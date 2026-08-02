@@ -31,14 +31,18 @@ import type { PressureReading } from '../../src/monitoring/SessionReaper.js';
 // not try to statically resolve them.
 type EngineMod = typeof import('../../src/core/CartographerSweepEngine.js');
 type TreeMod = typeof import('../../src/core/CartographerTree.js');
+type PopulationMod = typeof import('../../src/core/cartographerPopulation.js');
 let CartographerSweepEngine: EngineMod['CartographerSweepEngine'];
 let CartographerTree: TreeMod['CartographerTree'];
+let populateCartographer: PopulationMod['populateCartographer'];
 const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist', 'core');
 beforeAll(async () => {
   const eng = (await import(/* @vite-ignore */ path.join(DIST, 'CartographerSweepEngine.js'))) as EngineMod;
   const tre = (await import(/* @vite-ignore */ path.join(DIST, 'CartographerTree.js'))) as TreeMod;
+  const pop = (await import(/* @vite-ignore */ path.join(DIST, 'cartographerPopulation.js'))) as PopulationMod;
   CartographerSweepEngine = eng.CartographerSweepEngine;
   CartographerTree = tre.CartographerTree;
+  populateCartographer = pop.populateCartographer;
 });
 
 function git(cwd: string, args: string[]): void {
@@ -180,7 +184,7 @@ describe('cartographer event-loop safety — REAL dist worker (fix instar#1069)'
     expect(t.readSnapshot()).not.toBeNull();
   });
 
-  it('boot scaffold (scaffoldChunked) does NOT starve the event loop on a large real tree (lag < 250ms)', async () => {
+  it('zero-cost boot population publishes real counts without starving the event loop (lag < 250ms)', async () => {
     const t = tree();
     // Generate a large real directory tree (~6000 leaf files) so the walk + per-node
     // writes + the streamed index serialize are all non-trivial. Unchunked (the
@@ -197,7 +201,12 @@ describe('cartographer event-loop safety — REAL dist worker (fix instar#1069)'
     const timer = setInterval(() => { const now = Date.now(); maxLag = Math.max(maxLag, now - last - SAMPLE_MS); last = now; }, SAMPLE_MS);
     last = Date.now();
     try {
-      await t.scaffoldChunked({ chunkNodes: 200, onYield: () => new Promise<void>((r) => setImmediate(r)) });
+      const result = await populateCartographer({
+        tree: t,
+        config: { scaffoldChunkNodes: 200, detectTimeoutMs: 120000, maxIndexBytes: 256 * 1024 * 1024 },
+      });
+      expect(result.refused).toBe(false);
+      expect(result.nodeCount).toBeGreaterThan(6000);
     } finally {
       clearInterval(timer);
     }
@@ -206,5 +215,24 @@ describe('cartographer event-loop safety — REAL dist worker (fix instar#1069)'
     const loaded = t.loadIndexBounded(256 * 1024 * 1024);
     expect(loaded.state).toBe('ok');
     expect(loaded.nodeCount).toBeGreaterThan(6000);
+    const snap = t.readSnapshot();
+    expect(snap?.counts.nodeCount).toBe(loaded.nodeCount);
+    expect(snap?.freshness.freshRatio).toBeNull();
+  });
+
+  it('boot population refreshes an existing hierarchy when repository structure changes', async () => {
+    const t = tree();
+    fs.mkdirSync(path.join(repo, 'src'));
+    fs.writeFileSync(path.join(repo, 'src', 'a.ts'), 'export const a = 1;\n');
+    git(repo, ['add', '-A']); git(repo, ['commit', '-q', '-m', 'add a']);
+    const first = await populateCartographer({ tree: t });
+
+    fs.writeFileSync(path.join(repo, 'src', 'b.ts'), 'export const b = 2;\n');
+    git(repo, ['add', '-A']); git(repo, ['commit', '-q', '-m', 'add b']);
+    const second = await populateCartographer({ tree: t });
+
+    expect(second.nodeCount).toBe(first.nodeCount + 1);
+    expect(t.getNode('src/b.ts')).not.toBeNull();
+    expect(t.readSnapshot()?.counts.nodeCount).toBe(second.nodeCount);
   });
 });

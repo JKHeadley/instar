@@ -21,9 +21,30 @@ The rule is now: **nothing — not the background job, not any web endpoint — 
 
 The deferred Git-listing upgrade is now complete too: the worker reads Git's NUL-separated tree records as they arrive instead of holding the entire command output in a fixed-size buffer. It accepts the result only after Git exits cleanly, and worker timeout teardown explicitly reaps the Git child. The scaffold-writer and index-storage follow-ups in #1073 remain separate items.
 
+## What this structural-population increment adds
+
+The map itself no longer depends on turning on the summary-writing job. Whenever
+Cartographer is available, startup refreshes the folder-and-file hierarchy in
+small yielding chunks, then asks the existing worker to count what is really in
+that hierarchy and save the health snapshot. This is local filesystem and Git
+work only: it does not select a model, enter an intelligence queue, send data to
+another service, or change the summary-writing setting.
+
+That distinction matters on a brand-new map. The health view now reports the
+real number of discovered cards even while every card is still unwritten. It
+also tells the truth about freshness: during the initial grace period the ratio
+is unknown, and after grace it is zero. An empty or wholly unwritten map is never
+reported as perfectly fresh. If summary writing is later enabled explicitly, it
+waits for startup population to finish before touching the same index, so the
+two writers cannot race.
+
 ## What changes for you
 
-Nothing visible day-to-day, except the server stops dying when the sweep is on. The sweep stays **off** until this ships and I can re-enable it and finally give you the real cost-per-pass numbers you're owed. The trade-off: the health/stale endpoints now show last-known numbers with an age stamp rather than always-live numbers — a deliberate swap of "perfectly live" for "never freezes the server."
+The structural map and its health counts populate automatically without buying
+or enabling semantic-summary work. The summary-writing sweep stays **off** until
+you explicitly enable it. Health and stale views continue to show last-known
+numbers with an age stamp rather than recomputing the whole tree on demand — a
+deliberate swap of "perfectly live" for "never freezes the server."
 
 ## What the build-time review caught
 

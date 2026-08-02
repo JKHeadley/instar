@@ -82,6 +82,12 @@ export interface DetectInput {
   snapshotSampleMax: number;
   /** Wall clock for the grace computation (injected for deterministic tests). */
   nowMs: number;
+  /**
+   * Aggregate-only mode for zero-cost structural population. It computes the
+   * health/stale snapshot but does not build author candidates, mutate defer
+   * counters, or write the index. The cost-bearing sweep leaves this false.
+   */
+  snapshotOnly?: boolean;
 }
 
 export interface DetectCounts {
@@ -433,15 +439,17 @@ export async function runDetect(
   // ── Pass A: derive status for every node; accumulate counts + freshness;
   //    collect the candidate set; feed the oldest-fresh revalidation heap. ──
   const entries = Object.entries(index.nodes);
-  const candidateSet = new Set<string>();
+  const candidateSet = input.snapshotOnly ? null : new Set<string>();
   const staleSample: { path: string; status: StalenessStatus }[] = [];
+  let staleTotal = 0;
   let authoredCount = 0, neverAuthored = 0, stale = 0, pathGone = 0;
   let authorable = 0, fresh = 0, never = 0, neverWithin = 0, neverPast = 0, authorFailed = 0;
   const revalHeap = new BoundedTopHeap<string>(Math.max(0, input.revalidateSamplePerPass));
   const sampleCap = Math.max(0, input.snapshotSampleMax);
 
   const addCandidate = (p: string, status: StalenessStatus): void => {
-    candidateSet.add(p);
+    staleTotal += 1;
+    candidateSet?.add(p);
     // Secret-bearing path NAMES are excluded from the published sample so they are
     // never surfaced via the /stale route or the Files tab (they are still authored-
     // excluded by the engine; only their NAME is withheld from the snapshot).
@@ -481,11 +489,13 @@ export async function runDetect(
   //    reads) — needed for the dir-defer rule (author a dir after its candidate
   //    children). Derived from the index we already parsed, never the filesystem. ──
   const childrenOf = new Map<string, string[]>();
-  for (const [p] of entries) {
-    if (p === '') continue;
-    const par = parentOf(p);
-    const arr = childrenOf.get(par);
-    if (arr) arr.push(p); else childrenOf.set(par, [p]);
+  if (candidateSet) {
+    for (const [p] of entries) {
+      if (p === '') continue;
+      const par = parentOf(p);
+      const arr = childrenOf.get(par);
+      if (arr) arr.push(p); else childrenOf.set(par, [p]);
+    }
   }
 
   // ── Pass B: order candidates through bounded heaps (NEVER a full sort of the
@@ -499,11 +509,13 @@ export async function runDetect(
   const candidateHeap = new BoundedTopHeap<string>(input.maxCandidates);
   const starvedHeap = new BoundedTopHeap<string>(frontCap);
 
-  for (const p of candidateSet) {
-    const entry = index.nodes[p];
-    const starved = entry.kind === 'dir' && (entry.staleSincePass ?? 0) >= input.maxDeferredPasses;
-    if (starved) starvedHeap.offer(depthOf(p), p, p);
-    else candidateHeap.offer(depthOf(p), p, p);
+  if (candidateSet) {
+    for (const p of candidateSet) {
+      const entry = index.nodes[p];
+      const starved = entry.kind === 'dir' && (entry.staleSincePass ?? 0) >= input.maxDeferredPasses;
+      if (starved) starvedHeap.offer(depthOf(p), p, p);
+      else candidateHeap.offer(depthOf(p), p, p);
+    }
   }
 
   const starvedList = starvedHeap.drainSorted();
@@ -515,13 +527,15 @@ export async function runDetect(
   // candidate child, gets its defer counter bumped (persisted in write (a)).
   const selected = new Set(candidates);
   let deferredApplied = 0;
-  for (const p of candidateSet) {
-    const entry = index.nodes[p];
-    if (entry.kind !== 'dir' || selected.has(p)) continue;
-    const kids = childrenOf.get(p);
-    if (kids && kids.some((c) => candidateSet.has(c))) {
-      entry.staleSincePass = (entry.staleSincePass ?? 0) + 1;
-      deferredApplied += 1;
+  if (candidateSet) {
+    for (const p of candidateSet) {
+      const entry = index.nodes[p];
+      if (entry.kind !== 'dir' || selected.has(p)) continue;
+      const kids = childrenOf.get(p);
+      if (kids && kids.some((c) => candidateSet.has(c))) {
+        entry.staleSincePass = (entry.staleSincePass ?? 0) + 1;
+        deferredApplied += 1;
+      }
     }
   }
 
@@ -565,7 +579,7 @@ export async function runDetect(
     },
     revalidationSample: revalHeap.drainSorted(),
     staleSample,
-    staleTotal: candidateSet.size,
+    staleTotal,
     durationMs: Date.now() - startedAt,
   };
 }
@@ -587,6 +601,53 @@ export function readSnapshot(snapshotPath: string): CartographerSnapshot | null 
     // routes serve snapshot:'absent' and the next detect rewrites it.
     return null;
   }
+}
+
+export function detectStatus(r: DetectResult): LastDetectStatus {
+  if (!r.refused) return 'ok';
+  switch (r.refusalReason) {
+    case 'detect-timeout': return 'timeout';
+    case 'detect-worker-start-failure': return 'worker-start-failed';
+    case 'detect-index-too-large': return 'index-too-large';
+    case 'detect-index-unreadable': return 'index-unreadable';
+    case 'detect-git-error': return 'git-error';
+    default: return 'ok';
+  }
+}
+
+/**
+ * Persist one detect result using the same refusal semantics everywhere: a
+ * failure flips detect health but retains the last-good structural counts.
+ */
+export function persistDetectSnapshot(snapshotPath: string, r: DetectResult, nowMs = Date.now()): CartographerSnapshot {
+  const nowIso = new Date(nowMs).toISOString();
+  const status = detectStatus(r);
+  let snap: CartographerSnapshot;
+  if (r.refused) {
+    const prior = readSnapshot(snapshotPath);
+    snap = prior
+      ? { ...prior, lastDetectStatus: status, lastDetectAt: nowIso, durationMs: r.durationMs }
+      : {
+          generatedAt: nowIso, headSha: null, counts: r.counts, freshness: r.freshness,
+          staleSample: [], staleTotal: 0, staleSampleTruncated: false,
+          lastDetectStatus: status, lastDetectAt: nowIso, durationMs: r.durationMs,
+        };
+  } else {
+    snap = {
+      generatedAt: nowIso,
+      headSha: r.counts.headSha,
+      counts: r.counts,
+      freshness: r.freshness,
+      staleSample: r.staleSample,
+      staleTotal: r.staleTotal,
+      staleSampleTruncated: r.staleSample.length < r.staleTotal,
+      lastDetectStatus: 'ok',
+      lastDetectAt: nowIso,
+      durationMs: r.durationMs,
+    };
+  }
+  writeSnapshot(snapshotPath, snap);
+  return snap;
 }
 
 // ── applyIndexDeltas (author-phase write — ONE off-thread 67MB write) ─────────

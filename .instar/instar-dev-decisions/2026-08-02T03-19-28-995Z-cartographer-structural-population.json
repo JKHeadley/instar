@@ -1,0 +1,35 @@
+{
+  "ts": "2026-08-02T03:19:28.995Z",
+  "slug": "cartographer-structural-population",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 525,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/CartographerSweepEngine.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/cartographerDetect.ts",
+      "src/core/cartographerDetectWorker.ts",
+      "src/core/cartographerPopulation.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 360,
+    "deletedLines": 165
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Cartographer structural population is invoked exactly once during server composition, has a bounded scaffold and worker timeout, settles one promise, and schedules no retry, restart, notification, or recurring controller; the separately existing summary poller remains behind explicit enablement."
+  },
+  "verdict": "pass"
+}

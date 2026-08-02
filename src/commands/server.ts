@@ -189,6 +189,7 @@ import { createPrivateKey, createPublicKey, createHash, randomBytes, randomInt }
 import { sign as signEd25519, verify as verifyEd25519 } from '../core/MachineIdentity.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
 import { CartographerTree } from '../core/CartographerTree.js';
+import { populateCartographer } from '../core/cartographerPopulation.js';
 import { CapabilityMapper } from '../core/CapabilityMapper.js';
 import { ScopeVerifier } from '../core/ScopeVerifier.js';
 import { ContextHierarchy, checkDeclaredIdentityDirectory } from '../core/ContextHierarchy.js';
@@ -15311,30 +15312,39 @@ export async function startServer(options: StartOptions): Promise<void> {
       : null;
     if (cartographer) console.log(pc.green('  Cartographer doc-tree enabled'));
 
-    // fix instar#1069: build the structural index ONCE at boot, OFF the request path,
-    // in chunks that yield the event loop — replacing the per-request lazy scaffold()
-    // that froze /health. Fire-and-forget (boot is not blocked); P19 time ceiling so a
-    // pathological tree can't run forever (next boot retries; routes serve not-built
-    // meanwhile). Skipped when an index already exists.
-    if (cartographer && !fs.existsSync(cartographer.indexFilePath())) {
-      const scCfg = (config as { cartographer?: { freshnessSweep?: { scaffoldChunkNodes?: number } } }).cartographer?.freshnessSweep;
-      const chunkNodes = typeof scCfg?.scaffoldChunkNodes === 'number' ? scCfg.scaffoldChunkNodes : 500;
-      const scaffoldStartedAt = Date.now();
-      void cartographer.scaffoldChunked({
-        chunkNodes,
-        onYield: () => new Promise<void>((r) => setImmediate(r)),
-        shouldAbort: () => Date.now() - scaffoldStartedAt > 10 * 60_000, // P19: 10-min ceiling, retry next boot
-      }).then(() => {
-        console.log(pc.gray('  Cartographer index built (boot scaffold)'));
-      }).catch((err: unknown) => {
-        // @silent-fallback-ok — the boot scaffold is best-effort by design (fix
-        // instar#1069 P19): a partial run never produces a readable index (atomic
-        // tmp+rename), routes serve indexState:'not-built' honestly, and the next
-        // boot retries. The yellow log line is the operator surface; failing the
-        // boot over a map-build would invert the feature's priority.
-        console.log(pc.yellow(`  Cartographer boot scaffold incomplete (retries next boot): ${err instanceof Error ? err.message : String(err)}`));
-      });
-    }
+    // Zero-cost structural population is independent of the optional summary
+    // author sweep. Refresh at every boot so newly-added/removed paths join the
+    // hierarchy, then run aggregate-only detect in a worker and publish the
+    // snapshot that /tree?format=compact + /health serve. No router, LLM, egress,
+    // or freshnessSweep.enabled mutation occurs on this path.
+    const cartographerPopulationReady: Promise<void> | null = cartographer
+      ? (() => {
+          const fsCfg = (config as { cartographer?: { freshnessSweep?: Record<string, unknown> } }).cartographer?.freshnessSweep;
+          const num = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+          return populateCartographer({
+            tree: cartographer,
+            config: {
+              scaffoldChunkNodes: num(fsCfg?.scaffoldChunkNodes, 500),
+              detectTimeoutMs: num(fsCfg?.detectTimeoutMs, 120000),
+              detectWorkerHeapMb: num(fsCfg?.detectWorkerHeapMb, 1536),
+              maxIndexBytes: num(fsCfg?.maxIndexBytes, 200 * 1024 * 1024),
+              snapshotSampleMax: num(fsCfg?.snapshotSampleMax, 500),
+              gitMaxBuffer: num(fsCfg?.gitMaxBuffer, 64 * 1024 * 1024),
+              graceMs: num(fsCfg?.cadenceMs, 600000) * 2,
+            },
+          }).then((r) => {
+            if (r.refused) {
+              console.log(pc.yellow(`  Cartographer population snapshot refused (${r.detectStatus}); retries next boot`));
+            } else {
+              console.log(pc.gray(`  Cartographer hierarchy populated (${r.nodeCount} nodes)`));
+            }
+          }).catch((err: unknown) => {
+            // @silent-fallback-ok — scaffold is atomic and boot remains available;
+            // prior snapshot/index stay readable and the next boot retries.
+            console.log(pc.yellow(`  Cartographer population incomplete (retries next boot): ${err instanceof Error ? err.message : String(err)}`));
+          });
+        })()
+      : null;
 
     // Cartographer doc-freshness sweep (spec #2). In-process poller that authors
     // stale/never-authored node summaries on a LIGHT model routed OFF Claude.
@@ -15432,8 +15442,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             log: (m) => console.log(pc.gray(m)),
             reportDegradation: (d) => { try { DegradationReporter.getInstance().report(d); } catch { /* never break boot on a report */ } },
           });
-          cartographerSweepPoller.start();
-          console.log(pc.green('  Cartographer doc-freshness sweep enabled (off-Claude, lease-gated)'));
+          // Structural refresh owns the index first; only then may the optional
+          // author loop mutate it. This closes the boot scaffold/sweep write race.
+          void (cartographerPopulationReady ?? Promise.resolve()).then(() => {
+            cartographerSweepPoller?.start();
+            console.log(pc.green('  Cartographer doc-freshness sweep enabled (off-Claude, lease-gated)'));
+          });
         }
       }
     }

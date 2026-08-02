@@ -14,19 +14,27 @@
  *   3. The cost-bearing sweep poller is NOT started in EITHER case without an
  *      explicit freshnessSweep.enabled:true (the cost surface is never auto-armed).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { CartographerTree } from '../../src/core/CartographerTree.js';
-import { runDetect, writeSnapshot } from '../../src/core/cartographerDetect.js';
 import { resolveDevAgentGate } from '../../src/core/devAgentGate.js';
 import { applyDefaults, getMigrationDefaults } from '../../src/config/ConfigDefaults.js';
+
+type PopulationMod = typeof import('../../src/core/cartographerPopulation.js');
+let populateCartographer: PopulationMod['populateCartographer'];
+const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist', 'core');
+beforeAll(async () => {
+  const pop = (await import(/* @vite-ignore */ path.join(DIST, 'cartographerPopulation.js'))) as PopulationMod;
+  populateCartographer = pop.populateCartographer;
+});
 
 const AUTH = 'test-bearer-token';
 
@@ -98,33 +106,34 @@ describe('Cartographer dev-gate — feature is alive (Tier 3 E2E, production ini
     // Sanity: the REAL defaults OMIT cartographer.enabled (dev-gate decides).
     expect((cfg.cartographer as { enabled?: unknown })?.enabled).toBeUndefined();
 
-    // fix instar#1069: /health serves the per-host snapshot, never a lazy scaffold.
-    // Before any detect has run, the LIVE surface answers 200 with snapshot:'absent'
-    // (honest empty) — proving the route is wired, with no event-loop walk.
+    // /health remains cheap while the fire-and-forget boot population is pending.
     let res = await bearer(request(appFor(cfg)).get('/cartographer/health'));
     expect(res.status).toBe(200);
     expect(res.body.enabled).toBe(true);
     expect(res.body.snapshot).toBe('absent');
 
-    // With the index built (boot scaffold's job) + a detect snapshot (the sweep's
-    // job), the same route serves real counts — the full aliveness proof.
+    // Run the exact production boot helper. It builds structure + snapshot without
+    // enabling or invoking the cost-bearing summary sweep.
     const t = new CartographerTree({ projectDir: repo, stateDir });
-    t.scaffold();
-    const r = await runDetect({
-      indexPath: t.indexFilePath(), projectDir: repo, maxIndexBytes: 256 * 1024 * 1024,
-      maxCandidates: 100, maxNodesPerPass: 25, maxDeferredPasses: 5, revalidateSamplePerPass: 0,
-      graceMs: 0, gitMaxBuffer: 64 * 1024 * 1024, snapshotSampleMax: 500, nowMs: Date.now(),
-    });
-    writeSnapshot(t.snapshotPath(), {
-      generatedAt: new Date().toISOString(), headSha: r.counts.headSha, counts: r.counts,
-      freshness: r.freshness, staleSample: r.staleSample, staleTotal: r.staleTotal,
-      staleSampleTruncated: r.staleSample.length < r.staleTotal,
-      lastDetectStatus: 'ok', lastDetectAt: new Date().toISOString(), durationMs: r.durationMs,
-    });
+    const sweepCfg = (cfg.cartographer as { freshnessSweep: { enabled: boolean } }).freshnessSweep;
+    expect(sweepCfg.enabled).toBe(false);
+    const populated = await populateCartographer({ tree: t });
+    expect(populated.refused).toBe(false);
+    expect(sweepCfg.enabled).toBe(false);
+
     res = await bearer(request(appFor(cfg)).get('/cartographer/health'));
     expect(res.status).toBe(200);
     expect(res.body.snapshot).toBe('present');
     expect(res.body.nodeCount).toBeGreaterThanOrEqual(1);
+    expect(res.body.neverAuthoredCount).toBe(res.body.nodeCount);
+    expect(res.body.freshness.freshRatio).toBeNull();
+    expect(res.body.sweepEnabled).toBe(false);
+  });
+
+  it('production server wiring invokes zero-cost population before the optional sweep starts', () => {
+    const serverSource = fs.readFileSync(path.join(process.cwd(), 'src', 'commands', 'server.ts'), 'utf8');
+    expect(serverSource).toContain('populateCartographer({');
+    expect(serverSource).toContain('cartographerPopulationReady ?? Promise.resolve()');
   });
 
   it('fleet config → cartographer is null: /cartographer/health 503', async () => {

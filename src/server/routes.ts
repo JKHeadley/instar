@@ -7109,7 +7109,8 @@ export function createRoutes(ctx: RouteContext): Router {
   // is in-process only.
   //
   // fix instar#1069: NO request path runs an O(nodeCount)/67MB synchronous op on
-  // the event loop. /health + /stale serve the per-host SNAPSHOT the sweep writes;
+  // the event loop. /health + /stale serve the per-host SNAPSHOT zero-cost boot
+  // population writes (and an enabled sweep subsequently refreshes);
   // /tree is byte-bounded (too-large-for-request above the ceiling); the lazy
   // scaffold()/loadIndex() preamble is GONE (routes serve indexState:'not-built'
   // when no index exists — the boot-path chunked scaffold builds it off-request).
@@ -7277,7 +7278,7 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!summaryRaw || summaryRaw.length > 4096) { res.status(400).json({ error: 'invalid summary' }); return; }
 
     // fix instar#1069: no lazy scaffold()/loadIndex() preamble — getNode is a single
-    // node-file read. An un-scaffolded node 400s (the boot scaffold builds the index).
+    // node-file read. An un-scaffolded node 400s (boot population builds the index).
     const node = ctx.cartographer.getNode(p);
     if (!node) { res.status(400).json({ error: 'no such node — only an existing scaffolded node can be refreshed' }); return; }
 
