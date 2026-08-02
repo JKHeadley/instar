@@ -8,11 +8,16 @@
 import type { CartographerTree } from './CartographerTree.js';
 import {
   persistDetectSnapshot,
+  type DetectInput,
   type DetectRefusalReason,
   type DetectResult,
   type LastDetectStatus,
 } from './cartographerDetect.js';
-import { runCartographerWorker } from './cartographerDetectWorker.js';
+import {
+  runCartographerWorker,
+  type CartographerDetectWorkerOptions,
+  type CartographerWorkerResult,
+} from './cartographerDetectWorker.js';
 
 export interface CartographerPopulationConfig {
   scaffoldChunkNodes?: number;
@@ -39,6 +44,11 @@ export interface CartographerPopulationDeps {
   config?: CartographerPopulationConfig;
   now?: () => number;
   onYield?: () => Promise<void>;
+  /** Test seam: production omits this and always uses the real worker. */
+  runDetectWorker?: (
+    input: DetectInput,
+    options: CartographerDetectWorkerOptions,
+  ) => Promise<CartographerWorkerResult<DetectResult>>;
 }
 
 function refusedDetect(reason: DetectRefusalReason, durationMs: number): DetectResult {
@@ -71,7 +81,7 @@ export async function populateCartographer(deps: CartographerPopulationDeps): Pr
     shouldAbort: () => now() - scaffoldStartedAt > (cfg.scaffoldTimeoutMs ?? 10 * 60_000),
   });
 
-  const out = await runCartographerWorker<DetectResult>('detect', {
+  const detectInput: DetectInput = {
     indexPath: deps.tree.indexFilePath(),
     projectDir: deps.tree.projectDirPath(),
     maxIndexBytes: cfg.maxIndexBytes ?? 200 * 1024 * 1024,
@@ -86,11 +96,17 @@ export async function populateCartographer(deps: CartographerPopulationDeps): Pr
     snapshotSampleMax: cfg.snapshotSampleMax ?? 500,
     nowMs: now(),
     snapshotOnly: true,
-  }, {
+  };
+  const workerOptions: CartographerDetectWorkerOptions = {
     timeoutMs: cfg.detectTimeoutMs,
     heapMb: cfg.detectWorkerHeapMb,
     now,
-  });
+  };
+  const runDetectWorker = deps.runDetectWorker
+    ?? ((input: DetectInput, options: CartographerDetectWorkerOptions) => (
+      runCartographerWorker<DetectResult>('detect', input, options)
+    ));
+  const out = await runDetectWorker(detectInput, workerOptions);
 
   let detect: DetectResult;
   if (out.startFailed || (!out.ok && !out.timedOut)) {

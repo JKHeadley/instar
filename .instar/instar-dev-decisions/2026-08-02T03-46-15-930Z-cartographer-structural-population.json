@@ -1,0 +1,26 @@
+{
+  "ts": "2026-08-02T03:46:15.930Z",
+  "slug": "cartographer-structural-population",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 24,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/cartographerPopulation.ts"
+    ],
+    "addedLines": 20,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Cartographer structural population is invoked exactly once during server composition, has a bounded scaffold and worker timeout, settles one promise, and schedules no retry, restart, notification, or recurring controller; the new runner injection is a test seam and production still selects the real worker."
+  },
+  "verdict": "pass"
+}

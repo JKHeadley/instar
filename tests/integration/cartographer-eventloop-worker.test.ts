@@ -1,7 +1,10 @@
 // safe-git-allow: test file — execFileSync('git') builds the fixture repo; fs.rmSync is per-test tmpdir cleanup.
 /**
  * Tier 2 (integration) — the event-loop-safety proof for fix instar#1069, run
- * against the REAL compiled worker in dist/ (the globalSetup builds it). These
+ * against the REAL compiled worker in dist/. Source-only CI lanes do not build
+ * that ignored artifact and skip this suite, matching store-snapshot-mesh; the
+ * source-level production lifecycle remains covered by the Tier 3 E2E test.
+ * These
  * tests prove what unit tests in-process cannot:
  *   - the PROD worker path resolves (`new URL('./cartographerDetect.worker.js',
  *     import.meta.url)`) and returns a bounded result + writes the snapshot;
@@ -36,7 +39,10 @@ let CartographerSweepEngine: EngineMod['CartographerSweepEngine'];
 let CartographerTree: TreeMod['CartographerTree'];
 let populateCartographer: PopulationMod['populateCartographer'];
 const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist', 'core');
+const DIST_BUILT = fs.existsSync(path.join(DIST, 'CartographerSweepEngine.js'))
+  && fs.existsSync(path.join(DIST, 'cartographerPopulation.js'));
 beforeAll(async () => {
+  if (!DIST_BUILT) return;
   const eng = (await import(/* @vite-ignore */ path.join(DIST, 'CartographerSweepEngine.js'))) as EngineMod;
   const tre = (await import(/* @vite-ignore */ path.join(DIST, 'CartographerTree.js'))) as TreeMod;
   const pop = (await import(/* @vite-ignore */ path.join(DIST, 'cartographerPopulation.js'))) as PopulationMod;
@@ -97,7 +103,7 @@ function engineFor(t: CartographerTree, over: Partial<SweepEngineConfig> = {}): 
   });
 }
 
-describe('cartographer event-loop safety — REAL dist worker (fix instar#1069)', () => {
+describe.skipIf(!DIST_BUILT)('cartographer event-loop safety — REAL dist worker (fix instar#1069)', () => {
   it('detect runs in the dist worker, returns a bounded result, and writes the snapshot', async () => {
     const t = tree();
     writeLargeIndex(t, 20000);

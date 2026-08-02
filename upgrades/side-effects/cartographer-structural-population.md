@@ -62,6 +62,13 @@ No new static heuristic is added at a competing-signals decision point. The choi
 - **Races:** the optional poller starts only after the population promise settles. Scaffold writes remain atomic, and aggregate-only detect does not write the index, closing the only new shared-writer race.
 - **Feedback loops:** the public snapshot is read-only observational input. It does not enable the sweep, enqueue model work, or feed a controller that changes population cadence.
 - **Failure recovery:** scaffold or worker failure keeps boot available, preserves prior readable state, emits an operator-visible log line, and retries at next boot. No synchronous fallback reintroduces the event-loop hazard.
+- **Test transport seam:** `runDetectWorker` is injectable only through the
+  population helper's dependency object. Production composition omits it and
+  therefore always selects the real worker; the source-only E2E lane injects the
+  pure detector because that lane intentionally does not build the ignored
+  compiled tree. The real compiled-worker integration suite remains unchanged
+  when `dist` exists and skips consistently with the repository's established
+  source-only integration convention when it does not.
 
 ---
 
@@ -112,6 +119,10 @@ This change does not touch messaging, dispatch, session spawn/restart/kill/recov
 - Focused unit coverage: 13 tests for aggregate detection, including byte-for-byte non-mutation in snapshot-only mode.
 - Focused integration coverage: 7 tests against the real built worker, including a roughly 6,000-file hierarchy and event-loop lag below 250 ms.
 - Focused end-to-end coverage: 4 tests using production defaults, the real population helper, honest public health, and an unchanged disabled summary sweep.
+- CI-source-lane correction: after GitHub exposed that E2E does not build the
+  ignored compiled tree, the lifecycle test moved to the production helper's
+  narrow detector-transport injection seam; the final combined focused run
+  passed all 24 unit, real-worker integration, and E2E tests.
 - Repository-wide gate: 2,831 files and 43,297 tests passed; the deterministic manifest-staleness case and ordering-sensitive feedback case passed on isolated rerun. Two unrelated live Gemini smokes could not authenticate on this machine because a local binary is installed without its API credential; credential-less CI skips those smokes.
 - Final `npm run build`, lint, whitespace, no-silent-fallback, and headless-spawn-reroute checks passed (the latter under the CI-equivalent environment without the inherited agent framework override).
 

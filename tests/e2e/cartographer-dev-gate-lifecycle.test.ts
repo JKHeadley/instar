@@ -14,27 +14,20 @@
  *   3. The cost-bearing sweep poller is NOT started in EITHER case without an
  *      explicit freshnessSweep.enabled:true (the cost surface is never auto-armed).
  */
-import { describe, it, expect, beforeEach, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { CartographerTree } from '../../src/core/CartographerTree.js';
+import { runDetect } from '../../src/core/cartographerDetect.js';
+import { populateCartographer } from '../../src/core/cartographerPopulation.js';
 import { resolveDevAgentGate } from '../../src/core/devAgentGate.js';
 import { applyDefaults, getMigrationDefaults } from '../../src/config/ConfigDefaults.js';
-
-type PopulationMod = typeof import('../../src/core/cartographerPopulation.js');
-let populateCartographer: PopulationMod['populateCartographer'];
-const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist', 'core');
-beforeAll(async () => {
-  const pop = (await import(/* @vite-ignore */ path.join(DIST, 'cartographerPopulation.js'))) as PopulationMod;
-  populateCartographer = pop.populateCartographer;
-});
 
 const AUTH = 'test-bearer-token';
 
@@ -117,7 +110,16 @@ describe('Cartographer dev-gate — feature is alive (Tier 3 E2E, production ini
     const t = new CartographerTree({ projectDir: repo, stateDir });
     const sweepCfg = (cfg.cartographer as { freshnessSweep: { enabled: boolean } }).freshnessSweep;
     expect(sweepCfg.enabled).toBe(false);
-    const populated = await populateCartographer({ tree: t });
+    const populated = await populateCartographer({
+      tree: t,
+      // E2E's CI lane intentionally does not build dist. Inject only the worker
+      // transport while retaining the exact production population lifecycle;
+      // Tier 2 exercises the real compiled Worker boundary.
+      runDetectWorker: async (input) => {
+        const result = await runDetect(input);
+        return { ok: true, result, durationMs: result.durationMs };
+      },
+    });
     expect(populated.refused).toBe(false);
     expect(sweepCfg.enabled).toBe(false);
 
