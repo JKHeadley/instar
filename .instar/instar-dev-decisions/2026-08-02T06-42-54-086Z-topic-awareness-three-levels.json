@@ -1,0 +1,32 @@
+{
+  "ts": "2026-08-02T06:42:54.086Z",
+  "slug": "topic-awareness-three-levels",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 3,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/TopicIntentExtractor.ts"
+    ],
+    "addedLines": 3,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "prompt-parser-contract-drift",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "test",
+      "citation": "tests/unit/TopicIntent-extractor.test.ts#preserves-a-legacy-array-containing-proposal-objects-during-rolling-upgrades",
+      "howCaught": "The legacy-array regression and live 50 ms lifecycle test fail if parser container selection drops the signal; the silent-fallback ratchet separately enforces explicit observability justification on malformed v2 output."
+    },
+    "prNumber": 1834,
+    "component": "TopicIntentExtractor parser"
+  },
+  "verdict": "pass"
+}

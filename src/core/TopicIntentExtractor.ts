@@ -355,6 +355,9 @@ export function parseExtractorAnalysis(raw: string): SignalProposal[] | Extracto
       const awareness = normalizeAwarenessDraft(parsed.awareness);
       return { signals, ...(awareness ? { awareness } : {}) };
     } catch {
+      // @silent-fallback-ok — malformed v2 model output is converted into the
+      // structured invalid-awareness result that ingest() meters; capture stays
+      // fail-open and the degradation is observable instead of breaking ingress.
       return { signals: [] };
     }
   }

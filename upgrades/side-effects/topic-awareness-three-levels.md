@@ -278,6 +278,11 @@ signal/authority analysis.
   into an empty structured result. A 500 ms control still failed, ruling out
   added latency. The parser now chooses the first JSON container, with a direct
   legacy-array regression test and the original 50 ms lifecycle test restored.
+- The rerun also exercised the repository's silent-fallback ratchet. Malformed
+  v2 model JSON deliberately degrades to an empty structured analysis so ingress
+  remains available; that outcome is not silent because `ingest()` classifies it
+  as `awarenessInvalid` for capture metrics. The catch now carries the required
+  in-block justification, and the focused ratchet returns to its 495 baseline.
 
 ---
 
