@@ -1,0 +1,22 @@
+# Cartographer structural population
+
+## What Changed
+
+Fixed Cartographer's empty structural health view when semantic summary maintenance is disabled. Cartographer now refreshes its local folder-and-file hierarchy during startup, computes honest counts in the existing bounded worker, and saves the snapshot served by health, stale, and compact-tree reads. The optional summary-writing poller still requires explicit enablement and now waits for structural population to settle before it can touch the same index.
+
+## What to Tell Your User
+
+Cartographer can now map the structure of your project and report real health counts without using a paid model or sending project data to another service. Automatic summary writing remains off unless you explicitly turn it on.
+
+## Summary of New Capabilities
+
+- The structural project map refreshes during Cartographer-enabled startup.
+- Health reports the real discovered-node count even when no semantic summaries have been written.
+- A wholly unwritten map reports freshness as unknown during its grace period and zero afterward, never perfectly fresh.
+- Structural population performs no model call, intelligence-queue work, or network egress.
+
+## Evidence
+
+- Unit, integration, and end-to-end Cartographer coverage passed, including real built-worker execution and event-loop responsiveness over a roughly 6,000-file tree.
+- The repository-wide gate passed 43,297 tests across 2,831 files; its two deterministic local failures passed on isolated rerun.
+- The final TypeScript build, lint ratchets, and whitespace validation passed.

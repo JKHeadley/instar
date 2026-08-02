@@ -142,6 +142,25 @@ describe('cartographerDetect.runDetect — refusal taxonomy (each feeds the brea
 });
 
 describe('cartographerDetect.runDetect — snapshot sample + freshness', () => {
+  it('snapshotOnly reports the real hierarchy without creating author work or mutating defer state', async () => {
+    writeIndex({
+      '': { kind: 'dir', hasChildren: true, staleSincePass: 2 },
+      'src': { kind: 'dir', hasChildren: true, staleSincePass: 3 },
+      'src/a.ts': { kind: 'file' },
+    });
+    const before = fs.readFileSync(indexPath, 'utf8');
+    const r = await runDetect(input({ snapshotOnly: true, graceMs: 60_000 }));
+
+    expect(r.counts.nodeCount).toBe(3);
+    expect(r.freshness.nodeCount).toBe(3);
+    expect(r.freshness.neverAuthoredCount).toBe(3);
+    expect(r.freshness.freshRatio).toBeNull();
+    expect(r.staleTotal).toBe(3);
+    expect(r.candidates).toEqual([]);
+    expect(r.deferredApplied).toBe(0);
+    expect(fs.readFileSync(indexPath, 'utf8')).toBe(before);
+  });
+
   it('stale sample is bounded by snapshotSampleMax and excludes secret-bearing paths', async () => {
     const nodes: Record<string, { kind: 'file' }> = { 'src/.env': { kind: 'file' }, 'src/secrets.ts': { kind: 'file' } };
     for (let i = 0; i < 20; i++) nodes[`src/f${i}.ts`] = { kind: 'file' };

@@ -24,22 +24,21 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { Worker } from 'node:worker_threads';
 import type { CartographerTree, CartographerNode, CartographerConfidence } from './CartographerTree.js';
 import type { PressureReading } from '../monitoring/SessionReaper.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import {
   runDetect,
   applyIndexDeltas,
-  writeSnapshot,
-  readSnapshot,
+  detectStatus as statusFromDetect,
+  persistDetectSnapshot,
   type DetectInput,
   type DetectResult,
   type ApplyDeltasInput,
   type IndexDelta,
   type LastDetectStatus,
-  type CartographerSnapshot,
 } from './cartographerDetect.js';
+import { runCartographerWorker } from './cartographerDetectWorker.js';
 import {
   isSecretBearingPath,
   contentHasCredentialMaterial,
@@ -421,7 +420,11 @@ export class CartographerSweepEngine {
       // Operator escape hatch: bounded pure module on the main thread (NEVER staleNodes()).
       return await runDetect(input);
     }
-    const out = await this.runWorker<DetectResult>('detect', input);
+    const out = await runCartographerWorker<DetectResult>('detect', input, {
+      timeoutMs: this.d.config.detectTimeoutMs,
+      heapMb: this.d.config.detectWorkerHeapMb,
+      now: this.now,
+    });
     if (out.startFailed) {
       return this.refusedDetect('detect-worker-start-failure', out.durationMs);
     }
@@ -457,7 +460,11 @@ export class CartographerSweepEngine {
     };
     try {
       if (this.d.config.detectInWorker === false) { applyIndexDeltas(input); return; }
-      await this.runWorker('apply-deltas', input);
+      await runCartographerWorker('apply-deltas', input, {
+        timeoutMs: this.d.config.detectTimeoutMs,
+        heapMb: this.d.config.detectWorkerHeapMb,
+        now: this.now,
+      });
     } catch {
       // @silent-fallback-ok — a failed index-delta write only means the node files
       // (already written) are ahead of the index for one tick; the next detect
@@ -466,125 +473,17 @@ export class CartographerSweepEngine {
   }
 
   private detectStatus(r: DetectResult): LastDetectStatus {
-    if (!r.refused) return 'ok';
-    switch (r.refusalReason) {
-      case 'detect-timeout': return 'timeout';
-      case 'detect-worker-start-failure': return 'worker-start-failed';
-      case 'detect-index-too-large': return 'index-too-large';
-      case 'detect-index-unreadable': return 'index-unreadable';
-      case 'detect-git-error': return 'git-error';
-      default: return 'ok';
-    }
+    return statusFromDetect(r);
   }
 
   /** Persist (or update) the per-host snapshot every /cartographer/* read route serves from. */
   private persistSnapshot(r: DetectResult): void {
     try {
-      const nowIso = new Date(this.now()).toISOString();
-      const status = this.detectStatus(r);
-      if (r.refused) {
-        // Keep the last-good sample/counts; only flip the detect-health fields so
-        // /stale serves snapshot:'detect-failing' with its prior sample (Slice 2).
-        const prior = readSnapshot(this.d.tree.snapshotPath());
-        const snap: CartographerSnapshot = prior
-          ? { ...prior, lastDetectStatus: status, lastDetectAt: nowIso, durationMs: r.durationMs }
-          : {
-              generatedAt: nowIso, headSha: null, counts: r.counts, freshness: r.freshness,
-              staleSample: [], staleTotal: 0, staleSampleTruncated: false,
-              lastDetectStatus: status, lastDetectAt: nowIso, durationMs: r.durationMs,
-            };
-        writeSnapshot(this.d.tree.snapshotPath(), snap);
-        return;
-      }
-      const snap: CartographerSnapshot = {
-        generatedAt: nowIso,
-        headSha: r.counts.headSha,
-        counts: r.counts,
-        freshness: r.freshness,
-        staleSample: r.staleSample,
-        staleTotal: r.staleTotal,
-        staleSampleTruncated: r.staleSample.length < r.staleTotal,
-        lastDetectStatus: 'ok',
-        lastDetectAt: nowIso,
-        durationMs: r.durationMs,
-      };
-      writeSnapshot(this.d.tree.snapshotPath(), snap);
+      persistDetectSnapshot(this.d.tree.snapshotPath(), r, this.now());
     } catch {
       // @silent-fallback-ok — the snapshot is an observability surface; a write
       // failure only costs route freshness for one tick, never correctness/safety.
     }
-  }
-
-  /** Minimal env allowlist for a spawned worker — NEVER the parent process.env. */
-  private workerEnv(): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = {};
-    for (const k of ['PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'SystemRoot', 'TEMP', 'TMP']) {
-      if (process.env[k]) env[k] = process.env[k];
-    }
-    for (const k of Object.keys(process.env)) {
-      if (k.startsWith('GIT_')) env[k] = process.env[k];
-    }
-    return env;
-  }
-
-  /** Spawn the detect/write worker, await its single message, bound by detectTimeoutMs. */
-  private runWorker<T>(
-    mode: 'detect' | 'apply-deltas',
-    input: DetectInput | ApplyDeltasInput,
-  ): Promise<{ ok: boolean; result?: T; error?: string; timedOut?: boolean; startFailed?: boolean; durationMs: number }> {
-    const startedAt = this.now();
-    const timeoutMs = this.d.config.detectTimeoutMs ?? 120_000;
-    const heapMb = this.d.config.detectWorkerHeapMb ?? 1536;
-    return new Promise((resolve) => {
-      let worker: Worker;
-      try {
-        const workerUrl = new URL('./cartographerDetect.worker.js', import.meta.url);
-        worker = new Worker(workerUrl, {
-          workerData: { mode, input },
-          resourceLimits: { maxOldGenerationSizeMb: heapMb },
-          env: this.workerEnv(),
-        });
-      } catch (err) {
-        // @silent-fallback-ok — failure is surfaced as structured startFailed;
-        // this is not a continuation with hidden degraded state.
-        resolve({ ok: false, startFailed: true, error: err instanceof Error ? err.message : String(err), durationMs: this.now() - startedAt });
-        return;
-      }
-      let settled = false;
-      let gitChildPid: number | null = null;
-      let timeoutPending = false;
-      let forceTerminateTimer: NodeJS.Timeout | null = null;
-      const done = (r: { ok: boolean; result?: T; error?: string; timedOut?: boolean; startFailed?: boolean }): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (forceTerminateTimer) clearTimeout(forceTerminateTimer);
-        if (gitChildPid != null) {
-          try { process.kill(gitChildPid, 'SIGKILL'); } catch { /* @silent-fallback-ok — already exited is the desired terminal state */ }
-          gitChildPid = null;
-        }
-        worker.terminate().catch(() => { /* @silent-fallback-ok — OS child was explicitly killed above; worker may already be gone */ });
-        resolve({ ...r, durationMs: this.now() - startedAt });
-      };
-      const timer = setTimeout(() => {
-        timeoutPending = true;
-        // Give the live worker event loop a bounded chance to kill + reap its own
-        // streamed git child. A worker stuck in synchronous parse cannot have
-        // spawned git yet; the force timer still bounds that case.
-        worker.postMessage({ kind: 'cancel' });
-        forceTerminateTimer = setTimeout(() => done({ ok: false, timedOut: true }), 250);
-      }, timeoutMs);
-      worker.on('message', (msg: { kind?: string; pid?: number; ok?: boolean; result?: T; error?: string }) => {
-        if (msg.kind === 'git-child-spawned' && typeof msg.pid === 'number') { gitChildPid = msg.pid; return; }
-        if (msg.kind === 'git-child-closed' && msg.pid === gitChildPid) { gitChildPid = null; return; }
-        if (typeof msg.ok === 'boolean') {
-          if (timeoutPending) done({ ok: false, timedOut: true });
-          else done({ ok: msg.ok, result: msg.result, error: msg.error });
-        }
-      });
-      worker.once('error', (err: Error) => done({ ok: false, error: err.message }));
-      worker.once('exit', (code: number) => { if (!settled) done({ ok: false, error: `worker exited (${code})` }); });
-    });
   }
 
   // ── authoring one node ──────────────────────────────────────────────────────
