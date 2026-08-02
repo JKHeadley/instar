@@ -38,6 +38,10 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { pickDashboardPin } from '../core/dashboardPin.js';
 import { stopAutonomousTopic, type AutonomousJournalSeam } from '../core/AutonomousSessions.js';
 import { AttentionTopicGuard, TopicFloodBudgetError, type AttentionTopicGuardConfig } from './AttentionTopicGuard.js';
+import { buildStallAlertDecisionContext } from './shared/StallAlertDecisionContext.js';
+import { DP_TELEGRAM_STALL_CONFIRM } from '../data/provenanceCoverage.js';
+
+export const TELEGRAM_STALL_CONFIRM_PROMPT_ID = 'telegram-stall-confirm-v1';
 
 export interface TelegramConfig {
   /** Bot token from @BotFather */
@@ -2735,6 +2739,12 @@ export class TelegramAdapter implements MessagingAdapter {
         maxTokens: 5,
         temperature: 0,
         attribution: { component: 'TelegramAdapter' }, // attribution for /metrics/features
+        provenance: {
+          decisionPoint: DP_TELEGRAM_STALL_CONFIRM,
+          context: buildStallAlertDecisionContext({ promptText: prompt, ...context }),
+          optionsPresented: ['yes', 'no'],
+          promptId: TELEGRAM_STALL_CONFIRM_PROMPT_ID,
+        },
       });
       const answer = response.trim().toLowerCase();
       if (answer === 'no') {

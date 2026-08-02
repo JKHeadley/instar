@@ -276,6 +276,12 @@ export const DP_INPUT_CLASSIFY = 'input-classify';
 /** Bounded active-session terminal slice → structured routing summary. */
 export const DP_SESSION_SUMMARY_EXTRACT = 'session-summary-extract';
 
+/** Slack fallback stall/promise evidence → send or suppress alert. */
+export const DP_SLACK_STALL_CONFIRM = 'slack-stall-confirm';
+
+/** Telegram fallback stall/promise evidence → send or suppress alert. */
+export const DP_TELEGRAM_STALL_CONFIRM = 'telegram-stall-confirm';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -509,12 +515,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Arc-check classification of a topic intent over conversation; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'slack-stall-confirm',
+    decisionPoint: DP_SLACK_STALL_CONFIRM,
     component: 'SlackAdapter',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The response parser proves only that the model said yes or no; it does not independently establish ' +
+      'whether sending or suppressing the alert was correct. Identity-only provenance permits later comparison ' +
+      'with session recovery and operator feedback without inventing a label today.',
     reason:
-      'Stall-confirm alert-suppression judgment over session output (Slack arm); enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Slack fallback alert confirmation over session state and agent-authored context; identity-only context stores digests and scalar facts, never message text.',
   },
 
   // — Gates —
@@ -793,12 +805,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Task/phase/files extraction over bounded tmux output; identity-only context stores exact visible-slice digests and bounds, never terminal text.',
   },
   {
-    decisionPoint: 'telegram-stall-confirm',
+    decisionPoint: DP_TELEGRAM_STALL_CONFIRM,
     component: 'TelegramAdapter',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The response parser proves only that the model said yes or no; it does not independently establish ' +
+      'whether sending or suppressing the alert was correct. Identity-only provenance permits later comparison ' +
+      'with session recovery and operator feedback without inventing a label today.',
     reason:
-      'Stall-confirm alert-suppression judgment over session output (Telegram arm); enrollment queued in the ACT-1193 retrofit backlog.',
+      'Telegram fallback alert confirmation over session state and agent-authored context; identity-only context stores digests and scalar facts, never message text.',
   },
   {
     decisionPoint: 'resume-uuid-validate',

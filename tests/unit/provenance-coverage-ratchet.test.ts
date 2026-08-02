@@ -50,6 +50,8 @@ import {
   DP_PROFILE_INTENT_CLASSIFY,
   DP_INPUT_CLASSIFY,
   DP_SESSION_SUMMARY_EXTRACT,
+  DP_SLACK_STALL_CONFIRM,
+  DP_TELEGRAM_STALL_CONFIRM,
   getCensusEntry,
   isEnrolled,
   getVolumeClass,
@@ -110,12 +112,10 @@ const PENDING_BASELINE = [
   'resume-uuid-validate::ResumeValidator::backlog:decision-quality-enrolment',
   'self-knowledge-extract::SelfKnowledgeTree::backlog:decision-quality-enrolment',
   'session-activity-digest::SessionActivitySentinel::backlog:decision-quality-enrolment',
-  'slack-stall-confirm::SlackAdapter::backlog:decision-quality-enrolment',
   'stall-triage-diagnosis::StallTriageNurse::backlog:decision-quality-enrolment',
   'standards-conformance-review::StandardsConformanceReviewer::backlog:decision-quality-enrolment',
   'standards-coverage-enrich::StandardsCoverageEnrichment::backlog:decision-quality-enrolment',
   'task-classify::TaskClassifier::backlog:decision-quality-enrolment',
-  'telegram-stall-confirm::TelegramAdapter::backlog:decision-quality-enrolment',
   'temporal-coherence-check::TemporalCoherenceChecker::backlog:decision-quality-enrolment',
   'topic-intent-arc-check::TopicIntentArcCheck::backlog:decision-quality-enrolment',
   'topic-summarize::TopicSummarizer::backlog:decision-quality-enrolment',
@@ -477,6 +477,21 @@ describe('session-summary-extract — bounded terminal-output enrollment', () =>
     expect(entry?.status).toBe('wired');
     expect(entry?.component).toBe('SessionSummarySentinel');
     expect(entry?.volumeClass).toBe('budget:500');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('cross-platform stall confirmation — bounded fallback-alert enrollment', () => {
+  it.each([
+    [DP_SLACK_STALL_CONFIRM, 'SlackAdapter'],
+    [DP_TELEGRAM_STALL_CONFIRM, 'TelegramAdapter'],
+  ])('%s is wired with a bounded valve and explicit measurement-only posture', (decisionPoint, component) => {
+    const entry = getCensusEntry(decisionPoint);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe(component);
+    expect(entry?.volumeClass).toBe('budget:100');
     expect(entry?.contentClass).toBe('content-bearing');
     expect(entry?.gradingPosture).toBe('measurement-only');
     expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
