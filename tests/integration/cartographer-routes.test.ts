@@ -16,7 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { CartographerTree } from '../../src/core/CartographerTree.js';
-import { runDetect, writeSnapshot } from '../../src/core/cartographerDetect.js';
+import { persistDetectSnapshot, runDetect, writeSnapshot } from '../../src/core/cartographerDetect.js';
 
 const AUTH = 'test-bearer-token';
 
@@ -116,6 +116,35 @@ describe('GET /cartographer/* (Tier 2 integration)', () => {
     expect(res.body.authoredCount).toBe(0);
     expect(res.body.freshness).toBeDefined();
     expect(typeof res.body.snapshotStale).toBe('boolean');
+  });
+
+  it('health treats a non-Git structural-only snapshot as present with honest unknown freshness', async () => {
+    const nonGit = fs.mkdtempSync(path.join(os.tmpdir(), 'carto-rt-nogit-'));
+    const nonGitState = path.join(nonGit, '.instar');
+    try {
+      fs.mkdirSync(path.join(nonGit, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(nonGit, 'src', 'index.ts'), 'export const a = 1;\n');
+      const t = new CartographerTree({ projectDir: nonGit, stateDir: nonGitState });
+      t.scaffold();
+      const r = await runDetect({
+        indexPath: t.indexFilePath(), projectDir: nonGit, maxIndexBytes: 256 * 1024 * 1024,
+        maxCandidates: 1, maxNodesPerPass: 1, maxDeferredPasses: 1, revalidateSamplePerPass: 0,
+        graceMs: 60_000, gitMaxBuffer: 64 * 1024 * 1024, snapshotSampleMax: 500,
+        nowMs: Date.now(), snapshotOnly: true,
+      });
+      persistDetectSnapshot(t.snapshotPath(), r);
+
+      const res = await bearer(request(appWith(t)).get('/cartographer/health'));
+      expect(res.status).toBe(200);
+      expect(res.body.snapshot).toBe('present');
+      expect(res.body.snapshotStale).toBe(false);
+      expect(res.body.lastDetectStatus).toBe('structural-only');
+      expect(res.body.nodeCount).toBeGreaterThanOrEqual(3);
+      expect(res.body.neverAuthoredCount).toBe(res.body.nodeCount);
+      expect(res.body.freshness.freshRatio).toBeNull();
+    } finally {
+      fs.rmSync(nonGit, { recursive: true, force: true });
+    }
   });
 
   it('stale (snapshot present) → 200 with bounded sample + total + truncated', async () => {

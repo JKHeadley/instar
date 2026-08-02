@@ -1,0 +1,22 @@
+# Cartographer structural snapshots at non-Git roots
+
+## What Changed
+
+Fixed Cartographer boot population for agent homes that are filesystem roots containing one or more worktrees but are not themselves Git repositories. The freshly scaffolded hierarchy now remains publishable when Git metadata is unavailable: health reports the real structural node count, labels the detect state `structural-only`, and leaves summary freshness unknown. The cost-bearing summary sweep still refuses without Git and remains explicitly disabled unless the operator enables it.
+
+## What to Tell Your User
+
+Cartographer can now map an agent home even when that top-level folder is not a Git checkout. It reports the real local hierarchy without claiming its summaries are fresh, making a model call, sending data elsewhere, or enabling paid summary maintenance.
+
+## Summary of New Capabilities
+
+- Non-Git project roots publish usable structural snapshots instead of collapsing a completed scaffold to zero nodes.
+- `lastDetectStatus: structural-only` distinguishes filesystem truth from Git-backed staleness analysis.
+- Summary freshness stays `null` when Git cannot verify it; authored summaries are never falsely called fresh or stale.
+- The semantic authoring sweep retains its strict Git requirement and its existing explicit opt-in.
+
+## Evidence
+
+- Unit coverage exercises a mixed authored/un-authored index at a non-Git root and verifies real counts, null freshness, zero author candidates, and byte-for-byte index non-mutation.
+- Route integration coverage verifies the structural-only snapshot is served as present, current, and honestly unscored.
+- The focused Cartographer unit, integration, and end-to-end set passed 31 tests.
