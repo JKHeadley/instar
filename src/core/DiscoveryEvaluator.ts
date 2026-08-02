@@ -16,6 +16,8 @@
  */
 
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from './JudgmentProvenanceLog.js';
+import { DP_DISCOVERY_EVALUATE } from '../data/provenanceCoverage.js';
 import type {
   FeatureRegistry,
   FeatureDefinition,
@@ -99,6 +101,30 @@ const DEFAULT_LIMITS: EvaluatorLimits = {
 };
 
 const PROMPT_VERSION = 'v1.0';
+
+export const DISCOVERY_EVALUATE_PROMPT_ID = `discovery-evaluate-${PROMPT_VERSION}`;
+
+/** Identity-only envelope for sanitized discovery context and eligible features. */
+export function buildDiscoveryDecisionContext(input: {
+  promptText: string;
+  context: DiscoveryContext;
+  eligible: EligibleFeature[];
+}): Record<string, unknown> {
+  return buildBoundedContext({
+    promptIdentitySha256: buildStructuredSha256Identity(input.promptText),
+    promptChars: input.promptText.length,
+    promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+    topicCategoryIdentitySha256: buildStructuredSha256Identity(input.context.topicCategory),
+    conversationIntent: input.context.conversationIntent,
+    autonomyProfile: input.context.autonomyProfile,
+    problemSetIdentitySha256: buildStructuredSha256Identity(JSON.stringify(input.context.problemCategories)),
+    problemCategoryCount: input.context.problemCategories.length,
+    enabledFeatureSetIdentitySha256: buildStructuredSha256Identity(JSON.stringify(input.context.enabledFeatures)),
+    enabledFeatureCount: input.context.enabledFeatures.length,
+    eligibleFeatureSetIdentitySha256: buildStructuredSha256Identity(JSON.stringify(input.eligible)),
+    eligibleFeatureCount: input.eligible.length,
+  });
+}
 
 /** Discovery states that make a feature ineligible for surfacing */
 const INELIGIBLE_STATES: Set<DiscoveryState> = new Set(['enabled', 'disabled']);
@@ -189,7 +215,7 @@ export class DiscoveryEvaluator {
     const prompt = this.buildPrompt(context, eligible);
 
     try {
-      const response = await this.callWithTimeout(prompt);
+      const response = await this.callWithTimeout(prompt, context, eligible);
       const recommendation = this.validateOutput(response, eligible, context.autonomyProfile);
 
       const result: DiscoveryEvaluation = {
@@ -450,12 +476,22 @@ Evaluate: should any of these features be surfaced given the current context? JS
     this.cache.set(topicCategory, { result, timestamp: Date.now() });
   }
 
-  private async callWithTimeout(prompt: string): Promise<string> {
+  private async callWithTimeout(
+    prompt: string,
+    context: DiscoveryContext,
+    eligible: EligibleFeature[],
+  ): Promise<string> {
     const options: IntelligenceOptions = {
       model: 'fast',         // Haiku-class
       maxTokens: 300,
       temperature: 0,
       attribution: { component: 'DiscoveryEvaluator' }, // attribution for /metrics/features
+      provenance: {
+        decisionPoint: DP_DISCOVERY_EVALUATE,
+        context: buildDiscoveryDecisionContext({ promptText: prompt, context, eligible }),
+        optionsPresented: ['no-recommendation', 'awareness', 'suggestion', 'prompt'],
+        promptId: DISCOVERY_EVALUATE_PROMPT_ID,
+      },
     };
 
     // Race against timeout

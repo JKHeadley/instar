@@ -65,6 +65,8 @@ import {
   DP_USHER_TOPIC_ROUTE,
   DP_PRE_COMPACTION_FLUSH,
   DP_TREE_SYNTHESIZE,
+  DP_STALL_TRIAGE_DIAGNOSIS,
+  DP_DISCOVERY_EVALUATE,
   getCensusEntry,
   isEnrolled,
   getVolumeClass,
@@ -106,7 +108,6 @@ const PENDING_BASELINE = [
   'contextual-evaluate::ContextualEvaluator::backlog:decision-quality-enrolment',
   'correction-distill::correction-learning::backlog:decision-quality-enrolment',
   'cross-model-review::crossModelReviewer::backlog:decision-quality-enrolment',
-  'discovery-evaluate::DiscoveryEvaluator::backlog:decision-quality-enrolment',
   'external-operation-gate::ExternalOperationGate::backlog:decision-quality-enrolment',
   'job-reflect::JobReflector::backlog:decision-quality-enrolment',
   'llm-sanitize::LLMSanitizer::backlog:decision-quality-enrolment',
@@ -118,7 +119,6 @@ const PENDING_BASELINE = [
   'resume-sanity-check::ResumeQueueDrainer::backlog:decision-quality-enrolment',
   'self-knowledge-extract::SelfKnowledgeTree::backlog:decision-quality-enrolment',
   'session-activity-digest::SessionActivitySentinel::backlog:decision-quality-enrolment',
-  'stall-triage-diagnosis::StallTriageNurse::backlog:decision-quality-enrolment',
   'standards-conformance-review::StandardsConformanceReviewer::backlog:decision-quality-enrolment',
   'standards-coverage-enrich::StandardsCoverageEnrichment::backlog:decision-quality-enrolment',
   'task-classify::TaskClassifier::backlog:decision-quality-enrolment',
@@ -648,6 +648,30 @@ describe('tree-synthesize — bounded knowledge-synthesis enrollment', () => {
     expect(entry?.status).toBe('wired');
     expect(entry?.component).toBe('TreeSynthesis');
     expect(entry?.volumeClass).toBe('budget:250');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('stall-triage-diagnosis — bounded recovery enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_STALL_TRIAGE_DIAGNOSIS);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('StallTriageNurse');
+    expect(entry?.volumeClass).toBe('budget:100');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('discovery-evaluate — bounded feature-surfacing enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_DISCOVERY_EVALUATE);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('DiscoveryEvaluator');
+    expect(entry?.volumeClass).toBe('budget:100');
     expect(entry?.contentClass).toBe('content-bearing');
     expect(entry?.gradingPosture).toBe('measurement-only');
     expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);

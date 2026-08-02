@@ -321,6 +321,12 @@ export const DP_PRE_COMPACTION_FLUSH = 'pre-compaction-flush';
 /** Bounded self-knowledge fragments → first-person synthesis. */
 export const DP_TREE_SYNTHESIZE = 'tree-synthesize';
 
+/** Session stall evidence → recovery diagnosis and first treatment. */
+export const DP_STALL_TRIAGE_DIAGNOSIS = 'stall-triage-diagnosis';
+
+/** Sanitized conversation context + eligible features → surfacing recommendation. */
+export const DP_DISCOVERY_EVALUATE = 'discovery-evaluate';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -470,12 +476,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Activity digest authored over session tmux output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'stall-triage-diagnosis',
+    decisionPoint: DP_STALL_TRIAGE_DIAGNOSIS,
     component: 'StallTriageNurse',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The later recovery check is not correlation-bound to the model settlement, and escalation can recover ' +
+      'after an incorrect initial action. Treating eventual recovery as direct grading would therefore ' +
+      'misattribute outcomes; identity-only provenance is collected until that join exists.',
     reason:
-      'Stall-triage diagnosis over session output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Stall-triage diagnosis over terminal and message evidence; context stores exact identities and bounded shape, never session or message bodies.',
   },
   {
     decisionPoint: DP_COMMITMENT_DETECT,
@@ -802,12 +814,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Artifact-vs-standard conformance review over file content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'discovery-evaluate',
+    decisionPoint: DP_DISCOVERY_EVALUATE,
     component: 'DiscoveryEvaluator',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Output validation proves only that a recommendation names an eligible feature and allowed pressure level; ' +
+      'it does not establish relevance or user benefit. Later discovery-state transitions are not yet ' +
+      'correlation-bound to each settlement, so provenance is collected without claiming a grade.',
     reason:
-      'Serendipity-discovery evaluation over subagent output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Feature surfacing evaluation over sanitized context and eligible feature descriptions; provenance stores identities and counts, never descriptive text.',
   },
   {
     decisionPoint: DP_DASHBOARD_INSIGHT,

@@ -19,6 +19,8 @@ import { DegradationReporter } from './DegradationReporter.js';
 import { ANTHROPIC_MODELS, resolveModelId } from '../core/models.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 import { resolveModelForFramework } from '../core/frameworkSessionLaunch.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
+import { DP_STALL_TRIAGE_DIAGNOSIS } from '../data/provenanceCoverage.js';
 import { getActivitySignal, type FrameworkActivitySignal } from './frameworkActivitySignals.js';
 import type {
   StallTriageConfig,
@@ -48,6 +50,30 @@ export type {
 // ─── Constants ──────────────────────────────────────────────
 
 const DEFAULT_POST_INTERVENTION_DELAY_MS = 3000;
+
+export const STALL_TRIAGE_DIAGNOSIS_PROMPT_ID = 'stall-triage-diagnosis-v1';
+
+/** Identity-only envelope for the model-visible stall diagnosis evidence. */
+export function buildStallTriageDecisionContext(input: {
+  promptText: string;
+  context: TriageContext;
+}): Record<string, unknown> {
+  const { context } = input;
+  return buildBoundedContext({
+    promptIdentitySha256: buildStructuredSha256Identity(input.promptText),
+    promptChars: input.promptText.length,
+    promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+    sessionIdentitySha256: buildStructuredSha256Identity(context.sessionName),
+    topicId: context.topicId,
+    sessionStatus: context.sessionStatus,
+    waitMinutes: context.waitMinutes,
+    terminalIdentitySha256: buildStructuredSha256Identity(context.tmuxOutput),
+    terminalChars: context.tmuxOutput.length,
+    pendingMessageIdentitySha256: buildStructuredSha256Identity(context.pendingMessage),
+    recentMessageSetIdentitySha256: buildStructuredSha256Identity(JSON.stringify(context.recentMessages)),
+    recentMessageCount: context.recentMessages.length,
+  });
+}
 
 const DEFAULT_CONFIG: Required<StallTriageConfig> = {
   framework: 'claude-code',
@@ -610,6 +636,12 @@ export class StallTriageNurse extends EventEmitter {
         model: 'balanced',
         maxTokens: this.config.maxTokens,
         attribution: { component: 'StallTriageNurse' }, // attribution for /metrics/features
+        provenance: {
+          decisionPoint: DP_STALL_TRIAGE_DIAGNOSIS,
+          context: buildStallTriageDecisionContext({ promptText: prompt, context }),
+          optionsPresented: ['status-update', 'nudge', 'interrupt', 'unstick', 'restart'],
+          promptId: STALL_TRIAGE_DIAGNOSIS_PROMPT_ID,
+        },
       });
 
       return this.parseDiagnosis(rawResponse);

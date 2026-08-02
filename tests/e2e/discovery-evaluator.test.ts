@@ -14,26 +14,32 @@ import express from 'express';
 import type { Server } from 'node:http';
 import { FeatureRegistry } from '../../src/core/FeatureRegistry.js';
 import { BUILTIN_FEATURES } from '../../src/core/FeatureDefinitions.js';
-import { DiscoveryEvaluator } from '../../src/core/DiscoveryEvaluator.js';
+import {
+  DiscoveryEvaluator,
+  DISCOVERY_EVALUATE_PROMPT_ID,
+} from '../../src/core/DiscoveryEvaluator.js';
 import type { DiscoveryContext, DiscoveryEvaluation, EligibleFeature } from '../../src/core/DiscoveryEvaluator.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { createRoutes } from '../../src/server/routes.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { DP_DISCOVERY_EVALUATE } from '../../src/data/provenanceCoverage.js';
 
 // ── Mock Intelligence Provider ──────────────────────────────────────
 
 class MockIntelligenceProvider implements IntelligenceProvider {
   lastPrompt = '';
+  lastOptions: IntelligenceOptions | undefined;
   callCount = 0;
   response: string | (() => string) = '{"featuresToSurface": []}';
   shouldThrow = false;
   throwError: Error | null = null;
   delay = 0;
 
-  async evaluate(prompt: string, _options?: IntelligenceOptions): Promise<string> {
+  async evaluate(prompt: string, options?: IntelligenceOptions): Promise<string> {
     this.lastPrompt = prompt;
+    this.lastOptions = options;
     this.callCount++;
 
     if (this.shouldThrow) {
@@ -49,6 +55,7 @@ class MockIntelligenceProvider implements IntelligenceProvider {
 
   reset(): void {
     this.lastPrompt = '';
+    this.lastOptions = undefined;
     this.callCount = 0;
     this.response = '{"featuresToSurface": []}';
     this.shouldThrow = false;
@@ -419,6 +426,24 @@ describe('E2E: Discovery Evaluator', () => {
   // ── Full Evaluation Flow ────────────────────────────────────────
 
   describe('Full Evaluation', () => {
+    it('enrolls sanitized discovery evidence without storing descriptive text', async () => {
+      intelligence.response = '{"featuresToSurface": []}';
+
+      await evaluator.evaluate(makeContext({
+        topicCategory: 'cobalt-lantern-private-category',
+        problemCategories: ['cobalt-lantern-private-problem'],
+        enabledFeatures: ['cobalt-lantern-private-feature'],
+      }));
+
+      expect(intelligence.lastPrompt).toContain('cobalt-lantern');
+      expect(intelligence.lastOptions?.provenance).toMatchObject({
+        decisionPoint: DP_DISCOVERY_EVALUATE,
+        optionsPresented: ['no-recommendation', 'awareness', 'suggestion', 'prompt'],
+        promptId: DISCOVERY_EVALUATE_PROMPT_ID,
+      });
+      expect(JSON.stringify(intelligence.lastOptions?.provenance?.context)).not.toContain('cobalt-lantern');
+    });
+
     it('returns recommendation when LLM finds a match', async () => {
       intelligence.response = JSON.stringify({
         featuresToSurface: [{
