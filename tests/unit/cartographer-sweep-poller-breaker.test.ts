@@ -57,7 +57,7 @@ describe('CartographerSweepPoller — a detect refusal trips the breaker (fix in
       maxDeferredPasses: 5, revalidateSamplePerPass: 0, minNodesUnderPressure: 3,
       detectInWorker: false, maxIndexBytes: 1, // every detect refuses detect-index-too-large
     };
-    const engine = new CartographerSweepEngine({ tree: t, router, llmQueue: queue, pressure, holdsLease: () => true, config, stateDir });
+    const engine = new CartographerSweepEngine({ tree: t, router, llmQueue: queue, pressure, holdsLease: () => true, authorizePaidAuthoring: () => ({ ok: true }), config, stateDir });
 
     // Sanity: one pass refuses (not "no-candidates").
     const r = await engine.runPass();

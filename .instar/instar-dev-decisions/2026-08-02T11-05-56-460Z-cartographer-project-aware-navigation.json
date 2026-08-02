@@ -1,0 +1,39 @@
+{
+  "ts": "2026-08-02T11:05:56.460Z",
+  "slug": "cartographer-project-aware-navigation",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 864,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/CartographerNavigator.ts",
+      "src/core/CartographerRootRegistry.ts",
+      "src/core/CartographerSweepEngine.ts",
+      "src/core/ScopeVerifier.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 759,
+    "deletedLines": 105
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/cartographer-sweep-engine.test.ts",
+      "howCaught": "The existing poller-to-sweep control loop retains finite per-pass node and spend bounds; sustained root-authority refusal performs zero writes and the zero-progress breaker settles the loop instead of minting new allowance."
+    }
+  },
+  "verdict": "pass"
+}

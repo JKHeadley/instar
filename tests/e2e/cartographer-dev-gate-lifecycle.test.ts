@@ -134,7 +134,8 @@ describe('Cartographer dev-gate — feature is alive (Tier 3 E2E, production ini
 
   it('production server wiring invokes zero-cost population before the optional sweep starts', () => {
     const serverSource = fs.readFileSync(path.join(process.cwd(), 'src', 'commands', 'server.ts'), 'utf8');
-    expect(serverSource).toContain('populateCartographer({');
+    expect(serverSource).toContain('new CartographerRootRegistry({');
+    expect(serverSource).toContain('cartographerRoots.populateOnBoot()');
     expect(serverSource).toContain('cartographerPopulationReady ?? Promise.resolve()');
   });
 

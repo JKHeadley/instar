@@ -74,9 +74,16 @@ It ships turned off until then.
 ## Verified-root foundation
 
 Before project-aware navigation can trust this map, Cartographer also needs to
-prove which code checkout it is mapping. The first root-authority slice adds that
-checkpoint without connecting it to live navigation yet: an explicitly selected
-project can be matched to its repository and exact revision, contradictory
-evidence is refused, and a checkout without readable Git identity may keep its
-free structural map but cannot spend money writing trusted descriptions. A
-separate follow-up connects the checkpoint to the live reader and writer.
+prove which code checkout it is mapping. The verified-root authority now sits in
+the live path: a topic selects its bound project, that checkout is matched to its
+repository and exact revision, and the same selected tree supplies the response,
+navigation result, and any permitted summary write. A standalone request with no
+topic binding is refused instead of quietly mapping the agent's noisy home.
+
+Each response identifies the selected root, revision, provenance, and verification
+state. Two topics bound to different projects receive isolated maps. If Git has an
+unborn or unreadable HEAD, the free structural map still refreshes at boot and is
+reported as structural-only with unknown freshness; paid summary writing stays
+off. Before inline or background authoring, Cartographer checks the pinned revision
+again. A checkout that moved since the map was selected is refused rather than
+letting a report about one revision authorize writing against another.

@@ -118,6 +118,7 @@ describe('CartographerSweepEngine.probeRouting', () => {
     const engine = new CartographerSweepEngine({
       tree: t, router: routerStub({ framework: 'claude-code', evaluate: () => 'x' }),
       llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig(), stateDir,
     });
     const probe = engine.probeRouting();
@@ -129,6 +130,7 @@ describe('CartographerSweepEngine.probeRouting', () => {
     const engine = new CartographerSweepEngine({
       tree: t, router: routerStub({ framework: 'claude-code', evaluate: () => 'x' }),
       llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig({ allowClaudeFallback: true }), stateDir,
     });
     expect(engine.probeRouting().ok).toBe(true);
@@ -139,6 +141,7 @@ describe('CartographerSweepEngine.probeRouting', () => {
     const engine = new CartographerSweepEngine({
       tree: t, router: routerStub({ framework: 'codex-cli', available: false, evaluate: () => 'x' }),
       llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig(), stateDir,
     });
     expect(engine.probeRouting().ok).toBe(false);
@@ -155,6 +158,7 @@ describe('CartographerSweepEngine.runPass — authoring', () => {
     });
     const engine = new CartographerSweepEngine({
       tree: t, router, llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig(), stateDir,
     });
     const r = await engine.runPass();
@@ -172,6 +176,7 @@ describe('CartographerSweepEngine.runPass — authoring', () => {
     const router = routerStub({ evaluate: () => 'Implements computeWidgetTotal here.' });
     const engine = new CartographerSweepEngine({
       tree: t, router, llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => false,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig(), stateDir,
     });
     const r = await engine.runPass();
@@ -185,12 +190,59 @@ describe('CartographerSweepEngine.runPass — authoring', () => {
     const router = routerStub({ framework: 'claude-code', evaluate: () => 'x' });
     const engine = new CartographerSweepEngine({
       tree: t, router, llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig(), stateDir,
     });
     const r = await engine.runPass();
     expect(r.refused).toBe(true);
     expect(r.authored).toBe(0);
     expect(router.calls.length).toBe(0);
+  });
+
+  it('refuses background paid authoring before routing when root authority is stale', async () => {
+    const t = tree(); t.scaffold();
+    const router = routerStub({ evaluate: () => 'Implements computeWidgetTotal here.' });
+    const engine = new CartographerSweepEngine({
+      tree: t, router, llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: false, reason: 'revision-mismatch' }),
+      config: defaultConfig(), stateDir,
+    });
+    const r = await engine.runPass();
+    expect(r).toMatchObject({
+      ranAuthorPath: false,
+      refused: true,
+      refusalReason: 'revision-mismatch',
+      authored: 0,
+      reason: 'authority-refused',
+    });
+    expect(router.calls).toEqual([]);
+    expect(t.getNode('src/core/Widget.ts')?.summary).toBe('');
+  });
+
+  it('revalidates after detect and refuses when revision authority drifts during the worker await', async () => {
+    const t = tree(); t.scaffold();
+    const router = routerStub({ evaluate: () => 'Implements computeWidgetTotal here.' });
+    let authorityChecks = 0;
+    const engine = new CartographerSweepEngine({
+      tree: t, router, llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => {
+        authorityChecks += 1;
+        return authorityChecks === 1
+          ? { ok: true }
+          : { ok: false, reason: 'revision-mismatch' };
+      },
+      config: defaultConfig(), stateDir,
+    });
+    const r = await engine.runPass();
+    expect(r).toMatchObject({
+      ranAuthorPath: false,
+      refused: true,
+      refusalReason: 'revision-mismatch',
+      authored: 0,
+      reason: 'authority-refused',
+    });
+    expect(authorityChecks).toBe(2);
+    expect(router.calls).toEqual([]);
   });
 });
 
@@ -200,6 +252,7 @@ describe('CartographerSweepEngine — deterministic quality bar', () => {
     const router = routerStub({ evaluate: () => 'This module does some general work and stuff.' });
     const engine = new CartographerSweepEngine({
       tree: t, router, llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig(), stateDir,
     });
     const r = await engine.runPass();
@@ -220,6 +273,7 @@ describe('CartographerSweepEngine — ordering (children before parents)', () =>
     });
     const engine = new CartographerSweepEngine({
       tree: t, router, llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig(), stateDir,
     });
     await engine.runPass();
@@ -243,6 +297,7 @@ describe('CartographerSweepEngine — dir re-author amplification guard', () => 
     });
     const engine = new CartographerSweepEngine({
       tree: t, router, llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig(), stateDir,
     });
     await engine.runPass(); // everything authored
@@ -270,6 +325,7 @@ describe('CartographerSweepEngine — per-pass bounds', () => {
     const router = routerStub({ evaluate: (p) => p.includes('Widget.ts') ? 'Implements computeWidgetTotal here.' : 'Implements bootstrapApp here.' });
     const engine = new CartographerSweepEngine({
       tree: t, router, llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig({ maxNodesPerPass: 1 }), stateDir,
     });
     const r = await engine.runPass();
@@ -282,6 +338,7 @@ describe('CartographerSweepEngine — per-pass bounds', () => {
     const router = routerStub({ evaluate: (p) => p.includes('Widget.ts') ? 'Implements computeWidgetTotal here.' : 'Implements bootstrapApp here.' });
     const engine = new CartographerSweepEngine({
       tree: t, router, llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig({ estCentsPerAuthor: 10, maxCentsPerPass: 10 }), stateDir,
     });
     const r = await engine.runPass();
@@ -297,6 +354,7 @@ describe('CartographerSweepEngine — secrets egress', () => {
     const router = routerStub({ evaluate: () => 'Implements computeWidgetTotal here.' });
     const engine = new CartographerSweepEngine({
       tree: t, router, llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig(), stateDir,
     });
     await engine.runPass();
@@ -311,6 +369,7 @@ describe('CartographerSweepEngine — quarantine', () => {
     const router = routerStub({ evaluate: () => 'no symbols here just prose words' });
     const engine = new CartographerSweepEngine({
       tree: t, router, llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig({ nodeFailQuarantineThreshold: 2 }), stateDir,
     });
     await engine.runPass();
@@ -330,6 +389,7 @@ describe('CartographerSweepEngine — abort is backpressure, not failure', () =>
       tree: t, router,
       llmQueue: { enqueue: () => { throw new SweepAbortedError(); } },
       pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig(), stateDir,
     });
     const r = await engine.runPass();
@@ -346,6 +406,7 @@ describe('CartographerSweepEngine — fresh != correct (re-validation sample)', 
     const router = routerStub({ evaluate: (p) => p.includes('Widget.ts') ? 'Implements computeWidgetTotal here.' : 'Implements bootstrapApp here.' });
     const engine = new CartographerSweepEngine({
       tree: t, router, llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig(), stateDir,
     });
     await engine.runPass(); // author everything
@@ -353,6 +414,7 @@ describe('CartographerSweepEngine — fresh != correct (re-validation sample)', 
     // Second pass: no candidates (all fresh) but the sample should re-examine fresh nodes.
     const engine2 = new CartographerSweepEngine({
       tree: t, router, llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig({ revalidateSamplePerPass: 2 }), stateDir,
     });
     const r = await engine2.runPass();
@@ -371,6 +433,7 @@ describe('CartographerSweepEngine — idempotent cursor', () => {
     fs.writeFileSync(path.join(cursorDir, 'cartographer-sweep-cursor.json'), '{not json');
     const engine = new CartographerSweepEngine({
       tree: t, router, llmQueue: queueStub(), pressure: normalPressure, holdsLease: () => true,
+      authorizePaidAuthoring: () => ({ ok: true }),
       config: defaultConfig({ maxNodesPerPass: 2 }), stateDir,
     });
     const r = await engine.runPass();

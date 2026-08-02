@@ -99,7 +99,7 @@ function engineFor(t: CartographerTree, over: Partial<SweepEngineConfig> = {}): 
   };
   return new CartographerSweepEngine({
     tree: t, router: routerStub, llmQueue: queueStub, pressure: normalPressure,
-    holdsLease: () => true, config, stateDir,
+    holdsLease: () => true, authorizePaidAuthoring: () => ({ ok: true }), config, stateDir,
   });
 }
 

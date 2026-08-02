@@ -188,8 +188,7 @@ import { decryptFromSync, encryptForSync } from '../core/SecretStore.js';
 import { createPrivateKey, createPublicKey, createHash, randomBytes, randomInt } from 'node:crypto';
 import { sign as signEd25519, verify as verifyEd25519 } from '../core/MachineIdentity.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
-import { CartographerTree } from '../core/CartographerTree.js';
-import { populateCartographer } from '../core/cartographerPopulation.js';
+import { CartographerRootRegistry } from '../core/CartographerRootRegistry.js';
 import { CapabilityMapper } from '../core/CapabilityMapper.js';
 import { ScopeVerifier } from '../core/ScopeVerifier.js';
 import { ContextHierarchy, checkDeclaredIdentityDirectory } from '../core/ContextHierarchy.js';
@@ -15291,6 +15290,15 @@ export async function startServer(options: StartOptions): Promise<void> {
     sleepWakeDetector.start();
 
     // Project Map + Coherence Gate — spatial awareness and pre-action verification
+    // ScopeVerifier is constructed before Cartographer because its persisted topic
+    // bindings are now the typed provenance source for every live root selection.
+    const scopeVerifier = new ScopeVerifier({
+      projectDir: config.projectDir,
+      stateDir: config.stateDir,
+      projectName: config.projectName,
+    });
+    scopeVerifier.loadTopicBindings();
+
     const projectMapper = new ProjectMapper({ projectDir: config.projectDir, stateDir: config.stateDir });
     try {
       projectMapper.generateAndSave();
@@ -15307,43 +15315,64 @@ export async function startServer(options: StartOptions): Promise<void> {
       (config as { cartographer?: { enabled?: boolean } }).cartographer?.enabled,
       config,
     );
-    const cartographer = cartographerEnabled
-      ? new CartographerTree({ projectDir: config.projectDir, stateDir: config.stateDir })
+    const fsCfg = (config as { cartographer?: { freshnessSweep?: Record<string, unknown> } }).cartographer?.freshnessSweep;
+    const cartographerNum = (v: unknown, d: number): number => (
+      typeof v === 'number' && Number.isFinite(v) ? v : d
+    );
+    const cartographerRoots = cartographerEnabled
+      ? new CartographerRootRegistry({
+          agentType: config.agentType === 'standalone' ? 'standalone' : 'project-bound',
+          agentHome: config.projectDir,
+          agentName: config.projectName,
+          stateDir: config.stateDir,
+          ...(config.agentType === 'standalone'
+            ? {}
+            : {
+                serverProject: {
+                  projectDir: config.projectDir,
+                  projectName: config.projectName,
+                },
+              }),
+          // ScopeVerifier owns the live map; this accessor avoids synchronous
+          // disk reads while still following route-driven binding updates.
+          topicBindings: () => scopeVerifier.currentTopicBindings(),
+          population: {
+            config: {
+              scaffoldChunkNodes: cartographerNum(fsCfg?.scaffoldChunkNodes, 500),
+              detectTimeoutMs: cartographerNum(fsCfg?.detectTimeoutMs, 120000),
+              detectWorkerHeapMb: cartographerNum(fsCfg?.detectWorkerHeapMb, 1536),
+              maxIndexBytes: cartographerNum(fsCfg?.maxIndexBytes, 200 * 1024 * 1024),
+              snapshotSampleMax: cartographerNum(fsCfg?.snapshotSampleMax, 500),
+              gitMaxBuffer: cartographerNum(fsCfg?.gitMaxBuffer, 64 * 1024 * 1024),
+              graceMs: cartographerNum(fsCfg?.cadenceMs, 600000) * 2,
+            },
+          },
+          log: (message) => console.log(pc.yellow(`  ${message}`)),
+        })
       : null;
-    if (cartographer) console.log(pc.green('  Cartographer doc-tree enabled'));
+    if (cartographerRoots) console.log(pc.green('  Cartographer verified-root registry enabled'));
 
     // Zero-cost structural population is independent of the optional summary
     // author sweep. Refresh at every boot so newly-added/removed paths join the
     // hierarchy, then run aggregate-only detect in a worker and publish the
     // snapshot that /tree?format=compact + /health serve. No router, LLM, egress,
     // or freshnessSweep.enabled mutation occurs on this path.
-    const cartographerPopulationReady: Promise<void> | null = cartographer
-      ? (() => {
-          const fsCfg = (config as { cartographer?: { freshnessSweep?: Record<string, unknown> } }).cartographer?.freshnessSweep;
-          const num = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : d);
-          return populateCartographer({
-            tree: cartographer,
-            config: {
-              scaffoldChunkNodes: num(fsCfg?.scaffoldChunkNodes, 500),
-              detectTimeoutMs: num(fsCfg?.detectTimeoutMs, 120000),
-              detectWorkerHeapMb: num(fsCfg?.detectWorkerHeapMb, 1536),
-              maxIndexBytes: num(fsCfg?.maxIndexBytes, 200 * 1024 * 1024),
-              snapshotSampleMax: num(fsCfg?.snapshotSampleMax, 500),
-              gitMaxBuffer: num(fsCfg?.gitMaxBuffer, 64 * 1024 * 1024),
-              graceMs: num(fsCfg?.cadenceMs, 600000) * 2,
-            },
-          }).then((r) => {
-            if (r.refused) {
-              console.log(pc.yellow(`  Cartographer population snapshot refused (${r.detectStatus}); retries next boot`));
-            } else {
-              console.log(pc.gray(`  Cartographer hierarchy populated (${r.nodeCount} nodes)`));
+    const cartographerPopulationReady: Promise<void> | null = cartographerRoots
+      ? cartographerRoots.populateOnBoot()
+          .then((results) => {
+            for (const result of results) {
+              if (result.refused) {
+                console.log(pc.yellow(`  Cartographer population snapshot refused (${result.detectStatus}); retries next boot`));
+              } else {
+                console.log(pc.gray(`  Cartographer hierarchy populated (${result.nodeCount} nodes, ${result.rootAuthority.verificationState})`));
+              }
             }
-          }).catch((err: unknown) => {
+          })
+          .catch((err: unknown) => {
             // @silent-fallback-ok — scaffold is atomic and boot remains available;
             // prior snapshot/index stay readable and the next boot retries.
             console.log(pc.yellow(`  Cartographer population incomplete (retries next boot): ${err instanceof Error ? err.message : String(err)}`));
-          });
-        })()
+          })
       : null;
 
     // Cartographer doc-freshness sweep (spec #2). In-process poller that authors
@@ -15357,13 +15386,19 @@ export async function startServer(options: StartOptions): Promise<void> {
     // routing is an unrouted provider the sweep refuses to start (it could not enforce
     // off-Claude) — that cost-protecting probe is UNCHANGED.
     let cartographerSweepPoller: import('../monitoring/CartographerSweepPoller.js').CartographerSweepPoller | null = null;
-    if (cartographer) {
-      const fsCfg = (config as {
+    if (cartographerRoots) {
+      const paidFsCfg = (config as {
         cartographer?: { freshnessSweep?: Record<string, unknown> & { enabled?: boolean; egressAcknowledged?: boolean } };
       }).cartographer?.freshnessSweep;
       const num = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : d);
-      if (fsCfg?.enabled && sharedLlmQueue) {
-        const routerLike =
+      if (paidFsCfg?.enabled && sharedLlmQueue) {
+        const backgroundResolution = cartographerRoots.resolve();
+        if (!backgroundResolution.ok) {
+          console.log(pc.yellow(`  Cartographer sweep: NOT started (root authority ${backgroundResolution.reason})`));
+        } else {
+          const cartographer = backgroundResolution.root.tree;
+          const fsCfg = paidFsCfg;
+          const routerLike =
           sharedIntelligence &&
           typeof (sharedIntelligence as { for?: unknown }).for === 'function' &&
           typeof (sharedIntelligence as { defaultFramework?: unknown }).defaultFramework === 'string'
@@ -15408,6 +15443,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             }),
             // Author ONLY on the lease holder (multi-machine N× burn fix); single-machine ⇒ always holder.
             holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
+            authorizePaidAuthoring: () => {
+              const decision = cartographerRoots.authorizePaidAuthoring(backgroundResolution.root);
+              return decision.ok
+                ? { ok: true as const }
+                : { ok: false as const, reason: decision.reason };
+            },
             config: {
               maxNodesPerPass: num(fsCfg.maxNodesPerPass, 25),
               maxCentsPerPass: num(fsCfg.maxCentsPerPass, 25),
@@ -15448,6 +15489,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             cartographerSweepPoller?.start();
             console.log(pc.green('  Cartographer doc-freshness sweep enabled (off-Claude, lease-gated)'));
           });
+        }
         }
       }
     }
@@ -15608,14 +15650,6 @@ export async function startServer(options: StartOptions): Promise<void> {
       // @silent-fallback-ok — capability map non-critical at startup
       console.error(`  Capability map generation failed (non-critical): ${err.message}`);
     });
-
-    const scopeVerifier = new ScopeVerifier({
-      projectDir: config.projectDir,
-      stateDir: config.stateDir,
-      projectName: config.projectName,
-    });
-    // Load any persisted topic-project bindings
-    scopeVerifier.loadTopicBindings();
 
     // Context Hierarchy — tiered context loading for session efficiency
     const contextHierarchy = new ContextHierarchy({
@@ -24530,7 +24564,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       })),
     });
 
-    const server = new AgentServer({ config, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle: credentialIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, getLastRelayEvent: threadlineGetLastRelayEvent, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle: credentialIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, getLastRelayEvent: threadlineGetLastRelayEvent, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     server.setWorkQueue(workQueue);
     if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
       const { CLASS_REVIEW_STORE_KEY, classReviewFromOriginRecord } = await import('../core/ClassReviewReplicatedStore.js');
