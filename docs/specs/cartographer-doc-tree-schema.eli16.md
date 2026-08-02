@@ -70,3 +70,13 @@ node. None of these change *what* the map is — only how it's tuned.
 Nothing visible yet — this is foundation. On its own it's an empty, structure-only
 map. It becomes useful when the next specs fill in the notes and start using them.
 It ships turned off until then.
+
+## Verified-root foundation
+
+Before project-aware navigation can trust this map, Cartographer also needs to
+prove which code checkout it is mapping. The first root-authority slice adds that
+checkpoint without connecting it to live navigation yet: an explicitly selected
+project can be matched to its repository and exact revision, contradictory
+evidence is refused, and a checkout without readable Git identity may keep its
+free structural map but cannot spend money writing trusted descriptions. A
+separate follow-up connects the checkpoint to the live reader and writer.
