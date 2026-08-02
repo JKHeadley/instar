@@ -48,6 +48,8 @@ import {
   DP_MOVE_INTENT_CLASSIFY,
   DP_HUB_INTENT_CLASSIFY,
   DP_PROFILE_INTENT_CLASSIFY,
+  DP_INPUT_CLASSIFY,
+  DP_SESSION_SUMMARY_EXTRACT,
   getCensusEntry,
   isEnrolled,
   getVolumeClass,
@@ -93,7 +95,6 @@ const PENDING_BASELINE = [
   'dashboard-insight::DashboardInsightEngine::backlog:decision-quality-enrolment',
   'discovery-evaluate::DiscoveryEvaluator::backlog:decision-quality-enrolment',
   'external-operation-gate::ExternalOperationGate::backlog:decision-quality-enrolment',
-  'input-classify::InputClassifier::backlog:decision-quality-enrolment',
   'job-reflect::JobReflector::backlog:decision-quality-enrolment',
   'llm-conflict-resolve::LLMConflictResolver::backlog:decision-quality-enrolment',
   'llm-sanitize::LLMSanitizer::backlog:decision-quality-enrolment',
@@ -109,7 +110,6 @@ const PENDING_BASELINE = [
   'resume-uuid-validate::ResumeValidator::backlog:decision-quality-enrolment',
   'self-knowledge-extract::SelfKnowledgeTree::backlog:decision-quality-enrolment',
   'session-activity-digest::SessionActivitySentinel::backlog:decision-quality-enrolment',
-  'session-summary-extract::SessionSummarySentinel::backlog:decision-quality-enrolment',
   'slack-stall-confirm::SlackAdapter::backlog:decision-quality-enrolment',
   'stall-triage-diagnosis::StallTriageNurse::backlog:decision-quality-enrolment',
   'standards-conformance-review::StandardsConformanceReviewer::backlog:decision-quality-enrolment',
@@ -453,6 +453,30 @@ describe('profile-intent-classify — bounded topic-profile enrollment', () => {
     expect(entry?.status).toBe('wired');
     expect(entry?.component).toBe('ProfileIntentClassifier');
     expect(entry?.volumeClass).toBe('budget:250');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('input-classify — bounded terminal-prompt enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_INPUT_CLASSIFY);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('InputClassifier');
+    expect(entry?.volumeClass).toBe('budget:500');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('session-summary-extract — bounded terminal-output enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_SESSION_SUMMARY_EXTRACT);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('SessionSummarySentinel');
+    expect(entry?.volumeClass).toBe('budget:500');
     expect(entry?.contentClass).toBe('content-bearing');
     expect(entry?.gradingPosture).toBe('measurement-only');
     expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);

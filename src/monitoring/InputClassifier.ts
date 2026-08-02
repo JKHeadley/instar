@@ -15,7 +15,32 @@
 
 import path from 'node:path';
 import type { IntelligenceProvider } from '../core/types.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
+import { DP_INPUT_CLASSIFY } from '../data/provenanceCoverage.js';
 import type { DetectedPrompt, PromptType } from './PromptGate.js';
+
+export const INPUT_CLASSIFIER_PROMPT_ID = 'input-classifier-v1';
+
+/** Identity-only envelope for the exact content shown to the classifier. */
+export function buildInputClassifierDecisionContext(input: {
+  promptText: string;
+  projectDir: string;
+  prompt: DetectedPrompt;
+}): Record<string, unknown> {
+  return buildBoundedContext({
+    promptIdentitySha256: buildStructuredSha256Identity(input.promptText),
+    promptChars: input.promptText.length,
+    promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+    projectDirIdentitySha256: buildStructuredSha256Identity(input.projectDir),
+    projectDirChars: input.projectDir.length,
+    promptType: input.prompt.type,
+    summaryIdentitySha256: buildStructuredSha256Identity(input.prompt.summary),
+    summaryChars: input.prompt.summary.length,
+    terminalTextIdentitySha256: buildStructuredSha256Identity(input.prompt.raw),
+    terminalTextChars: input.prompt.raw.length,
+    optionCount: input.prompt.options?.length ?? 0,
+  });
+}
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -253,6 +278,16 @@ export class InputClassifier {
         maxTokens: 10,
         temperature: 0,
         attribution: { component: 'InputClassifier' }, // attribution for /metrics/features
+        provenance: {
+          decisionPoint: DP_INPUT_CLASSIFY,
+          context: buildInputClassifierDecisionContext({
+            promptText: systemPrompt,
+            projectDir: this.normalizedProjectDir,
+            prompt,
+          }),
+          optionsPresented: ['approve', 'relay'],
+          promptId: INPUT_CLASSIFIER_PROMPT_ID,
+        },
       });
 
       const normalized = response.trim().toUpperCase();

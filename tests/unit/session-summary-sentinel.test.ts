@@ -17,10 +17,12 @@ import path from 'node:path';
 import os from 'node:os';
 import {
   SessionSummarySentinel,
+  SESSION_SUMMARY_PROMPT_ID,
   type SessionSummary,
 } from '../../src/messaging/SessionSummarySentinel.js';
 import type { Session } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { DP_SESSION_SUMMARY_EXTRACT } from '../../src/data/provenanceCoverage.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -194,6 +196,55 @@ describe('SessionSummarySentinel', () => {
   // ── LLM Response Parsing ───────────────────────────────────
 
   describe('LLM response parsing', () => {
+    it('enrolls the bounded visible slice with identity-only provenance', async () => {
+      let capturedPrompt = '';
+      let capturedOptions: any;
+      const mockIntelligence = {
+        evaluate: async (promptText: string, options?: any) => {
+          capturedPrompt = promptText;
+          capturedOptions = options;
+          return JSON.stringify({
+            task: 'Testing provenance',
+            phase: 'testing',
+            files: [],
+            topics: ['testing'],
+            blockers: null,
+          });
+        },
+      };
+
+      const sentinelWithLlm = new SessionSummarySentinel({
+        stateDir: tmpDir,
+        intelligence: mockIntelligence as any,
+        getActiveSessions: () => sessions,
+        captureOutput: (tmux) => capturedOutput.get(tmux) ?? null,
+        captureLines: 2,
+      });
+      const session = makeSession({ tmuxSession: 'tmux-provenance' });
+      sessions.push(session);
+      capturedOutput.set(
+        'tmux-provenance',
+        'discarded cobalt-lantern preface\nvisible cobalt-lantern line one\nvisible cobalt-lantern line two',
+      );
+
+      await sentinelWithLlm.scan();
+
+      expect(capturedPrompt).not.toContain('discarded cobalt-lantern preface');
+      expect(capturedPrompt).toContain('visible cobalt-lantern line two');
+      expect(capturedOptions.provenance).toMatchObject({
+        decisionPoint: DP_SESSION_SUMMARY_EXTRACT,
+        optionsPresented: ['extract-summary'],
+        promptId: SESSION_SUMMARY_PROMPT_ID,
+      });
+      const storedContext = JSON.stringify(capturedOptions.provenance.context);
+      expect(storedContext).not.toContain('cobalt-lantern');
+      expect(capturedOptions.provenance.context.outputWasTruncated).toBe(true);
+      expect(capturedOptions.provenance.context.visibleOutputIdentitySha256).toMatch(
+        /^sha256:(?:[a-f0-9]{16}:){3}[a-f0-9]{16}$/,
+      );
+      sentinelWithLlm.stop();
+    });
+
     it('parses valid JSON response', async () => {
       const mockIntelligence = {
         evaluate: async () => JSON.stringify({

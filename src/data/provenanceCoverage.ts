@@ -270,6 +270,12 @@ export const DP_HUB_INTENT_CLASSIFY = 'hub-intent-classify';
 /** Inbound message + bounded conversation/profile enums → topic profile intent. */
 export const DP_PROFILE_INTENT_CLASSIFY = 'profile-intent-classify';
 
+/** Ambiguous interactive terminal prompt → approve or relay. */
+export const DP_INPUT_CLASSIFY = 'input-classify';
+
+/** Bounded active-session terminal slice → structured routing summary. */
+export const DP_SESSION_SUMMARY_EXTRACT = 'session-summary-extract';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -759,20 +765,32 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
 
   // — Previously-uncategorized callsites (LLM Routing Registry audit set) —
   {
-    decisionPoint: 'input-classify',
+    decisionPoint: DP_INPUT_CLASSIFY,
     component: 'InputClassifier',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:500',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The deterministic parser establishes whether the model emitted APPROVE or RELAY, but no independent ' +
+      'safety label or downstream operator disposition is correlated yet. Identity-only provenance banks real ' +
+      'ambiguous prompts for later grading without treating parser acceptance as correctness.',
     reason:
-      'Auto-approve vs relay classification of inbound input; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Auto-approve vs relay classification of ambiguous inbound terminal prompts; identity-only context stores prompt and constituent digests, never prompt text.',
   },
   {
-    decisionPoint: 'session-summary-extract',
+    decisionPoint: DP_SESSION_SUMMARY_EXTRACT,
     component: 'SessionSummarySentinel',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:500',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'JSON shape validation and routing use do not independently establish that the authored task, phase, ' +
+      'files, topics, and blockers are semantically faithful. Provenance is collected now so later misroute or ' +
+      'operator-reviewed labels can grade real summaries without a cold start.',
     reason:
-      'Task/phase/files extraction over tmux output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Task/phase/files extraction over bounded tmux output; identity-only context stores exact visible-slice digests and bounds, never terminal text.',
   },
   {
     decisionPoint: 'telegram-stall-confirm',

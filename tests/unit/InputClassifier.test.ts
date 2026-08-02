@@ -8,9 +8,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   InputClassifier,
+  INPUT_CLASSIFIER_PROMPT_ID,
   type InputClassifierConfig,
   type ClassificationResult,
 } from '../../src/monitoring/InputClassifier.js';
+import { DP_INPUT_CLASSIFY } from '../../src/data/provenanceCoverage.js';
 import type { DetectedPrompt, PromptType } from '../../src/monitoring/PromptGate.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -308,6 +310,39 @@ describe('InputClassifier.dryRun', () => {
 // ── LLM Classification ───────────────────────────────────────────
 
 describe('InputClassifier.llm', () => {
+  it('enrolls only the LLM path with identity-only prompt provenance', async () => {
+    let capturedPrompt = '';
+    let capturedOptions: any;
+    const mockIntelligence = {
+      evaluate: async (promptText: string, options?: any) => {
+        capturedPrompt = promptText;
+        capturedOptions = options;
+        return 'APPROVE';
+      },
+    };
+    const classifier = makeClassifier({ intelligence: mockIntelligence });
+    const prompt = makePrompt({
+      type: 'selection',
+      summary: 'Choose the cobalt-lantern test runner',
+      raw: 'Choose runner for cobalt-lantern\n1) vitest\n2) jest',
+    });
+
+    await classifier.classify(prompt);
+
+    expect(capturedPrompt).toContain('cobalt-lantern');
+    expect(capturedOptions.provenance).toMatchObject({
+      decisionPoint: DP_INPUT_CLASSIFY,
+      optionsPresented: ['approve', 'relay'],
+      promptId: INPUT_CLASSIFIER_PROMPT_ID,
+    });
+    const storedContext = JSON.stringify(capturedOptions.provenance.context);
+    expect(storedContext).not.toContain('cobalt-lantern');
+    expect(storedContext).not.toContain('/Users/dev/project');
+    expect(capturedOptions.provenance.context.promptIdentitySha256).toMatch(
+      /^sha256:(?:[a-f0-9]{16}:){3}[a-f0-9]{16}$/,
+    );
+  });
+
   it('uses LLM for ambiguous prompts', async () => {
     const mockIntelligence = {
       evaluate: async () => 'APPROVE',
