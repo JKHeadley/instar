@@ -117,6 +117,7 @@ export function createTopicIntentRoutes(deps: {
         queueDepth: file.pending.queue.length,
         queuedRefIds: file.pending.queue.map(p => p.refId),
       },
+      awareness: file.awareness ?? null,
       telemetry: file.telemetry,
       schemaVersion: file.schemaVersion,
     });
@@ -175,8 +176,8 @@ export function createTopicIntentRoutes(deps: {
     if (!parsed.success) return res.status(400).type('text/plain').send('');
     const topicId = parsed.data;
     const result = renderTopicIntentBriefing(store, topicId);
-    // Surface-side metering (spec §10): a briefing fetch = the captured set
-    // actually reached the agent. Record it + how many refs it carried.
+    // Surface-side metering (spec §10): a prompt/compaction briefing fetch =
+    // the captured set actually reached agent context. Record it + contents.
     try {
       const settled = store.getRefsAtOrAbove(topicId, 'authoritative').length;
       const tentativePlus = store.getRefsAtOrAbove(topicId, 'tentative').length;
@@ -184,6 +185,7 @@ export function createTopicIntentRoutes(deps: {
         briefing_served: 1,
         briefing_refs_settled: settled,
         briefing_refs_tentative: Math.max(0, tentativePlus - settled),
+        awareness_briefing_served: result.counts.awareness ? 1 : 0,
       });
     } catch { /* metering best-effort — never block a briefing fetch */ }
     res.type('text/plain').send(result.text);
@@ -222,6 +224,18 @@ export function createTopicIntentRoutes(deps: {
         briefing_refs: { settled: c.briefing_refs_settled, tentative: c.briefing_refs_tentative },
         arccheck_fired: c.arccheck_fired,
         arccheck_signalled: c.arccheck_signalled,
+        awareness: {
+          updates: c.awareness_updates,
+          invalid: c.awareness_invalid,
+          agent_anchor_refused: c.awareness_agent_anchor_refused,
+          arc_transitions: c.awareness_arc_transitions,
+          stale_ignored: c.awareness_stale_ignored,
+          anchor_corrections: c.awareness_anchor_corrections,
+          briefing_served: c.awareness_briefing_served,
+          current_arc: file.awareness?.currentArcId ?? null,
+          archived_arcs: file.awareness?.archivedArcCount ?? 0,
+          lag_turns: file.awareness ? Math.max(0, (file.turn ?? 0) - file.awareness.turnAtUpdate) : null,
+        },
         refs_decayed,
         refkind_created: c.refkind_created ?? {},
         last_capture_at: c.last_capture_at,

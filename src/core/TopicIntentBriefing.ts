@@ -38,6 +38,10 @@ export interface BriefingResult {
     frame: number;
     /** Outstanding pending confirmation (if any). */
     pendingOutstanding: boolean;
+    /** Whether the temporal topic/arc/work projection was rendered. */
+    awareness: boolean;
+    /** User turns since the projection last refreshed. */
+    awarenessLagTurns: number;
   };
 }
 
@@ -66,12 +70,21 @@ export function renderTopicIntentBriefing(
   const propositions = refs.filter(r => !isTaskContextKind(r.kind));
   const authoritative = propositions.filter(r => r.projection.tier === 'authoritative');
   const tentative = propositions.filter(r => r.projection.tier === 'tentative');
+  const awareness = file.awareness;
+  const awarenessLagTurns = awareness ? Math.max(0, (file.turn ?? 0) - awareness.turnAtUpdate) : 0;
 
-  if (authoritative.length === 0 && tentative.length === 0 && frame.length === 0 && !file.pending.outstanding) {
+  if (!awareness && authoritative.length === 0 && tentative.length === 0 && frame.length === 0 && !file.pending.outstanding) {
     return {
       text: '',
       hasContent: false,
-      counts: { authoritative: 0, tentative: 0, frame: 0, pendingOutstanding: false },
+      counts: {
+        authoritative: 0,
+        tentative: 0,
+        frame: 0,
+        pendingOutstanding: false,
+        awareness: false,
+        awarenessLagTurns: 0,
+      },
     };
   }
 
@@ -79,6 +92,31 @@ export function renderTopicIntentBriefing(
   lines.push(`=== TOPIC ${topicId} INTENT BRIEFING (auto-injected) ===`);
   lines.push(`The agent has been tracking the arc of this conversation. Read this before responding —`);
   lines.push(`it's the goal-and-decisions context that won't appear in the message history alone.`);
+
+  if (awareness) {
+    const activeArc = awareness.arcs.find((arc) => arc.arcId === awareness.currentArcId);
+    lines.push('');
+    lines.push('THREE AWARENESS LEVELS (orientation, not authority — stay anchored without freezing legitimate evolution):');
+    lines.push('  TOPIC (whole history)');
+    lines.push(`    initial anchor: ${awareness.anchor.goal}`);
+    lines.push(`    evolving goal: ${awareness.topic.goal}`);
+    lines.push(`    trend: ${awareness.topic.trend}`);
+    lines.push(`    themes: ${awareness.topic.themes.join(' · ')}`);
+    if (activeArc) {
+      lines.push('  MOST-RECENT ARC');
+      lines.push(`    goal: ${activeArc.layer.goal}`);
+      lines.push(`    trend: ${activeArc.layer.trend}`);
+      lines.push(`    themes: ${activeArc.layer.themes.join(' · ')}`);
+    }
+    lines.push('  CURRENT WORK');
+    lines.push(`    goal: ${awareness.currentWork.goal}`);
+    lines.push(`    trend: ${awareness.currentWork.trend}`);
+    lines.push(`    themes: ${awareness.currentWork.themes.join(' · ')}`);
+    if (awarenessLagTurns > 2) {
+      lines.push(`  FRESHNESS WARNING: projection is ${awarenessLagTurns} user turns behind; treat it as stale orientation.`);
+    }
+    lines.push('  Confidence/authority remains governed by the evidence-tiered refs below; these summaries do not promote anything.');
+  }
 
   if (frame.length > 0) {
     lines.push('');
@@ -138,6 +176,8 @@ export function renderTopicIntentBriefing(
       tentative: tentative.length,
       frame: frame.length,
       pendingOutstanding: file.pending.outstanding !== null,
+      awareness: Boolean(awareness),
+      awarenessLagTurns,
     },
   };
 }

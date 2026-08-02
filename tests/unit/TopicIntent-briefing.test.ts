@@ -41,7 +41,14 @@ describe('renderTopicIntentBriefing — empty cases', () => {
     const result = renderTopicIntentBriefing(store, 100);
     expect(result.hasContent).toBe(false);
     expect(result.text).toBe('');
-    expect(result.counts).toEqual({ authoritative: 0, tentative: 0, frame: 0, pendingOutstanding: false });
+    expect(result.counts).toEqual({
+      authoritative: 0,
+      tentative: 0,
+      frame: 0,
+      pendingOutstanding: false,
+      awareness: false,
+      awarenessLagTurns: 0,
+    });
   });
 
   it('returns empty result when only observation-tier refs exist (not surfaced)', () => {
@@ -49,6 +56,61 @@ describe('renderTopicIntentBriefing — empty cases', () => {
     const result = renderTopicIntentBriefing(store, 101);
     expect(result.hasContent).toBe(false);
     expect(result.text).toBe('');
+  });
+});
+
+describe('renderTopicIntentBriefing — three temporal awareness levels', () => {
+  it('renders topic anchor + evolution, recent arc, and current work even without tentative refs', () => {
+    const first = store.updateAwareness(150, {
+      topic: { goal: 'Preserve the conversation course', trend: 'Establishing durable orientation', themes: ['continuity'] },
+      recentArc: { goal: 'Design the hierarchy', trend: 'Separating temporal scopes', themes: ['topic', 'arc'] },
+      currentWork: { goal: 'Write the projection', trend: 'Implementing validation', themes: ['storage'] },
+      arcTransition: { kind: 'continue' },
+    }, {
+      messageId: 'm1', messageText: 'Preserve the conversation course', fromUser: true,
+      at: '2026-01-01T00:00:00.000Z', turn: 1,
+    });
+    expect(first).not.toBeNull();
+
+    store.updateAwareness(150, {
+      topic: { goal: 'Preserve the course while allowing topic evolution', trend: 'The initial continuity goal is broadening', themes: ['continuity', 'evolution'] },
+      recentArc: { goal: 'Build the hierarchy', trend: 'Moving from design to code', themes: ['topic', 'arc', 'work'] },
+      currentWork: { goal: 'Test the renderer', trend: 'Proving all fields surface', themes: ['briefing'] },
+      arcTransition: { kind: 'continue' },
+    }, {
+      messageId: 'm2', messageText: 'Allow topic evolution too', fromUser: true,
+      at: '2026-01-01T00:01:00.000Z', turn: 2,
+    });
+
+    const result = renderTopicIntentBriefing(store, 150);
+    expect(result.hasContent).toBe(true);
+    expect(result.text).toContain('THREE AWARENESS LEVELS');
+    expect(result.text).toContain('initial anchor: Preserve the conversation course');
+    expect(result.text).toContain('evolving goal: Preserve the course while allowing topic evolution');
+    expect(result.text).toContain('MOST-RECENT ARC');
+    expect(result.text).toContain('CURRENT WORK');
+    expect(result.text).toContain('goal: Test the renderer');
+    expect(result.text).toContain('orientation, not authority');
+    expect(result.counts.awareness).toBe(true);
+  });
+
+  it('speaks when the projection is more than two user turns stale', () => {
+    store.updateAwareness(151, {
+      topic: { goal: 'Track the topic', trend: 'Starting', themes: ['awareness'] },
+      recentArc: { goal: 'Start an arc', trend: 'Starting', themes: ['arc'] },
+      currentWork: { goal: 'Begin work', trend: 'Starting', themes: ['work'] },
+    }, {
+      messageId: 'm1', messageText: 'Track the topic', fromUser: true,
+      at: '2026-01-01T00:00:00.000Z', turn: 1,
+    });
+    store.bumpTurn(151);
+    store.bumpTurn(151);
+    store.bumpTurn(151);
+    store.bumpTurn(151);
+
+    const result = renderTopicIntentBriefing(store, 151);
+    expect(result.counts.awarenessLagTurns).toBe(3);
+    expect(result.text).toContain('FRESHNESS WARNING');
   });
 });
 
