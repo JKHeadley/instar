@@ -286,6 +286,11 @@ import type { TopicMemory } from '../memory/TopicMemory.js';
 import type { FeedbackAnomalyDetector } from '../monitoring/FeedbackAnomalyDetector.js';
 import type { ProjectMapper } from '../core/ProjectMapper.js';
 import type { CartographerTree } from '../core/CartographerTree.js';
+import type {
+  CartographerRootRegistry,
+  CartographerRootReport,
+  CartographerResolvedRoot,
+} from '../core/CartographerRootRegistry.js';
 import { verifyMergedItemsViaGit, resolveCanonicalMainRef } from '../core/ProjectRoundExecution.js';
 import type { ProjectDriftChecker } from '../core/ProjectDriftChecker.js';
 import type { ScopeVerifier } from '../core/ScopeVerifier.js';
@@ -818,6 +823,9 @@ export interface RouteContext {
   topicMemory: TopicMemory | null;
   feedbackAnomalyDetector: FeedbackAnomalyDetector | null;
   projectMapper: ProjectMapper | null;
+  /** Authority-backed live consumer. Production Cartographer routes use this. */
+  cartographerRoots?: CartographerRootRegistry | null;
+  /** @deprecated Legacy test seam; production must pass cartographerRoots. */
   cartographer?: CartographerTree | null;
   coherenceGate: ScopeVerifier | null;
   contextHierarchy: ContextHierarchy | null;
@@ -7119,14 +7127,98 @@ export function createRoutes(ctx: RouteContext): Router {
   // The Slice-5 callsite lint forbids loadIndex/staleNodes/freshnessHealth/scaffold
   // here, so this regression cannot return by accident.
 
+  interface CartographerRouteRoot {
+    tree: CartographerTree;
+    rootAuthority?: CartographerRootReport;
+    resolvedRoot?: CartographerResolvedRoot;
+  }
+
+  const cartographerTopicId = (
+    req: ExpressRequest,
+  ): number | null | undefined => {
+    const raw = req.method === 'POST'
+      ? ((req.body as { topicId?: unknown } | undefined)?.topicId ?? req.query.topicId)
+      : req.query.topicId;
+    if (raw === undefined) return undefined;
+    const value = typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string'
+        ? Number(raw)
+        : NaN;
+    return Number.isInteger(value) && value > 0 ? value : null;
+  };
+
+  /** Resolve once per operation so reporting, reads, and writes cannot diverge. */
+  const cartographerRouteRoot = (
+    req: ExpressRequest,
+    res: ExpressResponse,
+    paidAuthoring = false,
+  ): CartographerRouteRoot | null => {
+    if (ctx.cartographerRoots) {
+      const topicId = cartographerTopicId(req);
+      if (topicId === null) {
+        res.status(400).json({ error: 'invalid topicId' });
+        return null;
+      }
+      const resolved = ctx.cartographerRoots.resolve(topicId);
+      if (!resolved.ok) {
+        res.status(409).json({
+          error: 'cartographer-root-refused',
+          reason: resolved.reason,
+          ...(resolved.report ? { rootAuthority: resolved.report } : {}),
+        });
+        return null;
+      }
+      if (paidAuthoring) {
+        const authorized = ctx.cartographerRoots.authorizePaidAuthoring(resolved.root);
+        if (!authorized.ok) {
+          res.status(409).json({
+            error: 'cartographer-authoring-refused',
+            reason: authorized.reason,
+            rootAuthority: resolved.root.report,
+          });
+          return null;
+        }
+      }
+      return {
+        tree: resolved.root.tree,
+        rootAuthority: resolved.root.report,
+        resolvedRoot: resolved.root,
+      };
+    }
+    // Compatibility for existing isolated route tests. AgentServer production
+    // wiring no longer supplies this singleton. It is read-only: paid authoring
+    // without a live authority is always refused.
+    if (ctx.cartographer) {
+      if (paidAuthoring) {
+        res.status(409).json({
+          error: 'cartographer-authoring-refused',
+          reason: 'root-authority-absent',
+        });
+        return null;
+      }
+      return { tree: ctx.cartographer };
+    }
+    res.status(503).json({ error: 'Cartographer not enabled' });
+    return null;
+  };
+
+  const withCartographerAuthority = <T extends Record<string, unknown>>(
+    payload: T,
+    root: CartographerRouteRoot,
+  ): T & { rootAuthority?: CartographerRootReport } => (
+    root.rootAuthority ? { ...payload, rootAuthority: root.rootAuthority } : payload
+  );
+
   /** Snapshot-enum + provenance, computed cheaply (one `git rev-parse --short HEAD`). */
   const cartoSnapshotMeta = (
     snap: import('../core/cartographerDetect.js').CartographerSnapshot | null,
+    tree: CartographerTree,
   ): { snapshot: 'present' | 'absent' | 'detect-failing'; snapshotStale: boolean; ageMs: number | null; headMoved: boolean; lastDetectStatus: string | null; lastDetectAt: string | null; headSha: string | null } => {
     if (!snap) {
       return { snapshot: 'absent', snapshotStale: true, ageMs: null, headMoved: false, lastDetectStatus: null, lastDetectAt: null, headSha: null };
     }
-    const currentHead = ctx.cartographer ? ctx.cartographer.currentHeadShort() : null;
+    const currentHead = tree.currentHeadShort();
     const headMoved = snap.headSha != null && currentHead != null && snap.headSha !== currentHead;
     const ageMs = snap.generatedAt ? Math.max(0, Date.now() - Date.parse(snap.generatedAt)) : null;
     // `structural-only` is a usable, current filesystem snapshot from a root
@@ -7145,42 +7237,44 @@ export function createRoutes(ctx: RouteContext): Router {
   };
 
   router.get('/cartographer/tree', (req, res) => {
-    if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
-    const snap = ctx.cartographer.readSnapshot();
+    const root = cartographerRouteRoot(req, res);
+    if (!root) return;
+    const snap = root.tree.readSnapshot();
     if (req.query.format === 'compact') {
       // Cheap: nodeCount + generatedAt from the snapshot (no index parse).
-      res.json({
+      res.json(withCartographerAuthority({
         root: '',
         generatedAt: snap?.generatedAt ?? null,
         nodeCount: snap?.counts.nodeCount ?? 0,
         indexState: snap ? 'built' : 'not-built',
-        ...cartoSnapshotMeta(snap),
-      });
+        ...cartoSnapshotMeta(snap, root.tree),
+      }, root));
       return;
     }
     // Full index: byte-bounded so a huge tree never triggers the 67MB sync parse.
     const fsCfg = (ctx.config as { cartographer?: { freshnessSweep?: { maxRequestNodes?: number } } }).cartographer?.freshnessSweep;
     const maxRequestNodes = typeof fsCfg?.maxRequestNodes === 'number' ? fsCfg.maxRequestNodes : 50000;
     const byteCeiling = maxRequestNodes * 512; // generous per-entry estimate
-    const loaded = ctx.cartographer.loadIndexBounded(byteCeiling);
+    const loaded = root.tree.loadIndexBounded(byteCeiling);
     if (loaded.state === 'not-built') {
-      res.json({ root: '', generatedAt: null, nodeCount: 0, indexState: 'not-built', ...cartoSnapshotMeta(snap) });
+      res.json(withCartographerAuthority({ root: '', generatedAt: null, nodeCount: 0, indexState: 'not-built', ...cartoSnapshotMeta(snap, root.tree) }, root));
       return;
     }
     if (loaded.state === 'too-large') {
-      res.json({
+      res.json(withCartographerAuthority({
         indexState: 'too-large-for-request',
         nodeCount: snap?.counts.nodeCount ?? null,
         guidance: 'index too large to serve whole; use GET /cartographer/navigate?query=... for a bounded subtree',
-        ...cartoSnapshotMeta(snap),
-      });
+        ...cartoSnapshotMeta(snap, root.tree),
+      }, root));
       return;
     }
-    res.json(loaded.index);
+    res.json(withCartographerAuthority(loaded.index as unknown as Record<string, unknown>, root));
   });
 
   router.get('/cartographer/node', (req, res) => {
-    if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
+    const root = cartographerRouteRoot(req, res);
+    if (!root) return;
     const p = typeof req.query.path === 'string' ? req.query.path : '';
     // Validate: repo-relative, no leading slash, no `..` segment. The validated
     // path indexes the in-memory node store — it never builds a filesystem path.
@@ -7188,17 +7282,18 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: 'invalid path' }); return;
     }
     // getNode reads ONE node file (O(1)) — no index parse, no scaffold preamble.
-    const node = ctx.cartographer.getNode(p);
-    if (!node) { res.status(404).json({ error: 'no such node', indexState: ctx.cartographer.readSnapshot() ? 'built' : 'not-built' }); return; }
-    res.json(node);
+    const node = root.tree.getNode(p);
+    if (!node) { res.status(404).json(withCartographerAuthority({ error: 'no such node', indexState: root.tree.readSnapshot() ? 'built' : 'not-built' }, root)); return; }
+    res.json(withCartographerAuthority(node as unknown as Record<string, unknown>, root));
   });
 
-  router.get('/cartographer/stale', (_req, res) => {
-    if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
-    const snap = ctx.cartographer.readSnapshot();
-    const meta = cartoSnapshotMeta(snap);
+  router.get('/cartographer/stale', (req, res) => {
+    const root = cartographerRouteRoot(req, res);
+    if (!root) return;
+    const snap = root.tree.readSnapshot();
+    const meta = cartoSnapshotMeta(snap, root.tree);
     if (!snap) {
-      res.json({ count: 0, nodes: [], total: 0, truncated: false, ...meta });
+      res.json(withCartographerAuthority({ count: 0, nodes: [], total: 0, truncated: false, ...meta }, root));
       return;
     }
     // Serve the bounded, secret-filtered sample with the honest total + truncation.
@@ -7207,21 +7302,22 @@ export function createRoutes(ctx: RouteContext): Router {
         : s === 'stale' ? 'code changed since the summary was authored'
           : s === 'path-gone' ? 'covered path no longer in HEAD' : '';
     const nodes = snap.staleSample.map((e) => ({ path: e.path, status: e.status, reason: reasonFor(e.status) }));
-    res.json({ count: nodes.length, nodes, total: snap.staleTotal, truncated: snap.staleSampleTruncated, ...meta });
+    res.json(withCartographerAuthority({ count: nodes.length, nodes, total: snap.staleTotal, truncated: snap.staleSampleTruncated, ...meta }, root));
   });
 
-  router.get('/cartographer/health', (_req, res) => {
-    if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
+  router.get('/cartographer/health', (req, res) => {
+    const root = cartographerRouteRoot(req, res);
+    if (!root) return;
     const sweepCfg = (ctx.config as { cartographer?: { freshnessSweep?: { enabled?: boolean; cadenceMs?: number } } })
       .cartographer?.freshnessSweep;
-    const snap = ctx.cartographer.readSnapshot();
-    const meta = cartoSnapshotMeta(snap);
+    const snap = root.tree.readSnapshot();
+    const meta = cartoSnapshotMeta(snap, root.tree);
     // fix instar#1069: the entire freshness block is served from the SNAPSHOT — the
     // route never calls health()/freshnessHealth() (the request-thread starvers).
     // Legacy field names/semantics are preserved (additive contract); new fields
     // carry snapshot provenance so a stale/failing detect is visible on the route.
     if (!snap) {
-      res.json({
+      res.json(withCartographerAuthority({
         enabled: true,
         nodeCount: 0, authoredCount: 0, neverAuthoredCount: 0, staleCount: 0, generatedAt: null,
         freshness: {
@@ -7230,10 +7326,10 @@ export function createRoutes(ctx: RouteContext): Router {
         },
         sweepEnabled: sweepCfg?.enabled === true,
         ...meta,
-      });
+      }, root));
       return;
     }
-    res.json({
+    res.json(withCartographerAuthority({
       enabled: true,
       // Legacy health() fields, sourced from the snapshot:
       nodeCount: snap.counts.nodeCount,
@@ -7245,7 +7341,7 @@ export function createRoutes(ctx: RouteContext): Router {
       freshness: snap.freshness,
       sweepEnabled: sweepCfg?.enabled === true,
       ...meta,
-    });
+    }, root));
   });
 
   // Tier-1 (inline opportunistic) write route (spec #2 — doc-freshness). The ONE
@@ -7257,7 +7353,8 @@ export function createRoutes(ctx: RouteContext): Router {
   // instruction-shaped-content neutralization, and a modest write-rate bound.
   const cartoRefreshLog: number[] = [];
   router.post('/cartographer/node/refresh', (req, res) => {
-    if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
+    const root = cartographerRouteRoot(req, res, true);
+    if (!root) return;
     const sweepCfg = (ctx.config as {
       cartographer?: { freshnessSweep?: { enabled?: boolean; minSummaryChars?: number; maxSummaryChars?: number; maxLeafBytes?: number } };
     }).cartographer?.freshnessSweep;
@@ -7284,17 +7381,17 @@ export function createRoutes(ctx: RouteContext): Router {
 
     // fix instar#1069: no lazy scaffold()/loadIndex() preamble — getNode is a single
     // node-file read. An un-scaffolded node 400s (boot population builds the index).
-    const node = ctx.cartographer.getNode(p);
+    const node = root.tree.getNode(p);
     if (!node) { res.status(400).json({ error: 'no such node — only an existing scaffolded node can be refreshed' }); return; }
 
     const { text: neutralized } = neutralizeInstructionShapedContent(summaryRaw);
     // Covered symbols: leaf → committed content; dir → child summaries + basenames.
     let coveredSymbols: Set<string>;
     if (node.kind === 'file') {
-      const read = ctx.cartographer.committedContent(p, sweepCfg.maxLeafBytes ?? 24576);
+      const read = root.tree.committedContent(p, sweepCfg.maxLeafBytes ?? 24576);
       coveredSymbols = extractCodeSymbols(read?.content ?? '');
     } else {
-      const children = ctx.cartographer.getChildren(p);
+      const children = root.tree.getChildren(p);
       const basename = (s: string) => { const i = s.lastIndexOf('/'); return i >= 0 ? s.slice(i + 1) : s; };
       coveredSymbols = extractCodeSymbols(
         children.map((c) => c.summary).join('\n') + '\n' + children.map((c) => basename(c.path)).join(' '),
@@ -7308,12 +7405,12 @@ export function createRoutes(ctx: RouteContext): Router {
     });
     if (!validation.ok) { res.status(400).json({ error: validation.reason }); return; }
 
-    ctx.cartographer.setSummary(p, neutralized.trim(), {
+    root.tree.setSummary(p, neutralized.trim(), {
       provenance: { source: 'inline-agent' },
       meta: { lastAuthoredBy: 'inline-agent', confidence: 'medium' },
     });
     cartoRefreshLog.push(nowMs);
-    res.json({ refreshed: true, path: p, status: ctx.cartographer.computeStaleness(p) });
+    res.json(withCartographerAuthority({ refreshed: true, path: p, status: root.tree.computeStaleness(p) }, root));
   });
 
   // Subtree Navigation (cartographer-subtree-nav spec #5). Given a query, the
@@ -7324,7 +7421,8 @@ export function createRoutes(ctx: RouteContext): Router {
   // from the request — paths are PRODUCED, never taken — so there is no traversal
   // surface; only `query` (length-bounded) + the numeric bounds are validated.
   router.get('/cartographer/navigate', (req, res) => {
-    if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return; }
+    const root = cartographerRouteRoot(req, res);
+    if (!root) return;
 
     const query = typeof req.query.query === 'string' ? req.query.query : '';
     if (!query || query.trim().length === 0) { res.status(400).json({ error: 'missing query' }); return; }
@@ -7355,7 +7453,7 @@ export function createRoutes(ctx: RouteContext): Router {
     // fix instar#1069: no lazy scaffold()/loadIndex() preamble — the navigator is
     // bounded (maxNodesVisited) and returns an empty manifest when the root node is
     // absent (index not built yet); the boot-path scaffold builds it off-request.
-    const manifest = cartographerNavigate(ctx.cartographer, query, {
+    const manifest = cartographerNavigate(root.tree, query, {
       maxDepth: maxDepthOverride ?? navCfg.maxDepth,
       branchingFactor: navCfg.branchingFactor,
       maxNodesVisited: navCfg.maxNodesVisited,
@@ -7363,32 +7461,33 @@ export function createRoutes(ctx: RouteContext): Router {
       minScore: navCfg.minScore,
       collapseFraction: navCfg.collapseFraction,
     });
-    res.json(manifest);
+    res.json(withCartographerAuthority(manifest as unknown as Record<string, unknown>, root));
   });
 
   // Standards Enforcement-Coverage Audit (cartographer-conformance-audit spec #3).
   // For each constitutional standard in docs/STANDARDS-REGISTRY.md, verify whether
   // the structural guard its prose NAMES actually exists on disk, classify each
   // standard's enforcement strength, and surface the gaps + dangling refs.
-  // Deterministic, observe-only, NON-gating. Gated behind BOTH ctx.cartographer
+  // Deterministic, observe-only, NON-gating. Gated behind Cartographer
   // (cartographer.enabled) AND config.cartographer.conformanceAudit.enabled === true.
   // Owner-Bearer (the auth middleware) + the X-Instar-Request:1 intent header (the
   // honest control per the spec's security note — there is no PIN-scope primitive).
-  // Lazily computes over config.projectDir + the on-disk registry; caches by inputHash
+  // Lazily computes over the authority-selected root + the on-disk registry; caches by inputHash
   // so an unchanged registry+repo short-circuits (the pass is deterministic + cheap).
-  const conformanceGate = (req: ExpressRequest, res: ExpressResponse): boolean => {
-    if (!ctx.cartographer) { res.status(503).json({ error: 'Cartographer not enabled' }); return false; }
+  const conformanceGate = (req: ExpressRequest, res: ExpressResponse): CartographerRouteRoot | null => {
+    const root = cartographerRouteRoot(req, res);
+    if (!root) return null;
     const cfg = (ctx.config as { cartographer?: { conformanceAudit?: { enabled?: boolean } } })
       .cartographer?.conformanceAudit;
-    if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) { res.status(503).json({ error: 'Conformance audit not enabled' }); return false; }
+    if (!resolveDevAgentGate(cfg?.enabled, ctx.config)) { res.status(503).json({ error: 'Conformance audit not enabled' }); return null; }
     if (req.headers['x-instar-request'] !== '1') {
       res.status(403).json({ error: 'GET /conformance/coverage requires the X-Instar-Request: 1 intent header' });
-      return false;
+      return null;
     }
-    return true;
+    return root;
   };
-  let conformanceCache: StandardsCoverageReport | null = null;
-  const conformanceReport = (): StandardsCoverageReport => {
+  const conformanceCache = new Map<string, StandardsCoverageReport>();
+  const conformanceReport = (root: CartographerRouteRoot): StandardsCoverageReport => {
     // The registry path comes from the resolver — NEVER built here. Until
     // 2026-07-26 this line was `path.join(ctx.config.projectDir, 'docs',
     // 'STANDARDS-REGISTRY.md')`, the agent-home SNAPSHOT, which is written once at
@@ -7418,20 +7517,21 @@ export function createRoutes(ctx: RouteContext): Router {
     const report = computeStandardsCoverage(
       {
         registryPath: resolution.path,
-        projectDir: ctx.config.projectDir,
+        projectDir: root.tree.projectDirPath(),
         registryMarkdown: resolution.markdown,
         integrity: resolution.integrity,
       },
-      conformanceCache,
+      conformanceCache.get(root.rootAuthority?.rootId ?? root.tree.projectDirPath()) ?? null,
     );
-    conformanceCache = report;
+    conformanceCache.set(root.rootAuthority?.rootId ?? root.tree.projectDirPath(), report);
     return report;
   };
 
   router.get('/conformance/coverage', (req, res) => {
-    if (!conformanceGate(req, res)) return;
+    const root = conformanceGate(req, res);
+    if (!root) return;
     let report: StandardsCoverageReport;
-    try { report = conformanceReport(); }
+    try { report = conformanceReport(root); }
     catch (err) { res.status(500).json({ error: 'coverage compute failed', detail: err instanceof Error ? err.message : String(err) }); return; }
 
     let standards = report.standards;
@@ -7443,7 +7543,7 @@ export function createRoutes(ctx: RouteContext): Router {
     if (status === 'gap') standards = standards.filter((s) => s.enforcementKind === 'documented-only');
     if (status === 'dangling') standards = standards.filter((s) => s.danglingRefs.length > 0);
 
-    res.json({
+    res.json(withCartographerAuthority({
       generatedAt: report.generatedAt,
       // Derived once, in `deriveCoverageClientFlags` — see that function for what each
       // flag means and why a single boolean could not carry it.
@@ -7451,13 +7551,14 @@ export function createRoutes(ctx: RouteContext): Router {
       summary: report.summary,
       count: standards.length,
       standards,
-    });
+    }, root));
   });
 
   router.get('/conformance/coverage/health', (req, res) => {
-    if (!conformanceGate(req, res)) return;
+    const root = conformanceGate(req, res);
+    if (!root) return;
     let report: StandardsCoverageReport;
-    try { report = conformanceReport(); }
+    try { report = conformanceReport(root); }
     catch (err) { res.status(500).json({ error: 'coverage compute failed', detail: err instanceof Error ? err.message : String(err) }); return; }
     // `converged` means ONLY "the deterministic pass is stable" — re-running on
     // unchanged inputs is byte-identical. It has never meant "the standards are
@@ -7466,7 +7567,7 @@ export function createRoutes(ctx: RouteContext): Router {
     // registry fragment, and the agent reading it drew the wrong conclusion twice
     // in one day, then quoted it to the operator. The meaning now travels with the
     // field, and the trustworthiness of the ratio travels beside it.
-    res.json({
+    res.json(withCartographerAuthority({
       enabled: true,
       generatedAt: report.generatedAt,
       converged: true,
@@ -7481,7 +7582,7 @@ export function createRoutes(ctx: RouteContext): Router {
       // expectation that does not exist yet — so a stale-but-coherent registry now reads
       // 'unverified' with the reason attached instead of asserting trust it never earned.
       ...report.summary,
-    });
+    }, root));
   });
 
   router.post('/project-map/refresh', (_req, res) => {

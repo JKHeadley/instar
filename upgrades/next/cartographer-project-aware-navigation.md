@@ -1,0 +1,61 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: minor -->
+
+## What Changed
+
+Cartographer's verified-root authority now controls the live reader and writer.
+On standalone agents, Cartographer resolves the active project from the request's
+topic binding instead of falling back to the agent home. Project-bound agents use
+their declared server project when no topic override is present. Each verified
+root receives isolated Cartographer state.
+
+Tree, node, stale, health, navigation, and conformance responses now use one
+selected root for the whole operation. Authority-backed responses include the
+root identity, canonical checkout, exact revision, provenance, verification
+state, and authoring eligibility. Standalone requests without a usable topic
+binding are refused explicitly.
+
+Zero-cost structural population runs for every eligible bound root on every
+server boot. An unborn or unreadable Git HEAD degrades to a structural-only map
+with unknown freshness rather than losing navigation entirely. Inline and
+background paid authoring require a verified, revision-matching root; the
+background path revalidates after detection, before each operation, and after a
+model response before it writes.
+
+## What to Tell Your User
+
+- “Cartographer navigation now follows the project bound to the current topic,
+  so two project topics cannot accidentally share one map.”
+- “Navigation and health show which checkout and revision they came from.”
+- “A project with no readable Git revision still gets a structural map, but no
+  paid descriptions are written until its revision can be verified.”
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Topic-aware Cartographer reads | Include `topicId` on Cartographer requests from a standalone agent |
+| Cross-project state isolation | Automatic for every authority-selected root |
+| Root/revision reporting | Read the additive `rootAuthority` response field |
+| Explicit ambiguous-root refusal | Automatic when a standalone request lacks a valid topic binding |
+| Revision-safe inline/background authoring | Automatic; drift refuses before a trusted write |
+| Structural-only unborn-HEAD maps | Automatic; `verificationState` is `structural-only` and `freshRatio` is `null` |
+| Durable decision evidence | Recorded locally with fixed-size rotation under Cartographer state |
+
+## Compatibility Notes
+
+Standalone API callers that previously omitted a topic and implicitly read the
+agent-home map now receive an explicit refusal and must provide a bound topic.
+The navigation visit ceiling remains 200. The paid freshness sweep remains behind
+its existing opt-in setting; this change does not enable it.
+
+## Evidence
+
+The acceptance fixture contains a noisy standalone home, two verified project
+bindings, more than 200 nodes per project, unique controls, and unrelated
+siblings. Mirrored topic queries prove the registry is not sticky and exclude the
+other project, sibling, and stale-home tree. Lifecycle controls prove population
+runs again on the next boot and that an unborn HEAD publishes a non-empty
+structural-only snapshot with null freshness. Separate route and sweep controls
+prove missing, structural-only, and revision-drifted authority cannot author.

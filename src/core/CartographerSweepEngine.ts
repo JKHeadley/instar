@@ -126,6 +126,15 @@ export class SweepAbortedError extends Error {
   }
 }
 
+class SweepAuthorityRefusedError extends Error {
+  readonly reason: string;
+  constructor(reason: string) {
+    super(`cartographer root authority refused (${reason})`);
+    this.name = 'SweepAuthorityRefusedError';
+    this.reason = reason;
+  }
+}
+
 export interface SweepLlmQueueLike {
   enqueue(
     lane: 'interactive' | 'background',
@@ -142,6 +151,13 @@ export interface SweepEngineDeps {
   pressure: () => PressureReading;
   /** Author ONLY when this returns true (lease holder). Single-machine ⇒ () => true. */
   holdsLease: () => boolean;
+  /**
+   * Revalidate the authority-pinned root before any paid/background path begins.
+   * Omitted only by isolated legacy tests; production wiring supplies it.
+   */
+  authorizePaidAuthoring: () =>
+    | { ok: true }
+    | { ok: false; reason: string };
   config: SweepEngineConfig;
   stateDir: string;
   now?: () => number;
@@ -245,6 +261,19 @@ export class CartographerSweepEngine {
       return { ...base, reason: 'not-lease-holder' };
     }
 
+    // Root authority precedes both routing and detect. A stale/mismatched root
+    // must spend nothing and must not inspect one tree while reporting another.
+    const authority = this.d.authorizePaidAuthoring();
+    if (!authority.ok) {
+      this.log(`[cartographer-sweep] refusing to author: root authority ${authority.reason}`);
+      return {
+        ...base,
+        refused: true,
+        refusalReason: authority.reason,
+        reason: 'authority-refused',
+      };
+    }
+
     // Routing probe — the L5 canary. Refuse rather than silently burn Claude.
     const probe = this.probeRouting();
     if (!probe.ok) {
@@ -265,6 +294,22 @@ export class CartographerSweepEngine {
       return {
         ...base, refused: true, refusalReason: detect.refusalReason, reason,
         candidateCount: detect.staleTotal, detectStatus: this.detectStatus(detect),
+        detectDurationMs: detect.durationMs,
+      };
+    }
+
+    // Detect may run for minutes in a worker. Revalidate again after that await,
+    // before the first paid call, so a HEAD move during detect cannot inherit the
+    // authority result sampled at pass admission.
+    const postDetectAuthority = this.d.authorizePaidAuthoring();
+    if (!postDetectAuthority.ok) {
+      return {
+        ...base,
+        refused: true,
+        refusalReason: postDetectAuthority.reason,
+        reason: 'authority-refused',
+        candidateCount: detect.staleTotal,
+        detectStatus: this.detectStatus(detect),
         detectDurationMs: detect.durationMs,
       };
     }
@@ -331,6 +376,17 @@ export class CartographerSweepEngine {
         continue;
       }
 
+      // Each LLM call yields the event loop and may overlap an external checkout
+      // update. Revalidate the pinned revision immediately before every paid or
+      // fingerprint-authoring operation, not merely once per pass.
+      const nodeAuthority = this.d.authorizePaidAuthoring();
+      if (!nodeAuthority.ok) {
+        result.refused = true;
+        result.refusalReason = nodeAuthority.reason;
+        result.reason = 'authority-refused';
+        break;
+      }
+
       try {
         const outcome = await this.authorNode(node, framework, deltas);
         switch (outcome.kind) {
@@ -358,6 +414,12 @@ export class CartographerSweepEngine {
             break;
         }
       } catch (err) {
+        if (err instanceof SweepAuthorityRefusedError) {
+          result.refused = true;
+          result.refusalReason = err.reason;
+          result.reason = 'authority-refused';
+          break;
+        }
         if (this.isAbort(err)) {
           // Backpressure, NOT failure: leave status, don't count the breaker, retry next quiet tick.
           result.abortedBackpressure = true;
@@ -378,7 +440,14 @@ export class CartographerSweepEngine {
     if (!curtail && !result.abortedBackpressure &&
         result.centsSpent + cfg.estCentsPerAuthor <= cfg.maxCentsPerPass &&
         result.authored + result.fingerprintRefreshed < cfg.maxNodesPerPass) {
-      result.revalidated = await this.revalidateSample(detect.revalidationSample, framework, result, deltas);
+      const sampleAuthority = this.d.authorizePaidAuthoring();
+      if (sampleAuthority.ok) {
+        result.revalidated = await this.revalidateSample(detect.revalidationSample, framework, result, deltas);
+      } else {
+        result.refused = true;
+        result.refusalReason = sampleAuthority.reason;
+        result.reason = 'authority-refused';
+      }
     }
 
     // Author-phase index write (b): ONE off-thread re-read+apply+write of the
@@ -512,6 +581,7 @@ export class CartographerSweepEngine {
       const coveredSymbols = extractCodeSymbols(read.content);
       const prompt = this.buildLeafPrompt(node.path, read.content, read.truncated);
       const summary = await this.callAuthor(prompt);
+      this.requirePaidAuthority();
       return this.persistAuthored(node, summary, coveredSymbols, framework, deltas, {
         modelTier: 'light', truncated: read.truncated,
       });
@@ -537,6 +607,7 @@ export class CartographerSweepEngine {
     const coveredSymbols = extractCodeSymbols(coveredText);
     const prompt = this.buildDirPrompt(node.path, childSummaries, children.map((c) => basename(c.path)));
     const summary = await this.callAuthor(prompt);
+    this.requirePaidAuthority();
     return this.persistAuthored(node, summary, coveredSymbols, framework, deltas, {
       modelTier: 'light', childDigestHash: digest,
     });
@@ -595,6 +666,12 @@ export class CartographerSweepEngine {
     );
   }
 
+  /** Close the LLM-await TOCTOU window immediately before a summary write. */
+  private requirePaidAuthority(): void {
+    const authority = this.d.authorizePaidAuthoring();
+    if (!authority.ok) throw new SweepAuthorityRefusedError(authority.reason);
+  }
+
   // ── re-validation sample (fresh ≠ correct) ──────────────────────────────────
 
   private async revalidateSample(
@@ -609,6 +686,13 @@ export class CartographerSweepEngine {
     let n = 0;
     for (const p of samplePaths) {
       if (result.centsSpent + this.d.config.estCentsPerAuthor > this.d.config.maxCentsPerPass) break;
+      const authority = this.d.authorizePaidAuthoring();
+      if (!authority.ok) {
+        result.refused = true;
+        result.refusalReason = authority.reason;
+        result.reason = 'authority-refused';
+        break;
+      }
       const node = this.d.tree.getNode(p);
       if (!node) continue;
       try {
@@ -618,6 +702,12 @@ export class CartographerSweepEngine {
           result.centsSpent += this.d.config.estCentsPerAuthor;
         }
       } catch (err) {
+        if (err instanceof SweepAuthorityRefusedError) {
+          result.refused = true;
+          result.refusalReason = err.reason;
+          result.reason = 'authority-refused';
+          break;
+        }
         if (this.isAbort(err)) break;
         // a failed re-validation is non-fatal; leave the node as-is.
       }

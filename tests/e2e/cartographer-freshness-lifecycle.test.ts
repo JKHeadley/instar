@@ -26,6 +26,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { CartographerTree } from '../../src/core/CartographerTree.js';
+import type { CartographerRootRegistry } from '../../src/core/CartographerRootRegistry.js';
 import {
   CartographerSweepEngine,
   type SweepEngineConfig,
@@ -129,6 +130,7 @@ function engineFor(t: CartographerTree, router: SweepRouterLike): CartographerSw
     llmQueue: queueStub(),
     pressure: normalPressure,
     holdsLease: () => true,
+    authorizePaidAuthoring: () => ({ ok: true }),
     config: sweepConfig(),
     stateDir,
   });
@@ -202,6 +204,23 @@ describe('Cartographer doc-freshness sweep — feature is alive (Tier 3 E2E)', (
 
   // ── PART B — the spec #2 routes are alive (200, not 503) through the server ──
   function app(carto: CartographerTree): express.Express {
+    const cartographerRoots = {
+      resolve: () => ({
+        ok: true,
+        root: {
+          tree: carto,
+          assessment: {},
+          report: {
+            rootId: 'test-root', repositoryId: 'test-repository',
+            kind: 'active-project-checkout', canonicalPath: repo, revision: 'test-revision',
+            provenance: { source: 'server-project', projectName: 't' },
+            verificationState: 'verified', verificationReason: 'verified',
+            structuralPopulationAllowed: true, paidAuthoringAllowed: true,
+          },
+        },
+      }),
+      authorizePaidAuthoring: () => ({ ok: true }),
+    } as unknown as CartographerRootRegistry;
     const a = express();
     a.use(express.json());
     a.use(authMiddleware(() => AUTH, 'test'));
@@ -215,7 +234,7 @@ describe('Cartographer doc-freshness sweep — feature is alive (Tier 3 E2E)', (
           freshnessSweep: { enabled: true, egressAcknowledged: true, minSummaryChars: 10, maxSummaryChars: 600, maxLeafBytes: 24576 },
         },
       } as unknown as RouteContext['config'],
-      cartographer: carto,
+      cartographerRoots,
       startTime: new Date(),
     } as unknown as RouteContext));
     return a;

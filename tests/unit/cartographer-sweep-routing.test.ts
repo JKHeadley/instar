@@ -83,7 +83,7 @@ describe('off-Claude routing — real IntelligenceRouter', () => {
       buildProvider: () => null,
     });
     const engine = new CartographerSweepEngine({
-      tree: t, router, llmQueue: queue, pressure: () => ({ tier: 'normal' }), holdsLease: () => true, config: cfg(), stateDir,
+      tree: t, router, llmQueue: queue, pressure: () => ({ tier: 'normal' }), holdsLease: () => true, authorizePaidAuthoring: () => ({ ok: true }), config: cfg(), stateDir,
     });
     const r = await engine.runPass();
     expect(r.refused).toBe(true);
@@ -101,7 +101,7 @@ describe('off-Claude routing — real IntelligenceRouter', () => {
       buildProvider: () => null, // codex binary missing
     });
     const engine = new CartographerSweepEngine({
-      tree: t, router, llmQueue: queue, pressure: () => ({ tier: 'normal' }), holdsLease: () => true, config: cfg(), stateDir,
+      tree: t, router, llmQueue: queue, pressure: () => ({ tier: 'normal' }), holdsLease: () => true, authorizePaidAuthoring: () => ({ ok: true }), config: cfg(), stateDir,
     });
     const r = await engine.runPass();
     expect(r.refused).toBe(true);
@@ -120,7 +120,7 @@ describe('off-Claude routing — real IntelligenceRouter', () => {
       buildProvider: (fw) => (fw === 'codex-cli' ? codex : null),
     });
     const engine = new CartographerSweepEngine({
-      tree: t, router, llmQueue: queue, pressure: () => ({ tier: 'normal' }), holdsLease: () => true, config: cfg(), stateDir,
+      tree: t, router, llmQueue: queue, pressure: () => ({ tier: 'normal' }), holdsLease: () => true, authorizePaidAuthoring: () => ({ ok: true }), config: cfg(), stateDir,
     });
     const r = await engine.runPass();
     expect(r.authored).toBeGreaterThan(0);

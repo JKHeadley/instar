@@ -210,6 +210,8 @@ function provisionalDirScore(query: string, dirNode: CartographerNode, descendan
 interface VisitedRecord {
   node: CartographerNode;
   depth: number;
+  /** Path-only augmented score used to decide whether a directory is worth descending toward. */
+  provisionalScore: number;
   /** The score used for RANKING the `scored` set. For a leaf == its own score; for a dir == max(own, fold-up). */
   finalScore: number;
   /**
@@ -326,7 +328,7 @@ export function navigate(
     const myVisitedChildren: string[] = [];
     let maxChildFinal = 0;
 
-    for (const { node: child, ownScore } of scoredChildren) {
+    for (const { node: child, ownScore, provisional } of scoredChildren) {
       if (nodesVisited >= o.maxNodesVisited) {
         truncated = true;
         break;
@@ -350,6 +352,7 @@ export function navigate(
       visited.set(child.path, {
         node: child,
         depth: depth + 1,
+        provisionalScore: provisional,
         finalScore,
         // A leaf seeds the relevant set on its OWN score; a dir never does (it must
         // collapse to become a relevant path).
@@ -372,6 +375,7 @@ export function navigate(
   visited.set('', {
     node: root,
     depth: 0,
+    provisionalScore: rootMaxChild,
     finalScore: rootMaxChild * 0.9,
     selfRelevant: false,     // root is never emitted as a relevant scope
     countsForCollapse: false,
@@ -413,9 +417,14 @@ export function navigate(
   }
 
   // ── Assemble the scored manifest ───────────────────────────────────────────
-  // Emit every visited node (excluding root) ranked by finalScore, capped at maxResults.
+  // Emit only relevant visited nodes (excluding root) ranked by finalScore,
+  // capped at maxResults. Zero/under-threshold siblings are traversal evidence,
+  // not navigation results; returning them leaks unrelated scope into a consumer.
   const allScored = [...visited.entries()]
-    .filter(([p]) => p !== '')
+    .filter(([p, rec]) => p !== '' && (
+      rec.finalScore > o.minScore
+      || (rec.node.kind === 'dir' && rec.provisionalScore > o.minScore)
+    ))
     .map(([, rec]) => rec)
     .sort((a, b) => b.finalScore - a.finalScore || a.node.path.localeCompare(b.node.path));
   if (allScored.length > o.maxResults) truncated = true;

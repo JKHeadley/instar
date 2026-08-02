@@ -226,6 +226,11 @@ export class ScopeVerifier {
     return this.config.topicProjects?.[String(topicId)] ?? null;
   }
 
+  /** Current in-memory binding map; no filesystem read on request paths. */
+  currentTopicBindings(): Record<string, TopicProjectBinding> {
+    return this.config.topicProjects ?? (this.config.topicProjects = {});
+  }
+
   /**
    * Register a topic-to-project binding.
    */
@@ -251,7 +256,10 @@ export class ScopeVerifier {
     } catch {
       // @silent-fallback-ok — corrupt bindings, empty map
     }
-    return {};
+    // Keep one live object so consumers can retain a read-only reference while
+    // setTopicBinding mutates and persists that same map.
+    this.config.topicProjects = {};
+    return this.config.topicProjects;
   }
 
   /**

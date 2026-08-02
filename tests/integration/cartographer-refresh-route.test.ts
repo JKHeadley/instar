@@ -20,6 +20,7 @@ import { execFileSync } from 'node:child_process';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { CartographerTree } from '../../src/core/CartographerTree.js';
+import type { CartographerRootRegistry } from '../../src/core/CartographerRootRegistry.js';
 
 const AUTH = 'test-bearer-token';
 
@@ -58,6 +59,25 @@ afterEach(() => {
 // the second gate (POST refresh) is open. minSummaryChars kept small so realistic
 // short summaries clear the floor.
 function ctxWith(cartographer: CartographerTree | null, sweepEnabled: boolean): RouteContext {
+  const cartographerRoots = cartographer
+    ? ({
+        resolve: () => ({
+          ok: true,
+          root: {
+            tree: cartographer,
+            assessment: {},
+            report: {
+              rootId: 'test-root', repositoryId: 'test-repository',
+              kind: 'active-project-checkout', canonicalPath: repo, revision: 'test-revision',
+              provenance: { source: 'server-project', projectName: 't' },
+              verificationState: 'verified', verificationReason: 'verified',
+              structuralPopulationAllowed: true, paidAuthoringAllowed: true,
+            },
+          },
+        }),
+        authorizePaidAuthoring: () => ({ ok: true }),
+      } as unknown as CartographerRootRegistry)
+    : null;
   return {
     config: {
       projectName: 't',
@@ -72,7 +92,7 @@ function ctxWith(cartographer: CartographerTree | null, sweepEnabled: boolean): 
         freshnessSweep: { enabled: sweepEnabled, minSummaryChars: 10, maxSummaryChars: 600, maxLeafBytes: 24576 },
       },
     } as any,
-    cartographer,
+    cartographerRoots,
     startTime: new Date(),
   } as unknown as RouteContext;
 }
@@ -104,6 +124,25 @@ describe('POST /cartographer/node/refresh (Tier 2 integration)', () => {
       request(appWith(null)).post('/cartographer/node/refresh'),
     ).send({ path: 'src/Sample.ts', summary: 'Implements uniqueSampleSymbol for the sample.' });
     expect(res.status).toBe(503);
+  });
+
+  it('refuses inline paid authoring when root authority is absent', async () => {
+    const legacyTree = scaffoldedTree();
+    const legacy = express();
+    legacy.use(express.json());
+    legacy.use(authMiddleware(() => AUTH, 'test'));
+    legacy.use('/', createRoutes({
+      ...ctxWith(null, true),
+      cartographer: legacyTree,
+      cartographerRoots: null,
+    }));
+    const res = await bearer(request(legacy).post('/cartographer/node/refresh'))
+      .send({ path: 'src/Sample.ts', summary: 'Implements uniqueSampleSymbol for the sample.' });
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({
+      error: 'cartographer-authoring-refused',
+      reason: 'root-authority-absent',
+    });
   });
 
   it('503 when freshnessSweep is disabled (cartographer enabled, sweep off)', async () => {
