@@ -2231,7 +2231,7 @@ export interface MachineCapacity {
    *  non-participant for every gated workstream (the conservative side —
    *  senders never forward to a peer that cannot durably receive; the journal
    *  applier's silently-drop-unknown-kinds behavior is the named skew-failure
-   *  mode this gate prevents). Fixed-size booleans only — never an inventory. */
+   *  mode this gate prevents). Fixed-size values only — never an inventory. */
   seamlessnessFlags?: {
     /** This machine can durably RECEIVE forwarded inbound messages (the
      *  'deliverMessage' receiver handler + live durable queue). */
@@ -2260,6 +2260,11 @@ export interface MachineCapacity {
      *  Advertised only when the dark ws44PoolCache flag resolved on; ABSENT/false
      *  → the surfaces fan out per-route (today's behavior). */
     ws44PoolCache?: boolean;
+    /** Proposed stable owner for the undated-action cooldown ledger. This is
+     *  NOT authority by itself: the controller engages only when every registered
+     *  pool member's latest authenticated heartbeat advertises the same machine id. `null`
+     *  means deliberately unconfigured and therefore fail-closed. */
+    undatedActionStateOwnerMachineId?: string | null;
     /** WS2 replicated-store foundation (§10.2 capability advert). Per-store
      *  receive capability: `stateSyncReceive[store] === true` means this machine
      *  can durably RECEIVE + apply that store's replicated journal kind. ABSENT
@@ -3386,6 +3391,27 @@ export interface InstarConfig {
   };
   evolutionActions?: {
     autoExpiry?: EvolutionManagerConfig['autoExpiry'];
+    /**
+     * Bounded resurfacing for pending high/critical actions with no dueBy.
+     * `enabled` is dev-gated when omitted; user-facing emission remains
+     * dry-run-first until deliberately promoted.
+     */
+    undatedResurfacer?: {
+      enabled?: boolean;
+      dryRun?: boolean;
+      runIntervalMs?: number;
+      cooldownMs?: number;
+      maxHighAgeMs?: number;
+      maxRaises?: number;
+      dispositionThreshold?: number;
+      maxLedgerBytes?: number;
+      /**
+       * Proposed stable owner of the machine-local cooldown ledger on a
+       * multi-machine agent. Every registered pool member's latest authenticated
+       * advert must carry the same proposal; absence or disagreement fails closed.
+       */
+      stateOwnerMachineId?: string;
+    };
   };
   /**
    * Apprenticeship-program gates (docs/specs/framework-stall-coverage-matrix.md

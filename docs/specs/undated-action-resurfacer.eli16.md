@@ -39,15 +39,30 @@ digest of them — would bury the very surface it's supposed to help. Your agent
 built specifically to stop that kind of flood, and it exists because that mistake has been made
 before.
 
-One at a time won't clear the backlog, and it isn't meant to. It means **no item can sit forever
-untouched**. Six a day, oldest first, and the worst case is bounded by arithmetic rather than by
-someone choosing a threshold correctly.
+One at a time won't clear the backlog, and it isn't meant to. It means the oldest items keep getting
+a path back while the list stays finite and does not grow faster than the cadence can serve it. If
+new important items arrive faster than six a day, newer rows can still wait indefinitely. The
+unconditional guarantee is the flood bound; the pool-size metric shows when the reach assumption is
+failing.
+
+The four-hour cadence is stored, not just held by a process timer. Restarting the agent or repeatedly
+requesting another pass cannot squeeze extra items into the window.
+
+A live sizing snapshot found that the newest part of the currently unresolved group is about ten
+times denser than the rate at which unchanged rows can reach the three-reminder terminal. That does
+not prove how quickly new rows arrive, because rows already resolved are absent. It does show why this
+feature is a safe reach mechanism rather than a drain; rollout must measure both arrivals and exits
+before choosing the next lever.
 
 ## What it deliberately cannot do
 
 It never marks anything done, never cancels anything, never changes a priority, and never decides an
 item doesn't matter. It brings one thing back into view and says nothing else. Every judgment stays
 with you.
+
+An item whose author explicitly recorded “I cannot give this an honest due date” still qualifies.
+That explanation makes the missing date deliberate; it does not make the action permanently
+invisible.
 
 ## How you'd know it's working
 
@@ -57,16 +72,28 @@ so the choice can be checked against a real 581-item backlog before it says anyt
 
 ## The honest limits
 
-**It does not clear the pile.** 581 items, one per run, is not a drain — it's a guarantee that nothing
-sits forever. Clearing what has already accumulated is separate work and this doesn't pretend
-otherwise.
+**It does not clear the pile.** 581 items, one per run, is not a drain. It gives the oldest important
+rows a path back only while the eligible set stays finite, arrivals stay below the service rate, and
+the scheduler keeps running. Clearing what has already accumulated is separate work and this doesn't
+pretend otherwise.
 
 **It only covers high and critical items to start.** Medium and low undated items are a bigger group,
 and adding them later is straightforward — but the measured damage is in the important ones, so that
-is where it starts.
+is where it starts. Old stores use several spellings for those levels, so `HIGH`, `high`,
+`CRITICAL`, `critical`, and the older top-priority word `urgent` are treated consistently.
 
-**One design question is genuinely open**, and it's written down as open rather than guessed: if you
-run your agent on more than one machine, both could bring back the same item unless they share a
-record of what's already been raised. There are two reasonable answers and the smaller one is probably
-right — but "probably right" is exactly how features get shipped machine-blind, so it gets decided
-before it gets built, not after.
+**The 30-day high-priority shortcut is not helping today.** No currently pending row has survived
+that long; the older rows in the store are already cancelled or completed. The shortcut remains as a
+guard for a different future population, while dry-run metrics must show whether it ever activates.
+
+**Multiple machines do not trade this history back and forth.** One stable machine owns the ledger,
+and it may run the cadence only while it also holds the serving lease. Every registered machine's
+latest authenticated heartbeat must agree on that owner first; missing or conflicting local settings
+stop every machine before either can act, rather than letting two empty ledgers both claim authority.
+If service moves elsewhere, resurfacing pauses; when service returns, the same cooldown and
+raise-count history resumes. This gives up
+availability during a handoff so a new machine cannot quietly treat old reminders as new.
+
+**Its own history cannot grow forever.** The ledger stops at four megabytes and raises one stable
+capacity warning instead of deleting action evidence or silently continuing without a trustworthy
+cooldown.

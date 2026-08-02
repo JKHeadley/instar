@@ -1104,6 +1104,8 @@ export interface RouteContext {
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
   featureMetricsLedger: import('../monitoring/FeatureMetricsLedger.js').FeatureMetricsLedger | null;
+  /** Bounded action-only Close-the-Loop reach for undated high/critical actions. */
+  undatedActionResurfacer?: import('../monitoring/UndatedActionResurfacer.js').UndatedActionResurfacer | null;
   blockerLifecycleService?: import('../monitoring/BlockerLifecycleService.js').BlockerLifecycleService | null;
   /** Benchmark-Divergence Detector analyzer (benchmark-divergence-detector FD8/FD10)
    *  — backs GET /benchmark-divergence (+pool), POST /benchmark-divergence/analyze,
@@ -22341,6 +22343,29 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   router.get('/evolution/actions/overdue', (_req, res) => {
     if (!ctx.evolution) { res.json({ overdue: [] }); return; }
     res.json({ overdue: ctx.evolution.getOverdueActions() });
+  });
+
+  /** Readable proof that the undated-action cadence is constructed and healthy. */
+  router.get('/evolution/actions/undated-resurfacer', (_req, res) => {
+    if (!ctx.undatedActionResurfacer) {
+      res.status(503).json({ enabled: false, error: 'undated-action-resurfacer-not-constructed' });
+      return;
+    }
+    res.json(ctx.undatedActionResurfacer.status());
+  });
+
+  /** Run one bounded pass. The component enforces stable owner, lease, and overlap gates. */
+  router.post('/evolution/actions/undated-resurfacer/pass', async (_req, res) => {
+    if (!ctx.undatedActionResurfacer) {
+      res.status(503).json({ enabled: false, error: 'undated-action-resurfacer-not-constructed' });
+      return;
+    }
+    try {
+      const result = await ctx.undatedActionResurfacer.run();
+      res.status(result.ran ? 200 : 409).json(result);
+    } catch (err) {
+      res.status(503).json({ error: 'undated-action-resurfacer-run-failed', detail: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   router.post('/evolution/actions', (req, res) => {

@@ -952,6 +952,53 @@ const checkInReminderPass: SelfActionController = {
   },
 };
 
+/**
+ * undated-action-resurfacer — bounded Attention reach for action rows that the
+ * due-date checker cannot see. The backlog can remain non-empty indefinitely,
+ * so this is an Eternal Sentinel rather than a controller that truthfully
+ * settles to zero. Its durable run ledger enforces a hard four-hour rate floor
+ * across process reconstruction; each row additionally cools down for 14 days
+ * and exits the loop after three unchanged raises. On a multi-machine agent the
+ * pool-agreed stable ledger owner must also hold the serving lease, so a handoff
+ * or divergent local owner config cannot reset either brake by constructing fresh
+ * local state.
+ */
+const undatedActionResurfacer: SelfActionController = {
+  id: 'undated-action-resurfacer',
+  actionVerb: 'undated-action-notify',
+  models: 'src/monitoring/UndatedActionResurfacer.ts (pool-agreed stable owner + serving lease + durable global cadence + per-row cooldown + three-raise disposition terminal)',
+  modelsPath: 'src/monitoring/UndatedActionResurfacer.ts',
+  delegatedGiveUp: 'the pool-agreed stable-owner ledger and serving-lease conjunction, durable three-raise needs-disposition terminal for each unchanged action, and four-hour global cadence floor',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: 3,
+  ticks: 48,
+  tickMs: 60 * 60_000,
+  eternalSentinel: {
+    reason: 'An undated high-priority backlog can remain non-empty indefinitely; oldest-row reach must continue at a fixed, non-accumulating cadence.',
+    rateFloorMs: 4 * 60 * 60_000,
+  },
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) {
+      return undatedActionResurfacer.makeUnderPressure(f, sink);
+    },
+  },
+  makeUnderPressure(f, sink) {
+    const KEY = 'undated-action-last-run-at';
+    const RATE_FLOOR_MS = 4 * 60 * 60_000;
+    return {
+      tick() {
+        sink.considered += 1;
+        const lastRunAt = f.durableState.get(KEY) as number | undefined;
+        if (lastRunAt !== undefined && f.clock.nowMs() - lastRunAt < RATE_FLOOR_MS) return;
+        f.durableState.set(KEY, f.clock.nowMs());
+        sink.emitTimesMs.push(f.clock.nowMs());
+        sink.emit({ verb: 'undated-action-notify', target: `oldest-eligible-${sink.count}` });
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   evolutionActionExpirySweep,
   spendReconSweep,
@@ -965,6 +1012,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   externalHogKillBreaker,
   meteredReserveExpirySweep,
   checkInReminderPass,
+  undatedActionResurfacer,
   spendStalePriceAlert,
   ownerDarkNotice,
   duplicateConvergeWrite,

@@ -63,7 +63,7 @@ feature**, not a safeguard bolted to it.
 
 | element | rule |
 |---|---|
-| eligible | `status: pending`, no `dueBy`, priority `high` or `critical` |
+| eligible | `status: pending`, no `dueBy`, priority `high` or `critical`, **including rows carrying an explicit `followThroughOptOutReason`**. The durable store predates the lowercase TypeScript union, so comparisons are case-insensitive and legacy `urgent` is the critical/top-priority alias. |
 | selection | **weighted lanes, not strict tiers**: 3 of every 4 runs draw the oldest eligible `critical`; the 4th draws the oldest eligible `high`. A lane with nothing eligible yields to the other. **Plus a max-age override**: any `high` older than 30 days enters the critical lane. Ties by action id. Excludes anything inside its cooldown. |
 | volume | **ONE per run. Never a digest, never a batch.** |
 | cooldown | an action re-surfaced is ineligible for 14 days, recorded durably |
@@ -75,6 +75,32 @@ feature**, not a safeguard bolted to it.
 One-per-run makes a flood **arithmetically impossible** — that part is unconditional, and it is the
 property the bound exists for. A bound that depends on a threshold being tuned correctly fails the
 first time the backlog grows; a bound of one does not.
+
+**Pre-live sizing observation, 2026-08-01.** The currently unresolved eligible cohort has a
+creation-age density of about 21.4 rows/day over its newest seven days (28.4/day over fourteen and
+20.3/day over thirty), while the default cadence emits at most six raises/day and can move at most two
+unchanged rows/day into the three-raise terminal after the pipeline fills. The seven-day density is
+roughly 10.7× that terminal capacity, confirming that this mechanism is reach, not drainage. This is
+not a historical intake measure: rows already completed, cancelled, dated, or reprioritized are
+absent from the snapshot. Live rollout must measure actual arrivals and exits before choosing between
+intake reduction, faster disposition, or a separately bounded backlog-remediation path.
+
+The 30-day high-priority promotion is also a future guard, not a currently active lane: the same
+measurement found zero pending actions older than 30 days. The store is not young—520 rows exceed
+that age—but 515 are cancelled and 5 completed. This does not justify deleting the override; it means
+the dry-run must report whether the lane remains inert rather than crediting it with current reach.
+
+**The creation-time opt-out is not a resurfacing opt-out.** A recorded
+`followThroughOptOutReason` explains why the author deliberately chose not to assign a due date. It
+does not authorize permanent invisibility, and excluding those rows would create a first-class escape
+hatch around this component. Eligibility therefore ignores that field. This distinction matters for
+NEW actions as much as for the measured stock: the creation gate makes omission explicit, while this
+component keeps the resulting undated row reachable.
+
+**The cadence is durable, not merely a process timer.** The ledger records each run and refuses a new
+one until the four-hour interval has elapsed. Startup, a manual pass, and an overlapping invocation all
+share that same floor. Otherwise a restart loop or a repeatedly called pass endpoint could emit one
+item per process start while still claiming “one per run,” turning a syntactic bound into a flood.
 
 **What it guarantees, stated at the strength it actually has.** Eventual surfacing is NOT
 unconditional. It holds only while: the eligible set is finite and not growing faster than one per
@@ -123,11 +149,13 @@ single attention item at HIGH, subject to the same one-per-run bound and its own
 That is the consumer. It is deliberately one threshold and one item — a second flood surface built to
 watch the first would be absurd.
 
-**Concurrency, designed rather than asserted.** Lease-holder-only (§4) prevents cross-machine
-duplication; it does not prevent two overlapping scheduler invocations on the SAME holder. The claim
-step is therefore a conditional write: the `pending-emit` append succeeds only if no unretired entry
-for that action id exists. A losing racer selects nothing and exits — it does not fall through to the
-next candidate, because a run that emits two rows is no longer one-per-run.
+**Concurrency, designed rather than asserted.** The stable-state-owner + serving-lease conjunction
+(§4) prevents a lease handoff from changing ledger authority; it does not prevent two overlapping
+scheduler processes on that SAME owner. Every reconcile, retry claim, cadence check, selection, and
+`pending-emit` append therefore runs under one inter-process ledger lock. Delivery happens only after
+the lock is released, against the durable claim, and state ownership + serving lease are re-checked
+immediately before the external emit. A losing invocation exits; it does not fall through to the next
+candidate, because a run that emits two rows is no longer one-per-run.
 
 ## 2.1 What it meters — the whole loop, not the raise
 
@@ -158,8 +186,11 @@ actions change status at no better a rate than unraised ones of comparable age a
 component is **not working** and its removal is the correct response — not a tuning pass. A
 re-surfacer that is ignored is a notifier, and this project has enough of those.
 
-**Where it lands:** the existing per-feature metrics surface. No new store — a component this small
-introducing its own observability substrate would be its own incoherence.
+**Where it lands:** fired/no-op/error events use the existing per-feature metrics surface. The health
+read exposes the control ledger's own projection — owner/lease block reason, last attempt, run,
+unexpected run error, pool/cooldown counts, pending/failed/abandoned claims, disposition-alert state,
+per-action raise and age state, and delayed outcomes by status. There is no second observation-only
+store: the same ledger that enforces cooldown is the evidence source.
 
 ## 2.2 The ledger — a state model, not "recorded durably"
 
@@ -185,7 +216,8 @@ mechanism's problem, and two paths must never both own one row).
 
 **Append-only events, derived state — because the table above mixes them.** `raiseCount`,
 `disposition` and retirement are field-LIKE, which an append-only log cannot hold directly. The store
-is an event stream (`raised`, `emitted`, `reset`, `retired`, `disposition-set`); the table above is
+is an event stream (`run`, `pending-emit`, `emitted`, `claim-abandoned`, `reset`, `retired`,
+`disposition-set`, outcome and disposition-alert claim events); the table above is
 the PROJECTION derived by folding those events per action id. The projection may be cached, and it is
 always reconstructible from the events — so a corrupt cache is a rebuild rather than a data loss.
 
@@ -205,12 +237,24 @@ than one run interval is REPLAYED.** When the two failure directions are "says s
 itself about which one it chose.
 
 **"A duplicate is harmless" is an assertion, so it is replaced by a mechanism.** Each raise carries a
-stable idempotency key — `resurface:{actionId}:{raiseCount}` — and the attention queue's existing
-dedupe consumes it, so a replay of an item the queue already accepted collapses rather than appearing
-twice. That matters because the destination is the surface this component exists to protect: an
+stable idempotency key — `resurface:{actionId}:s{series}:{raiseCount}` — and the attention queue's
+existing dedupe consumes it, so a replay of an item the queue already accepted collapses rather than
+appearing twice. A meaningful edit durably increments `series`: its first new raise therefore cannot
+be swallowed by the permanent Attention id from an earlier series. That matters because the
+destination is the surface this component exists to protect: an
 attention queue that amplifies duplicates is the flood failure arriving through the back door.
 **Replay is bounded**: three attempts, then the entry is marked `emit-failed` and counted in the §2.1
-metrics — a poison row must not retry forever, and it must not vanish either.
+metrics — a poison row must not retry forever, and it must not vanish either. The aggregate
+disposition alert uses the same three-attempt terminal and consumes its 14-day cooldown on terminal
+failure; clearing a failed claim must not immediately mint another retry budget for the same unchanged
+aggregate.
+
+**Storage is bounded too.** The active ledger has a hard 4 MiB ceiling, below the repository's
+whole-file synchronous-read limit. The writer refuses before crossing it; it does not truncate an
+un-acted row or rewrite the append-only history. Capacity refusal emits one stable-id HIGH Attention
+item and the health read exposes the byte count, ceiling, and exceeded state. This is deliberately a
+loud stop: silently deleting old cooldown/disposition evidence would let forgotten rows re-enter as
+new, while an unbounded ledger would turn a long-running agent into a slow storage failure.
 
 ## 2.3 Why not `nextReviewAt` on the action itself
 
@@ -258,7 +302,7 @@ of ownership.
 | Decision point | classification |
 |---|---|
 | which actions are eligible | `invariant` — a field test over recorded values, no judgment |
-| which one is selected | `invariant` — oldest `createdAt`, deterministic tie-break by id |
+| which one is selected | `invariant` — the fixed 3:1 critical/high lane schedule plus the 30-day high max-age override, then oldest `createdAt`, with a deterministic tie-break by id |
 | how many per run | `invariant` — exactly one, not tunable |
 | when it stops | `invariant` — 3 re-surfacings, counted durably |
 
@@ -268,25 +312,41 @@ is that its behaviour is completely predictable, so a flood cannot arise from a 
 
 ## 4. Multi-machine posture
 
-**Posture: `machine-local`** — `machine-local-justification: operator-ratified-exception` pending, and
-**this is the spec's one genuinely open design question**, deliberately surfaced rather than answered
-by assertion.
+**Posture: stable-owner machine-local.**
 
-The action store is per-agent, and the re-surfacing cooldown is state about *what this agent has
-already raised*. Two machines re-surfacing from a shared backlog would double-raise unless the
-cooldown replicates.
+machine-local-justification: hardware-bound-resource — the ledger is keyed by that machine's local
+action ids and describes its local EvolutionManager queue; the queue and its cooldown history are one
+owner-bound resource and cannot be moved independently without changing identity.
 
-**DECIDED: option 1 — run on the serving-lease holder only.**
+The controller is allowed to act only when that SAME stable owner also holds the serving lease.
 
-1. **Lease-holder only** ← chosen. No replication, and it inherits an existing single-writer
-   guarantee rather than inventing one. A standby machine runs nothing, so double-raising is
-   impossible by construction rather than by reconciliation.
-2. Replicate the cooldown ledger — correct under partition, and more machinery than a
-   one-row-per-run component justifies.
+**Lease ownership alone is insufficient.** An earlier draft said the current lease holder could own a
+machine-local ledger. After a handoff the new holder has an empty ledger, so its first run can repeat a
+row still cooling down on the old holder and reset the three-raise terminal. Stable Attention ids do
+not repair that: the Attention store is also owner-local, and suppressing one visible duplicate would
+still leave split outcome and terminal state.
 
-**The cost of option 1, stated:** if no machine holds the lease, nothing re-surfaces. That is
-acceptable because a pool with no lease-holder has larger problems than a stale backlog, and the
-`eligible` metric (§2.1) will show the gap rather than hide it.
+**DECIDED: pool-agreed stable ledger owner AND serving lease.** On a multi-machine agent each machine
+advertises its explicit `stateOwnerMachineId` proposal in its authenticated capacity heartbeat. The
+local value is never authority by itself. A pass requires all three predicates:
+
+1. every registered pool member's latest authenticated advert carries the same non-empty owner id;
+2. this machine is that stable ledger owner; and
+3. this machine currently holds the serving lease.
+
+A handoff away from the ledger owner therefore PAUSES resurfacing. A handback resumes from the same
+cooldown, retry, outcome, and disposition history. A non-owner does not create a run event, claim, or
+Attention item. If an advert is missing or two local configs disagree, every machine remains readable
+but refuses with `state-owner-unconfigured`; the health projection includes the agreement posture and
+disagreeing participants. That is an honest coverage gap, not a fresh local ledger. Offline registered
+peers remain in the check through their last authenticated advert: otherwise each side of a partition
+could call its one-member local view "agreement." After a process restart with no last-known peer
+advert, resurfacing pauses until authenticated presence restores it.
+
+**The cost, stated:** this is safe under handoff but not highly available. If the stable owner is
+offline or the lease sits elsewhere, nothing re-surfaces. Reassigning the state owner requires moving
+the ledger with it; automatic owner migration is deliberately not claimed. Replicating this ledger is
+the future path if uninterrupted multi-machine cadence becomes worth the additional protocol.
 
 ## 5. Frontloaded decisions
 
@@ -297,16 +357,23 @@ acceptable because a pool with no lease-holder has larger problems than a stale 
 | 3 | Destination | The existing attention queue at the action's own priority. No new topic, no new surface. |
 | 4 | Cooldown | 14 days, durable. Short enough that a genuinely stuck item returns; long enough that one run cannot chase the same row. |
 | 5 | Stop condition | 3 re-surfacings without a status change, then a single terminal note. |
-| 6 | Authority | None. It never mutates an action. |
+| 6 | Authority | Deterministic delivery-policy authority over eligibility, cadence, and Attention delivery; **no semantic authority** to mutate or dispose an action. |
 | 7 | Rollout | Ships **dark**, then dry-run (logs the row it WOULD raise), then live. The dry-run stage is the real test: it proves the selection is sane against a 581-row backlog before anything is raised. |
+| 8 | Explicit follow-through opt-out | Does **not** affect eligibility. It records why no due date was chosen; it never grants invisibility from the undated-action path. |
+
+### 5.1 Implementation surfaces
+
+The authenticated health read is `GET /evolution/actions/undated-resurfacer`. The authenticated,
+cadence-bounded manual trigger is `POST /evolution/actions/undated-resurfacer/pass`. Both use the same
+production controller and durable cadence; the pass operation is not a bypass around the run floor.
 
 ## 6. Open questions
 
 *(none)*
 
-> §4's multi-machine choice was described in an earlier draft as "the spec's one genuinely open
-> question" while this section said none — a straight contradiction. It is now DECIDED in §4 (option 1,
-> lease-holder only), so neither section is parked on anyone.
+> §4's multi-machine choice was described in an earlier draft as "lease-holder only." Adversarial
+> review overturned it because a lease chooses an actor but does not move local cooldown state. The
+> stable-owner + lease conjunction is now the decided v1 posture.
 
 ## 7. Deferred work
 
@@ -320,6 +387,10 @@ acceptable because a pool with no lease-holder has larger problems than a stale 
   **Disposing of the existing 581 requires a bounded one-off review**, which is separate work with a
   separate flood profile. Shipping this and declaring Close the Loop solved would be exactly the
   overclaim this project keeps catching.
+- **Measuring arrivals and exits** — the pre-live open-cohort density is around 20–28 rows/day across
+  the sampled age windows, far above the bounded terminal rate, but it is not historical intake.
+  Rollout must measure creation and resolution events before deciding whether creation defaults,
+  faster disposition, or bounded triage is the honest lever.
 
 ## 8. What "done" means
 
@@ -330,17 +401,19 @@ acceptable because a pool with no lease-holder has larger problems than a stale 
 | tier | what it must cover here |
 |---|---|
 | **Unit** | the pure selection rule with real inputs: priority-tier-before-age, tie-break by id, cooldown exclusion, count-reset on a non-status edit, terminal transition at the third raise, retirement when a row gains a `dueBy`. |
-| **Integration** | the ledger + emit path end to end: two-phase `pending-emit` → emit → confirm, replay of a `pending-emit` left by a simulated crash, the conditional-write claim under two overlapping runs, and the `needs-disposition` threshold raising exactly one item. |
-| **E2E lifecycle** | the production initialization path — the component is CONSTRUCTED, wired to the real action store and the real attention queue, and a run selects and raises against them. **This is the tier that would have caught a reaper reporting "0 reclaimable" beside 39GB**, because it is the only one that proves the thing is reachable rather than merely correct. |
+| **Integration** | the ledger + emit path end to end: two-phase `pending-emit` → emit → confirm, replay of a `pending-emit` left by a simulated crash, the conditional-write claim under two overlapping runs, the `needs-disposition` threshold raising exactly one item, a reset through the real `TelegramAdapter` dedupe store, and a growth burst proving the file refuses at its byte ceiling without truncation. |
+| **E2E lifecycle** | the production initialization path — the component is CONSTRUCTED, wired to the real action-store implementation and the production Attention delegation seam, and a run selects and delegates a raise. The external Telegram transport is deliberately replaced by a capture adapter in this tier; real Attention persistence/dedupe semantics are covered by integration, while live transport evidence remains a rollout gate. **This is the tier that would have caught a reaper reporting "0 reclaimable" beside 39GB**, because it proves the thing is reachable rather than merely correct. |
 
 **Wiring integrity is required explicitly**, per the same standard: assert the injected action-store
 reader and attention emitter are neither null nor no-ops and delegate to the real implementations. A
 component whose emitter is a stub passes every unit and integration test above while raising nothing —
 the exact shape this whole spec exists to prevent, reproduced inside its own test suite.
 
-**2. Live evidence** — a command and its output showing a specific, real, previously-invisible action
-raised. The two cases in §0 are the natural candidates: both undated, both old, both demonstrably
-unreachable before.
+**2. Live evidence — required for rollout completion, not claimed by a draft code PR.** A command and
+its output must show a specific, real, previously-invisible action raised. The two cases in §0 are the
+natural candidates: both undated, both old, both demonstrably unreachable before. Until the dark →
+dry-run → live maturation reaches that observation, the implementation may be code-complete and under
+draft review, but the feature is not "done" under this section.
 
 **Why both, stated because picking one is the tempting shortcut:** a fixture test proves the logic is
 what I wrote down; it cannot prove the component is reachable, wired, and pointed at the real store —

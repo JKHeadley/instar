@@ -5,6 +5,25 @@
   "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
   "entries": [
     {
+      "category": "undated-action-resurfacer-ledger",
+      "description": "Pool-agreed stable-owner event ledger for undated high/critical action cooldown, delivery claims, outcome observation, and terminal disposition. It is keyed to one machine's local action-id namespace and may act only when every registered pool member's latest authenticated advert agrees on that owner and the same owner holds the serving lease; missing or divergent adverts and handoffs away pause instead of starting a fresh ledger.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "state/undated-action-resurfacer.jsonl"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-byte-ceiling",
+        "access": "whole-sync",
+        "maxBytes": 4194304,
+        "keepSegments": 0,
+        "note": "The writer refuses before crossing 4 MiB and emits one stable-id HIGH Attention item instead of dropping an unacted action or rewriting the append-only history. At this ceiling whole-file reads remain below the repository's 8 MiB synchronous-read limit."
+      }
+    },
+    {
       "category": "worktree-enumeration-failure-history",
       "description": "Restart-surviving failure count and last-failure time for the two local worktree guards; the current pass outcome intentionally remains process-local.",
       "scope": "machine-local",

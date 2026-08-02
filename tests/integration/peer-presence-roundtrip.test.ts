@@ -61,7 +61,11 @@ describe('PeerPresencePuller → /mesh/rpc round-trip marks a credential-less pe
       machineId: 'MINI',
       selfReportedLastSeen: new Date().toISOString(),
       loadAvg: 1.5,
-      seamlessnessFlags: { ws11DeliverReceive: true, stateSyncReceive: { learnings: true, knowledge: true } },
+      seamlessnessFlags: {
+        ws11DeliverReceive: true,
+        stateSyncReceive: { learnings: true, knowledge: true },
+        undatedActionStateOwnerMachineId: 'MINI',
+      },
     });
 
     // MINI's signed /mesh/rpc dispatcher — answers session-status with its capacity.
@@ -144,12 +148,14 @@ describe('PeerPresencePuller → /mesh/rpc round-trip marks a credential-less pe
     expect(cap?.online).toBe(true);
     // The peer's receive advert landed over signed HTTP — the load-bearing proof.
     expect(cap?.seamlessnessFlags?.stateSyncReceive).toEqual({ learnings: true, knowledge: true });
+    expect(cap?.seamlessnessFlags?.undatedActionStateOwnerMachineId).toBe('MINI');
 
     // The 30s sparse liveness echo (refreshPool's `{machineId,selfReportedLastSeen}`) must
     // NOT wipe the pulled advert — otherwise the gate flaps back to "cannot receive".
     laptopRegistry.recordHeartbeat({ machineId: 'MINI', selfReportedLastSeen: new Date().toISOString() });
     cap = laptopRegistry.getCapacity('MINI');
     expect(cap?.seamlessnessFlags?.stateSyncReceive).toEqual({ learnings: true, knowledge: true });
+    expect(cap?.seamlessnessFlags?.undatedActionStateOwnerMachineId).toBe('MINI');
   });
 
   it('an unreachable peer is NOT marked online (the puller swallows the transport error)', async () => {
