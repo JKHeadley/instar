@@ -63,12 +63,46 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { jailPath } from './StageTransitionValidator.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from './JudgmentProvenanceLog.js';
 import type { DriftVerdict, IntelligenceProvider, VerifiedCitation } from './types.js';
 import type { ProjectDriftCheckerCache } from './ProjectDriftCheckerCache.js';
 import { DriftSpendLedger, OverBudgetError } from './DriftSpendLedger.js';
+import { DP_PROJECT_DRIFT_CHECK } from '../data/provenanceCoverage.js';
 
 /** Bumped whenever the system prompt changes; part of the future cache key. */
 export const DRIFT_PROMPT_TEMPLATE_VERSION = 1;
+export const PROJECT_DRIFT_PROMPT_ID = `project-drift-v${DRIFT_PROMPT_TEMPLATE_VERSION}`;
+
+/**
+ * Identity-only envelope for the content-bearing drift judgment. The builder
+ * accepts digests and input shape, never spec/file bodies, so provenance cannot
+ * become a second repository-content store.
+ */
+export function buildProjectDriftDecisionContext(input: {
+  projectId: string;
+  roundIndex: number;
+  specPath: string;
+  specBytes: Buffer;
+  files: ReadonlyArray<{ relPath: string; bytes: Buffer }>;
+  deletedFileCount: number;
+  resolvedModelId: string;
+  estimatedTokens: number;
+}): Record<string, unknown> {
+  return buildBoundedContext({
+    projectId: input.projectId,
+    roundIndex: input.roundIndex,
+    specPath: input.specPath,
+    specIdentitySha256: buildStructuredSha256Identity(input.specBytes),
+    specBytes: input.specBytes.length,
+    referencedFileCount: input.files.length,
+    referencedFilePaths: input.files.map((file) => file.relPath),
+    referencedFileIdentitySha256s: input.files.map((file) => buildStructuredSha256Identity(file.bytes)),
+    referencedFileBytes: input.files.reduce((sum, file) => sum + file.bytes.length, 0),
+    deletedFileCount: input.deletedFileCount,
+    resolvedModelId: input.resolvedModelId,
+    estimatedTokens: input.estimatedTokens,
+  });
+}
 
 /** Hard limits per spec § Phase 1.4. Exported so tests can dial them down. */
 export const DRIFT_LIMITS = {
@@ -287,6 +321,9 @@ export class ProjectDriftChecker {
     // After validation but BEFORE the LLM call. A hit returns the
     // cached verdict directly; no ledger spend, no provider call.
     const resolvedModelId = input.modelId ?? 'balanced';
+    const specRelPath = path.relative(fs.realpathSync(input.targetRepoPath), specJailed.absPath)
+      .split(path.sep)
+      .join('/');
     let cacheKey: string | undefined;
     if (this.cache) {
       const lookup = this.cache.lookup({
@@ -354,6 +391,21 @@ export class ProjectDriftChecker {
             temperature: 0,
             timeoutMs,
             attribution: { component: 'ProjectDriftChecker' }, // attribution for /metrics/features
+            provenance: {
+              decisionPoint: DP_PROJECT_DRIFT_CHECK,
+              context: buildProjectDriftDecisionContext({
+                projectId: input.projectId,
+                roundIndex: input.roundIndex,
+                specPath: specRelPath,
+                specBytes,
+                files: prepared,
+                deletedFileCount: deleted.length,
+                resolvedModelId,
+                estimatedTokens,
+              }),
+              optionsPresented: ['no-drift', 'minor-drift', 'premise-violated'],
+              promptId: PROJECT_DRIFT_PROMPT_ID,
+            },
           }),
           timeoutMs
         );

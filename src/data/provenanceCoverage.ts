@@ -249,6 +249,27 @@ export const DP_UNJUSTIFIED_STOP_GATE = 'unjustified-stop-gate';
 /** Topic-intent extraction from a conversational turn (src/core/TopicIntentExtractor.ts). */
 export const DP_TOPIC_INTENT_EXTRACT = 'topic-intent-extract';
 
+/** Committed source/directory node → bounded Cartographer code-map summary. */
+export const DP_CARTOGRAPHER_SUMMARY_AUTHOR = 'cartographer-summary-author';
+
+/** Project spec + referenced committed files → drift signal. */
+export const DP_PROJECT_DRIFT_CHECK = 'project-drift-check';
+
+/** Untagged inbound message + topic history → coherence warning signal. */
+export const DP_INPUT_GUARD = 'input-guard';
+
+/** Ambiguous inbound user message → interrupt category. */
+export const DP_MESSAGE_SENTINEL_CLASSIFY = 'message-sentinel-classify';
+
+/** Inbound message + bounded conversation → machine relocation intent. */
+export const DP_MOVE_INTENT_CLASSIFY = 'move-intent-classify';
+
+/** Hub message + bounded conversation/topic enum → bind intent. */
+export const DP_HUB_INTENT_CLASSIFY = 'hub-intent-classify';
+
+/** Inbound message + bounded conversation/profile enums → topic profile intent. */
+export const DP_PROFILE_INTENT_CLASSIFY = 'profile-intent-classify';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -376,12 +397,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
 
   // — Sentinels —
   {
-    decisionPoint: 'input-guard',
+    decisionPoint: DP_INPUT_GUARD,
     component: 'InputGuard',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:500',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The warn-only review has no correlation-preserving downstream label for whether an untagged message ' +
+      'was genuinely coherent or suspicious. Identity-only rows are collected now so later authenticated ' +
+      'review or recurrence evidence can grade real cases without archiving inbound text.',
     reason:
-      'Input-coherence verdict over an inbound prompt; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Input-coherence verdict over an inbound prompt and recent topic context; provenance stores only bounded identities and shape.',
   },
   {
     decisionPoint: 'session-activity-digest',
@@ -416,20 +443,32 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Tier-3 stall judgment over session output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'message-sentinel-classify',
+    decisionPoint: DP_MESSAGE_SENTINEL_CLASSIFY,
     component: 'MessageSentinel',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:500',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The sentinel can enact pause, redirect, or emergency-stop behavior, but those actions do not currently ' +
+      'carry the router correlation needed to distinguish a correct interruption from a false positive. ' +
+      'Identity-only rows are collected now for later authenticated review and outcome joining.',
     reason:
-      'Pause/emergency/normal intent classification over an inbound user message (latency-critical); enrollment queued in the ACT-1193 retrofit backlog.',
+      'Latency-critical pause, emergency, redirect, or normal classification over an inbound user message; provenance retains message identity and shape only.',
   },
   {
-    decisionPoint: 'project-drift-check',
+    decisionPoint: DP_PROJECT_DRIFT_CHECK,
     component: 'ProjectDriftChecker',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The checker verifies citation shape and reports a bounded signal, but no registered outcome rule yet ' +
+      'establishes whether the historical semantic drift verdict was correct. Recording identity-only cases ' +
+      'now supports later independent or operator-reviewed grading without retaining source bodies.',
     reason:
-      'Is-work-on-project coherence verdict over session work + files; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Project-spec premise drift judgment over bounded repository files; provenance retains only project, path, digest, and input-shape identity.',
   },
   {
     decisionPoint: 'temporal-coherence-check',
@@ -538,28 +577,46 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Outbound coherence review — THE measured high-volume point (3,641 of 4,098 llm calls/24h on the dev agent, spec §5.6); MUST declare sampled:<rate> or budget:<rows/day> at enrollment, never full.',
   },
   {
-    decisionPoint: 'move-intent-classify',
+    decisionPoint: DP_MOVE_INTENT_CLASSIFY,
     component: 'MoveIntentClassifier',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'A transfer or pin may succeed even when the classifier misunderstood the user, while pass-through has no ' +
+      'independent correctness label. Until downstream command disposition and authenticated review carry this ' +
+      'correlation, identity-only cases are recorded for later grading.',
     reason:
-      'Move/pin command-vs-discussion intent over an inbound message + context; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Move or pin command-versus-discussion intent over an inbound message and bounded conversation context; provenance stores identity and shape only.',
   },
   {
-    decisionPoint: 'hub-intent-classify',
+    decisionPoint: DP_HUB_INTENT_CLASSIFY,
     component: 'HubIntentClassifier',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'A successful bind does not prove the message was correctly interpreted, and a pass-through produces no ' +
+      'independent label. Until the consumed-message path preserves quality correlation and authenticated review, ' +
+      'identity-only rows are collected for later grading.',
     reason:
-      'Hub open/tie bind-intent over an inbound hub message; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Hub open or tie intent over an inbound message, bounded conversation, and bindable-topic enum; provenance stores identity and shape only.',
   },
   {
-    decisionPoint: 'profile-intent-classify',
+    decisionPoint: DP_PROFILE_INTENT_CLASSIFY,
     component: 'ProfileIntentClassifier',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'A profile write applying successfully proves enum validity, not that the user intended the change, while ' +
+      'pass-through has no independent label. Identity-only cases are collected until profile-write disposition ' +
+      'and authenticated correction evidence carry this correlation.',
     reason:
-      'Topic-profile change intent (framework/model/thinking) over an inbound message; enrollment queued in the ACT-1193 retrofit backlog.',
+      'Topic framework, model, or thinking-mode intent over an inbound message, bounded context, and allowed enums; provenance stores identity and shape only.',
   },
   {
     decisionPoint: 'llm-sanitize',
@@ -678,12 +735,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Session authoring from (possibly user-authored) task descriptions; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'cartographer-summary-author',
+    decisionPoint: DP_CARTOGRAPHER_SUMMARY_AUTHOR,
     component: 'CartographerSweep',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:500',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The deterministic symbol-presence and output-shape checks measure whether a summary was safe to persist, ' +
+      'but they do not establish semantic correctness. Provenance is collected now so later independent or ' +
+      'operator-reviewed labels can grade real committed-source summaries without a cold start.',
     reason:
-      'Doc-tree summary authoring over untrusted code; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Doc-tree summary authoring over untrusted committed code; identity-only context records node and input shape, never source or child-summary bodies.',
   },
   {
     decisionPoint: 'standards-coverage-enrich',

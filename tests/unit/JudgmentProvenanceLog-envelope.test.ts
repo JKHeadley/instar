@@ -14,6 +14,7 @@ import path from 'node:path';
 import {
   JudgmentProvenanceLog,
   buildBoundedContext,
+  buildStructuredSha256Identity,
   buildTranscriptSliceIdentityContext,
   clampServedVerdictClass,
   clampServedPromptId,
@@ -255,6 +256,15 @@ describe('buildBoundedContext', () => {
     expect(out.fn).toBeUndefined();
     expect(out.sym).toBeUndefined();
     expect(out.ok).toBe(1);
+  });
+});
+
+describe('buildStructuredSha256Identity', () => {
+  it('retains all digest bits in a scrubber-safe structured form', () => {
+    const identity = buildStructuredSha256Identity('the exact content');
+    expect(identity).toMatch(/^sha256:(?:[0-9a-f]{16}:){3}[0-9a-f]{16}$/);
+    expect(buildBoundedContext({ identity }).identity).toBe(identity);
+    expect(identity).toBe(buildStructuredSha256Identity(Buffer.from('the exact content')));
   });
 });
 

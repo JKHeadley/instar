@@ -41,6 +41,13 @@ import {
   DP_COMPLETION_EVALUATE,
   DP_COMPLETION_STOP_RATIONALE,
   DP_MESSAGING_TONE_GATE,
+  DP_CARTOGRAPHER_SUMMARY_AUTHOR,
+  DP_PROJECT_DRIFT_CHECK,
+  DP_INPUT_GUARD,
+  DP_MESSAGE_SENTINEL_CLASSIFY,
+  DP_MOVE_INTENT_CLASSIFY,
+  DP_HUB_INTENT_CLASSIFY,
+  DP_PROFILE_INTENT_CLASSIFY,
   getCensusEntry,
   isEnrolled,
   getVolumeClass,
@@ -78,7 +85,6 @@ const baseOf = (component: string): string => component.split('/')[0].replace(/^
 const PENDING_BASELINE = [
   // decisionPoint::component::tracker-ref
   'a2a-checkin-summarize::a2a-checkin::backlog:decision-quality-enrolment',
-  'cartographer-summary-author::CartographerSweep::backlog:decision-quality-enrolment',
   'coherence-review::CoherenceReviewer::backlog:decision-quality-enrolment',
   'commitment-detect::CommitmentSentinel::backlog:decision-quality-enrolment',
   'contextual-evaluate::ContextualEvaluator::backlog:decision-quality-enrolment',
@@ -87,22 +93,16 @@ const PENDING_BASELINE = [
   'dashboard-insight::DashboardInsightEngine::backlog:decision-quality-enrolment',
   'discovery-evaluate::DiscoveryEvaluator::backlog:decision-quality-enrolment',
   'external-operation-gate::ExternalOperationGate::backlog:decision-quality-enrolment',
-  'hub-intent-classify::HubIntentClassifier::backlog:decision-quality-enrolment',
   'input-classify::InputClassifier::backlog:decision-quality-enrolment',
-  'input-guard::InputGuard::backlog:decision-quality-enrolment',
   'job-reflect::JobReflector::backlog:decision-quality-enrolment',
   'llm-conflict-resolve::LLMConflictResolver::backlog:decision-quality-enrolment',
   'llm-sanitize::LLMSanitizer::backlog:decision-quality-enrolment',
   'mentor-stage-b-classify::mentor-stage-b::backlog:decision-quality-enrolment',
-  'message-sentinel-classify::MessageSentinel::backlog:decision-quality-enrolment',
-  'move-intent-classify::MoveIntentClassifier::backlog:decision-quality-enrolment',
   'open-conversation-brief::openConversationBrief::backlog:decision-quality-enrolment',
   'override-detect::OverrideDetector::backlog:decision-quality-enrolment',
   'pipe-session-spawn::PipeSessionSpawner::backlog:decision-quality-enrolment',
   'pre-compaction-flush::PreCompactionFlush::backlog:decision-quality-enrolment',
   'presence-stall-judge::PresenceProxy::backlog:decision-quality-enrolment',
-  'profile-intent-classify::ProfileIntentClassifier::backlog:decision-quality-enrolment',
-  'project-drift-check::ProjectDriftChecker::backlog:decision-quality-enrolment',
   'prompt-injection-detect::PromptGate::backlog:decision-quality-enrolment',
   'relationship-extract::RelationshipManager::backlog:decision-quality-enrolment',
   'resume-sanity-check::ResumeQueueDrainer::backlog:decision-quality-enrolment',
@@ -372,6 +372,90 @@ describe('messaging-tone-gate — the third enrolled customer (§5.6 high-volume
     // The two enrollment-growth guards above only pass because the sub-budget
     // now exists; pin the flag so a revert of the sub-budget re-fails here too.
     expect(SUBBUDGET_IMPLEMENTED, 'the tone-gate enrollment requires the §5.5 per-point sub-budget in place').toBe(true);
+  });
+});
+
+describe('cartographer-summary-author — committed-source summary enrollment', () => {
+  it('is wired with a bounded high-volume valve and an honest grading posture', () => {
+    const entry = getCensusEntry(DP_CARTOGRAPHER_SUMMARY_AUTHOR);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('CartographerSweep');
+    expect(entry?.volumeClass).toBe('budget:500');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('project-drift-check — bounded repository-content enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_PROJECT_DRIFT_CHECK);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('ProjectDriftChecker');
+    expect(entry?.volumeClass).toBe('budget:100');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('input-guard — bounded inbound-context enrollment', () => {
+  it('is wired with a high-volume valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_INPUT_GUARD);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('InputGuard');
+    expect(entry?.volumeClass).toBe('budget:500');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('message-sentinel-classify — bounded interrupt-intent enrollment', () => {
+  it('is wired with a high-volume valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_MESSAGE_SENTINEL_CLASSIFY);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('MessageSentinel');
+    expect(entry?.volumeClass).toBe('budget:500');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('move-intent-classify — bounded relocation-intent enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_MOVE_INTENT_CLASSIFY);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('MoveIntentClassifier');
+    expect(entry?.volumeClass).toBe('budget:250');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('hub-intent-classify — bounded bind-intent enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_HUB_INTENT_CLASSIFY);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('HubIntentClassifier');
+    expect(entry?.volumeClass).toBe('budget:250');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('profile-intent-classify — bounded topic-profile enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_PROFILE_INTENT_CLASSIFY);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('ProfileIntentClassifier');
+    expect(entry?.volumeClass).toBe('budget:250');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
   });
 });
 

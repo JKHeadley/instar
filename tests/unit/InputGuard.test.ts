@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { InputGuard, type TopicBinding } from '../../src/core/InputGuard.js';
+import {
+  InputGuard,
+  INPUT_GUARD_COHERENCE_PROMPT_ID,
+  type TopicBinding,
+} from '../../src/core/InputGuard.js';
+import { DP_INPUT_GUARD } from '../../src/data/provenanceCoverage.js';
+import type { IntelligenceOptions } from '../../src/core/types.js';
 
 const BINDING: TopicBinding = {
   topicId: 116,
@@ -207,7 +213,7 @@ describe('InputGuard', () => {
       });
       globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
-      const evaluate = vi.fn(async () =>
+      const evaluate = vi.fn(async (_prompt: string, _options?: IntelligenceOptions) =>
         JSON.stringify({ verdict: 'COHERENT', reason: 'on topic', confidence: 0.9 }),
       );
 
@@ -223,6 +229,22 @@ describe('InputGuard', () => {
       expect(fetchSpy).not.toHaveBeenCalled();
       expect(result.verdict).toBe('coherent');
       expect(result.reason).toBe('on topic');
+
+      const options = evaluate.mock.calls[0][1];
+      expect(options?.provenance?.decisionPoint).toBe(DP_INPUT_GUARD);
+      expect(options?.provenance?.optionsPresented).toEqual(['coherent', 'suspicious']);
+      expect(options?.provenance?.promptId).toBe(INPUT_GUARD_COHERENCE_PROMPT_ID);
+      expect(options?.provenance?.context).toMatchObject({
+        topicId: BINDING.topicId,
+        channel: BINDING.channel,
+        topicNameChars: BINDING.topicName.length,
+        messageSliceChars: 'some untagged message'.length,
+        messageWasTruncated: false,
+        recentContextAvailable: false,
+      });
+      const serializedContext = JSON.stringify(options?.provenance?.context ?? {});
+      expect(serializedContext).not.toContain('some untagged message');
+      expect(serializedContext).not.toContain(BINDING.topicName);
     });
 
     it('passes IntelligenceProvider suspicious verdicts through', async () => {

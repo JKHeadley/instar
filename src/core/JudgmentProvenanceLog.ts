@@ -35,6 +35,7 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { scrub, scrubString } from './CredentialAuditEmit.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
@@ -695,6 +696,17 @@ function boundValue(v: unknown, depth: number): unknown {
  */
 export function buildBoundedContext(fields: Record<string, unknown>): Record<string, unknown> {
   return (boundValue(fields ?? {}, 0) ?? {}) as Record<string, unknown>;
+}
+
+/**
+ * Complete SHA-256 identity encoded as four short groups. The credential
+ * scrubber intentionally redacts uninterrupted high-entropy runs of 32+
+ * characters; grouping makes this value unambiguously a digest while retaining
+ * all 256 bits for exact case correlation.
+ */
+export function buildStructuredSha256Identity(value: string | Buffer): string {
+  const hex = crypto.createHash('sha256').update(value).digest('hex');
+  return `sha256:${hex.match(/.{16}/g)!.join(':')}`;
 }
 
 /**

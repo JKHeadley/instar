@@ -20,10 +20,12 @@ import {
   toProfilePatch,
   defaultKnownModelValues,
   valueGroundedInLatestMessage,
+  PROFILE_INTENT_PROMPT_ID,
   type ProfileIntentInput,
 } from '../../src/core/ProfileIntentClassifier.js';
 import { SUPPORTED_FRAMEWORKS } from '../../src/core/TopicFrameworksStore.js';
-import type { IntelligenceProvider } from '../../src/core/types.js';
+import type { IntelligenceOptions, IntelligenceProvider } from '../../src/core/types.js';
+import { DP_PROFILE_INTENT_CLASSIFY } from '../../src/data/provenanceCoverage.js';
 
 const FRAMEWORKS = [...SUPPORTED_FRAMEWORKS];
 const MODELS = defaultKnownModelValues();
@@ -142,8 +144,35 @@ describe('ProfileIntentClassifier — prompt contract (structured output, untrus
 
 describe('ProfileIntentClassifier — decision + fail-open contract', () => {
   it('a high-confidence framework change with a resolved value → isChange:true', async () => {
-    const r = await classifyProfileIntent(base({}));
+    let options: IntelligenceOptions | undefined;
+    const message = 'use codex here';
+    const prior = 'Private prior profile context that must not enter provenance';
+    const intelligence: IntelligenceProvider = {
+      evaluate: async (_prompt, received) => {
+        options = received;
+        return verdict({ isChange: true, intent: 'framework', value: 'codex-cli', confidence: 0.95 });
+      },
+    };
+    const r = await classifyProfileIntent(base({
+      text: message,
+      conversationContext: [{ fromUser: true, text: prior }],
+      intelligence,
+    }));
     expect(r).toMatchObject({ isChange: true, intent: 'framework', value: 'codex-cli', source: 'llm' });
+    expect(options?.provenance?.decisionPoint).toBe(DP_PROFILE_INTENT_CLASSIFY);
+    expect(options?.provenance?.optionsPresented).toEqual(['not-change', 'framework', 'model', 'thinking']);
+    expect(options?.provenance?.promptId).toBe(PROFILE_INTENT_PROMPT_ID);
+    expect(options?.provenance?.context).toMatchObject({
+      messageChars: message.length,
+      contextTurnCount: 1,
+      frameworkCount: FRAMEWORKS.length,
+      modelValueCount: MODELS.length,
+      minConfidence: 0.85,
+    });
+    const serializedContext = JSON.stringify(options?.provenance?.context ?? {});
+    expect(serializedContext).not.toContain(message);
+    expect(serializedContext).not.toContain(prior);
+    expect(serializedContext).not.toContain('codex-cli');
   });
 
   it('maps a thinking verdict', async () => {

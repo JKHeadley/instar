@@ -14,10 +14,13 @@ import { CartographerTree } from '../../src/core/CartographerTree.js';
 import {
   CartographerSweepEngine,
   SweepAbortedError,
+  CARTOGRAPHER_DIRECTORY_SUMMARY_PROMPT_ID,
+  CARTOGRAPHER_LEAF_SUMMARY_PROMPT_ID,
   type SweepEngineConfig,
   type SweepRouterLike,
   type SweepLlmQueueLike,
 } from '../../src/core/CartographerSweepEngine.js';
+import { DP_CARTOGRAPHER_SUMMARY_AUTHOR } from '../../src/data/provenanceCoverage.js';
 import type { PressureReading, PressureTier } from '../../src/monitoring/SessionReaper.js';
 
 function git(cwd: string, args: string[]): void {
@@ -80,14 +83,17 @@ function routerStub(opts: {
   framework?: string;
   available?: boolean;
   evaluate: (prompt: string) => string;
-}): SweepRouterLike & { calls: string[] } {
+}): SweepRouterLike & { calls: string[]; optionCalls: Array<Parameters<SweepRouterLike['evaluate']>[1]> } {
   const calls: string[] = [];
+  const optionCalls: Array<Parameters<SweepRouterLike['evaluate']>[1]> = [];
   return {
     calls,
+    optionCalls,
     defaultFramework: 'claude-code',
     for: () => ({ component: 'CartographerSweep', category: 'job', framework: opts.framework ?? 'codex-cli', available: opts.available ?? true }),
-    evaluate: async (prompt: string) => {
+    evaluate: async (prompt: string, evaluateOpts) => {
       calls.push(prompt);
+      optionCalls.push(evaluateOpts);
       return opts.evaluate(prompt);
     },
   };
@@ -169,6 +175,45 @@ describe('CartographerSweepEngine.runPass — authoring', () => {
     expect(leaf?.provenance?.source).toBe('sweep');
     expect(leaf?.lastAuthoredBy).toBe('sweep:codex-cli');
     expect(t.computeStaleness('src/core/Widget.ts')).toBe('fresh');
+
+    expect(router.optionCalls).toHaveLength(router.calls.length);
+    for (let i = 0; i < router.calls.length; i++) {
+      const provenance = router.optionCalls[i].provenance;
+      expect(provenance?.decisionPoint).toBe(DP_CARTOGRAPHER_SUMMARY_AUTHOR);
+      expect(provenance?.optionsPresented).toEqual(['write-summary']);
+      expect(provenance?.promptId).toBe(
+        router.calls[i].includes('File:')
+          ? CARTOGRAPHER_LEAF_SUMMARY_PROMPT_ID
+          : CARTOGRAPHER_DIRECTORY_SUMMARY_PROMPT_ID,
+      );
+    }
+
+    const leafCall = router.calls.findIndex((prompt) => prompt.includes('File: src/core/Widget.ts'));
+    expect(leafCall).toBeGreaterThanOrEqual(0);
+    const leafContext = router.optionCalls[leafCall].provenance?.context ?? {};
+    expect(leafContext).toMatchObject({
+      nodePath: 'src/core/Widget.ts',
+      nodeKind: 'file',
+      visibleSourceBytes: Buffer.byteLength('export function computeWidgetTotal() { return 0; }\n', 'utf8'),
+      inputTruncated: false,
+      coveredSymbolCount: 1,
+    });
+    expect(String(leafContext.inputIdentitySha256)).toMatch(/^sha256:(?:[0-9a-f]{16}:){3}[0-9a-f]{16}$/);
+    const serializedContext = JSON.stringify(leafContext);
+    expect(serializedContext).not.toContain('export function');
+    expect(serializedContext).not.toContain('computeWidgetTotal');
+
+    const dirCall = router.calls.findIndex((prompt) => prompt.includes('Directory: src/core'));
+    expect(dirCall).toBeGreaterThanOrEqual(0);
+    const dirContext = router.optionCalls[dirCall].provenance?.context ?? {};
+    expect(dirContext).toMatchObject({
+      nodePath: 'src/core',
+      nodeKind: 'dir',
+      childCount: 1,
+      childSummaryCount: 1,
+    });
+    expect(String(dirContext.inputIdentitySha256)).toMatch(/^sha256:(?:[0-9a-f]{16}:){3}[0-9a-f]{16}$/);
+    expect(JSON.stringify(dirContext)).not.toContain('Implements computeWidgetTotal');
   });
 
   it('does NOT author when this machine is not the lease holder', async () => {

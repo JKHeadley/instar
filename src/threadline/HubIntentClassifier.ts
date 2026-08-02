@@ -45,6 +45,10 @@
 
 import type { IntelligenceProvider } from '../core/types.js';
 import type { HubCommand } from './hubCommands.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
+import { DP_HUB_INTENT_CLASSIFY } from '../data/provenanceCoverage.js';
+
+export const HUB_INTENT_PROMPT_ID = 'hub-intent-v1';
 
 /** One recent conversation turn, oldest→newest, fed to the LLM for reference. */
 export interface ConversationTurn {
@@ -197,6 +201,32 @@ function buildContextBlock(
       return `${who}: ${body}`;
     })
     .join('\n');
+}
+
+/** Identity-only envelope for the exact hub message/context and bindable-topic enum shown to the model. */
+export function buildHubIntentDecisionContext(input: {
+  text: string;
+  context: ConversationTurn[];
+  topics: HubTopicCandidate[];
+  maxTurns: number;
+  maxChars: number;
+  maxTopics: number;
+  minConfidence: number;
+}): Record<string, unknown> {
+  const visibleContext = buildContextBlock(input.context, input.maxTurns, input.maxChars);
+  return buildBoundedContext({
+    messageIdentitySha256: buildStructuredSha256Identity(input.text),
+    messageChars: input.text.length,
+    messageBytes: Buffer.byteLength(input.text, 'utf8'),
+    contextWindowIdentitySha256: buildStructuredSha256Identity(visibleContext),
+    contextWindowChars: visibleContext.length,
+    contextTurnCount: Math.min(input.context.length, input.maxTurns),
+    maxContextCharsPerTurn: input.maxChars,
+    bindableTopicCount: input.topics.length,
+    bindableTopicSetIdentitySha256: buildStructuredSha256Identity(JSON.stringify(input.topics)),
+    maxBindableTopics: input.maxTopics,
+    minConfidence: input.minConfidence,
+  });
 }
 
 /**
@@ -358,6 +388,20 @@ export async function classifyHubIntent(input: HubIntentInput): Promise<HubInten
         maxTokens: 200,
         timeoutMs,
         attribution: { component: 'HubIntentClassifier' },
+        provenance: {
+          decisionPoint: DP_HUB_INTENT_CLASSIFY,
+          context: buildHubIntentDecisionContext({
+            text: input.text,
+            context,
+            topics,
+            maxTurns,
+            maxChars,
+            maxTopics,
+            minConfidence,
+          }),
+          optionsPresented: ['not-command', 'open', 'tie'],
+          promptId: HUB_INTENT_PROMPT_ID,
+        },
       }),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('hub-intent classify timeout')), timeoutMs),
