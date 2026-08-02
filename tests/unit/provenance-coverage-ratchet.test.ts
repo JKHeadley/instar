@@ -61,6 +61,8 @@ import {
   DP_WATCHDOG_STUCK_JUDGE,
   DP_COMMITMENT_DETECT,
   DP_RESUME_UUID_VALIDATE,
+  DP_TOPIC_INTENT_ARC_CHECK,
+  DP_USHER_TOPIC_ROUTE,
   getCensusEntry,
   isEnrolled,
   getVolumeClass,
@@ -120,10 +122,8 @@ const PENDING_BASELINE = [
   'standards-coverage-enrich::StandardsCoverageEnrichment::backlog:decision-quality-enrolment',
   'task-classify::TaskClassifier::backlog:decision-quality-enrolment',
   'temporal-coherence-check::TemporalCoherenceChecker::backlog:decision-quality-enrolment',
-  'topic-intent-arc-check::TopicIntentArcCheck::backlog:decision-quality-enrolment',
   'tree-synthesize::TreeSynthesis::backlog:decision-quality-enrolment',
   'tree-triage::TreeTriage::backlog:decision-quality-enrolment',
-  'usher-topic-route::Usher::backlog:decision-quality-enrolment',
 ].sort();
 
 const EXEMPT_BASELINE = [
@@ -600,6 +600,30 @@ describe('resume-uuid-validate — bounded session-match enrollment', () => {
     expect(entry?.status).toBe('wired');
     expect(entry?.component).toBe('ResumeValidator');
     expect(entry?.volumeClass).toBe('budget:100');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('topic-intent-arc-check — bounded draft/ref enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_TOPIC_INTENT_ARC_CHECK);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('TopicIntentArcCheck');
+    expect(entry?.volumeClass).toBe('budget:250');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('usher-topic-route — bounded faded-context enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_USHER_TOPIC_ROUTE);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('Usher');
+    expect(entry?.volumeClass).toBe('budget:250');
     expect(entry?.contentClass).toBe('content-bearing');
     expect(entry?.gradingPosture).toBe('measurement-only');
     expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);

@@ -15,6 +15,8 @@
  */
 
 import type { IntelligenceProvider } from './types.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from './JudgmentProvenanceLog.js';
+import { DP_USHER_TOPIC_ROUTE } from '../data/provenanceCoverage.js';
 import type { TopicIntentStore } from './TopicIntent.js';
 import type { UsherSignalStore } from './UsherSignalStore.js';
 import { isSubstantiveTurn, type CaptureTurnEntry } from './TopicIntentCapture.js';
@@ -33,6 +35,8 @@ const MAX_CAND_TEXT = 300;
 const MAX_CANDIDATES = 25; // bound the prompt
 const FENCE = '<<<DATA';
 const FENCE_END = 'DATA>>>';
+
+export const USHER_TOPIC_ROUTE_PROMPT_ID = 'usher-topic-route-v1';
 
 function truncate(s: string, max: number): string {
   if (typeof s !== 'string') return '';
@@ -57,6 +61,30 @@ ${FENCE_END}
 
 Output a JSON array of the faded contexts this new message RE-ACTIVATES (makes relevant again). Each item: {"refId":"<one of the refIds above>","reason":"<one short sentence on why it's relevant now>"}.
 Be CONSERVATIVE — most messages re-activate nothing; return [] unless the connection is genuine. Only use refIds from the list above.`;
+}
+
+/** Identity-only envelope for the exact turn/candidate prompt shown to the Usher. */
+export function buildUsherDecisionContext(input: {
+  promptText: string;
+  turnText: string;
+  candidates: FadedCandidate[];
+}): Record<string, unknown> {
+  const visibleTurn = truncate(input.turnText, MAX_TURN_CHARS);
+  const visibleCandidates = input.candidates.map((candidate) => [
+    candidate.refId,
+    candidate.kind,
+    truncate(candidate.text, MAX_CAND_TEXT),
+  ]);
+  return buildBoundedContext({
+    promptIdentitySha256: buildStructuredSha256Identity(input.promptText),
+    promptChars: input.promptText.length,
+    promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+    turnIdentitySha256: buildStructuredSha256Identity(visibleTurn),
+    turnChars: visibleTurn.length,
+    turnWasTruncated: input.turnText.length > MAX_TURN_CHARS,
+    candidateCount: input.candidates.length,
+    candidateSetIdentitySha256: buildStructuredSha256Identity(JSON.stringify(visibleCandidates)),
+  });
 }
 
 export function parseUsherResponse(raw: string, candidates: FadedCandidate[]): UsherReactivation[] {
@@ -91,11 +119,18 @@ export function createUsherCheckFn(
   return async (turnText, candidates) => {
     if (!intelligence) { try { onDegrade?.('no-intelligence'); } catch { /* */ } return []; }
     if (candidates.length === 0) return [];
+    const prompt = buildUsherPrompt(turnText, candidates);
     let raw: string;
     try {
-      raw = await intelligence.evaluate(buildUsherPrompt(turnText, candidates), {
+      raw = await intelligence.evaluate(prompt, {
         model: 'fast', temperature: 0, maxTokens: 500,
         attribution: { component: 'Usher' },
+        provenance: {
+          decisionPoint: DP_USHER_TOPIC_ROUTE,
+          context: buildUsherDecisionContext({ promptText: prompt, turnText, candidates }),
+          optionsPresented: ['no-reactivation', 'reactivate'],
+          promptId: USHER_TOPIC_ROUTE_PROMPT_ID,
+        },
       });
     } catch {
       try { onDegrade?.('error'); } catch { /* */ }

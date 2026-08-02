@@ -26,10 +26,12 @@ import {
   parseArcCheckResponse,
   buildArcCheckPrompt,
   createArcCheckClassifyFn,
+  TOPIC_INTENT_ARC_CHECK_PROMPT_ID,
   type ArcCheckClassifyFn,
   type ArcCheckClassification,
 } from '../../src/core/TopicIntentArcCheck.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
+import { DP_TOPIC_INTENT_ARC_CHECK } from '../../src/data/provenanceCoverage.js';
 
 let tempDir: string;
 let store: TopicIntentStore;
@@ -55,6 +57,36 @@ function seedAuthoritative(topicId: number, refId: string, text: string): void {
 function classifierReturning(c: ArcCheckClassification): ArcCheckClassifyFn {
   return async () => c;
 }
+
+describe('createArcCheckClassifyFn provenance', () => {
+  it('enrolls draft/ref evidence without storing their bodies', async () => {
+    let capturedPrompt = '';
+    let capturedOptions: any;
+    const intelligence: IntelligenceProvider = {
+      evaluate: async (prompt: string, options?: any) => {
+        capturedPrompt = prompt;
+        capturedOptions = options;
+        return '{"actsOn":[],"contradicts":[]}';
+      },
+    };
+    const refs = [{
+      refId: 'ref-private',
+      text: 'cobalt-lantern private tracked decision',
+      kind: 'decision' as const,
+      projection: { tier: 'tentative' as const, confidence: 0.5 },
+    }] as any;
+
+    await createArcCheckClassifyFn(intelligence)('cobalt-lantern private draft', refs);
+
+    expect(capturedPrompt).toContain('cobalt-lantern');
+    expect(capturedOptions.provenance).toMatchObject({
+      decisionPoint: DP_TOPIC_INTENT_ARC_CHECK,
+      optionsPresented: ['no-engagement', 'acts-on', 'contradicts'],
+      promptId: TOPIC_INTENT_ARC_CHECK_PROMPT_ID,
+    });
+    expect(JSON.stringify(capturedOptions.provenance.context)).not.toContain('cobalt-lantern');
+  });
+});
 
 describe('ArcCheck — fires & priorities', () => {
   it('no refs at all → no fire', async () => {

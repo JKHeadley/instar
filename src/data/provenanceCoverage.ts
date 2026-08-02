@@ -309,6 +309,12 @@ export const DP_COMMITMENT_DETECT = 'commitment-detect';
 /** Bounded topic history + session transcript → resume UUID match. */
 export const DP_RESUME_UUID_VALIDATE = 'resume-uuid-validate';
 
+/** Draft reply + tracked refs → acts-on/contradicts arc classification. */
+export const DP_TOPIC_INTENT_ARC_CHECK = 'topic-intent-arc-check';
+
+/** Inbound user turn + faded refs → context reactivation signal. */
+export const DP_USHER_TOPIC_ROUTE = 'usher-topic-route';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -546,12 +552,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Resume-sanity verdict before a queued mid-work revival; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'topic-intent-arc-check',
+    decisionPoint: DP_TOPIC_INTENT_ARC_CHECK,
     component: 'TopicIntentArcCheck',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The signal-only priority logic establishes how a parsed engagement becomes a warning, but it does not ' +
+      'independently label whether the model correctly linked a draft to a tracked ref. Identity-only provenance ' +
+      'banks those cases for later operator or redraft-outcome review.',
     reason:
-      'Arc-check classification of a topic intent over conversation; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Arc-check classification over a draft and tracked topic refs; exact prompt, draft, and ref-set identities are stored without their bodies.',
   },
   {
     decisionPoint: DP_SLACK_STALL_CONFIRM,
@@ -896,12 +908,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Resume-UUID-vs-topic match verdict over bounded topic and transcript slices; context stores exact identities and bounds, never message bodies.',
   },
   {
-    decisionPoint: 'usher-topic-route',
+    decisionPoint: DP_USHER_TOPIC_ROUTE,
     component: 'Usher',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The signal store tracks later acted-on events, but those events are not yet correlation-bound to each ' +
+      'model settlement or registered as a grading rule. Identity-only provenance preserves real reactivation ' +
+      'judgments so that correlation can be added without a cold start.',
     reason:
-      'Per-turn topic routing over an inbound user turn; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Per-turn faded-context reactivation over a bounded user turn and candidate set; context stores identities and bounds, never message or ref text.',
   },
   {
     decisionPoint: DP_TOPIC_INTENT_EXTRACT,
