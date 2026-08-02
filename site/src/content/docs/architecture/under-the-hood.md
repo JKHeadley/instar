@@ -113,6 +113,15 @@ Checks for new versions every 30 minutes. When an update is found, it coalesces 
 ### GitSyncManager
 Automatic git-based state synchronization for multi-machine setups. Debounces commits (30 seconds), runs a full sync cycle every 30 minutes, and has multi-stage conflict resolution: programmatic merging for simple cases, LLM-powered resolution for complex ones, human escalation as a last resort.
 
+### CartographerRootRegistry
+The project-identity boundary for Cartographer. `CartographerRootRegistry` resolves
+each topic through its explicit project binding, keeps a separate map namespace per
+checkout, and supplies one root/report pair to navigation, health, and authoring.
+`CartographerRootAuthority` verifies the canonical repository and exact revision;
+missing proof permits only the free structural map, while contradictory or drifted
+proof refuses paid writes. Every eligible bound root is repopulated at boot, and
+the machine-local evidence log and inactive cache set remain bounded.
+
 ### CoherenceJournal
 The multi-machine "diary" writer (P1 of the coherence initiative). Each machine appends per-kind event streams — topic placement (with the reason it moved), session open/close/reap, autonomous runs with their artifact paths — so "what happened where, and where are the files?" is answerable from local disk. Emits are non-blocking memory hand-offs (a background flusher owns all disk I/O), crash repairs are counted, restores-from-backup are detected via incarnation tokens, and a strict per-kind schema keeps free text and secrets out. Signal-only by design: nothing ever kills, spawns, or moves anything based on journal data — the companion `CoherenceJournalReader` (a deliberately separate module, so a lint can ban actuators from importing it) serves the merged bounded read view behind `GET /coherence/journal`. Ships dark; per-kind retention keeps placement history effectively forever.
 
