@@ -122,6 +122,7 @@ export function createUsherCheckFn(
     const prompt = buildUsherPrompt(turnText, candidates);
     let raw: string;
     try {
+      // @llm-fallback-ok: advisory reactivation; provider failure emits onDegrade and returns no reactivation.
       raw = await intelligence.evaluate(prompt, {
         model: 'fast', temperature: 0, maxTokens: 500,
         attribution: { component: 'Usher' },

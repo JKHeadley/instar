@@ -19,6 +19,8 @@ The batch touches existing classifiers, sentinels, summarizers, evaluators, revi
 
 None identified. Provenance construction is observational and does not participate in the production verdict. Existing throws, parse failures, deterministic fallbacks, and fail-open/fail-closed behavior retain their prior owners. A provenance write failure remains evidence loss, not a reason to block the underlying action.
 
+The forward safety ratchet identified three newly visible advisory callsites whose existing benign fallback was not explicitly classified. `PreCompactionFlush` records a provider error and writes no facts, `Usher` emits its degradation callback and returns no reactivation, and Mentor Stage-B forensics treats the failed signal-only read as a no-op tick. Each now carries the ratchet's reviewed `@llm-fallback-ok` marker with its concrete fail-safe direction. None is marked `gating: true`, so provider-routing and enacted behavior remain unchanged.
+
 ## 2. Under-block and residual gaps
 
 This batch does not close universal coverage. Nine declared rows still require identity/composition repair and ten remain blocked, dark, or stale. It also does not create decision-to-outcome joins for these new measurement-only points, add screenshots, or make rich capture lossless. Those omissions remain visible in the census and the separate full-decision-visibility audit; none is relabeled as complete.
@@ -62,9 +64,12 @@ Each enrollment batch is isolated in a small commit. Reverting the relevant comm
 - 850 tests across 29 files passed with all 28 enrollments combined.
 - TypeScript no-emit checking passed.
 - The LLM-attribution, no-direct-LLM-HTTP, and no-whole-file synchronous-read guards passed.
+- The no-silent-LLM-fallback ratchet passes with all three newly visible advisory callsites explicitly classified.
 - The census ratchet proves 81 rows before and after, with wired increasing from 11 to 39 and every added row carrying grading posture, reason, and a non-full budget.
 - Echo independently reviewed PR #1841 against pre-written bars and approved head `0c34ae9bc`, specifically confirming genuine wiring and conversion without denominator inflation.
 
 ## Second-pass review
 
 The prior adversarial, security, and scalability passes found no authority expansion, plaintext capture, unbounded volume, external egress, schema/config migration, or multi-machine behavior change. Echo's independent PR review concurred on the load-bearing wiring and denominator bars. No unresolved side-effect concern remains for the enrollment batch.
+
+Concur with the review — the three safety markers accurately describe the pre-existing benign fallbacks: audit-and-no-write, degradation-and-no-reactivation, and signal-only empty findings. None gates or authorizes action, and the patch changes only comments/documentation with no runtime, security, or privacy behavior change.

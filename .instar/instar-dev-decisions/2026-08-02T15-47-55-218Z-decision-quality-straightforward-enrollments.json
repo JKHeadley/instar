@@ -1,0 +1,24 @@
+{
+  "ts": "2026-08-02T15:47:55.218Z",
+  "slug": "decision-quality-straightforward-enrollments",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 3,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PreCompactionFlush.ts",
+      "src/core/Usher.ts",
+      "src/scheduler/MentorStageBForensics.ts"
+    ],
+    "addedLines": 3,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

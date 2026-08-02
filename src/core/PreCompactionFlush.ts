@@ -185,6 +185,7 @@ export class PreCompactionFlush {
     let llmResponse: string;
     try {
       const prompt = this.buildPrompt(transcriptTail);
+      // @llm-fallback-ok: advisory extraction; provider failure writes no facts and is recorded in the flush audit.
       llmResponse = await this.deps.intelligence.evaluate(
         prompt,
         {

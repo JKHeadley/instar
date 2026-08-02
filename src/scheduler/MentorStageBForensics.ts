@@ -179,6 +179,7 @@ export async function analyzeForensics(input: AnalyzeForensicsInput): Promise<Fo
   let raw: string;
   try {
     const prompt = buildForensicPrompt(input.framework, input.signals);
+    // @llm-fallback-ok: signal-only forensics; provider failure is a no-op tick and grants no authority.
     raw = await input.evaluate(prompt, buildMentorStageBProvenance({
       promptText: prompt,
       framework: input.framework,
