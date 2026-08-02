@@ -262,7 +262,7 @@ signal/authority analysis.
   completion-order boundary loss and identified the unbounded arc list and
   overstated cross-machine/hook claims. Those findings drove the refold, caps,
   executable hook tests, and corrected prose above.
-- Final evidence: 97/97 focused tests green after the pre-anchor inversion and
+- Final evidence: 102/102 focused tests green after the pre-anchor inversion and
   generated-compaction authentication fixes; TypeScript, `git diff --check`,
   repository lint, and build all pass. The lint command reports only its
   pre-existing report-only controller/parser inventory notices; the local
@@ -283,6 +283,12 @@ signal/authority analysis.
   remains available; that outcome is not silent because `ingest()` classifies it
   as `awarenessInvalid` for capture metrics. The catch now carries the required
   in-block justification, and the focused ratchet returns to its 495 baseline.
+- That parser marker made the file-level LLM convergence ledger correctly reject
+  `TopicIntentExtractor` as a stale advisory entry. The actual provider-failure
+  boundary now has its own LLM-specific marker beside the existing `onDegrade`
+  metric, and the redundant ledger entry is removed. The marker therefore
+  documents the LLM degradation it exempts instead of borrowing an unrelated
+  parser annotation elsewhere in the file.
 
 ---
 

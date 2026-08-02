@@ -70,7 +70,11 @@ const REVIEWED_ADVISORY: Record<string, string> = {
   // swaps before abstaining) AND tags abstains so CoherenceGate fails CLOSED on a
   // high-criticality abstain external. The "no stale entries" check below enforces this
   // removal (it now hasMarker).
-  'core/TopicIntentExtractor.ts': 'returns [] — advisory topic-intent extraction',
+  // core/TopicIntentExtractor.ts REMOVED from REVIEWED_ADVISORY
+  // (topic-awareness-three-levels CI follow-through): the provider-failure
+  // boundary now carries an @llm-fallback-ok marker beside its onDegrade metric;
+  // extraction remains advisory and cannot authorize or block an action. The
+  // "no stale entries" check below enforces this removal (it now hasMarker).
   'memory/TopicSummarizer.ts': 'returns partial results — advisory topic summary',
   'security/LLMSanitizer.ts': 'fails SAFE — default catch returns sanitized:"" (empty, the safest result); only returns original when the caller explicitly opts in',
   'providers/uxConfirm/TaskClassifier.ts': 'returns UNCLASSIFIED_PATTERN source:"fallback" — advisory task classification, explicitly fallback-marked',

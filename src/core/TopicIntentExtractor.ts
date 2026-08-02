@@ -438,6 +438,9 @@ export function createLlmExtractFn(
     } catch {
       // network/timeout/provider failure / LlmQueue cap breach → degrade to no
       // capture for this turn (acceptance #4: cap breach degrades to a counter tick).
+      // @llm-fallback-ok — extraction is advisory and never gates an action;
+      // production wires onDegrade to a per-topic capture metric before this
+      // fail-open result, so the provider failure is observable rather than silent.
       try { onDegrade?.('error', input.topicId); } catch { /* metering best-effort */ }
       return [];
     }
