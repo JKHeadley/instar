@@ -1,0 +1,52 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+Cartographer can now run its Git-backed detector on a verified Instar source
+checkout. Its existing `rev-parse` and streaming `ls-tree` calls opt into the
+narrow protected-source read tier already enforced by `SafeGitExecutor`.
+
+This fixes a dogfooding-only contradiction where root authority correctly
+verified the active checkout, but the detector's read-only Git calls were then
+rejected by the source-tree safety guard. The resulting snapshot falsely
+degraded to structural-only and prevented summary authoring on the real Instar
+project.
+
+The source-tree guard and its closed verb allowlist are unchanged. Destructive
+Git shapes remain refused. The recurring freshness sweep remains off unless it
+was already explicitly enabled, and the navigation visit ceiling remains 200.
+
+## What to Tell Your User
+
+- “Cartographer can now build a Git-backed map of the protected Instar checkout
+  instead of incorrectly treating it as a non-Git directory.”
+- “The safety guard is still intact; only the detector's existing read-only Git
+  commands receive the narrow permission.”
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Git-backed Cartographer snapshots on Instar source checkouts | Automatic after updating and restarting |
+| Exact snapshot HEAD reporting for the protected checkout | Read `headSha` from Cartographer health/navigation metadata |
+| Bounded authoring on a verified protected checkout | Existing author path; root authority and per-pass bounds still apply |
+
+## Compatibility Notes
+
+No API or configuration changes. Non-Instar repositories are behaviorally
+unchanged. Existing structural caches are regenerable and will become Git-backed
+on the next detect pass.
+
+## Evidence
+
+Before the fix, live v1.3.1115 reported a verified topic-bound root at exact
+revision `cb6f8fd07941a566178eb630b1de0fca66eb998f` with paid authoring allowed,
+yet population degraded to `structural-only` because the protected-source read
+was refused. The regression test reproduced that real `SourceTreeGuardError`.
+
+After the three call-site declarations, the same protected checkout produced an
+`ok` snapshot with 2,142 nodes, `headSha: cb6f8fd07`, zero authored summaries,
+and the recurring sweep still false. All 192 Cartographer tests, the TypeScript
+build, and the complete repository lint suite pass.

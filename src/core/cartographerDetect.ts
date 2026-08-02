@@ -266,13 +266,14 @@ export async function readCurrentOids(
   projectDir: string,
   _deprecatedGitMaxBuffer: number,
   spawnGit: GitStreamSpawner = (args, cwd) => SafeGitExecutor.readStream(args, {
-    cwd, operation: GIT_OP, timeout: 30000,
+    cwd, operation: GIT_OP, timeout: 30000, sourceTreeReadOk: true,
   }),
   hooks?: DetectRuntimeHooks,
 ): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   const rootTree = SafeGitExecutor.readSync(['rev-parse', 'HEAD^{tree}'], {
     cwd: projectDir, operation: GIT_OP, maxBuffer: 1024 * 1024,
+    sourceTreeReadOk: true,
   });
   if (rootTree) map.set('', rootTree.trim());
   const child = spawnGit(['ls-tree', '-r', '-t', '-z', 'HEAD'], projectDir);
@@ -307,6 +308,7 @@ function headShort(projectDir: string): string | null {
   try {
     const out = SafeGitExecutor.readSync(['rev-parse', '--short', 'HEAD'], {
       cwd: projectDir, operation: GIT_OP, maxBuffer: 1024 * 1024,
+      sourceTreeReadOk: true,
     });
     return out ? out.trim() : null;
   } catch {

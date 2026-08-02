@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-02T12:45:26.275Z",
+  "slug": "cartographer-source-tree-read",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/cartographerDetect.ts"
+    ],
+    "addedLines": 3,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
