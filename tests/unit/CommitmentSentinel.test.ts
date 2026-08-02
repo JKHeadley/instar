@@ -16,12 +16,16 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { CommitmentSentinel } from '../../src/monitoring/CommitmentSentinel.js';
+import {
+  CommitmentSentinel,
+  COMMITMENT_SENTINEL_PROMPT_ID,
+} from '../../src/monitoring/CommitmentSentinel.js';
 import type { CommitmentSentinelConfig } from '../../src/monitoring/CommitmentSentinel.js';
 import { CommitmentTracker } from '../../src/monitoring/CommitmentTracker.js';
 import { LiveConfig } from '../../src/config/LiveConfig.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { DP_COMMITMENT_DETECT } from '../../src/data/provenanceCoverage.js';
 
 // ── Mock IntelligenceProvider ────────────────────────────────────
 
@@ -334,6 +338,26 @@ describe('CommitmentSentinel', () => {
   // ── LLM Commitment Detection ──────────────────────────
 
   describe('LLM commitment detection', () => {
+    it('enrolls exchange evidence without storing conversation bodies', async () => {
+      writeMessages(stateDir, [
+        { messageId: 1, topicId: 100, text: 'Please remember cobalt-lantern behavior', fromUser: true },
+        { messageId: 2, topicId: 100, text: 'I will remember cobalt-lantern behavior', fromUser: false },
+      ]);
+      const intelligence = createMockIntelligence('[]');
+      const { sentinel } = makeSentinel(stateDir, intelligence);
+
+      await sentinel.scan();
+
+      const [prompt, options] = (intelligence.evaluate as any).mock.calls[0];
+      expect(prompt).toContain('cobalt-lantern');
+      expect(options.provenance).toMatchObject({
+        decisionPoint: DP_COMMITMENT_DETECT,
+        optionsPresented: ['no-commitment', 'config-change', 'behavioral', 'one-time-action'],
+        promptId: COMMITMENT_SENTINEL_PROMPT_ID,
+      });
+      expect(JSON.stringify(options.provenance.context)).not.toContain('cobalt-lantern');
+    });
+
     it('detects and registers a config-change commitment', async () => {
       writeMessages(stateDir, [
         { messageId: 1, topicId: 100, text: 'Turn off auto-updates', fromUser: true },

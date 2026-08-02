@@ -12,7 +12,11 @@
 
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
-import { llmValidateResumeCoherence } from '../../src/core/ResumeValidator.js';
+import {
+  llmValidateResumeCoherence,
+  RESUME_UUID_VALIDATE_PROMPT_ID,
+} from '../../src/core/ResumeValidator.js';
+import { DP_RESUME_UUID_VALIDATE } from '../../src/data/provenanceCoverage.js';
 
 // ─── Test Fixtures ──────────────────────────────────────────────────────
 
@@ -253,9 +257,13 @@ describe('ResumeValidator: LLM Coherence Gate', () => {
 
   it('uses IntelligenceProvider.evaluate when evaluateFn not provided', async () => {
     let evaluateCalled = false;
+    let capturedPrompt = '';
+    let capturedOptions: any;
     const mockIntelligence = {
       evaluate: async (prompt: string, options?: any) => {
         evaluateCalled = true;
+        capturedPrompt = prompt;
+        capturedOptions = options;
         expect(options?.model).toBe('fast');
         return 'MATCH';
       },
@@ -265,13 +273,23 @@ describe('ResumeValidator: LLM Coherence Gate', () => {
       INTERACTIVE_UUID, TOPIC_ID, 'test-topic', '/tmp/test-project', null,
       mockIntelligence,
       {
-        getTopicHistory: topicHistory,
-        readSessionJsonl: matchingSession,
+        getTopicHistory: async () => ({
+          topicName: 'test-topic',
+          messages: [{ sender: 'User', text: 'cobalt-lantern private topic context' }],
+        }),
+        readSessionJsonl: () => 'cobalt-lantern private session context',
       },
     );
 
     expect(evaluateCalled).toBe(true);
     expect(result).toBe(true);
+    expect(capturedPrompt).toContain('cobalt-lantern');
+    expect(capturedOptions.provenance).toMatchObject({
+      decisionPoint: DP_RESUME_UUID_VALIDATE,
+      optionsPresented: ['match', 'mismatch'],
+      promptId: RESUME_UUID_VALIDATE_PROMPT_ID,
+    });
+    expect(JSON.stringify(capturedOptions.provenance.context)).not.toContain('cobalt-lantern');
   });
 
   it('uses "fast" model tier for lightweight evaluation', async () => {

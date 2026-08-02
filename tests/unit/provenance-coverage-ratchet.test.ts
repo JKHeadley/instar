@@ -59,6 +59,8 @@ import {
   DP_PROMPT_INJECTION_DETECT,
   DP_WARRANTS_REPLY_GATE,
   DP_WATCHDOG_STUCK_JUDGE,
+  DP_COMMITMENT_DETECT,
+  DP_RESUME_UUID_VALIDATE,
   getCensusEntry,
   isEnrolled,
   getVolumeClass,
@@ -97,7 +99,6 @@ const PENDING_BASELINE = [
   // decisionPoint::component::tracker-ref
   'a2a-checkin-summarize::a2a-checkin::backlog:decision-quality-enrolment',
   'coherence-review::CoherenceReviewer::backlog:decision-quality-enrolment',
-  'commitment-detect::CommitmentSentinel::backlog:decision-quality-enrolment',
   'contextual-evaluate::ContextualEvaluator::backlog:decision-quality-enrolment',
   'correction-distill::correction-learning::backlog:decision-quality-enrolment',
   'cross-model-review::crossModelReviewer::backlog:decision-quality-enrolment',
@@ -112,7 +113,6 @@ const PENDING_BASELINE = [
   'presence-stall-judge::PresenceProxy::backlog:decision-quality-enrolment',
   'relationship-extract::RelationshipManager::backlog:decision-quality-enrolment',
   'resume-sanity-check::ResumeQueueDrainer::backlog:decision-quality-enrolment',
-  'resume-uuid-validate::ResumeValidator::backlog:decision-quality-enrolment',
   'self-knowledge-extract::SelfKnowledgeTree::backlog:decision-quality-enrolment',
   'session-activity-digest::SessionActivitySentinel::backlog:decision-quality-enrolment',
   'stall-triage-diagnosis::StallTriageNurse::backlog:decision-quality-enrolment',
@@ -576,6 +576,30 @@ describe('watchdog-stuck-judge — bounded command-health enrollment', () => {
     expect(entry?.status).toBe('wired');
     expect(entry?.component).toBe('SessionWatchdog');
     expect(entry?.volumeClass).toBe('budget:250');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('commitment-detect — bounded agreement-detection enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_COMMITMENT_DETECT);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('CommitmentSentinel');
+    expect(entry?.volumeClass).toBe('budget:250');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('resume-uuid-validate — bounded session-match enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_RESUME_UUID_VALIDATE);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('ResumeValidator');
+    expect(entry?.volumeClass).toBe('budget:100');
     expect(entry?.contentClass).toBe('content-bearing');
     expect(entry?.gradingPosture).toBe('measurement-only');
     expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);

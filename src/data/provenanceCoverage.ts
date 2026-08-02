@@ -303,6 +303,12 @@ export const DP_WARRANTS_REPLY_GATE = 'warrants-reply-gate';
 /** Long-running command evidence → stuck or legitimate. */
 export const DP_WATCHDOG_STUCK_JUDGE = 'watchdog-stuck-judge';
 
+/** User/agent exchange set → detected durable commitment kinds. */
+export const DP_COMMITMENT_DETECT = 'commitment-detect';
+
+/** Bounded topic history + session transcript → resume UUID match. */
+export const DP_RESUME_UUID_VALIDATE = 'resume-uuid-validate';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -460,12 +466,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Stall-triage diagnosis over session output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'commitment-detect',
+    decisionPoint: DP_COMMITMENT_DETECT,
     component: 'CommitmentSentinel',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Schema filtering and duplicate checks establish record shape, not whether a detected commitment matches ' +
+      'the operator-agent agreement. Identity-only provenance enables later comparison with delivery, withdrawal, ' +
+      'or operator correction without retaining conversation bodies.',
     reason:
-      'Commitment detection over conversation text; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Commitment detection over bounded user-agent exchange pairs; exact prompt and exchange identities are stored without conversation text.',
   },
   {
     decisionPoint: 'presence-stall-judge',
@@ -870,12 +882,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Telegram fallback alert confirmation over session state and agent-authored context; identity-only context stores digests and scalar facts, never message text.',
   },
   {
-    decisionPoint: 'resume-uuid-validate',
+    decisionPoint: DP_RESUME_UUID_VALIDATE,
     component: 'ResumeValidator',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The fail-safe path prevents cross-topic resume on uncertainty, but no independent later label establishes ' +
+      'whether each match or mismatch verdict was semantically correct. Identity-only provenance banks those ' +
+      'cases without storing topic or session transcript bodies.',
     reason:
-      'Resume-UUID-vs-topic match verdict over session/resume state; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Resume-UUID-vs-topic match verdict over bounded topic and transcript slices; context stores exact identities and bounds, never message bodies.',
   },
   {
     decisionPoint: 'usher-topic-route',
