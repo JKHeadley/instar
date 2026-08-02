@@ -51,6 +51,14 @@ if a cyclic, generic, or wide-union case exceeds them, the build fails instead o
 guessing. Forwarders remain visible and checked; they just do not pretend to be
 extra decisions.
 
+Before that inventory check is allowed to become a merge ratchet, its implementation
+must run against the complete production program and publish the real graph-node
+count, configured node ceiling, wall time, and peak memory. The ceiling must be at
+least twice the measured production graph. If it is not, the implementation must
+raise the reviewed finite bound and re-prove its time and memory limits; it cannot
+turn the ratchet on, call the overflow harmless, or weaken the rule that no unknown
+callsite may merge.
+
 The real queue and retry code does use callbacks and loops, so the spec does not
 pretend a blanket ban describes it. Those exact implementations are pinned and
 analyzed as narrow combinators: one readonly context, one non-cloned queue thunk,

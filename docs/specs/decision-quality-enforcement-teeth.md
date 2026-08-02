@@ -736,6 +736,14 @@ finite forwarder proof, fixture corpus, generated manifest, invocation and
 non-invocation schemas, compatibility projection, bidirectional ratchet,
 consumption of the separately merged repair bootstrap map, generated per-callsite
 capabilities, derived runtime identity fields, and readout.
+Before arming the inventory ratchet, run that compiler inventory against the
+complete production program pinned to the implementation PR's merge base and
+record the observed graph-node count, configured `MAX_GRAPH_NODES`, wall time, and
+peak RSS. The configured bound must provide at least 2x node-count headroom over
+that production trace. If `observedGraphNodes * 2 > MAX_GRAPH_NODES`, revise the
+reviewed source constant and re-run the fixed wall/RSS oracles; do not activate the
+ratchet, admit `unknown`, or weaken the no-unknown merge rule. The measurement and
+bound are part of the method digest and the implementation PR's review evidence.
 Regenerate the source truth and update the audit's counts in the same PR. This
 increment changes measurement and enforcement, not model behavior or the semantic
 identity of the nine repair-first rows.
@@ -771,6 +779,12 @@ throughput for today's five grading points.
   the checked-in manifest, including different absolute checkout roots and line
   endings. Instrumentation observes exactly one `Program`; diagnostics exactly equal
   `tsc --noEmit`; five-run wall/RSS measurements meet the fixed relative ceilings.
+- Before the inventory ratchet is armed, the implementation PR records a
+  merge-base-pinned production trace with `observedGraphNodes`,
+  `MAX_GRAPH_NODES`, wall time, and peak RSS. It fails acceptance unless
+  `observedGraphNodes * 2 <= MAX_GRAPH_NODES`; changing the bound requires the same
+  fixed performance oracles and method-digest refresh. Budget exhaustion remains
+  `unknown` and cannot be waived at merge.
 - Changing an inventory input changes the method digest and fails until the audit's
   digest and convergence evidence are refreshed in the same PR.
 - Dropping a production file through `tsconfig`, adding a new runtime entrypoint or
