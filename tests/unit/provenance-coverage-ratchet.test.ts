@@ -54,6 +54,8 @@ import {
   DP_TELEGRAM_STALL_CONFIRM,
   DP_LLM_CONFLICT_RESOLVE,
   DP_OPEN_CONVERSATION_BRIEF,
+  DP_TOPIC_SUMMARIZE,
+  DP_DASHBOARD_INSIGHT,
   getCensusEntry,
   isEnrolled,
   getVolumeClass,
@@ -96,7 +98,6 @@ const PENDING_BASELINE = [
   'contextual-evaluate::ContextualEvaluator::backlog:decision-quality-enrolment',
   'correction-distill::correction-learning::backlog:decision-quality-enrolment',
   'cross-model-review::crossModelReviewer::backlog:decision-quality-enrolment',
-  'dashboard-insight::DashboardInsightEngine::backlog:decision-quality-enrolment',
   'discovery-evaluate::DiscoveryEvaluator::backlog:decision-quality-enrolment',
   'external-operation-gate::ExternalOperationGate::backlog:decision-quality-enrolment',
   'job-reflect::JobReflector::backlog:decision-quality-enrolment',
@@ -118,7 +119,6 @@ const PENDING_BASELINE = [
   'task-classify::TaskClassifier::backlog:decision-quality-enrolment',
   'temporal-coherence-check::TemporalCoherenceChecker::backlog:decision-quality-enrolment',
   'topic-intent-arc-check::TopicIntentArcCheck::backlog:decision-quality-enrolment',
-  'topic-summarize::TopicSummarizer::backlog:decision-quality-enrolment',
   'tree-synthesize::TreeSynthesis::backlog:decision-quality-enrolment',
   'tree-triage::TreeTriage::backlog:decision-quality-enrolment',
   'usher-topic-route::Usher::backlog:decision-quality-enrolment',
@@ -516,6 +516,30 @@ describe('open-conversation-brief — bounded A2A brief enrollment', () => {
     expect(entry?.status).toBe('wired');
     expect(entry?.component).toBe('openConversationBrief');
     expect(entry?.volumeClass).toBe('budget:100');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('topic-summarize — bounded rolling-summary enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_TOPIC_SUMMARIZE);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('TopicSummarizer');
+    expect(entry?.volumeClass).toBe('budget:250');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('dashboard-insight — bounded awareness-authoring enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_DASHBOARD_INSIGHT);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('DashboardInsightEngine');
+    expect(entry?.volumeClass).toBe('budget:250');
     expect(entry?.contentClass).toBe('content-bearing');
     expect(entry?.gradingPosture).toBe('measurement-only');
     expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);

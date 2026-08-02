@@ -9,6 +9,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   DashboardInsightEngine,
+  DASHBOARD_INSIGHT_PROMPT_ID,
   buildInsightPrompt,
   parseInsightResponse,
   fingerprintSnapshot,
@@ -16,6 +17,7 @@ import {
   type PageDataSnapshot,
 } from '../../src/monitoring/DashboardInsightEngine.js';
 import type { IntelligenceProvider, IntelligenceOptions } from '../../src/core/types.js';
+import { DP_DASHBOARD_INSIGHT } from '../../src/data/provenanceCoverage.js';
 
 function snap(over: Partial<PageDataSnapshot> = {}): PageDataSnapshot {
   return {
@@ -126,6 +128,40 @@ describe('DashboardInsightEngine — deterministic floor (Increment A)', () => {
 });
 
 describe('DashboardInsightEngine — LLM layer (Increment B)', () => {
+  it('enrolls only the live LLM path with identity-only page-data provenance', async () => {
+    let capturedPrompt = '';
+    let capturedOptions: IntelligenceOptions | undefined;
+    const eng = new DashboardInsightEngine({
+      pages: [page(() => snap({
+        facts: ['cobalt-lantern private dashboard fact'],
+        anomalies: [{ text: 'cobalt-lantern private anomaly', severity: 'watch' }],
+      }))],
+      intelligence: {
+        evaluate: async (prompt: string, options?: IntelligenceOptions) => {
+          capturedPrompt = prompt;
+          capturedOptions = options;
+          return VALID_LLM;
+        },
+      },
+      enabled: true,
+      dryRun: false,
+    });
+
+    await eng.getInsight('llm-activity');
+
+    expect(capturedPrompt).toContain('cobalt-lantern');
+    expect(capturedOptions?.provenance).toMatchObject({
+      decisionPoint: DP_DASHBOARD_INSIGHT,
+      optionsPresented: ['write-insight'],
+      promptId: DASHBOARD_INSIGHT_PROMPT_ID,
+    });
+    const storedContext = JSON.stringify(capturedOptions?.provenance?.context);
+    expect(storedContext).not.toContain('cobalt-lantern');
+    expect(capturedOptions?.provenance?.context?.promptIdentitySha256).toMatch(
+      /^sha256:(?:[a-f0-9]{16}:){3}[a-f0-9]{16}$/,
+    );
+  });
+
   it('generates an LLM insight and carries the FAST-lane attribution', async () => {
     const { provider, calls } = stubProvider(VALID_LLM);
     const events: Array<[string, string]> = [];

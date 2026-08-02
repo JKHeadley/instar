@@ -288,6 +288,12 @@ export const DP_LLM_CONFLICT_RESOLVE = 'llm-conflict-resolve';
 /** Bounded A2A conversation history → topic name and orientation brief. */
 export const DP_OPEN_CONVERSATION_BRIEF = 'open-conversation-brief';
 
+/** Bounded topic conversation window → rolling purpose and summary. */
+export const DP_TOPIC_SUMMARIZE = 'topic-summarize';
+
+/** Bounded dashboard page facts → awareness-only insight strip. */
+export const DP_DASHBOARD_INSIGHT = 'dashboard-insight';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -701,12 +707,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Knowledge-tree fragment triage over stored content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'topic-summarize',
+    decisionPoint: DP_TOPIC_SUMMARIZE,
     component: 'TopicSummarizer',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'PURPOSE parsing and minimum-length checks establish output shape, not whether the rolling summary ' +
+      'faithfully preserves decisions, state, and pending work. Identity-only provenance banks real topic ' +
+      'windows for later operator-reviewed or continuation-quality labels.',
     reason:
-      'Topic summary authoring over conversation content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Topic summary authoring over a bounded conversation window; exact prompt and constituent identities are stored without conversation or prior-summary bodies.',
   },
   {
     decisionPoint: 'contextual-evaluate',
@@ -741,12 +753,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Serendipity-discovery evaluation over subagent output; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'dashboard-insight',
+    decisionPoint: DP_DASHBOARD_INSIGHT,
     component: 'DashboardInsightEngine',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:250',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Strict JSON parsing and the deterministic floor establish safe degradation, but the floor is not ' +
+      'independent ground truth for which fact mattered most. Identity-only provenance enables later operator ' +
+      'or page-outcome review without retaining page-data bodies.',
     reason:
-      'Awareness-only page-data insight authoring (degrades to a deterministic floor); enrollment queued in the ACT-1193 retrofit backlog.',
+      'Awareness-only page-data insight authoring; exact bounded-prompt identity and scalar shape are stored without page facts, metrics, or anomalies.',
   },
 
   // — Jobs —
