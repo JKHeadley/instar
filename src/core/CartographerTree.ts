@@ -128,6 +128,12 @@ export interface CartographerConfig {
   projectDir: string;
   /** Instar state directory (cartographer state nests under here). */
   stateDir: string;
+  /**
+   * Optional verified-root namespace. When supplied, state is isolated under
+   * cartographer/roots/<namespace>. Omitted preserves the legacy singleton path
+   * exactly; PR 11B-1 adds the inert storage substrate without changing callers.
+   */
+  stateNamespace?: string;
   /** Hard cap on descent depth (default 12). */
   maxDepth?: number;
   /** File extensions that become leaf nodes (default ts/js/mjs/cjs). */
@@ -157,7 +163,12 @@ export class CartographerTree {
 
   constructor(config: CartographerConfig) {
     this.projectDir = config.projectDir;
-    this.cartoDir = path.join(config.stateDir, 'cartographer');
+    if (config.stateNamespace !== undefined && !/^root-[a-f0-9]{24}$/.test(config.stateNamespace)) {
+      throw new Error('Invalid Cartographer state namespace');
+    }
+    this.cartoDir = config.stateNamespace
+      ? path.join(config.stateDir, 'cartographer', 'roots', config.stateNamespace)
+      : path.join(config.stateDir, 'cartographer');
     this.nodesDir = path.join(this.cartoDir, 'nodes');
     this.indexPath = path.join(this.cartoDir, 'index.json');
     this.maxDepth = config.maxDepth ?? DEFAULT_MAX_DEPTH;
