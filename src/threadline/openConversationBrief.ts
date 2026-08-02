@@ -23,6 +23,10 @@
 import type { IntelligenceProvider } from '../core/types.js';
 import type { LlmQueue } from '../monitoring/LlmQueue.js';
 import { parsePurposeFromResponse } from '../memory/TopicSummarizer.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
+import { DP_OPEN_CONVERSATION_BRIEF } from '../data/provenanceCoverage.js';
+
+export const OPEN_CONVERSATION_BRIEF_PROMPT_ID = 'open-conversation-brief-v1';
 
 /** A scrubbed, never-empty name + summary for a newly-opened topic. */
 export interface ConversationBrief {
@@ -197,6 +201,21 @@ function buildLlmPrompt(messages: BriefMessageRow[]): string {
   ].join('\n');
 }
 
+/** Identity-only envelope for the exact bounded conversation prompt shown to the author. */
+export function buildOpenConversationBriefDecisionContext(input: {
+  promptText: string;
+  visibleMessages: BriefMessageRow[];
+}): Record<string, unknown> {
+  return buildBoundedContext({
+    promptIdentitySha256: buildStructuredSha256Identity(input.promptText),
+    promptChars: input.promptText.length,
+    promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+    visibleMessageCount: input.visibleMessages.length,
+    inboundMessageCount: input.visibleMessages.filter((message) => message.direction === 'in').length,
+    outboundMessageCount: input.visibleMessages.filter((message) => message.direction === 'out').length,
+  });
+}
+
 /**
  * Build the name + summary for a conversation being opened into its own topic.
  * NEVER throws — always returns a usable, non-empty ConversationBrief.
@@ -256,13 +275,25 @@ export async function generateConversationBrief(
 
   // Tier A — LLM. Any failure degrades to the Tier-B template (per-field for scrub).
   const prompt = buildLlmPrompt(messages);
+  const visibleMessages = messages.slice(-10);
   const intelligence = deps.intelligence;
   let llmReason: ConversationBrief['reason'] = 'ok';
   let raw = '';
   try {
     raw = await deps.llmQueue.enqueue('interactive', async (signal) => {
       return await Promise.race([
-        intelligence.evaluate(prompt, { model: 'fast', maxTokens: 320, timeoutMs, attribution: { component: 'openConversationBrief' } }),
+        intelligence.evaluate(prompt, {
+          model: 'fast',
+          maxTokens: 320,
+          timeoutMs,
+          attribution: { component: 'openConversationBrief' },
+          provenance: {
+            decisionPoint: DP_OPEN_CONVERSATION_BRIEF,
+            context: buildOpenConversationBriefDecisionContext({ promptText: prompt, visibleMessages }),
+            optionsPresented: ['write-brief'],
+            promptId: OPEN_CONVERSATION_BRIEF_PROMPT_ID,
+          },
+        }),
         new Promise<never>((_, reject) => {
           const t = setTimeout(() => reject(new Error('LLM timeout')), timeoutMs);
           signal.addEventListener('abort', () => { clearTimeout(t); reject(new Error('LLM aborted')); });

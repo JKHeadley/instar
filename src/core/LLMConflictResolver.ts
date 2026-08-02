@@ -21,6 +21,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from './JudgmentProvenanceLog.js';
+import { DP_LLM_CONFLICT_RESOLVE } from '../data/provenanceCoverage.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -109,6 +111,25 @@ export interface LLMConflictResolverConfig {
 const RESOLVED_MARKER_START = '=== RESOLVED:';
 const RESOLVED_MARKER_END = '=== END ===';
 const NEEDS_HUMAN_MARKER = '=== NEEDS_HUMAN:';
+
+export const LLM_CONFLICT_TIER1_PROMPT_ID = 'llm-conflict-resolve-tier1-v1';
+export const LLM_CONFLICT_TIER2_PROMPT_ID = 'llm-conflict-resolve-tier2-v1';
+
+/** Identity-only envelope for one exact tier prompt handed to the resolver. */
+export function buildLlmConflictDecisionContext(input: {
+  promptText: string;
+  relativePath: string;
+  tier: 1 | 2;
+}): Record<string, unknown> {
+  return buildBoundedContext({
+    promptIdentitySha256: buildStructuredSha256Identity(input.promptText),
+    promptChars: input.promptText.length,
+    promptBytes: Buffer.byteLength(input.promptText, 'utf8'),
+    relativePathIdentitySha256: buildStructuredSha256Identity(input.relativePath),
+    relativePathChars: input.relativePath.length,
+    tier: input.tier,
+  });
+}
 
 // ── Resolver ─────────────────────────────────────────────────────────
 
@@ -206,6 +227,20 @@ export class LLMConflictResolver {
           maxTokens: tier === 1 ? 4000 : 8000,
           temperature: 0,
           attribution: { component: 'LLMConflictResolver' }, // attribution for /metrics/features
+          provenance: {
+            decisionPoint: DP_LLM_CONFLICT_RESOLVE,
+            context: buildLlmConflictDecisionContext({
+              promptText: prompt,
+              relativePath: conflict.relativePath,
+              tier,
+            }),
+            optionsPresented: tier === 1
+              ? ['resolve-conflict']
+              : ['resolve-conflict', 'needs-human'],
+            promptId: tier === 1
+              ? LLM_CONFLICT_TIER1_PROMPT_ID
+              : LLM_CONFLICT_TIER2_PROMPT_ID,
+          },
         });
 
         const durationMs = Date.now() - startTime;

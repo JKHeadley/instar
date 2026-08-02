@@ -52,6 +52,8 @@ import {
   DP_SESSION_SUMMARY_EXTRACT,
   DP_SLACK_STALL_CONFIRM,
   DP_TELEGRAM_STALL_CONFIRM,
+  DP_LLM_CONFLICT_RESOLVE,
+  DP_OPEN_CONVERSATION_BRIEF,
   getCensusEntry,
   isEnrolled,
   getVolumeClass,
@@ -98,10 +100,8 @@ const PENDING_BASELINE = [
   'discovery-evaluate::DiscoveryEvaluator::backlog:decision-quality-enrolment',
   'external-operation-gate::ExternalOperationGate::backlog:decision-quality-enrolment',
   'job-reflect::JobReflector::backlog:decision-quality-enrolment',
-  'llm-conflict-resolve::LLMConflictResolver::backlog:decision-quality-enrolment',
   'llm-sanitize::LLMSanitizer::backlog:decision-quality-enrolment',
   'mentor-stage-b-classify::mentor-stage-b::backlog:decision-quality-enrolment',
-  'open-conversation-brief::openConversationBrief::backlog:decision-quality-enrolment',
   'override-detect::OverrideDetector::backlog:decision-quality-enrolment',
   'pipe-session-spawn::PipeSessionSpawner::backlog:decision-quality-enrolment',
   'pre-compaction-flush::PreCompactionFlush::backlog:decision-quality-enrolment',
@@ -491,6 +491,30 @@ describe('cross-platform stall confirmation — bounded fallback-alert enrollmen
     const entry = getCensusEntry(decisionPoint);
     expect(entry?.status).toBe('wired');
     expect(entry?.component).toBe(component);
+    expect(entry?.volumeClass).toBe('budget:100');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('llm-conflict-resolve — tier-aware conflict enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_LLM_CONFLICT_RESOLVE);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('LLMConflictResolver');
+    expect(entry?.volumeClass).toBe('budget:100');
+    expect(entry?.contentClass).toBe('content-bearing');
+    expect(entry?.gradingPosture).toBe('measurement-only');
+    expect((entry?.gradingReason ?? '').length).toBeGreaterThanOrEqual(40);
+  });
+});
+
+describe('open-conversation-brief — bounded A2A brief enrollment', () => {
+  it('is wired with a bounded valve and explicit measurement-only posture', () => {
+    const entry = getCensusEntry(DP_OPEN_CONVERSATION_BRIEF);
+    expect(entry?.status).toBe('wired');
+    expect(entry?.component).toBe('openConversationBrief');
     expect(entry?.volumeClass).toBe('budget:100');
     expect(entry?.contentClass).toBe('content-bearing');
     expect(entry?.gradingPosture).toBe('measurement-only');

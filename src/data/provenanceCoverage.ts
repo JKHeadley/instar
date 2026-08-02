@@ -282,6 +282,12 @@ export const DP_SLACK_STALL_CONFIRM = 'slack-stall-confirm';
 /** Telegram fallback stall/promise evidence → send or suppress alert. */
 export const DP_TELEGRAM_STALL_CONFIRM = 'telegram-stall-confirm';
 
+/** Divergent multi-machine file state → resolved content or human escalation. */
+export const DP_LLM_CONFLICT_RESOLVE = 'llm-conflict-resolve';
+
+/** Bounded A2A conversation history → topic name and orientation brief. */
+export const DP_OPEN_CONVERSATION_BRIEF = 'open-conversation-brief';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -879,20 +885,32 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Knowledge-fragment synthesis into an answer; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
-    decisionPoint: 'llm-conflict-resolve',
+    decisionPoint: DP_LLM_CONFLICT_RESOLVE,
     component: 'LLMConflictResolver',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The marker parser and existing escalation log show whether a response was syntactically accepted, but ' +
+      'no independent post-merge correctness signal is correlated to the decision row yet. Tier-specific ' +
+      'identity-only provenance preserves real cases without equating parser acceptance with correctness.',
     reason:
-      'Divergent multi-machine state resolution over untrusted peer data; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'Divergent multi-machine state resolution over untrusted peer data; exact tier-prompt identity and bounds are stored without file or peer content.',
   },
   {
-    decisionPoint: 'open-conversation-brief',
+    decisionPoint: DP_OPEN_CONVERSATION_BRIEF,
     component: 'openConversationBrief',
-    status: 'pending:backlog:decision-quality-enrolment',
+    status: 'wired',
+    volumeClass: 'budget:100',
     contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'Name/summary shape and credential scrubbing establish safe persistence, not semantic faithfulness to the ' +
+      'conversation. Identity-only provenance is collected so later operator edits or routing outcomes can grade ' +
+      'real briefs without retaining peer conversation bodies.',
     reason:
-      'A2A conversation-brief authoring over peer content; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
+      'A2A conversation-brief authoring over a bounded peer-message window; context stores only exact prompt identity, bounds, and direction counts.',
   },
   {
     decisionPoint: 'a2a-checkin-summarize',
