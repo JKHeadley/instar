@@ -18,20 +18,27 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const SERVER = path.join(process.cwd(), 'src/commands/server.ts');
+const SERVER = fileURLToPath(new URL('../../src/commands/server.ts', import.meta.url));
 
 describe('A1 — quota collector runs independent of Telegram-polling ownership', () => {
   const src = fs.readFileSync(SERVER, 'utf-8');
 
-  it('quotaManager.start() is reached OUTSIDE (before) the !lifelineOwnsPolling Telegram block', () => {
+  it('structurally keeps quotaManager.start() before Telegram topology resolution and both ownership branches', () => {
     const startIdx = src.indexOf('quotaManager.start()');
-    const blockIdx = src.indexOf('if (telegramConfig && !skipTelegram && !isStandbyTelegram && !lifelineOwnsPolling)');
+    const topologyIdx = src.indexOf('const telegramTopology = resolveTelegramStartupTopology({');
+    const sendOnlyIdx = src.indexOf("if (telegramTopology?.mode === 'send-only' && telegramConfig)");
+    const pollingIdx = src.indexOf("if (telegramTopology?.mode === 'server-polling' && telegramConfig)");
     expect(startIdx).toBeGreaterThan(0);
-    expect(blockIdx).toBeGreaterThan(0);
-    // The collector pipeline must run before the polling-ownership gate, so a
-    // send-only (lifeline-owns-polling) server still collects quota.
-    expect(startIdx).toBeLessThan(blockIdx);
+    expect(topologyIdx).toBeGreaterThan(0);
+    expect(sendOnlyIdx).toBeGreaterThan(0);
+    expect(pollingIdx).toBeGreaterThan(0);
+    // The collector pipeline must run before Telegram ownership is resolved,
+    // so every send-only topology still collects quota.
+    expect(startIdx).toBeLessThan(topologyIdx);
+    expect(topologyIdx).toBeLessThan(sendOnlyIdx);
+    expect(topologyIdx).toBeLessThan(pollingIdx);
   });
 
   it('the collector pipeline is gated only on quotaTracker, with the A1 rationale recorded', () => {
