@@ -377,11 +377,17 @@ during skew is optional hardening, not required).
 
 #### 2.4 Dry-run
 
-Never claims custody, never short-circuits, bypasses the ordering gate; maintains
-**durable counters** (`wouldEnqueue`, `wouldHold`, `wouldRefuse`, `dryRunErrors`)
-surfaced in `/pool/queue` — the dry-run stage evidence (round-2: rate-capped log
-lines alone were structurally invisible). Residual rows from a live→dry-run flip are
-handled by the §5.3 sweep.
+Never claims authoritative custody, never short-circuits, and bypasses the
+ordering gate. It does exercise the production SQLite schema and FULL-sync
+transaction against a distinct non-dispatchable shadow store: write the message,
+read the committed row back exactly, record durable proof, then terminalize and
+prune it. A crash between commit and cleanup leaves only a shadow row; the next
+boot counts that recovered row as stronger persistence evidence, scrubs it, and
+never dispatches it. Durable counters (`wouldEnqueue`, `wouldHold`,
+`wouldRefuse`, `dryRunErrors`, and the `shadowCustody*` evidence family) plus
+first/last evidence timestamps are surfaced in `/pool/queue`. Residual rows in
+the authoritative store from a live→dry-run flip are still handled by the §5.3
+sweep.
 
 ### 3. QueueDrainLoop
 
@@ -1115,7 +1121,7 @@ seam is what makes operator retuning safe rather than forbidden.
 |---|---|---|---|---|
 | enabled, lease held | ✓ | ✓ | ✓ | normal (receipts → delivered) |
 | enabled, lease NOT held | refused → fall-through | ✗ | ✗ | normal; residue → tenure clamp |
-| dry-run | ✗ (counters only) | ✗ | ✗ | §5.3 if residual rows |
+| dry-run | shadow only (write + read-back + scrub) | ✗ | ✗ | §5.3 for authoritative residual rows; shadow recovery never dispatches |
 | disabled / pool-dark / no-mesh-identity | ✗ | ✗ | ✗ | §5.3 expire-all + report (gate named) |
 | corrupt store | refused → fall-through | ✗ | ✗ | quarantine-rename + one item, boot proceeds |
 | route() throws | n/a | n/a | catch: per-message point-read fall-through (§2.2); a point-read ERROR (vs no-row) fails open to fall-through — bounded duplicate window, §5-enumerated, episode-latched log | n/a |
@@ -1151,10 +1157,14 @@ signal-vs-authority deterministic-evaluator carve-out applies.
   claimed/held/delivered24h/expired24h/droppedOverflow24h), holds (+reasons),
   dryRun counters, `orderingViolations`, `mirrorDrift`, `possiblyNotInjected`,
   `holdBypassedByAttemptsCap`, flap state,
-  oldestQueuedAgeMs, perSession (capped 50, total included), and
-  `custodyDurability: supported|unsupported|unknown` (round-8 external — the §1
-  storage-assumption posture as a live field: detected storage class, never a
-  silent assumption). `delivered24h` EXCLUDES possibly-not-injected rows (round-8
+  oldestQueuedAgeMs, perSession (capped 50, total included), tenure id +
+  `tenureStartedAt`, explicit `countersScope: store-lifetime` (the counters do
+  not reset on tenure changes), and a `shadowCustody` evidence block in dry-run. It also
+  carries `custodyDurability: supported|unsupported|unknown` plus
+  `custodyDurabilityDetectionAvailable`; the current build returns `unknown` and
+  `false`, making it explicit that no storage-class/fsync detector exists yet
+  rather than implying a detector measured an unknown result. `delivered24h`
+  EXCLUDES possibly-not-injected rows (round-8
   external: success totals never overstate; the two are summed separately).
 - Mesh capacity heartbeat: `queueDepth`, `oldestQueuedAt`, tenure id (§3.5/§5.1),
   top-K per-session depths

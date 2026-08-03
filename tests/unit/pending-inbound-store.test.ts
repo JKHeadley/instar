@@ -14,6 +14,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   PendingInboundStore,
   resolvePendingInboundPath,
+  resolvePendingInboundShadowPath,
   type EnqueueInput,
   type InboundQueueBounds,
 } from '../../src/core/PendingInboundStore.js';
@@ -63,6 +64,20 @@ describe('open / encapsulation / file mode', () => {
     expect(fs.existsSync(p)).toBe(true);
     const mode = fs.statSync(p).mode & 0o777;
     expect(mode).toBe(0o600);
+  });
+
+  it('keeps the dry-run shadow store at a distinct non-authoritative path', () => {
+    const shadow = PendingInboundStore.openShadow('echo', dir);
+    try {
+      const livePath = resolvePendingInboundPath(dir, 'echo');
+      const shadowPath = resolvePendingInboundShadowPath(dir, 'echo');
+      expect(shadowPath).not.toBe(livePath);
+      expect(shadow.pathOnDisk()).toBe(shadowPath);
+      expect(fs.existsSync(shadowPath)).toBe(true);
+      expect(fs.statSync(shadowPath).mode & 0o777).toBe(0o600);
+    } finally {
+      shadow.close();
+    }
   });
 
   it('does NOT expose the DB handle (round-8 encapsulation contract)', () => {
@@ -302,18 +317,21 @@ describe('receipts (§3.4)', () => {
 
 describe('tenure (§3.5 — acquisition generation, never the renewal epoch)', () => {
   it('first claim mints generation 1; renewals/same-holder re-acquire do NOT bump', () => {
-    const t1 = store.observeLeaseClaim('mac-a', null);
+    const t1 = store.observeLeaseClaim('mac-a', null, '2026-06-12T20:00:00.000Z');
     expect(t1).toBe('mac-a#1');
+    expect(store.currentTenureStartedAt()).toBe('2026-06-12T20:00:00.000Z');
     // Same-holder re-acquire (tip names self) — same tenure.
-    expect(store.observeLeaseClaim('mac-a', 'mac-a')).toBe('mac-a#1');
-    expect(store.observeLeaseClaim('mac-a', 'mac-a')).toBe('mac-a#1');
+    expect(store.observeLeaseClaim('mac-a', 'mac-a', '2026-06-12T21:00:00.000Z')).toBe('mac-a#1');
+    expect(store.observeLeaseClaim('mac-a', 'mac-a', '2026-06-12T22:00:00.000Z')).toBe('mac-a#1');
+    expect(store.currentTenureStartedAt()).toBe('2026-06-12T20:00:00.000Z');
   });
 
   it('an intervening holder at the tip bumps the generation (A→B→A)', () => {
-    store.observeLeaseClaim('mac-a', null);
-    const t2 = store.observeLeaseClaim('mac-a', 'mac-b');
+    store.observeLeaseClaim('mac-a', null, '2026-06-12T20:00:00.000Z');
+    const t2 = store.observeLeaseClaim('mac-a', 'mac-b', '2026-06-12T23:00:00.000Z');
     expect(t2).toBe('mac-a#2');
     expect(store.acquisitionGeneration()).toBe(2);
+    expect(store.currentTenureStartedAt()).toBe('2026-06-12T23:00:00.000Z');
   });
 
   it('tenure survives a store reopen (persisted in meta)', () => {
@@ -322,6 +340,7 @@ describe('tenure (§3.5 — acquisition generation, never the renewal epoch)', (
     store.close();
     store = PendingInboundStore.open('echo', dir);
     expect(store.currentTenure('mac-a')).toBe('mac-a#2');
+    expect(store.currentTenureStartedAt()).not.toBeNull();
   });
 });
 
