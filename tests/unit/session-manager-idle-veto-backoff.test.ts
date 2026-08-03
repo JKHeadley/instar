@@ -391,11 +391,10 @@ describe('SessionManager idle-zombie veto-backoff — KEY CONSISTENCY (fix-the-f
   });
 
   // EQUIVALENCE PROPERTY TEST (the Structure>Willpower guard) — the ORACLE is the REAL
-  // terminateSessionInternal; the pre-check reasonKey MUST equal the reason it stores.
+  // public termination boundary; the pre-check reasonKey MUST equal its skip reason.
   it('property: computeIdleZombieReapVerdict().reasonKey equals the REAL terminate skip reason for every mirrored cell', async () => {
     type Priv = {
       computeIdleZombieReapVerdict(s: Session, now: number): { blocked: unknown; reasonKey: string | null };
-      terminateSessionInternal(id: string, reason: string, opts: { disposition: string }): Promise<{ terminated: boolean; skipped?: string }>;
     };
     // Each cell: [label, reapGuard deps (before protected wiring), awake?, protected?].
     // Only SKIP cells (terminate returns terminated:false) are in the equality matrix;
@@ -424,7 +423,7 @@ describe('SessionManager idle-zombie veto-backoff — KEY CONSISTENCY (fix-the-f
       }
       const priv = m as unknown as Priv;
       const verdict = priv.computeIdleZombieReapVerdict(s, 21_000_000);
-      const result = await priv.terminateSessionInternal(s.id, 'idle-zombie', { disposition: 'terminal' });
+      const result = await m.terminateSession(s.id, 'idle-zombie', { disposition: 'terminal' });
       // Only assert equality when terminate SKIPPED (a kill has no stored veto reason).
       if (!result.terminated) {
         expect(normalizeReasonKey(result.skipped ? { reason: result.skipped } : null), label)

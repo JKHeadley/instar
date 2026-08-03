@@ -44,7 +44,7 @@ import { CredentialIdentityOracle } from '../core/CredentialIdentityOracle.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { SessionManager } from '../core/SessionManager.js';
+import type { SessionManager, SessionTerminateAuthority } from '../core/SessionManager.js';
 import {
   KNOWN_CLAUDE_MODEL_IDS,
   escalatedModelIds,
@@ -796,6 +796,10 @@ export interface RouteContext {
    *  when the delivery sentinel's store opens; absent → no exemption. */
   pendingRelayLookup?: (deliveryId: string) => boolean;
   sessionManager: SessionManager;
+  /** Birth-bound lifecycle authority. Production supplies it from the
+   *  SessionManager constructor handoff; absent test/legacy contexts fail closed
+   *  for operator termination rather than falling onto raw killSession. */
+  terminateSessionAuthority?: SessionTerminateAuthority;
   state: StateManager;
   scheduler: JobScheduler | null;
   /** Dynamic MCP Lifecycle (DYNAMIC-MCP-LIFECYCLE-SPEC). Null/disabled ⇒ the
@@ -9610,11 +9614,9 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     try {
-      // Operator kill — stamped origin:'operator' so it bypasses the autonomous
-      // ReapAuthority gates (protected / lease / KEEP-guard) and ALWAYS happens
-      // (the user clicked "kill"). Routing through terminateSession (rather than
-      // the raw killSession) gives the reap-log + lifecycle events the §P4 surface
-      // depends on. (UNIFIED-SESSION-LIFECYCLE §P0.)
+      // Explicit operator kill. Public terminateSession is structurally
+      // autonomous-only; this authenticated route receives the birth-bound
+      // authority from the server composition root.
       // Try direct UUID lookup first, then fall back to tmux session name lookup —
       // the dashboard sends tmux session names, not UUIDs.
       let target = ctx.state.getSession(req.params.id);
@@ -9626,10 +9628,12 @@ export function createRoutes(ctx: RouteContext): Router {
         res.status(404).json({ error: `Session "${req.params.id}" not found` });
         return;
       }
-      // UNTRUSTED provenance claim (REMOTE-SESSION-CLOSE-SPEC §2.3): any token
-      // holder could set this header. Recorded in the reap-log as `viaClaim`
-      // (a signal in the audit trail); NEVER consulted in authority decisions —
-      // those read the route-stamped `origin` below. Sanitized + bounded.
+      if (!ctx.terminateSessionAuthority) {
+        res.status(503).json({ error: 'Session termination authority unavailable' });
+        return;
+      }
+      // UNTRUSTED provenance claim (REMOTE-SESSION-CLOSE-SPEC §2.3): recorded
+      // as signal only, never consulted for authority.
       const viaHeader = req.headers['x-instar-close-via'];
       const via = typeof viaHeader === 'string' && /^[a-z0-9-]{1,40}$/.test(viaHeader) ? viaHeader : undefined;
       // FD13 principal provenance (unified-self-action-backpressure §4): a
@@ -9640,13 +9644,13 @@ export function createRoutes(ctx: RouteContext): Router {
       // agent-origin ('self') and rides the normal governor ceilings once the
       // kill sink enforces.
       recordPrincipalKillProvenance(req, req.params.id);
-      const result = await ctx.sessionManager.terminateSession(target.id, 'operator-kill', {
+      const result = await ctx.terminateSessionAuthority(target.id, 'operator-kill', {
         origin: 'operator',
         finalStatus: 'killed',
         ...(via ? { via } : {}),
       });
       if (!result.terminated) {
-        res.status(404).json({ error: `Session "${req.params.id}" not found`, skipped: result.skipped });
+        res.status(409).json({ error: `Session "${req.params.id}" was not terminated`, skipped: result.skipped });
         return;
       }
       res.json({ ok: true, killed: req.params.id });

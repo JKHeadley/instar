@@ -55,7 +55,7 @@ import {
   weakEvidence,
 } from '../../src/core/WorkEvidence.js';
 import { ReapGuard, type ReapGuardDeps } from '../../src/core/ReapGuard.js';
-import { SessionManager } from '../../src/core/SessionManager.js';
+import { SessionManager, type SessionTerminateAuthority } from '../../src/core/SessionManager.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { Session, SessionManagerConfig } from '../../src/core/types.js';
 
@@ -255,6 +255,7 @@ describe('terminateSession — evidence threading (R2.1)', () => {
   let tmpDir: string;
   let state: StateManager;
   let manager: SessionManager;
+  let terminateAuthority: SessionTerminateAuthority;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-evidence-'));
@@ -269,7 +270,9 @@ describe('terminateSession — evidence threading (R2.1)', () => {
       protectedSessions: [],
       completionPatterns: ['Session complete'],
     };
-    manager = new SessionManager(config, state);
+    manager = new SessionManager(config, state, {
+      bindTerminateAuthority: (authority) => { terminateAuthority = authority; },
+    });
     mockTmuxSessions.clear();
   });
 
@@ -325,7 +328,7 @@ describe('terminateSession — evidence threading (R2.1)', () => {
     const reaped: Array<{ midWork?: boolean; workEvidence?: string[] }> = [];
     manager.on('sessionReaped', (e) => reaped.push(e));
 
-    const result = await manager.terminateSession(session.id, 'reaped-idle', {
+    const result = await terminateAuthority(session.id, 'reaped-idle', {
       origin: 'autonomous',
       bypassActiveProcessKeep: true,
     });
@@ -363,7 +366,7 @@ describe('terminateSession — evidence threading (R2.1)', () => {
     const reaped: Array<{ midWork?: boolean; workEvidence?: string[] }> = [];
     manager.on('sessionReaped', (e) => reaped.push(e));
 
-    const result = await manager.terminateSession(session.id, 'quota-shed', {
+    const result = await terminateAuthority(session.id, 'quota-shed', {
       origin: 'autonomous',
       bypassActiveProcessKeep: true,
     });
@@ -378,7 +381,7 @@ describe('terminateSession — evidence threading (R2.1)', () => {
     const reaped: Array<{ midWork?: boolean; workEvidence?: string[] }> = [];
     manager.on('sessionReaped', (e) => reaped.push(e));
 
-    const result = await manager.terminateSession(session.id, 'boot-purge', {
+    const result = await terminateAuthority(session.id, 'boot-purge', {
       origin: 'autonomous',
       knownDead: true,
     });

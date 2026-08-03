@@ -176,7 +176,7 @@ const proactiveSwapMonitor: SelfActionController = {
 const ageKillBackoff: SelfActionController = {
   id: 'age-kill-backoff',
   actionVerb: 'age-kill',
-  models: 'src/monitoring/SessionReaper.ts (age-limit kill-request; AgeKillBackoff — P19 backoff + breaker)',
+  models: 'src/core/SessionManager.ts (age-limit kill-request; AgeKillBackoff — P19 backoff + breaker)',
   modelsPath: 'src/core/SessionManager.ts',
   restartPosture: { pressureSurvives: false, resetSafeReason: 'Server restart begins a new reaper episode and re-reads protection/age before any kill request.' },
   boundK: 5,

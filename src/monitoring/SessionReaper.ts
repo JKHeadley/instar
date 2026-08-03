@@ -339,15 +339,9 @@ export interface SessionReaperDeps {
        *  ONLY on a liveness-CONFIRMED genuine move so a duplicate leftover with a
        *  pre-move "recent" message can shed. */
       bypassRecentUserMessageForConfirmedMove?: boolean;
-      /** Post-transfer closeout carve-out (F8, roadmap 0.6): lifts ONLY the
-       *  authority's lease-holder gate — the machine a topic moves AWAY from is
-       *  by definition usually NOT the serving-lease holder, so without this
-       *  the closeout of its own leftover session was structurally vetoed
-       *  `skipped:'not-lease-holder'` on every attempt. Set on EVERY closeout
-       *  terminate (legacy + gated): the target is always THIS machine's own
-       *  local session for a topic owned elsewhere. Protected + KEEP-guards
-       *  are unaffected. */
-      bypassLeaseForTopicMovedCloseout?: boolean;
+      /** Trusted closeout assertion. This option reaches only the birth-bound
+       *  SessionManager authority closure held by production boot wiring. */
+      localPostTransferCloseout?: boolean;
       workEvidence?: string[];
     },
   ) => Promise<{ terminated: boolean; skipped?: string }>;
@@ -407,7 +401,7 @@ export type TopicMovedStreakValue =
 
 export class SessionReaper extends EventEmitter {
   private readonly cfg: SessionReaperConfig;
-  private readonly deps: SessionReaperDeps;
+  readonly #deps: Readonly<SessionReaperDeps>;
   private readonly now: () => number;
   private timer?: NodeJS.Timeout;
   private running = false;
@@ -450,7 +444,7 @@ export class SessionReaper extends EventEmitter {
 
   constructor(deps: SessionReaperDeps, cfg?: Partial<SessionReaperConfig>) {
     super();
-    this.deps = deps;
+    this.#deps = Object.freeze({ ...deps });
     this.cfg = { ...DEFAULT_SESSION_REAPER_CONFIG, ...(cfg ?? {}) };
     this.now = deps.now ?? (() => Date.now());
     this.guard = new ReapGuard(deps, {
@@ -465,7 +459,7 @@ export class SessionReaper extends EventEmitter {
     // (the long idle clock) + lastFrame/lastTranscript (render-stasis continuity)
     // survive; every tick still re-checks all-clear + frame-stasis before reaping.
     try {
-      const restored = this.deps.loadCandidacy?.();
+      const restored = this.#deps.loadCandidacy?.();
       if (restored) {
         for (const [id, o] of Object.entries(restored)) {
           if (!o || typeof o.candidateSince !== 'number') continue;
@@ -477,11 +471,11 @@ export class SessionReaper extends EventEmitter {
 
   /** Serialize the in-memory candidacy map for durable persistence (A). */
   private persistCandidacy(): void {
-    if (!this.deps.saveCandidacy) return;
+    if (!this.#deps.saveCandidacy) return;
     try {
       const out: Record<string, Obs> = {};
       for (const [id, o] of this.obs.entries()) out[id] = o;
-      this.deps.saveCandidacy(out);
+      this.#deps.saveCandidacy(out);
     } catch { /* @silent-fallback-ok — a failed persist just resets the clock next restart */ }
   }
 
@@ -501,8 +495,8 @@ export class SessionReaper extends EventEmitter {
   }
 
   private probe(session: Session): TranscriptProbe {
-    if (this.deps.probeTranscript) return this.deps.probeTranscript(session);
-    const framework = session.framework ?? this.deps.frameworkForSession(session.tmuxSession) ?? 'claude-code';
+    if (this.#deps.probeTranscript) return this.#deps.probeTranscript(session);
+    const framework = session.framework ?? this.#deps.frameworkForSession(session.tmuxSession) ?? 'claude-code';
     // Claude uses claudeSessionId; Codex's transcript is globbed by its session
     // id which we do not separately track → unresolved → KEEP (safe).
     const sessionId = framework === 'claude-code' ? (session.claudeSessionId ?? '') : '';
@@ -512,7 +506,7 @@ export class SessionReaper extends EventEmitter {
     // transcript-unresolved → the reaper could never PROVE a session idle and kept
     // everything (2026-06-06 grounding). Inject it via `transcriptProjectDir`; an
     // absent/wrong value still resolves to unresolved → KEEP (safe).
-    const projectDir = this.deps.transcriptProjectDir?.() ?? '';
+    const projectDir = this.#deps.transcriptProjectDir?.() ?? '';
     return probeTranscript({ framework, sessionId, projectDir });
   }
 
@@ -558,8 +552,8 @@ export class SessionReaper extends EventEmitter {
    * positive-idle + activeness checks.
    */
   evaluate(session: Session, opts?: { cpuFlat?: boolean }): SessionEvaluation {
-    const framework = session.framework ?? this.deps.frameworkForSession(session.tmuxSession);
-    const frame = safeCapture(this.deps, session.tmuxSession, this.cfg.paneCaptureLines);
+    const framework = session.framework ?? this.#deps.frameworkForSession(session.tmuxSession);
+    const frame = safeCapture(this.#deps, session.tmuxSession, this.cfg.paneCaptureLines);
     const transcript = this.probe(session);
     let cpuTightened = false;
     let busyOrphanSuspect = false;
@@ -572,10 +566,10 @@ export class SessionReaper extends EventEmitter {
     // An 8h-silent session is treated as abandoned (Justin's "no message today"
     // rule) — see the active-process relax below. Unbindable topic ⇒ NOT stale
     // (conservative: never relax a veto on a session we can't time-bound).
-    const staleTopicId = this.deps.topicBinding(session.tmuxSession);
+    const staleTopicId = this.#deps.topicBinding(session.tmuxSession);
     const staleIdle = this.cfg.reapStaleIdleWithActiveChildren
       && staleTopicId != null
-      && !this.deps.recentUserMessage(staleTopicId, this.cfg.staleCommitmentWindowMinutes * 60_000);
+      && !this.#deps.recentUserMessage(staleTopicId, this.cfg.staleCommitmentWindowMinutes * 60_000);
 
     // ── Stateless KEEP-guards (§P2): protected, spawn-grace, recovery,
     //    pending-injection, relay-lease, recent-user, open-commitment,
@@ -656,11 +650,11 @@ export class SessionReaper extends EventEmitter {
     // (uses cpuFlat===true to relax) or busyOrphanDetection (uses cpuFlat===false
     // to flag). Off-pressure / no dep ⇒ undefined (no tighten, no flag).
     if ((!this.cfg.cpuAwareActiveProcessKeep && !this.cfg.busyOrphanDetection)
-        || tier === 'normal' || !this.deps.descendantCpuSeconds) {
+        || tier === 'normal' || !this.#deps.descendantCpuSeconds) {
       return undefined;
     }
     let sec: number;
-    try { sec = this.deps.descendantCpuSeconds(session.tmuxSession); }
+    try { sec = this.#deps.descendantCpuSeconds(session.tmuxSession); }
     catch { return undefined; }
     if (!Number.isFinite(sec)) return undefined;
     const at = this.now();
@@ -715,17 +709,17 @@ export class SessionReaper extends EventEmitter {
    * liveness check, no Part E bypass. Returns whether the session was terminated +
    * the running reap count.
    */
-  private async runCloseoutLegacy(
+  async #runCloseoutLegacy(
     session: Session,
     reapedThisTick: number,
   ): Promise<{ terminated: boolean; reapedThisTick: number }> {
     let otherOwner: string | null = null;
     let pinnedHere = false;
     try {
-      const topicId = this.deps.topicBinding(session.tmuxSession);
-      otherOwner = topicId != null ? (this.deps.topicOwnerElsewhere?.(topicId) ?? null) : null;
+      const topicId = this.#deps.topicBinding(session.tmuxSession);
+      otherOwner = topicId != null ? (this.#deps.topicOwnerElsewhere?.(topicId) ?? null) : null;
       // WS1.3: pin-conflict = do-not-act (reconcile mid-flight TOWARD us).
-      pinnedHere = topicId != null && (this.deps.topicPinnedHere?.(topicId) ?? false);
+      pinnedHere = topicId != null && (this.#deps.topicPinnedHere?.(topicId) ?? false);
     } catch { otherOwner = null; /* @silent-fallback-ok — ownership signal failed → cannot reason → skip rule (safe withhold direction) */ }
 
     if (otherOwner && pinnedHere) {
@@ -742,7 +736,7 @@ export class SessionReaper extends EventEmitter {
       this.topicMovedStreak.set(session.id, streak);
       if (streak >= this.cfg.topicMovedConfirmTicks) {
         const reason = `topic moved to ${otherOwner} — closing the leftover session on this machine (post-transfer closeout)`;
-        return this.attemptCloseoutTerminate({
+        return this.#attemptCloseoutTerminate({
           session, otherOwner, reason, streak,
           key: session.id, reapedThisTick, bypassRecentForMove: false,
         });
@@ -768,7 +762,7 @@ export class SessionReaper extends EventEmitter {
    * Maps are keyed on the stable TOPIC id (Secondary fix) with the richer streak
    * struct so the dwell advances only across DISTINCT snapshot generations.
    */
-  private async runCloseoutGated(
+  async #runCloseoutGated(
     session: Session,
     reapedThisTick: number,
   ): Promise<{ terminated: boolean; reapedThisTick: number }> {
@@ -776,11 +770,11 @@ export class SessionReaper extends EventEmitter {
     let owner: { machineId: string; displayName: string } | null = null;
     let pinnedHere = false;
     try {
-      topicId = this.deps.topicBinding(session.tmuxSession);
+      topicId = this.#deps.topicBinding(session.tmuxSession);
       // The gated path REQUIRES the combined dep — it never falls back to the
       // display-only one. Absent ⇒ owner stays null ⇒ withhold (fail-closed below).
-      owner = topicId != null ? (this.deps.topicOwnerElsewhereInfo?.(topicId) ?? null) : null;
-      pinnedHere = topicId != null && (this.deps.topicPinnedHere?.(topicId) ?? false);
+      owner = topicId != null ? (this.#deps.topicOwnerElsewhereInfo?.(topicId) ?? null) : null;
+      pinnedHere = topicId != null && (this.#deps.topicPinnedHere?.(topicId) ?? false);
     } catch { owner = null; /* @silent-fallback-ok — ownership signal failed → cannot reason → skip rule (safe withhold direction) */ }
 
     // topicId null → no participation (also covers the topicOwnerElsewhereInfo-absent
@@ -805,8 +799,8 @@ export class SessionReaper extends EventEmitter {
       // ── Part C: liveness gate ──────────────────────────────────────────────
       let liveness: { state: boolean | 'unknown'; reachableAt?: number };
       try {
-        liveness = this.deps.remoteOwnerHasLiveSession
-          ? this.deps.remoteOwnerHasLiveSession(topicId, owner.machineId)
+        liveness = this.#deps.remoteOwnerHasLiveSession
+          ? this.#deps.remoteOwnerHasLiveSession(topicId, owner.machineId)
           : { state: 'unknown' }; // dep absent under gate → fail-closed
       } catch {
         liveness = { state: 'unknown' }; // a throw is treated as 'unknown'
@@ -863,10 +857,10 @@ export class SessionReaper extends EventEmitter {
         // Part E: pass the narrow bypass ONLY when the topic's freshest LOCAL user
         // message is OLDER than the snapshot reachableAt (freshest-interaction veto).
         const lastUserMsgAt = (() => {
-          try { return this.deps.recentUserMessageAt?.(topicId) ?? null; } catch { return null; /* @silent-fallback-ok — recent-msg signal failed → treat as no recent message → bypass not granted (safe) */ }
+          try { return this.#deps.recentUserMessageAt?.(topicId) ?? null; } catch { return null; /* @silent-fallback-ok — recent-msg signal failed → treat as no recent message → bypass not granted (safe) */ }
         })();
         const bypassRecentForMove = lastUserMsgAt == null || lastUserMsgAt <= reachableAt;
-        return this.attemptCloseoutTerminate({
+        return this.#attemptCloseoutTerminate({
           session, otherOwner: owner.displayName, reason, streak: count,
           key, reapedThisTick, bypassRecentForMove,
           confirmedMove: true, snapshotReachableAt: reachableAt,
@@ -890,7 +884,7 @@ export class SessionReaper extends EventEmitter {
    * audit. `key` is session.id (legacy) or the topic id (gated); `bypassRecentForMove`
    * is passed through to terminate ONLY on a liveness-confirmed genuine move.
    */
-  private async attemptCloseoutTerminate(args: {
+  async #attemptCloseoutTerminate(args: {
     session: Session;
     otherOwner: string;
     reason: string;
@@ -916,17 +910,13 @@ export class SessionReaper extends EventEmitter {
       return { terminated: false, reapedThisTick };
     }
     if (reapedThisTick < this.cfg.maxReapsPerTick && this.hourlyBudgetRemaining() > 0) {
-      // F8 carve-out: EVERY closeout terminate carries the lease bypass — the
-      // topic provably moved AWAY from this machine (ownership signal + dwell),
-      // so this machine is usually no longer the lease holder, yet the session
-      // being closed is its OWN local leftover. Without the flag the authority
-      // vetoed the closeout `skipped:'not-lease-holder'` until the P19 breaker
-      // gave up (audit F8, test-as-self 2026-07-02). `workEvidence` semantics
-      // are unchanged: killer-authoritative [] only on the liveness-confirmed
-      // Part E path, guard-collected otherwise.
-      const res = await this.deps.terminate(session.id, reason, bypassRecentForMove
-        ? { bypassRecentUserMessageForConfirmedMove: true, workEvidence: [], bypassLeaseForTopicMovedCloseout: true }
-        : { bypassLeaseForTopicMovedCloseout: true });
+      // F8 carve-out: this assertion is emitted only after the ownership+dwell
+      // transition above. Production wires this private dependency to the
+      // SessionManager authority closure captured at manager construction;
+      // public terminateSession drops the same-shaped forged option.
+      const res = await this.#deps.terminate(session.id, reason, bypassRecentForMove
+        ? { bypassRecentUserMessageForConfirmedMove: true, workEvidence: [], localPostTransferCloseout: true }
+        : { localPostTransferCloseout: true });
       if (res.terminated) {
         reapedThisTick++;
         this.reapTimestamps.push(this.now());
@@ -949,8 +939,8 @@ export class SessionReaper extends EventEmitter {
         this.audit('closeout-breaker-open', session, {
           rule: 'topic-moved-away', otherOwner, vetoedAttempts: v, lastSkipped: res.skipped ?? 'keep-guard',
         });
-        const topicId = this.deps.topicBinding(session.tmuxSession);
-        this.deps.raiseAttention?.({
+        const topicId = this.#deps.topicBinding(session.tmuxSession);
+        this.#deps.raiseAttention?.({
           id: `closeout-breaker:${session.id}`,
           title: `Topic ${topicId ?? '?'} moved to ${otherOwner}, but the old session won't close`,
           summary: `Post-transfer closeout gave up after ${v} vetoed attempts (held by: ${res.skipped ?? 'keep-guard'}).`,
@@ -966,12 +956,12 @@ export class SessionReaper extends EventEmitter {
     this.running = true;
     this.lastTickAt = this.now();
     try {
-      const pressure = this.deps.pressure();
+      const pressure = this.#deps.pressure();
       const threshold = this.thresholdMs(pressure.tier);
-      const sessions = this.deps.listRunningSessions();
+      const sessions = this.#deps.listRunningSessions();
       const live = new Set(sessions.map(s => s.id));
       // GC obs for vanished sessions.
-      for (const id of [...this.obs.keys()]) if (!live.has(id)) { this.obs.delete(id); this.deps.clearReaping(id); }
+      for (const id of [...this.obs.keys()]) if (!live.has(id)) { this.obs.delete(id); this.#deps.clearReaping(id); }
       for (const id of [...this.lastAuditedDecision.keys()]) if (!live.has(id)) this.lastAuditedDecision.delete(id);
       for (const id of [...this.cpuSamples.keys()]) if (!live.has(id)) this.cpuSamples.delete(id);
       for (const id of [...this.busyOrphanStreak.keys()]) if (!live.has(id)) this.busyOrphanStreak.delete(id);
@@ -984,7 +974,7 @@ export class SessionReaper extends EventEmitter {
         // window (2× tickIntervalSec — survives one full respawn gap). `lastSeenAt`
         // is stamped on every entry whenever its topic is bound/owned-elsewhere.
         const liveTopics = new Set<number>();
-        for (const s of sessions) { const t = this.deps.topicBinding(s.tmuxSession); if (t != null) liveTopics.add(t); }
+        for (const s of sessions) { const t = this.#deps.topicBinding(s.tmuxSession); if (t != null) liveTopics.add(t); }
         const graceMs = 2 * this.cfg.tickIntervalSec * 1000;
         const now = this.now();
         for (const [key, val] of [...this.topicMovedStreak.entries()]) {
@@ -1015,10 +1005,10 @@ export class SessionReaper extends EventEmitter {
         // veto is audited and retried next tick (eventual closeout, never a
         // forced kill). Dwell of `topicMovedConfirmTicks` absorbs ownership
         // churn mid-transfer.
-        if (this.cfg.topicMovedCloseout && (this.deps.topicOwnerElsewhere || this.deps.topicOwnerElsewhereInfo)) {
+        if (this.cfg.topicMovedCloseout && (this.#deps.topicOwnerElsewhere || this.#deps.topicOwnerElsewhereInfo)) {
           const outcome = this.cfg.closeoutLivenessGate
-            ? await this.runCloseoutGated(session, reapedThisTick)
-            : await this.runCloseoutLegacy(session, reapedThisTick);
+            ? await this.#runCloseoutGated(session, reapedThisTick)
+            : await this.#runCloseoutLegacy(session, reapedThisTick);
           reapedThisTick = outcome.reapedThisTick;
           if (outcome.terminated) continue; // session is gone — skip the idle pipeline
         }
@@ -1033,7 +1023,7 @@ export class SessionReaper extends EventEmitter {
           // A protect-signal threw — we cannot reason about this session, so
           // KEEP it (abort any reap-pending) and reset candidacy. Never reap on
           // a failed evaluation.
-          this.deps.clearReaping(session.id);
+          this.#deps.clearReaping(session.id);
           this.obs.set(session.id, { candidateSince: 0, consecutive: 0, lastFrame: '', lastTranscript: { resolved: false, path: '', size: 0, mtime: 0 } });
           continue;
         }
@@ -1078,7 +1068,7 @@ export class SessionReaper extends EventEmitter {
         if (evaln.verdict === 'keep') {
           // Any non-candidate observation resets candidacy + aborts reap-pending.
           if (prior?.reapPendingSince != null) {
-            this.deps.clearReaping(session.id);
+            this.#deps.clearReaping(session.id);
             this.audit('reap-aborted', session, { keptBy: evaln.keptBy });
           }
           this.obs.set(session.id, { candidateSince: 0, consecutive: 0, lastFrame: evaln.frame, lastTranscript: evaln.transcript });
@@ -1092,7 +1082,7 @@ export class SessionReaper extends EventEmitter {
         // If we were reap-pending and the frame is no longer static, the session
         // rendered something during the grace window — abort the reap (§3.5).
         if (prior?.reapPendingSince != null && !frameStatic) {
-          this.deps.clearReaping(session.id);
+          this.#deps.clearReaping(session.id);
           this.audit('reap-aborted', session, { reason: 'frame-changed-during-grace' });
           this.obs.set(session.id, { candidateSince: now, consecutive: 1, lastFrame: evaln.frame, lastTranscript: evaln.transcript });
           continue;
@@ -1116,13 +1106,13 @@ export class SessionReaper extends EventEmitter {
               // and the reap would never land. False ⇒ no active process was the blocker,
               // so the bypass is a harmless no-op.
               const relaxedActiveProcess = evaln.cpuTightened || evaln.staleIdleRelaxed;
-              await this.performReap(session, pressure, next, relaxedActiveProcess); // clears the lease on every path
+              await this.#performReap(session, pressure, next, relaxedActiveProcess); // clears the lease on every path
               reapedThisTick++;
             } else {
               // Grace elapsed but the reap is gated (tier dropped / budget spent).
               // Release the reaping lease so the idle-kill safety net is not
               // permanently disabled for this session.
-              this.deps.clearReaping(session.id);
+              this.#deps.clearReaping(session.id);
             }
             this.obs.set(session.id, { ...next, reapPendingSince: undefined });
           } else {
@@ -1141,7 +1131,7 @@ export class SessionReaper extends EventEmitter {
           // Enter reap-pending (two-phase). Lease the session so idle-kill won't
           // race us; terminate on a later tick after the grace window.
           next.reapPendingSince = now;
-          this.deps.markReaping(session.id);
+          this.#deps.markReaping(session.id);
           this.audit('reap-pending', session, { tier: pressure.tier, idleMs, thresholdMs: threshold });
         }
         this.obs.set(session.id, next);
@@ -1152,7 +1142,7 @@ export class SessionReaper extends EventEmitter {
     }
   }
 
-  private async performReap(
+  async #performReap(
     session: Session,
     pressure: PressureReading,
     obs: Obs,
@@ -1161,7 +1151,7 @@ export class SessionReaper extends EventEmitter {
     const detail = { tier: pressure.tier, idleMs: this.now() - obs.candidateSince, dryRun: !this.killsEnabled };
     if (!this.killsEnabled) {
       this.audit('would-reap', session, detail); // dry-run: log, do not kill
-      this.deps.clearReaping(session.id);
+      this.#deps.clearReaping(session.id);
       return;
     }
     try {
@@ -1175,11 +1165,11 @@ export class SessionReaper extends EventEmitter {
       // terminate chokepoint. `dirtyCheck` is present only when the dev-gated
       // feature is live; it is bounded + fail-open internally.
       const workEvidence: string[] = [];
-      if (this.deps.dirtyCheck && session.cwd) {
-        try { if (this.deps.dirtyCheck(session.cwd)) workEvidence.push('uncommitted-worktree-work'); }
+      if (this.#deps.dirtyCheck && session.cwd) {
+        try { if (this.#deps.dirtyCheck(session.cwd)) workEvidence.push('uncommitted-worktree-work'); }
         catch { /* @silent-fallback-ok: SPEC-MANDATED fail-open — evidence collection NEVER endangers the kill path; a dirty-check failure just omits the signal (the kill proceeds with the evidence gathered so far). */ }
       }
-      const r = await this.deps.terminate(session.id, 'reaped-idle', {
+      const r = await this.#deps.terminate(session.id, 'reaped-idle', {
         bypassActiveProcessKeep: relaxedActiveProcess,
         // Pre-relaxation verdict as killer-supplied evidence (reap-notify R2.1):
         // an idle-reap means this reaper PROVED no active work — assert that set
@@ -1211,7 +1201,7 @@ export class SessionReaper extends EventEmitter {
       this.audit('reap-failed-auto-disable', session, { ...detail, error: err instanceof Error ? err.message : String(err) });
       this.emit('auto-disabled', { session, reason: 'error' });
     } finally {
-      this.deps.clearReaping(session.id);
+      this.#deps.clearReaping(session.id);
     }
   }
 
@@ -1233,7 +1223,7 @@ export class SessionReaper extends EventEmitter {
 
   private audit(event: string, session: Session, detail: Record<string, unknown>): void {
     const entry = { ts: new Date(this.now()).toISOString(), kind: 'session-reaper', event, session: session.name, sessionId: session.id, ...detail };
-    if (this.deps.audit) this.deps.audit(entry);
+    if (this.#deps.audit) this.#deps.audit(entry);
   }
 
   /** Observability snapshot for GET /sessions/reaper. */
@@ -1243,10 +1233,10 @@ export class SessionReaper extends EventEmitter {
     reapsLastHour: number;
     sessions: Array<{ name: string; sessionId: string; verdict: Verdict; keptBy: string; confidence: Confidence; consecutive: number; idleMs: number; reapPending: boolean }>;
   } {
-    const pressure = this.deps.pressure();
+    const pressure = this.#deps.pressure();
     const threshold = this.thresholdMs(pressure.tier);
     const now = this.now();
-    const sessions = this.deps.listRunningSessions().map(s => {
+    const sessions = this.#deps.listRunningSessions().map(s => {
       const o = this.obs.get(s.id);
       let verdict: Verdict = 'keep';
       let keptBy = 'eval-error';

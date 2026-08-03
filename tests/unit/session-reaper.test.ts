@@ -131,9 +131,10 @@ describe('SessionReaper — protect-gates each force KEEP', () => {
   }
 
   it('KEEPs a freshly-spawned session (spawn grace)', () => {
-    const h = harness({ cfg: { minAgeMinutes: 30 }, sessions: [mkSession({ startedAt: new Date(Date.now()).toISOString() })] });
+    const session = mkSession({ startedAt: new Date(Date.now()).toISOString() });
+    const h = harness({ cfg: { minAgeMinutes: 30 }, sessions: [session] });
     // now() is 1_000_000 ms; startedAt ~ Date.now() (much larger) → age negative → grace.
-    const e = h.reaper.evaluate(h.reaper['deps'].listRunningSessions()[0]);
+    const e = h.reaper.evaluate(session);
     expect(e.keptBy).toBe('spawn-grace');
   });
 });

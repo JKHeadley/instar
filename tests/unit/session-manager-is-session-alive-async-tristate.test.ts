@@ -79,6 +79,7 @@ function absentErr(): Error {
 
 type Probe = { isSessionAliveAsync(s: string): Promise<boolean | 'indeterminate'> };
 const probe = (m: SessionManager): Probe => m as unknown as Probe;
+const maintenanceTicks = new WeakMap<SessionManager, () => Promise<void>>();
 
 function makeManager(tmpDir: string, state: StateManager, asyncEnabled: boolean): SessionManager {
   const config = {
@@ -90,7 +91,14 @@ function makeManager(tmpDir: string, state: StateManager, asyncEnabled: boolean)
     protectedSessions: [],
     completionPatterns: [],
   } as unknown as SessionManagerConfig;
-  return new SessionManager(config, state, { tmuxAsyncEnabled: asyncEnabled, tmuxCallTimeoutMs: 9000 });
+  let maintenanceTick!: () => Promise<void>;
+  const manager = new SessionManager(config, state, {
+    tmuxAsyncEnabled: asyncEnabled,
+    tmuxCallTimeoutMs: 9000,
+    bindMaintenanceTickForTesting: (tick) => { maintenanceTick = tick; },
+  });
+  maintenanceTicks.set(manager, maintenanceTick);
+  return manager;
 }
 
 describe('SessionManager.isSessionAliveAsync — tri-state (§A)', () => {
@@ -187,7 +195,7 @@ describe('SessionManager.isSessionAliveAsync — tri-state (§A)', () => {
     let completed = 0;
     manager.on('sessionComplete', () => { completed++; });
 
-    await (manager as unknown as { monitorTick(): Promise<void> }).monitorTick();
+    await maintenanceTicks.get(manager)!();
 
     expect(state.getSession('reap-me')!.status).toBe('completed');
     expect(completed).toBe(1);
@@ -200,7 +208,7 @@ describe('SessionManager.isSessionAliveAsync — tri-state (§A)', () => {
     let completed = 0;
     manager.on('sessionComplete', () => { completed++; });
 
-    await (manager as unknown as { monitorTick(): Promise<void> }).monitorTick();
+    await maintenanceTicks.get(manager)!();
 
     expect(state.getSession('keep-me')!.status).toBe('running'); // still alive — NOT reaped
     expect(completed).toBe(0);

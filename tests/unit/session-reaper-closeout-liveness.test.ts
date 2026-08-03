@@ -108,11 +108,11 @@ describe('SessionReaper — closeout liveness gate (Part C decision table)', () 
     expect(h.audits.some(a => a.event === 'reaped' && (a as any).confirmedMove === true)).toBe(true);
   });
 
-  it('F8: the gated closeout terminate carries bypassLeaseForTopicMovedCloseout (lease carve-out)', async () => {
+  it('F8: the gated closeout carries an opaque one-shot proof and the Part E bypass', async () => {
     // The old owner is by definition usually NOT the lease holder after a
     // move — the authority's lease gate vetoed the exact teardown the
     // transfer requires (audit F8). The gated path must carry the narrow
-    // lease bypass on every closeout terminate, alongside its Part E flag.
+    // one-shot closeout proof on every terminate, alongside its Part E flag.
     let r = 500_000;
     const h = harness({
       deps: {
@@ -124,11 +124,12 @@ describe('SessionReaper — closeout liveness gate (Part C decision table)', () 
     h.setNow(1_120_000); r = 700_000; await h.reaper.tick();
     expect(h.terminate).toHaveBeenCalledTimes(1);
     const opts = h.terminate.mock.calls[0][2] as any;
-    expect(opts?.bypassLeaseForTopicMovedCloseout).toBe(true);
+    expect(opts?.bypassLeaseForTopicMovedCloseout).toBeUndefined();
+    expect(opts?.localPostTransferCloseout).toBe(true);
     expect(opts?.bypassRecentUserMessageForConfirmedMove).toBe(true);
   });
 
-  it('F8: the lease bypass is carried even when the Part E bypass is withheld (fresher user message)', async () => {
+  it('F8: the one-shot proof is carried even when the Part E bypass is withheld', async () => {
     let r = 500_000;
     const terminate = vi.fn(async (_id: string, _reason: string, opts?: any) =>
       opts?.bypassRecentUserMessageForConfirmedMove ? { terminated: true } : { terminated: false, skipped: 'recent-user-message' });
@@ -143,8 +144,9 @@ describe('SessionReaper — closeout liveness gate (Part C decision table)', () 
     h.setNow(1_120_000); r = 700_000; await h.reaper.tick();
     expect(terminate).toHaveBeenCalledTimes(1);
     const opts = terminate.mock.calls[0][2];
-    // F8 lease bypass: always on for a closeout. Part E: correctly withheld.
-    expect(opts?.bypassLeaseForTopicMovedCloseout).toBe(true);
+    // No caller-controlled lease bypass exists. Part E is correctly withheld.
+    expect(opts?.bypassLeaseForTopicMovedCloseout).toBeUndefined();
+    expect(opts?.localPostTransferCloseout).toBe(true);
     expect(opts?.bypassRecentUserMessageForConfirmedMove).toBeUndefined();
   });
 

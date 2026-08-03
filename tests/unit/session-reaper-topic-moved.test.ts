@@ -89,6 +89,20 @@ function harness(opts: {
 }
 
 describe('SessionReaper — topic-moved closeout (post-transfer duplicate sessions)', () => {
+  it('all authority-bearing closeout and reap transitions are absent from the runtime prototype', () => {
+    const { reaper } = harness();
+    const runtime = reaper as unknown as Record<string, unknown>;
+    expect(runtime.attemptCloseoutTerminate).toBeUndefined();
+    expect(runtime.runCloseoutLegacy).toBeUndefined();
+    expect(runtime.runCloseoutGated).toBeUndefined();
+    expect(runtime.performReap).toBeUndefined();
+    const prototypeMethods = Object.getOwnPropertyNames(Object.getPrototypeOf(reaper));
+    expect(prototypeMethods).not.toContain('attemptCloseoutTerminate');
+    expect(prototypeMethods).not.toContain('runCloseoutLegacy');
+    expect(prototypeMethods).not.toContain('runCloseoutGated');
+    expect(prototypeMethods).not.toContain('performReap');
+  });
+
   it('closes a session whose topic is owned by another machine after the confirm dwell — even while BUSY', async () => {
     const h = harness({ deps: { topicOwnerElsewhere: () => 'Laptop' } });
     await h.reaper.tick(); // streak 1 — below dwell, no kill yet
@@ -280,19 +294,19 @@ describe('SessionReaper — topic-moved closeout (post-transfer duplicate sessio
   // serving-lease holder, so the authority's lease gate structurally vetoed
   // the exact closeout the transfer requires (skipped:'not-lease-holder' ×5,
   // then breaker give-up — the leftover session survived). Every closeout
-  // terminate must therefore carry the narrow lease bypass.
+  // terminate must therefore carry the verified one-shot closeout proof.
 
-  it('F8: the closeout terminate carries bypassLeaseForTopicMovedCloseout (legacy path)', async () => {
+  it('F8: the closeout carries an opaque proof without a public bypass option', async () => {
     const h = harness({ deps: { topicOwnerElsewhere: () => 'Mac Mini' } });
     await h.reaper.tick();
     h.setNow(1_120_000); await h.reaper.tick(); // dwell met → terminate
     expect(h.terminate).toHaveBeenCalledTimes(1);
     const opts = h.terminate.mock.calls[0][2] as {
-      bypassLeaseForTopicMovedCloseout?: boolean;
       bypassRecentUserMessageForConfirmedMove?: boolean;
+      localPostTransferCloseout?: boolean;
       workEvidence?: string[];
     } | undefined;
-    expect(opts?.bypassLeaseForTopicMovedCloseout).toBe(true);
+    expect(opts?.localPostTransferCloseout).toBe(true);
     // The legacy path never mints the Part E recent-message bypass, and it
     // leaves workEvidence unset so the authority's guard-collected fallback
     // is preserved (F8 lifts ONLY the lease gate — nothing else changes).
@@ -300,13 +314,10 @@ describe('SessionReaper — topic-moved closeout (post-transfer duplicate sessio
     expect(opts?.workEvidence).toBeUndefined();
   });
 
-  it('F8: a lease-vetoing authority closes the leftover once the bypass is honored (regression shape of the audit)', async () => {
-    // Model the audited failure: an authority that refuses any closeout
-    // WITHOUT the lease bypass (the old machine is not the lease holder), but
-    // honors the carve-out. Pre-fix, the reaper passed no flag → 5 vetoes →
-    // breaker give-up; with the fix the FIRST attempt lands.
-    const terminate = vi.fn(async (_id: string, _r: string, opts?: { bypassLeaseForTopicMovedCloseout?: boolean }) =>
-      opts?.bypassLeaseForTopicMovedCloseout ? { terminated: true } : { terminated: false, skipped: 'not-lease-holder' });
+  it('F8: the proof-carrying closeout closes the leftover on its first attempt', async () => {
+    // The legacy bug sent closeout through ordinary lease-gated terminate and
+    // reached the breaker. The dedicated authority lands the first attempt.
+    const terminate = vi.fn(async () => ({ terminated: true }));
     const raiseAttention = vi.fn();
     const h = harness({ deps: { topicOwnerElsewhere: () => 'Mac Mini', terminate, raiseAttention } });
     await h.reaper.tick();

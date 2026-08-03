@@ -87,6 +87,8 @@ export interface ReapLogEntry {
    *  or notify:<outcome>. */
   disposition: 'terminal' | 'recovery-bounce' | `skipped:${string}` | `notify:${string}`;
   origin?: 'operator' | 'autonomous';
+  /** Which authority domain admitted the reap. Optional on legacy rows. */
+  authorityScope?: 'lease-holder' | 'local-age-limit' | 'local-post-transfer-closeout' | 'operator';
   /** UNTRUSTED caller-supplied provenance claim (REMOTE-SESSION-CLOSE-SPEC §2.3)
    *  — e.g. 'remote-dashboard' from a relayed close. A label any token holder
    *  could set; recorded as a signal for the audit trail, NEVER consulted in
@@ -182,6 +184,7 @@ export class ReapLog {
     reason: string;
     disposition?: 'terminal' | 'recovery-bounce';
     origin?: 'operator' | 'autonomous';
+    authorityScope?: 'lease-holder' | 'local-age-limit' | 'local-post-transfer-closeout' | 'operator';
     viaClaim?: string;
     launchLane?: 'headless' | 'rerouted-interactive';
     midWork?: boolean;
@@ -196,6 +199,7 @@ export class ReapLog {
       reason: e.reason,
       disposition: e.disposition ?? 'terminal',
       origin: e.origin,
+      ...(e.authorityScope ? { authorityScope: e.authorityScope } : {}),
       ...(e.viaClaim ? { viaClaim: e.viaClaim } : {}),
       machine: this.machineId?.(),
       ...(e.launchLane ? { launchLane: e.launchLane } : {}),
@@ -371,6 +375,16 @@ export class ReapLog {
       entry.launchLane === 'headless' || entry.launchLane === 'rerouted-interactive'
         ? entry.launchLane
         : undefined;
+    const authorityScope =
+      entry.authorityScope === 'lease-holder'
+      || entry.authorityScope === 'local-age-limit'
+      || entry.authorityScope === 'local-post-transfer-closeout'
+      || entry.authorityScope === 'operator'
+        ? entry.authorityScope
+        : undefined;
+    const origin = entry.origin === 'operator' || entry.origin === 'autonomous'
+      ? entry.origin
+      : undefined;
     const workEvidence = Array.isArray(entry.workEvidence)
       ? entry.workEvidence.filter((v): v is string => typeof v === 'string')
       : undefined;
@@ -382,9 +396,10 @@ export class ReapLog {
       tmuxSession: typeof entry.tmuxSession === 'string' ? entry.tmuxSession : 'unknown',
       reason: typeof entry.reason === 'string' ? entry.reason : 'unknown',
       disposition,
-      origin: entry.origin,
+      origin,
       skipped,
       machine: entry.machine,
+      ...(authorityScope ? { authorityScope } : {}),
       ...(launchLane ? { launchLane } : {}),
       ...(typeof entry.midWork === 'boolean' ? { midWork: entry.midWork } : {}),
       ...(workEvidence && workEvidence.length > 0 ? { workEvidence } : {}),

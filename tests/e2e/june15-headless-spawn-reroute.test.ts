@@ -27,6 +27,7 @@ const mockTmuxSessions = new Set<string>();
 const newSessionArgvs: string[][] = [];
 /** Toggled by the completion test: capture-pane returns the sentinel. */
 let capturePaneOutput = '';
+const maintenanceTicks = new WeakMap<SessionManager, () => Promise<void>>();
 
 vi.mock('node:child_process', () => {
   const handle = (args?: string[]) => {
@@ -122,7 +123,11 @@ describe('Headless-spawn reroute E2E (V6)', () => {
         ? { subscriptionReroutedLifetimeMinutes: subscriptionPathCfg.maxReroutedLifetimeMinutes }
         : {}),
     };
-    const manager = new SessionManager(sessionManagerConfig as never, state);
+    let maintenanceTick!: () => Promise<void>;
+    const manager = new SessionManager(sessionManagerConfig as never, state, {
+      bindMaintenanceTickForTesting: (tick) => { maintenanceTick = tick; },
+    });
+    maintenanceTicks.set(manager, maintenanceTick);
     stubReadyWait(manager);
     return manager;
   }
@@ -201,7 +206,7 @@ describe('Headless-spawn reroute E2E (V6)', () => {
     // the session as a SUCCESS (status not 'killed'; JobScheduler finalizes
     // success off exactly this, spec F1).
     capturePaneOutput = `some output\n${sentinel}\n`;
-    await (manager as unknown as { monitorTick: () => Promise<void> }).monitorTick();
+    await maintenanceTicks.get(manager)!();
     const done = await completed;
     expect(done.status).not.toBe('killed');
     capturePaneOutput = '';

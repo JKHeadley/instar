@@ -77,8 +77,18 @@ They found real things my own pass missed, and the design got noticeably stronge
   and that front door holds the rules. A crew can *ask* to shut a burner off; the front door decides.
   No crew can act alone anymore.
 - **The machines won't step on each other.** If you're running me on two computers, only the "awake"
-  one is allowed to shut anything off — so a sleepy second machine can't reach over and kill the
-  active one's work.
+  one is allowed to act on shared routing or shut down work on another machine. Each computer still
+  has to clean up a session process that physically runs on that computer; otherwise a non-awake
+  laptop can identify its own expired session forever while no machine is able to close it. That
+  local cleanup is narrowly limited to its own over-age, positively-idle process and still obeys every
+  protected-work and active-work safeguard. The cleanup monitor does not even start until those
+  safeguards and the machine's permission to save that session are ready; a read-only computer that
+  does not own writable session state cannot touch the process. Every cleanup observer gets its own
+  chance to inspect the still-live session, then the final “this session is closed” record is saved
+  immediately before a hard-time-limited process stop. If ownership changes at that instant, the save
+  is refused and the process stays alive. If stopping the process itself fails, the record is put back
+  to “running” and the audit says the cleanup failed; it never reports a successful cleanup while the
+  process may still be alive. A broken observer cannot suppress the later audit.
 - **It won't slow down startup.** Being careful, done naively, would've made the kitchen take a
   minute-plus to reopen — bringing back the exact pile-up we're fixing. Now the careful check is fast:
   one quick "who's here?" question for everyone at once, with a hard time limit.

@@ -71,6 +71,33 @@ describe('ReapLog — reaped entries with mid-work evidence (R2.1)', () => {
     });
     expect(log.read()[0].launchLane).toBe('rerouted-interactive');
   });
+
+  it('preserves the admitting authority scope and rejects unknown values', () => {
+    const log = new ReapLog(stateDir, () => 'machine-under-test');
+    log.recordReaped({
+      session: 'local-expired',
+      tmuxSession: 'tmux-local-expired',
+      reason: 'age-limit',
+      authorityScope: 'local-age-limit',
+    });
+    expect(log.read()[0]).toMatchObject({
+      machine: 'machine-under-test',
+      authorityScope: 'local-age-limit',
+    });
+
+    fs.appendFileSync(
+      path.join(tmpDir, 'logs', 'reap-log.jsonl'),
+      JSON.stringify({
+        type: 'reaped',
+        session: 'bad',
+        authorityScope: 'remote-anything',
+        origin: 'forged-operator',
+      }) + '\n',
+    );
+    expect(log.read().at(-1)).toMatchObject({ session: 'bad' });
+    expect(log.read().at(-1)?.authorityScope).toBeUndefined();
+    expect(log.read().at(-1)?.origin).toBeUndefined();
+  });
 });
 
 describe('ReapLog — notify outcome record pairs (R1.3)', () => {

@@ -3,6 +3,7 @@ title: "Unified Session-Lifecycle Robustness — one authority for every session
 date: 2026-05-27
 author: echo
 status: approved
+parent-principle: "Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions"
 review-method: internal-5-reviewer-plus-conformance-gate (security, scalability, adversarial, integration, lessons-aware); external cross-model panel tracked separately (see "External review" note below)
 approved: true
 approved-by: Justin
@@ -112,13 +113,18 @@ gains:
   them. Routing inline kills here also *restores* the `sessionComplete` emission the inline age-limit
   path fired, so no listener regresses.
 - a **lease-holder gate**: an **autonomous-reap** terminate on a standby (non-awake) machine is a no-op
-  `skipped:'not-lease-holder'`. Only the awake/lease-holding machine may autonomously reap; this also
-  dedupes notifications. **Operator-initiated kills bypass the lease gate unconditionally** — origin is
-  an explicit `origin: 'operator' | 'autonomous'` argument **defaulting to `'autonomous'` when omitted**
-  and stamped `'operator'` only by the (Bearer-authed) HTTP route layer — in-process autonomous killers
-  call `terminateSession` directly and therefore cannot mint `'operator'`; origin is **never inferred
-  from the reason string** (a misclassified or mid-handoff operator kill must never be silently dropped
-  — the user clicks "kill" and it must happen). Every terminate that is skipped for *any* reason
+  `skipped:'not-lease-holder'` unless the authority itself minted one of the two local-process-only
+  capabilities described in the 2026-08-02 correction below. The lease holder remains the only machine
+  allowed to act on shared or remote session state; a non-holder may clean up only a tmux process in
+  its own machine-local session registry. This also dedupes notifications. The public
+  `terminateSession()` boundary is **always autonomous**: caller-supplied `origin` labels—including
+  unknown values forced through a cast—are discarded and normalized to `'autonomous'`; undeclared
+  `knownDead` and individual KEEP-bypass booleans are dropped too. The public method copies only an
+  explicit whitelist of inert fields. Trusted lifecycle components use a termination closure delivered
+  to the server composition root only during `SessionManager` construction. Explicit operator kills
+  use that closure from the authenticated route; the remaining internal operator reconciliation path
+  is JavaScript-runtime-private. Origin is **never inferred from the reason string** and never accepted
+  as caller-minted authority. Every terminate that is skipped for *any* reason
   (`not-lease-holder`, a KEEP, in-flight, protected) is recorded as a `skipped` entry in the reap-log
   (P4), so a dropped kill is never invisible.
 - **re-entrancy ordering (explicit):** the ReapGuard reads the in-flight reap-lock (`isReaping`) state
@@ -260,10 +266,59 @@ sanitization wherever it surfaces.
 
 ## Multi-machine
 
-Reaping is **awake-machine-only**, enforced at the P0 authority (lease-holder gate), not per-killer.
-The boot purge — today called unconditionally before any `isAwake` check — is moved behind the same
-gate. `sessionReaped` notices are emitted only by the lease holder, so a handoff cannot double-notify.
-A standby machine's killers may still *detect and signal* but the authority no-ops their terminate.
+Cross-machine reaping is **awake-machine-only**, enforced at the P0 authority (lease-holder gate), not
+per-killer. The boot purge — today called unconditionally before any `isAwake` check — is moved behind
+the same gate. `sessionReaped` notices are emitted only by the machine that owns the local process, so
+a handoff cannot double-notify. A standby machine's ordinary autonomous killers may still *detect and
+signal* but the authority no-ops their terminate.
+
+**2026-08-02 correction — local process cleanup is not cross-machine authority.** The original wording
+above collapsed two different ownership domains: the pool's serving lease governs shared routing and
+remote-machine action, while a tmux process and its session record are physically machine-local. That
+made a non-lease-holder repeatedly detect its own over-age idle process and then refuse to reap it as
+`not-lease-holder`; no other machine could perform the cleanup because the process exists only in that
+machine's tmux namespace. The corrected invariant is:
+
+1. An ordinary public autonomous terminate on a non-holder remains refused.
+2. The age-limit monitor may terminate an over-age, positively-idle session from its own local state
+   tree through a runtime-private (`#`) authority-minted capability. Neither the capability nor the
+   internal termination options cross an overridable runtime property; the public `terminateSession()`
+   surface cannot carry them. The capability is valid only for the literal `age-limit` reason.
+3. Every real termination uses one transition protocol. It invokes each `beforeSessionKill` observer
+   independently while the process is still inspectable, then immediately commits the terminal
+   session record, then performs a bounded synchronous tmux kill. The commit repeats the
+   ownership-aware StateManager admission after the observers. If an observer or concurrent handoff
+   changes admission, the write is refused and the process remains alive. The tmux call is bounded
+   with `SIGKILL` because a wedged tmux client may ignore Node's default `SIGTERM`. This write-first,
+   no-await transition removes both the nonholder and ordinary-holder check/kill/save races.
+4. Protected-session, KEEP-guard, CAS, in-flight, and self-action-governor checks remain mandatory.
+5. Topic-moved closeout is separately scoped to a locally hosted leftover whose topic ownership has
+   moved elsewhere. `SessionManager` hands its trusted termination closure to the composition root
+   only during manager construction; there is no later public getter or binder. Production boot keeps
+   that closure in lexical scope and supplies it only as a runtime-private, frozen `SessionReaper`
+   dependency. After the ownership/liveness+dwell transition passes, that reaper may assert local
+   post-transfer closeout through the trusted closure. A fabricated reaper—even one constructed
+   first—can reach only public `terminateSession()`, which copies a whitelist of inert fields and drops
+   every hidden bypass option. No chronological first-claim, exported minter, reusable public closure,
+   or public Boolean can request this exception.
+6. A throwing `beforeSessionKill` observer is isolated from the other observers, then write admission
+   is rechecked before any irreversible action. A non-definitive tmux kill failure compensates the
+   durable row back to the exact running snapshot, emits `tmux-kill-failed`, and emits no
+   `sessionReaped` success. After a successful kill, `sessionComplete` and `sessionReaped` listeners
+   are also invoked independently, so one observer cannot suppress the durable reap audit or turn a
+   successful termination into a rejected authority call. If compensation itself is refused, the distinct
+   `tmux-kill-failed-compensation-failed` record exposes the unresolved state/process split rather than
+   claiming success. Neither local authority authorizes a remote close, a shared ownership write, a
+   boot purge, an idle-zombie kill, or any other autonomous termination class.
+
+The machine-local state tree and local tmux namespace are the ownership proof: `SessionManager` lists
+only sessions persisted by that machine and its process command can target only that machine. This is
+the same distinction already relied on by active-active standby session writes; replicating or
+lease-gating the local cleanup would strand the resource it is supposed to govern.
+
+Boot ordering is part of the boundary: `SessionManager` maintenance begins only after ReapGuard and
+the pool's per-session write posture are installed. A pure read-only standby, an ownership-refused
+session, or a first tick before guard readiness remains lease-refused and cannot touch tmux.
 
 ## Supervision (LLM-Supervised Execution)
 
@@ -322,8 +377,10 @@ conformance gate) then **strengthened** it materially. The biggest changes:
   rewrite routes every kill through the existing single-writer `terminateSession()`, which now *holds*
   the guard — so a killer can only *ask*, and the authority decides. Nothing is postponed; it is solved
   in-scope.
-- **Multi-machine safety was entirely missing.** Reaping is now awake-machine-only, so a standby can't
-  reap the active machine's sessions or double-notify.
+- **Multi-machine safety was entirely missing.** Shared/remote reaping is now awake-machine-only, so a
+  standby can't reap the active machine's sessions or double-notify. The 2026-08-02 correction above
+  makes explicit that this does not prohibit narrowly-capability-gated cleanup of a process physically
+  owned by the standby itself.
 - **Boot speed.** The conservative probing, done naively, would have blocked boot for ~100s with 9
   sessions — re-creating the very death spiral we're fixing. Now: one `list-sessions`, bounded
   concurrency, an 8s hard cap, async throughout.
