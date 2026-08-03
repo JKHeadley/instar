@@ -264,7 +264,7 @@ async function postVerifyEvidence(
 }
 import { ReflectionMetrics } from '../monitoring/ReflectionMetrics.js';
 import { HomeostasisMonitor } from '../monitoring/HomeostasisMonitor.js';
-import { readReaperAudit } from '../monitoring/SessionReaper.js';
+import { readReaperAuditPage } from '../monitoring/SessionReaper.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import { coerceMessageProvenance, type MessageProvenance } from '../messaging/shared/MessageProvenance.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
@@ -8042,12 +8042,344 @@ export function createRoutes(ctx: RouteContext): Router {
   // SessionReaper observability (SESSION-REAPER-SPEC §3.9). Answers
   // "why did/didn't it reap X?" from a pull surface — pressure tier, active
   // threshold, and every running session's verdict + the gate that kept it.
-  router.get('/sessions/reaper', (_req, res) => {
+  // Pool scope uses the same response-health envelope as the established
+  // sessions/attention pool reads, and the same full-roster accounting as the
+  // guards pool read. Peers are always called on the PLAIN route (no recursive
+  // fan-out). Every registered peer therefore contributes either a body or a
+  // classified `failed` row; `scope=pool` can never silently look local again.
+  const reaperPoolLimiter = rateLimiter(60_000, 6);
+  const REAPER_POOL_TIMEOUT_MS = 5_000;
+  const REAPER_POOL_MAX_BODY_BYTES = 2 * 1024 * 1024;
+  type ReaperPoolFailure = { machineId: string; error: string };
+  type ReaperPoolPeer = {
+    machineId: string;
+    nickname: string | null;
+    body: Record<string, unknown>;
+  };
+  const REAPER_POOL_MAX_JSON_DEPTH = 16;
+
+  function reaperPeerJsonDepthAllowed(root: unknown): boolean {
+    const pending: Array<{ value: unknown; depth: number }> = [{ value: root, depth: 0 }];
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      if (!current.value || typeof current.value !== 'object') continue;
+      if (current.depth > REAPER_POOL_MAX_JSON_DEPTH) return false;
+      const children = Array.isArray(current.value)
+        ? current.value
+        : Object.values(current.value as Record<string, unknown>);
+      for (const value of children) pending.push({ value, depth: current.depth + 1 });
+    }
+    return true;
+  }
+
+  async function readReaperPeerText(response: globalThis.Response): Promise<
+    { ok: true; text: string } | { ok: false; error: 'response-bound' }
+  > {
+    const declaredLength = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declaredLength) && declaredLength > REAPER_POOL_MAX_BODY_BYTES) {
+      try { await response.body?.cancel(); } catch { /* response is already classified */ }
+      return { ok: false, error: 'response-bound' };
+    }
+    if (!response.body) return { ok: true, text: '' };
+
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > REAPER_POOL_MAX_BODY_BYTES) {
+        try { await reader.cancel(); } catch { /* response is already classified */ }
+        return { ok: false, error: 'response-bound' };
+      }
+      chunks.push(Buffer.from(value));
+    }
+    return { ok: true, text: Buffer.concat(chunks, bytes).toString('utf8') };
+  }
+
+  async function readReaperPoolPeers(
+    peerPath: string,
+    validate: (body: Record<string, unknown>) => boolean,
+  ): Promise<{
+    peers: ReaperPoolPeer[];
+    failed: ReaperPoolFailure[];
+    peersQueried: number;
+  }> {
+    const selfMachineId = ctx.meshSelfId ?? null;
+    const resolvedUrls = new Map((ctx.resolvePeerUrls?.() ?? []).map((p) => [p.machineId, p.url]));
+    const roster = new Map<string, { machineId: string; nickname?: string; lastKnownUrl?: string | null }>();
+    for (const machine of ctx.listPoolMachines?.() ?? []) {
+      if (machine.machineId !== selfMachineId) roster.set(machine.machineId, machine);
+    }
+    // Back-compat for pool wiring that predates listPoolMachines: the proven
+    // resolvePeerUrls roster is still fan-out capable. New wiring prefers the
+    // full registry roster above so a URL-less/dark machine is never omitted.
+    for (const [machineId, url] of resolvedUrls) {
+      if (machineId !== selfMachineId && !roster.has(machineId)) {
+        roster.set(machineId, { machineId, lastKnownUrl: url });
+      }
+    }
+
+    const peers: ReaperPoolPeer[] = [];
+    const failed: ReaperPoolFailure[] = [];
+    let peersQueried = 0;
+    const extraAllowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+
+    await Promise.all([...roster.values()].map(async (machine) => {
+      const capacity = ctx.machinePoolRegistry?.getCapacity(machine.machineId) ?? null;
+      // The multi-rope resolver is the live authority for reachability. The
+      // registry URL is a last-known fallback only; preferring it can strand a
+      // peer after an address/rope change even while the resolver is healthy.
+      const url = resolvedUrls.get(machine.machineId) ?? machine.lastKnownUrl ?? null;
+      if (!url) {
+        failed.push({ machineId: machine.machineId, error: 'no-known-url' });
+        return;
+      }
+      if (capacity && capacity.online === false) {
+        failed.push({ machineId: machine.machineId, error: 'offline' });
+        return;
+      }
+      if (!isPeerUrlAllowedForCredentials(url, extraAllowlist).ok) {
+        // Credentials are never attached to a rejected URL.
+        failed.push({ machineId: machine.machineId, error: 'url-rejected' });
+        return;
+      }
+
+      peersQueried++;
+      try {
+        const response = await fetch(`${url}${peerPath}`, {
+          headers: {
+            Authorization: `Bearer ${ctx.config.authToken}`,
+            'X-Instar-AgentId': ctx.config.projectName,
+          },
+          signal: AbortSignal.timeout(REAPER_POOL_TIMEOUT_MS),
+        });
+        if (response.status === 404) {
+          failed.push({ machineId: machine.machineId, error: 'route-missing' });
+          return;
+        }
+        if (response.status === 401 || response.status === 403) {
+          failed.push({ machineId: machine.machineId, error: 'unauthorized' });
+          return;
+        }
+        if (!response.ok) {
+          failed.push({ machineId: machine.machineId, error: 'error' });
+          return;
+        }
+        const bounded = await readReaperPeerText(response);
+        if (!bounded.ok) {
+          failed.push({ machineId: machine.machineId, error: bounded.error });
+          return;
+        }
+        let body: unknown;
+        try {
+          body = JSON.parse(bounded.text) as unknown;
+        } catch {
+          failed.push({ machineId: machine.machineId, error: 'invalid-body' });
+          return;
+        }
+        if (!body || typeof body !== 'object' || Array.isArray(body)
+          || !reaperPeerJsonDepthAllowed(body)
+          || !validate(body as Record<string, unknown>)) {
+          failed.push({ machineId: machine.machineId, error: 'invalid-body' });
+          return;
+        }
+        peers.push({
+          machineId: machine.machineId,
+          nickname: capacity?.nickname ?? machine.nickname ?? null,
+          body: body as Record<string, unknown>,
+        });
+      } catch (err) {
+        const name = err instanceof Error ? err.name : '';
+        failed.push({
+          machineId: machine.machineId,
+          error: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable',
+        });
+      }
+    }));
+
+    peers.sort((a, b) => a.machineId.localeCompare(b.machineId));
+    failed.sort((a, b) => a.machineId.localeCompare(b.machineId));
+    return { peers, failed, peersQueried };
+  }
+
+  const isReaperSnapshot = (body: Record<string, unknown>): boolean =>
+    typeof body.enabled === 'boolean'
+    && typeof body.dryRun === 'boolean'
+    && typeof body.autoDisabled === 'boolean'
+    && typeof body.lastTickAt === 'number'
+    && !!body.pressure && typeof body.pressure === 'object' && !Array.isArray(body.pressure)
+    && typeof (body.pressure as Record<string, unknown>).tier === 'string'
+    && ((body.pressure as Record<string, unknown>).inputs === undefined
+      || (!!(body.pressure as Record<string, unknown>).inputs
+        && typeof (body.pressure as Record<string, unknown>).inputs === 'object'
+        && !Array.isArray((body.pressure as Record<string, unknown>).inputs)))
+    && (body.activeThresholdMinutes === null || typeof body.activeThresholdMinutes === 'number')
+    && typeof body.reapsLastHour === 'number'
+    && Array.isArray(body.sessions)
+    && body.sessions.every((session) => {
+      if (!session || typeof session !== 'object' || Array.isArray(session)) return false;
+      const row = session as Record<string, unknown>;
+      return typeof row.name === 'string'
+        && typeof row.sessionId === 'string'
+        && typeof row.verdict === 'string'
+        && typeof row.keptBy === 'string'
+        && typeof row.confidence === 'string'
+        && typeof row.consecutive === 'number'
+        && typeof row.idleMs === 'number'
+        && typeof row.reapPending === 'boolean';
+    });
+
+  const projectReaperSnapshotPeer = (peer: ReaperPoolPeer): Record<string, unknown> => {
+    const body = peer.body;
+    const pressure = body.pressure as Record<string, unknown>;
+    return {
+      machineId: peer.machineId,
+      nickname: peer.nickname,
+      enabled: body.enabled,
+      dryRun: body.dryRun,
+      autoDisabled: body.autoDisabled,
+      lastTickAt: body.lastTickAt,
+      pressure: {
+        tier: pressure.tier,
+        ...(pressure.inputs !== undefined ? { inputs: pressure.inputs } : {}),
+      },
+      activeThresholdMinutes: body.activeThresholdMinutes,
+      reapsLastHour: body.reapsLastHour,
+      sessions: (body.sessions as Array<Record<string, unknown>>).map((session) => ({
+        name: session.name,
+        sessionId: session.sessionId,
+        verdict: session.verdict,
+        keptBy: session.keptBy,
+        confidence: session.confidence,
+        consecutive: session.consecutive,
+        idleMs: session.idleMs,
+        reapPending: session.reapPending,
+      })),
+    };
+  };
+
+  const isReaperEntryPage = (limit: number) => (body: Record<string, unknown>): boolean => {
+    if (!Array.isArray(body.entries)
+      || !body.entries.every((entry) => !!entry && typeof entry === 'object' && !Array.isArray(entry))
+      || !body.page || typeof body.page !== 'object' || Array.isArray(body.page)) {
+      return false;
+    }
+    const page = body.page as Record<string, unknown>;
+    return Number.isInteger(page.returned)
+      && (page.returned as number) >= 0
+      && (page.returned as number) <= limit
+      && page.returned === body.entries.length
+      && typeof page.truncated === 'boolean';
+  };
+
+  const reaperPoolSelf = (): { selfMachineId: string | null; selfMachineNickname: string | null } => {
+    const selfMachineId = ctx.meshSelfId ?? null;
+    return {
+      selfMachineId,
+      selfMachineNickname: selfMachineId
+        ? (ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null)
+        : null,
+    };
+  };
+
+  const reaperPoolHealth = (
+    peers: ReaperPoolPeer[],
+    failed: ReaperPoolFailure[],
+    peersQueried: number,
+  ): Record<string, unknown> => {
+    return {
+      enabled: !!ctx.machinePoolRegistry,
+      ...reaperPoolSelf(),
+      peersQueried,
+      peersOk: peers.length,
+      failed,
+    };
+  };
+
+  const reaperEvidencePoolHealth = (
+    peers: ReaperPoolPeer[],
+    failed: ReaperPoolFailure[],
+    peersQueried: number,
+    limit: number,
+    localReturned: number,
+    localTruncated: boolean,
+  ): Record<string, unknown> => {
+    const { selfMachineId } = reaperPoolSelf();
+    return {
+      ...reaperPoolHealth(peers, failed, peersQueried),
+      limitPerMachine: limit,
+      sources: [
+        { machineId: selfMachineId, returned: localReturned, truncated: localTruncated },
+        ...peers.map((peer) => {
+          const page = peer.body.page as Record<string, unknown>;
+          return {
+            machineId: peer.machineId,
+            returned: page.returned,
+            truncated: page.truncated,
+          };
+        }),
+      ],
+    };
+  };
+
+  const mergeReaperPoolEntries = (
+    localEntries: ReadonlyArray<object>,
+    peers: ReaperPoolPeer[],
+    limit: number,
+  ): Array<Record<string, unknown>> => {
+    const { selfMachineId, selfMachineNickname } = reaperPoolSelf();
+    const entries: Array<Record<string, unknown>> = localEntries.map((entry) => ({
+      ...entry,
+      machineId: selfMachineId,
+      machineNickname: selfMachineNickname,
+      remote: false,
+    }));
+    for (const peer of peers) {
+      for (const entry of (peer.body.entries as Record<string, unknown>[]).slice(-limit)) {
+        entries.push({
+          ...entry,
+          machineId: peer.machineId,
+          machineNickname: peer.nickname,
+          remote: true,
+        });
+      }
+    }
+    // Both local evidence routes document chronological order with newest
+    // last. A pool union must preserve that contract globally, not group rows
+    // by whichever machine happened to be read first.
+    return entries.sort((a, b) =>
+      String(a.ts ?? '').localeCompare(String(b.ts ?? ''))
+      || String(a.machineId ?? '').localeCompare(String(b.machineId ?? ''))
+      || String(a.session ?? '').localeCompare(String(b.session ?? ''))
+      || String(a.event ?? a.type ?? '').localeCompare(String(b.event ?? b.type ?? '')),
+    );
+  };
+
+  router.get('/sessions/reaper', async (req, res) => {
     if (!ctx.sessionReaper) {
       res.status(503).json({ error: 'session reaper unavailable' });
       return;
     }
-    res.json(ctx.sessionReaper.snapshot());
+    const local = ctx.sessionReaper.snapshot();
+    if (req.query.scope !== 'pool') {
+      res.json(local);
+      return;
+    }
+
+    reaperPoolLimiter(req, res, async () => {
+      const { peers, failed, peersQueried } = await readReaperPoolPeers('/sessions/reaper', isReaperSnapshot);
+      res.json({
+        ...local,
+        pool: {
+          ...reaperPoolHealth(peers, failed, peersQueried),
+          // Mirrors guards?scope=pool for a naturally per-machine posture: the
+          // registry owns identity/nickname; peer fields cannot shadow them.
+          machines: peers.map(projectReaperSnapshotPeer),
+        },
+      });
+    });
   });
 
   // G3 lease-gated-spawn soak evidence (MESH-SELF-HEAL-SPEC §3.3). The operator's
@@ -8231,15 +8563,41 @@ export function createRoutes(ctx: RouteContext): Router {
   // Reap-log (UNIFIED-SESSION-LIFECYCLE §P4). The pull-surface answer to "why did
   // my session vanish?": every reap + every refused/skipped terminate, newest
   // last. Read-only, Bearer-auth (the router-level middleware). `?limit=N`
-  // bounds the tail (default 200).
-  router.get('/sessions/reap-log', (req, res) => {
+  // bounds the tail (default 200). `?includePage=1` adds returned/truncated
+  // metadata; pool fan-out requires that metadata so an unknown peer window
+  // cannot masquerade as complete evidence.
+  router.get('/sessions/reap-log', async (req, res) => {
     if (!ctx.reapLog) {
       res.status(503).json({ error: 'reap-log unavailable' });
       return;
     }
     const rawLimit = Number(req.query.limit);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 1000) : 200;
-    res.json({ entries: ctx.reapLog.read(limit) });
+    const includePage = req.query.includePage === '1';
+    const probePage = includePage || req.query.scope === 'pool';
+    const localPage = probePage ? ctx.reapLog.readPage(limit) : null;
+    const localEntries = localPage?.entries ?? ctx.reapLog.read(limit);
+    const localTruncated = localPage?.truncated ?? false;
+    if (req.query.scope !== 'pool') {
+      res.json({
+        entries: localEntries,
+        ...(includePage ? { page: { returned: localEntries.length, truncated: localTruncated } } : {}),
+      });
+      return;
+    }
+
+    reaperPoolLimiter(req, res, async () => {
+      const { peers, failed, peersQueried } = await readReaperPoolPeers(
+        `/sessions/reap-log?limit=${limit}&includePage=1`,
+        isReaperEntryPage(limit),
+      );
+      res.json({
+        entries: mergeReaperPoolEntries(localEntries, peers, limit),
+        pool: reaperEvidencePoolHealth(
+          peers, failed, peersQueried, limit, localEntries.length, localTruncated,
+        ),
+      });
+    });
   });
 
   // ── Resume Queue (reap-notify spec R2.10) ───────────────────────────
@@ -8666,11 +9024,37 @@ export function createRoutes(ctx: RouteContext): Router {
   // every keep/kill DECISION transition (logged on change, not every tick) plus the
   // reap-path events, each stamped with the pressure tier (memory + CPU) that drove
   // it. Read-only, Bearer-auth (router-level middleware), silent (no notifications).
-  // `?limit=N` bounds the tail (default 200, max 1000).
-  router.get('/sessions/reaper/audit', (req, res) => {
+  // `?limit=N` bounds the tail (default 200, max 1000). `?includePage=1`
+  // adds returned/truncated metadata; pool fan-out requires that metadata so
+  // an unknown peer window cannot masquerade as complete evidence.
+  router.get('/sessions/reaper/audit', async (req, res) => {
     const rawLimit = Number(req.query.limit);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 1000) : 200;
-    res.json({ entries: readReaperAudit(ctx.config.stateDir, limit) });
+    const includePage = req.query.includePage === '1';
+    const probePage = includePage || req.query.scope === 'pool';
+    const localPage = readReaperAuditPage(ctx.config.stateDir, limit);
+    const localEntries = localPage.entries;
+    const localTruncated = probePage ? localPage.truncated : false;
+    if (req.query.scope !== 'pool') {
+      res.json({
+        entries: localEntries,
+        ...(includePage ? { page: { returned: localEntries.length, truncated: localTruncated } } : {}),
+      });
+      return;
+    }
+
+    reaperPoolLimiter(req, res, async () => {
+      const { peers, failed, peersQueried } = await readReaperPoolPeers(
+        `/sessions/reaper/audit?limit=${limit}&includePage=1`,
+        isReaperEntryPage(limit),
+      );
+      res.json({
+        entries: mergeReaperPoolEntries(localEntries, peers, limit),
+        pool: reaperEvidencePoolHealth(
+          peers, failed, peersQueried, limit, localEntries.length, localTruncated,
+        ),
+      });
+    });
   });
 
   // Sleep/wake telemetry. The pull-surface answer to "why does my agent keep

@@ -77,6 +77,27 @@ describe('Reap-log E2E lifecycle (feature is alive)', () => {
       skipped: 'not-lease-holder',
       disposition: 'skipped:not-lease-holder',
     });
+    expect(res.body.pool).toBeUndefined();
+  });
+
+  it('GET /sessions/reap-log?scope=pool keeps local rows and returns an explicit pool block', async () => {
+    const res = await request(app).get('/sessions/reap-log?scope=pool&limit=500').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.entries).toHaveLength(2);
+    expect(res.body.entries[1]).toMatchObject({
+      type: 'skipped', skipped: 'not-lease-holder',
+      machine: 'e2e-machine', machineId: null, machineNickname: null, remote: false,
+    });
+    expect(res.body.pool).toEqual({
+      enabled: false,
+      selfMachineId: null,
+      selfMachineNickname: null,
+      peersQueried: 0,
+      peersOk: 0,
+      limitPerMachine: 500,
+      sources: [{ machineId: null, returned: 2, truncated: false }],
+      failed: [],
+    });
   });
 
   it('requires Bearer auth', async () => {

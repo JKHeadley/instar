@@ -1306,23 +1306,44 @@ export function reaperAuditSink(stateDir: string): (event: Record<string, unknow
   };
 }
 
+export interface ReaperAuditPage {
+  entries: Array<Record<string, unknown>>;
+  returned: number;
+  truncated: boolean;
+}
+
 /**
- * Read the tail of the reaper audit trail (newest last), bounded to `limit`
- * rows. Returns [] when the file is absent or unreadable — never throws.
+ * Read a bounded page of the reaper audit trail (newest last). Scans backward
+ * until it finds `limit + 1` VALID JSON rows, so a corrupt/torn tail line cannot
+ * consume the truncation probe and make older valid evidence look absent.
  */
-export function readReaperAudit(stateDir: string, limit: number): Array<Record<string, unknown>> {
+export function readReaperAuditPage(stateDir: string, limit: number): ReaperAuditPage {
   const logPath = reaperAuditPath(stateDir);
   let raw: string;
   try {
     raw = fs.readFileSync(logPath, 'utf-8');
-  } catch {
-    return []; // @silent-fallback-ok — absent audit file ⇒ no rows yet.
+  } catch (err) {
+    // Absent means no trail yet. Other read failures cannot prove completeness.
+    const absent = (err as NodeJS.ErrnoException).code === 'ENOENT';
+    return { entries: [], returned: 0, truncated: !absent };
   }
   const lines = raw.split('\n').filter(l => l.trim().length > 0);
-  const tail = lines.slice(Math.max(0, lines.length - limit));
-  const out: Array<Record<string, unknown>> = [];
-  for (const line of tail) {
-    try { out.push(JSON.parse(line)); } catch { /* skip a torn line */ }
+  const wanted = Math.max(0, Math.floor(limit));
+  const foundNewestFirst: Array<Record<string, unknown>> = [];
+  for (let i = lines.length - 1; i >= 0 && foundNewestFirst.length <= wanted; i--) {
+    try {
+      foundNewestFirst.push(JSON.parse(lines[i]) as Record<string, unknown>);
+    } catch { /* skip a torn line and keep scanning for valid history */ }
   }
-  return out;
+  const truncated = foundNewestFirst.length > wanted;
+  const entries = foundNewestFirst.slice(0, wanted).reverse();
+  return { entries, returned: entries.length, truncated };
+}
+
+/**
+ * Read the tail of the reaper audit trail (newest last), bounded to `limit`
+ * valid rows. Returns [] when the file is absent or unreadable — never throws.
+ */
+export function readReaperAudit(stateDir: string, limit: number): Array<Record<string, unknown>> {
+  return readReaperAuditPage(stateDir, limit).entries;
 }

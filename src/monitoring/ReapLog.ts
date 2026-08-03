@@ -25,11 +25,17 @@ import path from 'node:path';
  * torn record is never mis-parsed. Never throws; an absent/unreadable file
  * yields [].
  */
-function tailLines(filePath: string, maxBytes: number): string[] {
+interface TailLinesPage {
+  lines: string[];
+  /** True when older bytes may exist but were not readable within this window. */
+  truncatedBefore: boolean;
+}
+
+function tailLines(filePath: string, maxBytes: number): TailLinesPage {
   let fd: number | undefined;
   try {
     const size = fs.statSync(filePath).size;
-    if (size === 0) return [];
+    if (size === 0) return { lines: [], truncatedBefore: false };
     const readBytes = Math.min(size, maxBytes);
     const start = size - readBytes;
     const buf = Buffer.allocUnsafe(readBytes);
@@ -39,9 +45,15 @@ function tailLines(filePath: string, maxBytes: number): string[] {
     const lines = text.split('\n');
     // Dropped: a leading partial line when we didn't read from byte 0.
     if (start > 0 && lines.length > 0) lines.shift();
-    return lines.filter((l) => l.trim().length > 0);
-  } catch {
-    return []; // @silent-fallback-ok — absent/unreadable ⇒ no rows.
+    return {
+      lines: lines.filter((l) => l.trim().length > 0),
+      truncatedBefore: start > 0,
+    };
+  } catch (err) {
+    // An absent generation means there is no older history. Any other read
+    // failure is conservatively incomplete: the caller cannot prove emptiness.
+    const absent = (err as NodeJS.ErrnoException).code === 'ENOENT';
+    return { lines: [], truncatedBefore: !absent };
   } finally {
     if (fd !== undefined) {
       try {
@@ -123,6 +135,12 @@ export interface ReapLogEntry {
   topicId?: number;
   /** Notify entries: the outcome this record asserts. */
   outcome?: ReapNotifyOutcome;
+}
+
+export interface ReapLogPage {
+  entries: ReapLogEntry[];
+  returned: number;
+  truncated: boolean;
 }
 
 /** Rotate the reap-log once it crosses this many bytes. The current file is
@@ -331,16 +349,44 @@ export class ReapLog {
    *  the current file's tail doesn't yield enough rows and a rotated `.1` backup
    *  exists, its tail is merged so recent history survives a rotation boundary. */
   read(limit = 200): ReapLogEntry[] {
-    const wanted = limit > 0 ? limit : Number.MAX_SAFE_INTEGER;
-    let lines = tailLines(this.logPath, this.tailReadBytes);
-    if (lines.length < wanted) {
-      // Backfill from the rotated generation (older lines first).
+    return this.readPage(limit).entries;
+  }
+
+  /**
+   * Read a bounded page and state whether older valid history may exist.
+   *
+   * Unlike a raw `limit + 1` line probe, this parses the whole bounded window
+   * before counting rows, so a torn/corrupt record cannot consume the proof
+   * slot. If the 2 MiB window starts mid-file (or a generation is unreadable),
+   * `truncated` is conservatively true even when fewer than `limit` valid rows
+   * were recovered.
+   */
+  readPage(limit = 200): ReapLogPage {
+    const wanted = limit > 0 ? Math.floor(limit) : Number.MAX_SAFE_INTEGER;
+    const current = tailLines(this.logPath, this.tailReadBytes);
+    let entries = this.parseLines(current.lines);
+    let incomplete = current.truncatedBefore;
+
+    // Backfill only when needed to prove/fulfill the page AND the current
+    // generation was fully readable. Crossing an unread current prefix into
+    // `.1` would return stale rows while omitting newer current-generation rows.
+    // Counting VALID rows (not raw lines) ensures corrupt tail rows do not hide
+    // `.1` data when the current generation is otherwise complete.
+    if (!current.truncatedBefore && entries.length <= wanted) {
       const older = tailLines(`${this.logPath}.1`, this.tailReadBytes);
-      if (older.length > 0) lines = older.concat(lines);
+      const olderEntries = this.parseLines(older.lines);
+      entries = olderEntries.concat(entries);
+      incomplete = incomplete || older.truncatedBefore;
     }
-    const tail = limit > 0 ? lines.slice(-limit) : lines;
+
+    const truncated = incomplete || entries.length > wanted;
+    const pageEntries = limit > 0 ? entries.slice(-wanted) : entries;
+    return { entries: pageEntries, returned: pageEntries.length, truncated };
+  }
+
+  private parseLines(lines: string[]): ReapLogEntry[] {
     const out: ReapLogEntry[] = [];
-    for (const line of tail) {
+    for (const line of lines) {
       try {
         out.push(this.normalizeEntry(JSON.parse(line) as Partial<ReapLogEntry>));
       } catch {
