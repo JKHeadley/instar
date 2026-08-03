@@ -12,8 +12,9 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..');
+const REPO = fileURLToPath(new URL('../../', import.meta.url));
 const read = (rel: string) => fs.readFileSync(path.join(REPO, rel), 'utf8');
 
 describe('poll-ownership lease — wiring integrity', () => {
@@ -28,14 +29,22 @@ describe('poll-ownership lease — wiring integrity', () => {
     expect(window).toContain('this.consecutive409s = 0');
   });
 
-  it('server consults the lease BEFORE choosing send-only vs full-poll', () => {
+  it('structurally verifies the server consults the lease before resolving send-only vs full-poll', () => {
     const src = read('src/commands/server.ts');
     expect(src).toMatch(/import \{ lifelineOwnsPoll as lifelineOwnsTelegramPoll \} from '\.\.\/lifeline\/TelegramPollOwnerLease\.js'/);
     expect(src).toMatch(/const lifelineOwnsPolling = telegramConfig && telegramBotToken\s*\?\s*lifelineOwnsTelegramPoll\(/);
-    // send-only branch now also triggers on a live lease
-    expect(src).toMatch(/if \(\(skipTelegram \|\| isStandbyTelegram \|\| lifelineOwnsPolling\) && telegramConfig\)/);
-    // full-poll branch is now also gated on !lifelineOwnsPolling
-    expect(src).toMatch(/if \(telegramConfig && !skipTelegram && !isStandbyTelegram && !lifelineOwnsPolling\)/);
+    expect(src).toContain('const telegramTopology = resolveTelegramStartupTopology({');
+    expect(src).toMatch(/lifelineOwnsPolling:\s*Boolean\(lifelineOwnsPolling\)/);
+    expect(src).toContain("if (telegramTopology?.mode === 'send-only' && telegramConfig)");
+    expect(src).toContain("if (telegramTopology?.mode === 'server-polling' && telegramConfig)");
+
+    const leaseRead = src.indexOf('const lifelineOwnsPolling =');
+    const topologyResolution = src.indexOf('const telegramTopology = resolveTelegramStartupTopology({');
+    const sendOnly = src.indexOf("if (telegramTopology?.mode === 'send-only' && telegramConfig)");
+    const fullPoll = src.indexOf("if (telegramTopology?.mode === 'server-polling' && telegramConfig)");
+    expect(leaseRead).toBeLessThan(topologyResolution);
+    expect(topologyResolution).toBeLessThan(sendOnly);
+    expect(topologyResolution).toBeLessThan(fullPoll);
   });
 
   it('the server NEVER writes the lease (only the lifeline does — single-writer)', () => {
