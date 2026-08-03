@@ -803,6 +803,9 @@ changes-requested, terminal). Deny-by-default inherited: no mandate → 403.
 - `DELETE /sessions/:id`
 - `GET /sessions`
 - `GET /sessions/:name/output`
+- `GET /sessions/reaper` — this machine's live pressure and per-session reaper verdicts; `?scope=pool` adds peer snapshots plus classified peer failures while preserving the local snapshot at the top level
+- `GET /sessions/reaper/audit` — the bounded decision-audit tail; `?scope=pool` merges machine-tagged entries and distinguishes a failed peer read from a genuinely empty trail
+- `GET /sessions/reap-log` — the bounded history of completed and refused shutoffs; `?scope=pool` merges all answering machines chronologically and classifies peer failures
 - `GET /sessions/tmux`
 - `POST /sessions/:name/input`
 - `POST /sessions/:name/remote-close`

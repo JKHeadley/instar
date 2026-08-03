@@ -113,6 +113,22 @@ describe('SessionReaper E2E lifecycle', () => {
       expect(res.body.enabled).toBe(true);
       expect(res.body.pressure).toBeDefined();
       expect(Array.isArray(res.body.sessions)).toBe(true);
+      expect(res.body.pool).toBeUndefined();
+    });
+
+    it('GET /sessions/reaper?scope=pool is explicit on a real single-machine AgentServer', async () => {
+      const res = await request(app).get('/sessions/reaper?scope=pool').set(auth());
+      expect(res.status).toBe(200);
+      expect(res.body.enabled).toBe(true);
+      expect(res.body.pool).toEqual({
+        enabled: false,
+        selfMachineId: null,
+        selfMachineNickname: null,
+        peersQueried: 0,
+        peersOk: 0,
+        machines: [],
+        failed: [],
+      });
     });
 
     it('GET /sessions/reaper/audit returns 200 (not 503) and reads the trail through real plumbing', async () => {
@@ -130,6 +146,22 @@ describe('SessionReaper E2E lifecycle', () => {
       expect(res.status).toBe(200);
       expect(res.body.entries).toHaveLength(1);
       expect(res.body.entries[0]).toMatchObject({ event: 'decision', keptBy: 'active-process' });
+      expect(res.body.pool).toBeUndefined();
+    });
+
+    it('GET /sessions/reaper/audit?scope=pool tags local evidence and returns an explicit pool block', async () => {
+      const res = await request(app).get('/sessions/reaper/audit?scope=pool&limit=10').set(auth());
+      expect(res.status).toBe(200);
+      expect(res.body.entries).toHaveLength(1);
+      expect(res.body.entries[0]).toMatchObject({ event: 'decision', machineId: null, remote: false });
+      expect(res.body.pool).toEqual({
+        enabled: false,
+        selfMachineId: null,
+        selfMachineNickname: null,
+        peersQueried: 0,
+        peersOk: 0,
+        failed: [],
+      });
     });
   });
 
