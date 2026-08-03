@@ -218,6 +218,7 @@ import { ForegroundRestartWatcher } from '../core/ForegroundRestartWatcher.js';
 import { NotificationBatcher } from '../messaging/NotificationBatcher.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 import type { NotificationTier } from '../messaging/NotificationBatcher.js';
+import { resolveTelegramStartupTopology, wireTelegramSendSide } from './telegramSendSideComposition.js';
 import { MessageStore } from '../messaging/MessageStore.js';
 import { MessageFormatter } from '../messaging/MessageFormatter.js';
 import { MessageDelivery } from '../messaging/MessageDelivery.js';
@@ -7181,7 +7182,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const telegramConfig = config.messaging.find(m => m.type === 'telegram' && m.enabled);
     const skipTelegram = options.telegram === false; // --no-telegram sets telegram: false
     // Standby machines use send-only Telegram — they don't poll for messages
-    const isStandbyTelegram = !coordinator.isAwake && telegramConfig;
+    const isStandbyTelegram = !coordinator.isAwake && telegramConfig != null;
     // Poll-ownership lease (Task 4 / 2026-05-27 silent-stalls postmortem,
     // SELF-PROPAGATION-HARNESS-SPEC.md Part 1): if a lifeline is already polling
     // this bot token (lease present + fresh + token-hash match), the server
@@ -7197,7 +7198,13 @@ export async function startServer(options: StartOptions): Promise<void> {
     const lifelineOwnsPolling = telegramConfig && telegramBotToken
       ? lifelineOwnsTelegramPoll(config.stateDir, telegramBotToken)
       : false;
-    if ((skipTelegram || isStandbyTelegram || lifelineOwnsPolling) && telegramConfig) {
+    const telegramTopology = resolveTelegramStartupTopology({
+      telegramConfigured: telegramConfig != null,
+      skipTelegram,
+      coordinatorAwake: coordinator.isAwake,
+      lifelineOwnsPolling: Boolean(lifelineOwnsPolling),
+    });
+    if (telegramTopology?.mode === 'send-only' && telegramConfig) {
       // Send-only mode: no polling, but sendToTopic() works for session replies
       telegram = new TelegramAdapter(
         {
@@ -7293,7 +7300,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green('  Telegram routing + command callbacks wired (send-only)'));
     }
 
-    if (telegramConfig && !skipTelegram && !isStandbyTelegram && !lifelineOwnsPolling) {
+    if (telegramTopology?.mode === 'server-polling' && telegramConfig) {
       telegram = new TelegramAdapter(
         {
           ...(telegramConfig.config as any),
@@ -7326,23 +7333,6 @@ export async function startServer(options: StartOptions): Promise<void> {
           console.log(`[session-rename] Updated bound session "${tmuxSession}" display name → "${newName}" (topic ${topicId})`);
         }
       });
-
-      // Threadline → Telegram bridge — mirrors inbound/outbound threadline
-      // messages into per-thread Telegram topics. Default-OFF; the relay
-      // handler below and the threadline_send tool consult bridge.mirror*
-      // unconditionally — TelegramBridgeConfig owns the gate.
-      try {
-        const { TelegramBridge } = await import('../threadline/TelegramBridge.js');
-        telegramBridge = new TelegramBridge({
-          stateDir: config.stateDir,
-          localAgentName: config.projectName,
-          config: telegramBridgeConfig,
-          telegram,
-        });
-        console.log(pc.dim(`  Threadline → Telegram bridge: armed (default ${telegramBridgeConfig.getSettings().enabled ? 'ENABLED' : 'OFF'})`));
-      } catch (err) {
-        console.warn(pc.yellow(`  Threadline → Telegram bridge init failed (non-fatal): ${err instanceof Error ? err.message : err}`));
-      }
 
       // Wire Prompt Gate callbacks — connect Telegram relay responses to sessions
       if (promptGateConfig?.enabled) {
@@ -7395,19 +7385,6 @@ export async function startServer(options: StartOptions): Promise<void> {
         if (relayPruneTimer.unref) relayPruneTimer.unref();
         console.log(pc.green('  Prompt Gate: Telegram relay wired'));
       }
-
-      // Wire NotificationBatcher to Telegram and start batching
-      notificationBatcher.setSendFunction(
-        async (topicId, text) => {
-          await telegram!.sendToTopic(topicId, text);
-          // NOTE: Batched notifications (SUMMARY/DIGEST) are NOT mirrored to Slack.
-          // Only IMMEDIATE notifications reach Slack (via the notify() gateway).
-          // This prevents notification spam in the attention channel.
-          return { messageId: 0 };
-        }
-      );
-      notificationBatcher.start();
-      console.log(pc.green('  Notification batcher enabled (SUMMARY: 30m, DIGEST: 2h)'));
 
       // accountSwitcher + the QuotaManager/collector pipeline were hoisted OUT
       // of this Telegram-polling block to top scope (finding A1) so the quota
@@ -7506,12 +7483,53 @@ export async function startServer(options: StartOptions): Promise<void> {
 
       console.log(pc.green('  Telegram message routing active'));
 
+      // Ensure Agent Attention topic exists (the agent's direct line to the user)
+      ensureAgentAttentionTopic(telegram, state).catch(err => {
+        console.error(`[server] Failed to ensure Agent Attention topic: ${err}`);
+      });
+
+      // Ensure Agent Updates topic exists (informational updates, not critical)
+      ensureAgentUpdatesTopic(telegram, state).catch(err => {
+        console.error(`[server] Failed to ensure Agent Updates topic: ${err}`);
+      });
+    }
+
+    // Poll ownership changes only inbound getUpdates. Every constructed adapter
+    // remains a usable outbound sink, so polling-independent dependencies must
+    // converge after both topology branches.
+    if (telegram && telegramTopology) {
+      const sendSide = wireTelegramSendSide({
+        mode: telegramTopology.mode,
+        telegram,
+        scheduler,
+        notificationBatcher,
+      });
+      console.log(pc.green(
+        `  Telegram send side wired (${sendSide.mode}; scheduler: ${sendSide.schedulerAttached ? 'attached' : 'not configured'}; batcher: attached)`,
+      ));
+
+      // Threadline mirroring writes durable thread→topic bindings. Every
+      // send-capable process may construct the observer so a promoted standby
+      // becomes ready without restart, but EACH mirror consults this live
+      // lease/role predicate immediately before its effects. Demotion therefore
+      // silences the old owner instead of leaving two mirroring voices alive.
+      try {
+        const { TelegramBridge } = await import('../threadline/TelegramBridge.js');
+        telegramBridge = new TelegramBridge({
+          stateDir: config.stateDir,
+          localAgentName: config.projectName,
+          config: telegramBridgeConfig,
+          telegram,
+          isOwner: () => coordinator.isAwake && coordinator.holdsLease(),
+        });
+        console.log(pc.dim(
+          `  Threadline → Telegram bridge: ${telegramTopology.bridgeOwner ? 'owner-ready' : 'standby-ready'} (default ${telegramBridgeConfig.getSettings().enabled ? 'ENABLED' : 'OFF'})`,
+        ));
+      } catch (err) {
+        console.warn(pc.yellow(`  Threadline → Telegram bridge init failed (non-fatal): ${err instanceof Error ? err.message : err}`));
+      }
+
       if (scheduler) {
-        scheduler.setMessenger(telegram);
-        scheduler.setTelegram(telegram);
-        if (topicMemory?.isReady()) {
-          scheduler.setTopicMemory(topicMemory);
-        }
         // WS4.3 role-guard-at-spawn (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3,
         // CMT-1416). The provider is read LIVE at each spawn boundary: `enabled`
         // from multiMachine.seamlessness.ws43RoleGuard (DARK default), `holdsLease`
@@ -7520,7 +7538,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         // deduped item (createAttentionItem dedups on id) so the operator learns a
         // state-writing job could not run on this read-only standby; it is
         // best-effort (the refusal itself is the load-bearing safety).
-        const telegramForRoleGuard = telegram; // const-narrow for the closure
+        const telegramForRoleGuard = telegram;
         scheduler.setRoleGuard(
           () => ({
             // DEV-AGENT DARK GATE (operator directive 2026-06-13, topic 13481):
@@ -7546,17 +7564,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
         );
       }
-
-      // Ensure Agent Attention topic exists (the agent's direct line to the user)
-      ensureAgentAttentionTopic(telegram, state).catch(err => {
-        console.error(`[server] Failed to ensure Agent Attention topic: ${err}`);
-      });
-
-      // Ensure Agent Updates topic exists (informational updates, not critical)
-      ensureAgentUpdatesTopic(telegram, state).catch(err => {
-        console.error(`[server] Failed to ensure Agent Updates topic: ${err}`);
-      });
     }
+
+    // Finalize scheduler alert delivery after Telegram composition, including
+    // the intentional "no Telegram configured" result. Availability and
+    // composition completion are distinct: an absent sink must remain a loud,
+    // durable retry episode across pause and restart rather than being dropped.
+    scheduler?.activateFailureAlertDelivery();
 
     // ── Coherence Journal × Telegram emergency-stop seam (COHERENCE-JOURNAL §3.3)
     // The adapter's sentinel emergency-stop path clears a topic's autonomous job
@@ -7781,6 +7795,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           impact: 'Sessions start without conversation summaries. Search unavailable. Context limited to last 20 raw messages.',
         });
       }
+    }
+
+    // TopicMemory becomes usable only after open() completes. Hand it to the
+    // scheduler here instead of attempting the handoff during adapter startup.
+    if (scheduler && topicMemory?.isReady()) {
+      scheduler.setTopicMemory(topicMemory);
     }
 
     // ── WhatsApp adapter initialization ──────────────────────────────

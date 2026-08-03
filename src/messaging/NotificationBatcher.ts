@@ -9,6 +9,8 @@
  * Born from: Matthew Berman OpenClaw analysis (2026-02-25)
  */
 
+import { requireDeliverySink, reportDeliverySinkFailure } from './DeliverySinkFailure.js';
+
 export type NotificationTier = 'IMMEDIATE' | 'SUMMARY' | 'DIGEST';
 
 export interface BatchedNotification {
@@ -338,15 +340,23 @@ export class NotificationBatcher {
   }
 
   private async sendDirect(topicId: number, message: string): Promise<void> {
-    if (!this.sendFn) {
-      return;
-    }
+    if (!requireDeliverySink(this.sendFn, {
+      component: 'NotificationBatcher',
+      primary: 'Deliver queued and immediate notifications through the configured messaging sink',
+      reason: `No delivery sink is configured for topic ${topicId}`,
+      impact: 'A notification was not delivered; startup composition or messaging configuration is incomplete',
+    })) return;
 
     try {
       await this.sendFn(topicId, message);
     } catch (err) {
-      // Log but don't throw — batching should never crash the caller
-      console.error('[NotificationBatcher] Failed to send:', err);
+      // Keep batching non-throwing, but never treat a failed send as silence.
+      reportDeliverySinkFailure({
+        component: 'NotificationBatcher',
+        primary: 'Deliver queued and immediate notifications through the configured messaging sink',
+        reason: `Configured sink failed: ${err instanceof Error ? err.message : String(err)}`,
+        impact: 'A notification was not delivered; the queue remains observable through degradation state',
+      });
     }
   }
 

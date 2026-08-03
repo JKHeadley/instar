@@ -35,6 +35,7 @@ import type { CanRunJobResult, IntelligenceProvider, MessagingAdapter, SkipReaso
 import { TOPIC_STYLE } from '../messaging/TelegramAdapter.js';
 import type { JobDefinition, JobSchedulerConfig, JobState, JobPriority } from '../core/types.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
+import { reportDeliverySinkFailure } from '../messaging/DeliverySinkFailure.js';
 import type { JobClaimManager } from './JobClaimManager.js';
 import type { JobLeaseClaimStore } from './JobLeaseClaimStore.js';
 import { decideClaimPath, type CutoverGateInput, type CutoverDecision } from './JobLeaseCutoverGate.js';
@@ -69,6 +70,31 @@ const PRIORITY_ORDER: Record<JobPriority, number> = {
   low: 3,
 };
 
+interface JobFailureAlertState {
+  version: 1;
+  lastObservedFailures: number;
+  lastError: string;
+  deliveryAttempts: number;
+  deliveredCount: number;
+  nextEligibleAt: string;
+  lastAttemptAt?: string;
+  lastDeliveredAt?: string;
+  activeAttemptId?: string;
+}
+
+const FAILURE_ALERT_RETRY_BACKOFF_MS = [
+  5 * 60_000,
+  15 * 60_000,
+  60 * 60_000,
+] as const;
+
+const FAILURE_ALERT_REMINDER_CADENCE_MS = [
+  60 * 60_000,
+  6 * 60 * 60_000,
+  24 * 60 * 60_000,
+] as const;
+
+/* @self-action-controller: job-failure-alert-delivery */
 export class JobScheduler {
   private config: JobSchedulerConfig;
   private sessionManager: SessionManager;
@@ -117,6 +143,15 @@ export class JobScheduler {
 
   /** Optional Telegram adapter for job-topic coupling */
   private telegram: TelegramAdapter | null = null;
+
+  /** Coalesce overlapping completion/error callbacks for the same alert episode. */
+  private failureAlertsInFlight: Set<string> = new Set();
+
+  /** Scheduler-owned wakeups for delivery retries and unresolved reminders. */
+  private failureAlertTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+
+  /** Startup composition has completed, even when its result is "no sink". */
+  private failureAlertDeliveryActive = false;
 
   /** Optional quota tracker for death classification cross-reference */
   private quotaTracker: QuotaTracker | null = null;
@@ -230,6 +265,21 @@ export class JobScheduler {
       this.ensureJobTopics(enabledJobs).catch(err => {
         console.error(`[scheduler] Failed to ensure job topics (post-Telegram init): ${err}`);
       });
+    }
+  }
+
+  /**
+   * Mark startup composition complete and arm persisted failure-alert episodes.
+   * Production calls this after every Telegram construction branch, including
+   * the intentional "no sink" result, so an overdue missing-sink episode stays
+   * loud and retryable without ever waking against a half-composed dependency.
+   */
+  activateFailureAlertDelivery(): void {
+    this.failureAlertDeliveryActive = true;
+    if (!this.running) return;
+    for (const job of this.jobs) {
+      const alertState = this.state.get<JobFailureAlertState>(this.failureAlertStateKey(job.slug));
+      if (alertState?.version === 1) this.scheduleFailureAlert(job, alertState);
     }
   }
 
@@ -458,6 +508,12 @@ export class JobScheduler {
       });
     }
 
+    // Some embedders attach messaging before start(); the production server
+    // attaches it afterward and explicitly calls the same activation seam.
+    if (this.failureAlertDeliveryActive || this.messenger || this.telegram) {
+      this.activateFailureAlertDelivery();
+    }
+
     this.state.appendEvent({
       type: 'scheduler_start',
       summary: `Scheduler started with ${scopedJobs.length} enabled jobs` + (skippedByScope > 0 ? ` (${skippedByScope} skipped by machine scope)` : ''),
@@ -481,6 +537,8 @@ export class JobScheduler {
       if (state.timer) clearTimeout(state.timer);
     }
     this.retryState.clear();
+    for (const timer of this.failureAlertTimers.values()) clearTimeout(timer);
+    this.failureAlertTimers.clear();
     this.bodyDriftWarnings.clear();
     this.running = false;
 
@@ -789,6 +847,7 @@ export class JobScheduler {
    */
   resume(): void {
     this.paused = false;
+    if (this.failureAlertDeliveryActive) this.activateFailureAlertDelivery();
     this.processQueue();
   }
 
@@ -1118,6 +1177,7 @@ export class JobScheduler {
         consecutiveFailures: 0,
         nextScheduled: this.getNextRun(job.slug),
       });
+      this.clearFailureAlertState(job.slug);
       this.releaseClaim(job.slug, 'success');
     }).catch((err: unknown) => {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -1140,7 +1200,7 @@ export class JobScheduler {
         consecutiveFailures,
         nextScheduled: this.getNextRun(job.slug),
       });
-      this.alertOnConsecutiveFailures(job, consecutiveFailures, errorMsg);
+      void this.alertOnConsecutiveFailures(job, consecutiveFailures, errorMsg);
       this.releaseClaim(job.slug, 'failure');
       this.scheduleRetry(job.slug, 'error');
     });
@@ -1245,6 +1305,7 @@ export class JobScheduler {
         nextScheduled: this.getNextRun(job.slug),
       };
       this.state.saveJobState(jobState);
+      this.clearFailureAlertState(job.slug);
 
       this.state.appendEvent({
         type: 'job_triggered',
@@ -1282,7 +1343,7 @@ export class JobScheduler {
         metadata: { slug: job.slug, consecutiveFailures: failures },
       });
 
-      this.alertOnConsecutiveFailures(job, failures, errorMsg);
+      void this.alertOnConsecutiveFailures(job, failures, errorMsg);
     });
   }
 
@@ -1511,9 +1572,13 @@ export class JobScheduler {
     };
     this.state.saveJobState(jobState);
 
+    if (!failed) {
+      this.clearFailureAlertState(job.slug);
+    }
+
     // Alert on consecutive failures
     if (failed && jobState.lastError) {
-      this.alertOnConsecutiveFailures(job, jobState.consecutiveFailures, jobState.lastError);
+      void this.alertOnConsecutiveFailures(job, jobState.consecutiveFailures, jobState.lastError);
     }
 
     // Finalize Living Skills execution journal if enabled
@@ -1898,40 +1963,169 @@ export class JobScheduler {
   }
 
   /**
-   * Alert when a job hits consecutive failure thresholds.
-   * Critical/high priority jobs alert after 2 failures.
-   * Medium/low priority jobs alert after 3 failures.
-   * Only alerts at the threshold (not every failure after).
+   * Alert when a job reaches or remains beyond its failure threshold.
    *
-   * When the failure is a session limit issue (not a job execution error),
-   * the notification is reframed as "Job Blocked" with intelligent diagnostics:
-   * running session list with ages, stale session flags, memory pressure,
-   * and actionable suggestions.
+   * Eligibility and delivery are separate: an episode remains eligible until a
+   * send succeeds, then follows a widening reminder cadence until recovery.
+   * Both tracks persist across restart. This repairs a missed threshold without
+   * turning every later cron tick into an alert flood.
    */
-  private alertOnConsecutiveFailures(job: JobDefinition, failures: number, error: string): void {
+  private async alertOnConsecutiveFailures(job: JobDefinition, failures: number, error: string): Promise<void> {
     const threshold = (job.priority === 'critical' || job.priority === 'high') ? 2 : 3;
-    if (failures !== threshold) return;
+    if (failures < threshold) return;
 
-    const isSessionBlocked = error.includes('Max sessions') && error.includes('reached');
+    const stateKey = this.failureAlertStateKey(job.slug);
+    const previous = this.state.get<JobFailureAlertState>(stateKey);
+    const sameEpisode = previous?.version === 1 && failures >= previous.lastObservedFailures;
+    const alertState: JobFailureAlertState = sameEpisode
+      ? { ...previous, lastObservedFailures: failures, lastError: error }
+      : {
+          version: 1,
+          lastObservedFailures: failures,
+          lastError: error,
+          deliveryAttempts: 0,
+          deliveredCount: 0,
+          nextEligibleAt: new Date(0).toISOString(),
+        };
 
-    let alertText: string;
-
-    if (isSessionBlocked) {
-      alertText = this.buildSessionBlockedAlert(job, failures, error);
-    } else {
-      alertText = `*Job Alert: ${job.name}*\n\n${failures} consecutive failures.\nLast error: ${error}\nPriority: ${job.priority}`;
+    const now = Date.now();
+    const nextEligible = Date.parse(alertState.nextEligibleAt);
+    if (Number.isFinite(nextEligible) && now < nextEligible) {
+      this.state.set(stateKey, alertState);
+      this.scheduleFailureAlert(job, alertState);
+      return;
     }
 
-    // Send to job's topic if available
-    if (this.telegram && job.topicId) {
-      this.telegram.sendToTopic(job.topicId, alertText).catch(err => {
-        console.error(`[scheduler] Failed to send failure alert: ${err}`);
-      });
-    } else if (this.messenger) {
-      this.messenger.send({ userId: 'system', content: alertText }).catch(err => {
-        console.error(`[scheduler] Failed to send failure alert: ${err}`);
-      });
+    if (this.failureAlertsInFlight.has(job.slug)) return;
+    this.failureAlertsInFlight.add(job.slug);
+
+    try {
+      const isSessionBlocked = error.includes('Max sessions') && error.includes('reached');
+
+      let alertText: string;
+
+      if (isSessionBlocked) {
+        alertText = this.buildSessionBlockedAlert(job, failures, error);
+      } else {
+        alertText = `*Job Alert: ${job.name}*\n\n${failures} consecutive failures.\nLast error: ${error}\nPriority: ${job.priority}`;
+      }
+
+      alertState.lastAttemptAt = new Date(now).toISOString();
+      const attemptId = crypto.randomUUID();
+      alertState.activeAttemptId = attemptId;
+      this.state.set(stateKey, alertState);
+
+      const send = this.telegram && job.topicId
+        ? () => this.telegram!.sendToTopic(job.topicId!, alertText).then(() => undefined)
+        : this.messenger
+          ? () => this.messenger!.send({ userId: 'system', content: alertText }).then(() => undefined)
+          : null;
+
+      if (!send) {
+        this.recordFailureAlertDeliveryFailure(job, alertState, 'No scheduler delivery sink is configured', now);
+        return;
+      }
+
+      try {
+        await send();
+        if (!this.isCurrentFailureAlertAttempt(stateKey, attemptId)) return;
+        alertState.deliveryAttempts = 0;
+        alertState.deliveredCount += 1;
+        alertState.lastDeliveredAt = new Date(now).toISOString();
+        delete alertState.activeAttemptId;
+        const reminderIndex = Math.min(alertState.deliveredCount - 1, FAILURE_ALERT_REMINDER_CADENCE_MS.length - 1);
+        alertState.nextEligibleAt = new Date(now + FAILURE_ALERT_REMINDER_CADENCE_MS[reminderIndex]).toISOString();
+        this.state.set(stateKey, alertState);
+        this.scheduleFailureAlert(job, alertState);
+        this.state.appendEvent({
+          type: 'job_alert_delivered',
+          summary: `Failure alert delivered for job "${job.slug}" after ${failures} consecutive failures`,
+          timestamp: new Date(now).toISOString(),
+          metadata: { slug: job.slug, consecutiveFailures: failures, deliveredCount: alertState.deliveredCount },
+        });
+      } catch (sendError) {
+        if (!this.isCurrentFailureAlertAttempt(stateKey, attemptId)) return;
+        this.recordFailureAlertDeliveryFailure(
+          job,
+          alertState,
+          `Configured scheduler sink failed: ${sendError instanceof Error ? sendError.message : String(sendError)}`,
+          now,
+        );
+      }
+    } finally {
+      this.failureAlertsInFlight.delete(job.slug);
     }
+  }
+
+  private failureAlertStateKey(slug: string): string {
+    return `job-failure-alert-${slug}`;
+  }
+
+  private isCurrentFailureAlertAttempt(stateKey: string, attemptId: string): boolean {
+    return this.state.get<JobFailureAlertState>(stateKey)?.activeAttemptId === attemptId;
+  }
+
+  private clearFailureAlertState(slug: string): void {
+    const timer = this.failureAlertTimers.get(slug);
+    if (timer) clearTimeout(timer);
+    this.failureAlertTimers.delete(slug);
+    this.state.delete(this.failureAlertStateKey(slug));
+  }
+
+  private scheduleFailureAlert(job: JobDefinition, alertState: JobFailureAlertState): void {
+    if (!this.running || !this.failureAlertDeliveryActive) return;
+    const existing = this.failureAlertTimers.get(job.slug);
+    if (existing) clearTimeout(existing);
+
+    const eligibleAt = Date.parse(alertState.nextEligibleAt);
+    const delay = Math.max(0, Number.isFinite(eligibleAt) ? eligibleAt - Date.now() : 0);
+    const timer = setTimeout(() => {
+      this.failureAlertTimers.delete(job.slug);
+      if (!this.running || this.paused || this.state.readOnly) return;
+
+      const liveJob = this.jobs.find(candidate => candidate.slug === job.slug);
+      const persisted = this.state.get<JobFailureAlertState>(this.failureAlertStateKey(job.slug));
+      if (!liveJob?.enabled || persisted?.version !== 1) return;
+
+      void this.alertOnConsecutiveFailures(
+        liveJob,
+        persisted.lastObservedFailures,
+        persisted.lastError,
+      );
+    }, delay);
+    if (timer.unref) timer.unref();
+    this.failureAlertTimers.set(job.slug, timer);
+  }
+
+  private recordFailureAlertDeliveryFailure(
+    job: JobDefinition,
+    alertState: JobFailureAlertState,
+    reason: string,
+    now: number,
+  ): void {
+    alertState.deliveryAttempts += 1;
+    delete alertState.activeAttemptId;
+    const backoffIndex = Math.min(alertState.deliveryAttempts - 1, FAILURE_ALERT_RETRY_BACKOFF_MS.length - 1);
+    alertState.nextEligibleAt = new Date(now + FAILURE_ALERT_RETRY_BACKOFF_MS[backoffIndex]).toISOString();
+    this.state.set(this.failureAlertStateKey(job.slug), alertState);
+    this.scheduleFailureAlert(job, alertState);
+    this.state.appendEvent({
+      type: 'job_alert_delivery_failed',
+      summary: `Failure alert for job "${job.slug}" was not delivered: ${reason}`,
+      timestamp: new Date(now).toISOString(),
+      metadata: {
+        slug: job.slug,
+        consecutiveFailures: alertState.lastObservedFailures,
+        deliveryAttempts: alertState.deliveryAttempts,
+        nextEligibleAt: alertState.nextEligibleAt,
+      },
+    });
+    reportDeliverySinkFailure({
+      component: `JobScheduler.${job.slug}`,
+      primary: 'Deliver the scheduler-owned consecutive-failure escalation',
+      reason,
+      impact: `Job ${job.slug} remains failed and its operator alert remains undelivered; retry is scheduled for ${alertState.nextEligibleAt}`,
+    });
   }
 
   /**

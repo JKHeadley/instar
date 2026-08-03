@@ -94,11 +94,14 @@ describe('NotificationBatcher', () => {
       consoleSpy.mockRestore();
     });
 
-    it('silently drops when no send function configured', async () => {
+    it('reports a missing send function loudly without crashing the caller', async () => {
       const batcher = new NotificationBatcher(makeConfig());
-      // No setSendFunction called
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
       await batcher.enqueue(makeNotification({ tier: 'IMMEDIATE' }));
-      // Should not throw
+
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('[delivery-sink] NotificationBatcher'));
+      consoleSpy.mockRestore();
     });
   });
 
