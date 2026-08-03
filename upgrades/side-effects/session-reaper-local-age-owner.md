@@ -3,7 +3,7 @@
 **Version / slug:** `session-reaper-local-age-owner`
 **Date:** `2026-08-02`
 **Author:** `Instar Agent (instar-codey)`
-**Second-pass reviewer:** `Heisenberg (item12_security_r1)`
+**Second-pass reviewer:** `Heisenberg (item12_security_r1)` plus the CI-correction reviewer recorded below
 
 ## Summary of the change
 
@@ -169,6 +169,31 @@ audit suppression, false-success state/process divergence, and an ignorable time
 demonstrated attack now has a structural repair and regression test. The final fresh adversarial
 verdict explicitly concurs with no remaining concrete blocker in scope.
 
+### 2026-08-02 CI correction addendum
+
+The first pushed revision exposed eleven PR-caused failures across eight test files. Two test
+harnesses had been mutating or reading the former TypeScript-private `deps` property; runtime `#deps`
+and construction-time freezing correctly made that impossible. Those harnesses now use
+construction-time closures to vary transcript/CPU observations, or retain the injected session
+object directly, without adding a production escape hatch. Source-contract tests now assert the
+runtime-private async monitor and authority entrypoint rather than the superseded public shapes.
+
+The remaining failures exposed real integration seams rather than a reason to weaken the authority:
+remote-close tests now receive the birth-bound termination authority explicitly, including a
+missing-authority refusal case. The already-dead branch commits the terminal record without issuing
+a redundant tmux kill after the liveness oracle has proved the process absent. Listener isolation is
+marked as intentional because every lifecycle observer must remain independent; no observer gains
+authority over later audit delivery.
+
+This correction does not add a new decision point, heuristic, public bypass, durable field, notice,
+URL, or cross-machine behavior. It preserves the machine-local-by-design posture and the existing
+rollback path. All eleven failures were first reproduced on the PR head and all eight files were
+then green on the untouched base, establishing PR causality. After the correction, those files pass
+127/127 and the expanded termination-authority matrix passes 219/219; TypeScript/lint and build also
+pass. A broad 47,613-test sweep completed with 47,560 passes and 22 failures confined to
+baseline/environment-sensitive lanes. The only additional lifecycle timeout reproduced identically
+on the untouched base at the same five-second boundary.
+
 ---
 
 ## Second-pass review (if required)
@@ -188,6 +213,11 @@ The reviewer reported no remaining concrete authority-minting or state/process-d
 Independent verification passed TypeScript and 156/156 focused checks; the author's final broader
 focused matrix passed 179/179, with lint and build also green.
 
+**CI-correction reviewer:** `pr1846_fix_review` — **Concur with the review.** The correction preserves
+session-lifecycle authority, runtime privacy, signal-vs-authority separation, known-dead
+state/process convergence, and listener isolation without production escape hatches. Independent
+verification passed 164/164 focused tests; diff check was clean.
+
 ---
 
 ## Evidence pointers
@@ -201,6 +231,11 @@ focused matrix passed 179/179, with lint and build also green.
 - `tests/integration/session-lifecycle-reap-wiring.test.ts` — termination/reap-log lifecycle wiring.
 - `tests/unit/self-action-convergence.test.ts` — registered age-kill controller settles under
   sustained rejection.
+- `tests/unit/session-reaper-cpu-aware-keep.test.ts` — immutable construction-time observation seams.
+- `tests/unit/session-reaper.test.ts` — no test-only access to runtime-private reaper dependencies.
+- `tests/unit/session-async-monitor.test.ts` — runtime-private async monitor source contract.
+- `tests/unit/session-lifecycle-phase-2-wiring.test.ts` — private termination-authority wiring contract.
+- `tests/integration/remote-session-close.test.ts` — explicit authority injection and refusal when absent.
 
 ---
 

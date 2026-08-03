@@ -12,8 +12,10 @@ describe('SessionManager async monitoring', () => {
   );
 
   it('uses async monitoring to avoid blocking the event loop', () => {
-    // Monitor tick should be async
-    expect(source).toContain('async monitorTick()');
+    // Monitor tick should be async and runtime-private. Tests that need to drive
+    // it receive the birth-time bindMaintenanceTickForTesting closure.
+    expect(source).toContain('async #monitorTick()');
+    expect(source).toContain('bindMaintenanceTickForTesting?.(() => this.#monitorTick())');
     // Uses execFileAsync instead of execFileSync in monitoring
     expect(source).toContain('await execFileAsync');
   });

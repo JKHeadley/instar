@@ -118,9 +118,10 @@ describe('Phase 2 — per-killer routing contracts', () => {
       expect(deferredReturns.length).toBeGreaterThanOrEqual(5);
     });
 
-    it('the wiring routes the kill through terminateSession with recovery-bounce disposition + bypassRecoveryFlag', () => {
-      // server.ts wires the dep.killSession to terminateSession with the right opts.
-      expect(serverSource).toMatch(/terminateSession\([^)]*'session-recovery'/);
+    it('the wiring routes the kill through birth-bound terminate authority with recovery-bounce disposition + bypassRecoveryFlag', () => {
+      // server.ts wires the dep.killSession to the construction-bound authority,
+      // not the public autonomous-only terminateSession surface.
+      expect(serverSource).toMatch(/terminateWithAuthority\([^)]*'session-recovery'/);
       expect(serverSource).toContain("disposition: 'recovery-bounce'");
       expect(serverSource).toContain('bypassRecoveryFlag: true');
     });

@@ -43,6 +43,7 @@ interface Harness {
   setNow: (n: number) => void;
   setFrame: (f: string) => void;
   setCpu: (n: number) => void;
+  setTranscript: (p: TranscriptProbe) => void;
 }
 
 function harness(opts: {
@@ -54,6 +55,7 @@ function harness(opts: {
   let now = 1_000_000;
   let frame = IDLE_FRAME;
   let cpu = 0;
+  let transcript = RESOLVED_STATIC;
   const sessions = [mkSession()];
   const audits: Array<Record<string, unknown>> = [];
   const terminate = vi.fn(async () => ({ terminated: true }));
@@ -64,7 +66,7 @@ function harness(opts: {
     captureOutput: () => frame,
     hasActiveProcesses: () => true, // the active-process veto is in play by default here
     frameworkForSession: () => 'claude-code',
-    probeTranscript: () => RESOLVED_STATIC,
+    probeTranscript: () => transcript,
     isRecoveryActive: () => false,
     isRelayLeaseActive: () => false,
     hasPendingInjection: () => false,
@@ -99,6 +101,7 @@ function harness(opts: {
     setNow: (n) => { now = n; },
     setFrame: (f) => { frame = f; },
     setCpu: (n) => { cpu = n; },
+    setTranscript: (p) => { transcript = p; },
   };
 }
 
@@ -159,9 +162,8 @@ describe('cpuAwareActiveProcessKeep — evaluate() veto-relaxation (both sides)'
     return (async () => {
       await h.reaper.tick(); // records lastTranscript = size 100
       h.setCpu(0);
-      // Grow the transcript: override probe to a bigger size on next eval.
-      (h.reaper as unknown as { deps: SessionReaperDeps }).deps.probeTranscript =
-        () => ({ resolved: true, path: '/t.jsonl', size: 999, mtime: 2000 });
+      // Grow the constructor-injected probe's backing value on the next eval.
+      h.setTranscript({ resolved: true, path: '/t.jsonl', size: 999, mtime: 2000 });
       const e = h.reaper.evaluate(mkSession(), { cpuFlat: true });
       expect(e.cpuTightened).toBe(true);
       expect(e.keptBy).toBe('transcript-grew');
@@ -217,10 +219,11 @@ describe('cpuAwareActiveProcessKeep — cpuProgressFlat gating via tick() (both 
 
   it('under pressure + CPU RISING (working) ⇒ veto stands ⇒ never reaped', async () => {
     const h = harness();
-    let cpu = 0;
-    (h.reaper as unknown as { deps: SessionReaperDeps }).deps.descendantCpuSeconds = () => { cpu += 50; return cpu; };
+    h.setCpu(50);
     h.setNow(1_000_000); await h.reaper.tick(); // +50 over 0 → but no prior, undefined
+    h.setCpu(100);
     h.setNow(1_120_000); await h.reaper.tick(); // +50 over 120s = 0.42/s ≫ 0.02 ⇒ NOT flat
+    h.setCpu(150);
     h.setNow(1_240_000); await h.reaper.tick();
     expect(h.terminate).not.toHaveBeenCalled();
     expect(h.audits.some(a => a.event === 'cpu-keep-tightened')).toBe(false);

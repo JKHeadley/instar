@@ -24,6 +24,7 @@ import type { AddressInfo } from 'node:net';
 import type http from 'node:http';
 import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
+import type { SessionTerminateAuthority } from '../../src/core/SessionManager.js';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -60,10 +61,15 @@ interface CtxOpts {
   protectedSessions?: string[];
   sessions?: Array<{ id: string; tmuxSession: string; name: string; status: string }>;
   terminateCalls?: Array<{ sessionId: string; opts: Record<string, unknown> }>;
+  withTerminateAuthority?: boolean;
 }
 
 function ctxFor(o: CtxOpts = {}): RouteContext {
   const sessions = o.sessions ?? [];
+  const terminateSession: SessionTerminateAuthority = async (sessionId, _reason, opts = {}) => {
+    o.terminateCalls?.push({ sessionId, opts: { ...opts } });
+    return { terminated: true };
+  };
   return {
     config: {
       projectName: 'remote-close', projectDir: path.dirname(stateDir), stateDir, port: 0,
@@ -73,12 +79,10 @@ function ctxFor(o: CtxOpts = {}): RouteContext {
     } as never,
     sessionManager: {
       listRunningSessions: () => [],
-      terminateSession: async (sessionId: string, _reason: string, opts: Record<string, unknown>) => {
-        o.terminateCalls?.push({ sessionId, opts });
-        return { terminated: true };
-      },
+      terminateSession,
       clearInjectionTracker: () => {},
     } as never,
+    ...(o.withTerminateAuthority === false ? {} : { terminateSessionAuthority: terminateSession }),
     state: {
       getJobState: () => null,
       getSession: (id: string) => sessions.find((s) => s.id === id) ?? null,
@@ -243,6 +247,19 @@ describe('relay outcomes — delivery honesty (Tier 2, mocked peers)', () => {
 });
 
 describe('peer-side semantics (Tier 1+2)', () => {
+  it('fails closed when the birth-bound terminate authority is unavailable', async () => {
+    const terminateCalls: Array<{ sessionId: string; opts: Record<string, unknown> }> = [];
+    const app = appWith(ctxFor({
+      sessions: [{ id: 'u-1', tmuxSession: 'sess-a', name: 'sess-a', status: 'running' }],
+      terminateCalls,
+      withTerminateAuthority: false,
+    }));
+    const res = await request(app).delete('/sessions/u-1').set(auth());
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe('Session termination authority unavailable');
+    expect(terminateCalls).toEqual([]);
+  });
+
   it('forged via header is recorded as a claim and CANNOT alter authority (origin stays route-stamped operator)', async () => {
     const terminateCalls: Array<{ sessionId: string; opts: Record<string, unknown> }> = [];
     const app = appWith(ctxFor({

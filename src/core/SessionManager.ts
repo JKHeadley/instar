@@ -1554,10 +1554,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // admission, the immediately-following save fails closed before tmux.
       this.#emitListenersIsolated('beforeSessionKill', session);
 
-      // Every real kill uses one write-first, bounded-synchronous protocol. This
+      // Every live-process kill uses one write-first, bounded-synchronous protocol. This
       // removes the ordinary lease-holder branch's former await window (tmux gone
       // before a late ownership/write refusal) and gives local nonholder cleanup
-      // the same state/process ordering. saveSession rechecks admission here.
+      // the same state/process ordering. A `knownDead` oracle verdict needs only
+      // the durable transition: by definition there is no tmux process to kill.
+      // saveSession rechecks admission here.
       try {
         this.state.saveSession(endedSession);
       } catch {
@@ -1566,35 +1568,37 @@ rm()  { "${shimRunner}" rm  "$@"; }
         return { terminated: false, skipped };
       }
 
-      try {
-        // No event-loop turn exists between the terminal commit and the local
-        // process action. The timeout bounds tmux transport failure.
-        withSyncOp(() => execFileSync(
-          this.config.tmuxPath,
-          ['kill-session', '-t', `=${session.tmuxSession}`],
-          // SIGTERM is not a real bound for a wedged tmux client: it can ignore
-          // the default signal and keep execFileSync blocking the event loop.
-          // Match the async hot-path invariant and enforce the timeout with KILL.
-          { encoding: 'utf-8', timeout: this.tmuxCallTimeoutMs, killSignal: 'SIGKILL' },
-        ));
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const definitelyAbsent = /can't find session|no such session|no server running|session not found/i.test(message);
-        if (!definitelyAbsent) {
-          // The process may still be alive. Compensate the write-first record
-          // back to its exact live snapshot and never emit a false reap event.
-          let compensationFailed = false;
-          try {
-            this.state.saveSession(session);
-          } catch (rollbackErr) {
-            compensationFailed = true;
-            console.error('[SessionManager] cleanup kill failed and state compensation also failed:', rollbackErr);
+      if (!opts?.knownDead) {
+        try {
+          // No event-loop turn exists between the terminal commit and the local
+          // process action. The timeout bounds tmux transport failure.
+          withSyncOp(() => execFileSync(
+            this.config.tmuxPath,
+            ['kill-session', '-t', `=${session.tmuxSession}`],
+            // SIGTERM is not a real bound for a wedged tmux client: it can ignore
+            // the default signal and keep execFileSync blocking the event loop.
+            // Match the async hot-path invariant and enforce the timeout with KILL.
+            { encoding: 'utf-8', timeout: this.tmuxCallTimeoutMs, killSignal: 'SIGKILL' },
+          ));
+        } catch (err) {
+          const killErrorText = err instanceof Error ? err.message : String(err);
+          const definitelyAbsent = /can't find session|no such session|no server running|session not found/i.test(killErrorText);
+          if (!definitelyAbsent) {
+            // The process may still be alive. Compensate the write-first record
+            // back to its exact live snapshot and never emit a false reap event.
+            let compensationFailed = false;
+            try {
+              this.state.saveSession(session);
+            } catch (rollbackErr) {
+              compensationFailed = true;
+              console.error('[SessionManager] cleanup kill failed and state compensation also failed:', rollbackErr);
+            }
+            const skipped = compensationFailed
+              ? 'tmux-kill-failed-compensation-failed'
+              : 'tmux-kill-failed';
+            this.emit('reapBlocked', { session, reason, skipped, origin });
+            return { terminated: false, skipped };
           }
-          const skipped = compensationFailed
-            ? 'tmux-kill-failed-compensation-failed'
-            : 'tmux-kill-failed';
-          this.emit('reapBlocked', { session, reason, skipped, origin });
-          return { terminated: false, skipped };
         }
       }
       // The process is gone and the terminal state is durable. Lifecycle
@@ -1644,7 +1648,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     for (const listener of this.rawListeners(eventName)) {
       try {
         Reflect.apply(listener, this, args);
-      } catch (err) {
+      } catch (err) { // @silent-fallback-ok — observer isolation is deliberate; the fault is surfaced and cannot roll back an authoritative lifecycle transition
         console.error(`[SessionManager] ${eventName} listener failed; lifecycle transition remains authoritative:`, err);
       }
     }
