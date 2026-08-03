@@ -104,6 +104,18 @@ import type { IncidentDedupe } from '../monitoring/IncidentDedupe.js';
 // flips this class to enforce (FD8).
 const ageKillGov = governor.for('age-kill-backoff');
 
+/**
+ * Unforgeable, module-private authority for one machine-local cleanup path.
+ *
+ * The serving lease governs shared/cross-machine state; it cannot make a peer
+ * clean up a tmux process that physically exists only on this machine. The
+ * over-age monitor is the sole minter of this capability, and the termination
+ * authority accepts it only with the literal `age-limit` reason. It is omitted
+ * from the public terminateSession options so ordinary autonomous callers keep
+ * the lease-holder boundary unchanged.
+ */
+const LOCAL_AGE_LIMIT_REAP_CAPABILITY = Symbol('local-age-limit-reap-capability');
+
 /** The canonical target derivation for the age-kill controller (companion §1):
  *  instar session ids are stable per topic across respawns, so the session id
  *  IS the recurrence identity — a stable key, never a per-incarnation pid. */
@@ -322,7 +334,34 @@ export interface SessionManagerOptions {
    *  A GETTER because the mesh identity resolves after SessionManager
    *  construction at server boot. Absent/null ⇒ the literal 'local'. */
   buildContextMachineId?: () => string | null;
+  /** Birth-time capability handoff. The trusted terminate closure is delivered
+   *  while this manager is constructed; no later public getter or binder exists. */
+  bindTerminateAuthority?: (authority: SessionTerminateAuthority) => void;
+  /** Test-only birth-time observation seam for the maintenance workflow. The
+   *  authority-bearing tick itself remains a JS-private method and never appears
+   *  on a live manager's runtime prototype. Production boot does not request it. */
+  bindMaintenanceTickForTesting?: (tick: () => Promise<void>) => void;
 }
+
+export interface SessionTerminateAuthorityOptions {
+  finalStatus?: 'completed' | 'killed';
+  disposition?: 'terminal' | 'recovery-bounce';
+  origin?: 'operator' | 'autonomous';
+  via?: string;
+  knownDead?: boolean;
+  bypassRecoveryFlag?: boolean;
+  bypassActiveProcessKeep?: boolean;
+  bypassRecentUserMessageForConfirmedMove?: boolean;
+  /** Trusted SessionReaper assertion after ownership/liveness/dwell clears. */
+  localPostTransferCloseout?: boolean;
+  workEvidence?: string[];
+}
+
+export type SessionTerminateAuthority = (
+  sessionId: string,
+  reason: string,
+  opts?: SessionTerminateAuthorityOptions,
+) => Promise<{ terminated: boolean; skipped?: string }>;
 
 export class SessionManager extends EventEmitter {
   private config: SessionManagerConfig;
@@ -588,6 +627,11 @@ export class SessionManager extends EventEmitter {
         machineId: opts.buildContextMachineId ?? null,
       });
     }
+    // Minted only during construction and handed into the boot composition root's
+    // lexical scope. A caller holding this manager later cannot retrieve it.
+    opts.bindTerminateAuthority?.((sessionId, reason, authorityOpts) =>
+      this.#terminateSessionInternal(sessionId, reason, authorityOpts));
+    opts.bindMaintenanceTickForTesting?.(() => this.#monitorTick());
   }
 
   /** Per-agent GitHub token env flags for spawned sessions (Phase-3 increment
@@ -991,7 +1035,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // no reap-log write.
         return;
       }
-      const result = await this.terminateSessionInternal(
+      const result = await this.#terminateSessionInternal(
         session.id,
         'idle-zombie',
         { disposition: 'terminal' },
@@ -1105,10 +1149,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * false, an AUTONOMOUS terminate is a no-op `skipped:'not-lease-holder'` — only
    * the awake/lease-holding machine may autonomously reap; a standby may detect
    * and signal but never kill another machine's sessions. Operator kills bypass,
-   * and so does the topic-moved closeout (`bypassLeaseForTopicMovedCloseout` —
-   * F8: closing THIS machine's own leftover session for a topic that moved away
-   * is not "killing another machine's session", and the old owner is by
-   * definition usually not the lease holder). Unset → treated as awake
+   * and so does the runtime-private topic-moved closeout authority (F8: closing
+   * THIS machine's own leftover session for a topic that moved away is not
+   * "killing another machine's session", and the old owner is by definition
+   * usually not the lease holder). Unset → treated as awake
    * (single-machine default).
    */
   setAwakeChecker(fn: () => boolean): void {
@@ -1201,16 +1245,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * The authority holds the safety checks so a killer can only *request* a kill:
    *  - CAS on live status + an in-flight guard (prevents the double-kill race).
    *  - `protectedSessions` (never kill).
-   *  - Lease-holder gate: an AUTONOMOUS reap on a standby machine is a no-op
-   *    `skipped:'not-lease-holder'` — only the awake machine reaps. Exception
-   *    (F8): the topic-moved closeout's `bypassLeaseForTopicMovedCloseout`
-   *    lifts ONLY this gate (see the opt's doc below).
+   *  - Lease-holder gate: an ordinary AUTONOMOUS reap on a standby machine is a
+   *    no-op `skipped:'not-lease-holder'`. Two machine-local exceptions lift
+   *    ONLY this gate: the existing F8 topic-moved closeout, and the private
+   *    over-age monitor capability for this machine's own idle process.
    *  - ReapGuard (§P2): an AUTONOMOUS reap of a session the guard says to KEEP is
    *    a no-op `skipped:<keep-reason>` — even a buggy killer cannot end a guarded
    *    session.
-   * `origin:'operator'` bypasses the lease-gate and the guard (an explicit human
-   * kill must always happen). Default `origin` is `'autonomous'` so an in-process
-   * caller can never accidentally mint operator privilege.
+   * Operator authority exists only on runtime-private internal calls. The public
+   * method is structurally autonomous; caller labels and casts cannot mint it.
    *
    * Re-entrancy: the guard is consulted BEFORE this call acquires its own
    * in-flight lock, so the authority's lock for the kill it is performing is
@@ -1229,23 +1272,33 @@ rm()  { "${shimRunner}" rm  "$@"; }
     opts?: {
       finalStatus?: 'completed' | 'killed';
       disposition?: 'terminal' | 'recovery-bounce';
-      origin?: 'operator' | 'autonomous';
       /** UNTRUSTED caller-supplied provenance claim (REMOTE-SESSION-CLOSE-SPEC
        *  §2.3) — recorded in the reap-log as `viaClaim`, NEVER consulted in any
        *  authority/bypass decision (signal-vs-authority). */
       via?: string;
-      knownDead?: boolean;
-      bypassRecoveryFlag?: boolean;
-      bypassActiveProcessKeep?: boolean;
-      bypassRecentUserMessageForConfirmedMove?: boolean;
-      bypassLeaseForTopicMovedCloseout?: boolean;
       workEvidence?: string[];
     },
   ): Promise<{ terminated: boolean; skipped?: string }> {
     // Public enforcement boundary — re-evaluates the guard itself (no precomputed
     // verdict). The single-guard-eval precompute is a PRIVATE same-tick optimization
     // used only by the idle-zombie branch (R3-1/R4-2); it is NEVER a public option.
-    return this.terminateSessionInternal(sessionId, reason, opts);
+    // Copy only inert/public fields. Do not spread the caller object: JavaScript
+    // callers can force undeclared keys through a cast, and every guard bypass is
+    // authority. Trusted lifecycle components receive a birth-bound closure.
+    return this.#terminateSessionInternal(
+      sessionId,
+      reason,
+      {
+        finalStatus: opts?.finalStatus,
+        disposition: opts?.disposition,
+        via: opts?.via,
+        workEvidence: opts?.workEvidence,
+        // Public callers are always autonomous. Explicit operator authority is
+        // confined to runtime-private call sites inside this class; labels,
+        // unknown values, and caller casts cannot bypass any guard.
+        origin: 'autonomous',
+      },
+    );
   }
 
   /**
@@ -1255,7 +1308,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * double-evaluated in the same tick (C2). Every OTHER caller passes it undefined
    * and the guard is evaluated here exactly as before.
    */
-  private async terminateSessionInternal(
+  async #terminateSessionInternal(
     sessionId: string,
     reason: string,
     opts?: {
@@ -1280,21 +1333,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
        * fresh and still vetoes. Spec: docs/specs/post-transfer-closeout-correctness.md.
        */
       bypassRecentUserMessageForConfirmedMove?: boolean;
-      /**
-       * Post-transfer closeout carve-out (F8, roadmap 0.6,
-       * test-as-self 2026-07-02): lifts ONLY the lease-holder gate — protected,
-       * CAS, in-flight, and EVERY KEEP-guard still apply unchanged. The
-       * SessionReaper sets it ONLY on the topic-moved closeout path, where this
-       * machine is closing ITS OWN local leftover session for a topic the pool
-       * ownership registry says ANOTHER machine now owns. The lease gate exists
-       * so a standby never reaps ANOTHER machine's sessions; the post-transfer
-       * closeout is the inverse case — the machine a topic moves AWAY from is
-       * by definition usually NOT the serving-lease holder, so without this
-       * carve-out the transfer's required teardown was structurally vetoed
-       * `skipped:'not-lease-holder'` every attempt until the P19 breaker gave
-       * up, stranding a duplicate session on the old machine (audit F8).
-       */
-      bypassLeaseForTopicMovedCloseout?: boolean;
+      /** Module-private capability minted only by #terminateLocalAgeExpiredSession.
+       *  It proves the request originated in THIS SessionManager's monitor over
+       *  THIS machine's state tree and local tmux namespace. Never public. */
+      localAgeLimitReapCapability?: typeof LOCAL_AGE_LIMIT_REAP_CAPABILITY;
+      /** Birth-bound SessionReaper assertion after ownership/liveness/dwell. */
+      localPostTransferCloseout?: boolean;
       /**
        * Killer-supplied work evidence (reap-notify spec R2.1): computed at the
        * KILLER's decision point — the only moment the work was observable (the
@@ -1321,16 +1365,39 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
     const origin = opts?.origin ?? 'autonomous';
     const disposition = opts?.disposition ?? 'terminal';
+    const holdsServingLease = origin === 'operator'
+      || !this.isAwakeMachine
+      || this.isAwakeMachine();
+    const requestedLocalAgeLimit = reason === 'age-limit'
+      && opts?.localAgeLimitReapCapability === LOCAL_AGE_LIMIT_REAP_CAPABILITY;
+    // The local-process capability is usable only after the full KEEP guard is
+    // installed and the exact durable session transition is currently admitted.
+    // This closes both startup windows: no guard means no local authority, and a
+    // pure read-only standby never kills tmux before discovering saveSession will
+    // be refused. The real write re-checks admission again before the process kill.
+    let isAuthorizedLocalAgeLimit = false;
+    if (requestedLocalAgeLimit && this.reapGuard) {
+      try {
+        this.state.assertSessionWriteAllowed(session);
+        isAuthorizedLocalAgeLimit = true;
+      } catch {
+        // Not locally owned/writable in the current posture: the normal lease
+        // boundary below remains authoritative.
+      }
+    }
+    const isAuthorizedTopicMovedCloseout = reason.startsWith('topic moved')
+      && opts?.localPostTransferCloseout === true;
+    const authorityScope = origin === 'operator'
+      ? 'operator' as const
+      : holdsServingLease
+        ? 'lease-holder' as const
+        : isAuthorizedLocalAgeLimit
+          ? 'local-age-limit' as const
+          : 'local-post-transfer-closeout' as const;
 
     // ── Authority gates (autonomous only; operator bypasses) ──
-    // An `origin:'operator'` kill — stamped ONLY by the Bearer-authed HTTP route
-    // layer and by the transfer handler executing the user's explicit
-    // "move this to <machine>" command (post-transfer closeout, 2026-06-05) —
-    // must always happen: the user commanded it. It bypasses protected, the
-    // lease gate, and the KEEP-guard. (The transfer handler additionally skips
-    // protected sessions BEFORE calling, so the bypass never reaches them on
-    // that path.) Autonomous killers (the default) can only *request*; the
-    // authority holds the safety checks.
+    // Runtime-private `origin:'operator'` calls may bypass these gates. Every
+    // call through public terminateSession is normalized to autonomous above.
     if (origin === 'autonomous') {
       // Protected set — never autonomously reap a protected session.
       if (this.config.protectedSessions.includes(session.tmuxSession)) {
@@ -1338,14 +1405,20 @@ rm()  { "${shimRunner}" rm  "$@"; }
         return { terminated: false, skipped: 'protected' };
       }
       // Lease-holder gate: a standby machine never reaps another machine's sessions.
-      // F8 carve-out: the topic-moved closeout is exempt — it closes THIS
+      // F8 carve-out: the runtime-private topic-moved closeout is exempt — it closes THIS
       // machine's OWN leftover session for a topic that moved AWAY (the old
       // owner is by definition usually not the lease holder, so the gate
       // structurally vetoed the exact teardown the transfer requires). The
-      // flag lifts ONLY this gate; protected (above) and the KEEP-guard
-      // cascade (below) are unaffected.
-      if (this.isAwakeMachine && !this.isAwakeMachine()
-          && !opts?.bypassLeaseForTopicMovedCloseout) {
+      // capability lifts ONLY this gate; protected (above) and the KEEP-guard
+      // cascade (below) are unaffected. No public caller can supply it.
+      // Local age-limit carve-out: the private monitor capability authorizes
+      // cleanup of a process in THIS manager's machine-local state/tmux tree.
+      // A peer cannot perform that cleanup remotely, and the capability is not
+      // part of terminateSession's public options. The literal reason check is
+      // defense in depth against capability reuse for another kill class.
+      if (!holdsServingLease
+          && !isAuthorizedTopicMovedCloseout
+          && !isAuthorizedLocalAgeLimit) {
         this.emit('reapBlocked', { session, reason, skipped: 'not-lease-holder', origin });
         return { terminated: false, skipped: 'not-lease-holder' };
       }
@@ -1462,29 +1535,118 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
       const midWork = isMidWork(workEvidence);
 
-      // Emit BEFORE destroying tmux so listeners (TopicResumeMap, SlackAdapter)
-      // can capture resume UUIDs while the session is still alive.
-      this.emit('beforeSessionKill', session);
-      try {
-        await execFileAsync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`]);
-      } catch { /* session may already be dead */ }
-      session.status = opts?.finalStatus ?? 'completed';
-      session.endedAt = new Date().toISOString();
-      session.endedReason = reason;
+      const endedSession: Session = {
+        ...session,
+        status: opts?.finalStatus ?? 'completed',
+        endedAt: new Date().toISOString(),
+        endedReason: reason,
+      };
       if (!opts?.knownDead) {
-        session.endedMidWork = midWork;
-        if (workEvidence.length > 0) session.endedWorkEvidence = workEvidence;
+        endedSession.endedMidWork = midWork;
+        if (workEvidence.length > 0) endedSession.endedWorkEvidence = workEvidence;
       }
-      this.state.saveSession(session);
-      this.emit('sessionComplete', session);
+      const usesLocalProcessAuthority = origin === 'operator'
+        || isAuthorizedLocalAgeLimit
+        || isAuthorizedTopicMovedCloseout;
+      // Continuity observers inspect the still-live process before the terminal
+      // commit, but are never cleanup authority. Invoke each independently so a
+      // faulty observer cannot suppress the rest. If a listener changes write
+      // admission, the immediately-following save fails closed before tmux.
+      this.#emitListenersIsolated('beforeSessionKill', session);
+
+      // Every real kill uses one write-first, bounded-synchronous protocol. This
+      // removes the ordinary lease-holder branch's former await window (tmux gone
+      // before a late ownership/write refusal) and gives local nonholder cleanup
+      // the same state/process ordering. saveSession rechecks admission here.
+      try {
+        this.state.saveSession(endedSession);
+      } catch {
+        const skipped = usesLocalProcessAuthority ? 'local-write-refused' : 'state-write-refused';
+        this.emit('reapBlocked', { session, reason, skipped, origin });
+        return { terminated: false, skipped };
+      }
+
+      try {
+        // No event-loop turn exists between the terminal commit and the local
+        // process action. The timeout bounds tmux transport failure.
+        withSyncOp(() => execFileSync(
+          this.config.tmuxPath,
+          ['kill-session', '-t', `=${session.tmuxSession}`],
+          // SIGTERM is not a real bound for a wedged tmux client: it can ignore
+          // the default signal and keep execFileSync blocking the event loop.
+          // Match the async hot-path invariant and enforce the timeout with KILL.
+          { encoding: 'utf-8', timeout: this.tmuxCallTimeoutMs, killSignal: 'SIGKILL' },
+        ));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const definitelyAbsent = /can't find session|no such session|no server running|session not found/i.test(message);
+        if (!definitelyAbsent) {
+          // The process may still be alive. Compensate the write-first record
+          // back to its exact live snapshot and never emit a false reap event.
+          let compensationFailed = false;
+          try {
+            this.state.saveSession(session);
+          } catch (rollbackErr) {
+            compensationFailed = true;
+            console.error('[SessionManager] cleanup kill failed and state compensation also failed:', rollbackErr);
+          }
+          const skipped = compensationFailed
+            ? 'tmux-kill-failed-compensation-failed'
+            : 'tmux-kill-failed';
+          this.emit('reapBlocked', { session, reason, skipped, origin });
+          return { terminated: false, skipped };
+        }
+      }
+      // The process is gone and the terminal state is durable. Lifecycle
+      // observers run independently from here onward: a listener exception must
+      // never turn a successful kill into a rejected promise or suppress the
+      // durable reap audit emitted by a later listener.
+      this.#emitListenersIsolated('sessionComplete', endedSession);
       // The single reap-notification signal (§P3): terminal reaps may reach the
       // user; recovery-bounce reaps are silent. One emission, at the one chokepoint.
-      this.emit('sessionReaped', { session, reason, disposition, origin, midWork, workEvidence, ...(opts?.via ? { via: opts.via } : {}) });
+      this.#emitListenersIsolated('sessionReaped', {
+        session: endedSession,
+        reason,
+        disposition,
+        origin,
+        authorityScope,
+        midWork,
+        workEvidence,
+        ...(opts?.via ? { via: opts.via } : {}),
+      });
       this.idlePromptSince.delete(session.id);
       this.reapingSessions.delete(session.id);
       return { terminated: true };
     } finally {
       this.terminating.delete(sessionId);
+    }
+  }
+
+  /**
+   * The only non-lease-holder age-limit entrypoint. The caller is the local
+   * maintenance loop after it has independently proven age and positive idle.
+   * All remaining termination authority checks are re-evaluated downstream.
+   */
+  #terminateLocalAgeExpiredSession(sessionId: string): Promise<{ terminated: boolean; skipped?: string }> {
+    return this.#terminateSessionInternal(sessionId, 'age-limit', {
+      finalStatus: 'killed',
+      disposition: 'terminal',
+      localAgeLimitReapCapability: LOCAL_AGE_LIMIT_REAP_CAPABILITY,
+    });
+  }
+
+  /**
+   * Deliver an irreversible-transition lifecycle event to every listener even
+   * when one observer throws. `rawListeners` preserves EventEmitter's `once`
+   * wrapper semantics while direct invocation lets us isolate each callback.
+   */
+  #emitListenersIsolated(eventName: string, ...args: unknown[]): void {
+    for (const listener of this.rawListeners(eventName)) {
+      try {
+        Reflect.apply(listener, this, args);
+      } catch (err) {
+        console.error(`[SessionManager] ${eventName} listener failed; lifecycle transition remains authoritative:`, err);
+      }
     }
   }
 
@@ -1618,13 +1780,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
     this.monitorInterval = setInterval(() => {
       // Prevent overlapping monitor ticks
       if (this.monitoringInProgress) return;
-      this.monitorTick().catch(err => {
+      this.#monitorTick().catch(err => {
         console.error(`[SessionManager] Monitor tick error: ${err}`);
       });
     }, intervalMs);
   }
 
-  private async monitorTick(): Promise<void> {
+  async #monitorTick(): Promise<void> {
     this.monitoringInProgress = true;
     try {
       const running = this.state.listSessions({ status: 'running' });
@@ -1858,14 +2020,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
               }
               // Route through the single ReapAuthority (§P0) instead of an inline
               // kill: this restores the beforeSessionKill/sessionComplete emission,
-              // adds the sessionReaped signal + reap-log entry, applies the lease
-              // gate, and — critically — gains the P2 KEEP-guard's topic-bound
-              // grace, so a session that just received a user message is not
-              // age-killed out from under the user.
-              const ageKillResult = await this.terminateSession(session.id, 'age-limit', {
-                finalStatus: 'killed',
-                disposition: 'terminal',
-              });
+              // adds the sessionReaped signal + reap-log entry, applies the
+              // authority boundary (lease-holder or this private local-process
+              // capability), and — critically — gains the P2 KEEP-guard's
+              // topic-bound grace, so a session that just received a user
+              // message is not age-killed out from under the user.
+              const ageKillResult = await this.#terminateLocalAgeExpiredSession(session.id);
               if (ageKillResult.terminated) {
                 // Actually killed — drop any back-off state for the (now gone) session.
                 this.ageKillBackoff.recordKilled(session.id);
@@ -3957,7 +4117,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // KEEP-guard is bypassed via `knownDead` — the oracle has already proven
         // this session dead, and the guard's liveness-blind topic-state KEEPs would
         // otherwise pin a tombstone and re-create the death-spiral.
-        const r = await this.terminateSession(session.id, 'boot-purge-dead', {
+        const r = await this.#terminateSessionInternal(session.id, 'boot-purge-dead', {
           knownDead: true,
           finalStatus: 'completed',
         });
@@ -3972,7 +4132,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // the job reruns cleanly with fresh run-tracking; adopting an orphan REPL
         // whose run-id we no longer hold would silently never finalize). Operator
         // kill so the lease/KEEP-guards don't pin the orphan.
-        const r = await this.terminateSession(session.id, 'boot-reconcile-rerouted-job', {
+        const r = await this.#terminateSessionInternal(session.id, 'boot-reconcile-rerouted-job', {
           finalStatus: 'killed',
           disposition: 'terminal',
           origin: 'operator',

@@ -65,7 +65,7 @@ import { InMemoryImportTarget, runImport, type ImportRunResult } from '../feedba
 import { SecretStore } from '../core/SecretStore.js';
 import { secretKeyPaths } from '../core/SecretSync.js';
 import { fileURLToPath } from 'node:url';
-import type { SessionManager } from '../core/SessionManager.js';
+import type { SessionManager, SessionTerminateAuthority } from '../core/SessionManager.js';
 import type { StateManager } from '../core/StateManager.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
@@ -504,6 +504,7 @@ export class AgentServer {
   constructor(options: {
     config: InstarConfig;
     sessionManager: SessionManager;
+    terminateSessionAuthority?: SessionTerminateAuthority;
     /** Override the same-host apprenticeship peer read (tests/custom embeddings). */
     apprenticeshipPeerCycleReader?: (instanceId: string) => Promise<import('../monitoring/ApprenticeshipPeerCycleReader.js').ApprenticeshipPeerCycleRead>;
     state: StateManager;
@@ -3438,6 +3439,7 @@ export class AgentServer {
       capabilityRegistry: new CapabilityRegistryReceiver(),
       config: options.config,
       sessionManager: options.sessionManager,
+      terminateSessionAuthority: options.terminateSessionAuthority,
       state: options.state,
       scheduler: options.scheduler ?? null,
       dynamicMcpService,

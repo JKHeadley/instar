@@ -85,10 +85,10 @@ describe('Activity-aware session-timeout gate', () => {
     // When the activity check confirms idle, the kill path fires. Post
     // UNIFIED-SESSION-LIFECYCLE §P0 the inline kill is replaced by a route
     // through the single ReapAuthority: the warning still names the timeout +
-    // idle condition, then funnels through terminateSession('age-limit').
+    // idle condition, then funnels through the private local-age-limit entrypoint.
     expect(SM_SOURCE).toContain('exceeded timeout');
     expect(SM_SOURCE).toContain('and is idle');
-    expect(SM_SOURCE).toMatch(/terminateSession\(\s*session\.id,\s*'age-limit'/);
+    expect(SM_SOURCE).toMatch(/#terminateLocalAgeExpiredSession\(\s*session\.id\s*\)/);
   });
 
   it('does not skip idle-detection when deferring the timeout kill', () => {

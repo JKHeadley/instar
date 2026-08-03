@@ -12,6 +12,10 @@ import os from 'node:os';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const mockTmuxSessions = new Set<string>();
+const mockChildProcessControl = vi.hoisted(() => ({
+  killError: null as Error | null,
+  lastKillOptions: null as Record<string, unknown> | null,
+}));
 
 vi.mock('node:child_process', () => {
   const handle = (args?: string[]) => {
@@ -22,6 +26,7 @@ vi.mock('node:child_process', () => {
       return '';
     }
     if (args[0] === 'kill-session') {
+      if (mockChildProcessControl.killError) throw mockChildProcessControl.killError;
       const target = args[2]?.replace(/^=/, '');
       if (target) mockTmuxSessions.delete(target);
       return '';
@@ -34,7 +39,10 @@ vi.mock('node:child_process', () => {
     return '';
   };
   return {
-    execFileSync: vi.fn().mockImplementation((_cmd: string, args?: string[]) => handle(args)),
+    execFileSync: vi.fn().mockImplementation((_cmd: string, args?: string[], opts?: Record<string, unknown>) => {
+      if (args?.[0] === 'kill-session') mockChildProcessControl.lastKillOptions = opts ?? null;
+      return handle(args);
+    }),
     execFile: vi.fn().mockImplementation(
       (_cmd: string, args: string[], _opts: unknown, cb?: (e: Error | null, r: { stdout: string }) => void) => {
         if (typeof _opts === 'function') cb = _opts as typeof cb;
@@ -45,7 +53,7 @@ vi.mock('node:child_process', () => {
   };
 });
 
-import { SessionManager } from '../../src/core/SessionManager.js';
+import { SessionManager, type SessionTerminateAuthority } from '../../src/core/SessionManager.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { ReapGuard, type ReapGuardDeps } from '../../src/core/ReapGuard.js';
 import type { SessionManagerConfig } from '../../src/core/types.js';
@@ -54,6 +62,8 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
   let tmpDir: string;
   let state: StateManager;
   let manager: SessionManager;
+  let terminateAuthority: SessionTerminateAuthority;
+  let maintenanceTick: () => Promise<void>;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-terminate-'));
@@ -68,8 +78,13 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
       protectedSessions: ['my-project-server'],
       completionPatterns: ['Session complete'],
     };
-    manager = new SessionManager(config, state);
+    manager = new SessionManager(config, state, {
+      bindTerminateAuthority: (authority) => { terminateAuthority = authority; },
+      bindMaintenanceTickForTesting: (tick) => { maintenanceTick = tick; },
+    });
     mockTmuxSessions.clear();
+    mockChildProcessControl.killError = null;
+    mockChildProcessControl.lastKillOptions = null;
   });
 
   afterEach(() => {
@@ -202,6 +217,47 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
       { minAgeMs: 0 }, // no spawn-grace so the active-process guard is what fires
     );
 
+  type MonitorSeam = {
+    isSessionAliveAsync(): Promise<boolean>;
+    recordBuildContextMaybeAsync(): Promise<void>;
+    detectCompletionMaybeAsync(): Promise<boolean>;
+    captureMeaningfulTailMaybeAsync(): Promise<string>;
+    hasActiveProcessesMaybeAsync(): Promise<boolean>;
+    isTranscriptRecentlyActive(): boolean;
+  };
+
+  const runLocalExpiredMonitorTick = async (
+    name: string,
+    beforeTick?: () => void,
+  ): Promise<{ id: string; blocked: string[]; authorityScopes: string[] }> => {
+    const s = await spawn(name);
+    state.saveSession({
+      ...s,
+      startedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+      maxDurationMinutes: 1,
+    });
+
+    const seam = manager as unknown as MonitorSeam;
+    seam.isSessionAliveAsync = async () => true;
+    seam.recordBuildContextMaybeAsync = async () => {};
+    seam.detectCompletionMaybeAsync = async () => false;
+    seam.captureMeaningfulTailMaybeAsync = async () => 'bypass permissions on';
+    seam.hasActiveProcessesMaybeAsync = async () => false;
+    seam.isTranscriptRecentlyActive = () => false;
+
+    const blocked: string[] = [];
+    const authorityScopes: string[] = [];
+    manager.on('reapBlocked', (event: { skipped?: string }) => {
+      if (event.skipped) blocked.push(event.skipped);
+    });
+    manager.on('sessionReaped', (event: { authorityScope?: string }) => {
+      if (event.authorityScope) authorityScopes.push(event.authorityScope);
+    });
+    beforeTick?.();
+    await maintenanceTick();
+    return { id: s.id, blocked, authorityScopes };
+  };
+
   it('without the flag, an active-process keep vetoes the reap (skipped:active-process)', async () => {
     manager.setReapGuard(guardWith());
     const s = await spawn('ap-1');
@@ -213,7 +269,7 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
   it('bypassActiveProcessKeep:true lifts the active-process veto ⇒ terminates', async () => {
     manager.setReapGuard(guardWith());
     const s = await spawn('ap-2');
-    const r = await manager.terminateSession(s.id, 'reaped-idle', { bypassActiveProcessKeep: true });
+    const r = await terminateAuthority(s.id, 'reaped-idle', { bypassActiveProcessKeep: true });
     expect(r.terminated).toBe(true);
     expect(state.getSession(s.id)!.status).toBe('completed');
   });
@@ -227,7 +283,7 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
       recentUserMessage: () => true,
     }));
     const s = await spawn('ap-3');
-    const r = await manager.terminateSession(s.id, 'reaped-idle', { bypassActiveProcessKeep: true });
+    const r = await terminateAuthority(s.id, 'reaped-idle', { bypassActiveProcessKeep: true });
     expect(r).toEqual({ terminated: false, skipped: 'recent-user-message' });
     expect(state.getSession(s.id)!.status).toBe('running');
   });
@@ -248,7 +304,7 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
   it('bypassRecentUserMessageForConfirmedMove:true lifts ONLY recent-user-message ⇒ terminates', async () => {
     manager.setReapGuard(guardWith({ hasActiveProcesses: () => false, topicBinding: () => 1, recentUserMessage: () => true }));
     const s = await spawn('move-2');
-    const r = await manager.terminateSession(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
+    const r = await terminateAuthority(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
     expect(r.terminated).toBe(true);
     expect(state.getSession(s.id)!.status).toBe('completed');
   });
@@ -258,7 +314,7 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     // only, so this session must still be KEPT.
     manager.setReapGuard(guardWith({ hasActiveProcesses: () => true }));
     const s = await spawn('move-3');
-    const r = await manager.terminateSession(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
+    const r = await terminateAuthority(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
     expect(r).toEqual({ terminated: false, skipped: 'active-process' });
     expect(state.getSession(s.id)!.status).toBe('running');
   });
@@ -269,7 +325,7 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
       activeSubagentCount: () => 2, // a live subagent — must still veto
     }));
     const s = await spawn('move-4');
-    const r = await manager.terminateSession(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
+    const r = await terminateAuthority(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
     expect(r.terminated).toBe(false);
     expect(r.skipped).toBe('active-subagent');
     expect(state.getSession(s.id)!.status).toBe('running');
@@ -292,7 +348,7 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
       activeSubagentCount: () => 2,  // #8 — live, must win
     }));
     const s = await spawn('move-cooc-1');
-    const r = await manager.terminateSession(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
+    const r = await terminateAuthority(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
     expect(r).toEqual({ terminated: false, skipped: 'active-subagent' });
     expect(state.getSession(s.id)!.status).toBe('running'); // live session preserved
   });
@@ -308,7 +364,7 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
       activeCommitmentForTopic: () => true, // #7 — open commitment, must win
     }));
     const s = await spawn('move-cooc-2');
-    const r = await manager.terminateSession(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
+    const r = await terminateAuthority(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
     expect(r).toEqual({ terminated: false, skipped: 'open-commitment' });
     expect(state.getSession(s.id)!.status).toBe('running');
   });
@@ -322,7 +378,7 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
       recentUserMessage: () => true, // the ONLY live guard, and it is bypassed
     }));
     const s = await spawn('move-cooc-3');
-    const r = await manager.terminateSession(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
+    const r = await terminateAuthority(s.id, 'topic moved', { bypassRecentUserMessageForConfirmedMove: true });
     expect(r.terminated).toBe(true);
     expect(state.getSession(s.id)!.status).toBe('completed');
   });
@@ -337,18 +393,313 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
       mainProcessActive: () => true,         // #11 — live, must win
     }));
     const s = await spawn('ap-cooc-1');
-    const r = await manager.terminateSession(s.id, 'reaped-idle', { bypassActiveProcessKeep: true });
+    const r = await terminateAuthority(s.id, 'reaped-idle', { bypassActiveProcessKeep: true });
     expect(r).toEqual({ terminated: false, skipped: 'main-process-active' });
     expect(state.getSession(s.id)!.status).toBe('running');
   });
 
-  // ── bypassLeaseForTopicMovedCloseout (F8 lease carve-out, roadmap 0.6) ──────
+  // ── runtime-private topic-moved closeout authority (F8) ─────────────────────
   // The machine a topic moves AWAY from is by definition usually NOT the
   // serving-lease holder, so the lease gate structurally vetoed the exact
   // closeout the transfer requires (`skipped:'not-lease-holder'` ×5 → breaker
   // give-up → leftover session survived; test-as-self matrix 2026-07-02, F8).
   // The flag lifts ONLY the lease gate — protected, CAS, and every KEEP-guard
   // are re-checked and still veto. Both sides of every boundary:
+
+  it('REPRO: a non-lease-holder reaps its own over-age idle session through the maintenance path', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false);
+    const { id, blocked, authorityScopes } = await runLocalExpiredMonitorTick('local-expired-on-standby', () => {
+      // Production standby posture: the coordinator makes the state tree
+      // read-only, while pool participation allows only per-session writes.
+      state.setSessionPoolActive(true);
+      state.setReadOnly(true);
+    });
+
+    // Before the fix this remains `running` and records `not-lease-holder`:
+    // the local monitor proves age + idleness, then the global lease gate
+    // vetoes the machine's cleanup of its own tmux process.
+    expect(state.getSession(id)).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+    expect(blocked).not.toContain('not-lease-holder');
+    expect(authorityScopes).toEqual(['local-age-limit']);
+  });
+
+  it('a public autonomous age-limit request on a non-holder remains lease-refused', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false);
+    const s = await spawn('public-age-limit-standby');
+    const r = await manager.terminateSession(s.id, 'age-limit');
+    expect(r).toEqual({ terminated: false, skipped: 'not-lease-holder' });
+    expect(state.getSession(s.id)!.status).toBe('running');
+  });
+
+  it('the local age capability minter is runtime-private, not a callable prototype method', () => {
+    const runtimeManager = manager as unknown as Record<string, unknown>;
+    expect(runtimeManager.terminateLocalAgeExpiredSession).toBeUndefined();
+    expect(Object.getOwnPropertyNames(Object.getPrototypeOf(manager))).not.toContain(
+      'terminateLocalAgeExpiredSession',
+    );
+    expect(runtimeManager.terminateSessionInternal).toBeUndefined();
+    expect(Object.getOwnPropertyNames(Object.getPrototypeOf(manager))).not.toContain(
+      'terminateSessionInternal',
+    );
+  });
+
+  it('a startup tick before ReapGuard installation cannot mint local age authority', async () => {
+    manager.setAwakeChecker(() => false);
+    const { id, blocked } = await runLocalExpiredMonitorTick('local-age-before-guard', () => {
+      state.setSessionPoolActive(true);
+      state.setReadOnly(true);
+    });
+    expect(state.getSession(id)!.status).toBe('running');
+    expect(blocked).toContain('not-lease-holder');
+    expect(mockTmuxSessions.has(state.getSession(id)!.tmuxSession)).toBe(true);
+  });
+
+  it('a pure read-only standby refuses before touching tmux or durable state', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false);
+    let beforeKill = 0;
+    manager.on('beforeSessionKill', () => { beforeKill++; });
+    const { id, blocked } = await runLocalExpiredMonitorTick('local-age-pure-standby', () => {
+      state.setReadOnly(true); // pool-active intentionally remains false
+    });
+    const saved = state.getSession(id)!;
+    expect(saved.status).toBe('running');
+    expect(blocked).toContain('not-lease-holder');
+    expect(beforeKill).toBe(0);
+    expect(mockTmuxSessions.has(saved.tmuxSession)).toBe(true);
+  });
+
+  it('an ownership change between preflight and commit refuses before touching tmux', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false);
+    let beforeKill = 0;
+    manager.on('beforeSessionKill', () => { beforeKill++; });
+    let saveSpy: ReturnType<typeof vi.spyOn> | undefined;
+    const { id, blocked } = await runLocalExpiredMonitorTick('local-age-ownership-race', () => {
+      state.setSessionPoolActive(true);
+      state.setReadOnly(true);
+      // Preflight was admitted; model the ownership CAS changing immediately
+      // before the durable transition. The write-first protocol must not kill.
+      saveSpy = vi.spyOn(state, 'saveSession').mockImplementation(() => {
+        throw new Error('StateManager is read-only [write-refused:not-owner]');
+      });
+    });
+    saveSpy?.mockRestore();
+    const saved = state.getSession(id)!;
+    expect(saved.status).toBe('running');
+    expect(blocked).toContain('local-write-refused');
+    expect(beforeKill).toBe(1);
+    expect(mockTmuxSessions.has(saved.tmuxSession)).toBe(true);
+  });
+
+  it('a throwing before-kill listener cannot strand a committed local cleanup', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false);
+    manager.on('beforeSessionKill', () => { throw new Error('listener exploded'); });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { id, blocked, authorityScopes } = await runLocalExpiredMonitorTick(
+      'local-age-listener-throws',
+      () => {
+        state.setSessionPoolActive(true);
+        state.setReadOnly(true);
+      },
+    );
+
+    consoleSpy.mockRestore();
+    const saved = state.getSession(id)!;
+    expect(saved).toMatchObject({ status: 'killed', endedReason: 'age-limit' });
+    expect(mockTmuxSessions.has(saved.tmuxSession)).toBe(false);
+    expect(blocked).toEqual([]);
+    expect(authorityScopes).toEqual(['local-age-limit']);
+  });
+
+  it('a local tmux kill failure compensates state and emits no false reap', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false);
+    mockChildProcessControl.killError = new Error('tmux transport failure');
+    const { id, blocked, authorityScopes } = await runLocalExpiredMonitorTick(
+      'local-age-kill-fails',
+      () => {
+        state.setSessionPoolActive(true);
+        state.setReadOnly(true);
+      },
+    );
+
+    const saved = state.getSession(id)!;
+    expect(saved.status).toBe('running');
+    expect(saved.endedAt).toBeUndefined();
+    expect(saved.endedReason).toBeUndefined();
+    expect(mockTmuxSessions.has(saved.tmuxSession)).toBe(true);
+    expect(blocked).toContain('tmux-kill-failed');
+    expect(authorityScopes).toEqual([]);
+  });
+
+  it('an arbitrary public origin label is normalized to autonomous authority', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false);
+    const s = await spawn('forged-origin-on-standby');
+    const r = await manager.terminateSession(s.id, 'age-limit', {
+      origin: 'anything',
+    } as Parameters<SessionManager['terminateSession']>[2] & { origin: string });
+
+    expect(r).toEqual({ terminated: false, skipped: 'not-lease-holder' });
+    expect(state.getSession(s.id)!.status).toBe('running');
+    expect(mockTmuxSessions.has(s.tmuxSession)).toBe(true);
+  });
+
+  it.each([
+    { option: 'knownDead', expected: 'recent-user-message', deps: { topicBinding: () => 1, recentUserMessage: () => true, hasActiveProcesses: () => false } },
+    { option: 'bypassRecoveryFlag', expected: 'recovery-in-flight', deps: { isRecoveryActive: () => true, hasActiveProcesses: () => false } },
+    { option: 'bypassActiveProcessKeep', expected: 'active-process', deps: {} },
+    { option: 'bypassRecentUserMessageForConfirmedMove', expected: 'recent-user-message', deps: { topicBinding: () => 1, recentUserMessage: () => true, hasActiveProcesses: () => false } },
+  ])('public callers cannot forge the $option guard bypass', async ({ option, expected, deps }) => {
+    manager.setReapGuard(guardWith(deps));
+    const s = await spawn(`forged-${option}`);
+    const r = await manager.terminateSession(s.id, 'forged-public-bypass', {
+      [option]: true,
+    } as Parameters<SessionManager['terminateSession']>[2] & Record<string, boolean>);
+    expect(r).toEqual({ terminated: false, skipped: expected });
+    expect(state.getSession(s.id)!.status).toBe('running');
+    expect(mockTmuxSessions.has(s.tmuxSession)).toBe(true);
+  });
+
+  it('a trusted operator kill reports tmux failure without changing state or emitting success', async () => {
+    const s = await spawn('operator-kill-fails');
+    mockChildProcessControl.killError = new Error('tmux transport failure');
+    let reaped = 0;
+    manager.on('sessionReaped', () => { reaped++; });
+    const r = await terminateAuthority(s.id, 'operator-kill', {
+      origin: 'operator',
+      finalStatus: 'killed',
+    });
+    expect(r).toEqual({ terminated: false, skipped: 'tmux-kill-failed' });
+    expect(state.getSession(s.id)!.status).toBe('running');
+    expect(mockTmuxSessions.has(s.tmuxSession)).toBe(true);
+    expect(reaped).toBe(0);
+  });
+
+  it('the synchronous tmux kill timeout is enforced with SIGKILL', async () => {
+    const s = await spawn('bounded-sync-kill');
+    const r = await terminateAuthority(s.id, 'operator-kill', {
+      origin: 'operator',
+      finalStatus: 'killed',
+    });
+    expect(r).toEqual({ terminated: true });
+    expect(mockChildProcessControl.lastKillOptions).toMatchObject({
+      timeout: 9000,
+      killSignal: 'SIGKILL',
+    });
+  });
+
+  it('a trusted operator kill fails closed when a listener revokes write admission before commit', async () => {
+    const s = await spawn('operator-write-race');
+    manager.on('beforeSessionKill', () => { state.setReadOnly(true); });
+    const r = await terminateAuthority(s.id, 'operator-kill', {
+      origin: 'operator',
+      finalStatus: 'killed',
+    });
+    expect(r).toEqual({ terminated: false, skipped: 'local-write-refused' });
+    expect(state.getSession(s.id)).toMatchObject({ status: 'running' });
+    expect(mockTmuxSessions.has(s.tmuxSession)).toBe(true);
+  });
+
+  it('listener-side admission loss wins before a simultaneous tmux transport failure', async () => {
+    const s = await spawn('operator-write-and-kill-race');
+    mockChildProcessControl.killError = new Error('tmux transport failure');
+    manager.on('beforeSessionKill', () => { state.setReadOnly(true); });
+    const r = await terminateAuthority(s.id, 'operator-kill', {
+      origin: 'operator',
+      finalStatus: 'killed',
+    });
+    expect(r).toEqual({ terminated: false, skipped: 'local-write-refused' });
+    expect(state.getSession(s.id)).toMatchObject({ status: 'running' });
+    expect(mockTmuxSessions.has(s.tmuxSession)).toBe(true);
+  });
+
+  it('post-kill listener failures cannot suppress success or the reap audit event', async () => {
+    const s = await spawn('operator-post-kill-listener-throws');
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const observed: string[] = [];
+    manager.on('sessionComplete', () => { throw new Error('first completion listener exploded'); });
+    manager.on('sessionComplete', () => { observed.push('completion'); });
+    manager.on('sessionReaped', () => { throw new Error('first reap listener exploded'); });
+    manager.on('sessionReaped', () => { observed.push('reap'); });
+
+    const r = await terminateAuthority(s.id, 'operator-kill', {
+      origin: 'operator',
+      finalStatus: 'killed',
+    });
+
+    consoleSpy.mockRestore();
+    expect(r).toEqual({ terminated: true });
+    expect(state.getSession(s.id)).toMatchObject({ status: 'killed', endedReason: 'operator-kill' });
+    expect(mockTmuxSessions.has(s.tmuxSession)).toBe(false);
+    expect(observed).toEqual(['completion', 'reap']);
+  });
+
+  it.each([
+    {
+      label: 'recent user message',
+      expected: 'recent-user-message',
+      deps: { topicBinding: () => 1, recentUserMessage: () => true },
+    },
+    {
+      label: 'open commitment',
+      expected: 'open-commitment',
+      deps: {
+        topicBinding: () => 1,
+        recentUserMessage: (_topicId: number, withinMs: number) => withinMs > 30 * 60_000,
+        activeCommitmentForTopic: () => true,
+      },
+    },
+    {
+      label: 'in-flight structural work',
+      expected: 'structural-long-work',
+      deps: { topicBinding: () => 1, buildOrAutonomousActive: () => true },
+    },
+    {
+      label: 'recovery in flight',
+      expected: 'recovery-in-flight',
+      deps: { isRecoveryActive: () => true },
+    },
+  ])('the local age capability does not bypass $label', async ({ expected, deps }) => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false, ...deps }));
+    manager.setAwakeChecker(() => false);
+    const { id, blocked } = await runLocalExpiredMonitorTick(`local-age-kept-${expected}`);
+    expect(state.getSession(id)!.status).toBe('running');
+    expect(blocked).toContain(expected);
+  });
+
+  it('the protected-session floor still vetoes local standby age cleanup', async () => {
+    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
+    manager.setAwakeChecker(() => false);
+    const protectedSession = {
+      id: 'protected-local-age', name: 'protected-local-age', status: 'running' as const,
+      tmuxSession: 'my-project-server',
+      startedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+      maxDurationMinutes: 1,
+      prompt: 'p',
+    };
+    state.saveSession(protectedSession);
+    const seam = manager as unknown as MonitorSeam;
+    seam.isSessionAliveAsync = async () => true;
+    seam.recordBuildContextMaybeAsync = async () => {};
+    seam.detectCompletionMaybeAsync = async () => false;
+    seam.captureMeaningfulTailMaybeAsync = async () => 'bypass permissions on';
+    seam.hasActiveProcessesMaybeAsync = async () => false;
+    seam.isTranscriptRecentlyActive = () => false;
+    await maintenanceTick();
+    expect(state.getSession(protectedSession.id)!.status).toBe('running');
+  });
+
+  it('the local-age authority workflow is absent from the runtime prototype', () => {
+    const runtime = manager as unknown as Record<string, unknown>;
+    expect(runtime.monitorTick).toBeUndefined();
+    expect(Object.getOwnPropertyNames(Object.getPrototypeOf(manager))).not.toContain('monitorTick');
+  });
 
   it('standby machine WITHOUT the flag → skipped:not-lease-holder (today\'s veto preserved)', async () => {
     manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
@@ -359,54 +710,19 @@ describe('SessionManager.terminateSession (single-writer CAS)', () => {
     expect(state.getSession(s.id)!.status).toBe('running');
   });
 
-  it('standby machine WITH bypassLeaseForTopicMovedCloseout → the closeout terminates (zero leftover)', async () => {
+  it('a public caller cannot forge closeout authority with a reason string or hidden option', async () => {
     manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
     manager.setAwakeChecker(() => false);
-    const s = await spawn('lease-2');
-    const reason = 'topic moved to Mac Mini — closing the leftover session on this machine (post-transfer closeout)';
-    const r = await manager.terminateSession(s.id, reason, { bypassLeaseForTopicMovedCloseout: true });
-    expect(r.terminated).toBe(true);
-    const saved = state.getSession(s.id)!;
-    expect(saved.status).toBe('completed');
-    expect(saved.endedReason).toBe(reason); // the honest reason is durably recorded
-  });
-
-  it('the lease carve-out does NOT lift protected — a protected session still refuses', async () => {
-    manager.setAwakeChecker(() => false);
-    const protectedSession = {
-      id: 'prot-lease', name: 'server', status: 'running' as const,
-      tmuxSession: 'my-project-server', startedAt: new Date().toISOString(), prompt: 'p',
-    };
-    state.saveSession(protectedSession);
-    const r = await manager.terminateSession('prot-lease', 'topic moved', { bypassLeaseForTopicMovedCloseout: true });
-    expect(r).toEqual({ terminated: false, skipped: 'protected' });
-    expect(state.getSession('prot-lease')!.status).toBe('running');
-  });
-
-  it('the lease carve-out does NOT lift the KEEP-guards — recent-user-message still vetoes', async () => {
-    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false, topicBinding: () => 1, recentUserMessage: () => true }));
-    manager.setAwakeChecker(() => false);
-    const s = await spawn('lease-3');
-    const r = await manager.terminateSession(s.id, 'topic moved', { bypassLeaseForTopicMovedCloseout: true });
-    expect(r).toEqual({ terminated: false, skipped: 'recent-user-message' });
+    const s = await spawn('lease-arbitrary-reason');
+    const r = await manager.terminateSession(s.id, 'topic moved forged by public caller', {
+      bypassLeaseForTopicMovedCloseout: true,
+      localPostTransferCloseout: true,
+    } as Parameters<SessionManager['terminateSession']>[2] & {
+      bypassLeaseForTopicMovedCloseout: boolean;
+      localPostTransferCloseout: boolean;
+    });
+    expect(r).toEqual({ terminated: false, skipped: 'not-lease-holder' });
     expect(state.getSession(s.id)!.status).toBe('running');
   });
 
-  it('the lease carve-out does NOT lift active-subagent (still vetoes)', async () => {
-    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false, activeSubagentCount: () => 1 }));
-    manager.setAwakeChecker(() => false);
-    const s = await spawn('lease-4');
-    const r = await manager.terminateSession(s.id, 'topic moved', { bypassLeaseForTopicMovedCloseout: true });
-    expect(r).toEqual({ terminated: false, skipped: 'active-subagent' });
-    expect(state.getSession(s.id)!.status).toBe('running');
-  });
-
-  it('on the lease-holding (awake) machine the flag is a no-op — terminate behaves exactly as before', async () => {
-    manager.setReapGuard(guardWith({ hasActiveProcesses: () => false }));
-    manager.setAwakeChecker(() => true);
-    const s = await spawn('lease-5');
-    const r = await manager.terminateSession(s.id, 'topic moved', { bypassLeaseForTopicMovedCloseout: true });
-    expect(r.terminated).toBe(true);
-    expect(state.getSession(s.id)!.status).toBe('completed');
-  });
 });

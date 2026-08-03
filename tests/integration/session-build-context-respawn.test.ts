@@ -69,6 +69,7 @@ describe('Session build-context respawn restore (integration)', () => {
   let stateDir: string;
   let state: StateManager;
   let sm: SessionManager;
+  let maintenanceTick: () => Promise<void>;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'session-build-context-respawn-'));
@@ -86,7 +87,9 @@ describe('Session build-context respawn restore (integration)', () => {
       completionPatterns: ['Session complete'],
       port: 4044,
       respawnBuildContext: { enabled: true, maxAgeMs: 60_000 },
-    }, state);
+    }, state, {
+      bindMaintenanceTickForTesting: (tick) => { maintenanceTick = tick; },
+    });
     tmuxSessions.clear();
     paneCwds.clear();
   });
@@ -116,7 +119,7 @@ describe('Session build-context respawn restore (integration)', () => {
       startedAt: new Date(Date.now() - 20_000).toISOString(),
     } as Session);
 
-    await (sm as any).monitorTick();
+    await maintenanceTick();
     tmuxSessions.delete(tmuxSession);
 
     await sm.spawnInteractiveSession('CONTINUATION — resume this topic', 'topic-1052', {
@@ -143,7 +146,7 @@ describe('Session build-context respawn restore (integration)', () => {
       startedAt: new Date(Date.now() - 20_000).toISOString(),
     } as Session);
 
-    await (sm as any).monitorTick();
+    await maintenanceTick();
     tmuxSessions.delete(tmuxSession);
 
     await sm.spawnInteractiveSession('CONTINUATION — home only', 'topic-home', {

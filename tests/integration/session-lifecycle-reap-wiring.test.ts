@@ -49,11 +49,12 @@ vi.mock('node:child_process', () => {
   };
 });
 
-import { SessionManager } from '../../src/core/SessionManager.js';
+import { SessionManager, type SessionTerminateAuthority } from '../../src/core/SessionManager.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import { ReapGuard } from '../../src/core/ReapGuard.js';
 import { ReapNotifier } from '../../src/monitoring/ReapNotifier.js';
 import { ReapLog } from '../../src/monitoring/ReapLog.js';
+import { SessionReaper, type SessionReaperDeps } from '../../src/monitoring/SessionReaper.js';
 import type { SessionManagerConfig, Session } from '../../src/core/types.js';
 
 describe('session-lifecycle reap wiring (integration)', () => {
@@ -61,6 +62,7 @@ describe('session-lifecycle reap wiring (integration)', () => {
   let stateDir: string;
   let state: StateManager;
   let manager: SessionManager;
+  let terminateAuthority: SessionTerminateAuthority;
   let log: ReapLog;
   let notices: Array<{ topicId: number; text: string }>;
   let notifier: ReapNotifier;
@@ -76,7 +78,9 @@ describe('session-lifecycle reap wiring (integration)', () => {
       tmuxPath: '/usr/bin/tmux', claudePath: '/usr/local/bin/claude', projectDir: tmpDir,
       maxSessions: 5, protectedSessions: ['proj-server'], completionPatterns: ['done'],
     };
-    manager = new SessionManager(config, state);
+    manager = new SessionManager(config, state, {
+      bindTerminateAuthority: (authority) => { terminateAuthority = authority; },
+    });
     mockTmuxSessions.clear();
     awake = true; relayLeased = null;
 
@@ -121,6 +125,53 @@ describe('session-lifecycle reap wiring (integration)', () => {
 
   const spawn = (name: string) => manager.spawnSession({ name, prompt: 'p' });
 
+  const closeoutThroughVerifiedReaper = async (
+    targetTmux?: string,
+    trustedAuthority = true,
+  ): Promise<{ terminated: boolean; skipped?: string } | undefined> => {
+    let result: { terminated: boolean; skipped?: string } | undefined;
+    const deps: SessionReaperDeps = {
+      listRunningSessions: () => state.listSessions().filter((s) => s.status === 'running'),
+      captureOutput: () => 'working',
+      hasActiveProcesses: () => true,
+      frameworkForSession: () => 'claude-code',
+      isRecoveryActive: () => false,
+      isRelayLeaseActive: (id) => id === relayLeased,
+      hasPendingInjection: () => false,
+      topicBinding: (tmux) => !targetTmux || tmux === targetTmux ? 42 : null,
+      topicOwnerElsewhere: () => 'Mac Mini',
+      recentUserMessage: () => false,
+      activeCommitmentForTopic: () => false,
+      activeSubagentCount: () => 0,
+      buildOrAutonomousActive: () => false,
+      protectedSessions: () => ['proj-server'],
+      pressure: () => ({ tier: 'normal' }),
+      terminate: async (id, reason, opts) => {
+        result = trustedAuthority
+          ? await terminateAuthority(id, reason, opts)
+          : await manager.terminateSession(
+              id,
+              reason,
+              opts as Parameters<SessionManager['terminateSession']>[2],
+            );
+        return result;
+      },
+      markReaping: () => {},
+      clearReaping: () => {},
+    };
+    const reaper = new SessionReaper(deps, {
+      enabled: true,
+      dryRun: false,
+      minAgeMinutes: 0,
+      topicMovedCloseout: true,
+      topicMovedConfirmTicks: 1,
+      maxReapsPerTick: 5,
+      maxReapsPerHour: 20,
+    });
+    await reaper.tick();
+    return result;
+  };
+
   it('autonomous terminal reap → logged "reaped" + exactly one user notice', async () => {
     const s = await spawn('job-a');
     const r = await manager.terminateSession(s.id, 'idle-zombie', { disposition: 'terminal' });
@@ -140,9 +191,7 @@ describe('session-lifecycle reap wiring (integration)', () => {
     expect(log.read().at(-1)).toMatchObject({ type: 'reaped', disposition: 'recovery-bounce' });
   });
 
-  it('operator reap → logged, SILENT, and bypasses guard + protected', async () => {
-    // Protected + relay-leased: an autonomous reap would be refused twice over,
-    // but an operator kill must always happen.
+  it('a public operator label is untrusted and cannot bypass guard + protected', async () => {
     relayLeased = 'will-set';
     const protectedSession: Session = {
       id: 'op-1', name: 'proj-server', status: 'running', tmuxSession: 'proj-server',
@@ -150,12 +199,37 @@ describe('session-lifecycle reap wiring (integration)', () => {
     } as Session;
     state.saveSession(protectedSession);
     mockTmuxSessions.add('proj-server');
-    const r = await manager.terminateSession('op-1', 'operator-kill', { origin: 'operator', finalStatus: 'killed' });
-    expect(r.terminated).toBe(true);
+    const r = await manager.terminateSession('op-1', 'operator-kill', {
+      origin: 'operator',
+      finalStatus: 'killed',
+    } as Parameters<SessionManager['terminateSession']>[2] & { origin: 'operator' });
+    expect(r).toEqual({ terminated: false, skipped: 'protected' });
     await notifier.flush();
     expect(notices).toHaveLength(0); // operator kills are silent
-    expect(log.read().at(-1)).toMatchObject({ type: 'reaped', origin: 'operator' });
-    expect(state.getSession('op-1')!.status).toBe('killed');
+    expect(log.read().at(-1)).toMatchObject({ type: 'skipped', origin: 'autonomous', skipped: 'protected' });
+    expect(state.getSession('op-1')!.status).toBe('running');
+  });
+
+  it('the birth-bound operator authority bypasses guards but remains logged and silent', async () => {
+    const protectedSession: Session = {
+      id: 'op-trusted', name: 'proj-server', status: 'running', tmuxSession: 'proj-server',
+      startedAt: new Date().toISOString(), prompt: 'p',
+    } as Session;
+    state.saveSession(protectedSession);
+    mockTmuxSessions.add('proj-server');
+    awake = false;
+    relayLeased = protectedSession.id;
+    const r = await terminateAuthority(protectedSession.id, 'operator-kill', {
+      origin: 'operator', finalStatus: 'killed',
+    });
+    expect(r).toEqual({ terminated: true });
+    await notifier.flush();
+    expect(notices).toHaveLength(0);
+    expect(log.read().at(-1)).toMatchObject({
+      type: 'reaped', origin: 'operator', session: 'proj-server', reason: 'operator-kill',
+    });
+    expect(state.getSession(protectedSession.id)!.status).toBe('killed');
+    expect(mockTmuxSessions.has(protectedSession.tmuxSession)).toBe(false);
   });
 
   it('guarded (relay-lease) session → refused, logged "skipped", survives', async () => {
@@ -223,7 +297,7 @@ describe('session-lifecycle reap wiring (integration)', () => {
     expect(log.read().at(-1)).toMatchObject({ type: 'skipped', skipped: 'active-process' });
 
     // With the bypass (what performReap now sends): the kill actually lands.
-    const reaped = await manager.terminateSession(s.id, 'reaped-idle', { bypassActiveProcessKeep: true });
+    const reaped = await terminateAuthority(s.id, 'reaped-idle', { bypassActiveProcessKeep: true });
     expect(reaped.terminated).toBe(true);
     expect(state.getSession(s.id)!.status).toBe('completed');
     expect(log.read().at(-1)).toMatchObject({ type: 'reaped', reason: 'reaped-idle' });
@@ -234,12 +308,13 @@ describe('session-lifecycle reap wiring (integration)', () => {
   // the lease holder) tried to close its own leftover session and the lease
   // gate vetoed every attempt (skipped:'not-lease-holder' ×5 → breaker gave
   // up → duplicate session survived). The carve-out lifts ONLY the lease gate.
-  it('F8: standby machine + bypassLeaseForTopicMovedCloseout → closeout LANDS, reap-log records the honest reason', async () => {
+  it('F8: standby machine + runtime-private local closeout authority → closeout lands', async () => {
     const s = await spawn('moved-topic-leftover');
     awake = false; // this machine lost the lease when the topic moved away
     const reason = 'topic moved to Mac Mini — closing the leftover session on this machine (post-transfer closeout)';
-    const r = await manager.terminateSession(s.id, reason, { bypassLeaseForTopicMovedCloseout: true });
-    expect(r.terminated).toBe(true);
+    const r = await closeoutThroughVerifiedReaper();
+    expect(r).toBeDefined();
+    expect(r!.terminated).toBe(true);
     expect(state.getSession(s.id)!.status).toBe('completed'); // ZERO leftover sessions
     expect(log.read().at(-1)).toMatchObject({ type: 'reaped', session: 'moved-topic-leftover', reason });
   });
@@ -252,9 +327,8 @@ describe('session-lifecycle reap wiring (integration)', () => {
     } as Session;
     state.saveSession(protectedSession);
     mockTmuxSessions.add('proj-server');
-    const r = await manager.terminateSession('prot-f8', 'topic moved to Mac Mini — closing the leftover session on this machine (post-transfer closeout)', { bypassLeaseForTopicMovedCloseout: true });
-    expect(r.terminated).toBe(false);
-    expect(r.skipped).toBe('protected');
+    const r = await closeoutThroughVerifiedReaper();
+    expect(r).toEqual({ terminated: false, skipped: 'protected' });
     expect(state.getSession('prot-f8')!.status).toBe('running');
     expect(log.read().at(-1)).toMatchObject({ type: 'skipped', skipped: 'protected' });
   });
@@ -263,18 +337,31 @@ describe('session-lifecycle reap wiring (integration)', () => {
     const s = await spawn('moved-but-guarded');
     relayLeased = s.id; // a live KEEP-guard reason
     awake = false;
-    const r = await manager.terminateSession(s.id, 'topic moved to Mac Mini — closing the leftover session on this machine (post-transfer closeout)', { bypassLeaseForTopicMovedCloseout: true });
-    expect(r.terminated).toBe(false);
-    expect(r.skipped).toBe('relay-lease'); // vetoed by the guard, NOT by the lease
+    const r = await closeoutThroughVerifiedReaper();
+    expect(r).toEqual({ terminated: false, skipped: 'relay-lease' });
     expect(state.getSession(s.id)!.status).toBe('running');
     expect(log.read().at(-1)).toMatchObject({ type: 'skipped', skipped: 'relay-lease' });
   });
 
-  it('F8 boundary: a standby terminate WITHOUT the flag keeps today\'s not-lease-holder veto', async () => {
+  it('F8 boundary: ordinary standby terminate keeps the not-lease-holder veto', async () => {
     const s = await spawn('ordinary-standby-kill');
     awake = false;
     const r = await manager.terminateSession(s.id, 'idle-zombie');
     expect(r).toEqual({ terminated: false, skipped: 'not-lease-holder' });
     expect(state.getSession(s.id)!.status).toBe('running');
+  });
+
+  it('F8 a fabricated first reaper cannot mint authority through the public manager', async () => {
+    const target = await spawn('attacker-first-closeout');
+    awake = false;
+    const forgedFirst = await closeoutThroughVerifiedReaper(target.tmuxSession, false);
+    expect(forgedFirst).toEqual({ terminated: false, skipped: 'not-lease-holder' });
+    expect(state.getSession(target.id)!.status).toBe('running');
+    expect(mockTmuxSessions.has(target.tmuxSession)).toBe(true);
+
+    // The real composition-root closure remains usable; there is no claim race.
+    const trusted = await closeoutThroughVerifiedReaper(target.tmuxSession, true);
+    expect(trusted).toEqual({ terminated: true });
+    expect(state.getSession(target.id)!.status).toBe('completed');
   });
 });

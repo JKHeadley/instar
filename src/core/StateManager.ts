@@ -135,6 +135,19 @@ export class StateManager {
   }
 
   /**
+   * Assert that the exact saveSession write for this session is currently
+   * admissible, without mutating state. Destructive local-process cleanup uses
+   * this before touching tmux so a read-only or ownership-refused standby can
+   * never kill first and discover the durable write refusal afterward.
+   */
+  assertSessionWriteAllowed(session: Pick<Session, 'id' | 'tmuxSession'>): void {
+    this.guardWrite('saveSession', {
+      sessionScoped: true,
+      scope: { sessionId: session.tmuxSession || session.id },
+    });
+  }
+
+  /**
    * ONE-WAY attach of the standby-write-reconciliation admission layer
    * (docs/specs/standby-write-reconciliation.md §3.2 pre-construction window):
    * StateManager exists and takes writes long before the pool block that
@@ -264,7 +277,7 @@ export class StateManager {
   saveSession(session: Session): void {
     // Scope resolution is the CALLER's job with data already in hand (§3.1
     // keying note): the tmux session name keys the in-memory topic binding.
-    this.guardWrite('saveSession', { sessionScoped: true, scope: { sessionId: session.tmuxSession || session.id } });
+    this.assertSessionWriteAllowed(session);
     this.validateKey(session.id, 'sessionId');
     // One-running-record-per-tmux invariant (ghost-record fix): registering a
     // record as live for a tmux name supersedes any OTHER record still marked

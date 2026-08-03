@@ -1,0 +1,40 @@
+# Non-Lease-Holder Local Session Cleanup
+
+<!-- bump: patch -->
+
+## What Changed
+
+A machine that does not hold the serving lease can now close one of its own over-age, positively-idle
+session processes. The exception is capability-gated inside the termination authority and is not
+available to public autonomous callers. Shared routing and remote-machine action remain lease-holder
+only, and every existing protected-work veto still applies. All real cleanup paths isolate their
+pre-kill observers, recheck and commit terminal state, then stop the process synchronously under a
+hard timeout. An ownership change therefore refuses cleanly instead of producing a killed process
+with a still-running durable record. If the process stop fails, the state is compensated back to
+running and the attempt is logged as refused rather than falsely successful. A broken lifecycle
+observer cannot suppress the reap audit after a successful stop.
+
+New reap-log rows identify whether a termination was admitted by the lease holder, the local age
+monitor, the local post-transfer closeout path, or an operator action.
+
+## What to Tell Your User
+
+On a multi-machine agent, an idle expired session no longer gets stranded merely because its host
+computer is not currently serving messages. Active work, recent conversations, commitments,
+recovery, and protected sessions remain safe from automatic cleanup.
+
+## Summary of New Capabilities
+
+- Cleans up expired idle sessions on the machine where their process actually runs.
+- Keeps ordinary non-holder termination requests lease-refused.
+- Leaves both state and process running if final ownership admission changes.
+- Restores running state and emits no success when tmux teardown fails.
+- Records the admitting authority domain alongside the machine in the reap audit trail.
+
+## Evidence
+
+- `tests/unit/session-manager-terminate.test.ts`
+- `tests/unit/session-timeout-activity-aware.test.ts`
+- `tests/unit/reap-log.test.ts`
+- `tests/integration/session-lifecycle-reap-wiring.test.ts`
+- `tests/unit/self-action-convergence.test.ts`

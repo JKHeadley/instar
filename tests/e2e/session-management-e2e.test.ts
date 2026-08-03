@@ -31,6 +31,7 @@ import { getTelegramInboundDir } from '../../src/messaging/shared/telegramInboun
 const TMUX_PREFIX = 'sess-e2e-';
 const tmuxPath = detectTmuxPath();
 const describeMaybe = tmuxPath ? describe : describe.skip;
+const maintenanceTicks = new WeakMap<SessionManager, () => Promise<void>>();
 
 // ── Mock Claude Scripts ─────────────────────────────────────────────
 
@@ -194,7 +195,8 @@ function createTestProject(): TestProject {
 }
 
 function createManager(project: TestProject, claudePath: string, overrides?: Partial<SessionManagerConfig>): SessionManager {
-  return new SessionManager(
+  let maintenanceTick!: () => Promise<void>;
+  const manager = new SessionManager(
     {
       tmuxPath: tmuxPath!,
       claudePath,
@@ -205,7 +207,10 @@ function createManager(project: TestProject, claudePath: string, overrides?: Par
       ...overrides,
     },
     project.state,
+    { bindMaintenanceTickForTesting: (tick) => { maintenanceTick = tick; } },
   );
+  maintenanceTicks.set(manager, maintenanceTick);
+  return manager;
 }
 
 // ── BDD Tests ───────────────────────────────────────────────────────
@@ -822,7 +827,7 @@ describeMaybe('Session Management E2E', () => {
       buildSession.startedAt = new Date(Date.now() - 20_000).toISOString();
       project.state.saveSession(buildSession);
 
-      await (buildSm as any).monitorTick();
+      await maintenanceTicks.get(buildSm)!();
       execFileSync(tmuxPath!, ['kill-session', '-t', `=${buildTmux}`], { stdio: 'ignore' });
 
       await buildSm.spawnInteractiveSession('CONTINUATION — resume build', buildName, {
@@ -848,7 +853,7 @@ describeMaybe('Session Management E2E', () => {
       homeSession.startedAt = new Date(Date.now() - 20_000).toISOString();
       project.state.saveSession(homeSession);
 
-      await (homeSm as any).monitorTick();
+      await maintenanceTicks.get(homeSm)!();
       execFileSync(tmuxPath!, ['kill-session', '-t', `=${homeTmux}`], { stdio: 'ignore' });
 
       await homeSm.spawnInteractiveSession('CONTINUATION — home only', homeName, {

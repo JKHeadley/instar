@@ -1,0 +1,70 @@
+{
+  "version": 3,
+  "slug": "session-reaper-local-age-owner",
+  "sessionId": "40e5fe03-705e-4d04-a0c7-fd7daec1ec07",
+  "timestamp": "2026-08-03T03:24:07.000Z",
+  "artifactPath": "upgrades/side-effects/session-reaper-local-age-owner.md",
+  "artifactSha256": "9f7004fe0d53e18c577854b684f39693ec543dece117f1ad1ccdad9f3b724bbe",
+  "specPath": "docs/specs/unified-session-lifecycle-robustness.md",
+  "eli16Path": "upgrades/session-reaper-local-age-owner.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/session-reaper-local-age-owner.md",
+  "coveredFiles": [
+    "docs/specs/unified-session-lifecycle-robustness.eli16.md",
+    "docs/specs/unified-session-lifecycle-robustness.md",
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/core/StateManager.ts",
+    "src/monitoring/ReapLog.ts",
+    "src/monitoring/SessionReaper.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/june15-headless-spawn-reroute.test.ts",
+    "tests/e2e/session-management-e2e.test.ts",
+    "tests/integration/session-build-context-respawn.test.ts",
+    "tests/integration/session-lifecycle-reap-wiring.test.ts",
+    "tests/integration/tmux-resilience-slow-stub.test.ts",
+    "tests/unit/headless-spawn-reroute.test.ts",
+    "tests/unit/reap-log.test.ts",
+    "tests/unit/session-manager-idle-veto-backoff.test.ts",
+    "tests/unit/session-manager-is-session-alive-async-tristate.test.ts",
+    "tests/unit/session-manager-terminate.test.ts",
+    "tests/unit/session-reaper-closeout-liveness.test.ts",
+    "tests/unit/session-reaper-topic-moved.test.ts",
+    "tests/unit/session-reaper-wiring.test.ts",
+    "tests/unit/session-telegram-inject.test.ts",
+    "tests/unit/session-timeout-activity-aware.test.ts",
+    "tests/unit/work-evidence.test.ts",
+    "upgrades/next/session-reaper-local-age-owner.md",
+    "upgrades/session-reaper-local-age-owner.eli16.md",
+    "upgrades/side-effects/session-reaper-local-age-owner.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes a multi-machine termination-authority boundary and the state/process commit protocol; independent adversarial review and full release gates are required.",
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The global serving-lease gate correctly protected shared and cross-machine action but was applied to a machine-local age cleanup that no peer could execute, stranding expired sessions on nonholders. Adversarial review also exposed pre-existing runtime-private and state/process atomicity weaknesses in the same authority funnel."
+  },
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "duplicateBuildCheck": {
+    "verdict": "likely-duplicate",
+    "cause": "concurrency",
+    "causes": ["concurrency"],
+    "decision": "proceed",
+    "reason": "Open PR #1271 overlaps only the broad SessionManager symbol; this branch addresses an independently reproduced nonholder local-age authority defect with distinct implementation, spec correction, and adversarial regressions.",
+    "acknowledgedEvidenceIds": ["EV-1"],
+    "checkedAt": "2026-08-03T03:21:50.534Z",
+    "specSlug": "unified-session-lifecycle-robustness"
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/session-manager-terminate.test.ts",
+      "howCaught": "The production maintenance-path regression proves one local-owner age reap converges on a nonholder while recent-message, open-commitment, structural-work, recovery, protected-session, startup-readiness, ownership-race, and public-forgery cases converge to named refusals without touching tmux."
+    }
+  }
+}

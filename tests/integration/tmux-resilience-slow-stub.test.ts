@@ -54,6 +54,7 @@ import {
 import type { SessionManagerConfig, Session, InstarConfig } from '../../src/core/types.js';
 
 const AUTH = 'test-tmux-resilience-slow-stub';
+const maintenanceTicks = new WeakMap<SessionManager, () => Promise<void>>();
 
 /** A stub tmux that sleeps STUB_SLEEP_SECS before answering (the degraded shared
  *  server). It accepts ANY tmux subcommand and just sleeps then exits 0 — the
@@ -223,10 +224,13 @@ describe('tmux Event-Loop Resilience — slow-stub integration (GROUP G)', () =>
       tmpDir = t.tmpDir;
       const tmuxPath = writeSlowTmuxStub(tmpDir);
       state = new StateManager(t.stateDir);
+      let maintenanceTick!: () => Promise<void>;
       sm = new SessionManager(smConfig(tmpDir, tmuxPath), state, {
         tmuxAsyncEnabled: true,
         tmuxCallTimeoutMs: 800,
+        bindMaintenanceTickForTesting: (tick) => { maintenanceTick = tick; },
       });
+      maintenanceTicks.set(sm, maintenanceTick);
       seedRunningSession(state, 'tick-sess');
     });
 
@@ -239,7 +243,7 @@ describe('tmux Event-Loop Resilience — slow-stub integration (GROUP G)', () =>
       sm.on('sessionComplete', () => { completedEmitted = true; });
 
       const t0 = Date.now();
-      await (sm as unknown as { monitorTick: () => Promise<void> }).monitorTick();
+      await maintenanceTicks.get(sm)!();
       const elapsed = Date.now() - t0;
 
       // The session is STILL running — a slow has-session resolves indeterminate,
@@ -253,7 +257,7 @@ describe('tmux Event-Loop Resilience — slow-stub integration (GROUP G)', () =>
     });
 
     it('does NOT zero _cachedRunningSessions when tmux is slow', async () => {
-      await (sm as unknown as { monitorTick: () => Promise<void> }).monitorTick();
+      await maintenanceTicks.get(sm)!();
       const cached = sm.getCachedRunningSessions();
       // Cache reflects the STILL-running session (the tick refreshes it from state,
       // and state stayed `running` because indeterminate did not transition it).
@@ -272,7 +276,7 @@ describe('tmux Event-Loop Resilience — slow-stub integration (GROUP G)', () =>
       let killEmitted = false;
       sm.on('beforeSessionKill', () => { killEmitted = true; });
 
-      await (sm as unknown as { monitorTick: () => Promise<void> }).monitorTick();
+      await maintenanceTicks.get(sm)!();
 
       expect(termSpy.calls.length).toBe(0);
       expect(killEmitted).toBe(false);

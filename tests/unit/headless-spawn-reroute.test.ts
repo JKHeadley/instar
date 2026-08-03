@@ -97,7 +97,7 @@ function makeManager(opts: {
   maxRerouted?: number;
   framework?: 'claude-code' | 'codex-cli' | 'gemini-cli';
   credit?: () => Promise<{ remainingUsd: number; totalUsd: number } | null>;
-}, tmpDir: string): { manager: SessionManager; state: StateManager } {
+}, tmpDir: string): { manager: SessionManager; state: StateManager; maintenanceTick: () => Promise<void> } {
   const stateDir = path.join(tmpDir, 'state');
   fs.mkdirSync(stateDir, { recursive: true });
   const state = new StateManager(stateDir);
@@ -114,7 +114,10 @@ function makeManager(opts: {
     ...(opts.mode ? { subscriptionPathMode: opts.mode } : {}),
     ...(opts.maxRerouted != null ? { subscriptionMaxRerouted: opts.maxRerouted } : {}),
   };
-  const manager = new SessionManager(config, state);
+  let maintenanceTick!: () => Promise<void>;
+  const manager = new SessionManager(config, state, {
+    bindMaintenanceTickForTesting: (tick) => { maintenanceTick = tick; },
+  });
   // Stub the background ready-wait so the detached injectAfterReady completes
   // immediately (otherwise it polls for ~90s). The tmux argv is captured
   // synchronously at new-session, so this never affects the pin assertions.
@@ -129,7 +132,7 @@ function makeManager(opts: {
   if (opts.credit) {
     manager.setSdkCreditReader(opts.credit as never);
   }
-  return { manager, state };
+  return { manager, state, maintenanceTick };
 }
 
 describe('headless-spawn reroute', () => {
@@ -147,7 +150,7 @@ describe('headless-spawn reroute', () => {
 
   // ── V1: mode off/unset → byte-for-byte today's headless argv ──
   it('V1: mode unset → claude-code spawn is the headless `-p` one-shot (byte-for-byte)', async () => {
-    const { manager, state } = makeManager({}, tmpDir);
+    const { manager, state, maintenanceTick } = makeManager({}, tmpDir);
     const s = await manager.spawnSession({ name: 'job-a', prompt: 'do the thing', model: 'haiku' });
 
     const launch = launchArgvFrom(lastNewSessionArgv(), CLAUDE);
@@ -430,7 +433,7 @@ describe('monitorTick rerouted-interactive branch', () => {
   });
 
   it('sentinel match → terminates via the SUCCESS path (status completed, not killed)', async () => {
-    const { manager, state } = makeManager({}, tmpDir);
+    const { manager, state, maintenanceTick } = makeManager({}, tmpDir);
     // Persist a rerouted session old enough to clear the 15s grace period.
     const startedAt = new Date(Date.now() - 60_000).toISOString();
     state.saveSession({
@@ -448,7 +451,7 @@ describe('monitorTick rerouted-interactive branch', () => {
 
     let completedStatus: string | undefined;
     manager.on('sessionComplete', (s) => { completedStatus = s.status; });
-    await (manager as unknown as { monitorTick: () => Promise<void> }).monitorTick();
+    await maintenanceTick();
 
     const saved = state.getSession('rr-1')!;
     expect(saved.status).toBe('completed'); // NOT 'killed' → JobScheduler records success
@@ -459,7 +462,7 @@ describe('monitorTick rerouted-interactive branch', () => {
   it('hard lifetime exceeded without sentinel → killed (timeout) + degradation', async () => {
     const { DegradationReporter } = await import('../../src/monitoring/DegradationReporter.js');
     const reportSpy = vi.spyOn(DegradationReporter.getInstance(), 'report');
-    const { manager, state } = makeManager({}, tmpDir);
+    const { manager, state, maintenanceTick } = makeManager({}, tmpDir);
     // Started 50 min ago; lifetime cap 45 → over.
     const startedAt = new Date(Date.now() - 50 * 60_000).toISOString();
     state.saveSession({
@@ -474,7 +477,7 @@ describe('monitorTick rerouted-interactive branch', () => {
     // No sentinel in the output → lifetime cap fires.
     (manager as unknown as { captureOutput: () => string }).captureOutput = () => 'still grinding away\n';
 
-    await (manager as unknown as { monitorTick: () => Promise<void> }).monitorTick();
+    await maintenanceTick();
 
     const saved = state.getSession('rr-2')!;
     expect(saved.status).toBe('killed'); // killed → JobScheduler records 'timeout'
@@ -484,7 +487,7 @@ describe('monitorTick rerouted-interactive branch', () => {
   });
 
   it('under lifetime, no sentinel → left running (re-check next tick)', async () => {
-    const { manager, state } = makeManager({}, tmpDir);
+    const { manager, state, maintenanceTick } = makeManager({}, tmpDir);
     const startedAt = new Date(Date.now() - 60_000).toISOString(); // 1 min old
     state.saveSession({
       id: 'rr-3', name: 'rr-3', status: 'running', tmuxSession: 'proj-rr-3',
@@ -497,7 +500,7 @@ describe('monitorTick rerouted-interactive branch', () => {
     (manager as unknown as { recordBuildContext: () => void }).recordBuildContext = () => {};
     (manager as unknown as { captureOutput: () => string }).captureOutput = () => 'working\n';
 
-    await (manager as unknown as { monitorTick: () => Promise<void> }).monitorTick();
+    await maintenanceTick();
     expect(state.getSession('rr-3')!.status).toBe('running');
   });
 });
