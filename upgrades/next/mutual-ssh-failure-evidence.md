@@ -1,0 +1,47 @@
+# Mutual SSH failure evidence
+
+<!-- bump: patch -->
+
+## What Changed
+
+Mutual SSH enrollment now retains a structured failure record whenever an
+endpoint, advert exchange, standing-key write, or standing-access probe throws.
+The record keeps the existing failure class and adds the original error detail
+after a deterministic privacy pass and a 512-character bound. The privacy pass
+removes known credential shapes, private and public SSH key material, home
+directory identities, IP addresses, and hostnames identified in SSH/DNS
+endpoint contexts. Dotted JavaScript identifiers and filenames remain visible
+rather than being mistaken for machines.
+
+The classifier table is unchanged. Existing blocked-reason strings and
+readiness calculations are unchanged. Healthy status responses, including the
+single-machine case, do not gain an empty field; the new diagnostic array is
+present only when caught failure evidence exists.
+
+## What to Tell Your User
+
+- “When secure machine-to-machine setup hits an error Instar does not recognize,
+  its status now keeps a safe diagnostic clue instead of reducing everything to
+  the word unknown.”
+- “Machine names and SSH key material are removed before that clue is shown, and
+  the clue has a strict size limit.”
+- “This does not change whether secure access is enabled or ready; it only makes
+  a real setup failure diagnosable.”
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|------------|
+| Safe mutual SSH failure evidence | Read the existing mutual SSH status surface when enrollment is blocked |
+| Unknown-class diagnosis without a new classifier rule | Use the attached bounded detail to identify the real cause |
+
+## Evidence
+
+The regression test first failed on the unmodified source with the exact live
+shape: listener false, enrollment blocked, and a single unknown reason with no
+failure record. After the change, the same forced unknown listener failure
+surfaces its class plus a detail while removing a fixture hostname and a fixture
+private key, preserving dotted JavaScript diagnostics, redacting IPv4/IPv6 and
+bare/dotted endpoint identities, and enforcing the 512-character bound. Both
+mutual SSH unit suites pass together: 18 tests across the hardened lifecycle and bootstrap security
+invariants. TypeScript no-emit checking also passes.
