@@ -953,6 +953,60 @@ const checkInReminderPass: SelfActionController = {
 };
 
 /**
+ * job-failure-alert-delivery — scheduler-owned escalation while a job remains
+ * failed. The first eligible attempt happens immediately. Scheduler-owned
+ * timers then wake the durable 5m → 15m → 1h capped backoff, so permanent
+ * transport failure remains visible without depending on another job run and
+ * without becoming a per-run flood. Successful but unresolved delivery follows
+ * an even wider reminder cadence in the real controller; the permanently
+ * failing transport is the higher-frequency adversary and therefore pins the
+ * convergence floor here.
+ */
+const jobFailureAlertDelivery: SelfActionController = {
+  id: 'job-failure-alert-delivery',
+  actionVerb: 'job-alert-notify',
+  models: 'src/scheduler/JobScheduler.ts (persistent timer-owned failure-alert retry and reminder cadence)',
+  modelsPath: 'src/scheduler/JobScheduler.ts',
+  delegatedGiveUp: 'the durable 5-minute minimum retry floor widening to a one-hour cap while the alert remains undelivered',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 48,
+  tickMs: 5 * 60_000,
+  eternalSentinel: {
+    reason: 'An unresolved critical job failure must remain capable of reaching its operator; delivery attempts are constant-cost and rate-floored rather than abandoned.',
+    rateFloorMs: 5 * 60_000,
+  },
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) {
+      return jobFailureAlertDelivery.makeUnderPressure(f, sink);
+    },
+  },
+  makeUnderPressure(f, sink) {
+    const RETRY_MS = [5 * 60_000, 15 * 60_000, 60 * 60_000] as const;
+    const ATTEMPTS_KEY = 'job-failure-alert-attempts';
+    const NEXT_KEY = 'job-failure-alert-next-eligible-at';
+    return {
+      tick() {
+        sink.considered += 1;
+        const nextEligibleAt = Number(f.durableState.get(NEXT_KEY) ?? 0);
+        if (f.clock.nowMs() < nextEligibleAt) return;
+
+        sink.emit({ verb: 'job-alert-notify', target: 'failed-job' });
+        sink.emitTimesMs.push(f.clock.nowMs());
+
+        // Pinned pressure: delivery fails forever. Persist the widening retry
+        // state before the next tick, exactly as the real controller does.
+        const attempts = Number(f.durableState.get(ATTEMPTS_KEY) ?? 0) + 1;
+        f.durableState.set(ATTEMPTS_KEY, attempts);
+        const delay = RETRY_MS[Math.min(attempts - 1, RETRY_MS.length - 1)];
+        f.durableState.set(NEXT_KEY, f.clock.nowMs() + delay);
+      },
+    };
+  },
+};
+
+/**
  * undated-action-resurfacer — bounded Attention reach for action rows that the
  * due-date checker cannot see. The backlog can remain non-empty indefinitely,
  * so this is an Eternal Sentinel rather than a controller that truthfully
@@ -1011,6 +1065,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   livenessHeartbeat,
   externalHogKillBreaker,
   meteredReserveExpirySweep,
+  jobFailureAlertDelivery,
   checkInReminderPass,
   undatedActionResurfacer,
   spendStalePriceAlert,

@@ -1,0 +1,31 @@
+{
+  "ts": "2026-08-03T15:10:45.066Z",
+  "slug": "scheduler-alert-delivery",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 73,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/messaging/telegramSendSideComposition.ts"
+    ],
+    "addedLines": 72,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Permanent failed delivery is an Eternal Sentinel with a durable 5-minute floor widening to a 1-hour cap; startup composition and resume re-arm persisted no-sink and configured-sink episodes, successful unresolved reminders widen to 24 hours, and recovery/stop cancel timers. The convergence ratchet fails any per-run or restart-reset emission loop."
+    }
+  },
+  "verdict": "pass"
+}

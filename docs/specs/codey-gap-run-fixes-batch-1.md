@@ -87,6 +87,16 @@ false by design.
   flag plus the presence of the `lifeline.lock` file. Only the two started-dependent
   probes (connected, polling) change; the log/topics probes are untouched.
 
+### Follow-up: shared send-side composition
+
+`telegramSendSideComposition` now resolves explicit send-only, standby,
+lifeline-polling, and server-polling startup arrangements before construction. After
+the selected adapter exists, one shared seam attaches that real send-capable adapter
+to the scheduler and notification batcher. Poll ownership therefore controls only
+inbound `getUpdates`; it no longer decides whether scheduled-job alerts can send.
+The scheduler separately marks composition complete even when Telegram is
+unconfigured, keeping a missing-sink alert episode loud and retryable across restart.
+
 ## Safeguards
 
 **No new authority.** Both fixes only relax a too-aggressive failure/auto-resolve.

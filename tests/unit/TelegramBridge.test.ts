@@ -48,7 +48,7 @@ function createFakeSink(opts?: { failCreate?: boolean; failSend?: boolean }): Te
   return sink;
 }
 
-function createBridge(opts?: { configPatch?: Partial<{ enabled: boolean; autoCreateTopics: boolean; mirrorExisting: boolean; allowList: string[]; denyList: string[] }>; sink?: ReturnType<typeof createFakeSink> }): {
+function createBridge(opts?: { configPatch?: Partial<{ enabled: boolean; autoCreateTopics: boolean; mirrorExisting: boolean; allowList: string[]; denyList: string[] }>; sink?: ReturnType<typeof createFakeSink>; isOwner?: () => boolean }): {
   bridge: TelegramBridge;
   cfg: TelegramBridgeConfig;
   sink: ReturnType<typeof createFakeSink>;
@@ -66,6 +66,7 @@ function createBridge(opts?: { configPatch?: Partial<{ enabled: boolean; autoCre
     localAgentName: 'echo',
     config: cfg,
     telegram: sink,
+    isOwner: opts?.isOwner,
     log: { info: () => {}, warn: () => {}, error: () => {} },
   });
   return {
@@ -160,6 +161,34 @@ describe('TelegramBridge', () => {
   // ── Existing-topic mirroring ───────────────────────────────────
 
   describe('existing-topic mirroring', () => {
+    it('follows live owner handoff without reconstructing the bridge', async () => {
+      let owner = true;
+      env = createBridge({
+        configPatch: { enabled: true, autoCreateTopics: true },
+        isOwner: () => owner,
+      });
+
+      const first = await env.bridge.mirrorInbound({
+        threadId: 't1', remoteAgent: 'fp-dawn', remoteAgentName: 'Dawn', text: 'owner message',
+      });
+      expect(first.posted).toBe(true);
+      expect(env.sink.sendCalls).toHaveLength(1);
+
+      owner = false;
+      const demoted = await env.bridge.mirrorInbound({
+        threadId: 't1', remoteAgent: 'fp-dawn', remoteAgentName: 'Dawn', text: 'must stay silent',
+      });
+      expect(demoted).toEqual({ posted: false, reason: 'not-bridge-owner' });
+      expect(env.sink.sendCalls).toHaveLength(1);
+
+      owner = true;
+      const promoted = await env.bridge.mirrorOutbound({
+        threadId: 't1', remoteAgent: 'fp-dawn', text: 'new owner message',
+      });
+      expect(promoted.posted).toBe(true);
+      expect(env.sink.sendCalls).toHaveLength(2);
+    });
+
     it('mirrors inbound into an existing topic regardless of allow/deny-list', async () => {
       // Seed a topic via auto-create, then deny-list, then send another inbound
       env = createBridge({ configPatch: { enabled: true, autoCreateTopics: true } });

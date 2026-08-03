@@ -88,6 +88,8 @@ export interface TelegramBridgeOptions {
   localAgentName: string;
   config: TelegramBridgeConfig;
   telegram: TelegramSink;
+  /** Live one-voice predicate; false immediately silences every mirror path. */
+  isOwner?: () => boolean;
   /** Optional override for the bindings filename (testing). */
   bindingsFilename?: string;
   /** Logger; defaults to console. */
@@ -100,6 +102,7 @@ export class TelegramBridge {
   private readonly localAgentName: string;
   private readonly cfg: TelegramBridgeConfig;
   private readonly telegram: TelegramSink;
+  private readonly isOwner: () => boolean;
   private readonly log: NonNullable<TelegramBridgeOptions['log']>;
   private bindings = new Map<string, TelegramBridgeBinding>(); // threadId → binding
 
@@ -108,6 +111,7 @@ export class TelegramBridge {
     this.localAgentName = opts.localAgentName;
     this.cfg = opts.config;
     this.telegram = opts.telegram;
+    this.isOwner = opts.isOwner ?? (() => true);
     this.log = opts.log ?? {
       info: (m) => console.log(`[tg-bridge] ${m}`),
       warn: (m) => console.warn(`[tg-bridge] ${m}`),
@@ -192,6 +196,7 @@ export class TelegramBridge {
    * observability.
    */
   async mirrorInbound(evt: BridgeInboundEvent): Promise<{ posted: boolean; topicId?: number; reason?: string }> {
+    if (!this.ownsMirrorVoice()) return { posted: false, reason: 'not-bridge-owner' };
     const settings = this.cfg.getSettings();
     if (!settings.enabled) return { posted: false, reason: 'bridge-disabled' };
 
@@ -200,6 +205,7 @@ export class TelegramBridge {
       if (!this.cfg.shouldMirrorIntoExistingTopic()) {
         return { posted: false, reason: 'mirror-disabled' };
       }
+      if (!this.ownsMirrorVoice()) return { posted: false, reason: 'not-bridge-owner' };
       const body = this.formatInboundBody(evt);
       await this.postSafe(existing.topicId, body, evt.threadId);
       return { posted: true, topicId: existing.topicId };
@@ -223,7 +229,9 @@ export class TelegramBridge {
     const topicName = this.buildTopicName(matcher, evt.subject ?? evt.text);
     let topicId: number | undefined;
     try {
+      if (!this.ownsMirrorVoice()) return { posted: false, reason: 'not-bridge-owner' };
       const created = await this.telegram.findOrCreateForumTopic(topicName, undefined, { label: 'threadline-bridge' });
+      if (!this.ownsMirrorVoice()) return { posted: false, reason: 'not-bridge-owner' };
       topicId = created.topicId;
       this.bindings.set(evt.threadId, {
         threadId: evt.threadId,
@@ -253,6 +261,7 @@ export class TelegramBridge {
    * (the user opted in via inbound or by manual action).
    */
   async mirrorOutbound(evt: BridgeOutboundEvent): Promise<{ posted: boolean; topicId?: number; reason?: string }> {
+    if (!this.ownsMirrorVoice()) return { posted: false, reason: 'not-bridge-owner' };
     if (!this.cfg.shouldMirrorIntoExistingTopic()) {
       return { posted: false, reason: 'mirror-disabled' };
     }
@@ -286,7 +295,9 @@ export class TelegramBridge {
 
   private async postSafe(topicId: number, body: string, threadId: string): Promise<void> {
     try {
+      if (!this.ownsMirrorVoice()) return;
       await this.telegram.sendToTopic(topicId, body, { silent: true, skipStallClear: true });
+      if (!this.ownsMirrorVoice()) return;
       const binding = this.bindings.get(threadId);
       if (binding) {
         binding.lastMessageAt = new Date().toISOString();
@@ -294,6 +305,14 @@ export class TelegramBridge {
       }
     } catch (err) {
       this.log.warn(`postSafe: failed for topic ${topicId} thread ${threadId.slice(0, 8)} — ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  private ownsMirrorVoice(): boolean {
+    try {
+      return this.isOwner();
+    } catch {
+      return false;
     }
   }
 }
