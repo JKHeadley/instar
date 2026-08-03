@@ -32,8 +32,10 @@ All three reads now follow that established pool contract. The live read keeps
 the local snapshot where existing callers expect it and adds peer snapshots in
 the pool block. The audit and reap-log reads merge entries chronologically from
 every answering machine and mark each entry with registry-owned machine
-identity. A single-machine install
-still returns an explicit empty pool block, proving that pool scope was honored.
+identity. Their pool block also says how many rows each machine returned and
+whether that machine's newest-N tail was truncated, so a bounded denominator
+cannot look like complete history. A single-machine install still returns an
+explicit empty pool block, proving that pool scope was honored.
 
 ## The safeguards
 
@@ -53,6 +55,11 @@ required by authenticated peer reads.
 **Existing callers do not change.** Without pool scope, all three reads retain their
 prior response shapes. The new logic is read-only: it cannot keep, kill, restart,
 move, or otherwise alter a session, and it writes no durable state.
+
+**Evidence stays within one operator's agent pool.** Reap-log details, including
+normally producer-clamped work-evidence strings, cross only authenticated
+machines for the same agent/operator. That is the existing pool trust boundary,
+not a cross-operator sharing contract.
 
 ## What ships when
 

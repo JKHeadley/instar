@@ -160,6 +160,8 @@ describe('SessionReaper E2E lifecycle', () => {
         selfMachineNickname: null,
         peersQueried: 0,
         peersOk: 0,
+        limitPerMachine: 10,
+        sources: [{ machineId: null, returned: 1, truncated: false }],
         failed: [],
       });
     });

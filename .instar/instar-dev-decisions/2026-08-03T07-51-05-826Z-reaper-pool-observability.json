@@ -1,0 +1,33 @@
+{
+  "ts": "2026-08-03T07:51:05.826Z",
+  "slug": "reaper-pool-observability",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/SessionReaper.ts matches session reaper"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 207,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/ReapLog.ts",
+      "src/monitoring/SessionReaper.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 166,
+    "deletedLines": 41
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "These are one-shot, caller-driven GET reads plus bounded storage-page helpers. They add no controller, cadence, retry loop, notification, spawn, restart, reap decision, or other autonomous emit; SessionReaper lifecycle authority remains unchanged.",
+    "prNumber": 1847,
+    "component": "ReaperPoolReadRoutes"
+  },
+  "verdict": "pass"
+}

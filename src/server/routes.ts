@@ -264,7 +264,7 @@ async function postVerifyEvidence(
 }
 import { ReflectionMetrics } from '../monitoring/ReflectionMetrics.js';
 import { HomeostasisMonitor } from '../monitoring/HomeostasisMonitor.js';
-import { readReaperAudit } from '../monitoring/SessionReaper.js';
+import { readReaperAuditPage } from '../monitoring/SessionReaper.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import { coerceMessageProvenance, type MessageProvenance } from '../messaging/shared/MessageProvenance.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
@@ -8260,9 +8260,19 @@ export function createRoutes(ctx: RouteContext): Router {
     };
   };
 
-  const isReaperEntryList = (body: Record<string, unknown>): boolean =>
-    Array.isArray(body.entries)
-    && body.entries.every((entry) => !!entry && typeof entry === 'object' && !Array.isArray(entry));
+  const isReaperEntryPage = (limit: number) => (body: Record<string, unknown>): boolean => {
+    if (!Array.isArray(body.entries)
+      || !body.entries.every((entry) => !!entry && typeof entry === 'object' && !Array.isArray(entry))
+      || !body.page || typeof body.page !== 'object' || Array.isArray(body.page)) {
+      return false;
+    }
+    const page = body.page as Record<string, unknown>;
+    return Number.isInteger(page.returned)
+      && (page.returned as number) >= 0
+      && (page.returned as number) <= limit
+      && page.returned === body.entries.length
+      && typeof page.truncated === 'boolean';
+  };
 
   const reaperPoolSelf = (): { selfMachineId: string | null; selfMachineNickname: string | null } => {
     const selfMachineId = ctx.meshSelfId ?? null;
@@ -8288,6 +8298,32 @@ export function createRoutes(ctx: RouteContext): Router {
     };
   };
 
+  const reaperEvidencePoolHealth = (
+    peers: ReaperPoolPeer[],
+    failed: ReaperPoolFailure[],
+    peersQueried: number,
+    limit: number,
+    localReturned: number,
+    localTruncated: boolean,
+  ): Record<string, unknown> => {
+    const { selfMachineId } = reaperPoolSelf();
+    return {
+      ...reaperPoolHealth(peers, failed, peersQueried),
+      limitPerMachine: limit,
+      sources: [
+        { machineId: selfMachineId, returned: localReturned, truncated: localTruncated },
+        ...peers.map((peer) => {
+          const page = peer.body.page as Record<string, unknown>;
+          return {
+            machineId: peer.machineId,
+            returned: page.returned,
+            truncated: page.truncated,
+          };
+        }),
+      ],
+    };
+  };
+
   const mergeReaperPoolEntries = (
     localEntries: ReadonlyArray<object>,
     peers: ReaperPoolPeer[],
@@ -8301,7 +8337,7 @@ export function createRoutes(ctx: RouteContext): Router {
       remote: false,
     }));
     for (const peer of peers) {
-      for (const entry of (peer.body.entries as Record<string, unknown>[]).slice(0, limit)) {
+      for (const entry of (peer.body.entries as Record<string, unknown>[]).slice(-limit)) {
         entries.push({
           ...entry,
           machineId: peer.machineId,
@@ -8527,7 +8563,9 @@ export function createRoutes(ctx: RouteContext): Router {
   // Reap-log (UNIFIED-SESSION-LIFECYCLE §P4). The pull-surface answer to "why did
   // my session vanish?": every reap + every refused/skipped terminate, newest
   // last. Read-only, Bearer-auth (the router-level middleware). `?limit=N`
-  // bounds the tail (default 200).
+  // bounds the tail (default 200). `?includePage=1` adds returned/truncated
+  // metadata; pool fan-out requires that metadata so an unknown peer window
+  // cannot masquerade as complete evidence.
   router.get('/sessions/reap-log', async (req, res) => {
     if (!ctx.reapLog) {
       res.status(503).json({ error: 'reap-log unavailable' });
@@ -8535,20 +8573,29 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const rawLimit = Number(req.query.limit);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 1000) : 200;
-    const localEntries = ctx.reapLog.read(limit);
+    const includePage = req.query.includePage === '1';
+    const probePage = includePage || req.query.scope === 'pool';
+    const localPage = probePage ? ctx.reapLog.readPage(limit) : null;
+    const localEntries = localPage?.entries ?? ctx.reapLog.read(limit);
+    const localTruncated = localPage?.truncated ?? false;
     if (req.query.scope !== 'pool') {
-      res.json({ entries: localEntries });
+      res.json({
+        entries: localEntries,
+        ...(includePage ? { page: { returned: localEntries.length, truncated: localTruncated } } : {}),
+      });
       return;
     }
 
     reaperPoolLimiter(req, res, async () => {
       const { peers, failed, peersQueried } = await readReaperPoolPeers(
-        `/sessions/reap-log?limit=${limit}`,
-        isReaperEntryList,
+        `/sessions/reap-log?limit=${limit}&includePage=1`,
+        isReaperEntryPage(limit),
       );
       res.json({
         entries: mergeReaperPoolEntries(localEntries, peers, limit),
-        pool: reaperPoolHealth(peers, failed, peersQueried),
+        pool: reaperEvidencePoolHealth(
+          peers, failed, peersQueried, limit, localEntries.length, localTruncated,
+        ),
       });
     });
   });
@@ -8977,24 +9024,35 @@ export function createRoutes(ctx: RouteContext): Router {
   // every keep/kill DECISION transition (logged on change, not every tick) plus the
   // reap-path events, each stamped with the pressure tier (memory + CPU) that drove
   // it. Read-only, Bearer-auth (router-level middleware), silent (no notifications).
-  // `?limit=N` bounds the tail (default 200, max 1000).
+  // `?limit=N` bounds the tail (default 200, max 1000). `?includePage=1`
+  // adds returned/truncated metadata; pool fan-out requires that metadata so
+  // an unknown peer window cannot masquerade as complete evidence.
   router.get('/sessions/reaper/audit', async (req, res) => {
     const rawLimit = Number(req.query.limit);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 1000) : 200;
-    const localEntries = readReaperAudit(ctx.config.stateDir, limit);
+    const includePage = req.query.includePage === '1';
+    const probePage = includePage || req.query.scope === 'pool';
+    const localPage = readReaperAuditPage(ctx.config.stateDir, limit);
+    const localEntries = localPage.entries;
+    const localTruncated = probePage ? localPage.truncated : false;
     if (req.query.scope !== 'pool') {
-      res.json({ entries: localEntries });
+      res.json({
+        entries: localEntries,
+        ...(includePage ? { page: { returned: localEntries.length, truncated: localTruncated } } : {}),
+      });
       return;
     }
 
     reaperPoolLimiter(req, res, async () => {
       const { peers, failed, peersQueried } = await readReaperPoolPeers(
-        `/sessions/reaper/audit?limit=${limit}`,
-        isReaperEntryList,
+        `/sessions/reaper/audit?limit=${limit}&includePage=1`,
+        isReaperEntryPage(limit),
       );
       res.json({
         entries: mergeReaperPoolEntries(localEntries, peers, limit),
-        pool: reaperPoolHealth(peers, failed, peersQueried),
+        pool: reaperEvidencePoolHealth(
+          peers, failed, peersQueried, limit, localEntries.length, localTruncated,
+        ),
       });
     });
   });

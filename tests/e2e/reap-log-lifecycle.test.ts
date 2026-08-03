@@ -94,6 +94,8 @@ describe('Reap-log E2E lifecycle (feature is alive)', () => {
       selfMachineNickname: null,
       peersQueried: 0,
       peersOk: 0,
+      limitPerMachine: 500,
+      sources: [{ machineId: null, returned: 2, truncated: false }],
       failed: [],
     });
   });

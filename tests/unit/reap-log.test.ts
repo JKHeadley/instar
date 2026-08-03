@@ -282,6 +282,26 @@ describe('ReapLog — bounded read + rotation (can never be slurped/grow unbound
     expect(fs.statSync(p).size).toBeLessThan(1000);
   });
 
+  it('does not cross a byte-window gap into an older rotated generation', () => {
+    const p = path.join(tmpDir, 'logs', 'reap-log.jsonl');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const row = (session: string, padding = '') => JSON.stringify({
+      ts: '2026-01-01T00:00:00.000Z',
+      type: 'reaped',
+      session,
+      tmuxSession: `t-${session}`,
+      reason: 'age-limit',
+      padding,
+    }) + '\n';
+    fs.writeFileSync(`${p}.1`, row('s1') + row('s2') + row('s3'));
+    fs.writeFileSync(p, row('s4', 'x'.repeat(500)) + row('s5', 'x'.repeat(500)) + row('s6', 'x'.repeat(500)));
+
+    const page = new ReapLog(stateDir, undefined, { tailReadBytes: 750 }).readPage(3);
+
+    expect(page.entries.map((entry) => entry.session)).toEqual(['s6']);
+    expect(page).toMatchObject({ returned: 1, truncated: true });
+  });
+
   it('does not choke on an absent log (empty read)', () => {
     const log = new ReapLog(stateDir);
     expect(log.read()).toEqual([]);

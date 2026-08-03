@@ -322,6 +322,10 @@ describe('GET /sessions/reaper/audit (integration)', () => {
     fs.writeFileSync(logPath, rows.map(r => JSON.stringify(r)).join('\n') + '\n');
   }
 
+  function appendAuditRaw(line: string): void {
+    fs.appendFileSync(path.join(stateDir, '..', 'logs', 'reaper-audit.jsonl'), `${line}\n`);
+  }
+
   it('returns an empty list when no audit trail exists yet', async () => {
     const res = await request(app()).get('/sessions/reaper/audit');
     expect(res.status).toBe(200);
@@ -345,17 +349,37 @@ describe('GET /sessions/reaper/audit (integration)', () => {
     expect(limited.body.entries[0]).toMatchObject({ event: 'reaped' });
   });
 
+  it('includePage=1 reports whether the local audit tail was truncated without changing ordinary responses', async () => {
+    writeAudit([
+      { ts: '2026-01-01T00:00:00.000Z', event: 'decision', session: 'a', verdict: 'keep' },
+      { ts: '2026-01-02T00:00:00.000Z', event: 'decision', session: 'b', verdict: 'keep' },
+      { ts: '2026-01-03T00:00:00.000Z', event: 'reaped', session: 'c', tier: 'critical' },
+    ]);
+    appendAuditRaw('{');
+
+    const ordinary = await request(app()).get('/sessions/reaper/audit?limit=2');
+    expect(ordinary.body).toEqual({ entries: expect.any(Array) });
+
+    const res = await request(app()).get('/sessions/reaper/audit?limit=2&includePage=1');
+    expect(res.status).toBe(200);
+    expect(res.body.entries.map((entry: { session: string }) => entry.session)).toEqual(['b', 'c']);
+    expect(res.body.page).toEqual({ returned: 2, truncated: true });
+  });
+
   it('scope=pool merges a real peer audit and tags its entries with registry identity', async () => {
     writeAudit([{ ts: '2026-01-01T00:00:00.000Z', event: 'decision', session: 'local', verdict: 'keep' }]);
     const peer = await startPeer((req, res) => {
-      expect(req.url).toBe('/sessions/reaper/audit?limit=2');
+      expect(req.url).toBe('/sessions/reaper/audit?limit=2&includePage=1');
       expect(req.headers.authorization).toBe('Bearer test-token');
       expect(req.headers['x-instar-agentid']).toBe('test');
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ entries: [{
-        ts: '2025-01-01T00:00:00.000Z', event: 'reaped', session: 'remote', authorityDomain: 'local-age-monitor',
-        machineId: 'spoofed-machine', machineNickname: 'Spoofed nickname', remote: false,
-      }] }));
+      res.end(JSON.stringify({
+        entries: [{
+          ts: '2025-01-01T00:00:00.000Z', event: 'reaped', session: 'remote', authorityDomain: 'local-age-monitor',
+          machineId: 'spoofed-machine', machineNickname: 'Spoofed nickname', remote: false,
+        }],
+        page: { returned: 1, truncated: false },
+      }));
     });
     try {
       const res = await request(app({
@@ -369,6 +393,11 @@ describe('GET /sessions/reaper/audit (integration)', () => {
         selfMachineId: 'm-self',
         peersQueried: 1,
         peersOk: 1,
+        limitPerMachine: 2,
+        sources: [
+          { machineId: 'm-self', returned: 1, truncated: false },
+          { machineId: 'm-peer', returned: 1, truncated: false },
+        ],
         failed: [],
       });
       expect(res.body.entries).toEqual(expect.arrayContaining([
@@ -382,6 +411,103 @@ describe('GET /sessions/reaper/audit (integration)', () => {
     } finally {
       await peer.close();
     }
+  });
+
+  it('scope=pool exposes a peer audit tail that was truncated at the per-machine limit', async () => {
+    const peer = await startPeer((_req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({
+        entries: [
+          { ts: '2026-01-02T00:00:00.000Z', event: 'decision', session: 'remote-b', verdict: 'keep' },
+          { ts: '2026-01-03T00:00:00.000Z', event: 'reaped', session: 'remote-c', tier: 'critical' },
+        ],
+        page: { returned: 2, truncated: true },
+      }));
+    });
+    try {
+      const res = await request(app({
+        meshSelfId: 'm-self',
+        listPoolMachines: () => [{ machineId: 'm-peer', lastKnownUrl: peer.url }],
+      })).get('/sessions/reaper/audit?scope=pool&limit=2');
+
+      expect(res.status).toBe(200);
+      expect(res.body.entries.map((entry: { session: string }) => entry.session)).toEqual(['remote-b', 'remote-c']);
+      expect(res.body.pool.sources).toEqual([
+        { machineId: 'm-self', returned: 0, truncated: false },
+        { machineId: 'm-peer', returned: 2, truncated: true },
+      ]);
+    } finally {
+      await peer.close();
+    }
+  });
+
+  it('scope=pool accepts an exact-limit peer page that proves it is complete', async () => {
+    const peer = await startPeer((_req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({
+        entries: [
+          { ts: '2026-01-02T00:00:00.000Z', event: 'decision', session: 'remote-b' },
+          { ts: '2026-01-03T00:00:00.000Z', event: 'reaped', session: 'remote-c' },
+        ],
+        page: { returned: 2, truncated: false },
+      }));
+    });
+    try {
+      const res = await request(app({
+        meshSelfId: 'm-self',
+        listPoolMachines: () => [{ machineId: 'm-peer', lastKnownUrl: peer.url }],
+      })).get('/sessions/reaper/audit?scope=pool&limit=2');
+
+      expect(res.status).toBe(200);
+      expect(res.body.pool.sources).toEqual([
+        { machineId: 'm-self', returned: 0, truncated: false },
+        { machineId: 'm-peer', returned: 2, truncated: false },
+      ]);
+    } finally {
+      await peer.close();
+    }
+  });
+
+  it('scope=pool preserves a peer incomplete flag even when its byte window returned fewer than the limit', async () => {
+    const peer = await startPeer((_req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({
+        entries: [{ ts: '2026-01-03T00:00:00.000Z', event: 'reaped', session: 'remote-c' }],
+        page: { returned: 1, truncated: true },
+      }));
+    });
+    try {
+      const res = await request(app({
+        meshSelfId: 'm-self',
+        listPoolMachines: () => [{ machineId: 'm-peer', lastKnownUrl: peer.url }],
+      })).get('/sessions/reaper/audit?scope=pool&limit=2');
+
+      expect(res.status).toBe(200);
+      expect(res.body.pool.sources).toEqual([
+        { machineId: 'm-self', returned: 0, truncated: false },
+        { machineId: 'm-peer', returned: 1, truncated: true },
+      ]);
+    } finally {
+      await peer.close();
+    }
+  });
+
+  it('scope=pool exposes local truncation on a single-machine audit', async () => {
+    writeAudit([
+      { ts: '2026-01-01T00:00:00.000Z', event: 'decision', session: 'a', verdict: 'keep' },
+      { ts: '2026-01-02T00:00:00.000Z', event: 'decision', session: 'b', verdict: 'keep' },
+      { ts: '2026-01-03T00:00:00.000Z', event: 'reaped', session: 'c', tier: 'critical' },
+    ]);
+    appendAuditRaw('{');
+
+    const res = await request(app({ meshSelfId: 'm-self' })).get('/sessions/reaper/audit?scope=pool&limit=2');
+
+    expect(res.status).toBe(200);
+    expect(res.body.entries.map((entry: { session: string }) => entry.session)).toEqual(['b', 'c']);
+    expect(res.body.pool).toMatchObject({
+      limitPerMachine: 2,
+      sources: [{ machineId: 'm-self', returned: 2, truncated: true }],
+    });
   });
 
   it('scope=pool classifies a peer missing the route and preserves local audit entries', async () => {
@@ -469,7 +595,7 @@ describe('GET /sessions/reaper/audit (integration)', () => {
   it('scope=pool distinguishes a successful empty peer audit from failed fan-out', async () => {
     const peer = await startPeer((_req, res) => {
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ entries: [] }));
+      res.end(JSON.stringify({ entries: [], page: { returned: 0, truncated: false } }));
     });
     try {
       const res = await request(app({
@@ -481,7 +607,31 @@ describe('GET /sessions/reaper/audit (integration)', () => {
       expect(res.body.entries).toEqual([]);
       expect(res.body.pool.peersQueried).toBe(1);
       expect(res.body.pool.peersOk).toBe(1);
+      expect(res.body.pool.sources).toEqual([
+        { machineId: 'm-self', returned: 0, truncated: false },
+        { machineId: 'm-empty', returned: 0, truncated: false },
+      ]);
       expect(res.body.pool.failed).toEqual([]);
+    } finally {
+      await peer.close();
+    }
+  });
+
+  it('scope=pool treats a peer without page metadata as incomplete rather than silently complete', async () => {
+    const peer = await startPeer((_req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ entries: [] }));
+    });
+    try {
+      const res = await request(app({
+        meshSelfId: 'm-self',
+        listPoolMachines: () => [{ machineId: 'm-old', lastKnownUrl: peer.url }],
+      })).get('/sessions/reaper/audit?scope=pool&limit=2');
+
+      expect(res.status).toBe(200);
+      expect(res.body.pool.peersOk).toBe(0);
+      expect(res.body.pool.sources).toEqual([{ machineId: 'm-self', returned: 0, truncated: false }]);
+      expect(res.body.pool.failed).toEqual([{ machineId: 'm-old', error: 'invalid-body' }]);
     } finally {
       await peer.close();
     }

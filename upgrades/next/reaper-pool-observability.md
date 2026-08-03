@@ -9,7 +9,9 @@ pool scope. All three reads preserve this machine's answer even when another reg
 is dark, old, unreachable, unauthorized, or malformed. Peer evidence is tagged
 with registry-owned machine identity, and every failed fan-out becomes a
 classified `pool.failed` row instead of disappearing or turning the whole read
-into an error. Plain reads keep their existing response shape.
+into an error. Bounded evidence reads expose `pool.sources` with per-machine
+`returned` and `truncated` state, so a newest-N window cannot masquerade as
+complete history. Plain reads keep their existing response shape.
 
 ## What to Tell Your User
 
@@ -27,6 +29,7 @@ into an error. Plain reads keep their existing response shape.
 | Read machine-attributed reaper decisions across the pool | Add `scope=pool` to the decision-audit read; `limit` applies per machine |
 | Compare completed and refused shutoffs across machines | Add `scope=pool` to the reap-log read; rows remain chronological and machine-tagged |
 | Distinguish empty evidence from failed fan-out | Inspect `pool.failed`, `peersQueried`, and `peersOk` |
+| Detect an incomplete per-machine evidence window | Inspect `pool.sources`; any `truncated: true` source makes ratios window-scoped |
 
 ## Evidence
 
@@ -36,4 +39,6 @@ older peer missing the route, rejected public URLs, bounded chunked responses,
 malformed/deep snapshot and evidence bodies, successful empty peers, global
 timeline ordering, and preservation of local evidence. End-to-end tests
 exercise all three pool reads through real server wiring on a single-machine
-install and prove plain-route response compatibility.
+install and prove plain-route response compatibility. Evidence-route tests also
+pin local truncation, peer truncation, empty complete sources, and mixed-version
+peers that omit required page metadata.
