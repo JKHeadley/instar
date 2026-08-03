@@ -4,7 +4,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { MachineSshIdentity, type MachineSshIdentityRecord } from './MachineSshIdentity.js';
 import { MachineSshEndpoint } from './MachineSshEndpoint.js';
 import { MutualSshVerifier, canonicalDirectionalSshProof, type DirectionalSshProof, type SshProbeTarget } from './MutualSshVerifier.js';
-import { MutualSshHealthController, classifyMutualSshFailure, type MutualSshPairHealth } from './MutualSshHealthController.js';
+import {
+  MutualSshHealthController,
+  captureMutualSshFailure,
+  type MutualSshFailureClass,
+  type MutualSshPairHealth,
+} from './MutualSshHealthController.js';
 import { MutualSshProbeScheduler } from './MutualSshProbeScheduler.js';
 import { SshPeerAdmissionStore } from './SshPeerAdmissionStore.js';
 import { SshHostKeyLifecycle, canonicalHostKeyProposal } from './SshHostKeyLifecycle.js';
@@ -49,6 +54,43 @@ export type MutualSshWireCommand =
 
 interface StoredProofs { version: 1; proofs: DirectionalSshProof[] }
 
+interface CapturedBootstrapFailure {
+  reason: string;
+  failureClass: MutualSshFailureClass;
+  detail: string;
+}
+
+interface NamedBootstrapFailure {
+  reason: string;
+}
+
+type BootstrapFailure = CapturedBootstrapFailure | NamedBootstrapFailure;
+
+export type MutualSshBootstrapFailureStatus = BootstrapFailure & { machineId: string };
+
+function capturedBootstrapFailure(error: unknown, prefix?: string): CapturedBootstrapFailure {
+  const captured = captureMutualSshFailure(error);
+  return {
+    reason: prefix ? `${prefix}:${captured.failureClass}` : captured.failureClass,
+    failureClass: captured.failureClass,
+    detail: captured.detail,
+  };
+}
+
+export interface MutualSshRuntimeStatus {
+  enabled: true;
+  dryRun: boolean;
+  listener: boolean;
+  readinessRequired: boolean;
+  ready: boolean;
+  enrollmentState: 'paired' | 'ssh-bootstrap' | 'ssh-bootstrap-blocked' | 'ssh-proving' | 'ready';
+  blockedReasons: string[];
+  directions: MutualSshPairHealth[];
+  pairs: Array<{ machines: string[]; mutual: boolean; standingKeyInstalled: boolean; standingReachable: boolean }>;
+  /** Present only when caught bootstrap errors exist, preserving healthy/single-machine output. */
+  bootstrapFailures?: MutualSshBootstrapFailureStatus[];
+}
+
 /** Production coordinator for endpoint lifecycle, signed adverts, directional probes and rollback. */
 export class MutualSshRuntime {
   private readonly identityManager: MachineSshIdentity;
@@ -63,7 +105,7 @@ export class MutualSshRuntime {
   private readonly candidateAdverts = new Map<string, SshBootstrapAdvert>();
   private readonly hostKeys = new Map<string, SshHostKeyLifecycle>();
   private readonly proofs = new Map<string, DirectionalSshProof>();
-  private readonly bootstrapFailures = new Map<string, string>();
+  private readonly bootstrapFailures = new Map<string, BootstrapFailure>();
   private readonly knownPeers = new Set<string>();
   private timer: NodeJS.Timeout | null = null;
   private hostOverlapTimer: NodeJS.Timeout | null = null;
@@ -93,8 +135,8 @@ export class MutualSshRuntime {
         target.expectedSourceClientKeyFingerprint = MachineSshIdentity.fingerprint(this.identity.clientPublicKey);
         await this.exchangeAdvert(target.targetMachineId);
       },
-      notifySecurity: async target => this.d.notifySecurity?.({ type: 'host-key-change', target: target.targetMachineId }),
-      notifyExhausted: async (target, failure) => this.audit({ type: 'repair-exhausted', target: target.targetMachineId, failure }),
+      notifySecurity: async (target, _failure, detail) => this.d.notifySecurity?.({ type: 'host-key-change', target: target.targetMachineId, detail }),
+      notifyExhausted: async (target, failure, detail) => this.audit({ type: 'repair-exhausted', target: target.targetMachineId, failure, detail }),
     }, concurrency);
     this.proofFile = path.join(d.stateDir, 'machine-ssh', 'directional-proofs.json');
     this.peerAuthorizedKeys = d.peerExecution ? new PeerAuthorizedKeys(d.peerExecution.agentHome, d.peerExecution.dryRun) : null;
@@ -143,7 +185,7 @@ export class MutualSshRuntime {
         catch (error) {
           // @silent-fallback-ok — an advert exchange failure is retained as a
           // named readiness blocker and retried on the next bounded sweep.
-          this.bootstrapFailures.set(peer.machineId, classifyMutualSshFailure(error));
+          this.bootstrapFailures.set(peer.machineId, capturedBootstrapFailure(error));
         }
       }
       if (this.d.dryRun) { this.audit({ type: 'dry-run', wouldProbe: peers.length }); return; }
@@ -204,7 +246,7 @@ export class MutualSshRuntime {
     }
   }
 
-  status(): { enabled: true; dryRun: boolean; listener: boolean; readinessRequired: boolean; ready: boolean; enrollmentState: 'paired' | 'ssh-bootstrap' | 'ssh-bootstrap-blocked' | 'ssh-proving' | 'ready'; blockedReasons: string[]; directions: MutualSshPairHealth[]; pairs: Array<{ machines: string[]; mutual: boolean; standingKeyInstalled: boolean; standingReachable: boolean }> } {
+  status(): MutualSshRuntimeStatus {
     const targets = this.d.listPeers().flatMap(peer => { const target = this.targetFor(peer); return target ? [target] : []; });
     const directions = this.controller.health(targets).map(row => ({ ...row, proof: this.proofs.get(this.key(row.sourceMachineId, row.targetMachineId)) ?? row.proof }));
     const pairs = this.d.listPeers().map(peer => {
@@ -219,7 +261,7 @@ export class MutualSshRuntime {
       }));
       let standingKeyInstalled = false;
       try { standingKeyInstalled = Boolean(advert && this.peerAuthorizedKeys?.has(this.authorizedKey(advert))); }
-      catch (error) { this.bootstrapFailures.set(peer.machineId, `standing-key-store:${classifyMutualSshFailure(error)}`); }
+      catch (error) { this.bootstrapFailures.set(peer.machineId, capturedBootstrapFailure(error, 'standing-key-store')); }
       return {
         machines: [this.d.selfMachineId, peer.machineId],
         mutual,
@@ -235,10 +277,24 @@ export class MutualSshRuntime {
     const standingReady = !standingRequired || pairs.every(pair => pair.mutual && pair.standingKeyInstalled && pair.standingReachable);
     const combinedReadinessRequired = readinessRequired || standingRequired;
     const ready = !combinedReadinessRequired || (proofReady && standingReady);
-    const blockedReasons = [...this.bootstrapFailures.values()];
+    const blockedReasons = [...this.bootstrapFailures.values()].map(failure => failure.reason);
     if (standingRequired) for (const pair of pairs) if (!pair.mutual || !pair.standingKeyInstalled || !pair.standingReachable) blockedReasons.push(`standing-key-unreachable:${pair.machines[1]}`);
     const enrollmentState = this.stopped || peerCount === 0 ? 'ready' : this.bootstrapFailures.size > 0 || (combinedReadinessRequired && !standingReady) ? 'ssh-bootstrap-blocked' : this.d.dryRun || this.adverts.size < peerCount || !this.endpoint ? 'ssh-bootstrap' : proofReady ? 'ready' : 'ssh-proving';
-    return { enabled: true, dryRun: this.d.dryRun, listener: this.endpoint !== null, readinessRequired: combinedReadinessRequired, ready, enrollmentState, blockedReasons: [...new Set(blockedReasons)].sort(), directions, pairs };
+    const capturedFailures = [...this.bootstrapFailures.entries()]
+      .flatMap(([machineId, failure]) => 'detail' in failure ? [{ machineId, ...failure }] : [])
+      .sort((a, b) => a.machineId.localeCompare(b.machineId) || a.reason.localeCompare(b.reason));
+    return {
+      enabled: true,
+      dryRun: this.d.dryRun,
+      listener: this.endpoint !== null,
+      readinessRequired: combinedReadinessRequired,
+      ready,
+      enrollmentState,
+      blockedReasons: [...new Set(blockedReasons)].sort(),
+      directions,
+      pairs,
+      ...(capturedFailures.length > 0 ? { bootstrapFailures: capturedFailures } : {}),
+    };
   }
 
   revoke(machineId: string): void {
@@ -292,7 +348,7 @@ export class MutualSshRuntime {
       });
       this.endpoint = null;
       this.listen = null;
-      this.bootstrapFailures.set(this.d.selfMachineId, classifyMutualSshFailure(error));
+      this.bootstrapFailures.set(this.d.selfMachineId, capturedBootstrapFailure(error));
     }
   }
 
@@ -425,7 +481,7 @@ export class MutualSshRuntime {
       if (result.changed) this.audit({ type: 'peer-authorized-key-reconciled', machineId, pairingEpoch: advert.pairingEpoch, clientKeyGeneration: advert.clientKeyGeneration, dryRun: result.dryRun });
       this.bootstrapFailures.delete(machineId);
     } catch (error) {
-      this.bootstrapFailures.set(machineId, `standing-key-store:${classifyMutualSshFailure(error)}`);
+      this.bootstrapFailures.set(machineId, capturedBootstrapFailure(error, 'standing-key-store'));
     }
   }
 
@@ -434,7 +490,7 @@ export class MutualSshRuntime {
     const advert = this.adverts.get(machineId);
     if (!advert?.standingSsh) {
       this.standingEvidence.delete(machineId);
-      this.bootstrapFailures.set(machineId, 'standing-ssh-endpoint-missing');
+      this.bootstrapFailures.set(machineId, { reason: 'standing-ssh-endpoint-missing' });
       return;
     }
     try {
@@ -446,7 +502,7 @@ export class MutualSshRuntime {
       this.bootstrapFailures.delete(machineId);
     } catch (error) {
       this.standingEvidence.delete(machineId);
-      this.bootstrapFailures.set(machineId, `standing-ssh:${classifyMutualSshFailure(error)}`);
+      this.bootstrapFailures.set(machineId, capturedBootstrapFailure(error, 'standing-ssh'));
     }
   }
 

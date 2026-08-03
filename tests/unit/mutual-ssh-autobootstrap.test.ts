@@ -69,6 +69,11 @@ describe('mutual SSH bootstrap security invariants', () => {
     await controller.check(target);
     expect(verifier.probe).toHaveBeenCalledTimes(4);
     expect(hooks.notifyExhausted).toHaveBeenCalledOnce();
+    expect(hooks.notifyExhausted).toHaveBeenCalledWith(target, 'connect-refused', 'ECONNREFUSED');
+    expect(controller.health([target])[0]).toMatchObject({
+      lastFailureClass: 'connect-refused',
+      lastFailureDetail: 'ECONNREFUSED',
+    });
   }, 15_000);
 
   it('covers all 90 ten-machine directions within the full timeout-path budget without starvation', async () => {

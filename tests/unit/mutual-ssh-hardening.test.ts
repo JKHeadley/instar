@@ -12,7 +12,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { MutualSshRuntime, type MutualSshPeer } from '../../src/core/MutualSshRuntime.js';
 import { canonicalSshBootstrapAdvert, type SshBootstrapAdvert } from '../../src/core/SshBootstrapAdvert.js';
 import { canonicalDirectionalSshProof } from '../../src/core/MutualSshVerifier.js';
-import { classifyMutualSshFailure } from '../../src/core/MutualSshHealthController.js';
+import { captureMutualSshFailure, classifyMutualSshFailure } from '../../src/core/MutualSshHealthController.js';
 import { MachineSshIdentity } from '../../src/core/MachineSshIdentity.js';
 import { MachineSshEndpoint } from '../../src/core/MachineSshEndpoint.js';
 
@@ -149,6 +149,7 @@ describe('mutual SSH hardened lifecycle', () => {
     const first = new MutualSshRuntime(deps('self-boot-1'));
     await first.start();
     expect(first.status()).toMatchObject({ enrollmentState: 'ready', readinessRequired: true, ready: true });
+    expect(first.status()).not.toHaveProperty('bootstrapFailures');
     peers.push({ machineId: 'source', pairingEpoch: 7, machineFingerprint: 'source-fp', endpoints: [] });
     expect(first.status()).toMatchObject({ enrollmentState: 'ssh-bootstrap', readinessRequired: true, ready: false });
     const unsignedAdvert: Omit<SshBootstrapAdvert, 'machineSignature'> = {
@@ -185,6 +186,80 @@ describe('mutual SSH hardened lifecycle', () => {
     expect(classifyMutualSshFailure(new Error('EACCES firewall'))).toBe('firewall-denied');
     expect(classifyMutualSshFailure(new Error('ENETUNREACH from VPN route'))).toBe('vpn-route-unavailable');
     expect(classifyMutualSshFailure(new Error('system-sleep detected'))).toBe('system-sleep');
+  });
+
+  it('scrubs endpoint-shaped hosts without destroying dotted JavaScript diagnostics', () => {
+    for (const diagnostic of [
+      'Cannot find module.exports in package.json',
+      'TypeError: fs.readFileSync is not a function',
+      'failed reading MutualSshRuntime.ts at line 42',
+      'connect ECONNREFUSED, retry via socket.connect',
+    ]) {
+      expect(captureMutualSshFailure(new Error(diagnostic)).detail).toBe(diagnostic);
+    }
+
+    const failure = new Error('bootstrap exploded at echo-laptop.internal; getaddrinfo ENOTFOUND echo-laptop; route vanished at [fe80::1]');
+    expect(classifyMutualSshFailure(failure)).toBe('unknown');
+    const captured = captureMutualSshFailure(failure);
+    expect(captured.detail).toContain('[REDACTED:hostname]');
+    expect(captured.detail).toContain('[REDACTED:address]');
+    expect(captured.detail).not.toContain('echo-laptop');
+    expect(captured.detail).not.toContain('fe80::1');
+    expect(captureMutualSshFailure(new Error('\u0000 \n\t')).detail).toBe('<empty error detail after scrubbing>');
+  });
+
+  it('surfaces bounded scrubbed evidence when endpoint bootstrap classification is unknown', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-ssh-unknown-bootstrap-'));
+    roots.push(root);
+    const publicKeyMaterial = `ssh-ed25519 ${'B'.repeat(64)} echo-laptop.internal`;
+    const privateKey = `-----BEGIN OPENSSH PRIVATE KEY-----\n${'A'.repeat(96)}\n-----END OPENSSH PRIVATE KEY-----`;
+    const failure = new Error(`bootstrap exploded at echo-laptop.internal while reading module.exports in package.json using ${publicKeyMaterial} and ${privateKey} ${'diagnostic '.repeat(80)}`);
+    expect(classifyMutualSshFailure(failure)).toBe('unknown');
+    const listen = vi.spyOn(MachineSshEndpoint.prototype, 'listen').mockRejectedValue(failure);
+    const runtime = new MutualSshRuntime({
+      stateDir: root,
+      agentId: 'agent',
+      selfMachineId: 'self',
+      selfMachineFingerprint: 'self-fp',
+      observerBootId: 'self-boot',
+      bindHost: '127.0.0.1',
+      bindPort: 0,
+      dryRun: false,
+      requiredForReadiness: true,
+      listPeers: () => [{ machineId: 'peer', pairingEpoch: 1, machineFingerprint: 'peer-fp', endpoints: [] }],
+      send: async () => ({}),
+      sign: () => 'x'.repeat(64),
+      verify: () => true,
+    });
+
+    try {
+      await runtime.start();
+      const status = runtime.status();
+      expect(status).toMatchObject({
+        enrollmentState: 'ssh-bootstrap-blocked',
+        listener: false,
+        blockedReasons: ['unknown'],
+        bootstrapFailures: [{
+          machineId: 'self',
+          reason: 'unknown',
+          failureClass: 'unknown',
+          detail: expect.stringContaining('bootstrap exploded'),
+        }],
+      });
+      const detail = status.bootstrapFailures?.[0]?.detail ?? '';
+      expect(detail).toContain('[REDACTED:hostname]');
+      expect(detail).toContain('[REDACTED:ssh-key]');
+      expect(detail).toContain('[REDACTED:pem-private-key]');
+      expect(detail).toContain('module.exports');
+      expect(detail).toContain('package.json');
+      expect(detail).not.toContain('echo-laptop.internal');
+      expect(detail).not.toContain('B'.repeat(64));
+      expect(detail).not.toContain('BEGIN OPENSSH PRIVATE KEY');
+      expect(detail.length).toBeLessThanOrEqual(512);
+    } finally {
+      await runtime.rollback();
+      listen.mockRestore();
+    }
   });
 
   it('refuses non-CGNAT public 100/8 binds and leaves personal SSH byte-identical through rollback', async () => {
