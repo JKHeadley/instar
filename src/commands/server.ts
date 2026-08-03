@@ -218,7 +218,7 @@ import { ForegroundRestartWatcher } from '../core/ForegroundRestartWatcher.js';
 import { NotificationBatcher } from '../messaging/NotificationBatcher.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 import type { NotificationTier } from '../messaging/NotificationBatcher.js';
-import { resolveTelegramStartupTopology, wireTelegramSendSide } from './telegramSendSideComposition.js';
+import { resolveTelegramStartupTopology, wireTelegramSendSide } from '../messaging/telegramSendSideComposition.js';
 import { MessageStore } from '../messaging/MessageStore.js';
 import { MessageFormatter } from '../messaging/MessageFormatter.js';
 import { MessageDelivery } from '../messaging/MessageDelivery.js';

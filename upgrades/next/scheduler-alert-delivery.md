@@ -49,8 +49,10 @@ Lifeline-polling, and server-polling startup arrangements through the production
 topology resolver with a real Telegram adapter object, proving that scheduler
 and notification batcher can send. A live handoff test proves the Threadline
 bridge stops on demotion and resumes on promotion without reconstruction.
-Structural assertions pin every polling-independent handoff after
-topology selection and the topic-memory handoff after database initialization.
+A separately named source-order lint pins every polling-independent production
+call site after topology selection and the topic-memory handoff after database
+initialization. It is structural drift protection, not a claim that the test
+executes `server.ts` or proves call-site reachability.
 State-machine tests cover failure count 253, timer-owned missing-sink backoff,
 timer-owned successful reminders, configured- and missing-sink restart/resume rehydration, stop/recovery
 cancellation, recovery/send races, single-sink selection, and overlap

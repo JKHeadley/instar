@@ -3,14 +3,17 @@
  * send-capable TelegramAdapter in Lifeline-owned/send-only mode, but only wired
  * scheduler and notification consumers inside the server-polls branch.
  *
- * This deliberately composes topology + handoff. JobScheduler tests that inject
- * an already-wired adapter cannot catch a startup branch forgetting the handoff.
+ * The parameterized cases behaviorally compose topology + handoff. The final
+ * case is explicitly a structural production-call-site lint: it makes branch
+ * placement drift visible, but does not claim to execute or prove server.ts
+ * reachability.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { StateManager } from '../../src/core/StateManager.js';
 import { SessionManager } from '../../src/core/SessionManager.js';
 import type { JobDefinition, SessionManagerConfig } from '../../src/core/types.js';
@@ -20,7 +23,7 @@ import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import {
   resolveTelegramStartupTopology,
   wireTelegramSendSide,
-} from '../../src/commands/telegramSendSideComposition.js';
+} from '../../src/messaging/telegramSendSideComposition.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 vi.mock('node:child_process', () => ({
@@ -135,8 +138,9 @@ describe('server Telegram send-side composition', () => {
     },
   );
 
-  it('keeps all polling-independent handoffs after both ownership branches', () => {
-    const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf8');
+  it('structurally lints polling-independent handoffs after both ownership branches', () => {
+    const serverPath = fileURLToPath(new URL('../../src/commands/server.ts', import.meta.url));
+    const src = fs.readFileSync(serverPath, 'utf8');
     const topology = src.indexOf('const telegramTopology = resolveTelegramStartupTopology({');
     const sendOnly = src.indexOf("if (telegramTopology?.mode === 'send-only' && telegramConfig)");
     const polling = src.indexOf("if (telegramTopology?.mode === 'server-polling' && telegramConfig)");

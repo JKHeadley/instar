@@ -18,7 +18,7 @@ export interface TelegramStartupTopology {
 }
 
 /**
- * Resolve the production Telegram topology once, before either construction
+ * Resolve the production Telegram messaging topology once, before either construction
  * branch. The result carries both inbound poll ownership and the independent
  * one-voice verdict for the stateful Threadline bridge.
  */
