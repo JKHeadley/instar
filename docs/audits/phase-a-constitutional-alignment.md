@@ -39,13 +39,42 @@ across the whole population, and reading them.
 population.** Every key present answers *am I alive?* or *how am I configured?*. **None answers *what
 have I done?***
 
-**So the corrected figure is ZERO of 90, not 1 of 90.** The argument for the counter schema is
-therefore stronger than published, not weaker: this is not a sparsely-instrumented population, it is an
-**uninstrumented** one for the purpose the audit cares about.
+### …and then a THIRD reading corrected the correction. The honest claim is narrower than both.
 
-*Method note: this was caught by re-verifying a published headline with a DIFFERENT method than the one
-that produced it. The first method's flaw — a regex matching a plausible-looking key name — is exactly
-the class this audit catalogues, committed by the auditor, and it survived one publication cycle.*
+Before publishing "zero", a grounding check challenged the shape of the claim — *"you are reporting
+nothing found; could the source be wrong?"* It was right. **`/guards` is not the only surface.**
+Several guards expose act-counters on their OWN routes:
+
+| route | counters exposed |
+|---|---|
+| `/pool/queue` | `wouldEnqueue`, `wouldHold`, `wouldRefuse`, `held`, `refused` — **a complete would/did pair** |
+| `/self-action-governor` | `wouldDeny` |
+| `/test-runner-limiter` | `wouldBlock` |
+| `/sessions/reaper`, `/spawn-limiter`, `/green-pr-automerge` | none |
+
+**So the accurate statement is:**
+
+> **No guard exposes an act-counter through the `/guards` INVENTORY surface (0 of 90). At least three
+> expose one on their own dedicated route.** The population is not uninstrumented — the **inventory is
+> unaggregated**, and per-route coverage is sparse but real.
+
+That is a materially different — and much more actionable — finding than either earlier version. The
+fix is not "instrument 90 guards from scratch"; it is **surface, in the inventory, the counters that
+already exist, and fill the gaps**. `/pool/queue` already implements the exact `{would, did}` shape the
+Phase B recommendation asks for, so **there is an in-repo exemplar for the counter schema too.**
+
+### Method note — the same number was wrong TWICE, in opposite directions
+
+| version | figure | wrong because |
+|---|---|---|
+| 1st published | **1 of 90** | a regex matched `jobCount` — a count of jobs, not of acts |
+| 2nd (drafted) | **0 of 90** | enumerated keys correctly, but only on ONE surface |
+| 3rd (this) | **0 via `/guards`, ≥3 via own routes** | — |
+
+Both errors were caught by **changing the method**, not by looking harder with the same one. The second
+was caught by an automated grounding check that questioned a "nothing found" result — **a machine
+challenging my claim did what my own re-reading had not.** That is the strongest available argument for
+the structural-guard thesis this audit is about, arriving as evidence rather than assertion.
 
 Everything else can answer at most *"am I alive?"* — and 69% cannot answer even that.
 
