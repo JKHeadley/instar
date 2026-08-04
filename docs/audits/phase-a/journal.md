@@ -7642,3 +7642,59 @@ in one evening while congratulating myself for the first correction.
 
 Memory entry amended — the claim is now *"a scoped view can hide a message addressed elsewhere; read
 unscoped for early awareness"*, not *"the digest hid a direct question."*
+
+
+## 23:20Z — I OVER-COLLAPSED THE ATTENTION QUEUE — and the error is the finding
+
+Justin: *"the attention messages have become completely unmanageable… We need to lock this down now."*
+**102 open items on this machine.** Deduplicating my own backlog is housekeeping and clearly mine, so
+I did that rather than touch the design question I had asked about.
+
+## What I did, and the error inside it
+
+Grouped open items by **identical title** and collapsed each group to its newest. 102 → 76.
+
+**Then I checked the IDs, and several "duplicates" were not duplicates at all:**
+
+| title | what the ID showed |
+|---|---|
+| *"Credential rebalancer"* ×3 | `…:[TOKEN:a4f8****]`, `…:[TOKEN:636a****]` — **three different tokens** |
+| *"Account enrollment needs your check on 'this machine'"* ×3 | `…:justin-gmail:…`, `…:sagemind-dawn:…` — **different accounts** |
+| *"Threadline history diverged from peer"* ×4 | `…:thread-1785169413432-…`, `…:thread-1785169556489-…` — **different threads** |
+| *"Session wedged on an approval prompt…"* ×2 | `…:echo-postmortem-silent-loss…`, `…:echo-llm-pathway-…` — **different sessions** |
+
+**I used title-identity as a proxy for same-condition.** Reopened all 8. Net: **102 → 84**, an
+honest 18-item reduction, not the 26 I first produced.
+
+**I did this fifteen minutes after writing, in durable memory:** *"when a filter uses a proxy for the
+property you actually want, it fails precisely where the two diverge."* I then chose title as a proxy
+for subject, and it diverged exactly there.
+
+## ⭐ But the error is the better finding
+
+**The queue is hard to read because the TITLES do not distinguish the SUBJECTS.** Three items titled
+*"Credential rebalancer"* are three different credentials. Four *"Threadline history diverged from
+peer"* are four different threads. **The ID carries the real subject; the title throws it away.**
+
+**That is why the queue reads as unmanageable, and it is a different problem from volume.** An
+operator scanning titles sees what looks like the same alert five times and learns to skip it — and
+the one that is genuinely new is camouflaged by the four that look identical. **Deduplication is not
+the fix; distinguishing titles is.** A title that omits its subject makes distinct findings
+indistinguishable *and* makes true duplicates unverifiable — you cannot tell the two cases apart
+without opening the ID.
+
+**Only 2 of 11 duplicated conditions used a timestamped id** (`WS-GUARD-peer-*-<epoch>`), so my first
+hypothesis — *"an incrementing id defeats dedupe"*, my own recorded memory — was **refuted** as the
+general cause. It is one mechanism among several; the shared cause is upstream, in the title.
+
+## What was genuinely collapsed, and why it stands
+
+The **9 stranded-topic items** were true duplicates — identical title *and* identical summary
+(*"Topics owned by Laptop (quota) — inbound can't reach a servable machine"*), differing only by an
+epoch in the id. Same for the peer-missing/peer-flapping pairs and the per-topic closeout-breaker
+repeats. **The newest of each stays OPEN**, so no condition lost its representative.
+
+**Nothing was resolved by this.** I did not decide any condition is fixed — I removed redundant
+records of conditions that remain open. Given that `PATCH /attention/:id` accepts only `status` and
+silently discards any reason (found at 22:24Z), the *why* for all 18 closures lives here and nowhere
+else. That is itself a reason to be conservative about closing.
