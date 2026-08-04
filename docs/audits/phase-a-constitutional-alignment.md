@@ -9,22 +9,27 @@ rounds: "4"
 
 # Phase A — constitutional alignment: are the guards effective?
 
-**Measured 2026-08-04 03:12Z–10:31Z on the live echo agent (Mac Mini), against
+**Measured 2026-08-04 03:12Z–11:15Z on the live echo agent (Mac Mini), against
 `origin/main` @ 1.3.1124. Every script tested was first diffed UNCHANGED vs `origin/main`.**
 
-**This report is NOT converged and carries no `converged:` stamp.** One proper round has run. Per
-`scripts/write-audit-convergence.mjs`, a convergence claim requires ≥2 rounds whose final ledger parses
-to zero rows. **An honestly-incomplete audit is fine to commit; it just cannot claim convergence.**
+**This report is NOT converged and carries no `converged:` stamp.** Four rounds have run and **every one
+found material the previous round missed** — none has been an echo. Per
+`scripts/write-audit-convergence.mjs`, a convergence claim requires a final round whose ledger parses to
+zero rows. **An honestly-incomplete audit is fine to commit; it just cannot claim convergence.**
 
 ## Verdict: the standards are not aspirational — the failures are at their perimeters
 
-Across **48 guards in two complete enforcement tiers, not one was found broken.** Every alarm raised
-against them was the auditor's own method error (12 self-inflicted false results, zero genuine guard
-failures). The method demonstrably works: **44 of the 48 caught a deliberately planted violation, named
-the file and line, and then accepted the compliant form.**
+**51 guards verified at rung 3 by deliberate two-sided injection on current code. Not one was found
+broken.** Every apparent failure — **17 of them** — was the auditor's own method error. **Zero genuine
+guard defects were found by injection over eight hours.** The method demonstrably works: the great
+majority of those 51 caught a deliberately planted violation, named the file and line, and then accepted
+the compliant form.
 
 Where the standards fail is at edges: a scope boundary that stops at the source tree, a register that
 validates a reason's PRESENCE rather than its TRUTH, and a component classified but never constructed.
+
+⚠️ **This summary is prose and can go stale against the ledgers below it — it already did once.** The
+per-round tables are the derived record; where they disagree with this paragraph, they win.
 
 ## Round 1
 
