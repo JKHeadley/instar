@@ -54,6 +54,7 @@ export interface SessionDiagnostics {
   suggestions: string[];
 }
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { hostFreeMemPct, type MemReadDeps } from '../monitoring/hostMemoryPressure.js';
 import { detectRateLimited, nextIdleThrottleAction, RATE_LIMIT_SETTLED_CAPTURE_LINES, type ThrottleSettleState } from '../monitoring/rateLimitDetection.js';
 import { classifyIdleError } from './IdleErrorClassifier.js';
 import { InputGuard, type TopicBinding } from './InputGuard.js';
@@ -2310,11 +2311,18 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * pre-spawn gate and the diagnostics surface read ONE definition of pressure.
    * The reroute gate refuses to hold a fresh ~200-500MB REPL when the host is
    * already 'high'/'critical' — the 2026-06-05 laptop-meltdown class.
+   *
+   * Reads the CORRECTED available-memory percentage (free + inactive + purgeable
+   * on macOS via vm_stat; MemAvailable on Linux) via `hostFreeMemPct` — NOT
+   * `os.freemem()`, which on macOS reports only raw free pages (~2.7% on a
+   * healthy 17GB host) and therefore pinned this method at 'critical'
+   * PERMANENTLY, so force-mode `evaluateRerouteGate` threw on every job spawn.
+   * Spec: macos-memory-pressure-metric (the sibling the original fix missed —
+   * SessionReaper/HostPressureSampler were corrected, this caller was not).
+   * Thresholds are unchanged; only the measurement source moved.
    */
-  private currentMemoryPressure(): MemoryPressure {
-    const totalMem = os.totalmem();
-    const freeMem = os.freemem();
-    const usedPercent = Math.round(((totalMem - freeMem) / totalMem) * 100);
+  private currentMemoryPressure(deps: MemReadDeps = {}): MemoryPressure {
+    const usedPercent = Math.round(100 - hostFreeMemPct(deps));
     if (usedPercent >= 90) return 'critical';
     if (usedPercent >= 75) return 'high';
     if (usedPercent >= 60) return 'moderate';
@@ -4206,11 +4214,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
     const staleSessions = sessions.filter(s => s.isStale);
 
-    // Memory pressure assessment
+    // Memory pressure assessment. Reads the CORRECTED available-memory figure
+    // (free + inactive + purgeable on macOS via vm_stat; MemAvailable on Linux)
+    // — NOT os.freemem(), which counts only raw free pages and would report a
+    // healthy host at ~97% used. Kept in step with currentMemoryPressure() below
+    // so the reported PERCENTAGE and the reported TIER cannot contradict each
+    // other (pre-fix this surface could show "97% used" beside tier 'low').
+    // Spec: macos-memory-pressure-metric.
     const totalMem = os.totalmem();
-    const freeMem = os.freemem();
-    const usedPercent = Math.round(((totalMem - freeMem) / totalMem) * 100);
-    const freeMemMB = Math.round(freeMem / 1048576);
+    const freePct = hostFreeMemPct();
+    const usedPercent = Math.round(100 - freePct);
+    const freeMemMB = Math.round((totalMem * (freePct / 100)) / 1048576);
     const totalMemMB = Math.round(totalMem / 1048576);
 
     // Shared with the reroute pre-spawn gate (june15-headless-spawn-reroute O2)
