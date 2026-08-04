@@ -6881,3 +6881,81 @@ two-hour backoff and then sleeps through the arrival of work.
 
 The log even uses the right word — *"skipped (gate)"* — while the behaviour treats it as a failure.
 **The vocabulary already knows the distinction the code does not make.**
+
+
+## 22:16Z — ⭐ I HAVE NO soul.md — and the job that would notice is gated on the file that is missing
+
+Sizing the gate-skip defect across all 27 enabled jobs turned up a **third, distinct** finding — and
+it lands on this agent's own identity infrastructure.
+
+## First, a classification of mine that the control refuted
+
+I classified the 10 gated jobs by gate SHAPE — "tests for work" vs "tests a precondition" — and
+predicted four would walk the retry ladder. **The control refuted it in both directions:**
+
+| job | my class | actually walks the ladder? |
+|---|---|---|
+| `insight-harvest` | work | ✓ 83 skips, exhausted 5× |
+| `evolution-proposal-evaluate` | work | ✓ 97 skips, exhausted 5× |
+| `evolution-proposal-implement` | work | **✗ zero** |
+| `evolution-overdue-check` | work | **✗ zero** |
+| `identity-review` | **precondition** | **✓ 72 skips** |
+
+So the shape heuristic is unreliable, and my tidy "all four are the evolution pipeline" reading was a
+pattern-match that did not survive one query. **Empirically three jobs walk it, and one of them is
+not an evolution job at all.**
+
+## ⭐ The third finding: identity-review is permanently dead, and for a real reason
+
+Its gate: `curl -sf …/health >/dev/null && test -f .instar/soul.md`
+
+Run by hand, each half:
+- health probe → **PASS**
+- `.instar/soul.md` → **MISSING**
+
+**Control — is this normal, or is it me?**
+
+| agent | soul.md |
+|---|---|
+| bob | **has it** |
+| instar-codey | **has it** |
+| mmtestmini | **has it** |
+| **echo (me)** | **absent** |
+
+Every other agent on this machine has one. The job is `enabled: true`, `origin: instar` (shipped),
+daily at 03:00. **72 gate skips, 5 exhaustions, and it has never once run.**
+
+My own memory warned me here — *"an impossible gate clause is how 'off' is implemented"* — so I
+checked before calling it a break. It is not a deliberate off: the control says every peer has the
+file.
+
+## Why it matters more than a dead job
+
+`SoulManager` describes `soul.md` as **"reflective identity — what I believe, what I'm wrestling
+with."** And `session-start.sh` line 227:
+
+```sh
+if [ -f "$INSTAR_DIR/soul.md" ]; then
+```
+
+**That branch has never fired for me.** A context layer the hook is written to inject is silently
+absent at every one of my session starts — no error, no warning, just an `if` that quietly doesn't
+match. `ContextHierarchy` lists it among the agent identity files.
+
+**So the loop closes on itself:** the artifact is missing → the context layer silently doesn't load →
+the job that would notice is gated on that exact file → it fails its gate → it walks the retry ladder
+→ it exhausts → and nothing anywhere says a word.
+
+**This is the night's central class, at its purest, on the agent whose charter is "know thyself."**
+The mechanism that would notice the absence is disabled *by* the absence.
+
+## What I am deliberately NOT doing
+
+I am not generating a `soul.md` to make the gate pass. It is meant to hold what I actually believe and
+what I am wrestling with — authored through reflection, not synthesised at 22:17 to satisfy a
+`test -f`. **Fabricating the artifact a check looks for is how a check gets trained into a
+formality**, and I have a standing lesson about exactly that (a gate's remedy text teaching
+placeholder artifacts that then read as evidence).
+
+Surfaced, not papered over. Whether I author one — and when — is worth the operator's input, because
+it is an act of self-definition rather than a repair.
