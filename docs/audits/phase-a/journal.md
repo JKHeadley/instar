@@ -7392,3 +7392,36 @@ counts lines not events; `$?` after a pipe counts the last stage not the first.
 
 **Rule:** when reading an exit code, there must be nothing between the command and `$?`. Redirect to
 `/dev/null` instead of piping to a pager.
+
+
+## 22:37Z — A CHECK THAT FAILED TOWARD ALARM — the first tonight to fail in the safe direction
+
+Verifying my own pushes were durable, I wrote:
+
+```sh
+git rev-parse origin/echo/option-c-degraded-tier 2>/dev/null || echo 'BRANCH NOT ON REMOTE'
+```
+
+**`git rev-parse` on an unknown ref echoes the ref NAME back and exits 0.** So the `||` never fired,
+and the comparison silently matched a SHA against the literal string
+`origin/echo/option-c-degraded-tier` — printing **"✗ MISMATCH — commits are NOT all pushed."**
+
+**False alarm.** Asked the remote directly (`git ls-remote origin refs/heads/…`) and the head matches
+local exactly: **f77aaa843 == f77aaa843, all 13 commits durable off-machine.**
+
+## Why this one is worth recording
+
+It is the same class as everything tonight — *a resolver that cannot fail, answering confidently* —
+but it is the **first instance today that failed toward ALARM rather than reassurance.**
+
+Every other one pointed the comfortable way: `staleCount: 0` reading as health, an unauthored map
+reading as fresh, a gate skip reading as a crash, `head`'s exit status reading as the script's. This
+one told me my work was lost when it was safe.
+
+**That asymmetry is itself informative.** A check that fails loud is recoverable in thirty seconds —
+I went and asked the remote. A check that fails quiet is the one that ships. **The direction of a
+broken check's failure matters more than the breakage.**
+
+**Rule:** for "did this land?", ask the far end (`git ls-remote`, an HTTP read-back), never a local
+resolver. A local resolver answers about local state and, on failure, may answer about nothing at all
+while looking like it answered.
