@@ -7110,3 +7110,70 @@ That is not a defect I can file against the system. It is the one I have to answ
 **Stop choosing targets by what I trip over.** The next block of work should be `/project run-round
 convergence-towards-coherence 3` — items 9, 10, 11 — with tonight's measured instances attached to the
 items they evidence, rather than a fourth independent investigation.
+
+
+## 22:25Z — CORRECTING MY OWN SELF-CRITICISM — I did not check it as hard as I check a favourable claim
+
+Twenty minutes ago I sent the operator a self-critical holistic review. **Parts of it are wrong, and
+the error runs in the flattering-to-my-conscience direction rather than the flattering-to-my-work
+direction — which is exactly why I did not check it.**
+
+## Measured now, with the evidence bar I should have used first
+
+| item | stage | PR | merged |
+|---|---|---|---|
+| 1 | **merged** | 1649 | 2026-07-26 |
+| 2 | **merged** | 1644 | — |
+| 3, 4 | **merged** | 1662, 1663 | — |
+| 5, 6 | **merged** | 1819 | 2026-08-01 |
+| 7 | **merged** | 1818 | 2026-08-01 |
+| 8 | **merged** | 1832 | 2026-08-02 |
+| 9 | **merged** | 1834 | 2026-08-02 |
+| 10, 11, 12 | `outline` | — | not started |
+
+**Nine of twelve items are SHIPPED.** Rounds 0, 1 and 2 are `complete`. Round 3 is partly done
+(item 9 merged; 10 and 11 outstanding). The remaining work is **three items**, not twelve.
+
+## What I got wrong
+
+**"The twelve items are tonight's findings, written down before I started."** ✗ — nine of them are
+already built. They are not a waiting list.
+
+**"I re-derived a subset of it from scratch over nineteen hours."** ✗ — overstated. Item 1's PR is
+titled *"fix(insights): the panel said 'Routing is healthy' over ZERO…"* — **the class was known AND
+fixed on 2026-07-26.** What I did tonight was find **four new live instances of a known,
+already-partly-fixed class**. That is a materially different and considerably more useful act than
+duplicating undone planning.
+
+## What survives, verified
+
+- **The project has NOT been worked during this window.** Last item merged 2026-08-02T07:43Z; parent
+  `lastTouchedAt` 2026-08-02T09:24:48Z; my window opened 2026-08-04T03:13:56Z. The "untouched across
+  a third session" claim **holds**.
+- `/next` has wanted round 3 since 08-02. **Holds.**
+- I did not consult it until hour 19.2. **Holds.**
+
+## ⭐ The lesson, and it is a new one
+
+**I applied a lower evidence bar to a claim that made me look bad than I would have to one that made
+me look good.** Self-criticism *felt* like rigour, so it went out unverified — the same shape as my
+memory's rule about retracting a true claim on an estimated number, but pointed at conduct rather
+than at a measurement.
+
+The check that would have caught it took ninety seconds: read one child object and see
+`pipelineStage: merged, prNumber: 1649`. I had that object open — I read its `title` and its
+`lastTouchedAt` and stopped, because the title confirmed the story I was already telling about
+myself.
+
+**That is the same eye-movement as the `(gate)` field I skipped in the retry log four hours ago.** In
+both cases the disconfirming field was inside the object I was quoting from, and in both cases I took
+the field that fit the narrative. Once the narrative was "the system is broken"; once it was "I am
+the problem." **The bias is toward the story, not toward the direction.**
+
+## Corrected position
+
+The remaining project work is **items 10, 11 and 12**. Tonight's measured instances are new evidence
+for a class whose first fix shipped on 07-26 — which is precisely what item 5 (*"converging audit on
+a cadence … a check that fails when an area goes unaudited"*) exists to produce. **That makes tonight
+additive to the plan rather than a duplicate of it**, and I should say so as plainly as I said the
+opposite.
