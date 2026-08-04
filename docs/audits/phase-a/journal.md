@@ -6475,3 +6475,256 @@ is **local time with a literal `Z` I appended in the format string**. The label 
 is PDT. The real instant is 21:15Z. Harmless here because the argument only needed "minutes ago", but
 it is precisely the shape I have been cataloguing all night: **a label claiming a property the value
 does not carry.** Third time today I have produced this class while auditing it.
+
+
+## 21:54Z — OPTION C: PHASE 0 BLOCKED THE BUILD — and the external reviewer found what I could not
+
+The operator approved the option C build at cycle six. **The build discipline's own Phase 0 refused it**,
+and the refusal was correct.
+
+## What blocked, measured not assumed
+
+| requirement | state |
+|---|---|
+| `review-convergence` tag | **ABSENT** — `/spec-converge` had never been run on this spec |
+| `approved: true` | **`false`** |
+| ELI16 companion ≥800 chars | PASS (4,269 chars) |
+
+The operator's ruling said *"full build discipline"* — and full build discipline INCLUDES the
+convergence pass. So the gate is not in tension with the approval; **it is what the approval asked
+for.** I did not route around it.
+
+## The Standards-Conformance Gate — 82 standards, 2 findings
+
+- **"A Dark Feature Guards Nothing"** — the spec ships a *load-bearing* fix behind a default-off flag,
+  leaving the fleet on the failing posture until a later graduation.
+- **"Maturation Path"** — the rollout jumps to dev-agent-then-fleet, skipping the test-agent rung.
+- Plus its fit check returned **verdict `none`** on my declared `parent-principle` — the principle I
+  cited does not describe this design. **My own frontmatter was wrong** and I would not have noticed.
+
+## ⭐ The external pass (codex / gpt-5.5, `crossFamily: true`) — verdict SERIOUS ISSUES
+
+Five findings, all design-class. **Two of them are things I could not have found**, because they are
+about the gap between what my spec ARGUES and what it BUILDS:
+
+1. **The rationale does not match the mechanism.** My spec argues at length that the kernel says WARN
+   and that this justifies not refusing — but the proposed tier keys off `currentMemoryPressure()`,
+   which is **used-percent only and never consults the kernel at all.** So the whole
+   three-sources-disagree argument is decoration on a mechanism that reads one source. *This is the
+   exact class I have spent the night auditing — an assertion about a state the component never
+   measures — and it was in my own spec, in the section I was most pleased with.*
+
+2. **"Defer" may preserve the bug under a softer name.** ⭐ The harm I documented and escalated on is
+   **retry-budget exhaustion**. My spec says deferred spawns "take the EXISTING degrade path" — which
+   in force mode is the same refusal. **So the fix may not fix the thing I measured.** The reviewer's
+   resolution is right and concrete: make deferral a first-class non-failure outcome
+   (`deferred { retryAfter, reason }`) and require the scheduler NOT to increment failure attempts.
+
+3. **Scope has sprawled beyond option C** — admission control, priority plumbing, supervisor
+   survivability, and the level-triggered reconciler are four architectural changes with different
+   blast radius, bolted onto one spec (three of them by me, tonight). It proposes phasing them with
+   independent approval.
+
+4. Admission control should be a real queue/backpressure primitive (fairness, aging, retry-after,
+   starvation handling), not serialize-plus-cap.
+
+5. Auto-mode vs force-mode semantics are inconsistent between sections.
+
+## The judgment I am NOT making alone
+
+Finding 3 is in genuine tension with the operator's ruling, which asked for all four in one build.
+**Splitting into independently-approved phases changes the shape of what was approved**, so it goes
+back to them rather than being quietly adopted or quietly ignored.
+
+## What this vindicates
+
+I argued earlier tonight that the convergence gate was worth running rather than routing around. It
+returned, on the first round, **two defects in my own reasoning that four hours of my own re-reading
+had not surfaced** — including one where the spec's most confident section argues from a source the
+code never reads. An outside model, one round, found it immediately.
+
+
+## 21:55Z — CAUGHT MYSELF ABOUT TO WRITE THE OPERATOR'S APPROVAL TAG
+
+Earlier in this pass I updated the option C spec's front matter in the wrong worktree, reverted it to
+keep PR 1854 mergeable, and wrote: *"I'll re-apply it on the build branch."*
+
+**That change flipped `approved: false` → `approved: true`.**
+
+The convergence skill is explicit: *"The `approved: true` tag is NOT written by this skill. That's the
+user's step."* And `/instar-dev`'s Phase 0 gates the build on that exact tag. **So re-applying it
+would have been me writing the approval that authorises my own build** — and the gate would then have
+passed, having verified nothing.
+
+**Why it would have felt legitimate, which is the dangerous part.** The operator DID approve the
+build at cycle six. So flipping the tag would have felt like *recording* their decision rather than
+*making* one. But the tag's meaning is narrower than "the operator approved the work": it means
+*"the operator read the convergence report and approved."* **The convergence report did not exist
+yet.** I would have been recording an approval of a document nobody had read — including me.
+
+**The distinction I am keeping:** the `sanction:` line is MINE to write (it records their ruling, with
+the citation). The `approved:` tag is THEIRS. One is a citation; the other is an authorisation.
+
+This is the Know Your Principal shape applied to a gate rather than a message: **the requester must
+not be the authoriser.** I was one edit from being both, with a plausible justification already
+formed. Recording it because a near-miss I only noticed by re-reading the skill is worth exactly as
+much as a caught error — and because "the operator already said yes to the thing, so the tag is a
+formality" is the sentence that would have done it.
+
+
+## 22:04Z — ⭐ CONVERGENCE ROUND 1 REFUTES BOTH THE SPEC'S CENTRAL ARGUMENT AND ITS CENTRAL FIX
+
+Six internal reviewers + one external (codex/gpt-5.5) + the conformance gate. **The three findings
+below were each found INDEPENDENTLY by multiple reviewers, and together they mean this spec does not
+need editing — its premise needs re-deriving.**
+
+## 1. The causal chain I escalated on is CORRELATION, not causation
+
+Found independently by **security, adversarial, and lessons-aware**.
+
+My spec states — and I called it *"the strongest argument in this document"* — that
+
+> *"The gate runs by spawning a session (`JobScheduler.runGateAsync`), so it passes through
+> `evaluateRerouteGate` and inherits the refusal. The job-gate failures ARE the memory refusals, one
+> layer up."*
+
+**`runGateAsync` runs `execFileAsync('/bin/sh', ['-c', job.gate], { timeout: 10000 })`. It never
+spawns a session and cannot reach `evaluateRerouteGate`.** The 125ms co-occurrence is a shared cron
+tick. The skip-reason evidence proves it directly: a memory refusal records `reason:'memory-pressure'`,
+a gate-command failure records `'gate'` — and what I observed was `skipped (gate)`.
+
+**I escalated to the operator at 12:06Z on this chain**, called it the sharper version, and said it
+raised the cost of waiting. It was two co-occurring effects of one trigger, and I read a mechanism
+into them. *This is the fourth instance today of my most expensive error class — and the one I sent.*
+
+## 2. My proposed fix reproduces the EXACT harm I condemned — 91%, the same number
+
+Found by **adversarial**, by enumerating all 33 shipped job manifests.
+
+Constraint 3 says DEGRADED admits `critical`/`high` and defers `medium`/`low`. Measured:
+`critical` = **1**, `high` = **2**, `medium` = 15, `low` = 15.
+
+**So it admits 3 jobs and defers 30 — 91%.** And **all five `overseer-*` jobs are medium/low**, so
+100% of the tier that notices is shed. My own 20:40Z addendum says a refusal *"switches off ~91% of
+the scheduled supervisory layer and 100% of the tier that would notice"* and demands the opposite.
+
+**The fix reproduces the bug, to the percentage point.** All three jobs I named as harmed —
+`insight-harvest`, `identity-review`, `evolution-proposal-evaluate` — are shed by my own remedy.
+
+Root cause of the error: `JobPriority` encodes *scheduling urgency*, not *supervisory
+load-bearingness*. I reached for the field that existed instead of the property I meant.
+
+## 3. A SECOND memory gate at the same threshold fires FIRST — the fix is dead code
+
+Found by **adversarial and lessons-aware** independently.
+
+`server.ts` wraps `scheduler.canRunJob` with `memoryMonitor.canSpawnSession()`, whose `elevated`
+threshold is **also 75%**, evaluated BEFORE the job gate and before `spawnSession`. It ignores the
+priority argument entirely.
+
+**So for the entire scheduled-job population, a DEGRADED tier built only in `evaluateRerouteGate` is
+unreachable.** Two authorities gate one decision on one quantity at one threshold — a direct
+violation of *"each decision point has exactly one authority."* I measured a two-resolver split and
+attributed 100% of it to the reroute gate.
+
+## The rest, compressed (all DESIGN-class, all corroborated)
+
+- **`deferrable` is on `IntelligenceOptions`, not the spawn path** — found by FIVE reviewers. The
+  safety property I quoted (*"a gating call is ALWAYS non-deferrable"*) governs the LLM router and
+  does not transfer. I cited it as *"exactly the safety property DEGRADED needs."*
+- **`types.ts:1575` is `ActionItem.priority`, not `JobDefinition.priority`** (real: `:441`). Four
+  reviewers. **I re-verified this exact constraint at 20:40Z and did not catch it** — I grepped the
+  union literal and landed on the wrong interface.
+- **Deferral still burns the retry ladder** — external + four internals. Force-mode refusal throws →
+  `recordCompletion({result:'failure'})` → `consecutiveFailures++` → `scheduleRetry`. The headline
+  harm survives the fix, and a policy deferral becomes indistinguishable from a crash.
+- **`jobSlug` is an unauthenticated admission-priority capability** — any Bearer holder posts
+  `jobSlug:"health-check"` and buys `critical` admission.
+- **Dwell as specified can hold permissive straight through an escalation to `critical`** — no
+  attacker needed, ordinary volatility does it.
+- **The pressure read fails OPEN to `low`** — and the failing operation is a fork, likeliest to fail
+  under exactly the pressure it measures. The gate reads healthiest when the host is sickest.
+- **"Serialize starts" is a TOCTOU** — the counter cannot see an in-flight spawn.
+- **Pool placement ranks on `loadAvg` ALONE** — the `memPressure` and `activeSessionRatio` terms both
+  resolve to constant 0 because the heartbeat never publishes those fields. Two of three terms dead.
+- **The guard-manifest lint is structurally blind here** via a stale affirmative exemption
+  (`SessionManager` = *"the thing guards act ON, not a guard"*) — true when written, and **this spec
+  is what invalidates it**.
+- **Declared `parent-principle` is wrong** (gate verdict `none`); the right one is Signal vs Authority,
+  with No Unbounded Loops secondary.
+- **Structural gaps**: no `## Decision points touched` (tag writer refuses), an UNRESOLVED open
+  question (tag writer refuses), no `## Multi-machine posture`, no `## Frontloaded Decisions`, no
+  `## Maturation plan`.
+
+## What I am doing with this
+
+**Not editing the spec into compliance.** Findings 1-3 are not defects in the writing; they mean the
+problem was mis-diagnosed and the remedy mis-aimed. Editing would produce a well-formed document
+around a wrong premise.
+
+The operator approved a build on this spec **two hours ago, on my representation of the evidence.**
+That representation is now refuted in its load-bearing part. They get told before anything is built —
+this is not a finding to fold quietly into round 2.
+
+**The process earned its cost.** I argued earlier tonight for running the convergence gate rather than
+routing around it. One round returned three refutations of my own central claims, two of which I had
+already escalated to the operator as measured fact.
+
+
+## 22:08Z — A THIRD FAILURE MODE, AN HOUR AFTER THE SECOND — and the correctly-armed guard is what caught it
+
+The 22:00Z beat **recorded `success` and produced nothing.**
+
+## Measured
+
+| | 21:00Z (worked) | 22:00Z (did nothing) |
+|---|---|---|
+| session ready | 21:00:22Z (3.3s) | 22:00:21Z (3.1s) |
+| reaped | 21:00:39Z — success | 22:00:34Z — success |
+| runtime | 17s | **13s** |
+| ledger row | ✓ 21:00:28.997Z | **✗ none** |
+| digest regenerated | ✓ | **✗** |
+| anchor refreshed | ✓ | **✗** |
+
+Job history says `success`. The server log says *"Reaping as success"*. **None of the three outputs
+exists.** The script itself is fine — hand-run at 22:07:56Z it completed in seconds and wrote all
+three.
+
+## The control that stopped a false finding
+
+My first read was that the scheduler's line — *"Skipping notification for hourly-realignment — no
+meaningful output"* — was the suppressed tell. **Checked it: that line fires on ALL SEVEN successful
+beats today (hours 10, 11, 12, 13, 14, 21, 22).** It is routine — the beat is designed to be quiet.
+Not a tell. Withdrawn before it went anywhere.
+
+**So what I can state honestly is narrow:** the 22:00 session ran 13 seconds, was reaped success, and
+produced none of its outputs; the 21:00 session ran 17 seconds and produced all three; **no log
+evidence explains the difference.** I am not asserting a cause. Tonight's most expensive error was
+asserting a mechanism from a co-occurrence, and I have already done it once today on this same file.
+
+## ⭐ Three distinct failure modes in one day, each quieter than the last
+
+1. **Refused at spawn** (16:00–20:00Z) — visible as `spawn-error` in job history.
+2. **Lost to a server restart** (15:00Z) — no record at all; invisible unless you notice a missing hour.
+3. **Ran, reported success, produced nothing** (22:00Z) — **invisible to every existing signal.** Job
+   history: success. Scheduler line: routine. No error anywhere.
+
+**Mode 3 is detectable by exactly one thing: comparing the artifact's own timestamp against the
+clock.** Which is precisely the *level-triggered stale-anchor check* the spec proposed — the one piece
+the round-1 reviewers agreed was genuinely independent of the memory work.
+
+**That piece just proved itself in production, one hour after I wrote it, against a failure mode I had
+not imagined when I wrote it.** The spec's memory-pressure core is refuted; this fourth component is
+the part that survives, and it now has live evidence rather than an argument.
+
+## And the guard paid for itself, in the opposite direction from last time
+
+At 21:00 I armed a watcher with a **contaminated baseline** (taken 6s after the event) and concluded
+"ledger did not grow" — a **false negative** on a beat that had worked.
+
+At 22:00 the same tool, armed correctly at 21:10Z with `--not-before 22:00:00Z`, reported unchanged —
+and this time the negative is **TRUE**. Same tool, same target, opposite arming, opposite correctness.
+
+**That is the cleanest possible demonstration of why the baseline rule had to become a guard rather
+than stay a rule** — and I got both halves of the demonstration within one hour, on the same file,
+by accident.
