@@ -19,6 +19,7 @@ import { ANTHROPIC_INTERACTIVE_POOL_ID } from './errors.js';
 import type { InteractivePoolConfig } from './config.js';
 import type { InteractivePool, PoolSession } from './pool.js';
 import { getSignature } from './canary/emptyPromptSignature.js';
+import { chunkLiteralForTmux, buildLiteralSendArgs } from '../../../core/tmuxLiteralSend.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -107,13 +108,24 @@ export async function runPrompt(
   const beforeLength = beforeBuffer.length;
   const startTs = Date.now();
 
-  // Send prompt + Enter
+  // Send prompt + Enter.
+  //
+  // The prompt goes out in ceiling-safe chunks: `send-keys -l` passes its
+  // payload as ONE argv element, so a large prompt (these routinely run tens of
+  // KB) fails with a bare `command too long`. Untreated, that failure reached
+  // LlmCircuitBreaker as an opaque send error and was reported as
+  // `provider rate-limited`, tripping the breaker every 15 minutes and taking
+  // ten LLM-backed components down with it (2026-08-04). See
+  // `src/core/tmuxLiteralSend.ts` for the measured ceiling and why chunking is
+  // used rather than load-buffer/paste-buffer.
   try {
-    await execFileAsync(
-      config.tmuxPath,
-      ['send-keys', '-t', `=${tmuxName}:`, '-l', prompt],
-      { timeout: 5000 },
-    );
+    for (const chunk of chunkLiteralForTmux(prompt)) {
+      await execFileAsync(
+        config.tmuxPath,
+        buildLiteralSendArgs(`=${tmuxName}:`, chunk),
+        { timeout: 5000 },
+      );
+    }
     await new Promise((resolve) => setTimeout(resolve, 500));
     await execFileAsync(
       config.tmuxPath,

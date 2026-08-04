@@ -37,6 +37,7 @@ function localSlackRelayReadiness(stateDir: string): { ready: true } | { ready: 
   return slackReplyRelayReadiness(stateDir, template);
 }
 import { resolveStandardsRegistry } from '../core/standardsRegistryPath.js';
+import { chunkLiteralForTmux, buildLiteralSendArgs } from '../core/tmuxLiteralSend.js';
 import { parseStandardsRegistry } from '../core/StandardsRegistryParser.js';
 import { loadConfig, ensureStateDir, detectTmuxPath, detectGeminiPath } from '../core/Config.js';
 import { handleProcessLevelError } from '../core/uncaughtExceptionPolicy.js';
@@ -15906,7 +15907,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       sendKeys(tmuxSession: string, text: string): boolean {
         try {
           const target = `=${tmuxSession}:`;
-          execFileSync(tmuxBin, ['send-keys', '-t', target, '-l', text], { encoding: 'utf-8', timeout: 5000 });
+          // Chunked — see src/core/tmuxLiteralSend.ts (`send-keys -l` payload
+          // is one argv element and blows ARG_MAX on large text).
+          for (const chunk of chunkLiteralForTmux(text)) {
+            execFileSync(tmuxBin, buildLiteralSendArgs(target, chunk), { encoding: 'utf-8', timeout: 5000 });
+          }
           execFileSync(tmuxBin, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 });
           return true;
         } catch { /* @silent-fallback-ok — send-keys boolean return */ return false; }

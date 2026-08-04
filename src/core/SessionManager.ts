@@ -20,6 +20,7 @@ import type { ReapGuard, ReapKeepReason } from './ReapGuard.js';
 import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
 import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
+import { chunkLiteralForTmux, buildLiteralSendArgs } from './tmuxLiteralSend.js';
 import { isReadyPromptTail, classifyPaneReadiness, type PaneReadiness } from './claudeReadinessProbe.js';
 import { extractGeminiFinalAssistantBlock, meaningfulTail } from './paneText.js';
 import { ensureInteractiveReady } from './ensureInteractiveReady.js';
@@ -4003,11 +4004,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // Send text literally, then Enter separately. `--` terminates option
       // parsing so input can never be interpreted as a send-keys flag
       // (FABLE-MODEL-ESCALATION-SPEC §5.3 hardening; safe for all callers).
-      withSyncOp(() => execFileSync(
-        this.config.tmuxPath,
-        ['send-keys', '-t', `=${tmuxSession}:`, '-l', '--', input],
-        { encoding: 'utf-8', timeout: 5000 }
-      ));
+      // Chunked: `send-keys -l` carries its payload in ONE argv element, so a
+      // large input fails with `command too long` (src/core/tmuxLiteralSend.ts).
+      for (const chunk of chunkLiteralForTmux(input)) {
+        withSyncOp(() => execFileSync(
+          this.config.tmuxPath,
+          buildLiteralSendArgs(`=${tmuxSession}:`, chunk),
+          { encoding: 'utf-8', timeout: 5000 }
+        ));
+      }
       withSyncOp(() => execFileSync(
         this.config.tmuxPath,
         ['send-keys', '-t', `=${tmuxSession}:`, 'Enter'],
@@ -5681,9 +5686,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
           withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[200~'], {
             encoding: 'utf-8', timeout: 5000,
           }));
-          withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '-l', text], {
-            encoding: 'utf-8', timeout: 10000,
-          }));
+          // Chunked — see src/core/tmuxLiteralSend.ts. Safe inside the
+          // bracketed-paste region: everything between the markers is ONE
+          // paste no matter how many writes deliver it.
+          for (const chunk of chunkLiteralForTmux(text)) {
+            withSyncOp(() => execFileSync(this.config.tmuxPath, buildLiteralSendArgs(exactTarget, chunk), {
+              encoding: 'utf-8', timeout: 10000,
+            }));
+          }
           withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[201~'], {
             encoding: 'utf-8', timeout: 5000,
           }));
@@ -5698,9 +5708,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
           }
         } else {
           // Single-line: simple send-keys
-          withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '-l', text], {
-            encoding: 'utf-8', timeout: 10000,
-          }));
+          // Chunked — see src/core/tmuxLiteralSend.ts. Safe inside the
+          // bracketed-paste region: everything between the markers is ONE
+          // paste no matter how many writes deliver it.
+          for (const chunk of chunkLiteralForTmux(text)) {
+            withSyncOp(() => execFileSync(this.config.tmuxPath, buildLiteralSendArgs(exactTarget, chunk), {
+              encoding: 'utf-8', timeout: 10000,
+            }));
+          }
           for (let i = 0; i < enterPresses; i++) {
             withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
               encoding: 'utf-8', timeout: 5000,

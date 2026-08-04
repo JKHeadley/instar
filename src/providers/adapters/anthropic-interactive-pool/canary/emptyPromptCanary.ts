@@ -34,6 +34,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import { buildLiteralSendArgs } from '../../../../core/tmuxLiteralSend.js';
 import { promisify } from 'node:util';
 import type { InteractivePool, PoolSession } from '../pool.js';
 import type { InteractivePoolConfig } from '../config.js';
@@ -134,7 +135,7 @@ export async function runEmptyPromptCanary(
   try {
     await execFileAsync(
       config.tmuxPath,
-      ['send-keys', '-t', `=${session.tmuxName}:`, '-l', CANARY_PROMPT],
+      buildLiteralSendArgs(`=${session.tmuxName}:`, CANARY_PROMPT),
       { timeout: 5000 },
     );
     await new Promise((resolve) => setTimeout(resolve, 300));
