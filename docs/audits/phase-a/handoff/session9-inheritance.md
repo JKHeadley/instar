@@ -238,3 +238,67 @@ building is gated** — this is a genuine stopping point, not a stall.
    writing-style permission, and reports drifted 3,652 → 3,197 → 3,176 → 3,048 chars, each more
    nested, into a channel he has twice called unreadable. Complied; 3,048 → 1,762.
    **Detail belongs in the artifact the message points at, not in the paragraph.**
+
+
+---
+
+## ⭐⭐ ADDED 23:16Z — READ THIS BEFORE TRUSTING ANY FINDING ABOVE
+
+**Late in this window I called three working mechanisms broken.** All three ran the same direction,
+and the direction matters more than any individual error:
+
+| # | I claimed | actually |
+|---|---|---|
+| 1 | the cartographer's `409` meant a stale topic binding | binding was live; **I passed `?topic=` when the route reads `topicId`** |
+| 2 | I had "re-derived the plan from scratch over nineteen hours" | **nine of twelve items were already shipped**, some over a week earlier |
+| 3 | "the digest deliberately hid a direct question from the operator" | `36966` is the **Observer's** topic, manager-only by the operator's own rule; messages there reach me **by relay**. I saw it early and mislabelled early as deprived |
+
+**Why this happened, and why the next session is exposed to it too.** This window's story became
+*"the system is full of mechanisms that lie."* It is a true story — the gate-skip defect, the beat's
+three failure modes, `staleCount: 0` over an unauthored map are all real. **But twenty hours of
+finding genuine instances of a real class leaves you primed to see the class where the mechanism is
+simply doing its job.**
+
+> **System-criticism needs the same evidence bar as self-criticism.** I wrote the self-criticism rule
+> at 22:31Z and failed its mirror three times in the following forty minutes.
+
+**Practical test before filing any "X is broken":** *what would this look like if X were working
+correctly and I had used it wrong?* All three above collapse instantly under that question.
+
+## My own guard has the defect it was built to prevent
+
+`watch-for.sh` reported **CHANGED** for the 23:00Z beat. The beat was **REFUSED**; the row it saw was
+**my own hand-restore**. It answers *"did the target change?"* — **never** *"did the actor I care
+about change it?"* Correct on its literal contract, wrong on the question asked. Caveat now ships in
+the script header and the README; `--expect-matching` is the real fix and is **recorded, not built**.
+
+**It cost nothing only because I learned the refusal by a different route.** Relying on the tool
+alone, as its own README instructs, would have written "the 23:00 beat ran" into the journal that
+records it refused.
+
+## The beat's full day — the honest number
+
+**Seven of twelve hourly slots failed, in three distinct modes, needing a person three times**
+(hand-restored 20:03Z, 22:07Z, 23:05Z). The 15:00 slot has **no record at all**. The 22:00 slot
+**reported `success` and wrote nothing**.
+
+**And the flap, caught live at five-minute granularity:** `22:45 REFUSED · 22:50 success ·
+22:55 REFUSED · 23:00 REFUSED`. Adjacent ticks disagreeing — **stronger evidence than the 79→61 swing
+the original spec cited**, which a reviewer correctly flagged as unsourced. This is the one piece of
+the failed option C spec that survived review.
+
+## Reading the operator
+
+`telegram-messages.jsonl` filtered on `fromUser === 'true'` is the **record**; the digest is a
+**convenience scoped to this topic**. On 2026-08-04 he sent **37 messages across all topics, 17 here**.
+Read unscoped for **early awareness** — but **do not act on another agent's mail before it is
+relayed.** A gap between the anchor's `last inbound` and the digest means *"a message exists that is
+not addressed to me."*
+
+**Two of his that are live and unanswered as of 23:16Z:**
+- **22:20Z (36966, to the Observer):** *"have we made any progress in regards to the main plan?"* —
+  I answered via 29723 at 23:14Z.
+- **19:32Z + 19:49Z (7848, alerts hub, ambiguous ownership):** *"the attention messages have become
+  completely unmanageable… We need to lock this down now"* / *"Silent"*. **Not acted on** — surfaced
+  with numbers (34 created today here, 4 since he said it, **102 still open**) and asked whether it
+  is mine. The numbers say the backlog is the problem, not the creation rate.
