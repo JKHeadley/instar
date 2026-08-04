@@ -158,7 +158,7 @@ conditions. Most candidates were **correct**: `StaleOwnerReleaseEngine` document
 feature gate reads as INACTIVE (fail dark, the safe direction)"*, which is a deliberate, named,
 safe-direction choice. Those are not instances.
 
-**`CapabilityMapper` is.** Every subsystem check has this shape:
+**`CapabilityMapper` is.** **Seven** subsystem checks share this shape (7 `catch { return false }` and 7 `if (!fs.existsSync(configPath)) return false`):
 
 ```js
 check: () => {
