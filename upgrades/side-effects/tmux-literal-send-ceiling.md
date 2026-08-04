@@ -23,8 +23,15 @@ whose OPEN log line **hardcoded "provider rate-limited"**.
 - `[llm-circuit] OPEN: provider rate-limited … (trip #14)` — tripping every 15 minutes since 09:59Z
 - reason string, verbatim: `Failed to send prompt: Command failed: /opt/homebrew/bin/tmux send-keys
   -t =instar-pool-echo-aip-3757dfe6fb16: -l …`
-- **ten** LLM-backed components at 76–100% error rate, every `byModel` row showing `tokensIn: 0`
-  (the calls never produced anything):
+- **ten** LLM-backed components at 76–100% error rate, every `byModel` row showing `tokensIn: 0`:
+
+  ⚠️ **Correction (2026-08-04, post-deploy):** this originally read "(the calls never produced
+  anything)". **Withdrawn.** `tokensIn: 0` also appears on components with 100+ clean successes
+  (`durable-output-scrub` 125, `rope-health` 123, `mesh-coherence-live` 119) — it is a token
+  ATTRIBUTION gap, not proof of an empty call. The error rates below are the real evidence and
+  stand unchanged; only the token inference is retracted. Recording it rather than editing it away,
+  because an unmarked silent fix of a shipped claim is the failure mode this artifact exists to
+  prevent.
 
   | component | errors/calls | rate |
   |---|---|---|
@@ -194,3 +201,37 @@ look if calls still fail after this lands. Named here rather than discovered lat
 defect and a false-cause label, and it closes the class with a verified guard. It does **not** yet
 demonstrate a working end-to-end internal LLM call, and the artifact should not be read as claiming
 one. Independent review still owed.
+
+---
+
+## Post-deploy addendum (2026-08-04) — what the fix did and did NOT restore
+
+Deployed as 1.3.1125 and verified live: shipped `promptRunner.js` carries the chunked path, and
+post-restart there are **0 send failures and 0 breaker trips** (last trip #17 was pre-restart).
+
+**But the interactive-pool call count did not move at all** in 7.5 minutes of observation — so the
+"one real pool call succeeding" close condition is not satisfied by this deploy, and absence of a
+breaker trip is not being counted as success.
+
+**Cause: a SECOND, independent fault this change does not address.**
+
+    codex_api: HTTP 401 Unauthorized · "code": "refresh_token_invalidated"
+
+Internal components route to **codex-cli by default** (provider-fallback default policy). Codex's OAuth
+refresh token is revoked server-side, so those components fail at their PRIMARY door and never reach the
+interactive-pool tail this PR repaired.
+
+**Honest restatement of scope:** the argv ceiling was real, is fixed, and was proven end-to-end on the
+live provider. But it governed the FALLBACK path. The primary path for most of the affected components
+was independently dead, and still is. This PR repaired the spare tyre — necessary, and not sufficient.
+
+### Related finding — a third instance of the class this work already named
+
+`GET /intelligence/routing` reports codex-cli **`available: true`** for every component while every
+codex call 401s: availability is evidently measured as *the binary exists*, not *the door opens*.
+
+That is the same **asserts-unmeasured-state** class as the pre-fix memory metric and the pre-fix breaker
+label. The Phase A round-5 sweep concluded that class was "an outlier, not a pattern" after three
+angles over 348 files. **This counterexample weakens that conclusion** — and it sits precisely in the
+blind spot that sweep declared it could not see: *a cause asserted by a computed field rather than a
+string.* The named blind spot found the thing it predicted.
