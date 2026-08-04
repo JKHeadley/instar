@@ -7698,3 +7698,68 @@ repeats. **The newest of each stays OPEN**, so no condition lost its representat
 records of conditions that remain open. Given that `PATCH /attention/:id` accepts only `status` and
 silently discards any reason (found at 22:24Z), the *why* for all 18 closures lives here and nowhere
 else. That is itself a reason to be conservative about closing.
+
+
+## 23:22Z — PROJECT ITEM 3's SHIPPED READER MAKES THE EXACT MISTAKE I MADE 25 MINUTES AGO
+
+Item 3 — *"One reader across attention queue, action queue and sentinel log that names recurrence
+(63 items from one source is one finding, not 63)"* — shipped **2026-07-27 as PR 1662**. I used
+title-grouping by hand instead of using it, got it wrong, and reopened 8 items. **So I went and read
+what it actually does.**
+
+## First, a fourth near-miss I have to record
+
+My initial grep covered only `routes.ts` and `server.ts`, found nothing, and I was about to write
+*"the module exists, is tested, is wired to nothing"* — this window's central theme, and it would
+have been **wrong**. Widening the grep found `recurrenceLoop.ts` and `RecurrenceActuator.ts`, both
+real consumers, with an explicit design note: *"RecurrenceReader sees. RecurrenceActuator decides."*
+
+**That is the fourth time tonight I nearly called a working mechanism broken, and the first where the
+grep scope — not the reasoning — was the flaw.** A narrow corpus produced a confident negative. My
+own rule (*attach the scope to every negative*) applies to `grep` paths as much as to log windows.
+
+## The finding that DOES survive
+
+```ts
+export function recurrenceKey(title: string): string {
+  return (title || '')
+    .toLowerCase()
+    .replace(/[a-f0-9]{8,}/g, 'H')   // ← normalises away hex ids
+    .replace(/\d+/g, 'N')            // ← normalises away ALL digits
+    …
+}
+```
+
+And the `Observation` it keys carries an **`id`** field that the key **never reads** — the interface
+comment states it plainly: *"Human title / summary — the recurrence key is derived from this."*
+
+**The normalisation is correct for one case and wrong for another, and I have live evidence of both
+from tonight's own queue:**
+
+| observed | normalised key | correct? |
+|---|---|---|
+| *"Inbound stranded on Laptop (70 topics)"* vs *"(69 topics)"* | identical | ✅ **right** — same condition, differing count |
+| *"Credential rebalancer"* ×3 | identical | ❌ **three different tokens** (`[TOKEN:a4f8****]`, `[TOKEN:636a****]`, …) |
+| *"Threadline history diverged from peer"* ×4 | identical | ❌ **four different threads** |
+| *"Account enrollment needs your check on 'this machine'"* ×3 | identical | ❌ **three different accounts** |
+
+**It would cluster three distinct credentials as one recurrence — which is precisely the error I made
+by hand at 23:18Z and had to reverse.** I am not inferring the failure; I performed it, on this data,
+and measured the reversal.
+
+## Why this is item 3's own subject, not a new one
+
+Item 3's premise is *"N items from one source is one finding, not N."* **The converse is equally
+true and unhandled: N items sharing a title can be N findings, not one.** The reader implements the
+first and cannot express the second, because the distinguishing information is in the `id` it
+carries and discards.
+
+**The fix is small and the data is already there:** when `id` is present, incorporate it into the key
+(or key on `id`-minus-its-volatile-suffix). The digit/hex normalisation should apply to the *title*,
+not to the *identity*.
+
+## Honest bound on this finding
+
+I have **not** measured what the actuator does with a wrong cluster, so I am not claiming a
+production consequence beyond "the grouping is wrong." Whether that under-surfaces findings depends
+on `RecurrenceActuator`, which I have not read. **Stated as a defect in the key, not as an incident.**
