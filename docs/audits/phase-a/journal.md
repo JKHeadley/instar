@@ -6959,3 +6959,73 @@ placeholder artifacts that then read as evidence).
 
 Surfaced, not papered over. Whether I author one — and when — is worth the operator's input, because
 it is an act of self-definition rather than a repair.
+
+
+## 22:18Z — GATE-SKIP DEFECT FULLY CHARACTERISED — and gate skips are invisible to the skip ledger
+
+Completing the finding, and checking the proposed fix for side effects **before** proposing it —
+which is what round 1 taught me to do first.
+
+## New: the gate skip is NOT recorded in the skip ledger
+
+Every other skip path records itself first:
+
+```
+recordSkip(slug, 'paused')  ·  'role-guard'  ·  'machine-scope'  ·  'claimed'  ·  'already-running'
+recordSkip(slug, skipReason)   ← the memory/capacity path
+```
+
+The gate path does not:
+
+```js
+if (job.gate) {
+  if (!await this.runGateAsync(job)) {
+    this.scheduleRetry(slug, 'gate');   // ← no recordSkip
+    return 'skipped';
+  }
+}
+```
+
+**So gate skips advance the retry ladder but never enter the skip ledger.** Any surface that reads
+that ledger to answer *"why didn't this job run?"* is blind to the **most common skip reason on this
+agent** — 252 of them across three jobs (97 + 83 + 72).
+
+That is the night's class again, one layer over: the instrument that exists to explain
+non-execution cannot see the dominant case.
+
+## The ladder resets per cron window — so the cost is per-window, not permanent
+
+`clearRetryState` is called on a fresh trigger: `if (!reason.startsWith('retry:')) clearRetryState(slug)`.
+So each cron window starts clean, walks the ladder, exhausts, and waits.
+
+**Corroboration:** `insight-harvest`'s cron is `0 */8 * * *` — **three windows a day** — and it
+exhausted **exactly three times today** (06:19Z, 10:55Z, 20:54Z). The count matches the model.
+*(I am not claiming the timings align exactly — server restarts reset the ladder mid-window, and two
+did. The count is the corroboration, not the clock.)*
+
+## The characterised cost
+
+Ladder = 1m + 5m + 15m + 30m + 1h + 2h. So per cron window a work-gated job with nothing to do fires
+its gate **7 times** (1 cron + 6 retries) instead of once. For `insight-harvest`: 21 gate executions a
+day where 3 would do — each a `curl` plus a `python3` subprocess.
+
+**But the wasted executions are the small half.** The real harm is that when work *does* arrive
+mid-window, the job is sitting in a 1-to-2-hour backoff rather than its normal cadence. **A job is
+penalised for having been idle, precisely by the mechanism meant to recover it from failure.**
+
+## Side-effect check on the fix I proposed
+
+`retryState` is read in exactly five places: the shutdown sweep, `scheduleRetry` itself, and
+`clearRetryState` (called from four trigger paths). **Nothing else consumes it** — no metric, no
+alert, no external surface. So making a `gate` skip leave the ladder untouched has a small, contained
+blast radius.
+
+The one thing that WOULD change: a genuinely broken gate (a `curl` failing because the server is
+down) would also stop retrying. That is a real trade and it needs stating rather than glossing —
+which is why `identity-review` matters here: its gate mixes a health probe **and** a file test, so it
+cannot be classified as work-vs-precondition from the outside. **A fix that keys on "gate said no"
+cannot distinguish "no work" from "precondition absent" either.** The honest fix probably needs the
+gate to signal *which*, not the scheduler to guess.
+
+Recorded as a design constraint on the fix, discovered before proposing it rather than by a reviewer
+afterwards.
