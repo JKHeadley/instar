@@ -54,3 +54,56 @@ this table is the number to put in front of the decision.
   would be missed — so **1 is a floor, and the true figure could be marginally higher**. It cannot be
   materially higher: 62 of 90 report no runtime block at all, which no naming convention can rescue.
 - Single machine (Mini). The laptop's population may differ; the per-machine amendment applies.
+
+---
+
+## Round 6 sweep — angle 4 (computed availability booleans) CONFIRMS the class
+
+Round 5 ran three angles over cause STRINGS and concluded *asserts-unmeasured-state* was "an outlier,
+not a pattern". It also named the blind spot it could not see: **a cause asserted by a computed field
+rather than a string.** Round 6 ran that angle. It found an instance immediately.
+
+### The instance, confirmed FROM SOURCE (not inferred from behaviour)
+
+`GET /intelligence/routing` reports `available: true` for `codex-cli` on every component while every
+codex call returns `401 refresh_token_invalidated`. The router's own comments say why:
+
+| location | comment |
+|---|---|
+| `IntelligenceRouter.ts:66` | *"When a routed framework's provider is unavailable (**binary missing**)…"* |
+| `IntelligenceRouter.ts:178` | *"Returns null when that framework's **binary isn't available**."* |
+| `IntelligenceRouter.ts:239` | *"null = built but unavailable (**binary missing**)"* |
+
+**Availability is defined as *the binary exists*, in three places, by design.** It is not a claim about
+whether the door opens — but it is *named* `available`, and it is *read* as "this door works".
+
+This is not a bug in the sense of a mistake; it is a **measurement whose name overstates it**, which is
+exactly the class. The consequence was real: with codex 100% failing, the surface an operator would
+consult to ask "is codex healthy?" answered yes, for every component, throughout.
+
+### What this does to the Round 5 verdict
+
+**Round 5's "outlier, not a pattern" is WITHDRAWN as premature.** The class now has:
+
+1. `SessionManager.currentMemoryPressure` (pre-fix) — mis-measured, asserted `critical`
+2. `LlmCircuitBreaker` OPEN log (pre-fix) — measured nothing, asserted `provider rate-limited`
+3. `IntelligenceRouter` availability — measures binary presence, named/read as reachability
+
+Three confirmed instances, all on live critical paths, all found within one session. **A "clean" sweep
+that missed instance 3 was clean only about the surface it searched** — and its own blind-spot
+declaration predicted precisely where the miss would be. That the named blind spot then produced the
+counterexample is the strongest available evidence that naming blind spots is load-bearing, not
+ceremony.
+
+### Sweep status: NOT converged, and now with a positive finding
+
+| round | angles | new confirmed instances |
+|---|---|---|
+| 5 | 3 (cause strings, fixed literals, user templates) | 0 |
+| 6 | 1 (computed availability/health booleans) | **1** |
+
+A round that finds something is a round that must be followed by another. **The next angle is
+health/status fields whose NAME asserts more than their computation** — `healthy`, `reachable`,
+`ready`, `ok`, `connected` — checked against what each actually tests. `DoorwayRegistryReader:114`
+(*"parse-drift on a door that DID answer → stays reachable:true"*) is a candidate to examine: it may be
+a deliberate, documented exception rather than an instance, which is itself worth recording.
