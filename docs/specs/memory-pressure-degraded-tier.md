@@ -349,3 +349,66 @@ on the laptop (and `missing` appears on only 2 of 90 laptop guards, 0 of 90 Mini
 discriminates). **Recorded as a lead, not a verdict** — two attempts at independent confirmation were
 inconclusive because `?scope=pool` is silently ignored on `/health`, so I cannot yet distinguish "the
 laptop has no runs" from "the parameter was dropped."
+
+## Testing addendum 21:18Z — the original plan cannot catch tonight's three findings
+
+The Testing section above was written before the 20:40Z findings. **A build could pass every test in
+it and still ship all three defects**, so these are additions, not restatements. Each carries the
+control-that-must-fail discipline this phase runs on: *a test that cannot fail is not a test.*
+
+### 1. Hysteresis — the degraded state must STICK
+
+The reading swings **79 → 61 in four minutes** and the threshold sits inside that band, so a degraded
+tier that is also re-evaluated per call will flap exactly as the binary gate does today.
+
+- **Control (must fail against a no-dwell build):** feed the tier resolver an oscillating sequence
+  crossing 75 — `76, 62, 78, 61, 77` — and assert the effective mode stays DEGRADED throughout.
+  A per-call implementation returns degraded/normal/degraded/normal/degraded and fails. **If this test
+  passes against a build with dwell removed, the test is wrong.**
+- Assert leaving DEGRADED requires a *sustained* sub-threshold reading, not one sample.
+- Assert entering is fast and leaving is slow — asymmetry is the point; a symmetric dwell reintroduces
+  the flap at half frequency.
+
+### 2. Priority actually reaching the gate — the plumbing prerequisite
+
+The gate takes only a spawn name today, so "defer low-priority" is unimplementable without new wiring.
+**Testing the config field is not testing the behaviour.**
+
+- **Control (must fail against the current signature):** at `high`, a `priority: critical` job is
+  **admitted** and a `priority: low` job is **deferred**, in the same tick. Today both are refused
+  identically — `health-check` is declared critical and was refused **61 of 125 times**. This test
+  must be red before the plumbing lands, or it is not testing the plumbing.
+- Assert the value is read at the **call site**, not merely present on the type. A unit test that
+  constructs the priority itself proves nothing about whether the real caller passes it.
+
+### 3. Supervision survives, productive work sheds — the inversion
+
+Of 23 scheduled supervisory jobs, 21 need a spawn; the 2 that do not were the only survivors of the
+2026-08-04 episode, and all five `overseer-*` jobs are on the gated side. So the failure is invisible
+by construction.
+
+- **Control (must fail against a naive load-shed):** at `high`, assert a supervisory job is admitted
+  while a productive job of the *same* priority is deferred. An implementation that sheds uniformly —
+  the ordinary instinct — fails this, which is the entire point.
+- Assert the self-check step of a supervisor is never itself gated. **A supervisor whose failure
+  detector lives inside the supervisor cannot report its own refusal** — proven 2026-08-04: the same
+  beat shouted three times on 07-31 when its *script* failed inside a job that ran, and was silent for
+  six hours on 08-04 when the *spawn* was refused.
+
+### 4. Level-triggered, not edge-triggered — the mode option C does not touch
+
+The beat also lost an hour to a **server restart** (five restarts that day). It fires on a cron edge
+with no catch-up, so a missed tick is invisible to it and to everything else.
+
+- **Control (must fail against an edge-triggered build):** kill the tick entirely — never fire the
+  cron — then assert the anchor is refreshed anyway because a reconciler noticed it was stale. An
+  edge-triggered implementation does nothing and fails.
+- Assert the staleness check reads the artifact's **own** recorded timestamp rather than a separate
+  bookkeeping flag. Both honest records that failed here were correct and simply unread; a fix that
+  adds a *third* record repeats the mistake.
+
+### Why these four and not more
+
+Each corresponds to a defect **measured on 2026-08-04**, not to a hypothetical. The original plan's
+live-proof bar ("one job observed spawning at `usedPercent >= 75`") stays, but it is now the weakest
+of the five — it would have passed on a build with none of the above.

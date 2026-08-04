@@ -6413,3 +6413,65 @@ anywhere, so they are guarantees only when I reach for them. **That is a real li
 same limit the whole session has been documenting** — a correct mechanism with nothing running it.
 The honest status is: better than prose, weaker than a gate. Recorded as such rather than claimed as
 closure.
+
+
+## 21:16Z — SWEEP ABANDONED ON ITS OWN INSTRUMENT — 'what writes honestly to nobody?' — verdicts discarded
+
+Tonight's strongest finding was **two honest records that nothing consumed** (the anchor's own
+timestamp, and the beat ledger's visible hole). That looked like a class worth sweeping: *which other
+durable self-records does this agent write that nothing reads?*
+
+Enumerated all **24** record files and built a detector: for each, grep the shipped code near the
+record's name and count read-shaped vs write-shaped calls.
+
+## The control passed — and a second check killed the run anyway
+
+`reap-log` came back **consumed**, which is independently true (it is served on its own route). So the
+detector *can* return that verdict; it is not stuck on one answer. That is the control I always
+demand, and it passed.
+
+**Then I checked the other arm.** The same run scored `reap-log` at **writes = 0** — for a file that
+is **1.99 MB and was appended minutes before the run**. A continuously-written file scored as never
+written.
+
+**So the write-detection arm is provably wrong**, and with it:
+
+| verdict | count | status |
+|---|---|---|
+| `unknown` (0 reads, 0 writes) | 9 | **unusable** — rests on the broken arm |
+| `WRITE-ONLY?` | 8 | **unusable** — *derived* from the broken arm |
+| `consumed` | 2 | usable; one is the control and independently verified |
+
+**Seventeen of twenty-one verdicts discarded.** The `WRITE-ONLY?` set is the tempting one — it is
+exactly the answer I set out to find, it names eight plausible records, and it would have made a
+striking report. **It is an artifact of a detector I had already proven wrong.**
+
+## Why I am recording an abandoned sweep rather than quietly dropping it
+
+This is the audit's founding class, aimed at me, on the same night I found five instances of it in
+other people's code: **a proximity-grep heuristic returns a confident, well-formed, plausible set, and
+nothing in the output says the method is unsound.** Had I not checked a file I *knew* was written, I
+would have published eight write-only records as a finding.
+
+**The catch came from a control on the OTHER arm than the one I had validated.** I verified the
+detector could say "consumed" and treated that as validating the detector. It validated one arm. A
+two-armed instrument needs a control per arm — and the arm I skipped is the one that carried
+seventeen of the twenty-one answers.
+
+> **Validating one output path does not validate the instrument.** Control every arm that a verdict
+> can flow through, not the one that is easiest to check.
+
+## What the question still deserves
+
+The question is good and remains open. The reliable method is not proximity grep — it is resolving
+each record's path constant in source and finding its actual readers, or enumerating which records
+are served by a route at all. **That is real work and I am not going to fake it with a cheaper
+heuristic.** Recorded as an open lead with its method named, not as a finding.
+
+## Footnote, same class, my own hands
+
+The command that proved the write-arm broken printed `last written 2026-08-04T14:15:27Z` — but that
+is **local time with a literal `Z` I appended in the format string**. The label asserts UTC; the value
+is PDT. The real instant is 21:15Z. Harmless here because the argument only needed "minutes ago", but
+it is precisely the shape I have been cataloguing all night: **a label claiming a property the value
+does not carry.** Third time today I have produced this class while auditing it.
