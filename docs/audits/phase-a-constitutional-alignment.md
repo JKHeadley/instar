@@ -500,3 +500,65 @@ were found by watching RUNTIME behaviour diverge from a surface's claim (#2 from
 health endpoint contradicting live calls, #5 from an absence of expected log output). **A pattern sweep
 cannot find those; only using the system can.** That asymmetry is the sweep's honest limit and belongs
 in the next phase's method, not in a footnote.
+
+---
+
+# ⚠️ RETRACTION — OD-6's CAUSAL claim was wrong. The instance stands only as a LATENT risk.
+
+**Measured 2026-08-04 16:35Z.** I published OD-6 as *"CONFIRMED FROM SOURCE — a memoised rejected start
+permanently disables the pool"* and stated it accounted for every observation "with nothing left over".
+**The pool then recovered on its own**, without a restart:
+
+- pool sessions spawned at **15:45:39Z** and **15:52Z** — after I declared the door permanently dead
+- server log, 15:45:39Z: `[subscription-path] serving internal intelligence via subscription-pool`
+- current interactive-pool metrics: **25 calls, 1 error, 24 successes**
+
+**A poisoned `startPromise` cannot recover without a process restart. There was no restart. Therefore
+it was not poisoned.**
+
+## What was actually happening
+
+`ensureStarted()` is **lazy** — the pool starts on FIRST ALLOCATE, not at boot. Between the 15:11
+restart and 15:45 nothing had genuinely invoked it, so it had never started. That is not a fault; it is
+the documented design (*"Start the pool lazily on first allocate"*). The handful of earlier errors were
+calls arriving before or during that first start, not evidence of a permanent condition.
+
+## What survives, and what does not
+
+| claim | status |
+|---|---|
+| `ensureStarted` has no rejection handling and no reset (`if (!startPromise) startPromise = pool.start()`) | **TRUE** — verified from source, unchanged |
+| A rejection there WOULD be permanent for the process lifetime | **TRUE** by reading — the code has no catch |
+| A rejection HAD occurred and was the cause of the empty pool | **RETRACTED — false** |
+| `start()`'s `Promise.all` means one slow spawn rejects the whole start | **TRUE** — but latent, not observed firing |
+
+**OD-6 is re-classified from a confirmed active defect to a LATENT RISK**: a real robustness gap that
+has not been observed triggering. Its severity argument (silent, permanent, load-bearing) is a
+consequence of the code shape and still holds *if* it fires. Its evidence of *having* fired is
+withdrawn.
+
+## The failure, named plainly
+
+**I asserted a cause I inferred rather than measured — inside the audit whose entire subject is
+components that assert what they did not measure.** Every ingredient of my own catalogue is present:
+
+- I had a mechanism that *could* explain the observation, and stopped looking (method lesson #23's shape).
+- I mistook "accounts for every observation" for "is the only thing that accounts for every
+  observation" — the alternative (lazy start, not yet invoked) explains the same evidence and is
+  simpler.
+- **I did not apply the absence rule** — *before believing something is broken, prove the check could
+  have shown otherwise.* A pool that has never been asked to start looks exactly like a pool that
+  failed to start. **That distinction is literally the three-kinds-of-zero finding, and I walked past
+  it in my own sweep.**
+
+**New method lesson #24: "confirmed from source" is not confirmation of CAUSE.** Reading a code path
+that *could* produce an outcome proves the path exists, never that it ran. Confirming a mechanism and
+confirming a diagnosis are different acts, and the word "confirmed" hides the gap. A causal claim needs
+a runtime observation of that path being taken — which for OD-6 would be a logged rejection, and there
+was none.
+
+## Consequence for the close condition
+
+The close condition is now ALSO satisfied through the POOL, not only the primary door: **24 successful
+interactive-pool calls**. The stricter original reading of the Observer's condition — *one real
+judgment call succeeding live through the pool* — is met.
