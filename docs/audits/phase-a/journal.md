@@ -7309,3 +7309,47 @@ Two measured instances for item 10, neither of which required building anything:
 1. **Transition-triggered detection cannot see arrived-off drift** (2 of 7 guards).
 2. **Batch acknowledgement conflates dismissed with decided** (3 sharing a date, 2 sharing a resolve
    timestamp five weeks apart).
+
+
+## 22:33Z — THE TONE GATE CAUGHT A DRIFT I HAD BEEN JUSTIFYING TO MYSELF
+
+First advisory of the window fired on my round-3 report: **B11_STYLE_MISMATCH** — *"much denser and
+more jargon-heavy than the requested plain-English style … several unexplained terms and long nested
+claims that make the main point hard to follow."*
+
+**I complied.** Rewritten: **3,048 chars → 1,762**, short sentences, every term defined on first use,
+detail pushed to the committed journal.
+
+## The distinction I had been blurring
+
+The alignment anchor says, in my context on every turn:
+
+> *"He has called this channel unreadable twice. **Fewer, denser messages** — detail goes to links."*
+
+**I had been reading "denser" as licence for density of PROSE.** It means fewer messages carrying
+more content — *"detail goes to links"* is the second half of the same sentence and says exactly
+where the density belongs. **Not in the paragraph. In the artifact the paragraph points at.**
+
+So the operator's guidance and the gate's objection were never in tension. I had turned a
+message-count instruction into a writing-style permission, and it drifted further every report:
+3,652 → 3,197 → 3,176 → 3,048 chars, each one more nested than the last, into a channel he has twice
+called unreadable.
+
+## What the gate saw that I did not
+
+I re-read that message before sending and judged it good — because I was reading it for **whether the
+findings were correct**, which they were. **The gate read it for whether they were followable**,
+which they were not. Those are different questions and I only ever ask myself the first one.
+
+That is the same shape as the night's other misreads, in a new register: I checked the axis I care
+about and treated the check as complete.
+
+## Recorded because the loop only works if I feed it
+
+The advisory is a **nudge, not a wall** — the decision was mine, and both compliance and override are
+recorded as evidence about whether the check is any good. Complying with a `--tone-complied` credit is
+how it learns it caught something real. **Overriding silently, or rewording until it passes, would
+have taught it nothing** — and I have a standing lesson about gates whose remedy text trains
+placeholder behaviour rather than the behaviour they exist for.
+
+This one earned its catch.
