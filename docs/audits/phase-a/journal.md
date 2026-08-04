@@ -5396,3 +5396,94 @@ recovery hour.
 - Do not enroll the second codex account.
 - Do not re-enable peerExecution or the 3 load-bearing gaps unilaterally.
 - Genuine builds are Phase B; Phase A records, it does not fix.
+
+
+## 17:06:03Z — DURABILITY CONFIRMED — all Phase A work is on the remote
+
+Verified via the GitHub API rather than local refs, because the local remote-tracking refs looked
+MISSING and the honest first move was to check with an independent source rather than raise an alarm.
+
+**They were missing for a benign reason:** this worktree's fetch refspec is
+`+refs/heads/main:refs/remotes/origin/main` — it only ever fetches main, so no other branch appears as
+a local tracking ref. Nothing was lost. (Method lesson #22 applied correctly this time: verify before
+you alarm. Contrast with the pool incident five hours ago, where I did not.)
+
+**Confirmed on the remote:**
+
+| branch | head | contents |
+|---|---|---|
+| `main` | `ae526f036` | PRs #1851 + #1852 merged, released as 1.3.1125 |
+| `echo/memory-pressure-metric-sibling` | `bdd58c659` | the earlier audit rounds + Phase A close |
+| `audit/phase-a-rounds-7-8` | `aa2fee307` | rounds 5-8, the retraction, 9 open decisions, the option C spec, and ALL the evidence |
+
+`docs/audits/phase-a/` on the remote: A0-instruments (58 KB), INTERIM-SYNTHESIS (17 KB),
+VERDICT-LEDGER (9.7 KB), level2-nodes (23 KB), README (3 KB), **journal.md (333 KB)**, plus 11 journal
+files and the tranche1 subdirectory.
+
+**So the Phase A work now survives the loss of this agent home, this machine, and this session.** That
+was the plan's requirement — status evidence-derived rather than asserted — and until an hour ago it
+was not met for anything except the two summaries.
+
+
+## 17:54:38Z — PRIMARY CODEX CREDENTIAL VANISHED — reported, NOT touched
+
+## Facts, metadata only (I deliberately did not read any credential contents)
+
+| time | observation |
+|---|---|
+| 16:08:24Z | `~/.codex/auth.json` PRESENT, `last_refresh: 2026-08-04T16:08:24Z`; direct probe answered `turn.completed` with real usage |
+| 16:36:07Z | `~/.codex-followme-sagemindai/auth.json` CREATED (the second account's own config home) |
+| ~17:40Z | `~/.codex/auth.json` **ABSENT** — the file is gone, not corrupt |
+
+**The error signature changed, which is the discriminator:**
+
+- before Justin's sign-in: `refresh_token_invalidated` — a credential PRESENT but rejected
+- now: `Missing bearer or basic authentication in header` — **no credential at all**
+
+Probed the second home with `CODEX_HOME=~/.codex-followme-sagemindai` — it **works** (`turn.completed`,
+answered correctly). So the second account is fine; the primary's credential is simply gone.
+
+**Live consequence:** the recovery reported at 16:24Z has reversed. 1h window: SessionActivitySentinel
+139/139 errors, MessagingToneGate 11/11, MessageSentinel 71/76, **tokensIn 0 across every feature**.
+The 3h window still shows 3.05M tokensIn because it contains the healthy hour.
+
+## What I did NOT do, deliberately
+
+I did not move, copy, restore, or create any credential. Two standing constraints both point the same
+way: the Observer said the second account is theirs to enroll ("do not enroll it yourself"), and the
+credential guidance is **surface-and-stop, never repair** — a wrong guess here loses an account rather
+than fixing one.
+
+## What I did NOT claim
+
+**I do not know that the second-account sign-in caused this.** I know the primary was present at 16:08,
+the second appeared at 16:36, and the primary is absent now. That is a SEQUENCE. Asserting it as a
+CAUSE would be method lesson #24 committed for the third time today, in the same window I published it.
+
+The hypothesis is worth acting on — if the sign-in relocated rather than wrote-alongside, the next
+enrollment repeats it — but it is offered to the operator as a hypothesis, flagged as such.
+
+
+## 17:56:39Z — Tone gate 'not swapping' is DESIGN, not a defect — closing that thread
+
+Chased why `MessagingToneGate` (which is `gating: true`) showed 11/11 codex errors with zero successful
+pool swaps, while `MessageSentinel` — also gating — swapped and succeeded 5/5.
+
+**Answer: the tone gate has its OWN fallback and it engages instead of a provider swap.** It degrades
+to the **deterministic floor**, which is why my outbound messages are still being reviewed throughout
+the codex outage. I had direct evidence of this hours ago and did not connect it: an advisory I
+received read *"Outbound tone review degraded to the deterministic floor (provider-error)"* — that IS
+the mechanism, observed, in my own message path.
+
+So the layering is: codex fails → tone gate falls to its deterministic floor (fast, local, no provider)
+rather than spending a swap. `MessageSentinel` has no such floor, so it swaps to the pool. Both are
+behaving as designed; the difference in their metrics is the difference in their fallback strategy, not
+a fault in either.
+
+**Closing this thread as NOT-A-DEFECT rather than leaving it as an open question**, because an
+unresolved "why didn't this swap?" would read as a suspected fault to the next person, and it isn't
+one. The cost of leaving a resolved question open is that someone re-investigates it.
+
+**Method note worth keeping:** the evidence that answered this was in my own transcript from ~5 hours
+earlier. I searched the code before searching what I had already observed. **Check what you already
+saw before reading source** — the cheapest evidence is the evidence you already collected.
