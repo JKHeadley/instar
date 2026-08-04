@@ -59,13 +59,23 @@ Introduce a **DEGRADED** admission tier between "allow freely" and "refuse".
 | **DEGRADED** | `high` | **admit, but constrained** (below) |
 | refuse | `critical` | unchanged — refuse; force mode throws |
 
-**DEGRADED constraints (all three, together):**
+**DEGRADED constraints (all three, together).** Identifiers verified against the tree, so this is
+implementable as written:
 
-1. **Serialize starts** — at most ONE reroute spawn in flight at a time, regardless of `maxRerouted`.
-2. **Reduced concurrency bound** — the live rerouted-session cap drops to a small constant
-   (`degradedMaxRerouted`, default **1**) rather than `maxRerouted`.
-3. **Defer low-priority** — spawns whose job definition marks them deferrable are refused with the
-   existing degrade path; interactive and operator-initiated work is admitted.
+1. **Serialize starts** — at most ONE reroute spawn in flight at a time, regardless of
+   `subscriptionMaxRerouted` (`SessionManager:2836`, default **3**).
+2. **Reduced concurrency bound** — the effective cap becomes `degradedMaxRerouted` (new, default **1**)
+   instead of `subscriptionMaxRerouted`, evaluated at the same place the current cap is
+   (`reroutedCount < maxRerouted`, `SessionManager:2840`).
+3. **Defer low-priority** — two existing fields carry this, no new taxonomy required:
+   - `deferrable?: boolean` (`types.ts:1057`) — and its own contract already states *"a `gating:true`
+     call is ALWAYS treated as non-deferrable"*, which is exactly the safety property DEGRADED needs:
+     **a gate can never be deferred by memory pressure.**
+   - `JobDefinition.priority: 'critical' | 'high' | 'medium' | 'low'` (`types.ts:1575`) — DEGRADED
+     admits `critical`/`high`, defers `medium`/`low`.
+
+   Deferred spawns take the EXISTING degrade path (auto mode → headless; force mode → the current
+   refusal), so no new refusal behaviour is introduced — only a narrower set of things it applies to.
 
 `critical` keeps refusing, unchanged. The no-fallback semantics of `force` mode are unchanged.
 
