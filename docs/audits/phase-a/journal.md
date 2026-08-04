@@ -6194,3 +6194,113 @@ as much as for guards.
 
 **Cheapest concrete fix, and it needs no new instrument:** something that already runs must compare
 the anchor's own timestamp against now. The data is already there, already honest, already durable.
+
+
+## 20:54Z — NEARLY FILED A FALSE ALARM: 'a GET is mutating the project store'. The control refutes it.
+
+## What I saw, and what I was about to conclude
+
+Reading the convergence project (Tier 1's own subject), three children showed `updatedAt` within
+**milliseconds of my read instant**. A GET that moves a timestamp is a serious defect, and I was one
+step from reporting it.
+
+## The control, and it discriminates
+
+Full 12-child timestamp set → **20 seconds of total API silence** → full set again:
+
+**ZERO rows changed.** So there is no continuous background writer, and the churn really was
+correlated with my reads. That part of the alarm survived.
+
+**But the fuller picture refutes the conclusion.** Across six reads:
+
+| read | children stamped |
+|---|---|
+| 20:51:05 | 5, 6, 8 |
+| 20:51:22 | 1, 3, 7 |
+| 20:51:31 | 2, 4, 9 |
+| 20:51:39 | **none** |
+| 20:53:10 | **none** |
+| 20:53:31 | **none** |
+
+**Exactly three per read, three reads, then it stopped**, leaving children 10/11/12 still at their
+2026-08-02 timestamps. That is not the signature of "every GET writes" — it is the signature of a
+**one-time lazy backfill running in batches on read until complete.** A per-read mutation would still
+be firing; it stopped after nine.
+
+**So the alarm is withdrawn before it was ever sent.** I do not have evidence that a GET mutates this
+store, and I am not going to say so.
+
+## The smaller thing that IS real, stated at its true size
+
+**Nine of twelve children now carry `updatedAt = 20:51 today` while no work was done on them.** Their
+genuine last-change times are gone. So for those nine the field no longer answers the question it
+names — and **the anchor's own claim that this project "went untouched 07-27 → 07-29" is exactly the
+kind of claim that field is used to make.** That claim was measured before the backfill and is not
+re-verifiable now for those nodes.
+
+Minor, bounded, worth one line to whoever relies on project timestamps. Not an incident.
+
+## Why this entry exists at all
+
+**This is the fourth time today the discipline paid, and the first where it stopped a false report
+about someone else's code rather than my own.** The earlier three were self-catches on my own claims
+(the contaminated windows). Here the tempting story — "a read is corrupting the store" — was dramatic,
+coherent, and explained everything I had seen. The 20-second silent gap cost nothing and killed it.
+
+**The rule that caught it is the session's own founding one:** before believing something is broken,
+prove the check could have shown otherwise. The silent gap was that proof — it *could* have shown
+drifting timestamps, and it showed none.
+
+
+## 21:07Z — BEAT RECOVERED ON ITS OWN — and I hit the same contaminated-baseline error a FIFTH time, 90 minutes after writing the rule against it
+
+## The outcome I owed
+
+**The 21:00Z beat ran unaided.** Job spawned 21:00:18.936Z, session ready in 3.3s, completed
+`success` 21:00:39Z. All three of its outputs are fresh and agree on one instant:
+
+- anchor in the run file → `last regenerated 2026-08-04T21:00:28.997Z`
+- digest header → `generated 2026-08-04T21:00:28.997Z`
+- `beats.jsonl` final row → `{"ts":"2026-08-04T21:00:28.997Z", operatorMessages:138, …}`
+
+Ledger tail now reads **14:00:38Z → 20:03:09Z (my manual restore) → 21:00:28Z (automatic)**. The
+six-hour hole is closed at both ends and the mechanism is self-sustaining again — *for as long as the
+gate keeps letting it through*, which is the ruling still with the architect.
+
+## ⚠️ And I got the verification wrong, in the way I had just written a rule against
+
+I set a watcher for `beats.jsonl` to grow, captured a baseline of **172 rows**, waited five minutes,
+saw **172 rows**, and concluded **"LEDGER DID NOT GROW"** — which read as *the job reported success
+without doing its work*, a serious finding I was about to chase.
+
+**It was my baseline that was wrong.** The beat wrote at **21:00:28.997Z**. My baseline read at
+**≈21:00:35Z** — six seconds *after* the event it was supposed to precede. The file was already 172
+rows including the new one. I measured "before" after.
+
+**This is the fifth instance today of the same error, and the second of the LATE-reading shape** —
+identical to the one I published to the operator and retracted at 20:11Z.
+
+### The part worth keeping
+
+**Ninety minutes before this, I wrote the rule.** It is in my durable memory as
+`the-measurement-window-must-cover-the-claim`, with this exact shape named explicitly:
+
+> *Shape B — the reading is too LATE and postdates the event you're explaining… For a past-instant
+> claim, a spot reading NOW is not evidence.*
+
+**Writing it down did not stop me.** I had six clear minutes before 21:00:00Z in which capturing the
+baseline would have been trivial and correct, and I spent them on other checks, then took the baseline
+at the moment I started watching — which felt like the natural time and was structurally the wrong one.
+
+> **A baseline must be captured before the event, not before the WATCHING.** Those feel identical from
+> the inside and are not the same instant.
+
+**This is the session's own foundational principle landing on me.** *Structure beats willpower* — a
+rule I wrote and re-read is still willpower, and it failed within the hour on the exact case it was
+written for. The structural version is cheap and I should have built it: **the watcher should capture
+its own baseline as its first act, before arming, and refuse to start if the target may already have
+changed.** That is a five-line difference and it is the difference between a rule and a guarantee.
+
+Recording it at full weight rather than as a footnote, because a self-catch that only I know about is
+not a correction — and because the count matters: **five in one day, one published, and the written
+rule stopped none of them.**
