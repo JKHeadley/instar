@@ -150,3 +150,56 @@ instead of "yes".
 **Sweep status after 5 angles: 3 confirmed instances, 1 exemplar located, NOT converged.** The next
 angle remains open — the class has produced a finding in the most recent round, so the contract
 requires another.
+
+### Angle 6 — CONFIRMED INSTANCE #4, and it attacks the anti-hallucination mechanism itself
+
+Angle 6 swept *cause asserted by omission* — a branch emitting one status for several distinct
+conditions. Most candidates were **correct**: `StaleOwnerReleaseEngine` documents *"an unreadable
+feature gate reads as INACTIVE (fail dark, the safe direction)"*, which is a deliberate, named,
+safe-direction choice. Those are not instances.
+
+**`CapabilityMapper` is.** Every subsystem check has this shape:
+
+```js
+check: () => {
+  const configPath = path.join(this.config.stateDir, 'config.json');
+  if (!fs.existsSync(configPath)) return false;          // <- CANNOT READ  => "absent"
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    return config.messaging?.some(...) ?? false;
+  } catch { return false; }                               // <- CANNOT PARSE => "absent"
+}
+```
+
+Two paths report **capability ABSENT** when the truth is **could not determine**.
+
+#### Proved non-destructively, with both sides of the boundary
+
+Ran the exact check shape against fixture configs (never the live config):
+
+| condition | capability truly enabled? | check reports |
+|---|---|---|
+| readable config | yes | `true` ✅ |
+| **corrupt config** (truncated mid-object) | **yes** | **`false` — ABSENT** ❌ |
+| config file absent | unknown | `false` — ABSENT ❌ |
+
+A partial write, a truncated file, or a transient read error makes the agent report it does not have
+Telegram, relationships, or monitoring — while all three are enabled.
+
+#### Why this instance matters more than the other three
+
+`CapabilityMapper` feeds `GET /capabilities`, which the agent constitution names explicitly:
+
+> *"Before EVER saying 'I don't have', 'I can't', or 'this isn't available' — check what actually
+> exists… It is the source of truth about what you can do. **Never hallucinate about missing
+> capabilities — verify first.**"*
+
+**The mechanism built to stop the agent falsely claiming it lacks a capability will itself falsely
+report a missing capability whenever it cannot read the config.** An agent obeying the constitution
+perfectly — verifying before claiming — is handed a confident false negative, and the failure is
+silent, because a capability that is absent looks exactly like a capability that is off.
+
+The safe direction here is NOT `false`. For an availability claim, the honest default is *unknown* —
+the same three-valued shape `DoorwayRegistryReader` already implements.
+
+**Sweep status after 6 angles: 4 confirmed instances, 1 exemplar, NOT converged.**
