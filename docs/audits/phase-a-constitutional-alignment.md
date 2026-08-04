@@ -4,7 +4,7 @@ target-pattern: "Whether the guards our constitutional standards name are actual
 search-surface: "The 90-guard runtime inventory at GET /guards on both machines; all 30 scripts/lint-*.js; all 18 tests/unit/*ratchet*.test.ts plus lint-chain-completeness; the 81-entry NOT_A_GUARD exclusion list in guardManifest.ts; 27 further guard-shaped non-lint enforcement scripts; the internal LLM provider path; cross-machine guard posture via the machine registry."
 standing-guard: "tests/unit/lint-chain-completeness.test.ts"
 blind-spot-class: "population-scoped-by-naming-convention-mistaken-for-a-functional-tier"
-rounds: "4"
+rounds: "5"
 ---
 
 # Phase A — constitutional alignment: are the guards effective?
@@ -163,3 +163,64 @@ All three angles key on a **cause word appearing in source text**. They are stru
 breaker's own defect would have been invisible to angles 1–3 had the string lived in a metrics key
 instead of a log line. Next round should sweep counter/field NAMES against the conditions that
 increment them.
+
+---
+
+# PHASE A CLOSE — scope ruled by the Observer/Orchestrator, 2026-08-04 cycle three
+
+Recorded here because a ruling that lives only in a chat message is not a deliverable.
+
+## Convergence is declared over the AGENT-OBSERVABLE SURFACE — and only that
+
+This is a **scoped** close, not a claim that every guard was verified. The distinction is the whole
+point of the phase, so it is stated in the terms the audit used throughout:
+
+| tier | disposition | why |
+|---|---|---|
+| **agent-observable guards** | **converged** — rounds ran to zero-new within this surface | the surface an agent can inject against and read a verdict from |
+| **CI-and-PR-context guards** | **positional deferral** — recorded, NOT verified | they only fire inside a CI run or with PR context; an agent-side session cannot stage the condition. 10 guards. |
+| **live runtime guards** | **blocked** — recorded, NOT verified | rung 3 needs either a STAGED FAULT (kill a session, wedge a pane, exhaust a queue) or the counter-schema change below. 82 guards. |
+
+**The honest headline: the majority of the guard population is recorded as unverified, by tier, with the
+specific reason each tier is unverifiable from here.** That is a stronger result than a bare
+"converged" stamp over a surface that quietly excluded the hard cases.
+
+## The refused convergence stamp is PRESERVED AS A FINDING
+
+`scripts/write-audit-convergence.mjs` refused to stamp this audit converged. That refusal is **kept, not
+worked around**, and it is itself a result:
+
+> **A denominator growing faster than its numerator is the honest outcome of a real audit.**
+
+Every round found more guards than it verified — because looking properly *expands* the known
+population (the 30-lint tier turned out to be 30 of 57 guard-shaped scripts; the 90-guard runtime
+inventory grew as machines were compared). An audit whose scope stops growing is usually an audit that
+stopped looking. Stopping the rounds was correct; claiming convergence over the grown population would
+not have been.
+
+## Two items go to Justin as Phase B recommendations
+
+1. **Can the CI-context guards be verified by an actual CI run?** If a guard only fires with PR context,
+   the only honest rung-3 test is a real (or faithfully simulated) CI invocation. That is a
+   build decision, not an audit decision.
+
+2. **The three-counter schema change — `{looked, wouldAct, didAct}`.** Supporting evidence measured this
+   phase: **only 7 of 38 guard-shaped routes expose effectiveness counters (18%)**. Without a
+   `looked` counter, a zero is ambiguous between *"checked N times, found nothing"*, *"never checked"*,
+   and *"cannot tell"* — and the audit demonstrated repeatedly that those three are routinely conflated,
+   by the codebase and by me. This schema is the single change that would convert the largest block of
+   `unmeasured` verdicts into real ones **without** staged faults.
+
+## What Phase A actually produced
+
+- **51 guards given three-rung verdicts**, per machine where the critical path spans machines.
+- **21 self-caught false results, 0 uncorrected claims** — catalogued with tells in the method-lessons
+  companion, because the auditor's error rate turned out to be the dominant risk to the audit.
+- **Zero genuine guard failures found by injection** — every "failure" traced to auditor method.
+- **Two live defects found and fixed** off the audit's own path (the macOS memory metric; the tmux argv
+  ceiling + the breaker's false cause label), plus **one new guard built that is rung-3 effective by
+  construction** (`lint-no-unfunneled-tmux-literal-send`, A/B verified).
+- **A named generalizable class with no standard covering it** — *components that assert unmeasured
+  state* — carried into Phase B.
+
+**Phase A is closed at this scope. It is not closed at "the guards are effective."**
