@@ -607,3 +607,54 @@ Three exemplars, all in-repo, all pre-existing: `DoorwayRegistryReader` (three-v
 `orphaned-work-sentinel` (explicit UNKNOWN-not-zero). **The discipline is not missing from this
 codebase; it is unevenly applied.** That is the single most actionable conclusion of the sweep, and it
 is now supported by three independent examples rather than one.
+
+---
+
+## OD-9 — the swap budget cannot cover the pool's worst case (my own fix is partial BY CONSTRUCTION)
+
+**Correcting my own report.** After applying the sanctioned per-framework swap timeout I reported
+*"2 swap timeouts before the restart, 0 after"*. That was true when measured (~15:20). **It is no longer
+true: two more occurred, at 15:52:08Z and 16:31:19Z.** Re-measuring a claim I had already published is
+what surfaced it.
+
+### The arithmetic
+
+| budget | value |
+|---|---|
+| pool `allocateTimeoutMs` | 60,000 ms |
+| pool `maxPromptWaitSeconds` | 120 s |
+| **pool worst case (allocate + prompt)** | **180,000 ms** |
+| swap budget I set | 120,000 ms |
+| `DEFAULT_SWAP_ATTEMPT_TIMEOUT_MAX_MS` (**hard clamp**) | **120,000 ms** |
+
+**The swap budget's maximum permitted value is 120 s. The pool's own worst case is 180 s.** A
+legitimately slow call — one that waits for an allocation and then uses its full prompt budget — cannot
+fit inside the largest swap budget the router allows.
+
+**So the fix is partial by construction, not by my choice of value.** I chose the clamp maximum; there
+was no higher value available. In practice most calls fit comfortably (2 timeouts in ~100 minutes
+against hundreds of successful calls), but the tail is structurally unreachable through this knob.
+
+### Why this is a finding rather than a tuning note
+
+Two independently-set budgets govern one operation, and **the ceiling on the outer one is lower than
+the floor-plus-worst-case of the inner one.** Neither component is wrong on its own terms: the pool's
+120 s prompt wait is reasonable for a TUI, and a 120 s clamp on a swap attempt is reasonable
+backpressure. The defect is that **nothing reconciles them**, so the composition has a permanently
+unreachable region that neither owner can see from their side.
+
+**This is the cross-store-coherence class applied to timeouts** — two stores of the same truth
+("how long may this take?") with no declared agreement invariant. The `Cross-Store Coherence Is an
+Invariant` standard names exactly this shape for data; it has no timeout analogue.
+
+### Proposed resolution (for Phase B, not built)
+
+Either raise the clamp above the composed worst case, or lower the pool's composed worst case below the
+clamp, **and add an assertion that the two cannot drift apart again** — the reconciliation is the
+deliverable, not the number.
+
+### Honesty note
+
+I reported "0 after" from a single measurement taken minutes after the change, during a window when the
+pool was not even being invoked. **That is method lesson #22 again — the absence check applies hardest
+to a claim you have already published**, because nobody re-checks it for you.
