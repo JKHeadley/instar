@@ -54,6 +54,7 @@ const REQUIRED_LINTS = [
   'lint-no-unbounded-llm-spawn.js',
   'lint-no-unfunneled-credential-write.js',
   'lint-no-unfunneled-headless-launch.js',
+  'lint-no-unfunneled-tmux-literal-send.js',
   'lint-no-unfunneled-topic-creation.js',
   'lint-no-unreachable-messaging-gate.js',
   'lint-no-unregistered-self-action.js',
