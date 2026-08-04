@@ -7478,3 +7478,50 @@ look, from outside, like it ran fine.
 
 Midnight watcher armed at 23:06Z with `--not-before 2026-08-05T00:00:00Z` — baseline before the
 event, so whatever it reports is a real answer.
+
+
+## 23:07Z — ⭐ MY OWN GUARD HAS THE DEFECT IT WAS BUILT TO PREVENT — it cannot see the actor
+
+The 23:00Z watcher reported **CHANGED**, and the row it detected is stamped **23:05:18.733Z** —
+**my own hand-restore.** The 23:00 beat was **REFUSED**.
+
+**Read at face value, my guard said the beat wrote its row. It did not.**
+
+## The defect, precisely
+
+The tool's label was *"23:00Z beat writes its ledger row"*, and on its **literal contract** — *did this
+target change?* — it answered **correctly**. A row was written.
+
+**But the question I was actually asking was "did the beat run unaided?", and the tool cannot see the
+actor.** The ledger row is a *proxy*. A hand-restore writes an identical one.
+
+**That is "a passing condition narrower than what it certifies" — my own top memory entry — committed
+by me, into a tool built specifically to stop this class, and shipped with confident documentation
+three hours ago.**
+
+## Why it did not cost anything this time
+
+I learned the beat was refused by a **different route** — polling the job history directly while
+waiting — so the watcher's wrong answer never became a claim. **That is luck, not method.** Had I
+relied on the tool alone, as its README tells the next session to, I would have recorded "the 23:00
+beat ran" in the same journal that says it was refused.
+
+## The honest split: tool limitation vs my usage error
+
+Mostly **mine**. I asked it to watch *"any change to the last ledger row"* when I meant *"a row whose
+timestamp falls within seconds of the cron instant."* The tool offered no way to express that, but I
+also never noticed I was substituting one for the other.
+
+**And note the irony precisely:** `spans-window.sh` exists because I kept mistaking a proxy for the
+thing. `watch-for.sh` shipped with the same substitution inside it.
+
+## What I am doing about it
+
+Not a new feature at hour 20 of the window. **The tool ships with the caveat stated in its own header
+and in the README that points at it**, because the next session is told to reach for it and currently
+has no warning. A predicate option (`--expect-matching <regex>`) is the real fix and is recorded as
+such, not built.
+
+**The general rule this earns:** a watcher answers *"did the target change?"* — never *"did the actor
+I care about change it?"* **If any other party can produce the same change, the watcher cannot
+distinguish them, and "changed" is not evidence of who.**
