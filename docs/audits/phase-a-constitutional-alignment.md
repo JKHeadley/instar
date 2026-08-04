@@ -313,15 +313,39 @@ pool). Recorded as a bounded unknown rather than a guess.
 | a Claude REPL cannot reach ready right now | spawned one by hand: **ready in ~5 s**. |
 | the pool's working directory is missing | `.instar/intelligence-pool` exists; a tmux spawn with that `-c` succeeds. |
 
-**What that leaves:** something fails between the router selecting the pool provider and
-`pool.start()` / `spawnOne()` being reached — because a spawn attempt would log, and none does. The
-adapter's `ensureStarted()` is lazy and memoised (`if (!startPromise) startPromise = pool.start()`), so
-a `startPromise` that rejected once would be **permanently rejected for the process lifetime** without
-re-attempting. That is the leading candidate and it is testable, but it was NOT confirmed this window
-and is therefore recorded as a hypothesis, not a finding.
+### ⭐ CONFIRMED FROM SOURCE — a memoised rejected start permanently disables the pool
 
-**Why this is recorded rather than pursued further:** four hypotheses were eliminated with direct
-evidence and the fifth needs either instrumentation or a code read deeper than the remaining budget
-supports. Continuing to guess would produce exactly the plausible-but-unverified story this audit
-exists to prevent. **The serial-masking lesson applies: this is the fifth blocker in the chain, and
-each previous one was invisible until its predecessor was fixed.**
+```js
+let startPromise = null;
+const ensureStarted = async () => {
+    if (!startPromise) {
+        startPromise = pool.start();
+    }
+    await startPromise;          // <- NO rejection handling, and no reset
+};
+```
+
+**There is no rejection path.** If `pool.start()` rejects even once:
+
+1. `startPromise` is left holding a **rejected** promise — non-null.
+2. Every later `ensureStarted()` sees it as truthy, **skips the restart entirely**, and re-awaits the
+   same rejection, throwing immediately.
+3. No spawn is attempted, so **nothing is logged** — the failure is invisible after the first instant.
+4. This persists for the **entire process lifetime**. Only a server restart clears it.
+
+**This accounts for every observation, with nothing left over:** 0 sessions, 0 spawn attempts logged,
+4 real errors with `shed: 0`, a REPL that spawns fine by hand, and a condition that did not self-heal
+across 400 s of watching.
+
+**Severity.** One transient failure at first-use — a momentary resource blip, a slow spawn, a leftover
+session — permanently removes the interactive-pool door for that process. Under
+`subscriptionPath.mode: force`, that door is the fallback the entire gating layer depends on when the
+primary framework is down. Which is exactly the state this agent is in (codex 401).
+
+**The pattern is the audit's own class, one layer up.** `ensureStarted` treats "I already tried" as
+"the answer is settled" — the same shape as asserting a state you did not re-measure. A retry-on-reject
+(or clearing `startPromise` in a `catch`) is the whole fix.
+
+**Recorded as CONFIRMED-from-source, NOT as a shipped fix** — per the Phase A scope ruling, genuine
+builds are deferred to Phase B. Fifth blocker in the serial chain, and consistent with the lesson:
+each was invisible until its predecessor was fixed.
