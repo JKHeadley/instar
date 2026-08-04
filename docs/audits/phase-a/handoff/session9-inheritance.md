@@ -302,3 +302,64 @@ not addressed to me."*
   completely unmanageable… We need to lock this down now"* / *"Silent"*. **Not acted on** — surfaced
   with numbers (34 created today here, 4 since he said it, **102 still open**) and asked whether it
   is mine. The numbers say the backlog is the problem, not the creation rate.
+
+
+---
+
+## ⭐ ADDED 23:24Z — the sharpest ACTIONABLE finding, and it maps to a shipped project item
+
+**`recurrenceKey()` in `src/core/RecurrenceReader.ts` keys on TITLE and normalises away identity.**
+
+```ts
+export function recurrenceKey(title: string): string {
+  return (title || '').toLowerCase()
+    .replace(/[a-f0-9]{8,}/g, 'H')   // ← hex ids
+    .replace(/\d+/g, 'N')            // ← ALL digits
+    …
+}
+```
+
+The `Observation` it keys **carries an `id` the key never reads**.
+
+**Right for one case, wrong for another — both measured on tonight's real queue:**
+
+| observed | same key? | correct? |
+|---|---|---|
+| *"Inbound stranded on Laptop (70 topics)"* vs *"(69 topics)"* | yes | ✅ same condition, differing count |
+| *"Credential rebalancer"* ×3 | yes | ❌ **three different tokens** |
+| *"Threadline history diverged from peer"* ×4 | yes | ❌ **four different threads** |
+| *"Account enrollment needs your check…"* ×3 | yes | ❌ **three different accounts** |
+
+**This is not inferred — I performed the identical error by hand at 23:18Z**, collapsing the attention
+queue by title, and had to reopen 8 items. The reader would make the same grouping.
+
+**Item 3's premise is "N items from one source is one finding, not N." The converse is equally true
+and unhandled: N items sharing a title can be N findings, not one.** The distinguishing information
+is in the `id` the reader carries and discards.
+
+**Fix is small, data already present:** incorporate `id` into the key when it exists; apply the
+digit/hex normalisation to the *title*, never to *identity*.
+
+**Honest bound:** `RecurrenceActuator` is unread, so no production consequence is claimed beyond
+"the grouping is wrong." A defect in the key, not an incident.
+
+**This is a good Codey task** — small, well-specified, evidence-backed, contained blast radius.
+
+## The attention backlog, and what I did to it
+
+Justin (19:32Z, alerts hub): *"the attention messages have become completely unmanageable…"*
+
+**102 open → 84.** Collapsed 18 genuine duplicates (identical title AND summary, differing only by an
+epoch in the id); the newest of each condition stays OPEN so nothing lost its representative. **I
+over-collapsed 8 and put them back** — see above.
+
+**Nothing was marked resolved.** And `PATCH /attention/:id` accepts only `status`, silently
+discarding any reason — so the *why* for all 18 closures lives in the journal and **nowhere in the
+system**. Be conservative about closing.
+
+## ⚠ Running count of my over-detections this window: FOUR
+
+Added to the three already listed: I nearly wrote *"RecurrenceReader is wired to nothing"* after
+grepping only `routes.ts` and `server.ts`. Widening found two real consumers.
+**That one was a scope error in the `grep`, not in the reasoning** — *attach the scope to every
+negative* applies to grep paths exactly as it does to log windows.
