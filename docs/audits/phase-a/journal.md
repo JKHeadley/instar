@@ -7525,3 +7525,64 @@ such, not built.
 **The general rule this earns:** a watcher answers *"did the target change?"* — never *"did the actor
 I care about change it?"* **If any other party can produce the same change, the watcher cannot
 distinguish them, and "changed" is not evidence of who.**
+
+
+## 23:11Z — ⭐ THE DIGEST DELIBERATELY HID A DIRECT QUESTION FROM THE OPERATOR
+
+I nearly filed the anchor's `last inbound` field as an instrument defect. **Chasing it instead
+surfaced a direct question from Justin that I had not seen, an hour old.**
+
+## The discrepancy
+
+| field | value |
+|---|---|
+| anchor: *"Justin → last inbound"* | **22:20Z** |
+| digest: latest operator entry | **21:22Z** |
+
+Second time tonight (earlier: 19:49Z vs 19:36Z). I assumed a parsing bug and went to read the code.
+
+## The mechanism — and it is NOT a bug
+
+`last inbound` scans `telegram-messages.jsonl` for `fromUser === 'true'` and takes the **max
+timestamp across ALL topics**. The digest's message list is **scoped to topic 29723** — and says so
+explicitly: *"77 operator-account messages in OTHER topics deliberately excluded."*
+
+So the two adjacent fields have **different scopes**, and the unscoped one is the one telling the
+truth about when he last spoke.
+
+## ⭐ What the gap actually contained
+
+```
+19:32Z  topic 7848   "the attention messages have become completely unmanageable for pretty much
+                      all INSTAR agents that I can tell. We need to lock this down now"
+19:49Z  topic 7848   "Silent"
+22:20Z  topic 36966  "this sounds good, but have we made any progress in regards to the main plan?"
+```
+
+**A direct question to me, an hour old, and an operational directive three and a half hours old —
+both invisible in the digest that exists to put his words in front of me.**
+
+The exclusion is *deliberate and well-reasoned*: those other-topic messages include my own laptop
+session's output, which reaches his account through the apprenticeship browser path and is **not his
+words**. Filtering them out is correct. **But the filter is by TOPIC, and it throws away his genuine
+messages along with mine.**
+
+## The real defect, stated correctly
+
+Not "the timestamp is wrong." **The digest's scope filter is a proxy for authorship.** It uses
+*"which topic did this arrive in"* to answer *"did Justin write this."* Those coincide most of the
+time and diverge exactly where it matters — his messages in other topics.
+
+**That is tonight's class again, in the alignment scaffolding itself, and it cost a direct question
+going unanswered for an hour.** The digest was working perfectly, by its own definition, while
+hiding the thing it exists to surface.
+
+## What I changed
+
+**Read the operator's messages across ALL topics, not just the digest's.** The digest is a
+convenience, not the record. `telegram-messages.jsonl` filtered on `fromUser === 'true'` is the
+record, and the anchor's own `last inbound` field is the tell that the two disagree — **treat a gap
+between them as a message I have not read, not as a bug to file.**
+
+That is the second time tonight I was about to file a correct mechanism as broken. The first was the
+`409` from the cartographer.
