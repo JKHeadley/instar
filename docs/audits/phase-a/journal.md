@@ -6815,3 +6815,69 @@ wrote the lesson and then committed it again, on a bigger claim, twelve hours la
 The memory-pressure work is not vindicated by this — the 131 refusals in the episode are real and did
 refuse real spawns. But **they are not what exhausted the retry budgets**, and the retry-budget
 argument was the load-bearing half of the case I put to the operator.
+
+
+## 22:13Z — CLOSED: the disconfirming evidence was INSIDE the line I quoted
+
+The re-derivation is no longer an argument. The log carries the whole thing directly.
+
+## insight-harvest's actual ladder walk, verbatim
+
+```
+15:11:39Z  Job "insight-harvest" skipped (gate) — retry 1/6 in 1m
+15:12:49Z  Job "insight-harvest" skipped (gate) — retry 2/6 in 5m
+15:18:00Z  Job "insight-harvest" skipped (gate) — retry 3/6 in 15m
+15:33:10Z  Job "insight-harvest" skipped (gate) — retry 4/6 in 30m
+16:03:20Z  Job "insight-harvest" skipped (gate) — retry 5/6 in 1h
+17:02:15Z  Job "insight-harvest" skipped (gate) — retry 1/6 in 1m   ← reset (server restart 17:01:39Z)
+17:53:57Z  Job "insight-harvest" skipped (gate) — retry 5/6 in 1h
+18:54:07Z  Job "insight-harvest" skipped (gate) — retry 6/6 in 2h
+```
+
+Exhausted **three times today** — 06:19:10Z, 10:55:32Z, 20:54:17Z — each:
+
+```
+Job "insight-harvest" exhausted 6 retries (last skip: gate) — waiting for next cron window
+```
+
+`evolution-proposal-evaluate` walked the identical ladder to 6/6 at 20:52:02Z.
+
+**Every line says `gate`. Not one says `memory-pressure`.**
+
+## ⭐ The part I have to own
+
+At 12:06Z I told the operator:
+
+> *"Insight-harvest has now exhausted its retry budget entirely and is backing off two hours."*
+
+and attributed it to the memory gate. **I read the retry count out of a log line whose own text says
+`(gate)`.** The disconfirming evidence was not merely in the same file, or one grep away — it was
+*inside the sentence I was quoting from*. I took the number and did not read the reason.
+
+That is a harder version of the error than the one I journalled twenty minutes ago. Then I said the
+evidence was "one grep away, and I never ran it because the story already explained everything." It
+was closer than that. **I had it on screen and my eye went to the field that confirmed the story.**
+
+## What is now confirmed, and by what
+
+| claim | evidence class |
+|---|---|
+| a `gate` skip calls `scheduleRetry` and advances the ladder | **source** — `if (!await this.runGateAsync(job)) { this.scheduleRetry(slug, 'gate'); }` |
+| `skipReason` never affects whether the ladder advances | **source** — it appears only in the log string and the retry label |
+| the ladder is 1m/5m/15m/30m/1h/2h then "waiting for next cron window" | **source** — `RETRY_DELAYS_MS` |
+| gate skips are independent of memory pressure | **control** — hour 02: 24 gate / 0 memory; hour 09: 0 gate / 22 memory |
+| insight-harvest walked that exact ladder to 6/6 and exhausted 3× | **direct observation**, reason string included |
+| the ladder resets on restart | **observed** — 17:02:15Z reset matches the 17:01:39Z restart |
+
+Mechanism, independence, and the observed walk all agree. This is as closed as a finding gets, and it
+is closed *against* the claim I escalated.
+
+## The fix, restated with confidence
+
+A gate exists to answer *"is there work?"* — its own code comment calls it **zero-token
+pre-screening**. A `no` is the pre-screen **succeeding**. It should be a skip that leaves the ladder
+untouched; today it is indistinguishable from a crash, and a job with nothing to do walks itself to a
+two-hour backoff and then sleeps through the arrival of work.
+
+The log even uses the right word — *"skipped (gate)"* — while the behaviour treats it as a failure.
+**The vocabulary already knows the distinction the code does not make.**
