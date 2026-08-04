@@ -4,7 +4,7 @@ target-pattern: "Whether the guards our constitutional standards name are actual
 search-surface: "The 90-guard runtime inventory at GET /guards on both machines; all 30 scripts/lint-*.js; all 18 tests/unit/*ratchet*.test.ts plus lint-chain-completeness; the 81-entry NOT_A_GUARD exclusion list in guardManifest.ts; 27 further guard-shaped non-lint enforcement scripts; the internal LLM provider path; cross-machine guard posture via the machine registry."
 standing-guard: "tests/unit/lint-chain-completeness.test.ts"
 blind-spot-class: "population-scoped-by-naming-convention-mistaken-for-a-functional-tier"
-rounds: "3"
+rounds: "4"
 ---
 
 # Phase A — constitutional alignment: are the guards effective?
@@ -71,9 +71,27 @@ Surface delta: Eight of the 27 are now settled — four deep-verified this round
 
 New findings this round: 4
 
+## Round 4
+
+Search angles: Enumerated the server's full GET-route surface rather than the routes the auditor happened to know, then swept every guard-shaped route for the looked/would-act/did-act triple; re-read every previously judged guard by printing all non-zero numeric fields instead of grepping a fixed vocabulary.
+
+Surface delta: The observable surface was found to be far larger than anything the audit had enumerated — 433 GET routes against roughly 40 examined. Within the guard-shaped subset, the effectiveness-counter surface was measured for the first time rather than sampled, and two previously recorded classifications were overturned by printing fields the auditor's regex had never asked for.
+
+| location | behavior | bucket | disposition |
+|----------|----------|--------|-------------|
+| 38 guard-shaped status routes | Only 7 expose any would-act/did-act counter — 18%. The other 31 report a heartbeat or nothing measurable. The runtime tier's unmeasurability is therefore a property of what these guards publish, not of the auditor's method or position. No audit reaches a guard that reports only a pulse. | schema-limits-observability | accepted:recommended-looked-wouldAct-didAct-triple-with-the-18-percent-figure-attached |
+| `writeAdmission` and `threadlineNegotiator` | Recorded in round 3's working notes as the "ambiguous zero" class — a zero with no looked-counter, indistinguishable from a blind detector. Both publish looked-counters (259 writes evaluated; 32 decisions made). The class is empty. The auditor populated its most dangerous category using the same keyword technique the category exists to discredit. | auditor-classification-error | fixed:retracted-and-corrected-2026-08-04 |
+| `sessionPool.inboundQueue` (Tranche 1, the audit's first node) | Recorded at 06:12Z as "live but never exercised" from the response's `counts` block. The sibling `counters` block on the same response shows 9 real opportunities and 0 acts. Verdict upgraded to effective:FALSE-evidenced, and the node needs splitting: its hold sub-policy is live and acting while the queue is dry-run. Wrong verdict stood 4h37m on the first node of the audit. | read-one-block-missed-its-sibling | fixed:node-corrected-in-place-2026-08-04 |
+| The server's route surface | 433 GET routes exist; roughly 40 have been examined. Phase A's enumeration covers a small fraction of the observable surface, and a count of 51 verified guards should not be read as coverage of the system. | audit-coverage-bound | accepted:recorded-as-a-bound-not-a-finding |
+
+New findings this round: 4
+
 ## Why this audit cannot yet claim convergence
 
-Round 3 produced four findings, so its ledger is non-empty and a fourth round is required. **More
+Round 4 produced four findings, so its ledger is non-empty and a fifth round would be required.
+Rounds 2, 3 and 4 each surfaced material the previous round had missed — twice by the same failure mode
+(a population or a class scoped by vocabulary rather than by property), which is why the frontmatter's
+blind-spot class names exactly that. **More
 importantly, ten guards are structurally unreachable from an agent workstation** — a convergence claim
 made from this position would be a claim about the reachable surface only, and the report should say so
 rather than let the count imply completeness. **The blind-spot class this audit escaped is named
