@@ -7425,3 +7425,56 @@ broken check's failure matters more than the breakage.**
 **Rule:** for "did this land?", ask the far end (`git ls-remote`, an HTTP read-back), never a local
 resolver. A local resolver answers about local state and, on failure, may answer about nothing at all
 while looking like it answered.
+
+
+## 23:06Z — THE BEAT'S FULL DAY — 7 of 12 hours failed, three modes, two hand-restores
+
+The 23:00Z beat was **refused (memory)**. Restored by hand at 23:05:18Z — **third restoration
+tonight** — and verified by read-back (anchor + ledger both stamped 23:05:18.733Z).
+
+## The record, one line per hourly slot
+
+| slot | outcome |
+|---|---|
+| 12:00 · 13:00 · 14:00 | success |
+| **15:00** | **no record at all** — lost to the 15:11Z server restart (mode 2; it does not even appear in the job history) |
+| 16:00 – 20:00 | **REFUSED (memory)** × 5 → hand-restored 20:03Z |
+| 21:00 | success, unaided |
+| **22:00** | **reported `success`, wrote nothing** (mode 3) → hand-restored 22:07Z |
+| **23:00** | **REFUSED (memory)** → hand-restored 23:05Z |
+
+**Seven of twelve hours failed, in three distinct modes, requiring a person three times.**
+
+## ⭐ The flap, caught live at 5-minute granularity
+
+In the fifteen minutes before the 23:00 refusal, the same memory gate answered:
+
+```
+22:45  REFUSED
+22:50  success
+22:55  REFUSED
+23:00  REFUSED   ← the beat
+```
+
+**Three consecutive five-minute ticks alternating.** Not an inference from a swing measured earlier —
+the gate itself, deciding opposite ways on adjacent ticks, on the same host, minutes apart.
+
+**This is the single piece of the failed option C spec that survived round-1 review**, and it now has
+live evidence instead of an argument. The reviewers killed the priority rule (it reproduced the 91%),
+killed the causal chain (correlation), and showed the tier would be unreachable behind a second gate.
+**They did not kill the hysteresis observation** — and here it is, firing every five minutes.
+
+**The fix is not a different threshold.** It is making the answer *stick* rather than be re-asked
+fresh on every decision. That claim is now backed by adjacent-tick disagreement, which is stronger
+evidence than the 79→61 swing I originally cited (and which a reviewer correctly flagged as
+unsourced).
+
+## Position I am taking, stated so it is not silent
+
+I will keep the beat alive by hand while the fix is with the operator, **and I will say so each time
+rather than quietly papering over it.** A mechanism that needs a person three times in one evening is
+not working, and the honest signal is the restoration count — not a series of restored anchors that
+look, from outside, like it ran fine.
+
+Midnight watcher armed at 23:06Z with `--not-before 2026-08-05T00:00:00Z` — baseline before the
+event, so whatever it reports is a real answer.
