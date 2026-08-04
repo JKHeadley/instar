@@ -4,7 +4,7 @@ target-pattern: "Whether the guards our constitutional standards name are actual
 search-surface: "The 90-guard runtime inventory at GET /guards on both machines; all 30 scripts/lint-*.js; all 18 tests/unit/*ratchet*.test.ts plus lint-chain-completeness; the 81-entry NOT_A_GUARD exclusion list in guardManifest.ts; 27 further guard-shaped non-lint enforcement scripts; the internal LLM provider path; cross-machine guard posture via the machine registry."
 standing-guard: "tests/unit/lint-chain-completeness.test.ts"
 blind-spot-class: "population-scoped-by-naming-convention-mistaken-for-a-functional-tier"
-rounds: "2"
+rounds: "3"
 ---
 
 # Phase A — constitutional alignment: are the guards effective?
@@ -56,10 +56,27 @@ Surface delta: The enforcement-script population grew from the 30 swept in round
 
 New findings this round: 1
 
+## Round 3
+
+Search angles: Swept the 27 guard-shaped non-lint enforcement scripts surfaced by round 2 — baseline-ran every one with stdin redirected, deep-verified by two-sided injection wherever the fault could be staged locally, and classified the remainder by whether the auditor's position can reach them at all; measured the overlap between the three enforcement populations, which had been counted as disjoint.
+
+Surface delta: Eight of the 27 are now settled — four deep-verified this round, four already exercised by ratchet tests verified in round 1. Ten are structurally unreachable from an agent workstation: they require a PR description, a CI event payload, a staged diff against a remote, or a release-publish moment. The populations were found to overlap: four "unswept" scripts were already covered, and one lint is wrapped by a ratchet, so the three tiers do not sum to a distinct-guard count.
+
+| location | behavior | bucket | disposition |
+|----------|----------|--------|-------------|
+| `scripts/check-repo-invariants.mjs` · `protect-migration-guarantee.js` · `check-codex-rule1-drift.js` · `pre-push-fixture-guard.mjs` · `instar-dev-precommit.js` | All five verified two-sided: violation caught with a named reason, compliant form allowed. The instar-dev gate verified itself unplanned, refusing this auditor's own attempt to commit tooling into `scripts/` without spec or trace, while allowing the same commit docs-only. | enforcement-verified | fixed:verified-two-sided-2026-08-04 |
+| 10 of the 27 scripts (`eli16-pr-description-check`, `verify-runbook-pr-signature`, `post-publish-smoke`, `ux-impact-lint`, `validate-retro-harvest`, `worktree-commit-msg-hook`, `decision-audit-presence-check`, `destructive-command-shim`, `run-contract-tests`, `throwaway-identity`) | Only exercisable inside a real CI or PR context — a PR description, `GITHUB_EVENT_PATH`, a staged diff against a remote, or a release moment. No local diligence reaches them. Incomplete by the auditor's POSITION, not by effort. | positionally-unreachable | deferred:requires-CI-or-PR-context-not-available-to-an-agent-workstation |
+| `scripts/check-upgrade-guide.js` | Reports historical guides missing a required `## Evidence` section and still exits 0 — warn-not-enforce for that class, the same shape as `lint-degradation-emit-sites`. Not a defect; a detector. | detector-not-authority | accepted:advisory-by-construction-rung-3-does-not-apply |
+| Three enforcement populations (30 lint · 18 ratchet · 27 non-lint script) | Counted as disjoint throughout rounds 1–2; they overlap. Four "unswept" scripts were already exercised by verified ratchets, and one lint is wrapped by one. Every population total reported before this round double-counts to an unknown degree. | population-arithmetic-error | fixed:recorded-2026-08-04-no-corrected-total-invented |
+
+New findings this round: 4
+
 ## Why this audit cannot yet claim convergence
 
-Round 2 produced a new finding, so the round-2 ledger is non-empty. A third round is required, and it
-must sweep the 27 newly-surfaced enforcement scripts. **The blind-spot class this audit escaped is named
+Round 3 produced four findings, so its ledger is non-empty and a fourth round is required. **More
+importantly, ten guards are structurally unreachable from an agent workstation** — a convergence claim
+made from this position would be a claim about the reachable surface only, and the report should say so
+rather than let the count imply completeness. **The blind-spot class this audit escaped is named
 in the frontmatter: scoping a population by naming convention and mistaking it for a functional tier.**
 That class was found three times in one session — keyword-bucketed exclusion rationales, a keyword survey
 of ratchet negative-cases, and the `lint-` prefix — and only the third instance survived into a
