@@ -7177,3 +7177,65 @@ for a class whose first fix shipped on 07-26 — which is precisely what item 5 
 a cadence … a check that fails when an area goes unaudited"*) exists to produce. **That makes tonight
 additive to the plan rather than a duplicate of it**, and I should say so as plainly as I said the
 opposite.
+
+
+## 22:27Z — PROJECT ITEM 11 — premise confirmed with numbers, and item 1's shipped fix did not reach this surface
+
+First piece of work aimed by the project rather than by what I tripped over. Item 11:
+*"Populate the fractal hierarchy so roots suffice for navigation — the structure exists with zero
+nodes and reports freshRatio 1."*
+
+## Measured (`GET /cartographer/health?topicId=29723`)
+
+```
+nodeCount            2148
+authoredCount           0
+neverAuthoredCount   2148
+staleCount              0
+freshCount              0
+sweepEnabled        false
+generatedAt      2026-08-04T17:01:43Z   (ageMs 19,542,206 ≈ 5.4h)
+snapshotStale       false
+```
+
+**The premise holds, and the current shape is sharper than the item's wording.** The item says "zero
+nodes"; there are now **2,148** — and **not one has ever been authored.**
+
+## ⭐ `staleCount: 0` is the finding
+
+**Nothing is stale because nothing has ever been written.** A reader seeing `staleCount: 0` alongside
+`snapshotStale: false` concludes the map is current. It has never existed.
+
+That is **item 1's exact class** — *"every health/completeness metric carries its count and returns
+**unknown** when that count is zero or unverifiable"* — and **item 1 shipped on 2026-07-26 as PR
+1649**, titled *"the panel said 'Routing is healthy' over ZERO…"*.
+
+**So the fix propagated to the insights panel and not to this surface.** That is not a new class; it
+is a measured instance of a known class in a place its first fix did not reach — which is precisely
+what item 5 (*"converging audit on a cadence per fundamental area, with a check that fails when an
+area goes unaudited"*) exists to catch, and precisely the additive contribution I claimed tonight
+makes.
+
+**And `sweepEnabled: false`** — the freshness sweep is off, so nothing will ever author them. The
+2,148 will stay at zero indefinitely while the surface reports no staleness.
+
+## A second, smaller one
+
+`snapshotStale: false` on a snapshot **5.4 hours old**, generated at `17:01:43Z` — which matches the
+**17:01:39Z server restart** I found earlier tonight. So the snapshot is a boot artifact that has not
+refreshed, and the surface's own staleness predicate does not consider 5.4 hours stale.
+
+## Method note worth keeping
+
+I reached this after three wrong turns, and only one of them was the route's fault:
+1. `409 topic-binding-required` → I inferred a stale binding. **Wrong** — the bound worktree exists
+   and is live.
+2. I tested from three different working directories. **Wrong by construction, and I said so in the
+   command as I ran it** — curl is a client; cwd cannot affect a server-side decision. Worth noting I
+   predicted the null result and ran it anyway.
+3. The real cause: I passed `?topic=` and the route reads **`topicId`**. I guessed a parameter name.
+
+**Credit to the route:** it returned **409**, not a silent 200 over a default. Compare `/jobs/history`
+and `/commitments`, which accept `?scope=pool` and answer 200 self-only. **A loud refusal on an
+unmet precondition is the correct behaviour and it is worth naming when a surface gets it right**,
+since I have spent the night cataloguing the ones that do not.
