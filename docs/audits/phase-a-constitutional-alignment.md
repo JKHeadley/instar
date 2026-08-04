@@ -107,3 +107,46 @@ health/status fields whose NAME asserts more than their computation** — `healt
 `ready`, `ok`, `connected` — checked against what each actually tests. `DoorwayRegistryReader:114`
 (*"parse-drift on a door that DID answer → stays reachable:true"*) is a candidate to examine: it may be
 a deliberate, documented exception rather than an instance, which is itself worth recording.
+
+### Angle 5 — 0 new instances, and something more useful: the EXEMPLAR is already in-repo
+
+Angle 5 swept health/status fields whose NAME might assert more than their computation
+(`healthy`, `reachable`, `ready`, `connected`, `live`). **No new instance of the class.** But the
+candidate flagged in angle 4 turned out to be the opposite of an instance — it is the pattern the
+class needs, already written, already shipped:
+
+`DoorwayRegistryReader` resolves reachability **three-valued**:
+
+```
+'not-probed-this-run' | 'not-probed-this-scope'
+'not-probed-budget-refused' | 'http-5xx'   →  null    // CANNOT TELL — explicitly not false
+'not-installed' | 'http-4xx'               →  false   // definitively unreachable
+'malformed-response' | 'oversize-response' →  true    // the door DID answer
+default                                    →  null    // unknown ⇒ null, never a guess
+```
+
+**"Not probed" returns `null`, not `false`.** Unknown returns `null`, not a guess. A door that answered
+badly is still recorded as having answered, with the parse concern handled elsewhere rather than
+smeared into the reachability verdict.
+
+That is *exactly* the three-kinds-of-zero discipline this audit derived independently for counters
+(`{looked, wouldAct, didAct}`), implemented for booleans, by someone else, already in the tree.
+
+### Why this changes the Phase B recommendation
+
+The fix for *asserts-unmeasured-state* is therefore **not a design problem — it is a propagation
+problem.** The repo contains a correct, shipped exemplar; the instances are the sites that predate it
+or never adopted it. That is materially cheaper than "design a solution", and it makes the
+recommendation concrete:
+
+> **Make the two-valued `available: boolean` on `IntelligenceRouter` three-valued, matching
+> `DoorwayRegistryReader`: `true` (verified reachable) / `false` (verified unreachable) / `null` (not
+> probed — the honest default).**
+
+Under that shape, codex would have reported `null` rather than `true` while its token was revoked, and
+the surface an operator consults for "is this door healthy?" would have said "I have not checked"
+instead of "yes".
+
+**Sweep status after 5 angles: 3 confirmed instances, 1 exemplar located, NOT converged.** The next
+angle remains open — the class has produced a finding in the most recent round, so the contract
+requires another.
