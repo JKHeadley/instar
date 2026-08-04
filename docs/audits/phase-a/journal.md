@@ -7353,3 +7353,42 @@ have taught it nothing** — and I have a standing lesson about gates whose reme
 placeholder behaviour rather than the behaviour they exist for.
 
 This one earned its catch.
+
+
+## 22:35Z — TOOLS VERIFIED FROM A FRESH CHECKOUT — and a near-miss on my own artifact
+
+Closing a loop on my own work: I committed two guards and told the next session to reach for them.
+**Would they actually run from a fresh checkout?**
+
+`git ls-files -s` → both **`100755`** (exec bit preserved). Extracted `git archive HEAD` into a temp
+dir and ran all four paths there:
+
+| case | exit | expected |
+|---|---|---|
+| `spans-window` does-not-span | **2** | 2 |
+| `spans-window` spans | **0** | 0 |
+| `spans-window` empty corpus | **1** | 1 |
+| `watch-for` late-baseline refusal | **2** | 2 |
+
+**They ship usable.** Not "the file is committed" — *the file runs, from a clean extraction, and
+returns all of its distinct answers.*
+
+## The near-miss
+
+My first run piped the script through `head -6` and then read `$?`. It printed **exit=0** on a
+`DOES NOT SPAN` verdict — which, taken at face value, is a **defect in my own guard**: a refusal
+verdict returning success.
+
+**`$?` after a pipeline is the LAST command's status.** I measured `head`, not the script.
+
+I caught it only because the number contradicted something I already knew — I had watched that same
+tool return 2 an hour earlier. **Had I built the tool and tested it for the first time this way, I
+would have recorded a false defect against my own guard and possibly "fixed" a script that was
+already correct.**
+
+Same family as everything tonight, new mechanism: **the measurement apparatus interposed something
+between me and the thing I was measuring, and reported the interposition's answer.** `jq | wc -l`
+counts lines not events; `$?` after a pipe counts the last stage not the first.
+
+**Rule:** when reading an exit code, there must be nothing between the command and `$?`. Redirect to
+`/dev/null` instead of piping to a pager.
