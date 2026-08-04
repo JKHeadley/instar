@@ -40,6 +40,38 @@ every job/A2A spawn is refused.
 **The machine is not in trouble. The kernel says WARN, not critical, and the CPU is idle. We are
 refusing all scheduled work anyway.**
 
+## The reading is VOLATILE, and the gate has no hysteresis
+
+Measured 2026-08-04 16:50Z, sampling `usedPercent` every ~6 s:
+
+```
+74.5%  → moderate  (admit)
+82.2%  → high      (REFUSE)
+82.2%  → high      (REFUSE)
+84.0%  → high      (REFUSE)
+84.0%  → high      (REFUSE)
+80.3%  → high      (REFUSE)
+80.3%  → high      (REFUSE)
+80.3%  → high      (REFUSE)
+```
+
+**A 9.5-point swing inside 48 seconds, straddling the 75% refuse threshold.**
+
+`currentMemoryPressure()` is called **fresh inside `evaluateRerouteGate`** on every admission decision —
+there is no cached tier, no dwell, no hysteresis. So **a job's fate depends on which instant it happens
+to be evaluated at**, and two identical jobs seconds apart get opposite answers.
+
+Practical effect over the same period: **0 job completions in 30 minutes**, while `usedPercent` spent
+part of that window *below* the threshold.
+
+**This matters for the design, not just the diagnosis.** A DEGRADED tier that is also re-evaluated
+per-call would flap between "admit constrained" and "admit freely" just as the current one flaps
+between admit and refuse. **DEGRADED should therefore carry dwell/hysteresis**: once entered, remain in
+DEGRADED for a minimum interval, and require a sustained reading — not a single sample — to leave it.
+
+That is an addition to the ruled design, surfaced by measurement, and it is flagged here rather than
+assumed into the build.
+
 ## Why refuse-all is the wrong response to WARN
 
 `high` and `critical` currently produce **identical behaviour** — total refusal — which discards the
