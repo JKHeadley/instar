@@ -562,3 +562,48 @@ was none.
 The close condition is now ALSO satisfied through the POOL, not only the primary door: **24 successful
 interactive-pool calls**. The stricter original reading of the Observer's condition — *one real
 judgment call succeeding live through the pool* — is met.
+
+---
+
+## Exemplar #3, found in a live log line — and a real gap underneath it
+
+**2026-08-04 16:31Z**, observed while checking post-recovery health:
+
+```
+[orphaned-work-sentinel] enumeration FAILED — stranded-work count is UNKNOWN, not zero:
+worktree enumeration failed for repo "/Users/…/agents/echo":
+Command failed: git -C /Users/…/agents/echo worktree list --porcelain
+fatal: not a git repository
+```
+
+### Why it is an exemplar
+
+> **"stranded-work count is UNKNOWN, not zero"**
+
+That clause, in a WARN line, is the entire three-kinds-of-zero discipline stated in six words by a
+component that could trivially have logged `stranded: 0` and moved on. It distinguishes *I looked and
+found none* from *I could not look* **at the moment of failure**, in the surface a human actually
+reads. The other two exemplars implement the discipline in code; this one **speaks** it.
+
+### The real gap underneath
+
+The probe is wrong for this agent's shape: it runs `git worktree list` against the **agent home**,
+which is not a git repository — the worktrees live *under* it, each its own checkout, and the home is
+plain filesystem. So on this agent the sentinel is **structurally unable to enumerate stranded work**,
+permanently, not transiently.
+
+**And that is exactly why the honest reporting matters.** A component that reported `0` here would
+produce a standing false all-clear on stranded work — the failure mode being audited — indefinitely,
+with nothing to notice it. Instead the defect is loud on every run.
+
+**Recorded as OD-8** (open): the orphaned-work sentinel cannot enumerate on an agent whose home is not
+a repo; it should enumerate the worktree roots beneath the home, or declare the agent out of scope.
+Its current behaviour is *correct-but-blind* — the safest possible failure, and still a blind spot.
+
+### Score after this
+
+Three exemplars, all in-repo, all pre-existing: `DoorwayRegistryReader` (three-valued reachability),
+`TopicProfileResolver.isLaunchable` (TTL + fail-open + authority hand-off), and now
+`orphaned-work-sentinel` (explicit UNKNOWN-not-zero). **The discipline is not missing from this
+codebase; it is unevenly applied.** That is the single most actionable conclusion of the sweep, and it
+is now supported by three independent examples rather than one.
