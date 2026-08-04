@@ -137,3 +137,26 @@ than a changed path, and **a guard you cannot make fire cannot be said to fail t
 guard from a false accusation; it protects the *auditor* from a false discovery. The second failure mode
 is rarer, more consequential, and far more tempting — an audit that finds nothing is often correct, and
 an audit that finds something is always more interesting.
+
+
+## Check the story you are least attached to — that is where the free evidence is
+
+Five times in one session, running a check that was not needed for the conclusion being pursued produced
+something more valuable than the conclusion itself:
+
+| the check that was not needed | what it produced |
+|---|---|
+| a negative control on a gate that was already "obviously" broken | killed a false first-defect claim after 51 clean verifications |
+| re-testing a call already made and half-doubted | upheld it — and broke the emerging belief that re-checking always overturns |
+| an empty-index baseline on a search returning zero | revealed the command was hanging, not the vault empty |
+| re-reading a claim after the machine changed on its own | falsified a causal chain already reported upward |
+| testing a guess about a *second* agent's unrelated silence | refuted the guess and yielded an independent confirming control for the root cause |
+
+**The pattern:** evidence attaches to the checks you have no stake in. A check run to confirm a favoured
+story returns what the story predicts; a check run on an incidental question returns whatever is true.
+
+**Corollary, and the harder half:** the direction bias runs one way. Every number in this audit that
+shrank under checking had first appeared in the **alarming** direction — a 47% would-deny rate,
+"31 dead components", "21 dead jobs", "18 orphaned guards", "the 52nd guard is broken". Each was
+true-ish and materially misleading. **The alarming reading feels like a finding, so it gets written
+before it gets tested.** The mundane reading feels like nothing, so it gets tested — and survives.
