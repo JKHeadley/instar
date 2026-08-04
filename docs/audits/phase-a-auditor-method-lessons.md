@@ -218,3 +218,87 @@ Five distinct incidents in this audit, and every one is the same shape:
 
 > The auditor's dominant failure is not blindness. It is reading something, forming a conclusion from the
 > part that confirms it, and never returning to the part that does not.
+
+---
+
+## Round 5 additions — four new false-result tells, and one generalizable defect class
+
+### #18 — Hand-rolling an instrument reproduces the bug the instrument exists to correct
+
+I needed the host's memory pressure. Instead of calling `hostFreeMemPct()`, I recomputed it in a shell
+one-liner. The regex escaping collapsed, so I summed `Pages free` alone and got **9.3% free →
+`critical`**. The real reading was **59.3% used → normal**, and the kernel agreed
+(`kern.memorystatus_vm_pressure_level: 1` = NORMAL).
+
+`Pages free` alone **is the exact defect** the corrected helper was written to fix, and whose shipped
+comment warns against `os.freemem()` by name. I reintroduced it by hand, then came within one step of
+building a ruled feature on top of the false reading.
+
+**Tell:** you are about to reason from a number you computed yourself, for a quantity the codebase
+already has a named accessor for.
+**Rule:** an instrument exists because the naive calculation is wrong. Re-deriving it by hand
+re-imports the naivety. **Call the instrument.**
+
+### #19 — Querying a field that does not exist reads as "measured zero"
+
+I read `/jobs` and reported **"zero job runs in 90 minutes."** That route exposes **no `lastRun` field
+at all** — every job returned `null` because the key is absent, not because nothing ran. Jobs had in
+fact completed successfully at 11:20 and 11:25.
+
+Error class #3 (the three kinds of zero) recurring **on the very rule this phase exists to enforce**:
+*before believing something is absent, prove the check could have shown otherwise.*
+
+**Tell:** a uniform `null`/`0` across every row. Real measurements are ragged.
+**Rule:** before reporting an absence, print one raw record and confirm the field you are reading is
+actually in it.
+
+### #20 — A detector matching its own stimulus
+
+Proving the ceiling fix end-to-end, I sent a prompt ending *"reply with exactly: CEILINGFIXED"* and
+grepped the pane for `CEILINGFIXED`. It matched in 5 seconds — **from the echoed prompt**, not from any
+reply. The model had not answered yet, and when it did, it *declined* (the payload looked like a
+prompt-injection probe).
+
+**Tell:** success detected implausibly fast — the same tell that caught a 62 ms "passing" integration
+suite that was actually a silent skip.
+**Rule:** when the probe text appears in the stimulus, the detector must key on something only the
+RESPONSE can contain, or on position after the echo.
+
+### #21 — A guard can be perfectly correct and still leave you blind, if it measures the wrong noun
+
+`/threadline/peers/health` reported `stale: true` for the peer agent for **five days**. That was
+*true*. It was also useless: the field answers *"has this ADDRESS acknowledged?"* — and the address in
+my registry was a stale fingerprint that never routed to him at all. The guard faithfully reported a
+dead channel while the actual fault was the identity being addressed.
+
+**Tell:** a guard has been red a long time and nobody acted, because its answer names nothing fixable.
+**Rule:** for each guard ask *what noun does this measure?* A liveness check against a WRONG address is
+indistinguishable from a dead peer, and only the latter is actionable.
+**New blind-spot class — CORRECT-BUT-UNACTIONABLE:** the audit must record what a guard's verdict would
+look like if the INPUT were wrong, not only if the subject were broken.
+
+---
+
+## The generalizable class this round surfaced: COMPONENTS THAT ASSERT UNMEASURED STATE
+
+Two independent live defects this round are the same shape:
+
+| component | asserted | actually measured |
+|---|---|---|
+| `SessionManager.currentMemoryPressure` (pre-fix) | "host memory is critical" | raw free pages — near-zero on a *healthy* macOS host |
+| `LlmCircuitBreaker` OPEN log (pre-fix) | "provider rate-limited" | **nothing** — hardcoded for every trip cause |
+
+The breaker is the purer case: it did not mis-measure, it **never measured at all**, and stated a cause
+anyway. Fourteen trips reported a quota problem while the real cause was a `tmux` argv ceiling; the
+false label cost more hours than the underlying bug.
+
+This is the same family as my own 21 auditor errors — **narrating a conclusion the evidence does not
+carry** — appearing in the code rather than in the auditor. That symmetry is the finding: the
+discipline this phase demands of the auditor is one the codebase does not uniformly meet, **and no
+existing standard names it.**
+
+**Proposed sweep + candidate standard:** *A component must not report a cause it did not measure.*
+Where it cannot determine one, the honest output is "unknown" — never the most plausible guess. PR
+#1851's `classifyTripCause` defaults to `provider unavailable` rather than inventing a cause; the sweep
+should look for the inverse pattern elsewhere (hardcoded cause strings, fixed labels on variable
+conditions).
