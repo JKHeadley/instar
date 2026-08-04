@@ -7239,3 +7239,73 @@ I reached this after three wrong turns, and only one of them was the route's fau
 and `/commitments`, which accept `?scope=pool` and answer 200 self-only. **A loud refusal on an
 unmet precondition is the correct behaviour and it is worth naming when a surface gets it right**,
 since I have spent the night cataloguing the ones that do not.
+
+
+## 22:30Z — PROJECT ITEM 10 — the drift detector can only see CHANGED, which is the thing the item says it must not conflate
+
+Item 10: *"Drift means changed-without-anyone-deciding, not merely changed."*
+
+The org-intent drift surface is unavailable here (`503 — response review pipeline not enabled`), but
+`/guards` already encodes a version of the distinction, so I measured that instead.
+
+## The distinction IS partly encoded — credit first
+
+`/guards` separates the two off-classes:
+
+| offClass | count | meaning |
+|---|---|---|
+| `dark-default` | 11 | ships-dark on purpose — **not drift**, correctly quiet |
+| `diverged-from-default` | **7** | default-ON, currently OFF — the load-shed signature |
+
+That separation is real and is exactly the right first cut. **One of the seven is load-bearing:**
+`multiMachine.peerExecution.enabled`, criticalPath *"autonomous execution on …"*.
+
+## ⭐ Where it fails item 10 — the decision record
+
+Checked each of the seven for a tripwire decision record:
+
+| guard | record |
+|---|---|
+| `models.tierEscalation.dryRun` | item 2026-07-05, DONE |
+| `monitoring.collaborationRedrive.enabled` | item 2026-06-14, DONE |
+| `monitoring.reportExternalProcesses` | item 2026-06-14, DONE |
+| `monitoring.staleBackstop.enabled` | item 2026-06-14, DONE |
+| `multiMachine.peerExecution.enabled` | item 2026-08-01, DONE |
+| **`monitoring.autonomousHeartbeat.enabled`** | **✗ NONE** |
+| **`monitoring.blockerLedger.enabled`** | **✗ NONE** |
+
+**Two of seven are off against their resolved ON default with no record anywhere that anyone decided
+it.** The tripwire fires on a **transition** (`enabled → disabled`). **A guard that arrived off never
+transitions, so it never produces a decision record** — it simply appears as `diverged-from-default`
+forever.
+
+**That is item 10 verbatim.** The mechanism can only see *changed*. A guard that was never *changed*
+— it was always off — is drift with no change event, and is structurally invisible to the detector
+whose job is to notice drift.
+
+## And the records that DO exist are batch acknowledgements
+
+Three of the five share a creation date (2026-06-14) under one item titled **"Guard posture anomalies
+(10)"**. Two others resolved at the **identical timestamp** `2026-08-02T23:12:27` despite being
+created five weeks apart (06-24 and 07-15).
+
+**A batch acknowledgement records that someone dismissed a list. It does not record that someone
+decided each guard should stay off.** Item 10's distinction survives inside the acknowledgement too:
+*dismissed* is not *decided*.
+
+## A Close-the-Loop check that PASSES, on me
+
+The operator ruled at **15:07Z** that I acknowledge the three-day-open peerExecution tripwire item; I
+committed to it at **15:09Z**. Measured: that item's `updatedAt` is **2026-08-04T15:33:07Z** — it
+**postdates both**, consistent with me having done it.
+
+Stated at its true strength: there is no actor field, so the sequence supports it rather than proves
+it. But per my own standing rule — *check the change's timestamp predates my action before claiming I
+caused it* — the direction is right, and this is one loop tonight that did close.
+
+## Disposition
+
+Two measured instances for item 10, neither of which required building anything:
+1. **Transition-triggered detection cannot see arrived-off drift** (2 of 7 guards).
+2. **Batch acknowledgement conflates dismissed with decided** (3 sharing a date, 2 sharing a resolve
+   timestamp five weeks apart).
