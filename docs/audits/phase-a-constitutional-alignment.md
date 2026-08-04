@@ -397,3 +397,58 @@ An agent can therefore lose its entire internal-judgment fallback to one transie
 observable surface stays quiet about it. **That is the exact failure shape this audit was commissioned
 to find**, arrived at from the opposite direction — not by auditing a guard, but by chasing why a
 guard's evidence would not appear.
+
+---
+
+## Angle 8 — 0 new instances, a SECOND exemplar, and OD-6 bounded as a singleton
+
+### The memoised-promise shape is unique in the tree
+
+`grep -rnE "if \(!\w*[Pp]romise\)" src/` returns **exactly one** hit:
+`anthropic-interactive-pool/index.ts:82` — the OD-6 site. **OD-6 is a singleton, not a family.** That
+is worth knowing before anyone scopes a Phase B fix: it is a one-site change, not a sweep.
+
+### Second exemplar: `TopicProfileResolver.isLaunchable`
+
+Swept caches that could retain a FAILURE indefinitely. `launchabilityCache` looked like the shape —
+caching whether a framework can launch. It is the opposite:
+
+```js
+const cached = this.launchabilityCache.get(framework);
+if (cached && Date.now() - cached.at < LAUNCHABILITY_TTL_MS) return cached.ok;   // TTL'd
+let ok = true;                                                                    // fails toward YES
+try { … fs.existsSync(bin) … } catch { /* deliberate fail-OPEN */ }
+```
+
+Its own comment states the discipline better than the audit did:
+
+> *"Fail toward 'launchable' whenever the check cannot actually verify absence: this check is a cheap
+> SIGNAL whose only job is to catch a provably-missing binary… a pin must never be re-routed on the
+> checker's own blind spot. Genuinely broken CLIs are the §10.4 breaker's authority."*
+
+Three correct properties at once: a **TTL** so no verdict is permanent; **fail-open** because the
+consequential direction is "don't reroute"; and an explicit **hand-off of authority** to the component
+that can actually decide. It is signal-vs-authority and don't-assert-what-you-didn't-measure, applied
+together, deliberately.
+
+**Note the contrast with instance #3** (`IntelligenceRouter.available`, which also concerns whether a
+framework is usable): one asks the same question and answers it honestly; the other answers it with a
+name it cannot support. **They are in the same codebase, about the same subject.** That is the clearest
+possible evidence for the propagation reading — the knowledge exists here; it is unevenly applied.
+
+### Convergence status
+
+| angle | subject | new instances |
+|---|---|---|
+| 1-3 (round 5) | cause strings, fixed literals, user templates | 0 *(loose definition)* |
+| 4 | computed availability booleans | **1** (#3) |
+| 5 | health/status field naming | 0 — exemplar #1 found |
+| 6 | cause asserted by omission | **1** (#4) |
+| 7 | cross-boundary assertion | 0 — **definition tightened here** |
+| 8 | memoised/cached failures | 0 — exemplar #2 found; OD-6 bounded as singleton |
+
+**Two consecutive clean angles (7, 8) under the TIGHTENED definition.** The contract asks for a clean
+re-sweep before declaring convergence, and angles 1-5 ran under the looser definition — they would not
+reliably have recognised #3 or #4. **So: approaching convergence, not converged.** The honest next step
+is re-running angles 1-3 with the tightened definition ("a boolean whose unknown collapses to the
+CONSEQUENTIAL value"), not declaring done on two clean rounds.
