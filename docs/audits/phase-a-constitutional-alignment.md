@@ -232,3 +232,59 @@ shape, not for the consequence.
 **Sweep status after 7 angles: 4 confirmed instances, 1 exemplar, 1 tightened definition. NOT
 converged** — the contract needs a clean round with the *new* definition, since angles 1-5 were run
 with the looser one and would not reliably have recognised instances #3 or #4.
+
+---
+
+# NAMED OPEN DECISIONS carried into Phase B
+
+Recorded here so they cannot rot as implicit intentions. Each is a decision someone must MAKE, not a
+task someone must do.
+
+## OD-1 — Does the placement policy require the managed peer-execution runtime?
+
+**Node:** placement (worker lanes on the laptop)
+**Status:** OPEN. Ruled 2026-08-04 (Observer cycle four): do **not** re-enable unilaterally.
+
+`multiMachine.peerExecution.enabled` is `false` while its own config carries `requiredForReadiness:
+true`. It is classified **load-bearing**, `criticalPath: "autonomous execution on a paired peer
+machine"`, and it gates the managed mutual-SSH runtime. It was disabled on **2026-08-01T12:57:02Z**
+together with `meshTransport.recoveryProbeEnabled`; the guard-posture tripwire raised an attention item
+at the time, which **sat OPEN and unacknowledged for three days** until acknowledged on 2026-08-04
+under this ruling.
+
+**The decision:** placement may ride the **session pool** (currently stage `rebalance`) rather than the
+managed runtime. Until that is settled, re-enabling is a guess.
+
+**What is already known, so the decision is not re-litigated from scratch:**
+- Raw SSH between the two machines works — used continuously throughout the 2026-08-04 window.
+- So connectivity is NOT the open question; only whether the MANAGED runtime is on the placement path.
+- The laptop's revival queue — the prerequisite the Observer named for placement — is now repaired and
+  **verified running** (two distinct ticks 60 s apart), so this is the remaining placement blocker.
+
+**Decision owner:** Justin, via the Observer.
+
+## OD-2 — The three load-bearing guard gaps: graduate, soak, or record an owned accept?
+
+**Status:** OPEN, same ruling — recorded, not unilaterally re-enabled.
+
+`multiMachine.meshTransport.recoveryProbeEnabled` · `multiMachine.sessionPool.inboundQueue.enabled` ·
+`multiMachine.sessionPool.staleOwnerRelease.enabled`.
+
+The guard framework itself offers exactly three resolutions (graduate / let it soak out / record an
+owned accept with reason+owner). **Leaving them flagged is not one of them** — an indefinitely-open
+load-bearing gap is the state the classification exists to make impossible.
+
+## OD-3 — Can the CI-and-PR-context guards be verified by a real CI run?
+
+**Status:** OPEN (carried from the Phase A close). 10 guards, currently positional deferrals.
+
+## OD-4 — Adopt the `{looked, wouldAct, didAct}` counter schema?
+
+**Status:** OPEN (carried from the Phase A close). **Supporting evidence: exactly 1 guard in 90 can
+answer "did you ever actually act?"** — see the Round 6 instrumentation measurement.
+
+## OD-5 — Make availability three-valued to match the in-repo exemplar?
+
+**Status:** OPEN (new, Round 6). `IntelligenceRouter`'s `available: boolean` measures *binary presence*
+and is read as *reachability*; `DoorwayRegistryReader` already implements the correct three-valued
+shape (`true` / `false` / `null` for not-probed). **This is a propagation decision, not a design one.**
