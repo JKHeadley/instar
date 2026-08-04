@@ -6304,3 +6304,58 @@ changed.** That is a five-line difference and it is the difference between a rul
 Recording it at full weight rather than as a footnote, because a self-catch that only I know about is
 not a correction — and because the count matters: **five in one day, one published, and the written
 rule stopped none of them.**
+
+
+## 21:11Z — BUILT THE STRUCTURAL VERSION — the baseline guard, with all three paths controlled
+
+The previous entry ended by naming the fix and calling it "five lines." Writing that down is exactly
+the move that already failed five times today, so I built it instead.
+
+## What it does
+
+`watch-for.sh` — a change-watcher whose **baseline is its first act**, before anything else runs, and
+whose baseline timestamp is **always printed**. Plus the load-bearing part: `--not-before <ISO>` makes
+a late baseline a **refusal** rather than a silently meaningless "unchanged".
+
+The lineage is deliberate: `jrnl.sh` exists because a note telling me to check the clock did not work,
+so it **removed the typing**. This removes the opportunity to take the baseline late — not the
+reminder to avoid it.
+
+## Verified with three controls, because a checker that cannot fail is this audit's founding subject
+
+| path | test | result |
+|---|---|---|
+| refusal | `--not-before` already passed | **exit 2**, refuses, explains why |
+| unchanged | valid window, static target | **exit 1**, with the caveat that the negative is only real because the baseline predates the window |
+| **changed** | target mutated mid-watch | **exit 0**, reports the change instant |
+
+**The third control is the one that matters.** A watcher that always answers "unchanged" is
+output-identical to a working one — the exact defect I have found five times in other people's code
+today. Proving it returns exit 0 on a real change is what makes its "unchanged" mean anything.
+
+## The replay — against the real failure, not a synthetic one
+
+Armed with the same intent I actually had at 21:00Z (baseline now, event at 21:00:00Z):
+
+```
+REFUSED: baseline 21:10:36Z is AFTER --not-before 21:00:00Z.
+The event may already have happened, so 'unchanged' would be meaningless.
+```
+
+**It refuses precisely the case that produced my false conclusion**, and permits the same watch armed
+against the *next* hour. That is the difference between a rule and a guarantee, demonstrated on the
+instance rather than asserted.
+
+## First real use, correctly armed
+
+The 22:00Z beat watch is now running with its baseline captured at **21:10Z** — legitimately before
+the event, which is the whole point. Whatever it reports will be a real answer rather than an artifact
+of when I happened to start looking.
+
+## Honest scope
+
+This is **my own audit tooling**, not instar source, and it guards **one** error shape — a baseline
+taken after the event. It does nothing about the other four instances today, which were windows too
+WIDE rather than baselines too LATE. Those need a different guard (assert the corpus spans the claimed
+window), and I have not built it. Naming the gap rather than letting one tool imply the class is
+closed.
