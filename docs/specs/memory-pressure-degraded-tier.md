@@ -223,6 +223,42 @@ refusals are not merely wasteful, they are consuming the scheduler's own recover
 2. **It is verifiable live** — the refusals are logged per-occurrence with the tier that caused them,
    and the job-level consequence (`skipped (gate)` → hourly backoff) is observable in the scheduler log.
 
+## Update 19:25Z — the episode has ENDED. Read the evidence above as an episode, not a steady state.
+
+Sampled 8 times over ~1 minute: `usedPercent` **70.0-72.9%**, kernel back to **level 1 (NORMAL)**.
+Refusal rate decaying cleanly:
+
+| window | refusals |
+|---|---|
+| last 60 min | 28 |
+| last 45 min | 21 |
+| last 30 min | 14 |
+| **last 15 min** | **2** |
+
+**There is no live bleeding as of this timestamp.** The urgency argument in the sections above is
+therefore about an EPISODE that ran roughly 15:11-19:10Z, not about a condition that is ongoing now.
+Recording that here so nobody reads this spec next week and believes the machine is currently on fire.
+
+### What the ending does NOT change
+
+The design case is untouched, because none of the *structural* facts moved:
+
+- the gate is still **binary** — `high` and `critical` still produce identical total refusal
+- the tier is still re-read **fresh on every decision**, with no dwell or hysteresis
+- `usedPercent` on this host still **crosses 75 repeatedly** under ordinary load
+- the affected jobs' retry budgets are **still spent** — `insight-harvest` remains at 6/6 and will not
+  re-attempt for ~2 hours
+
+So the next busy period restarts the same compounding, from wherever each job's budget happens to sit.
+**This was a squall, not a repair.** The episode ending is evidence about timing and urgency; it is not
+evidence against the design.
+
+⚠️ **Method note.** I escalated the urgency of this at 19:05Z on genuine evidence and stood it down at
+19:25Z on genuine evidence. Both were correct at the time. **A spec whose urgency section is written
+during an episode will overstate steady-state severity** unless it is revisited after the episode ends
+— which is a general hazard for any document written from live measurement, and the reason this
+section exists rather than a silent edit to the numbers above.
+
 ## Open question for the reviewer
 
 Should DEGRADED also apply in `auto` mode? In `auto`, an elevated tier degrades to the headless lane
