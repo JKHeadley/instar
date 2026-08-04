@@ -46,3 +46,71 @@ counterexample was hiding. Naming the blind spot is what made this recognisable 
 
 **Round 5's conclusion is amended: not converged, and now with a known counterexample class — computed
 availability/health booleans. That is the highest-yield next angle, ahead of field-name matching.**
+
+---
+
+## Round 6 additions — #22, #23, and the first guards caught being EFFECTIVE on me
+
+### #22 — I applied the absence rule everywhere except my own incident report
+
+Seconds after a harness killed a pool session, I checked for pool sessions, got an empty result, and
+reported **"the pool is empty — one session to zero."** Both numbers were wrong. There were **two**
+sessions, one was killed, and the survivor was healthy and serving throughout (verified: live process,
+idle prompt, answered a 17,281-byte chunked prompt in ~5 s).
+
+This is the **third** occurrence today of *an empty/failed command result read as data* — after the
+`/jobs` route with no `lastRun` field, and the laptop probe where an auth error parsed into nulls I
+read as runtime state.
+
+**The tell is not new. The context is.** I have a written rule — *before reporting an absence, prove
+the check could have shown otherwise* — and applied it consistently to guards, jobs and peers… then
+not to **my own incident report**, the single place it mattered most. A false alarm about
+infrastructure damage is more expensive than any other kind, because it triggers exactly the panicked,
+unverified remediation that causes real damage.
+
+**Rule: the absence check applies HARDEST to your own bad news.** Alarm is the state in which
+verification feels least affordable and is most necessary.
+
+### #23 — "smoke test" is a name, not a behaviour contract
+
+I ran an adapter's own `_smoketest` against live infrastructure to gather evidence. On startup it
+reaped a **live** pool session belonging to the running server, by a loose name match, then failed to
+start its own.
+
+I read the docblock ("exercises the adapter against a real REPL pool") and inferred it was
+self-contained. It wasn't. **I trusted the label instead of reading the mechanism** — the exact failure
+this audit exists to catalogue, committed by the auditor, with teeth.
+
+**Rule: before running any harness against live infrastructure, read its SETUP path specifically** —
+not its purpose, not its docblock, but what it does to the world before it does its job.
+
+**Filed separately as a real defect:** a harness that reaps another live process's sessions on startup
+is dangerous by design, independent of my carelessness. Its "stale" detection should be scoped to
+sessions it owns.
+
+### ⭐ THREE guards observed EFFECTIVE on live violations — all caught on me
+
+| guard | violation I actually committed | outcome |
+|---|---|---|
+| managing-server restart refusal | tried to restart my OWN managing server from inside its session | refused, with the reason AND a safe alternative |
+| destructive-command guard | attempted a hard-reset of a git working tree | blocked, authorization required |
+| `lint-chain-completeness` | added a lint to CI without protecting it in `REQUIRED_LINTS` | failed the build, named the exact fix |
+
+**All three are rung 3** — a genuine violation, caught on current code — and none required a designed
+injection. I obtained them by making the mistakes.
+
+**Method note: the auditor's own errors are a legitimate and under-used source of rung-3 evidence.**
+They are unplanned, genuinely adversarial, and free. The catch is that the evidence only exists if you
+REPORT your violations instead of quietly fixing them. Every one of the 23 catalogued errors was a
+potential rung-3 datapoint; I recorded them as method failures and only noticed late that they are
+also guard measurements.
+
+### ⚠️ A false positive in the same family, caught immediately after
+
+The destructive-command guard then blocked a **commit message** that merely *quoted* the hard-reset
+command as prose. It matches the raw tool input, so a MENTION trips it identically to a USE.
+
+Same shape as the tone gate flagging `rung-3` in a message where that term was the operator's own
+vocabulary. **Keyword guards cannot distinguish use from mention** — which is the "Intelligence Infers,
+Keywords Only Guard" standard restated as a measurement. Both were cheap to work around honestly
+(reword, or acknowledge with a reason), and both are recorded rather than silently bypassed.
