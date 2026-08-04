@@ -186,3 +186,35 @@ faults or a schema change, and building staged faults ahead of that decision wou
 
 > **Stopping because the next measurement tells you nothing is a different act from stopping because the
 > work got hard. From outside they are indistinguishable, so the reason has to be recorded.**
+
+
+## Read your deliverable as its recipient before shipping it
+
+Nine commits into this audit, a two-minute read of the report's own first page found its summary
+contradicting the tables directly beneath it: *"one proper round has run · 48 guards · 12 false results"*
+above ledgers recording four rounds, 51 guards and 17. Rounds had been appended for hours; the top was
+never re-read.
+
+**A document arguing that status must be evidence-derived had an asserted summary drifting above its own
+derived record.**
+
+The fix is not a promise to keep them in sync — a hand-maintained summary above a machine-parsed ledger
+will always drift. **The fix is to state which one is authoritative.** The report now says the derived
+tables win wherever they disagree with the prose.
+
+## The one failure mode behind almost all of the rest
+
+Five distinct incidents in this audit, and every one is the same shape:
+
+| the data | where it was |
+|---|---|
+| job run history | in `job.state`, while the fields being read were on the wrapper |
+| a guard's 9 real opportunities | in the `counters` block, beside the `counts` block being printed |
+| the LLM root cause, four hours early | in the tone gate's own message: *"degraded to the deterministic floor (provider-error)"* |
+| three "fast" controls that never ran hooks | in the banner above each one: *"this workspace has not been trusted"* |
+| the report's own contradiction | in its first paragraph |
+
+**None of these was missing information. Every one was already on screen and was not followed.**
+
+> The auditor's dominant failure is not blindness. It is reading something, forming a conclusion from the
+> part that confirms it, and never returning to the part that does not.
