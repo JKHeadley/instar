@@ -716,3 +716,47 @@ deliverable, not the number.
 I reported "0 after" from a single measurement taken minutes after the change, during a window when the
 pool was not even being invoked. **That is method lesson #22 again — the absence check applies hardest
 to a claim you have already published**, because nobody re-checks it for you.
+
+---
+
+## Exemplar #4 — found while monitoring, and it has been right for two days
+
+`[failover-runner] failover-check-errored`, **51 occurrences since 2026-08-02T23:37Z**:
+
+```json
+{"provenStage":3,"commitSha":"package:1.3.1125",
+ "error":"sessionPool failover check did not run to completion
+          (evidence: no-source: vitest+tests/e2e/sessionpool-failover-two-node.test.ts
+           not resolvable (checkout absent))"}
+```
+
+The failover check verifies itself by **running a test**. On this agent there is no source checkout —
+it is an npm install, not a repo — so the test is unresolvable.
+
+**It reports `did not run to completion`, carries the evidence string, and names the precise reason.**
+It does not report "passed". It does not report "failed". It reports that it could not tell, with the
+receipt.
+
+**Two exemplars surfaced in a single ten-minute monitoring pass**, both of the same shape:
+
+| component | what it says instead of a verdict |
+|---|---|
+| `orphaned-work-sentinel` | *"stranded-work count is UNKNOWN, not zero"* |
+| `failover-runner` | *"did not run to completion (evidence: no-source: … checkout absent)"* |
+
+### What four exemplars does to the conclusion
+
+The sweep's actionable finding was *"the discipline is not missing from this codebase; it is unevenly
+applied."* With four independent examples — two in code, two speaking it in live logs — that is no
+longer an inference from a small sample. **The honest framing is now the reverse of where this audit
+started:** the codebase's DEFAULT is closer to honest-uncertainty than to false-certainty, and the five
+instances are the exceptions, not the rule.
+
+That is a materially different message for Phase B than "we have a systemic honesty problem". The work
+is **propagation to a known minority of sites**, and every one of them has an in-repo pattern to copy.
+
+⚠️ **And note where both exemplars were found: in LOG OUTPUT during monitoring, not by searching source.**
+Neither was reachable by the pattern sweep — they emit only when the failure condition occurs. This is
+the sweep's declared blind spot (runtime-only evidence) producing its most useful results twice more,
+which is the strongest argument yet that **the next phase's method should be "run the system and read
+what it says", not "search the code".**
