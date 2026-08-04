@@ -114,3 +114,56 @@ Same shape as the tone gate flagging `rung-3` in a message where that term was t
 vocabulary. **Keyword guards cannot distinguish use from mention** — which is the "Intelligence Infers,
 Keywords Only Guard" standard restated as a measurement. Both were cheap to work around honestly
 (reword, or acknowledge with a reason), and both are recorded rather than silently bypassed.
+
+---
+
+## #24 — "confirmed from source" is not confirmation of CAUSE
+
+**The most expensive error of the window, and the most instructive.**
+
+I traced the interactive pool's empty state to `ensureStarted()`, which memoises a start promise with
+no rejection handling. I read the code, confirmed the shape, and published:
+
+> *"CONFIRMED FROM SOURCE — a memoised rejected start permanently disables the pool… accounts for every
+> observation, with nothing left over."*
+
+**The pool then recovered on its own, with no restart, and served 24 of 25 calls.** A poisoned promise
+cannot recover without a process restart. There was none. The cause was mundane: `ensureStarted` is
+**lazy**, nothing had invoked the pool yet, and a pool that has never been asked to start is
+indistinguishable from a pool that failed to start.
+
+### The three separable mistakes
+
+1. **I confirmed a MECHANISM and reported a DIAGNOSIS.** Reading a path that *could* produce an outcome
+   proves the path exists. It never proves it ran. The word "confirmed" spans both and hides the gap —
+   which is exactly why it felt safe to write.
+2. **"Accounts for every observation" ≠ "is the only thing that accounts for every observation."** The
+   simpler explanation was available and I did not enumerate alternatives, because the one I had was
+   satisfying — it was elegant, it was severe, and I had *just* eliminated four other hypotheses, which
+   made the fifth feel earned rather than assumed.
+3. **I did not apply my own absence rule.** *Before believing something is broken, prove the check
+   could have shown otherwise.* A never-invoked lazy start and a failed start look identical from
+   outside. **That is the three-kinds-of-zero finding — the audit's own central result — and I walked
+   past it inside the sweep that produced it.**
+
+### The rule
+
+**A causal claim requires a runtime observation of the path being taken**, not a reading of the path
+existing. For this instance that would have been a logged rejection; there was none, and its absence
+was available to check before publishing.
+
+Where the runtime observation is unavailable, the honest verdict is **"latent risk — mechanism present,
+firing unobserved"**, which is what the instance was downgraded to.
+
+### Why it is recorded this loudly
+
+Four of my 24 catalogued errors were caught before reaching the Observer. This one **was published**,
+in a PR description, as the sharpest finding of the sweep. The correction cost a retraction in the
+audit, a comment on the PR, and a report — and that is the cheap version, because the pool recovered
+within the same window. **Had it recovered a day later, the finding would have been read, believed, and
+possibly acted on.**
+
+**The pattern across #18, #22 and #24 is now unmistakable: my failures cluster where I am most
+confident, not where I am least.** Each followed a genuine, hard-won result — a correct instrument
+read, a real incident, four correctly-eliminated hypotheses. **Confidence earned in the immediately
+preceding step is the reliable precondition for the next error.**

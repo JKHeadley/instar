@@ -14,9 +14,67 @@ rather than the 38-route sample used earlier.
 | …of those, reporting only a **tick/heartbeat** | 20 | — |
 | …of those, exposing an **act / would-act counter** | **1** | **1.1% of all guards** |
 
-### The finding, stated plainly
+### The finding, stated plainly — CORRECTED 2026-08-04 17:10Z, and it is worse than first published
 
-> **Exactly ONE guard in ninety can answer the question "did you ever actually act?"**
+> **NOT ONE guard in ninety can answer the question "did you ever actually act?"**
+
+**The originally published figure was "exactly ONE". That was wrong, in the conservative direction.**
+It came from a key-name heuristic (`count|fired|acted|would|attempts|blocked|caught`) matching
+`jobCount` — which is a count of JOBS THAT EXIST, not of actions taken.
+
+Re-verified by a different method: enumerating every DISTINCT key present in any guard's runtime block
+across the whole population, and reading them.
+
+| runtime key | guards exposing it | what it tells you |
+|---|---|---|
+| `enabled` | 26 | a config flag — not evidence of anything happening |
+| `lastTickAt` | 20 | liveness — "I ran" |
+| `tickAgeMs` | 19 | liveness |
+| `stale` | 16 | liveness |
+| `dryRun` | 13 | a mode flag |
+| `verdictUnknown` / `verdictUnknownReason` | 1 | one guard, and it is a state not a count |
+| `jobCount` / `pausedJobCount` | 1 | the scheduler's inventory — not its actions |
+
+**There is no `fired`, no `caught`, no `blocked`, no `wouldAct`, no `didAct` — anywhere in the
+population.** Every key present answers *am I alive?* or *how am I configured?*. **None answers *what
+have I done?***
+
+### …and then a THIRD reading corrected the correction. The honest claim is narrower than both.
+
+Before publishing "zero", a grounding check challenged the shape of the claim — *"you are reporting
+nothing found; could the source be wrong?"* It was right. **`/guards` is not the only surface.**
+Several guards expose act-counters on their OWN routes:
+
+| route | counters exposed |
+|---|---|
+| `/pool/queue` | `wouldEnqueue`, `wouldHold`, `wouldRefuse`, `held`, `refused` — **a complete would/did pair** |
+| `/self-action-governor` | `wouldDeny` |
+| `/test-runner-limiter` | `wouldBlock` |
+| `/sessions/reaper`, `/spawn-limiter`, `/green-pr-automerge` | none |
+
+**So the accurate statement is:**
+
+> **No guard exposes an act-counter through the `/guards` INVENTORY surface (0 of 90). At least three
+> expose one on their own dedicated route.** The population is not uninstrumented — the **inventory is
+> unaggregated**, and per-route coverage is sparse but real.
+
+That is a materially different — and much more actionable — finding than either earlier version. The
+fix is not "instrument 90 guards from scratch"; it is **surface, in the inventory, the counters that
+already exist, and fill the gaps**. `/pool/queue` already implements the exact `{would, did}` shape the
+Phase B recommendation asks for, so **there is an in-repo exemplar for the counter schema too.**
+
+### Method note — the same number was wrong TWICE, in opposite directions
+
+| version | figure | wrong because |
+|---|---|---|
+| 1st published | **1 of 90** | a regex matched `jobCount` — a count of jobs, not of acts |
+| 2nd (drafted) | **0 of 90** | enumerated keys correctly, but only on ONE surface |
+| 3rd (this) | **0 via `/guards`, ≥3 via own routes** | — |
+
+Both errors were caught by **changing the method**, not by looking harder with the same one. The second
+was caught by an automated grounding check that questioned a "nothing found" result — **a machine
+challenging my claim did what my own re-reading had not.** That is the strongest available argument for
+the structural-guard thesis this audit is about, arriving as evidence rather than assertion.
 
 Everything else can answer at most *"am I alive?"* — and 69% cannot answer even that.
 
@@ -397,3 +455,308 @@ An agent can therefore lose its entire internal-judgment fallback to one transie
 observable surface stays quiet about it. **That is the exact failure shape this audit was commissioned
 to find**, arrived at from the opposite direction — not by auditing a guard, but by chasing why a
 guard's evidence would not appear.
+
+---
+
+## Angle 8 — 0 new instances, a SECOND exemplar, and OD-6 bounded as a singleton
+
+### The memoised-promise shape is unique in the tree
+
+`grep -rnE "if \(!\w*[Pp]romise\)" src/` returns **exactly one** hit:
+`anthropic-interactive-pool/index.ts:82` — the OD-6 site. **OD-6 is a singleton, not a family.** That
+is worth knowing before anyone scopes a Phase B fix: it is a one-site change, not a sweep.
+
+### Second exemplar: `TopicProfileResolver.isLaunchable`
+
+Swept caches that could retain a FAILURE indefinitely. `launchabilityCache` looked like the shape —
+caching whether a framework can launch. It is the opposite:
+
+```js
+const cached = this.launchabilityCache.get(framework);
+if (cached && Date.now() - cached.at < LAUNCHABILITY_TTL_MS) return cached.ok;   // TTL'd
+let ok = true;                                                                    // fails toward YES
+try { … fs.existsSync(bin) … } catch { /* deliberate fail-OPEN */ }
+```
+
+Its own comment states the discipline better than the audit did:
+
+> *"Fail toward 'launchable' whenever the check cannot actually verify absence: this check is a cheap
+> SIGNAL whose only job is to catch a provably-missing binary… a pin must never be re-routed on the
+> checker's own blind spot. Genuinely broken CLIs are the §10.4 breaker's authority."*
+
+Three correct properties at once: a **TTL** so no verdict is permanent; **fail-open** because the
+consequential direction is "don't reroute"; and an explicit **hand-off of authority** to the component
+that can actually decide. It is signal-vs-authority and don't-assert-what-you-didn't-measure, applied
+together, deliberately.
+
+**Note the contrast with instance #3** (`IntelligenceRouter.available`, which also concerns whether a
+framework is usable): one asks the same question and answers it honestly; the other answers it with a
+name it cannot support. **They are in the same codebase, about the same subject.** That is the clearest
+possible evidence for the propagation reading — the knowledge exists here; it is unevenly applied.
+
+### Convergence status
+
+| angle | subject | new instances |
+|---|---|---|
+| 1-3 (round 5) | cause strings, fixed literals, user templates | 0 *(loose definition)* |
+| 4 | computed availability booleans | **1** (#3) |
+| 5 | health/status field naming | 0 — exemplar #1 found |
+| 6 | cause asserted by omission | **1** (#4) |
+| 7 | cross-boundary assertion | 0 — **definition tightened here** |
+| 8 | memoised/cached failures | 0 — exemplar #2 found; OD-6 bounded as singleton |
+
+**Two consecutive clean angles (7, 8) under the TIGHTENED definition.** The contract asks for a clean
+re-sweep before declaring convergence, and angles 1-5 ran under the looser definition — they would not
+reliably have recognised #3 or #4. **So: approaching convergence, not converged.** The honest next step
+is re-running angles 1-3 with the tightened definition ("a boolean whose unknown collapses to the
+CONSEQUENTIAL value"), not declaring done on two clean rounds.
+
+---
+
+## ASSERTS-UNMEASURED-STATE — sweep CONVERGED (this class, this surface)
+
+Angles 1-3 were re-run under the tightened definition rather than trusting their original clean
+results, because they had been run under the looser one and would not reliably have caught #3 or #4.
+
+| angle | subject | result under the TIGHTENED definition |
+|---|---|---|
+| 1 (re-run) | a stated cause that DRIVES a decision | **0** — every `reason:` sits in an audit call carrying the measured evidence beside it (`not-owner` + `observedStatus`, `stale-epoch` + `observed`/`sent`, `cas-lost` + `casReason`) |
+| 2 (re-run) | fixed status literals with consequence | **0** — all reason-carrying refusals are measured conditions; the one legacy fail-open (`conversationBindGate`) is a deliberate staged migration: scoped to the legacy path, time-bounded by a deploy-stamp grace window, and instrumented with a straggler attention item |
+| 3 (re-run) | defaults that DISABLE rather than label | **0** — `SwapAntiThrash` defaults `enabled: true, dryRun: true`; a brake defaulting ON and OBSERVE-ONLY is the safe direction |
+| 4 | computed availability booleans | **1** — instance #3 |
+| 5 | health/status field naming | 0 — exemplar #1 |
+| 6 | cause asserted by omission | **1** — instance #4 |
+| 7 | cross-boundary assertion | 0 — definition tightened here |
+| 8 | memoised / cached failures | 0 — exemplar #2; OD-6 bounded as a singleton |
+
+**Final round: 0 new findings, across a re-run of every prior angle plus two new ones, under one
+consistent definition.** The sweep is CONVERGED for this class over the agent-observable source surface.
+
+### Dispositions — every instance closed
+
+| # | instance | disposition |
+|---|---|---|
+| 1 | `SessionManager.currentMemoryPressure` asserted `critical` from raw free pages | **fixed** — PR #1850, shipped |
+| 2 | `LlmCircuitBreaker` hardcoded `provider rate-limited` for all trip causes | **fixed** — PR #1851, shipped 1.3.1125 |
+| 3 | `IntelligenceRouter.available` measures binary presence, read as reachability | **deferred:OD-5** — propagate the three-valued exemplar |
+| 4 | `CapabilityMapper` reports capability ABSENT when it cannot read config (7 checks) | **deferred:OD-7** (new, below) |
+| 5 | `anthropic-interactive-pool` memoised rejected `startPromise` | **deferred:OD-6** — singleton, one-site fix |
+
+### OD-7 — `CapabilityMapper` should distinguish "absent" from "cannot tell"
+
+**Status:** OPEN. Seven checks return `false` on both a missing config file and a JSON parse failure.
+Proved against fixture configs: a genuinely-enabled capability with a truncated config reports ABSENT.
+Feeds `GET /capabilities`, the surface the constitution names as the source of truth with the
+instruction *"never hallucinate about missing capabilities — verify first"*. **An agent obeying that
+rule perfectly is handed a confident false negative.** Same three-valued fix as OD-5.
+
+### What the convergence actually licenses
+
+**Only this:** no further instance of this class is findable by SOURCE-PATTERN search over `src/`.
+It does NOT license "the codebase no longer asserts unmeasured state" — three of the five instances
+were found by watching RUNTIME behaviour diverge from a surface's claim (#2 from a log line, #3 from a
+health endpoint contradicting live calls, #5 from an absence of expected log output). **A pattern sweep
+cannot find those; only using the system can.** That asymmetry is the sweep's honest limit and belongs
+in the next phase's method, not in a footnote.
+
+---
+
+# ⚠️ RETRACTION — OD-6's CAUSAL claim was wrong. The instance stands only as a LATENT risk.
+
+**Measured 2026-08-04 16:35Z.** I published OD-6 as *"CONFIRMED FROM SOURCE — a memoised rejected start
+permanently disables the pool"* and stated it accounted for every observation "with nothing left over".
+**The pool then recovered on its own**, without a restart:
+
+- pool sessions spawned at **15:45:39Z** and **15:52Z** — after I declared the door permanently dead
+- server log, 15:45:39Z: `[subscription-path] serving internal intelligence via subscription-pool`
+- current interactive-pool metrics: **25 calls, 1 error, 24 successes**
+
+**A poisoned `startPromise` cannot recover without a process restart. There was no restart. Therefore
+it was not poisoned.**
+
+## What was actually happening
+
+`ensureStarted()` is **lazy** — the pool starts on FIRST ALLOCATE, not at boot. Between the 15:11
+restart and 15:45 nothing had genuinely invoked it, so it had never started. That is not a fault; it is
+the documented design (*"Start the pool lazily on first allocate"*). The handful of earlier errors were
+calls arriving before or during that first start, not evidence of a permanent condition.
+
+## What survives, and what does not
+
+| claim | status |
+|---|---|
+| `ensureStarted` has no rejection handling and no reset (`if (!startPromise) startPromise = pool.start()`) | **TRUE** — verified from source, unchanged |
+| A rejection there WOULD be permanent for the process lifetime | **TRUE** by reading — the code has no catch |
+| A rejection HAD occurred and was the cause of the empty pool | **RETRACTED — false** |
+| `start()`'s `Promise.all` means one slow spawn rejects the whole start | **TRUE** — but latent, not observed firing |
+
+**OD-6 is re-classified from a confirmed active defect to a LATENT RISK**: a real robustness gap that
+has not been observed triggering. Its severity argument (silent, permanent, load-bearing) is a
+consequence of the code shape and still holds *if* it fires. Its evidence of *having* fired is
+withdrawn.
+
+## The failure, named plainly
+
+**I asserted a cause I inferred rather than measured — inside the audit whose entire subject is
+components that assert what they did not measure.** Every ingredient of my own catalogue is present:
+
+- I had a mechanism that *could* explain the observation, and stopped looking (method lesson #23's shape).
+- I mistook "accounts for every observation" for "is the only thing that accounts for every
+  observation" — the alternative (lazy start, not yet invoked) explains the same evidence and is
+  simpler.
+- **I did not apply the absence rule** — *before believing something is broken, prove the check could
+  have shown otherwise.* A pool that has never been asked to start looks exactly like a pool that
+  failed to start. **That distinction is literally the three-kinds-of-zero finding, and I walked past
+  it in my own sweep.**
+
+**New method lesson #24: "confirmed from source" is not confirmation of CAUSE.** Reading a code path
+that *could* produce an outcome proves the path exists, never that it ran. Confirming a mechanism and
+confirming a diagnosis are different acts, and the word "confirmed" hides the gap. A causal claim needs
+a runtime observation of that path being taken — which for OD-6 would be a logged rejection, and there
+was none.
+
+## Consequence for the close condition
+
+The close condition is now ALSO satisfied through the POOL, not only the primary door: **24 successful
+interactive-pool calls**. The stricter original reading of the Observer's condition — *one real
+judgment call succeeding live through the pool* — is met.
+
+---
+
+## Exemplar #3, found in a live log line — and a real gap underneath it
+
+**2026-08-04 16:31Z**, observed while checking post-recovery health:
+
+```
+[orphaned-work-sentinel] enumeration FAILED — stranded-work count is UNKNOWN, not zero:
+worktree enumeration failed for repo "/Users/…/agents/echo":
+Command failed: git -C /Users/…/agents/echo worktree list --porcelain
+fatal: not a git repository
+```
+
+### Why it is an exemplar
+
+> **"stranded-work count is UNKNOWN, not zero"**
+
+That clause, in a WARN line, is the entire three-kinds-of-zero discipline stated in six words by a
+component that could trivially have logged `stranded: 0` and moved on. It distinguishes *I looked and
+found none* from *I could not look* **at the moment of failure**, in the surface a human actually
+reads. The other two exemplars implement the discipline in code; this one **speaks** it.
+
+### The real gap underneath
+
+The probe is wrong for this agent's shape: it runs `git worktree list` against the **agent home**,
+which is not a git repository — the worktrees live *under* it, each its own checkout, and the home is
+plain filesystem. So on this agent the sentinel is **structurally unable to enumerate stranded work**,
+permanently, not transiently.
+
+**And that is exactly why the honest reporting matters.** A component that reported `0` here would
+produce a standing false all-clear on stranded work — the failure mode being audited — indefinitely,
+with nothing to notice it. Instead the defect is loud on every run.
+
+**Recorded as OD-8** (open): the orphaned-work sentinel cannot enumerate on an agent whose home is not
+a repo; it should enumerate the worktree roots beneath the home, or declare the agent out of scope.
+Its current behaviour is *correct-but-blind* — the safest possible failure, and still a blind spot.
+
+### Score after this
+
+Three exemplars, all in-repo, all pre-existing: `DoorwayRegistryReader` (three-valued reachability),
+`TopicProfileResolver.isLaunchable` (TTL + fail-open + authority hand-off), and now
+`orphaned-work-sentinel` (explicit UNKNOWN-not-zero). **The discipline is not missing from this
+codebase; it is unevenly applied.** That is the single most actionable conclusion of the sweep, and it
+is now supported by three independent examples rather than one.
+
+---
+
+## OD-9 — the swap budget cannot cover the pool's worst case (my own fix is partial BY CONSTRUCTION)
+
+**Correcting my own report.** After applying the sanctioned per-framework swap timeout I reported
+*"2 swap timeouts before the restart, 0 after"*. That was true when measured (~15:20). **It is no longer
+true: two more occurred, at 15:52:08Z and 16:31:19Z.** Re-measuring a claim I had already published is
+what surfaced it.
+
+### The arithmetic
+
+| budget | value |
+|---|---|
+| pool `allocateTimeoutMs` | 60,000 ms |
+| pool `maxPromptWaitSeconds` | 120 s |
+| **pool worst case (allocate + prompt)** | **180,000 ms** |
+| swap budget I set | 120,000 ms |
+| `DEFAULT_SWAP_ATTEMPT_TIMEOUT_MAX_MS` (**hard clamp**) | **120,000 ms** |
+
+**The swap budget's maximum permitted value is 120 s. The pool's own worst case is 180 s.** A
+legitimately slow call — one that waits for an allocation and then uses its full prompt budget — cannot
+fit inside the largest swap budget the router allows.
+
+**So the fix is partial by construction, not by my choice of value.** I chose the clamp maximum; there
+was no higher value available. In practice most calls fit comfortably (2 timeouts in ~100 minutes
+against hundreds of successful calls), but the tail is structurally unreachable through this knob.
+
+### Why this is a finding rather than a tuning note
+
+Two independently-set budgets govern one operation, and **the ceiling on the outer one is lower than
+the floor-plus-worst-case of the inner one.** Neither component is wrong on its own terms: the pool's
+120 s prompt wait is reasonable for a TUI, and a 120 s clamp on a swap attempt is reasonable
+backpressure. The defect is that **nothing reconciles them**, so the composition has a permanently
+unreachable region that neither owner can see from their side.
+
+**This is the cross-store-coherence class applied to timeouts** — two stores of the same truth
+("how long may this take?") with no declared agreement invariant. The `Cross-Store Coherence Is an
+Invariant` standard names exactly this shape for data; it has no timeout analogue.
+
+### Proposed resolution (for Phase B, not built)
+
+Either raise the clamp above the composed worst case, or lower the pool's composed worst case below the
+clamp, **and add an assertion that the two cannot drift apart again** — the reconciliation is the
+deliverable, not the number.
+
+### Honesty note
+
+I reported "0 after" from a single measurement taken minutes after the change, during a window when the
+pool was not even being invoked. **That is method lesson #22 again — the absence check applies hardest
+to a claim you have already published**, because nobody re-checks it for you.
+
+---
+
+## Exemplar #4 — found while monitoring, and it has been right for two days
+
+`[failover-runner] failover-check-errored`, **51 occurrences since 2026-08-02T23:37Z**:
+
+```json
+{"provenStage":3,"commitSha":"package:1.3.1125",
+ "error":"sessionPool failover check did not run to completion
+          (evidence: no-source: vitest+tests/e2e/sessionpool-failover-two-node.test.ts
+           not resolvable (checkout absent))"}
+```
+
+The failover check verifies itself by **running a test**. On this agent there is no source checkout —
+it is an npm install, not a repo — so the test is unresolvable.
+
+**It reports `did not run to completion`, carries the evidence string, and names the precise reason.**
+It does not report "passed". It does not report "failed". It reports that it could not tell, with the
+receipt.
+
+**Two exemplars surfaced in a single ten-minute monitoring pass**, both of the same shape:
+
+| component | what it says instead of a verdict |
+|---|---|
+| `orphaned-work-sentinel` | *"stranded-work count is UNKNOWN, not zero"* |
+| `failover-runner` | *"did not run to completion (evidence: no-source: … checkout absent)"* |
+
+### What four exemplars does to the conclusion
+
+The sweep's actionable finding was *"the discipline is not missing from this codebase; it is unevenly
+applied."* With four independent examples — two in code, two speaking it in live logs — that is no
+longer an inference from a small sample. **The honest framing is now the reverse of where this audit
+started:** the codebase's DEFAULT is closer to honest-uncertainty than to false-certainty, and the five
+instances are the exceptions, not the rule.
+
+That is a materially different message for Phase B than "we have a systemic honesty problem". The work
+is **propagation to a known minority of sites**, and every one of them has an in-repo pattern to copy.
+
+⚠️ **And note where both exemplars were found: in LOG OUTPUT during monitoring, not by searching source.**
+Neither was reachable by the pattern sweep — they emit only when the failure condition occurs. This is
+the sweep's declared blind spot (runtime-only evidence) producing its most useful results twice more,
+which is the strongest argument yet that **the next phase's method should be "run the system and read
+what it says", not "search the code".**
