@@ -85,3 +85,30 @@ A remedy proposed without being run at the real failing size is a guess. In this
 same throwaway target at the real payload size, six minutes apart. **The contrasting case — a fix built,
 tested, reviewed, published and deployed without ever observing the original failure stop — produced no
 demonstrated behaviour change and a public release note that had to be retracted.**
+
+
+## The finding that mattered most, measured on the auditor
+
+**Four documented lessons were repeated within the same session** — the `timeout` command that does not
+exist on this platform, verifying an edit landed, full-repo scan modes skipping untracked files, and
+relative paths in `node -e`. Each was written down, in this auditor's own journal, before being repeated.
+
+**One lesson was never repeated: journal timestamps.** Seven-plus were fabricated early in the session.
+The moment it stopped being a rule and became a ten-line script that stamps the time itself, it stopped
+happening — permanently, with no further effort.
+
+> **Every lesson that stayed prose got repeated. The one that became a mechanism did not.**
+
+That is this project's founding principle — *Structure > Willpower* — measured on the auditor over seven
+hours, in a controlled way nobody designed.
+
+**Acting on it:** an injection harness (held in the agent workspace pending the proper instar-dev route into `scripts/`) mechanises the five checks that were being forgotten:
+
+1. baseline must be exit 0 (else the failure cannot be attributed)
+2. the A edit must be **verified to have landed** (a no-op edit looks exactly like a working guard)
+3. A must fail **and** B must pass
+4. harness errors (`no tests`, module-not-found, syntax) are distinguished from real verdicts
+5. the tree is restored and the restoration is **asserted**
+
+Self-tested against a guard already verified by hand; it reproduced the verdict and enforced every check.
+**A future auditor should not have to re-earn these twelve mistakes.**
