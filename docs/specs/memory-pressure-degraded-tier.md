@@ -264,3 +264,88 @@ section exists rather than a silent edit to the numbers above.
 Should DEGRADED also apply in `auto` mode? In `auto`, an elevated tier degrades to the headless lane
 rather than throwing — arguably already a graceful degradation, so DEGRADED may be redundant there.
 **This spec proposes force-mode only**, and flags the question rather than deciding it.
+
+---
+
+## Update 20:40Z — the squall recurred, and I must correct constraint 3's implementability claim
+
+### The recurrence, on the record
+
+The 19:25Z section above called this "a squall, not a repair" and predicted the next busy period would
+restart the compounding. **It restarted 12 minutes later.** Refusals resumed at **19:30:20Z** after a
+clean 25-minute gap (19:05:00Z → 19:30:20Z, which is exactly where the stand-down measurement sits) and
+ran continuously to **20:05:00Z**. The prediction is confirmed rather than argued.
+
+Full-day shape, from the job history: **173 memory-tier refusals across 15 job slugs**, 08:30Z–20:00Z.
+
+### ⚠️ CORRECTION — constraint 3 is NOT implementable as written
+
+The Proposed-change section states the DEGRADED constraints are *"implementable as written"* with
+*"identifiers verified against the tree."* **For constraint 3 (defer low-priority) that is wrong, and
+the error is mine.**
+
+```js
+evaluateRerouteGate(spawnName) { … }          // the whole signature
+const gate = this.evaluateRerouteGate(options.name);   // the only call site
+```
+
+**The gate receives a name string. It has no priority parameter and consults none.** `deferrable` and
+`JobDefinition.priority` genuinely exist — I verified that — but *existing on a type is not the same as
+arriving at the decision point*. As shipped, the gate cannot distinguish a `critical` job from
+background work.
+
+**Measured consequence:** `health-check` is declared `priority: critical` and was refused **61 of 125
+attempts (49%)** today — refused identically to `low`-priority work, because the tier is all the gate
+can see.
+
+**Mitigation, so the correction is not just a complaint:** `options` is already in scope at the call
+site. Plumbing is small — pass the spawn options (or the resolved priority) instead of only the name.
+But **small is not "already there,"** and this spec claimed the latter. Constraint 3 therefore carries a
+plumbing prerequisite that must be built with it, not assumed.
+
+### The method lesson, because it lands on this phase's own distinction
+
+Phase A's founding decision is a **three-rung verdict — `exists` / `wired` / `effective` — and only
+`effective` counts.** I checked rung 1 (the identifiers exist), wrote rung 2 (they are wired to the
+consumer), and shipped it as verified. **In my own spec, on the exact distinction this phase invented.**
+
+> **Verifying that an identifier EXISTS is not verifying that its VALUE REACHES the decision point.**
+> For any claim of the form "field X already carries this," the check is a call-site read, not a
+> definition read.
+
+### New design input: DEGRADED must protect supervision, not shed it
+
+Measured today, full population enumerated (42 job manifests + the registered hook table):
+
+- **Of 23 scheduled supervisory jobs, 21 are gated on a session spawn; 2 are not.**
+- The 2 spawn-free ones (`delivery-canary`, `quota-groundtruth-check`) were the **only jobs of any kind
+  that survived** — 66/66, zero refused, including runs at the exact 20:00:00Z tick where six
+  spawn-gated jobs were refused.
+- **All five `overseer-*` jobs — the tier whose only purpose is noticing that the other supervisors
+  have stopped — are on the gated side, with no spawn-free member.**
+
+So a refusal does not merely delay work: **it switches off ~91% of the scheduled supervisory layer and
+100% of the tier that would notice.** That is why a 5-hour outage of the operator's own hourly
+re-alignment beat (refused 16:00Z–20:00Z, restored by hand 20:03Z) produced no alert from anywhere —
+every mechanism positioned to see it shared its failure mode.
+
+**Consequence for the design, and it inverts the usual instinct:** ordinary load-shedding sheds
+monitoring first, because monitoring looks optional. **DEGRADED must do the opposite** — shed productive
+work and keep supervision running, since supervision is both the cheapest class and the one whose
+absence makes every other failure silent.
+
+**In-tree exemplar for how:** promise capture already exists on two paths — the `commitment-detection`
+job (refused 65× today) and the `action-claim` **Stop hook** (observed firing 20:21Z / 20:23Z
+mid-outage). Commitments were registered at 19:37–19:51Z while every detector tick was refused. The
+hook path carried the load. **That is the shape: put each supervisor's load-bearing step on a path that
+needs no spawn, and leave its judgment steps on the job.**
+
+### Scope note on the machine that has headroom
+
+The idle laptop is online with **zero active sessions** while the Mini refuses jobs — so "run the
+supervisors over there" is the obvious no-code mitigation. **One signal says it is currently
+unavailable:** `scheduler.enabled` reports `on-confirmed` on the Mini and `missing` / `not-registered`
+on the laptop (and `missing` appears on only 2 of 90 laptop guards, 0 of 90 Mini guards, so it
+discriminates). **Recorded as a lead, not a verdict** — two attempts at independent confirmation were
+inconclusive because `?scope=pool` is silently ignored on `/health`, so I cannot yet distinguish "the
+laptop has no runs" from "the parameter was dropped."
