@@ -203,3 +203,32 @@ The safe direction here is NOT `false`. For an availability claim, the honest de
 the same three-valued shape `DoorwayRegistryReader` already implements.
 
 **Sweep status after 6 angles: 4 confirmed instances, 1 exemplar, NOT converged.**
+
+### Angle 7 — cross-boundary assertion: 0 new instances (and the near-miss is instructive)
+
+Swept callers that convert a null/undefined callee result into a definite state
+(`?? false`, `|| 'unavailable'`). 14 candidates, **0 instances**. They split three ways:
+
+1. **Config defaults** — `opts.escalationEnabled ?? false`, `config?.alwaysRestartImmediately ?? false`.
+   An absent flag defaulting to off is not an assertion about the world.
+2. **Documented fail-closed** — `UpdateGate`'s `restartSafetyResolver?.(session) ?? false` (no resolver
+   ⇒ restart NOT safe), `MeshRpc`'s `authorizeMandateDeliver?.(…) ?? false` (no authorizer ⇒ not
+   authorized). Refusing in the absence of a positive answer is the correct direction.
+3. **One near-miss worth naming.** `MultiMachineCoordinator.preferredIsHealthy` returns
+   `leaseCoordinator?.isHolderHealthy(m) ?? false` — "peer unhealthy" when there is no coordinator to
+   ask, which *reads* like instance #4's shape. It is not. `LeaseCoordinator.isHolderHealthy`'s own
+   contract: *"a non-preferred machine defers to its preferred peer ONLY while this is true, so a
+   frozen/down/released preferred never strands coverage."* `false` means **stop deferring and take
+   over** — the coverage-preserving direction.
+
+**The discriminator this angle produced:** an unmeasured-state assertion is only a defect when the
+asserted value is the one that CAUSES action or inaction wrongly. `false` meaning "refuse" is safe;
+`false` meaning "this capability is absent" (instance #4) or `true` meaning "this door works"
+(instance #3) is not. **The class is not "a boolean where unknown is possible" — it is "a boolean whose
+unknown collapses to the CONSEQUENTIAL value."** That is a materially tighter definition than the one
+Round 5 swept with, and it explains why Round 5's three angles found nothing: they searched for the
+shape, not for the consequence.
+
+**Sweep status after 7 angles: 4 confirmed instances, 1 exemplar, 1 tightened definition. NOT
+converged** — the contract needs a clean round with the *new* definition, since angles 1-5 were run
+with the looser one and would not reliably have recognised instances #3 or #4.
