@@ -14,9 +14,38 @@ rather than the 38-route sample used earlier.
 | …of those, reporting only a **tick/heartbeat** | 20 | — |
 | …of those, exposing an **act / would-act counter** | **1** | **1.1% of all guards** |
 
-### The finding, stated plainly
+### The finding, stated plainly — CORRECTED 2026-08-04 17:10Z, and it is worse than first published
 
-> **Exactly ONE guard in ninety can answer the question "did you ever actually act?"**
+> **NOT ONE guard in ninety can answer the question "did you ever actually act?"**
+
+**The originally published figure was "exactly ONE". That was wrong, in the conservative direction.**
+It came from a key-name heuristic (`count|fired|acted|would|attempts|blocked|caught`) matching
+`jobCount` — which is a count of JOBS THAT EXIST, not of actions taken.
+
+Re-verified by a different method: enumerating every DISTINCT key present in any guard's runtime block
+across the whole population, and reading them.
+
+| runtime key | guards exposing it | what it tells you |
+|---|---|---|
+| `enabled` | 26 | a config flag — not evidence of anything happening |
+| `lastTickAt` | 20 | liveness — "I ran" |
+| `tickAgeMs` | 19 | liveness |
+| `stale` | 16 | liveness |
+| `dryRun` | 13 | a mode flag |
+| `verdictUnknown` / `verdictUnknownReason` | 1 | one guard, and it is a state not a count |
+| `jobCount` / `pausedJobCount` | 1 | the scheduler's inventory — not its actions |
+
+**There is no `fired`, no `caught`, no `blocked`, no `wouldAct`, no `didAct` — anywhere in the
+population.** Every key present answers *am I alive?* or *how am I configured?*. **None answers *what
+have I done?***
+
+**So the corrected figure is ZERO of 90, not 1 of 90.** The argument for the counter schema is
+therefore stronger than published, not weaker: this is not a sparsely-instrumented population, it is an
+**uninstrumented** one for the purpose the audit cares about.
+
+*Method note: this was caught by re-verifying a published headline with a DIFFERENT method than the one
+that produced it. The first method's flaw — a regex matching a plausible-looking key name — is exactly
+the class this audit catalogues, committed by the auditor, and it survived one publication cycle.*
 
 Everything else can answer at most *"am I alive?"* — and 69% cannot answer even that.
 
