@@ -112,3 +112,28 @@ hours, in a controlled way nobody designed.
 
 Self-tested against a guard already verified by hand; it reproduced the verdict and enforced every check.
 **A future auditor should not have to re-earn these twelve mistakes.**
+
+
+## The near-miss that matters most: a control you do not need for the story you want
+
+Fifteen of the auditor's false results would have **wrongly condemned a working guard**. The sixteenth
+would have **wrongly announced a discovery**, and that is a materially more attractive error to make.
+
+A pre-publish gate demands fresh contract-test evidence when a messaging adapter changes. Verified facts:
+it watches four directories, **two of which do not exist**; the largest adapter (≈5,800 lines, the
+primary messaging path) sits **outside every watched path**; that file **has changed since the last
+release tag**; the gate is **silent**.
+
+After 51 guards with zero defects, "the 52nd is broken" writes itself.
+
+**The control refused to support it.** Committing a change *inside* a watched directory produced the same
+silence. So the gate's silence carries no information about path coverage — it evidently requires more
+than a changed path, and **a guard you cannot make fire cannot be said to fail to fire.**
+
+> **The path observation is a fact about the code. The defect conclusion is not, and only a control
+> nobody would have asked for separated them.**
+
+**Rule: run the control hardest when the finding is one you want.** A negative control protects a working
+guard from a false accusation; it protects the *auditor* from a false discovery. The second failure mode
+is rarer, more consequential, and far more tempting — an audit that finds nothing is often correct, and
+an audit that finds something is always more interesting.
