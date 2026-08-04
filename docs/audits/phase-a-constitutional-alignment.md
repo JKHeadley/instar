@@ -288,3 +288,40 @@ answer "did you ever actually act?"** — see the Round 6 instrumentation measur
 **Status:** OPEN (new, Round 6). `IntelligenceRouter`'s `available: boolean` measures *binary presence*
 and is read as *reachability*; `DoorwayRegistryReader` already implements the correct three-valued
 shape (`true` / `false` / `null` for not-probed). **This is a propagation decision, not a design one.**
+
+---
+
+## OD-6 — Why does the interactive pool hold zero sessions? (bounded unknown, 2026-08-04 15:45Z)
+
+**Status:** OPEN. Blocks the Phase A close condition (one real judgment call succeeding through the
+pool). Recorded as a bounded unknown rather than a guess.
+
+**What is established:**
+
+- Gating calls now genuinely REACH the pool: `MessagingToneGate` shows 4 calls / 4 errors against
+  `claude-code / interactive-pool`, with `shed: 0` — real errors, not capacity sheds.
+- The swap-budget fault is resolved: **2** `swap-attempt-timeout` events before the 15:11 restart,
+  **0** after.
+- The pool holds **0 tmux sessions**, and **no spawn attempt is logged at all** since that restart.
+
+**Hypotheses ELIMINATED (each checked, not assumed):**
+
+| hypothesis | why it is not the cause |
+|---|---|
+| the memory gate is starving pool spawns | `pool.spawnOne()` calls `tmux new-session` **directly**; it never passes through `evaluateRerouteGate`. The gate IS refusing *job* reroutes ("host memory pressure is high") — a real, separate fault, and option C's subject — but not this one. |
+| the host-wide spawn cap is shedding them | cap 8, 1 live, 7 available, `saturated: false`; and the tone-gate rows show `shed: 0`. |
+| a Claude REPL cannot reach ready right now | spawned one by hand: **ready in ~5 s**. |
+| the pool's working directory is missing | `.instar/intelligence-pool` exists; a tmux spawn with that `-c` succeeds. |
+
+**What that leaves:** something fails between the router selecting the pool provider and
+`pool.start()` / `spawnOne()` being reached — because a spawn attempt would log, and none does. The
+adapter's `ensureStarted()` is lazy and memoised (`if (!startPromise) startPromise = pool.start()`), so
+a `startPromise` that rejected once would be **permanently rejected for the process lifetime** without
+re-attempting. That is the leading candidate and it is testable, but it was NOT confirmed this window
+and is therefore recorded as a hypothesis, not a finding.
+
+**Why this is recorded rather than pursued further:** four hypotheses were eliminated with direct
+evidence and the fifth needs either instrumentation or a code read deeper than the remaining budget
+supports. Continuing to guess would produce exactly the plausible-but-unverified story this audit
+exists to prevent. **The serial-masking lesson applies: this is the fifth blocker in the chain, and
+each previous one was invisible until its predecessor was fixed.**
