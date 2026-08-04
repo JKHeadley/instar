@@ -40,6 +40,45 @@ every job/A2A spawn is refused.
 **The machine is not in trouble. The kernel says WARN, not critical, and the CPU is idle. We are
 refusing all scheduled work anyway.**
 
+## The metric is not WRONG — it is stricter than macOS's headline, and that is defensible
+
+Worth stating explicitly, because the tempting (and wrong) conclusion is *"the June fix was incomplete,
+go fix the metric again."* It was not, and the numbers reconcile exactly.
+
+Measured 2026-08-04 16:55Z:
+
+| source | figure |
+|---|---|
+| `instar readSystemMemoryPressure()` | **76.6% used** · free 3.53 GB / total 15.11 GB |
+| macOS `memory_pressure` headline | **"System-wide memory free percentage: 49%"** |
+| kernel `kern.memorystatus_vm_pressure_level` | **2 (WARN)** |
+
+Raw pages: free 9,407 · active 243,728 · inactive 222,675 · wired 148,597 · purgeable 12 ·
+**compressor 365,661**.
+
+Our formula is `available = free + inactive + purgeable` over
+`total = free + active + inactive + wired + compressor`, giving 76.6% used — and it **reproduces
+exactly**, so the implementation is doing what it says. The divergence from macOS's 49% is almost
+entirely the **compressor's 5.6 GB**, which our formula counts as used (it genuinely occupies physical
+RAM) and macOS's headline treats as largely reclaimable.
+
+**Both definitions are defensible. They answer different questions.** Ours is the conservative one.
+
+### Why this strengthens the case for DEGRADED rather than a metric change
+
+Three sources disagree about severity, and the one with the most authoritative view — **the kernel** —
+says **WARN, not critical**. A binary gate forced to pick one number will be wrong in one direction or
+the other at exactly the moment it matters.
+
+**The correct response to two defensible metrics disagreeing about severity is a graduated response,
+not a re-tuned threshold and not a swapped metric.** DEGRADED is precisely that: it lets the
+conservative reading trigger caution without triggering refusal, and reserves refusal for the level
+where all three sources would agree.
+
+**This is also why the spec does not touch the thresholds.** Changing 75 to 85 would silence the symptom
+and lose the conservative signal entirely — the signal is *correct*, it is the *response* that is too
+blunt.
+
 ## The reading is VOLATILE, and the gate has no hysteresis
 
 Measured 2026-08-04 16:50Z, sampling `usedPercent` every ~6 s:
