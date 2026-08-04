@@ -5396,3 +5396,1082 @@ recovery hour.
 - Do not enroll the second codex account.
 - Do not re-enable peerExecution or the 3 load-bearing gaps unilaterally.
 - Genuine builds are Phase B; Phase A records, it does not fix.
+
+
+## 17:06:03Z — DURABILITY CONFIRMED — all Phase A work is on the remote
+
+Verified via the GitHub API rather than local refs, because the local remote-tracking refs looked
+MISSING and the honest first move was to check with an independent source rather than raise an alarm.
+
+**They were missing for a benign reason:** this worktree's fetch refspec is
+`+refs/heads/main:refs/remotes/origin/main` — it only ever fetches main, so no other branch appears as
+a local tracking ref. Nothing was lost. (Method lesson #22 applied correctly this time: verify before
+you alarm. Contrast with the pool incident five hours ago, where I did not.)
+
+**Confirmed on the remote:**
+
+| branch | head | contents |
+|---|---|---|
+| `main` | `ae526f036` | PRs #1851 + #1852 merged, released as 1.3.1125 |
+| `echo/memory-pressure-metric-sibling` | `bdd58c659` | the earlier audit rounds + Phase A close |
+| `audit/phase-a-rounds-7-8` | `aa2fee307` | rounds 5-8, the retraction, 9 open decisions, the option C spec, and ALL the evidence |
+
+`docs/audits/phase-a/` on the remote: A0-instruments (58 KB), INTERIM-SYNTHESIS (17 KB),
+VERDICT-LEDGER (9.7 KB), level2-nodes (23 KB), README (3 KB), **journal.md (333 KB)**, plus 11 journal
+files and the tranche1 subdirectory.
+
+**So the Phase A work now survives the loss of this agent home, this machine, and this session.** That
+was the plan's requirement — status evidence-derived rather than asserted — and until an hour ago it
+was not met for anything except the two summaries.
+
+
+## 17:54:38Z — PRIMARY CODEX CREDENTIAL VANISHED — reported, NOT touched
+
+## Facts, metadata only (I deliberately did not read any credential contents)
+
+| time | observation |
+|---|---|
+| 16:08:24Z | `~/.codex/auth.json` PRESENT, `last_refresh: 2026-08-04T16:08:24Z`; direct probe answered `turn.completed` with real usage |
+| 16:36:07Z | `~/.codex-followme-sagemindai/auth.json` CREATED (the second account's own config home) |
+| ~17:40Z | `~/.codex/auth.json` **ABSENT** — the file is gone, not corrupt |
+
+**The error signature changed, which is the discriminator:**
+
+- before Justin's sign-in: `refresh_token_invalidated` — a credential PRESENT but rejected
+- now: `Missing bearer or basic authentication in header` — **no credential at all**
+
+Probed the second home with `CODEX_HOME=~/.codex-followme-sagemindai` — it **works** (`turn.completed`,
+answered correctly). So the second account is fine; the primary's credential is simply gone.
+
+**Live consequence:** the recovery reported at 16:24Z has reversed. 1h window: SessionActivitySentinel
+139/139 errors, MessagingToneGate 11/11, MessageSentinel 71/76, **tokensIn 0 across every feature**.
+The 3h window still shows 3.05M tokensIn because it contains the healthy hour.
+
+## What I did NOT do, deliberately
+
+I did not move, copy, restore, or create any credential. Two standing constraints both point the same
+way: the Observer said the second account is theirs to enroll ("do not enroll it yourself"), and the
+credential guidance is **surface-and-stop, never repair** — a wrong guess here loses an account rather
+than fixing one.
+
+## What I did NOT claim
+
+**I do not know that the second-account sign-in caused this.** I know the primary was present at 16:08,
+the second appeared at 16:36, and the primary is absent now. That is a SEQUENCE. Asserting it as a
+CAUSE would be method lesson #24 committed for the third time today, in the same window I published it.
+
+The hypothesis is worth acting on — if the sign-in relocated rather than wrote-alongside, the next
+enrollment repeats it — but it is offered to the operator as a hypothesis, flagged as such.
+
+
+## 17:56:39Z — Tone gate 'not swapping' is DESIGN, not a defect — closing that thread
+
+Chased why `MessagingToneGate` (which is `gating: true`) showed 11/11 codex errors with zero successful
+pool swaps, while `MessageSentinel` — also gating — swapped and succeeded 5/5.
+
+**Answer: the tone gate has its OWN fallback and it engages instead of a provider swap.** It degrades
+to the **deterministic floor**, which is why my outbound messages are still being reviewed throughout
+the codex outage. I had direct evidence of this hours ago and did not connect it: an advisory I
+received read *"Outbound tone review degraded to the deterministic floor (provider-error)"* — that IS
+the mechanism, observed, in my own message path.
+
+So the layering is: codex fails → tone gate falls to its deterministic floor (fast, local, no provider)
+rather than spending a swap. `MessageSentinel` has no such floor, so it swaps to the pool. Both are
+behaving as designed; the difference in their metrics is the difference in their fallback strategy, not
+a fault in either.
+
+**Closing this thread as NOT-A-DEFECT rather than leaving it as an open question**, because an
+unresolved "why didn't this swap?" would read as a suspected fault to the next person, and it isn't
+one. The cost of leaving a resolved question open is that someone re-investigates it.
+
+**Method note worth keeping:** the evidence that answered this was in my own transcript from ~5 hours
+earlier. I searched the code before searching what I had already observed. **Check what you already
+saw before reading source** — the cheapest evidence is the evidence you already collected.
+
+
+## 19:45:44Z — CODEY RE-ENGAGEMENT — delivered + verified; reply blocked by a NAMED fault in his startup
+
+**Order (Observer, 12:35pm):** re-engage Codey via Telegram-as-Justin into his group; concrete task;
+success bar = a VISIBLE REPLY, not a session spawn. Plus a binding signing rule.
+
+## Route analysis — three paths, two dead
+
+| route | state |
+|---|---|
+| Telegram-as-Justin (ordered) | **UNAVAILABLE to me** — I killed my browser MCP at ~11:20Z releasing the seat; the extension reports not-connected and I cannot restore it in-session |
+| Threadline to his corrected fingerprint | **SENT, NOT DELIVERED** — his newest accepted inbound is still 2026-07-30 |
+| His authenticated API | **WORKS** — his config's authToken is corrupt (len 1) but his VAULT copy authenticates (len 36) |
+
+Seat handling: the lease was still recorded to `echo-observer`, **expired 52 min earlier**. I acquired
+it properly, found the browser undriveable, and released it rather than hold a seat I could not use.
+
+## ⭐ THE NAMED FAULT — his relay does not ATTEMPT to connect
+
+| evidence | value |
+|---|---|
+| his `/threadline/health` relay state | `never-connected` |
+| his server uptime | **1d 3h** (booted ~2026-08-03T16:50Z) |
+| relay-mentioning log lines since that boot | **ZERO** |
+| is the log being written? | YES — newest line current, 5.1 MB |
+| his config | `threadline.relayEnabled: true`, correct relayUrl |
+
+**The client is not failing to connect. It is not attempting to.** That is a startup fault, not a
+network or address fault, and a restart is the obvious first test — his to run, not mine.
+
+**Both ends were broken at once**: my stale address (corrected 05:38Z) AND his absent relay. That
+simultaneity is why this went unnoticed for days rather than hours — each end could have been blamed
+on the other.
+
+## Delivered where I could, verified
+
+Filed in HIS attention queue via his authenticated API: `ATT-ECHO-PATHWAY-PR1854-REVIEW`, status OPEN,
+**verified present by reading his queue back** — an ACK, not an assumption.
+
+Two of his own guards refused me first and I complied with both rather than overriding: his tone gate
+blocked the draft as copy-paste-code, and a 2000-char limit rejected the next. **They are his guards.**
+
+## The thing I refused to do
+
+He exposes a route that injects a message as though it arrived from Telegram — which would have made
+him process and reply, hitting the success bar directly. **Using it means forging an inbound message as
+Justin.** I did not. A success bar is not a licence to manufacture the success it measures, and
+"speak only as yourself" does not bend for a target.
+
+## Signing rule adopted
+
+Every send from me now carries `[Echo — Pathway]`. Applied from the confirmation message onward.
+
+
+## 20:22Z — SUPERVISORY LAYER GATED ON THE RESOURCE IT SUPERVISES — the beat died 5h and nothing noticed
+
+**Finding class: a mechanism whose purpose is to catch my failure is itself gated on the most
+fragile resource on the host — so it fails exactly when it is needed, and silently.**
+
+## What happened
+
+The hourly re-alignment beat — the operator's OWN mechanism, built at his explicit 2026-07-28
+direction so his words stay in front of the working session — **was refused five consecutive
+times: 16:00, 17:00, 18:00, 19:00, 20:00Z.** Last success 14:00:24Z. Every refusal:
+`Reroute refused (force-mode): host memory pressure is high`.
+
+The anchor spliced into my run file — re-injected on EVERY turn — therefore carried 14:00Z numbers
+all afternoon. **I found it by reading the anchor's own regeneration timestamp**, not from any alert.
+Restored by hand at 20:03Z (script ran clean in seconds).
+
+## The control that makes this a finding rather than an impression
+
+Two jobs on this host execute a SCRIPT rather than spawning a session. Across the same window:
+
+| execute type | attempts | refused | succeeded |
+|---|---|---|---|
+| `script` (delivery-canary, quota-groundtruth-check) | 66 | **0** | **66** |
+| `agentmd` (15 slugs incl. the beat) | — | **173** | — |
+
+**32 of those 66 script successes fall INSIDE the refusal window**, and both ran at the exact
+20:00:00Z tick where six `agentmd` jobs were refused. Same scheduler, same instant, same host.
+So this is not a saturated machine declining work — it is the SPAWN path refusing while the host
+does other work fine.
+
+**And the beat's load-bearing step needs no session at all** — it is a deterministic script. The
+mechanism carrying the operator's intent is gated on the one resource that fails first, for no
+benefit it uses.
+
+## The supervisory layer, measured
+
+| job | cron | priority | refused | note |
+|---|---|---|---|---|
+| health-check | */5 | **critical** | 61 / 125 (49%) | declared critical, refused half the time |
+| commitment-detection | */5 | high | 65 / 126 | catches promises I make |
+| hourly-realignment | 0 * * * * | high | 6 | the operator's own mechanism |
+| overseer-guardian | 0 */6 | medium | 1 of 2 | *the meta-monitor for silently-failing jobs* |
+
+`overseer-guardian` exists to detect jobs that are "running, healthy, and not silently failing."
+Its last success was **13:00Z — two hours before the outage began**; its next run, inside the
+outage, was refused. **It did not run at any point during the five hours in which 15 job slugs
+were silently failing.** (Its 6-hourly cadence means 2 attempts is EXPECTED in this window — this
+is not starvation, it is a cadence too slow to see an episode of this length.)
+
+## Nothing told me — and the queue was demonstrably alive
+
+Control: the attention queue created **5 items between 15:00Z and 20:10Z**, two of them HIGH. So
+the surface could have shown otherwise. **Not one of the five concerns the job outage.**
+
+Yet the SAME condition DID alarm this morning — HIGH items at 03:49Z ("Twenty of twenty-seven
+scheduled jobs are dead on a memory reading…") and 04:16Z ("The memory fault is on the critical
+path…"). **The alarm fired for the first episode and stayed silent for the second, larger one.**
+
+**Three HIGH items on exactly this subject — 03:49Z, 04:16Z, 07:26Z — are ALL still OPEN.** The
+loop was opened three times this morning and closed zero times.
+
+**Candidate mechanism, NOT asserted:** an already-OPEN item suppressing recurrence (dedupe by
+episode). That is a hypothesis with a plausible shape and I have not read the source. Recording it
+as a lead, not a cause — "confirmed from source is not confirmation of cause" is this window's
+most expensive lesson and I am not repeating it here.
+
+## Direct input to the option C ruling
+
+`evaluateRerouteGate(spawnName)` takes **only a spawn name**. It has no priority parameter and
+consults none. So the gate **structurally cannot distinguish a critical job from a low-priority
+one** — which is why `health-check` at `priority: critical` is refused identically to background
+work.
+
+This matters because option C's design says "defer LOW-PRIORITY work" at the degraded tier. **That
+presupposes a priority-aware gate, and this one is not.** The degraded tier therefore needs the
+priority signal plumbed to the gate as part of the same change, or it will degrade uniformly and
+starve the critical jobs it was meant to protect. This is a design input the architect does not
+currently have.
+
+## Correction recorded against myself
+
+I published to the operator that jobs were refused "bracketed by readings well under the line" —
+implying the gate misfires. **Unsupported, and retracted 25 minutes later.** 165 samples of the
+gate's OWN shipped pressure function over 5.5 min read 64–73 with zero threshold crossings, and
+every job attempt in that same window SUCCEEDED (20:10, 20:15) — perfect agreement with the gate.
+My 61% sample was taken AFTER the 20:05 refusal, during recovery, and I presented it as bracketing
+the event. I had the confirming 78.6% sample from 20:02 in hand and discarded it as stale.
+
+**Fourth contaminated-window error of this window, first to reach the operator.** The new shape:
+earlier ones were a window too WIDE (spanning the outage); this one is a reading too LATE
+(postdating the event). Recency is not authority when the question is about a past instant.
+
+**What survives and is stronger:** the reading swings 79 → 61 in four minutes and the 75% threshold
+sits INSIDE that swing band. The gate is correct at every instant and wrong over time — no dwell,
+no smoothing, re-read fresh per spawn. Each transient crossing costs a full tick of jobs plus a
+decrement of their retry budgets. That is the hysteresis argument, cleanly.
+
+## Open, parked with the architect
+
+Two-tier beat (script keeps the anchor fresh; the agentmd job keeps steps 2–4, which are genuine
+judgment and would be silently dropped by a naive conversion). **Deliberately not built** — it is
+the operator's scaffolding and I said so before touching it.
+
+
+## 20:26Z — ATTENTION PATCH SILENTLY DISCARDS CLOSURE EVIDENCE — found by doing it to myself
+
+**I closed a HIGH attention item with an evidence paragraph attached. The status changed. The
+evidence was silently dropped. I got a 200.**
+
+## What I did
+
+Resolved `ATT-ECHO-PHASEA-MEMORY-METRIC-SIBLING` with `{"status":"resolved","resolution":"<~900
+chars of tier-signature evidence>"}`. Response: HTTP 200, object returned with `status: DONE`.
+I recorded in this journal that I had closed it "with evidence."
+
+**Read back: `resolution` is `None`. The summary is unchanged. The item is DONE with no record of
+why.** The 200 was for the status change alone.
+
+## Controls — the behaviour is exact, not a fluke
+
+| probe | result |
+|---|---|
+| `{"status":"open","zzz_not_a_field":"…"}` | **200** — unknown key silently dropped, 11 keys returned |
+| `{"status":"banana"}` | **400** — `"status" must be one of: OPEN, ACKNOWLEDGED, IN_PROGRESS, DONE, WONT_DO` |
+| `{"resolution":"…"}` alone | **400** — but the error names the MISSING status, never the unknown key |
+
+## The finding
+
+`PATCH /attention/:id` **validates the one field it knows and silently discards every field it does
+not.** Control 2 proves validation exists and is careful — the error enumerates every legal value
+and its aliases. So this is not a permissive endpoint that never checks; it is a *selectively*
+strict one.
+
+**The asymmetry is the defect.** It fails LOUDLY where a mistake is visible anyway (a bad status
+value does nothing, and you would notice), and SILENTLY where a mistake is invisible (a dropped
+field looks exactly like a stored one). That is inverted from what safety wants.
+
+**And it sits on the loop-closing path.** An item can be marked closed; it cannot be closed *with a
+reason*. Anyone reading the queue later sees DONE and no justification — which is strictly worse
+than an open item, because it looks settled. The operator has named "closing the loop" as needing
+to be a fundamental standard; this is the surface that standard runs on.
+
+## Propagation, not design — fifth instance
+
+Instar already ships the correct pattern. The decision journal "REFUSES (400) a decision that names
+no guiding principle, and refuses invented field names BY NAME rather than storing them." Same
+codebase, same problem, opposite behaviour. This is the fifth member of the family found this
+window where the right pattern exists in our own tree and one site did not get it.
+
+## Damage and disposition
+
+None to the record: the tier-signature evidence for that closure is in this journal at 20:22Z, so
+the reasoning is durable — just not on the item. **The closure itself stands** (its own stated close
+criterion, "an enabled job observed running to success on this machine," is met many times over —
+226 successes in the measured window).
+
+Controls left `ATT-ECHO-PHASEA-MEMORY-GATE-THRESHOLDS` at OPEN, its original state. Verified.
+
+## The self-referential part, recorded because it is the point
+
+I have spent this window auditing components that assert states they never measured. I then made a
+state change, was told 200, and asserted in my own audit record that it had landed — **without
+reading it back.** The read-back took one command and refuted me. Same class, my own hands, inside
+the audit whose subject is that class. Second time today.
+
+**Rule promoted: a write is not a claim until it is read back.** A 200 confirms the request was
+accepted, never that the payload was stored.
+
+
+## 20:28Z — CONVERGED: the supervisory layer splits by EXECUTION PATH, not by importance — and the correct pattern is already in-tree
+
+**The rule, derived from measurement rather than opinion:**
+
+> **A mechanism that exists to survive a failure must not be gated on a resource that fails at the
+> same time.** The test is concrete and binary: *can it run without spawning a session?*
+
+## The natural experiment
+
+Today's memory-pressure episode was an unplanned controlled trial. Same host, same scheduler, same
+instants, one variable: execution path.
+
+| path | mechanisms | outcome in the 08:30–20:00Z window |
+|---|---|---|
+| **spawn-free** (hooks, `script` jobs) | 2 of 42 jobs; 30+ hooks | **66 / 66 succeeded, 0 refused** |
+| **spawn-gated** (`agentmd` jobs) | 40 of 42 (25 enabled) | **173 refusals across 15 slugs** |
+
+Both spawn-free jobs ran at the exact 20:00:00Z tick where six spawn-gated jobs were refused.
+
+## The positive exemplar — the same capability on two paths, one survived
+
+**Promise capture exists twice in this system:**
+- `commitment-detection` — a scheduled job → spawns a session → **refused 65 times today**
+- `action-claim-followthrough.js` — a **Stop hook**, in-process, no spawn → **survived**
+
+Verification, not inference: commitments were registered at **19:37, 19:41, 19:42, 19:42, 19:51Z**
+while `commitment-detection` was refused at *every* tick in that window (19:30/35/40/45/50/55).
+The hook path was observed hitting `/action-claim/observe` at 20:21:09Z and 20:23:31Z — mid-outage.
+
+**So the promise-keeping mechanism kept working through the exact conditions that killed its own
+scheduled twin.** That is the shape the beat needs, and it already exists in our tree.
+
+## The negative cases — every temporal supervisor is on the dying side
+
+| supervisor | what it exists to catch | path | outcome |
+|---|---|---|---|
+| hourly-realignment | operator's intent drifting out of my context | job | **dead 5h** |
+| overseer-guardian | *jobs silently failing* | job | did not run during the outage |
+| health-check (`priority: critical`) | host health | job | **61/125 refused (49%)** |
+| llm-decision-grading | whether the checks are right | job | dead 5 consecutive hours |
+| coherence-audit | binding/state coherence | job | 0 successes in window |
+
+## The structural conclusion
+
+**The system is well defended at the per-action timescale and undefended at the hours-to-days
+timescale.** Guards against my individual mistakes — deferral detection, grounding-before-messaging,
+dangerous-command, the tone gate, the Stop-hook family — are hooks or in-process, and all survived.
+Guards against slow systemic drift are scheduled jobs, and they died together.
+
+**That is exactly inverted from where the risk sits.** A per-action mistake is loud and I catch it
+myself. A five-hour silent drift is precisely what a supervisor exists for — and that is the layer
+that switches off under load.
+
+## Propagation, not design — sixth instance this window
+
+Exactly **2 of 42** jobs use the spawn-free path. Both are supervisory (`delivery-canary`,
+`quota-groundtruth-check`). **Both are the only jobs that survived.** Somebody already made the
+correct call, twice, and it was never propagated. Same conclusion as the availability check, the
+three-valued booleans, the memory-metric sibling, and the attention PATCH: the right pattern is in
+our own tree and one site after another did not get it.
+
+**So the recommendation is cheap:** not "harden the scheduler" but "move the load-bearing step of
+each temporal supervisor onto the path two of them already use."
+
+## Sweep discipline / limits of this result
+
+Enumerated the full population (42 job manifests + the registered hook table) rather than sampling,
+so the *path* split is complete, not indicative. **What is NOT established:** which of the 25
+enabled spawn-gated jobs are genuinely supervisory versus productive — I classified five by name and
+purpose, not all of them. That classification is the next pass, and until it runs the phrase "every
+temporal supervisor" is supported for the five checked, not proven for the population.
+
+Refuted en route, recorded because it was my starting hypothesis: **"the outage silently lost
+promises."** It did not — the hook path carried them. I checked before reporting it, and the
+refutation produced the exemplar that makes the recommendation concrete.
+
+
+## 20:29Z — SWEEP CONVERGED — 21 of 23 scheduled supervisors are spawn-gated, including the ENTIRE overseer tier
+
+Completing the classification the previous entry named as unproven. **Full population enumerated
+(42 manifests), not sampled.**
+
+## The 25 enabled spawn-gated jobs, classified by their OWN descriptions
+
+**SUPERVISORY — 21.** Their described output is a signal *about* the system: monitor, review, audit,
+detect, grade, surface, report, check.
+
+`coherence-audit` · `commitment-detection` · `correction-analyzer` ·
+`correction-class-review-backstop` · `evolution-overdue-check` · `health-check` ·
+`hourly-realignment` · `identity-review` · `llm-decision-grading` · `maturation-heads-up` ·
+`initiative-digest-review` · `model-quota-daily-brief` · `reflection-trigger` ·
+`relationship-maintenance` · `rope-health-digest` · `benchmark-divergence-analysis` ·
+**`overseer-development` · `overseer-guardian` · `overseer-infrastructure` · `overseer-learning` ·
+`overseer-maintenance`**
+
+**PRODUCTIVE — 4.** `evolution-proposal-implement` · `mentor-onboarding` ·
+`evolution-proposal-evaluate` and `insight-harvest` (both borderline — they consume signal and emit
+proposals; counted productive to keep the supervisory figure conservative).
+
+## The number, stated precisely
+
+Of **23 scheduled supervisory jobs**, **21 are spawn-gated** and **2 are spawn-free**
+(`delivery-canary`, `quota-groundtruth-check`). The 2 spawn-free ones are the only jobs of any kind
+that survived today's episode — 66/66.
+
+**So the scheduled supervisory layer is ~91% gated on the resource whose exhaustion it exists to
+notice.**
+
+## The part that decides it
+
+**All five `overseer-*` jobs are spawn-gated.** Their descriptions are explicit — they exist to
+review the *other* supervisors: "Reviews all guardian/monitoring jobs: health-check, guardian-pulse,
+degradation-digest, state-integrity-check, session-continuity-check. Spots cross-job [failures]."
+
+**The entire meta-supervisory tier — the layer whose only job is noticing that the supervisors have
+stopped — is on the dying side, in its entirety, with no spawn-free member.** That is the exact
+structural reason a five-hour outage of the operator's own alignment beat produced no alert from
+anywhere: every mechanism positioned to notice was refused by the same gate, at the same instants,
+for the same reason.
+
+**This is not a gap in the design. It is a gap that is invisible BY design** — the observer and the
+observed share a failure mode, so the failure cannot report itself.
+
+## Why this changes the option C stakes
+
+The ruling has been framed as "what should the gate do under pressure — refuse, or degrade." The
+measured answer to "what does refusing actually cost" is now: **it switches off 91% of the scheduled
+supervisory layer, including 100% of the tier that would notice.** That is a materially larger
+consequence than the refusal counts conveyed, and it argues the degraded tier must keep supervision
+running even while it sheds productive work — the opposite of an ordinary load-shed, which sheds
+monitoring first because monitoring looks optional.
+
+Combined with the earlier finding that `evaluateRerouteGate` takes only a spawn name and consults no
+priority, the concrete shape is: **plumb priority to the gate, and put the supervisory layer's
+load-bearing steps on the spawn-free path two jobs already use.**
+
+## Convergence claim, bounded honestly
+
+This pass enumerated the whole population and classified every enabled spawn-gated job, so the
+*counts* are complete. **Re-swept the earlier pass's own conclusion and it survived** with one
+change: the previous entry said "every temporal supervisor I checked" (5 of them); the population
+figure is 21 of 23, which is stronger than what I claimed and was arrived at by finishing the
+enumeration rather than by finding more instances.
+
+**What a further pass could still change:** the supervisory/productive split rests on each job's
+self-description, not on reading what each actually does. Two are borderline and I counted them
+against my own thesis. A reader who disagrees with those two gets 23 of 25 supervisory, which moves
+the conclusion in the same direction.
+
+
+## 20:36Z — THE IDLE MACHINE IS NOT RUNNING THE SCHEDULER — and I must correct my own SSH claim
+
+## Finding (ONE signal, stated as a lead not a fact)
+
+The laptop is **online, heartbeat fresh (20:34:40Z), and has ZERO active sessions** while the Mini
+carries 3 and spends the afternoon refusing supervisory jobs for memory pressure.
+
+That makes "run the supervisors on the idle machine" the obvious no-code mitigation. **It is
+currently unavailable**, on this evidence:
+
+| guard key | Mac Mini | Laptop |
+|---|---|---|
+| `scheduler.enabled` | **on-confirmed** | **missing** / `not-registered` |
+
+**Control (the reason this is not just how that guard reports):** `missing` appears on **2 of 90**
+laptop guards and **0 of 90** Mini guards. The Mini confirms the same key. So `missing` is not the
+normal reporting mode — it discriminates.
+
+**Consequence if it holds:** the multi-machine design implies redundancy — "the SAME recurring job
+running on each machine is benign, BY DESIGN." **There is no second copy.** One scheduler exists,
+on the pressured machine. So today's beat outage had no fallback anywhere, and my "dead five hours"
+claim needs no scope qualifier for a stronger reason than I knew when I made it.
+
+**Also measured: 16 of 90 guards report different effective states on the two machines** — including
+`autonomousHeartbeat` (off on Mini, on-confirmed on Laptop) and `agentWorktreeReaper` (dry-run vs
+confirmed). That is the machine-coherence drift that raised two attention items today, quantified.
+
+### Why this is a LEAD and not a verdict
+
+**One signal.** Two attempts at independent confirmation both failed to discriminate:
+- `GET /health?scope=pool` returns **no `pool` block** — the route silently ignores `scope`. Its
+  answer is self-only, so it says nothing about the laptop.
+- `GET /jobs/history?limit=400&scope=pool` returns 400 runs from **one** machineId. But since
+  `/health` demonstrably ignores `scope`, I cannot tell "the laptop has no runs" from "the parameter
+  was dropped." **Inconclusive, recorded as inconclusive.**
+
+*(Both are themselves instances of the silent-parameter-drop class found on `PATCH /attention/:id`
+an hour ago. Third and fourth sightings today.)*
+
+## CORRECTION I OWE — my SSH claim is not reproducible
+
+At 06:41 PDT I told the architect, arguing about the disabled peer-execution guard:
+
+> *"I have working SSH to the laptop myself and used it all session, so raw connectivity is fine —
+> it's the managed runtime that's disabled."*
+
+**Tested just now: permission denied.** Three users (`justin`, `justin_instar_1`, `jkheadley`)
+against two hostnames (`mac.lan`, `justins-macbook-pro-144.local`), all
+`Permission denied (publickey,password,keyboard-interactive)`. The host RESOLVES and answers, so the
+box is reachable — the authentication is not.
+
+**What I can and cannot say.** It may have worked earlier and broken since; I did not re-test between.
+What is certain is that **I asserted it in the present tense as a live capability, and it is not one
+now** — and that assertion was load-bearing in an argument I handed the architect about whether the
+managed runtime is needed. **That argument is withdrawn.** Whether worker lanes need peer-execution
+is now genuinely open rather than "connectivity is fine anyway."
+
+**Same class as this morning's Codey-address finding, committed by me, hours after I named it:** an
+operational capability asserted once and never re-verified, then used as evidence. The Codey address
+lived in an operationalFact with no freshness; this one lived in my own head with no freshness. The
+storage differed; the failure did not.
+
+
+## 20:41Z — LAPTOP SCHEDULER — second independent signal agrees; and a real observability gap behind it
+
+## Second signal, obtained through a different subsystem
+
+The earlier entry recorded the laptop-scheduler finding as a LEAD on one signal, because two attempts
+at confirmation were inconclusive (`?scope=pool` is silently ignored on `/health`). A third route
+worked and it is genuinely independent — different subsystem, different data path:
+
+`GET /attention?scope=pool` → `peersQueried: 1, peersOk: 1, failed: []`, **459 items, 227 of them
+Laptop-originated.** So the fan-out reached the laptop and its state is readable — the control passes,
+this query could have shown otherwise.
+
+**What the laptop's items show:**
+- Only **2 created today** (06:05:26Z, 16:30:17Z); newest is >4h old.
+- Their sources are in-process sentinels — `stale-owner-release`, `a2a-redelivery`,
+  `subscription-pool:swap`, `spawn-drain-refusal` — **none job-sourced.**
+- The Mini, over the same period, produced 32 items today including several job-raised.
+
+**Verdict: two independent signals now agree** that the laptop's scheduled-job layer is not running,
+while its server and in-process sentinels are alive and healthy.
+
+**Still not a proof, and I am not calling it one.** Jobs do not necessarily raise attention items, so
+absence of job-sourced items is consistent with but does not entail an absent scheduler. The
+definitive check is the laptop's own job history, which I cannot reach (see below).
+
+## The observability gap underneath — and it is the sharper finding
+
+**There is no pool-scope route for job state.** `?scope=pool` is honoured on `/attention`, `/guards`,
+`/sessions`, `/subscription-pool` — and **silently ignored on `/jobs/history` and `/health`.**
+
+So on a two-machine agent, the question *"are my scheduled jobs running on my other machine?"* is
+**unanswerable from either machine**, and the failure mode is the worst kind: `?scope=pool` on
+`/jobs/history` returns **HTTP 200** with self-only rows. It looks like an answer. I read it twice
+before noticing, and only caught it because `/health` demonstrated the same silent drop on a route
+where the missing `pool` block was visible.
+
+**That is the third and fourth sighting today of the silent-parameter-drop class** (after
+`PATCH /attention/:id` discarding a resolution field). Same shape every time: a parameter the route
+does not implement is dropped without comment, and the 200 reads as confirmation.
+
+**Why it matters beyond convenience.** The whole multi-machine design is justified by coherence — one
+agent, many machines, one memory. A scheduled-job layer that is silently absent on one machine is
+exactly the kind of drift that design exists to prevent, and there is no surface that would reveal it.
+It took a guard-posture read plus a cross-subsystem attention query to get *two weak signals*, and
+neither is conclusive. **"Know thyself" has a hole here, and it is one route away from being closed.**
+
+## Recommendation (recorded, not built — Phase A scope)
+
+Honour `?scope=pool` on `/jobs/history` and `/health`, and — the more important half — **make an
+unimplemented `scope` parameter a 400 rather than a silent self-only 200.** The second half is the
+general fix for the class; the first is the instance.
+
+
+## 20:42Z — SILENT-PARAMETER-DROP: swept to convergence over the pool-scope surface
+
+Four accidental sightings today made this a class rather than an incident, so I swept it
+mechanically instead of continuing to trip over instances.
+
+## Method — a discriminating test, not an eyeball
+
+For each route: fetch WITHOUT `scope=pool`, fetch WITH it, compare response hashes, and check for a
+`pool` block. **Byte-identical + no marker = the parameter was dropped.** Different + marker =
+honoured. The comparison is the control: a route that genuinely fans out cannot return the same bytes.
+
+## Result (10 routes probed)
+
+**HONOUR it — 7:** `/attention` · `/guards` · `/sessions` · `/subscription-pool` ·
+`/self-action-governor` · `/judgment-provenance` · `/decision-quality`
+All return a `pool` block and a different response.
+
+**SILENTLY DROP it — 2, proven by BYTE-IDENTICAL responses:**
+- **`/jobs/history`** — so *"are my scheduled jobs running on my other machine?"* is unanswerable,
+  and answers **HTTP 200** with self-only rows. This is what cost me two misreads earlier tonight.
+- **`/commitments`** — ⭐ **new instance, and the worst of the three.** Commitments are the
+  promise-keeping registry. *"What has my other machine promised the operator, and did it follow
+  through?"* returns a confident self-only 200. Cross-machine follow-through cannot be checked, and
+  nothing says so.
+
+**DOES NOT honour, but not provable by hash — 1:** `/health` carries volatile fields (uptime,
+timestamps, memory) so its response always differs. **The absence of a `pool` block is the real
+signal**, verified directly. Recorded separately from the two proven cases because the *evidence* is
+weaker even though the conclusion is the same.
+
+## The class, stated
+
+> **An unimplemented query parameter is dropped without comment and the route answers 200.** The
+> caller cannot distinguish "the feature does not exist here" from "it ran and this is the answer."
+
+Instances found today, all independently: `PATCH /attention/:id` discarding a resolution field ·
+`/jobs/history?scope=pool` · `/health?scope=pool` · `/commitments?scope=pool`.
+
+**Same shape as the audit's founding class, one level out.** The five original instances were
+components *asserting a state they never measured*. This is a component *answering a question it never
+understood* — and both produce a confident, well-formed, wrong answer with no tell. The three-kinds-of-
+zero distinction applies exactly: "no cross-machine rows" and "I never looked across machines" are
+rendered identically.
+
+## Recommendation (recorded, not built — Phase A scope)
+
+The instance fix is to honour `scope` on the three routes. **The class fix is to reject an
+unimplemented `scope` with 400 rather than answering 200 self-only** — and that is the one worth
+having, because it converts every future occurrence from silent to loud without anyone having to
+predict which route needs it. `PATCH /attention/:id` already proves the pattern is available: it
+rejects a bad `status` with a precise enumerating message. It simply is not applied to unknown keys.
+
+## Limit of this sweep, stated honestly
+
+**Complete over the 10 routes probed, not over the API.** I chose them from the pool-scope surfaces
+named in the agent template plus the two I had already tripped over. A route not on that list is
+unexamined, not clean. A full sweep would enumerate the route table rather than a curated list — that
+is the next pass if this class is judged worth closing.
+
+
+## 20:44Z — BROWSER PATH — my 12:45 diagnosis was wrong; the seat is OCCUPIED, not disconnected
+
+**Re-tested a capability claim instead of carrying it forward.** At 12:45Z I told the architect the
+Telegram-as-Justin route was unavailable because *"the extension reports not connected."*
+
+**Probed just now. Different error entirely:**
+
+> `Browser is already in use for …/mcp-chrome-5f8aafd, use --isolated to run multiple instances`
+
+The profile is **held by a live Chrome instance, pid 82156, running 5h38m (since 15:05Z)** — not
+disconnected. Same blocked outcome, **different cause, and the cause is what determines the fix.**
+
+## Why the correction matters rather than being pedantry
+
+"Not connected" points a fixer at the extension, the MCP wiring, the connection. **"Profile in use"
+points at a seat-contention protocol and an `--isolated` flag** — a completely different repair. This
+is the same error I named in the tone-gate finding hours ago: *filing two problems together because
+they rhyme sends whoever picks it up hunting a cause that does not exist.* I did it to myself here.
+
+## What I deliberately did NOT do
+
+**I did not kill pid 82156**, and this is exactly the case where that restraint is the whole lesson.
+This morning I ran a "smoke test" against live infrastructure without reading what it does on startup,
+and it reaped another process's sessions. A five-hour-old Chrome holding a shared seat is the same
+shape: I cannot tell from here whether it belongs to a live observer session or is orphaned, and
+**reclaiming a shared resource by force is not a diagnosis, it is a gamble with someone else's work.**
+
+The error message names the sanctioned escape itself (`--isolated`), which is an MCP-server flag I
+cannot set from inside a session. So the honest position: **the browser path is blocked for me, the
+reason is now precisely stated, and neither remedy — the holder releasing the seat, or an isolated
+instance — is mine to force.**
+
+## Standing correction to the Codey report
+
+The 12:45Z conclusion stands on its outcome (no reply from Codey, task filed in his queue, his relay
+never attempting to connect) but **its browser-path cause is withdrawn and replaced.** Two of the three
+routes to him are still down; the third — his authenticated interface — still works, and nothing on
+his side is running to read what it holds.
+
+
+## 20:46Z — THE BEAT HAS A SECOND, INDEPENDENT WAY TO MISS AN HOUR — and it explains the 07:02Z fix boundary too
+
+Re-verifying the "dead five hours" claim at report time surfaced that **15:00Z has no run record at
+all** — not a refusal, nothing. Chased it rather than rounding it off.
+
+## Server restarts today, from the log's own boot markers
+
+**02:26Z · 07:02Z · 13:09Z · 15:11Z · 17:01Z** — five in a day (`Scheduler started`,
+`Server listening on 0.0.0.0:4042`).
+
+**15:11:03Z is the answer to the missing tick.** The server was restarting across the 15:00 hour, so
+the beat's tick was lost — not refused, not run, simply never attempted.
+
+### Corrected shape of the outage
+
+| hour | outcome |
+|---|---|
+| 14:00:24Z | **success** (last one) |
+| 15:00Z | **no record** — server restarted 15:11:03Z |
+| 16:00–20:00Z | **5 consecutive refusals** (memory tier) |
+
+So: **six hours without a successful beat** — five recorded refusals plus one lost to a restart. My
+earlier "five consecutive" is accurate as far as it went and *understated* the outage by an hour,
+because a missing record reads as nothing rather than as a failure.
+
+## ⭐ The finding: a second, independent failure mode the memory fix does not touch
+
+Even if option C lands and the gate stops refusing, **the beat still silently loses any hour whose
+tick lands on a restart** — and there were five restarts today. It is an hourly job with **no
+catch-up**: it fires on a cron edge, and if it misses the edge, nothing notices or re-fires. Its own
+step 4 asks the runner to confirm the log grew — but **that check only runs when the job runs**, which
+is exactly the case that did not happen.
+
+**Design consequence for the two-tier proposal (parked with the architect):** the spawn-free path
+should not merely *run on schedule* — it should be **level-triggered**: check whether the anchor is
+stale and refresh it if so, rather than firing on an edge and assuming success. A level-triggered
+refresh self-heals both failure modes (refusal AND missed tick) with the same mechanism; an
+edge-triggered one fixes neither on its own.
+
+*(Same shape as the reconciler pattern already in this codebase — the autonomous liveness reconciler
+"compares desired vs actual per tick and converges" rather than reacting to an event. Another in-tree
+exemplar for the fix, which is now the seventh time today the pattern I need is already here.)*
+
+## Bonus: the 07:02Z boundary now has a MECHANISM, not just a correlation
+
+Earlier I closed `ATT-ECHO-PHASEA-MEMORY-METRIC-SIBLING` on a tier-signature change — last `critical`
+refusal 07:00:01Z, first `high` at 07:02:58Z — and explicitly recorded that **which deploy introduced
+it was not established and would not be asserted.**
+
+**It is now established: the server restarted at 07:02:53Z.** The corrected available-memory reader
+was already on disk; that restart loaded it. Five seconds later the tier signature changes. The
+closure was correct and now rests on a mechanism rather than a coincidence in time.
+
+Recording the upgrade explicitly because the earlier entry drew a boundary around what it knew, and
+this is what crossing that boundary honestly looks like.
+
+
+## 20:47Z — ⭐ THE DETECTOR LIVES INSIDE THE THING IT DETECTS — proven against a documented contrast case
+
+## The clean proof, from the beat's own ledger
+
+`beats.jsonl` — the beat's durable self-record, whose stated purpose (step 4 of its body) is to make
+*"did this run?"* **a read rather than a memory**:
+
+```
+2026-08-04T13:00:32Z  ✓
+2026-08-04T14:00:38Z  ✓
+        ← 15:00, 16:00, 17:00, 18:00, 19:00 — NO ROWS AT ALL
+2026-08-04T20:03:09Z  ✓  (my manual restoration)
+```
+
+**A five-hour hole, recorded honestly, in a file built to be read.** And grep across the message store
+finds **zero failure notices posted today**.
+
+## The contrast case is in my own anchor, and it makes this conclusive
+
+The Observer directive re-injected into my context every turn documents **2026-07-31**: the beat failed
+**three consecutive times — 08:02, 10:00, 11:00Z — and each failure posted its own notice into the
+topic** ("the alignment scaffolding reached nobody this beat").
+
+**Same job. Same failure count, near enough. Opposite loudness.** So the difference is mechanism, not
+luck:
+
+| | 2026-07-31 | 2026-08-04 |
+|---|---|---|
+| what failed | the **script**, inside a job that RAN | the **spawn** — the job never started |
+| step 2 (self-check + notice) | **executed** → shouted 3× | **never executed** → total silence |
+| operator visibility | 3 notices in the topic | nothing |
+
+> **The beat's failure-detector lives inside the beat.** It can only report failures that occur AFTER
+> it starts. A refusal at spawn takes the detector down with the thing it was watching.
+
+That is the supervisory finding at its sharpest, and it now has a controlled comparison rather than an
+argument: the *same mechanism* is loud when its payload fails and silent when its host is refused.
+
+## The part that generalises past this one job
+
+**Two honest self-records existed the whole time and neither was consumed:**
+1. The **anchor stamps its own regeneration time** at the top — it was carrying 14:00Z numbers into
+   every turn for six hours, truthfully labelled. Nothing reads that label.
+2. **`beats.jsonl` has a visible five-hour hole** — exactly the question it was built to answer.
+   Nothing reads the file.
+
+So this was never an *honesty* failure. Both instruments told the truth, in writing, continuously.
+**It is a consumption failure** — and that is a materially different repair. Adding more honest
+reporting would have changed nothing; the missing half is something that reads what is already there
+and acts.
+
+**This also refines the day's earlier conclusion.** I wrote that the codebase's default is honest
+uncertainty rather than false confidence, with five exceptions. That still holds — and it is
+incomplete. **An honest record with no consumer is indistinguishable, in outcome, from no record at
+all.** Honesty is necessary and it is not sufficient. Rung 3 (`effective`) is exactly this
+distinction, and I keep rediscovering it from new angles: existing ≠ wired ≠ effective, for records
+as much as for guards.
+
+**Cheapest concrete fix, and it needs no new instrument:** something that already runs must compare
+the anchor's own timestamp against now. The data is already there, already honest, already durable.
+
+
+## 20:54Z — NEARLY FILED A FALSE ALARM: 'a GET is mutating the project store'. The control refutes it.
+
+## What I saw, and what I was about to conclude
+
+Reading the convergence project (Tier 1's own subject), three children showed `updatedAt` within
+**milliseconds of my read instant**. A GET that moves a timestamp is a serious defect, and I was one
+step from reporting it.
+
+## The control, and it discriminates
+
+Full 12-child timestamp set → **20 seconds of total API silence** → full set again:
+
+**ZERO rows changed.** So there is no continuous background writer, and the churn really was
+correlated with my reads. That part of the alarm survived.
+
+**But the fuller picture refutes the conclusion.** Across six reads:
+
+| read | children stamped |
+|---|---|
+| 20:51:05 | 5, 6, 8 |
+| 20:51:22 | 1, 3, 7 |
+| 20:51:31 | 2, 4, 9 |
+| 20:51:39 | **none** |
+| 20:53:10 | **none** |
+| 20:53:31 | **none** |
+
+**Exactly three per read, three reads, then it stopped**, leaving children 10/11/12 still at their
+2026-08-02 timestamps. That is not the signature of "every GET writes" — it is the signature of a
+**one-time lazy backfill running in batches on read until complete.** A per-read mutation would still
+be firing; it stopped after nine.
+
+**So the alarm is withdrawn before it was ever sent.** I do not have evidence that a GET mutates this
+store, and I am not going to say so.
+
+## The smaller thing that IS real, stated at its true size
+
+**Nine of twelve children now carry `updatedAt = 20:51 today` while no work was done on them.** Their
+genuine last-change times are gone. So for those nine the field no longer answers the question it
+names — and **the anchor's own claim that this project "went untouched 07-27 → 07-29" is exactly the
+kind of claim that field is used to make.** That claim was measured before the backfill and is not
+re-verifiable now for those nodes.
+
+Minor, bounded, worth one line to whoever relies on project timestamps. Not an incident.
+
+## Why this entry exists at all
+
+**This is the fourth time today the discipline paid, and the first where it stopped a false report
+about someone else's code rather than my own.** The earlier three were self-catches on my own claims
+(the contaminated windows). Here the tempting story — "a read is corrupting the store" — was dramatic,
+coherent, and explained everything I had seen. The 20-second silent gap cost nothing and killed it.
+
+**The rule that caught it is the session's own founding one:** before believing something is broken,
+prove the check could have shown otherwise. The silent gap was that proof — it *could* have shown
+drifting timestamps, and it showed none.
+
+
+## 21:07Z — BEAT RECOVERED ON ITS OWN — and I hit the same contaminated-baseline error a FIFTH time, 90 minutes after writing the rule against it
+
+## The outcome I owed
+
+**The 21:00Z beat ran unaided.** Job spawned 21:00:18.936Z, session ready in 3.3s, completed
+`success` 21:00:39Z. All three of its outputs are fresh and agree on one instant:
+
+- anchor in the run file → `last regenerated 2026-08-04T21:00:28.997Z`
+- digest header → `generated 2026-08-04T21:00:28.997Z`
+- `beats.jsonl` final row → `{"ts":"2026-08-04T21:00:28.997Z", operatorMessages:138, …}`
+
+Ledger tail now reads **14:00:38Z → 20:03:09Z (my manual restore) → 21:00:28Z (automatic)**. The
+six-hour hole is closed at both ends and the mechanism is self-sustaining again — *for as long as the
+gate keeps letting it through*, which is the ruling still with the architect.
+
+## ⚠️ And I got the verification wrong, in the way I had just written a rule against
+
+I set a watcher for `beats.jsonl` to grow, captured a baseline of **172 rows**, waited five minutes,
+saw **172 rows**, and concluded **"LEDGER DID NOT GROW"** — which read as *the job reported success
+without doing its work*, a serious finding I was about to chase.
+
+**It was my baseline that was wrong.** The beat wrote at **21:00:28.997Z**. My baseline read at
+**≈21:00:35Z** — six seconds *after* the event it was supposed to precede. The file was already 172
+rows including the new one. I measured "before" after.
+
+**This is the fifth instance today of the same error, and the second of the LATE-reading shape** —
+identical to the one I published to the operator and retracted at 20:11Z.
+
+### The part worth keeping
+
+**Ninety minutes before this, I wrote the rule.** It is in my durable memory as
+`the-measurement-window-must-cover-the-claim`, with this exact shape named explicitly:
+
+> *Shape B — the reading is too LATE and postdates the event you're explaining… For a past-instant
+> claim, a spot reading NOW is not evidence.*
+
+**Writing it down did not stop me.** I had six clear minutes before 21:00:00Z in which capturing the
+baseline would have been trivial and correct, and I spent them on other checks, then took the baseline
+at the moment I started watching — which felt like the natural time and was structurally the wrong one.
+
+> **A baseline must be captured before the event, not before the WATCHING.** Those feel identical from
+> the inside and are not the same instant.
+
+**This is the session's own foundational principle landing on me.** *Structure beats willpower* — a
+rule I wrote and re-read is still willpower, and it failed within the hour on the exact case it was
+written for. The structural version is cheap and I should have built it: **the watcher should capture
+its own baseline as its first act, before arming, and refuse to start if the target may already have
+changed.** That is a five-line difference and it is the difference between a rule and a guarantee.
+
+Recording it at full weight rather than as a footnote, because a self-catch that only I know about is
+not a correction — and because the count matters: **five in one day, one published, and the written
+rule stopped none of them.**
+
+
+## 21:11Z — BUILT THE STRUCTURAL VERSION — the baseline guard, with all three paths controlled
+
+The previous entry ended by naming the fix and calling it "five lines." Writing that down is exactly
+the move that already failed five times today, so I built it instead.
+
+## What it does
+
+`watch-for.sh` — a change-watcher whose **baseline is its first act**, before anything else runs, and
+whose baseline timestamp is **always printed**. Plus the load-bearing part: `--not-before <ISO>` makes
+a late baseline a **refusal** rather than a silently meaningless "unchanged".
+
+The lineage is deliberate: `jrnl.sh` exists because a note telling me to check the clock did not work,
+so it **removed the typing**. This removes the opportunity to take the baseline late — not the
+reminder to avoid it.
+
+## Verified with three controls, because a checker that cannot fail is this audit's founding subject
+
+| path | test | result |
+|---|---|---|
+| refusal | `--not-before` already passed | **exit 2**, refuses, explains why |
+| unchanged | valid window, static target | **exit 1**, with the caveat that the negative is only real because the baseline predates the window |
+| **changed** | target mutated mid-watch | **exit 0**, reports the change instant |
+
+**The third control is the one that matters.** A watcher that always answers "unchanged" is
+output-identical to a working one — the exact defect I have found five times in other people's code
+today. Proving it returns exit 0 on a real change is what makes its "unchanged" mean anything.
+
+## The replay — against the real failure, not a synthetic one
+
+Armed with the same intent I actually had at 21:00Z (baseline now, event at 21:00:00Z):
+
+```
+REFUSED: baseline 21:10:36Z is AFTER --not-before 21:00:00Z.
+The event may already have happened, so 'unchanged' would be meaningless.
+```
+
+**It refuses precisely the case that produced my false conclusion**, and permits the same watch armed
+against the *next* hour. That is the difference between a rule and a guarantee, demonstrated on the
+instance rather than asserted.
+
+## First real use, correctly armed
+
+The 22:00Z beat watch is now running with its baseline captured at **21:10Z** — legitimately before
+the event, which is the whole point. Whatever it reports will be a real answer rather than an artifact
+of when I happened to start looking.
+
+## Honest scope
+
+This is **my own audit tooling**, not instar source, and it guards **one** error shape — a baseline
+taken after the event. It does nothing about the other four instances today, which were windows too
+WIDE rather than baselines too LATE. Those need a different guard (assert the corpus spans the claimed
+window), and I have not built it. Naming the gap rather than letting one tool imply the class is
+closed.
+
+
+## 21:13Z — CLOSED THE OTHER HALF — corpus-spans-window guard, and the corpus provably slides
+
+The previous entry named this gap and did not build it. Building it, one entry later, rather than
+letting a named gap become a filed intention.
+
+## The guard
+
+`spans-window.sh` — given a claim window and a corpus-producing command, it extracts the corpus's
+real min/max timestamps and **refuses when the corpus does not span the window**. It distinguishes
+three outcomes that ordinarily render identically:
+
+| exit | meaning |
+|---|---|
+| 0 | corpus spans the window — **a negative result here is a real negative** |
+| 1 | corpus is EMPTY — cannot answer; absence of evidence, not evidence of absence |
+| 2 | corpus does NOT span — any "nothing found" is unsupported |
+
+## Controls — all three discriminate, tested against live data
+
+**A (must refuse):** the real error from earlier tonight — asking about the 03:49Z attention item
+against the job-history route. → **exit 2**, and it names the honest alternative: *"narrow the claim
+to 09:35 → 21:10, which is what was actually observed."*
+
+**B (must pass):** a window the corpus genuinely covers (15:00 → 20:00Z). → **exit 0**.
+
+**C (must report empty):** a corpus with no parseable timestamps. → **exit 1**.
+
+Three distinct answers on three inputs, so none of them is the tool's default.
+
+## ⭐ And the test surfaced a live hazard I had not measured
+
+Earlier tonight the same 400-row query covered **09:00:00Z → 20:40Z**. Running it now it covers
+**09:35:00Z → 21:10Z**.
+
+**The corpus SLID FORWARD by 35 minutes in about 90 minutes of wall clock.** A fixed-size row cap on
+a busy scheduler is a *moving* window, not a fixed one — so a query that legitimately answered a
+question at 20:40Z silently stops being able to answer it, with no change to the query and no
+warning in the response.
+
+That is the strongest argument for this guard existing at all: **the corpus I verified as adequate
+an hour ago is no longer adequate for the same claim, and nothing announced it.** Re-measuring at
+claim time (the plan's own standing rule) catches the VALUE changing; it does not catch the
+CORPUS's reach shrinking underneath a stable-looking query. This does.
+
+## Scope, honestly
+
+Two guards now cover the two shapes that cost me five errors today — baseline-too-late and
+corpus-too-narrow. Both are **my own audit tooling**, invoked deliberately; neither is enforced
+anywhere, so they are guarantees only when I reach for them. **That is a real limit and it is the
+same limit the whole session has been documenting** — a correct mechanism with nothing running it.
+The honest status is: better than prose, weaker than a gate. Recorded as such rather than claimed as
+closure.
+
+
+## 21:16Z — SWEEP ABANDONED ON ITS OWN INSTRUMENT — 'what writes honestly to nobody?' — verdicts discarded
+
+Tonight's strongest finding was **two honest records that nothing consumed** (the anchor's own
+timestamp, and the beat ledger's visible hole). That looked like a class worth sweeping: *which other
+durable self-records does this agent write that nothing reads?*
+
+Enumerated all **24** record files and built a detector: for each, grep the shipped code near the
+record's name and count read-shaped vs write-shaped calls.
+
+## The control passed — and a second check killed the run anyway
+
+`reap-log` came back **consumed**, which is independently true (it is served on its own route). So the
+detector *can* return that verdict; it is not stuck on one answer. That is the control I always
+demand, and it passed.
+
+**Then I checked the other arm.** The same run scored `reap-log` at **writes = 0** — for a file that
+is **1.99 MB and was appended minutes before the run**. A continuously-written file scored as never
+written.
+
+**So the write-detection arm is provably wrong**, and with it:
+
+| verdict | count | status |
+|---|---|---|
+| `unknown` (0 reads, 0 writes) | 9 | **unusable** — rests on the broken arm |
+| `WRITE-ONLY?` | 8 | **unusable** — *derived* from the broken arm |
+| `consumed` | 2 | usable; one is the control and independently verified |
+
+**Seventeen of twenty-one verdicts discarded.** The `WRITE-ONLY?` set is the tempting one — it is
+exactly the answer I set out to find, it names eight plausible records, and it would have made a
+striking report. **It is an artifact of a detector I had already proven wrong.**
+
+## Why I am recording an abandoned sweep rather than quietly dropping it
+
+This is the audit's founding class, aimed at me, on the same night I found five instances of it in
+other people's code: **a proximity-grep heuristic returns a confident, well-formed, plausible set, and
+nothing in the output says the method is unsound.** Had I not checked a file I *knew* was written, I
+would have published eight write-only records as a finding.
+
+**The catch came from a control on the OTHER arm than the one I had validated.** I verified the
+detector could say "consumed" and treated that as validating the detector. It validated one arm. A
+two-armed instrument needs a control per arm — and the arm I skipped is the one that carried
+seventeen of the twenty-one answers.
+
+> **Validating one output path does not validate the instrument.** Control every arm that a verdict
+> can flow through, not the one that is easiest to check.
+
+## What the question still deserves
+
+The question is good and remains open. The reliable method is not proximity grep — it is resolving
+each record's path constant in source and finding its actual readers, or enumerating which records
+are served by a route at all. **That is real work and I am not going to fake it with a cheaper
+heuristic.** Recorded as an open lead with its method named, not as a finding.
+
+## Footnote, same class, my own hands
+
+The command that proved the write-arm broken printed `last written 2026-08-04T14:15:27Z` — but that
+is **local time with a literal `Z` I appended in the format string**. The label asserts UTC; the value
+is PDT. The real instant is 21:15Z. Harmless here because the argument only needed "minutes ago", but
+it is precisely the shape I have been cataloguing all night: **a label claiming a property the value
+does not carry.** Third time today I have produced this class while auditing it.

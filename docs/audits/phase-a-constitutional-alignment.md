@@ -760,3 +760,85 @@ Neither was reachable by the pattern sweep — they emit only when the failure c
 the sweep's declared blind spot (runtime-only evidence) producing its most useful results twice more,
 which is the strongest argument yet that **the next phase's method should be "run the system and read
 what it says", not "search the code".**
+
+---
+
+## Closed as NOT-A-DEFECT — the tone gate "not swapping" on codex
+
+Investigated on a bounded ruling ("if it is the same argv/oversize class, file it; do not build").
+**It is not that class. Nothing filed. Recorded here so it is not re-investigated.**
+
+### The hypothesis, falsified by measurement
+
+`MessagingToneGate` carries a ~30,123-char prompt and the codex CLI takes its prompt as a positional
+argument, so an argv-ceiling failure was a reasonable suspicion — the same shape as the tmux bug fixed
+earlier this window.
+
+| test | result |
+|---|---|
+| `getconf ARG_MAX` (direct spawn) | **1,048,576 bytes (1 MB)** |
+| 30 KB positional through the same exec path | status **0** |
+| 300 KB positional | status **0** |
+
+**A 30 KB prompt is ~3% of the direct-spawn limit.** The tmux ceiling was ~16 KB because *tmux imposes
+its own, far smaller command-length cap* — not because of `ARG_MAX`. **Two different mechanisms that
+happen to rhyme.** Filing them together would have created a false family and sent the next reader
+looking for a size problem that does not exist.
+
+### What was actually happening
+
+The tone gate's codex calls were failing on **auth** (the credential incident), like everything else on
+codex. It showed no successful pool swap because **it does not swap** — it has its own fallback and
+degrades to the **deterministic floor**, locally, rather than spending a provider swap. `MessageSentinel`
+has no such floor, so it swaps and succeeded 5/5.
+
+**Both are behaving as designed. The metric difference is a difference in fallback strategy, not a
+fault in either.**
+
+### Method note — the evidence was already in my hands
+
+The proof was in my own transcript five hours earlier: a message of mine was held with the advisory
+*"Outbound tone review degraded to the deterministic floor (provider-error)"*. **That is the mechanism,
+observed, in my own message path.** I searched the source before searching what I had already been
+shown.
+
+**Rule: check what you already observed before reading code.** The cheapest evidence is the evidence
+you have already collected, and it is the evidence you are least likely to re-read.
+
+### OD-9, second instance — a 4s budget on an operation whose floor is ~14s
+
+Found while verifying the post-credential-restoration recovery. Same class as the swap-budget finding:
+**a timeout set below the operation's measured minimum.**
+
+```
+[DEGRADATION] IntelligenceRouter: failure-swap: 'codex-cli' failed
+              (Codex exec --json timed out after 4000ms); served by 'claude-code'
+```
+
+| measure | value |
+|---|---|
+| budget applied to a codex exec | **4,000 ms** |
+| measured wall time, `codex exec` with a ONE-WORD prompt | **13,806 ms** |
+| occurrences (whole day) | **10** — all at exactly 4000ms |
+
+**A trivial call takes ~3.5× the budget it is given.** Any codex call subject to this budget fails by
+construction, exactly as the 5s swap budget did against a 120s pool path.
+
+**Severity: LOW, and stated as such.** The failure-swap catches every occurrence — all 10 were
+`served by 'claude-code'` — so the work completes on the fallback rather than being lost. It costs a
+wasted codex spawn and a swap, not a dropped call. **This is the graceful-degradation machinery
+working**, which is why it took a deliberate look to notice at all.
+
+**Why it is recorded anyway:** two independent instances of *budget below the operation's floor*, in
+different subsystems, is a pattern rather than a coincidence — and neither owner can see it from their
+side, because each number is individually reasonable. That is the cross-store-coherence shape applied
+to time, which OD-9 already names and which the constitution has no analogue for.
+
+⚠️ **Honesty note on how this was nearly mis-reported.** My first reading attributed `SessionActivity
+Sentinel`'s 67/75 errors to this timeout. **Wrong** — the 1h metric window straddled the credential
+outage, so most of those errors predate the restoration by ~37 minutes. The clean 26-minute
+post-restoration window contains **4 error events total**. This is the THIRD time today a contaminated
+time window nearly produced a false finding (after "codex still 401ing" and "0 job completions").
+**Window contamination is now the single most repeated method error in this audit** — more than the
+absence rule, more than confirming-mechanism-as-cause. It belongs at the top of the next phase's
+checklist: *state the window, and check the event you are attributing to falls inside it.*
