@@ -32,10 +32,10 @@ every job/A2A spawn is refused.
 | measure | value |
 |---|---|
 | reroute refusals, 15:11 → 16:40 | **47** (34 by 16:10, 13 more in the following 25 min) |
-| `usedPercent` | **80-82%** → tier `high` |
+| `usedPercent` | **71-84%**, sampled — crosses the 75% line repeatedly (see volatility below) |
 | kernel `kern.memorystatus_vm_pressure_level` | **2 (WARN)** — not 4 (critical) |
-| CPU | **57% idle**; `load-assess` verdict *OK — CPU mostly idle* |
-| observed job impact | `insight-harvest`, `identity-review` → `skipped (gate)`, backing off to **hourly** retries |
+| CPU | **57-59% idle** across samples; `load-assess` verdict *OK — CPU mostly idle* |
+| observed job impact | `insight-harvest`, `identity-review`, `evolution-proposal-evaluate` → `skipped (gate)`, backing off to **hourly** retries |
 
 **The machine is not in trouble. The kernel says WARN, not critical, and the CPU is idle. We are
 refusing all scheduled work anyway.**
@@ -186,8 +186,9 @@ fleet.
 
 ## Evidence this is needed (both Observer conditions)
 
-1. **The pressure state has recurred and is sustained** — 47 refusals across 90 minutes, `usedPercent`
-   80-82%, kernel WARN, continuously.
+1. **The pressure state has recurred and is sustained** — **47 refusals** between 15:11 and 16:40
+   (count verified exactly against the log), `usedPercent` oscillating **71-84%**, kernel WARN
+   throughout.
 2. **It is verifiable live** — the refusals are logged per-occurrence with the tier that caused them,
    and the job-level consequence (`skipped (gate)` → hourly backoff) is observable in the scheduler log.
 
