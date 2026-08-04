@@ -184,6 +184,37 @@ fleet.
 
 **Live proof:** one job observed spawning successfully at `usedPercent >= 75` with the kernel at WARN.
 
+## The causal chain, evidenced (not inferred) — and it is ESCALATING
+
+Measured 2026-08-04 19:00-19:05Z. The memory refusal and the job-gate failure co-occur **125 ms apart**:
+
+```
+19:00:00.504  [DEGRADATION] SessionManager.spawnReroutedInteractive:
+                             Cannot reroute: host memory pressure is high
+19:00:00.582  [DEGRADATION] ... (second spawn, same refusal)
+19:00:00.629  [scheduler]   Gate for "evolution-proposal-evaluate" failed (attempt 1/3)
+```
+
+The gate runs by spawning a session (`JobScheduler.runGateAsync`), so it passes through
+`evaluateRerouteGate` and inherits the refusal. **The job-gate failures ARE the memory refusals, one
+layer up** — which means the raw refusal count understates the impact: each refusal also consumes a
+job's retry budget.
+
+### The backoff is compounding
+
+| job | state observed |
+|---|---|
+| `evolution-proposal-evaluate` | `retry 1/6 in 1m` → `retry 2/6 in 5m` (within 80 seconds) |
+| `identity-review` | `retry 5/6 in 1h` |
+| `insight-harvest` | **`retry 6/6 in 2h`** — retries EXHAUSTED |
+
+**`insight-harvest` has burned its entire retry budget and is now backing off two hours.** This is not a
+steady-state degradation; each hour the gate stays blunt, the affected jobs recede further. A job at
+6/6 is one failure from stopping entirely.
+
+**This materially raises the cost of waiting**, and it is the strongest argument in this document: the
+refusals are not merely wasteful, they are consuming the scheduler's own recovery mechanism.
+
 ## Evidence this is needed (both Observer conditions)
 
 1. **The pressure state has recurred and is sustained** — **47 refusals** between 15:11 and 16:40
