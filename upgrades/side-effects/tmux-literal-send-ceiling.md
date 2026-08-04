@@ -145,17 +145,32 @@ as a gap, not waved through; an independent pass before merge would be worth hav
 
 With that caveat, an adversarial pass found three things.
 
-### 1. ⚠️ The fix is NOT proven to restore the substrate — only to remove the send failure
+### 1. ✅ RESOLVED — end-to-end success now observed on the live provider
 
-`interactive-pool` shows **zero recorded successes** in the metrics window examined. I have direct
-evidence that the *send* failed (`command too long`, reproduced) and direct evidence that chunking
-delivers byte-exact. I do **not** have evidence that a chunked prompt then produces a completed LLM
-call, because no successful call exists on record to compare against.
+*Written first as an open risk ("not proven to restore the substrate"), then closed by measurement.
+Kept visible rather than edited away, because the sequence is the point.*
 
-So the honest claim is narrow: **this removes a defect that made success impossible.** It does not
-establish that success is now possible — there may be a second, independent fault behind it. Anyone
-reading this as "the LLM substrate is fixed" is reading more than the evidence supports. The
-end-to-end observation is the outstanding item.
+Driven against the live pool session `instar-pool-echo-aip-682604145ed3` (a real
+`claude --model haiku`, idle at prompt):
+
+| step | payload | result |
+|---|---|---|
+| unchunked single send | 18,972 B | **`command too long`** — the defect, reproduced on the live session |
+| chunked send | 18,971 B / 3 chunks | accepted; Claude read it and replied substantively |
+| chunked send (clean control) | 19,337 B / 3 chunks | accepted; **replied `Mitochondrion.`** |
+
+The third row is the clean one. The second reply was Claude *declining*: that payload was padding plus
+"ignore all padding above, reply with exactly…", which reads as a prompt-injection probe, and it
+refused on those grounds. The refusal is correct behaviour and still proves delivery — it could only
+object to instructions it had received in full — but it is ambiguous as evidence, so the run was
+repeated with a natural passage and question.
+
+**So the claim is now the strong one:** a >16 KB prompt that fails pre-fix on this exact session
+delivers post-fix and produces a complete model response. Not a unit test standing in for the claim.
+
+⚠️ Still true: this proves the *transport*. If a component still fails after this, the next suspect is
+newline-as-submit in `promptRunner` (it does not use bracketed paste), which this change does not
+touch.
 
 ### 2. Newline semantics are unchanged — and that may be the next fault
 
