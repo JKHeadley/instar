@@ -349,3 +349,51 @@ primary framework is down. Which is exactly the state this agent is in (codex 40
 **Recorded as CONFIRMED-from-source, NOT as a shipped fix** — per the Phase A scope ruling, genuine
 builds are deferred to Phase B. Fifth blocker in the serial chain, and consistent with the lesson:
 each was invisible until its predecessor was fixed.
+
+### OD-6 mechanism, completed — how one slow spawn kills the door for a whole process
+
+```js
+async start() {
+    await this.killStaleSessions();                    // agent-prefix scoped
+    const promises = [];
+    for (let i = 0; i < this.config.poolSize; i++)     // poolSize default 2
+        promises.push(this.spawnOne());
+    await Promise.all(promises);                       // ANY ONE failure rejects the whole start
+}
+// spawnOne: throws `Pool session <id> did not reach ready state in 30s`
+```
+
+Composed with the memoised `ensureStarted`, the full chain is:
+
+1. **One** of the two spawns fails to reach ready inside **30 s**.
+2. `Promise.all` rejects — the *other* session having spawned successfully does not help.
+3. `startPromise` retains that rejection **forever** (no catch, no reset).
+4. Every later call re-awaits it, attempts no spawn, and logs nothing.
+5. The door is gone until the process restarts.
+
+**A 30-second timeout on a machine under memory pressure is the whole exposure.** The reroute gate was
+reporting `host memory pressure is high` at 15:11:08 — the same window the first `pool.start()` would
+have run. That the trigger was a slow spawn is **inferred** (the timeout itself is not logged);
+the *defect* — that any single transient spawn failure is permanent — is **confirmed from source**.
+
+#### The same `killStaleSessions()` explains the earlier incident
+
+Its comment: *"our prefix is agent-scoped, so anything matching it is OURS from a dead process — kill
+before spawning fresh."* The reasoning holds for the SERVER's own restart. It does **not** hold for a
+second process constructing its own adapter: the `_smoketest` built a default-config adapter whose
+prefix matched the live server's sessions, so "anything matching it is ours" reaped a session belonging
+to a *running* peer process. **The already-filed harness defect and this pool defect share one root** —
+prefix-scoped ownership with no liveness check on the owner.
+
+#### Why this is the highest-value single finding of the sweep
+
+Three properties compound:
+- **Silent** — after the first instant it logs nothing, because nothing is attempted.
+- **Permanent** — process-lifetime, no self-heal, no backoff, no retry.
+- **Load-bearing** — under `subscriptionPath.mode: force` this door is the fallback the whole gating
+  layer depends on when the primary framework is down.
+
+An agent can therefore lose its entire internal-judgment fallback to one transient blip, and every
+observable surface stays quiet about it. **That is the exact failure shape this audit was commissioned
+to find**, arrived at from the opposite direction — not by auditing a guard, but by chasing why a
+guard's evidence would not appear.
