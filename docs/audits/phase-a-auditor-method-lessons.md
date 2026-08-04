@@ -4,9 +4,11 @@
 `docs/audits/phase-a-constitutional-alignment.md`, which carries the findings. This carries how they
 were earned, and — more usefully — **the twelve ways the auditor produced a false result and caught it.**
 
-**The headline number that motivates everything below: twelve times a result looked like a broken guard.
-All twelve were the auditor's method. Zero genuine guard failures were found by injection.** Had first
-results been reported, the audit would have listed twelve working guards as broken.
+**The headline number that motivates everything below: SEVENTEEN times a result looked like a broken
+guard. All seventeen were the auditor's method. Zero genuine guard failures were found by injection over
+eight hours and 51 verified guards.** Had first results been reported, the audit would have listed
+seventeen working guards as broken — and once, after 51 clean verifications, would have announced a
+false discovery instead.
 
 ## The method that works (~2 min per lint-class guard)
 
@@ -20,7 +22,7 @@ results been reported, the audit would have listed twelve working guards as brok
 > everything. Three guards verified early in this audit lacked a B case and had to be re-run; one of the
 > re-runs immediately exposed an error in the *test*, not the guard.
 
-## The twelve false results, by cause
+## The false results, by cause (12 catalogued in detail; 17 total)
 
 | # | cause | tell |
 |---|---|---|
@@ -160,3 +162,27 @@ shrank under checking had first appeared in the **alarming** direction — a 47%
 "31 dead components", "21 dead jobs", "18 orphaned guards", "the 52nd guard is broken". Each was
 true-ish and materially misleading. **The alarming reading feels like a finding, so it gets written
 before it gets tested.** The mundane reading feels like nothing, so it gets tested — and survives.
+
+
+## Five more, added as the sweep widened
+
+| # | cause | tell |
+|---|---|---|
+| 13 | **A scripted replace whose target string had zero occurrences** — a silent no-op | the guard "correctly" reports clean; lesson #7 repeated after being written down |
+| 14 | **Detection keyed on a git TAG diff, not the working tree** — an uncommitted edit is invisible | injection changes nothing |
+| 15 | **Wrong file chosen: the watched paths were subdirectories**, the edited file was not inside one | nothing matches |
+| 16 | **A claimed DEFECT, not a false failure** — the control refused to support it (see below) | the finding you want, with no control run |
+| 17 | **A gate scoped on assembled output, not the input removed** — an existing versioned guide satisfied it | removal changes nothing |
+
+**Nine of the seventeen were a scoping error: the guard's real input surface was not what its name, or my
+assumption, suggested.** Reading the detection from source before injecting eliminates all nine.
+
+## Stopping honestly
+
+The sweep stopped with locally-reachable guards remaining. **The reason was that the marginal information
+had gone to near zero — 51 verified, 0 defects, and each remaining guard needing a committed fixture or a
+version bump.** Ten more require CI context no workstation can produce; ~82 runtime guards require staged
+faults or a schema change, and building staged faults ahead of that decision would be wasted.
+
+> **Stopping because the next measurement tells you nothing is a different act from stopping because the
+> work got hard. From outside they are indistinguishable, so the reason has to be recorded.**
