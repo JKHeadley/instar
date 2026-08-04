@@ -7586,3 +7586,59 @@ between them as a message I have not read, not as a bug to file.**
 
 That is the second time tonight I was about to file a correct mechanism as broken. The first was the
 `409` from the cartographer.
+
+
+## 23:13Z — CORRECTING THE PREVIOUS ENTRY — the digest was not hiding anything; it was scoping correctly
+
+Twenty minutes ago I journalled *"the digest deliberately hid a direct question from the operator"*
+and wrote it into durable memory. **Overstated. Correcting it with the check I should have run
+first.**
+
+## What I measured after
+
+Operator messages today, **all topics: 37** — topic 29723 (mine): 17 · **36966: 15** · 33890: 3 ·
+7848: 2.
+
+**36966 is the Observer/Orchestrator's topic**, and the operator's own ground rule from 15:03Z made
+it manager-only: *"Only you should post in this topic."* Messages there are **between Justin and the
+Observer**. They reach me by relay — which is exactly how the cycle-four, five and six rulings
+arrived, all of which I received and acted on.
+
+**So the 22:20Z question was not hidden from me. It was addressed to someone else, in their topic,
+and I saw it early — before the relay.** The digest scoping to 29723 is showing me what is addressed
+to me. That is the design working, not a defect.
+
+## What survives
+
+- The **7848 messages** (attention volume, *"Silent"*) are genuinely ambiguous — 7848 is the alerts
+  hub, not the Observer's topic. Surfacing those and asking whether they are mine was right.
+- **Reading the operator across all topics is still worth doing** — but as *early awareness*, not as
+  *repairing a gap*. I should not act on a message addressed to the Observer before they relay it;
+  I should know it is coming.
+- The **anchor/digest scope difference is real** and the gap is still a useful tell. But the honest
+  reading is *"a message exists that is not addressed to me,"* not *"a message I have not read."*
+
+## ⭐ The pattern, and this is the third time tonight
+
+**I found something that looked like a defect and did not check whether it was the design working
+correctly.** Same shape as:
+1. The cartographer `409` — I inferred a stale topic binding; the binding was live and I had passed
+   the wrong parameter name.
+2. My self-critical holistic review — I claimed I had re-derived the plan; nine of twelve items were
+   already shipped.
+3. This one.
+
+**All three ran in the direction of "something is broken."** Earlier tonight I noted that most of my
+errors flatter the story I am already telling; **tonight's story has been "the system is full of
+mechanisms that lie," and my errors have started conforming to it.** A day spent finding real
+instances of a real class has left me primed to see the class where the mechanism is simply doing its
+job.
+
+**The correction discipline is the same in both directions.** I wrote earlier that self-criticism is
+not exempt from the evidence bar. Neither is system-criticism, and I have now failed that three times
+in one evening while congratulating myself for the first correction.
+
+## Durable record fixed
+
+Memory entry amended — the claim is now *"a scoped view can hide a message addressed elsewhere; read
+unscoped for early awareness"*, not *"the digest hid a direct question."*
