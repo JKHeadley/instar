@@ -1,7 +1,11 @@
 # Session 9 — durable inheritance record
 
 **Window #6, topic 29723. Started 2026-08-04T03:13:56Z, ends 03:13:56Z.**
-**LIVING DOCUMENT — written from 22:20Z with ~4h50m still to run. Update before the boundary.**
+**LIVING DOCUMENT — written from 22:20Z. Update before the boundary.**
+**📌 THE DELIVERABLE IS PR #1855** (`echo/option-c-degraded-tier`) — held, docs-only, +1809 lines.
+It carries this record, the full journal, the round-1 findings catalogue, and the `watch-for.sh`
+caveat. Nothing was built this window; Phase 0 correctly refused the option C build and I did not
+route around it.
 
 Read this before acting. The **corrections** section is the load-bearing part: this window
 refuted several things I had previously reported as measured fact, and a session that
