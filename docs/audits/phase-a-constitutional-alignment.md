@@ -113,3 +113,53 @@ enumerated file set; a compile-breaking injection reports "no tests" rather than
 workspace silently skips the hook set; a keyword classifier detects a vocabulary rather than a property.
 
 **Had first results been reported, this document would list twelve working guards as broken.**
+
+---
+
+## Round 5 — sweep for ASSERTS-UNMEASURED-STATE (interim, NOT converged)
+
+**Hypothesis.** Two live defects this round (`currentMemoryPressure` mis-measuring, `LlmCircuitBreaker`
+hardcoding `provider rate-limited` for all 14 trip causes) share a shape: **a component reporting a
+cause it did not measure.** If that is a systemic pattern rather than two coincidences, more instances
+should be findable.
+
+**Angles run (3):**
+
+| # | angle | candidates | confirmed instances |
+|---|---|---|---|
+| 1 | hardcoded cause noun in a template that ALSO interpolates the raw reason | 12 | 0 |
+| 2 | fixed `reason: '<literal>'` returned from a catch-all / decision path | 8 | 0 |
+| 3 | user-facing message templates + durable enum defaults asserting a cause | 2 | 0 |
+
+**Every candidate inspected was honest.** Representative:
+
+- `AmbientContributionGate:280` returns `reason: 'rate-limited'` — but *inside* `if (this.isRateLimited(...))`. It measured it.
+- `GoalRealignment:1222` returns `reason: 'provider-error'` — but from a `catch` around the provider call, and keeps `malformed-verdict` as a distinct outcome. It measured it.
+- `SessionRefresh:452` names the rate limit with the actual numbers that produced it.
+
+**Interim verdict: `LlmCircuitBreaker` was an OUTLIER, not the tip of a pattern.** That is a genuinely
+good result for the codebase and it weakens my hypothesis, which is why it is recorded rather than
+quietly dropped.
+
+### Why this is NOT convergence
+
+- Population is **348 files** carrying a `reason: '` literal. Three regex angles sampled it; they did
+  not enumerate it. A clean sample is not a clean population.
+- Zero-new after three angles is one round. The contract requires a **re-sweep** finding zero new, and
+  the angles must change between rounds.
+
+### Blind-spot class this sweep CANNOT see (named, per contract)
+
+All three angles key on a **cause word appearing in source text**. They are structurally blind to:
+
+1. **Cause asserted by omission** — a default branch that emits the same status for several distinct
+   conditions without naming any of them. There is no cause word to match.
+2. **Cause asserted across a function boundary** — a caller labelling what a callee returned, where
+   neither site contains both the label and the measurement.
+3. **Cause asserted by a field name rather than a value** — e.g. writing to `quotaFailures` from a
+   generic failure path. The noun is in the schema, not the string.
+
+**(3) is the highest-yield next angle** and is the shape most likely to hide a real instance: the
+breaker's own defect would have been invisible to angles 1–3 had the string lived in a metrics key
+instead of a log line. Next round should sweep counter/field NAMES against the conditions that
+increment them.
