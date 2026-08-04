@@ -54,11 +54,24 @@ describe('Telegram message injection logic', () => {
   });
 
   it('sendInput uses -l flag for literal text', () => {
+    // The `-l` flag now lives in the shared literal-send funnel rather than
+    // inline: `send-keys -l` carries its payload in ONE argv element and blows
+    // ARG_MAX past ~16KB, so every literal send goes through
+    // buildLiteralSendArgs()/chunkLiteralForTmux() (src/core/tmuxLiteralSend.ts).
+    // The guarantee this test protects is unchanged — literal text is sent with
+    // `-l` — so it follows the flag to where it now lives instead of asserting
+    // on a source string the fix deliberately removed.
     const source = fs.readFileSync(
       path.join(process.cwd(), 'src/core/SessionManager.ts'),
       'utf-8'
     );
-    expect(source).toContain("'-l'");
+    expect(source).toContain('buildLiteralSendArgs');
+
+    const funnel = fs.readFileSync(
+      path.join(process.cwd(), 'src/core/tmuxLiteralSend.ts'),
+      'utf-8'
+    );
+    expect(funnel).toContain("'-l'");
   });
 
   it('sendInput sends Enter key separately', () => {

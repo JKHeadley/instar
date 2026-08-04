@@ -209,6 +209,67 @@ export interface LlmCircuitBreakerStatus {
 const DEFAULT_OPEN_MS = 15 * 60_000; // 15 minutes
 const DEFAULT_PROBE_POLL_MS = 250;
 
+/**
+ * Describe WHY the breaker tripped, from the failure reason.
+ *
+ * The breaker previously hardcoded "provider rate-limited" into its OPEN log
+ * line regardless of cause. On 2026-08-04 the real cause was a tmux
+ * `send-keys` argv-ceiling failure (`command too long`) on a ~40 KB prompt;
+ * reported as a rate limit, it pointed the entire diagnosis at quota while the
+ * substrate stayed down for hours across 14 trips.
+ *
+ * A detector must not assert a cause it did not measure. Where the reason does
+ * not positively indicate a rate limit, this says so honestly rather than
+ * guessing — the same "signal must be true" rule the memory-pressure metric fix
+ * applied (see docs/specs/macos-memory-pressure-metric.md).
+ *
+ * Pure and exported so the classification is unit-testable without a breaker.
+ *
+ * RULE 3.1 RATIONALE
+ *   Criticality: low — this label is NARRATION ONLY. It never decides whether
+ *                the breaker trips, how long it stays open, or which calls are
+ *                refused; that path runs through classifyRateLimit /
+ *                recordFailure and is untouched. A wrong label misleads a human
+ *                reader (expensively — see below), it cannot misroute a call.
+ *   Frequency:   once per breaker trip (not per call)
+ *   Stability:   UNSTABLE by nature — it matches free-text error strings from
+ *                tmux, the shell, and provider CLIs, none of which promise a
+ *                stable message format. This is accepted deliberately: the
+ *                alternative in place until 2026-08-04 was a hardcoded
+ *                "provider rate-limited" for every cause, which is a heuristic
+ *                with a 100% false-positive rate on non-rate-limit trips.
+ *   Fallback:    'provider unavailable' — the honest default. Unmatched text
+ *                yields "I cannot tell", never an invented cause. Drift in an
+ *                upstream message therefore degrades to silence-about-cause,
+ *                never to a confident wrong cause.
+ *   Verdict:     ordered pattern match, ceiling-check FIRST so a send failure
+ *                mentioning "limit" is not misread as quota; pinned by
+ *                tests/unit/llm-circuit-trip-cause.test.ts against the verbatim
+ *                production string from the 2026-08-04 outage.
+ */
+export function classifyTripCause(reason: string): string {
+  const r = (reason ?? '').toLowerCase();
+  if (/\btoo long\b|e2big|argument list too long/.test(r)) {
+    return 'prompt too large for the transport (argv ceiling — NOT a rate limit)';
+  }
+  if (/rate.?limit|429|quota|usage limit|too many requests/.test(r)) {
+    return 'provider rate-limited';
+  }
+  if (/failed to send|send-keys|tmux|broken pipe|epipe/.test(r)) {
+    return 'transport send failure (NOT a rate limit)';
+  }
+  if (/timeout|etimedout|timed out/.test(r)) {
+    return 'provider timeout';
+  }
+  if (/enoent|not found|command not found/.test(r)) {
+    return 'provider binary unavailable';
+  }
+  if (/auth|401|403|credential|unauthor/.test(r)) {
+    return 'provider auth failure';
+  }
+  return 'provider unavailable';
+}
+
 export class LlmCircuitBreaker {
   private state: CircuitState = 'closed';
   private openUntil = 0;
@@ -373,7 +434,7 @@ export class LlmCircuitBreaker {
     this.openUntil = now + this.currentOpenMs;
     this.probeInFlight = false;
     this.log(
-      `[llm-circuit] OPEN: provider rate-limited — pausing further calls on THIS provider for ~${Math.round(
+      `[llm-circuit] OPEN: ${classifyTripCause(this.lastReason)} — pausing further calls on THIS provider for ~${Math.round(
         this.currentOpenMs / 1000,
       )}s (trip #${this.tripCount}); other frameworks have their own breakers; reason: ${this.lastReason}`,
     );

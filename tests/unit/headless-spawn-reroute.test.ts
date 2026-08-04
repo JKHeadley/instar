@@ -37,7 +37,13 @@ vi.mock('node:child_process', () => {
   const handle = (args?: string[]) => {
     if (!args) return '';
     if (args[0] === 'send-keys' && args.includes('-l')) {
-      sentLiterals.push(args[args.indexOf('-l') + 1]);
+      // The payload follows `-l`, and `--` may sit between them: literal sends
+      // funnel through buildLiteralSendArgs(), which emits an option terminator
+      // so a payload starting with `-` can never be read as a flag. Skip it, or
+      // this captures the terminator instead of the text.
+      let at = args.indexOf('-l') + 1;
+      if (args[at] === '--') at += 1;
+      sentLiterals.push(args[at]);
       return '';
     }
     if (args[0] === 'new-session') {

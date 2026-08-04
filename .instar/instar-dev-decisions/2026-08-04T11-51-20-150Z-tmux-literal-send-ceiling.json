@@ -1,0 +1,31 @@
+{
+  "ts": "2026-08-04T11:51:20.150Z",
+  "slug": "tmux-literal-send-ceiling",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 462,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-no-unfunneled-tmux-literal-send.js",
+      "src/commands/server.ts",
+      "src/core/LlmCircuitBreaker.ts",
+      "src/core/SessionManager.ts",
+      "src/core/tmuxLiteralSend.ts",
+      "src/providers/adapters/anthropic-headless/control/inputInjection.ts",
+      "src/providers/adapters/anthropic-interactive-pool/canary/emptyPromptCanary.ts",
+      "src/providers/adapters/anthropic-interactive-pool/control/inputInjection.ts",
+      "src/providers/adapters/anthropic-interactive-pool/promptRunner.ts",
+      "src/providers/adapters/openai-codex/control/inputInjection.ts"
+    ],
+    "addedLines": 428,
+    "deletedLines": 34
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

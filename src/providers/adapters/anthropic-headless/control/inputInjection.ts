@@ -1,9 +1,31 @@
 /**
  * InputInjection implementation for anthropic-headless via tmux send-keys.
  */
+/*
+ * RULE 3: EXEMPT — this is a WRITE path, not a state detector.
+ *
+ * The Rule 3 pattern match fires on `tmux send-keys`, but every use here is
+ * outbound: push literal text into a pane, then press Enter. Nothing in this
+ * file reads pane content, parses provider output, or infers session state, so
+ * there is no detection heuristic to carry a canary or a stability rationale —
+ * the failure mode this file can have is "the text did not arrive", which is a
+ * transport concern and is covered structurally instead:
+ *
+ *   - sends funnel through `buildLiteralSendArgs`/`chunkLiteralForTmux`
+ *     (src/core/tmuxLiteralSend.ts), which bounds each argv payload below the
+ *     measured ARG_MAX ceiling;
+ *   - `scripts/lint-no-unfunneled-tmux-literal-send.js` fails the build if a
+ *     raw unfunneled `send-keys -l` is reintroduced anywhere in src/;
+ *   - `tests/integration/tmux-literal-send-ceiling.test.ts` asserts byte-exact
+ *     delivery of a 40KB payload against a real pane.
+ *
+ * If this file ever starts READING pane state, this exemption stops being true
+ * and a Rule 3.1 rationale plus canary is required.
+ */
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { chunkLiteralForTmux, buildLiteralSendArgs } from '../../../../core/tmuxLiteralSend.js';
 import type {
   InputInjection,
   InputInjectionOptions,
@@ -50,11 +72,16 @@ class AnthropicHeadlessInputInjection implements InputInjection {
     const padding = options?.paddingMs ?? 500;
 
     try {
-      await execFileAsync(
-        this.config.tmuxPath,
-        ['send-keys', '-t', `=${tmuxName}:`, '-l', input],
-        { timeout: 5000 },
-      );
+      // Chunked: `send-keys -l` carries its payload in one argv element, so a
+      // large injected input fails with `command too long`
+      // (src/core/tmuxLiteralSend.ts).
+      for (const chunk of chunkLiteralForTmux(input)) {
+        await execFileAsync(
+          this.config.tmuxPath,
+          buildLiteralSendArgs(`=${tmuxName}:`, chunk),
+          { timeout: 5000 },
+        );
+      }
 
       if (submit) {
         if (padding > 0) {
