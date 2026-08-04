@@ -1,0 +1,92 @@
+<!-- bump: patch -->
+
+## What Changed
+
+On a multi-machine agent, the server publishes a small record telling its
+Lifeline process whether THIS machine should own the Telegram poll. That record
+was only rewritten when the machine's role actually changed. Because a machine's
+role is restored from the machine registry at startup, a machine that was
+already `awake` before a restart comes back, reconciles, finds nothing changed,
+and returns early — leaving the cautious boot default (`standby` /
+`shouldPoll:false`) standing permanently on the machine that genuinely holds the
+fenced lease. A second failure rode along: written only on transitions, the
+record aged past the Lifeline's 90-second freshness bound on a steady role and
+was discarded as "no current opinion".
+
+A second, independent defect in the same path is fixed with it. The "safe boot
+default" (`standby` / `shouldPoll:false`) was written at the END of
+`initializeLease()` — but every branch above it already ends in a role
+reconcile, so the default did not stand in for an unmade decision, it
+OVERWROTE the decision made three lines earlier. On its own that is enough to
+leave a lease HOLDER published as `standby / do-not-poll` for the life of the
+process. The default write now precedes the branch, matching the ordering its
+own comment describes.
+
+The lease-derived poll intent is now published on every role reconcile rather
+than only on a transition, so it always reflects `holdsLease()` and stays inside
+the consumer's freshness bound. An unchanged intent is rewritten at most once
+every 30 seconds (a 3× margin under the 90-second bound); a changed role or a
+moved lease epoch publishes immediately. A write that fails no longer records a
+skip-window, so it is retried on the next reconcile instead of being treated as
+delivered.
+
+Everything that should happen only on a genuine role change still happens only
+on a genuine role change — the `role_transition` audit entry, the
+promote/demote events, and the flap circuit-breaker were deliberately left
+below the early-return.
+
+## What to Tell Your User
+
+- **The machine in charge no longer tells itself it is the standby:** "When I
+  run on more than one machine, the one holding the badge now reports that
+  correctly to its own messenger instead of leaving a startup placeholder in
+  place."
+- **Why this mattered:** "With the placeholder standing, my messenger either
+  fought the other machine for the Telegram line — colliding, deciding it was
+  stuck, and restarting roughly every ten minutes — or, with the follow-the-lease
+  behaviour switched on, muted the machine that was supposed to be answering."
+- **Nothing changes on a single-machine setup:** "A single machine is always the
+  one in charge, so there was never a second poller to collide with."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|---|---|
+| The poll intent reflects the live fenced lease rather than a boot placeholder | Automatic — no configuration. Applies wherever `multiMachine.pollFollowsLease` resolves on |
+| The poll intent stays inside the consumer's freshness bound on a steady role | Automatic — an unchanged record is refreshed every 30s; a changed one publishes immediately |
+| A failed intent write is retried rather than recorded as delivered | Automatic — the throttle window only advances on a write that actually landed |
+
+## Evidence
+
+Measured live on a two-machine agent (v1.3.1122) before the fix: `/health →
+multiMachine.syncStatus` reported `role:awake, holdsLease:true,
+leaseEpoch:21302` in the same second that `state/telegram-poll-intent.json`
+reported `role:standby, shouldPoll:false` at that same epoch. Sampling the
+record at 10-second intervals showed its age climbing 84.5s → 155.0s across an
+80-second window with no rewrite — past the consumer's 90s bound. Downstream on
+that agent: 812 × `Telegram 409 Conflict — another bot instance is polling`,
+260 × `TelegramLifeline.selfRestart: conflict409Stuck`, and a server restart
+roughly every ten minutes for about eight hours.
+
+New unit coverage in
+`tests/unit/MultiMachineCoordinator-pollIntentRepublish.test.ts` (10 tests):
+holder-with-no-transition publishes `shouldPoll:true` (the regression),
+non-holder publishes `shouldPoll:false`, steady-role refresh past the window
+with throttling inside it, a failed write retried on the next reconcile,
+immediate publish on a lease-epoch change, no write when the gate is explicitly
+off, transition-only side effects still firing on a real change and NOT firing
+on a steady role, plus two tests that run the REAL boot path with a live
+FencedLease/LeaseCoordinator — a machine that acquires ends up published as
+`awake / shouldPoll:true`, and a machine on the observe-only branch that never
+acquires is left muted. Verified as a control that 7 of the 10 fail against
+`origin/main` — the headline regression failing with `expected null not to be
+null` (no record written at all) rather than a missing-symbol error; the 3 that
+pass pre-fix are the gate-off, real-transition, and never-acquires guards, which
+are expected to hold either way.
+
+The second defect was found BY the real-boot-path test, not by reading: with
+only the early-return fixed, that test failed with the on-disk record reading
+`{shouldPoll:false, role:'standby'}` while the in-process throttle key read
+`true|awake|1` — the correct value had been written and then overwritten by the
+boot default. Shipping the early-return fix alone would have produced a green
+stubbed suite and an unchanged production failure.
