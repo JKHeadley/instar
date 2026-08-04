@@ -6359,3 +6359,57 @@ taken after the event. It does nothing about the other four instances today, whi
 WIDE rather than baselines too LATE. Those need a different guard (assert the corpus spans the claimed
 window), and I have not built it. Naming the gap rather than letting one tool imply the class is
 closed.
+
+
+## 21:13Z — CLOSED THE OTHER HALF — corpus-spans-window guard, and the corpus provably slides
+
+The previous entry named this gap and did not build it. Building it, one entry later, rather than
+letting a named gap become a filed intention.
+
+## The guard
+
+`spans-window.sh` — given a claim window and a corpus-producing command, it extracts the corpus's
+real min/max timestamps and **refuses when the corpus does not span the window**. It distinguishes
+three outcomes that ordinarily render identically:
+
+| exit | meaning |
+|---|---|
+| 0 | corpus spans the window — **a negative result here is a real negative** |
+| 1 | corpus is EMPTY — cannot answer; absence of evidence, not evidence of absence |
+| 2 | corpus does NOT span — any "nothing found" is unsupported |
+
+## Controls — all three discriminate, tested against live data
+
+**A (must refuse):** the real error from earlier tonight — asking about the 03:49Z attention item
+against the job-history route. → **exit 2**, and it names the honest alternative: *"narrow the claim
+to 09:35 → 21:10, which is what was actually observed."*
+
+**B (must pass):** a window the corpus genuinely covers (15:00 → 20:00Z). → **exit 0**.
+
+**C (must report empty):** a corpus with no parseable timestamps. → **exit 1**.
+
+Three distinct answers on three inputs, so none of them is the tool's default.
+
+## ⭐ And the test surfaced a live hazard I had not measured
+
+Earlier tonight the same 400-row query covered **09:00:00Z → 20:40Z**. Running it now it covers
+**09:35:00Z → 21:10Z**.
+
+**The corpus SLID FORWARD by 35 minutes in about 90 minutes of wall clock.** A fixed-size row cap on
+a busy scheduler is a *moving* window, not a fixed one — so a query that legitimately answered a
+question at 20:40Z silently stops being able to answer it, with no change to the query and no
+warning in the response.
+
+That is the strongest argument for this guard existing at all: **the corpus I verified as adequate
+an hour ago is no longer adequate for the same claim, and nothing announced it.** Re-measuring at
+claim time (the plan's own standing rule) catches the VALUE changing; it does not catch the
+CORPUS's reach shrinking underneath a stable-looking query. This does.
+
+## Scope, honestly
+
+Two guards now cover the two shapes that cost me five errors today — baseline-too-late and
+corpus-too-narrow. Both are **my own audit tooling**, invoked deliberately; neither is enforced
+anywhere, so they are guarantees only when I reach for them. **That is a real limit and it is the
+same limit the whole session has been documenting** — a correct mechanism with nothing running it.
+The honest status is: better than prose, weaker than a gate. Recorded as such rather than claimed as
+closure.
