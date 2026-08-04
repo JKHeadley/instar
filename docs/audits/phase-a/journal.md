@@ -6728,3 +6728,90 @@ and this time the negative is **TRUE**. Same tool, same target, opposite arming,
 **That is the cleanest possible demonstration of why the baseline rule had to become a guard rather
 than stay a rule** — and I got both halves of the demonstration within one hour, on the same file,
 by accident.
+
+
+## 22:11Z — ⭐ RE-DERIVED: the real defect is a SUCCESSFUL pre-screen being treated as a retryable failure
+
+Round 1 refuted my causal chain. This is the re-derivation I recommended, done from **skip reasons and
+an independence control** rather than timestamp co-occurrence.
+
+## The control that settles it
+
+Gate failures vs memory refusals, per hour, from the server log:
+
+| hour | gate failures | memory refusals |
+|---|---|---|
+| 02 | **24** | **0** |
+| 09 | **0** | **22** |
+| 10 | 14 | 0 |
+| 13 | **30** | **0** |
+| 15 | 24 | 23 |
+| 17 | 30 | 23 |
+
+**Hour 02: 24 gate failures with zero memory pressure. Hour 09: 22 memory refusals with zero gate
+failures.** The two series are independent. If gate failures were memory refusals one layer up, as I
+claimed and escalated, neither row could exist.
+
+**And `/jobs/history` records only `spawn-error` and `success` — ZERO gate rows in 400.** So the
+corpus I built the original claim on never contained gate data at all.
+
+## The three jobs are the same three — for the opposite reason
+
+Gate failures by job, whole day: `evolution-proposal-evaluate` **92**, `identity-review` **72**,
+`insight-harvest` **68**.
+
+**Those are exactly the three jobs I named to the operator at 12:06Z as victims of memory pressure.**
+They were being skipped by their own gates, all day, in hours with no memory pressure at all.
+
+## ⭐ The actual defect
+
+```js
+if (job.gate) {
+  if (!await this.runGateAsync(job)) {
+    this.scheduleRetry(slug, 'gate');   // ← advances the exponential backoff ladder
+    return 'skipped';
+  }
+}
+```
+
+The gate's own documented purpose, in the line above it, is **"zero-token pre-screening"** — it exists
+to answer *"is there work?"*. And two of the three gates are pure no-work checks:
+
+- `insight-harvest` — `exit(0 if len(learnings) > 0 else 1)` — exits 1 when there are **no unapplied
+  learnings**.
+- `evolution-proposal-evaluate` — exits 1 when there are **no proposals** with status `proposed`.
+- (`identity-review` is different — a health probe plus a file test — so it *can* be load-sensitive.
+  Recorded as distinct rather than lumped in.)
+
+> **A gate correctly reporting "there is nothing to do" is recorded as a failure and consumes the
+> retry budget.** So a job with no work backs off 1m → 5m → 15m → hourly → 2-hourly — and by the time
+> work actually arrives, it is asleep.
+
+**That is why `insight-harvest` sat at 6/6 backing off two hours.** Not memory pressure. Its own
+successful pre-screen, 68 times.
+
+## Why this re-derivation is better than what it replaces
+
+- **One mechanism** instead of a two-gate causal chain.
+- **Independence proven by a control**, not inferred from a 125 ms gap.
+- **It explains the observation that started all this** — the exhausted retry budget — which the
+  memory theory only ever explained by assumption.
+- **The fix is small and local**: a gate answering "no work" should be a *skip*, not a *retryable
+  failure*. It should not touch the ladder at all.
+
+## The shape of my original error, named precisely
+
+I saw two effects of one clock tick, asserted a mechanism between them, and escalated. The
+disconfirming evidence — that gate failures fire abundantly with zero memory pressure — was in the
+same log file the whole time, one `grep` away, and I never ran it **because the story already
+explained everything I had looked at.**
+
+That is the fourth instance today of *"explains every observation" mistaken for "is the only thing
+that explains every observation"* — the exact sentence I wrote at 09:31Z about the pool defect. I
+wrote the lesson and then committed it again, on a bigger claim, twelve hours later.
+
+## Status
+
+The memory-pressure work is not vindicated by this — the 131 refusals in the episode are real and did
+refuse real spawns. But **they are not what exhausted the retry budgets**, and the retry-budget
+argument was the load-bearing half of the case I put to the operator.
