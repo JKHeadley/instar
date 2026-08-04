@@ -452,3 +452,51 @@ re-sweep before declaring convergence, and angles 1-5 ran under the looser defin
 reliably have recognised #3 or #4. **So: approaching convergence, not converged.** The honest next step
 is re-running angles 1-3 with the tightened definition ("a boolean whose unknown collapses to the
 CONSEQUENTIAL value"), not declaring done on two clean rounds.
+
+---
+
+## ASSERTS-UNMEASURED-STATE — sweep CONVERGED (this class, this surface)
+
+Angles 1-3 were re-run under the tightened definition rather than trusting their original clean
+results, because they had been run under the looser one and would not reliably have caught #3 or #4.
+
+| angle | subject | result under the TIGHTENED definition |
+|---|---|---|
+| 1 (re-run) | a stated cause that DRIVES a decision | **0** — every `reason:` sits in an audit call carrying the measured evidence beside it (`not-owner` + `observedStatus`, `stale-epoch` + `observed`/`sent`, `cas-lost` + `casReason`) |
+| 2 (re-run) | fixed status literals with consequence | **0** — all reason-carrying refusals are measured conditions; the one legacy fail-open (`conversationBindGate`) is a deliberate staged migration: scoped to the legacy path, time-bounded by a deploy-stamp grace window, and instrumented with a straggler attention item |
+| 3 (re-run) | defaults that DISABLE rather than label | **0** — `SwapAntiThrash` defaults `enabled: true, dryRun: true`; a brake defaulting ON and OBSERVE-ONLY is the safe direction |
+| 4 | computed availability booleans | **1** — instance #3 |
+| 5 | health/status field naming | 0 — exemplar #1 |
+| 6 | cause asserted by omission | **1** — instance #4 |
+| 7 | cross-boundary assertion | 0 — definition tightened here |
+| 8 | memoised / cached failures | 0 — exemplar #2; OD-6 bounded as a singleton |
+
+**Final round: 0 new findings, across a re-run of every prior angle plus two new ones, under one
+consistent definition.** The sweep is CONVERGED for this class over the agent-observable source surface.
+
+### Dispositions — every instance closed
+
+| # | instance | disposition |
+|---|---|---|
+| 1 | `SessionManager.currentMemoryPressure` asserted `critical` from raw free pages | **fixed** — PR #1850, shipped |
+| 2 | `LlmCircuitBreaker` hardcoded `provider rate-limited` for all trip causes | **fixed** — PR #1851, shipped 1.3.1125 |
+| 3 | `IntelligenceRouter.available` measures binary presence, read as reachability | **deferred:OD-5** — propagate the three-valued exemplar |
+| 4 | `CapabilityMapper` reports capability ABSENT when it cannot read config (7 checks) | **deferred:OD-7** (new, below) |
+| 5 | `anthropic-interactive-pool` memoised rejected `startPromise` | **deferred:OD-6** — singleton, one-site fix |
+
+### OD-7 — `CapabilityMapper` should distinguish "absent" from "cannot tell"
+
+**Status:** OPEN. Seven checks return `false` on both a missing config file and a JSON parse failure.
+Proved against fixture configs: a genuinely-enabled capability with a truncated config reports ABSENT.
+Feeds `GET /capabilities`, the surface the constitution names as the source of truth with the
+instruction *"never hallucinate about missing capabilities — verify first"*. **An agent obeying that
+rule perfectly is handed a confident false negative.** Same three-valued fix as OD-5.
+
+### What the convergence actually licenses
+
+**Only this:** no further instance of this class is findable by SOURCE-PATTERN search over `src/`.
+It does NOT license "the codebase no longer asserts unmeasured state" — three of the five instances
+were found by watching RUNTIME behaviour diverge from a surface's claim (#2 from a log line, #3 from a
+health endpoint contradicting live calls, #5 from an absence of expected log output). **A pattern sweep
+cannot find those; only using the system can.** That asymmetry is the sweep's honest limit and belongs
+in the next phase's method, not in a footnote.
