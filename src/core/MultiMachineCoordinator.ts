@@ -112,6 +112,13 @@ const DEFAULT_LEASE_PULL_INTERVAL_MS = 5_000;
 const RENEW_SAFETY_FACTOR = 0.5;
 const MIN_RENEW_INTERVAL_MS = 5_000;
 const MAX_RENEW_INTERVAL_MS = 60_000;
+/**
+ * B1 — how often an UNCHANGED lease-derived poll intent is rewritten so its `ts`
+ * stays inside the consumer's staleness bound (TelegramLifeline reads it with
+ * `maxStaleMs: 90_000`; past that the record is treated as "no current opinion").
+ * 30s leaves a 3× margin while keeping the write off every lease tick.
+ */
+const POLL_INTENT_REFRESH_MS = 30_000;
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -195,6 +202,13 @@ export class MultiMachineCoordinator extends EventEmitter {
    * from one left by a prior incarnation of this server.
    */
   private readonly bootId = `${process.pid}-${process.hrtime.bigint().toString(36)}`;
+  /**
+   * B1 — throttle state for the per-reconcile poll-intent republish. `key` is the
+   * last SUCCESSFULLY written `shouldPoll|role|leaseEpoch`; the timestamp is when
+   * that write landed. See `publishLeasePollIntent`.
+   */
+  private lastPollIntentKey: string | null = null;
+  private lastPollIntentWriteMs = 0;
   /** Integrated-Being v1 — tracks whether we've already emitted the
    *  per-machine-ledger warning this boot. Spec §Multi-machine. */
   private integratedBeingWarningEmitted: boolean = false;
@@ -863,21 +877,50 @@ export class MultiMachineCoordinator extends EventEmitter {
    * is off. Guarded: a write failure is logged once, never thrown into the
    * caller's hot path (the intent file is advisory; a missed write degrades to the
    * lifeline's "no current opinion" → hold, the safe direction).
+   *
+   * Returns true only when a record was actually written, so the throttling
+   * wrapper never records a skip-window off a failed write. EVERY successful
+   * write updates the throttle state here (not in the wrapper) so a direct
+   * caller — e.g. the boot default in `initializeLease` — can never leave the
+   * cached key describing something other than what is actually on disk.
    */
-  private writeLeasePollIntent(shouldPoll: boolean, role: MachineRole): void {
-    if (!this.pollFollowsLeaseEnabled() || !this.leaseCoordinator) return;
+  private writeLeasePollIntent(shouldPoll: boolean, role: MachineRole): boolean {
+    if (!this.pollFollowsLeaseEnabled() || !this.leaseCoordinator) return false;
+    const normalizedRole: MachineRole = role === 'awake' ? 'awake' : 'standby';
+    const epoch = this.leaseCoordinator.currentEpoch();
     try {
       writePollIntent(this.config.stateDir, {
         shouldPoll,
-        leaseEpoch: this.leaseCoordinator.currentEpoch(),
-        role: role === 'awake' ? 'awake' : 'standby',
+        leaseEpoch: epoch,
+        role: normalizedRole,
         serverPid: process.pid,
         bootId: this.bootId,
         ts: Date.now(),
       });
+      this.lastPollIntentKey = `${shouldPoll}|${normalizedRole}|${epoch}`;
+      this.lastPollIntentWriteMs = Date.now();
+      return true;
     } catch (err) {
       console.log(`[MultiMachine] [poll-intent] write failed (non-fatal): ${(err as Error).message}`);
+      return false;
     }
+  }
+
+  /**
+   * B1 — republish the lease-derived poll intent from `reconcileRoleToLease`,
+   * throttled. Writes when the intent CHANGES (shouldPoll / role / lease epoch) or
+   * when the last successful write is older than `POLL_INTENT_REFRESH_MS`, so a
+   * steady role stays comfortably inside the consumer's staleness bound without a
+   * file write on every lease tick. The throttle state is recorded by
+   * `writeLeasePollIntent` on a write that actually landed — a failed write
+   * retries on the next reconcile rather than being treated as delivered.
+   */
+  private publishLeasePollIntent(shouldPoll: boolean, role: MachineRole): void {
+    if (!this.pollFollowsLeaseEnabled() || !this.leaseCoordinator) return;
+    const key = `${shouldPoll}|${role === 'awake' ? 'awake' : 'standby'}|${this.leaseCoordinator.currentEpoch()}`;
+    const unchanged = key === this.lastPollIntentKey;
+    if (unchanged && Date.now() - this.lastPollIntentWriteMs < POLL_INTENT_REFRESH_MS) return;
+    this.writeLeasePollIntent(shouldPoll, role);
   }
 
   /**
@@ -1121,6 +1164,14 @@ export class MultiMachineCoordinator extends EventEmitter {
       // two-machine mesh, 2026-05-28). Read-only, so it runs before EVERY branch below: the
       // observe-only and defer-preferred decisions read the same lease view and benefit equally.
       this.leaseCoordinator.primeFromDurable();
+    // B1 — publish the SAFE default (shouldPoll:false / mute) BEFORE any branch
+    // below reconciles, so a stale prior-boot {shouldPoll:true} can't resurrect a
+    // poller in the window before the real role is known. This MUST precede the
+    // reconcile: written afterwards it overwrites the decision it was meant to
+    // stand in for, which is exactly what it used to do — every branch here ends
+    // in `reconcileRoleToLease`, so the tail write clobbered the truth and left a
+    // lease HOLDER published as `standby / do-not-poll`.
+    this.writeLeasePollIntent(false, 'standby');
     if (this.isLeaseObserveOnly) {
       // Silent standby: do NOT acquire — only observe the primary's lease.
       this.reconcileRoleToLease('lease-init-observe-only');
@@ -1139,10 +1190,6 @@ export class MultiMachineCoordinator extends EventEmitter {
     // B3 — keep the held lease fresh (renew before it lapses) so the epoch stops
     // climbing. No-op unless resilientRenew resolves on (dev-gate).
     this.startLeaseRenewTimer();
-    // B1 — at boot the role isn't yet reconciled; publish the SAFE default
-    // (shouldPoll:false / mute) so a stale prior-boot {shouldPoll:true} can't
-    // resurrect a poller before the first reconcile decides the real role.
-    this.writeLeasePollIntent(false, 'standby');
   }
 
   /**
@@ -1250,6 +1297,18 @@ export class MultiMachineCoordinator extends EventEmitter {
     if (!this.leaseCoordinator || !this._identity) return;
     const holds = this.leaseCoordinator.holdsLease();
     const desired: MachineRole = holds ? 'awake' : 'standby';
+    // B1 — publish the lease-derived poll intent on EVERY reconcile, ABOVE the
+    // no-transition early-return. `_role` is restored from the machine registry at
+    // startup, so a machine that was already awake before a restart re-enters
+    // reconcile with `desired === this._role` and returns here. Publishing below
+    // the early-return therefore left `initializeLease()`'s safe boot default
+    // ({shouldPoll:false, role:'standby'}) standing as the PERMANENT published
+    // intent for a machine that actually holds the lease — the lifeline then
+    // either fought for the poll (dry-run: 409 conflict loop) or muted the
+    // rightful holder (live). Publishing here also refreshes `ts` inside the
+    // consumer's staleness bound (TelegramLifeline: maxStaleMs 90_000), so a
+    // steady role reads as a live opinion instead of decaying to "no opinion".
+    this.publishLeasePollIntent(holds, desired);
     if (desired === this._role) return;
     const oldRole = this._role;
     this._role = desired;
@@ -1271,11 +1330,6 @@ export class MultiMachineCoordinator extends EventEmitter {
     if (holds) this.emit('promote');
     else this.emit('demote');
     console.log(`[MultiMachine] Lease reconcile → ${desired} (${reason})`);
-    // B1 — publish the lease-derived poll intent for the lifeline (shouldPoll =
-    // awake). No-op unless pollFollowsLease resolves on. Nothing consumes it yet
-    // (the lifeline reconcile loop is the next increment), so this is a safe,
-    // observe-only producer — it cannot change ingress.
-    this.writeLeasePollIntent(holds, desired);
     // B2 — feed the flap circuit-breaker on every REAL role transition (this is
     // past the `desired === this._role` early-return, so it counts only true
     // flips). Observe/dry-run: log the would-latch; applying the deterministic
