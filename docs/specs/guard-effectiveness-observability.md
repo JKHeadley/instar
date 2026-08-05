@@ -235,7 +235,34 @@ So the dependency is stated as binding:
 
 Until the harness exists, this schema's honest ceiling is **`unverifiable-by-construction` vs
 `instrumented`**. That distinction is worth having on its own (it is strictly more than today's
-silence), but it is *not* an effectiveness verdict and must never be rendered as one.
+silence), but it is *not* an effectiveness verdict.
+
+### And that ceiling is enforced by the TYPE, not by this paragraph
+
+⚠️ **Corrected — the gate caught this sentence.** An earlier draft said consumers "must never render
+instrumentation as an effectiveness verdict." **That is a wish, and this document is supposed to know
+better by now.** A prose prohibition is precisely the failure mode every version of this design was
+rejected for.
+
+So the verdict vocabulary is **shipped in two stages, and stage one does not contain the words**:
+
+```ts
+// Stage 1 — what ships WITH this schema. Note what is absent.
+type GuardObservabilityVerdict =
+  | 'unverifiable-by-construction'   // no framework-owned `looked` exists for this guard
+  | 'instrumented'                   // counters registered and arithmetically consistent
+  | 'never-evaluated'                // instrumented, looked === 0
+  | 'inconsistent';                  // the invariant didAct <= wouldAct <= looked is VIOLATED
+
+// Stage 2 — added ONLY when the staged-violation harness exists.
+//   | 'effective-candidate'
+//   | 'wired-not-effective'
+//   | 'evidence-backed-unmeasured'
+```
+
+**A consumer cannot render `effective-candidate` before the harness lands, because the value does not
+exist to render.** No discipline required, no reviewer needed, no way to forget. The prohibition is
+the absence of the symbol — which is, finally, the same move the whole design converged on.
 
 ## Design history
 
