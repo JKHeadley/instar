@@ -1179,3 +1179,71 @@ in the future tense, and this tree already has a standard for that — *A Dark F
 
 **The two tautologies are straightforwardly wrong** and are the only part of F12 I would call a defect
 without qualification.
+
+---
+
+## F13 — 11 tautological assertions in the test suite, and one is on the trust surface
+
+Sweep of **2,248 test files**, control PASSED (it independently re-found both known cases before
+reporting anything else).
+
+| category | count |
+|---|---:|
+| **A — tautological / shape-only assertion** | **11** |
+| **B — computed finding logged, never asserted** | 2 |
+| C — vacuous-when-empty loop | 5 |
+| D — skipped | 1 |
+
+**Nine of the eleven were new.** The lane's *exclusions* are what make the count credible: it dropped
+`expect(fn(x)).toBe(fn(x))` determinism checks (they can fail on an impure implementation), conditional
+`skipIf` gates (environment guards, not skips), and shape assertions in blocks that also assert
+concrete content. Precision over volume, as asked.
+
+### ⚠️ The one that matters most — a security-relevant tautology
+
+`tests/unit/AgentTrustManager-fingerprint.test.ts:144-149`, **spot-verified by hand:**
+
+```js
+it('returns empty array for unknown fingerprint (untrusted)', () => {
+  const ops = manager.getAllowedOperationsByFingerprint('unknown-fp');
+  // Untrusted agents get no operations
+  expect(Array.isArray(ops)).toBe(true);
+});
+```
+
+**The test name promises `empty`. The comment promises `no operations`. The assertion checks only that
+the result is an array.**
+
+> **If `getAllowedOperationsByFingerprint('unknown-fp')` returned `['deploy', 'delete-everything']`,
+> this test would pass.**
+
+This is the test for *an unknown, untrusted agent receives no permissions* — on the **cross-agent
+authorization surface**. Its sibling at line 155 has the same shape: "returns operations based on trust
+level" asserts only `Array.isArray(ops)`, so a *verified* agent receiving **zero** operations would also
+pass.
+
+**Neither is testing what its name says.** They are the exact defect this phase has been chasing — the
+passing condition narrower than what it certifies — sitting on the trust boundary.
+
+### A weaker case, recorded honestly as weaker
+
+`tests/unit/CoherenceGate.test.ts:509-516`:
+
+```js
+// The gate should have loaded and cached value docs
+// We can verify indirectly by checking that it doesn't fail
+expect(true).toBe(true);
+```
+
+The comment states the reasoning outright. **This one is not fully vacuous** — the block does exercise
+the gate, so a throw would fail the test. It is a smoke test with a decorative assertion, which is
+materially different from the trust-manager case and should not be reported at the same severity.
+
+### The distribution is the finding
+
+The eleven are spread across trust management, the coherence gate, migration parity, relationships,
+activity partitioning, session sentinels, and two threadline surfaces. **This is not one author's habit
+in one file — it is a suite-wide pattern**, and every one of these files is otherwise substantial.
+
+**A green suite is read as "these behaviours are verified."** For eleven assertions the honest reading is
+"this value has the right *type*," and nothing on the surface distinguishes them.
