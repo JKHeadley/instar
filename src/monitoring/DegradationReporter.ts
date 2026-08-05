@@ -437,6 +437,17 @@ export class DegradationReporter {
    *  report — reentrancy-safe per §4). Best-effort; never throws into the sweep. */
   private escalatePersistentDegradation(d: OpenDegradation, ageMs: number): void {
     try {
+      // C1 (bounded-attention-notification-surface): the SAME notifyUser gate as
+      // the primary alert path. This sweep was the sibling send door the original
+      // C1 commit missed — it deliberately bypasses reportEvent() for reentrancy
+      // safety, which also bypassed the gate, so the "heuristic fallback for
+      // ~Nm" reminders (the single most frequent template in the measured
+      // 24h sample) kept reaching the operator after the fix shipped. Found in
+      // production within two hours, by the operator. The sweep's internal
+      // state-keeping (openDegradations, TTL close, escalation dedupe) is
+      // untouched: only the outbound send is gated, so the record survives and
+      // delivery stops — identical contract to the primary path.
+      if (!this.notifyUser) return;
       if (!this.telegramSender || this.alertTopicId === null) return;
       const mins = Math.round(ageMs / 60_000);
       const msg =

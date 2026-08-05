@@ -1,0 +1,21 @@
+## What Changed
+
+**Completes the quiet-by-default fix from v1.3.1126: the second send door is now gated too.**
+
+v1.3.1126 stopped routine degradation reports reaching the operator — but the reporting system has two doors, and that release gated one. The timer-driven "never-silent" sweep, which re-sends `⚠ X has been on its heuristic fallback for ~Nm` reminders for persistently-degraded components, deliberately bypasses the primary report path for reentrancy safety — which also bypassed the new gate. Those reminders were the single most frequent template in the measurement that motivated the fix, so operators saw much of the noise continue after updating. Found in production by an operator within two hours.
+
+The same `monitoring.degradationReporter.notifyUser` setting (default `false`) now gates both doors identically. The sweep's internal tracking — open-degradation map, TTL auto-close, escalation dedupe — is untouched: the record survives, only delivery stops. Set `notifyUser: true` to receive these reminders again; both doors honour it.
+
+## Summary of New Capabilities
+
+None — this completes the v1.3.1126 capability rather than adding one. The existing `monitoring.degradationReporter.notifyUser` lever now controls the entire degradation-report surface, as its documentation already claimed.
+
+## What to Tell Your User
+
+If your agent got quieter after the last update but you still saw "has been on its heuristic fallback for ~N minutes" reminders, this closes that gap — those now stop too. Everything remains recorded and readable on request, and anything urgent or needing your decision is untouched, exactly as before.
+
+## Evidence
+
+- Exactly two `telegramSender` callsites exist in `DegradationReporter`; both are now downstream of the gate, and no other `src/` file emits the measured noise templates (sibling sweep with a grep the reviewer can re-run).
+- The shipped-default test drives the real path — open → sweep → escalate — and asserts zero sends with the tracking record intact; its control runs the identical sequence with `notifyUser: true` and asserts exactly one send.
+- Full unit suite green before push.
