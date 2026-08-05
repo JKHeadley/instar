@@ -125,7 +125,92 @@ nothing.** Three guards sit in that silent class on Echo right now:
 This is the concrete consequence the schema change removes, and it is why the obligation must be
 *required* rather than encouraged.
 
-## Proposed design
+
+## Design v2 — SUPERSEDES the design below (2026-08-05, post-adversarial-review)
+
+The adversarial review's finding 3 is not patchable, because it is not a bug in the check — it is a bug
+in **where the obligation lives**.
+
+> **v1 put the obligation in the MANIFEST — a *declaration*. A declaration names a route and a dotted
+> path, and a path can point anywhere: at `JobScheduler.jobCount`, at any pre-existing positive number.
+> The author controls it, so it can be borrowed.**
+>
+> **v2 puts the obligation in the REGISTRY — a *registration*.** `GuardRegistry.register(key, getter)`
+> (`src/monitoring/GuardRegistry.ts:44`) already requires a component to register a **synchronous
+> in-memory getter** for a manifest key it owns. That getter is a closure over the component's **own
+> instance state**. You cannot register another component's counters as your own — not because a check
+> forbids it, but because there is nothing to point at. **The borrowing attack has no surface.**
+
+This is the same move that ended the rounds-1-to-4 spiral: stop making the check harder to fake and
+take the thing out of the author's control entirely.
+
+### v2 schema — extend the EXISTING runtime contract
+
+```ts
+// src/monitoring/GuardRegistry.ts — GuardRuntimeStatus already exists and
+// already flows to the /guards row as `runtime`. Add the triple to it.
+export interface GuardRuntimeStatus {
+  enabled: boolean;
+  dryRun?: boolean;
+  lastTickAt?: number;
+  // ... existing fields unchanged ...
+
+  /** Effectiveness counters. Present TOGETHER or absent TOGETHER — the
+   *  nested object makes "two of three" unrepresentable, same as v1, but
+   *  now over values the component OWNS rather than paths it names. */
+  effectiveness?: {
+    looked: number;
+    wouldAct: number;
+    didAct: number;
+    /** What one `looked` increment means FOR THIS GUARD. Binds the subject
+     *  (Quantitative Claims Must Bind a Subject) without standardising
+     *  semantics across guards. */
+    lookedMeans: string;
+  };
+}
+```
+
+```ts
+// src/monitoring/guardManifest.ts — one boolean, mirroring the existing
+// `expectRuntime` reconciliation pattern exactly.
+export interface GuardManifestEntry {
+  // ... existing fields unchanged ...
+
+  /** True where this guard MUST report effectiveness counters. A guard with
+   *  expectCounters:true that registers a getter WITHOUT `effectiveness`
+   *  reconciles to the new `missing-counters` state — the same way
+   *  expectRuntime:true with no registration already reconciles to `missing`
+   *  (guardManifest.ts:42-47). Registration is not effectiveness. */
+  expectCounters: boolean;
+}
+```
+
+### Why v2 answers each material finding
+
+| finding | v2 answer |
+|---|---|
+| **3 — borrowed counters** | **Dissolved.** There is no path to borrow; a getter closes over its own component. |
+| **1 — unbound `ratificationRef`** | **Shrunk to near-nothing.** `expectCounters: false` is a much smaller claim than "this guard can never be verified", and it is contradicted at runtime the moment the guard registers counters anyway. The exemption stops being the load-bearing part of the design. |
+| **2 — expiry fails build not runtime** | **Dissolved.** `missing-counters` is computed **at request time** from live registry reconciliation (`/guards` already builds rows per request, `routes.ts:8689`). There is no build-time-only claim left to go stale on a deployed agent. |
+| **5 — lint cannot parse nested unions** | **Dissolved.** The nested shape now lives in TypeScript, checked by the **compiler**. The lint's only new job is a boolean field — well within its existing regex-over-text parser. |
+| **4 — 153-entry migration** | **Reduced to 72 booleans + instrumentation work.** `NOT_A_GUARD` needs no observability declaration at all under v2, because it holds things that are *not guards* and therefore register nothing. *(The ≥12-char `reason` defect on that list is a real, separate problem — it belongs to its own node and must not be smuggled into this one.)* |
+
+### What v2 still does NOT establish — stated, not buried
+
+A registered counter proves the number is the component's own. **It does not prove the component
+increments it correctly** — a guard could register `effectiveness` and never increment `looked`.
+
+That is only falsifiable by **staging an evaluation and watching the counter move**, which is the
+staged-violation harness. **So the honest dependency is: verifying a counter is HONEST requires the
+harness; making a counter UNBORROWABLE does not.** v2 delivers the second and is explicit that it does
+not deliver the first. The tree's ordering is corrected accordingly — the harness moves ahead of the
+"claim a guard is effective" work, though not ahead of this schema change.
+
+**Everything below this line is design v1, retained unedited for review against what was proposed.**
+
+---
+
+## Proposed design (v1 — SUPERSEDED)
 
 **This is a propagation, not new machinery.** Every element below already exists and is verified by
 injection somewhere in this codebase. The change applies them to one register that lacks them.
