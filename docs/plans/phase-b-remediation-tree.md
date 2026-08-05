@@ -347,3 +347,34 @@ visible. The concrete design is deliberately left open rather than re-guessed he
 > investigated will tend to prescribe the FIRST plausible fix. Two of ~20 nodes did. Every remaining
 > node's stated remedy should be treated as a **hypothesis**, not a plan — and the exit gate's
 > adversarial pass is what converts one into the other.
+
+### B1.4 — a corrected direction (grounded, 2026-08-05)
+
+Having refuted B1.4's original "apply closed-set validation" remedy, here is what the same
+change-the-producer lens yields instead. Two parts, and the difference between them matters.
+
+**Part 1 — the contradiction check (cheap, real, and available today).**
+Verified by control: `NOT_A_GUARD` appears in 4 source files, and **nothing anywhere cross-references
+it against the live `GuardRegistry`.** But a component classified "not a guard" that **registers a
+guard runtime getter** is a *self-contradiction the system can detect without asking the author* —
+`GuardRegistry.registeredKeys()` already exposes exactly what is needed
+(`src/monitoring/GuardRegistry.ts:53`).
+
+This is producer-independent: the claim is the author's, the contradicting evidence is the running
+system's.
+
+**⚠️ And it would NOT have caught `CrashLoopPauser`** — the incident that motivates the whole branch.
+That component was *never constructed*, so it registers nothing, so there is nothing to contradict.
+**Stating this plainly because a check that misses its own motivating case must not be presented as the
+fix.** It closes a different, real hole; it does not close that one.
+
+**Part 2 — what would actually close it: make the reason a PREDICATE, not prose.**
+`CrashLoopPauser` hid because its exclusion rationale *asserted an observability that did not hold*,
+and prose cannot be tested. The fix is not a stronger validator over a sentence — every version of that
+was refuted in the B0.1 arc. It is to change **what the author produces**: an exemption declares a
+*machine-evaluable predicate* ("this component is observable at X, and X reports Y"), which the system
+then evaluates. **When the reason IS a test, "the reason is present" and "the reason is true" stop
+being different questions** — which is the property this entire branch has been trying to buy.
+
+Part 2 is the real remedy and is **not yet designed**. It is recorded as a direction with its rationale,
+not scheduled as a plan, because that is the honest state.
