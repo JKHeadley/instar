@@ -531,3 +531,44 @@ was checking *whether the thing is supposed to be running* before calling it dea
 phase keeps finding — a condition narrower than what it certifies — now in the guard-posture surface
 itself, and it produces false alarms on every standby machine in the fleet.** Filed as a new node
 under B0 (instrument truth), where it belongs.
+
+### B2.1 premise — CONFIRMED, with a named second instance
+
+B2.1 asks: *which other registers carry an obligation with a weak or absent check?* The answer is at
+least one, and it is the same defect that hid `CrashLoopPauser`.
+
+**`COHERENCE_MANIFEST_EXCLUSIONS`** (`src/core/machineCoherenceManifest.ts:274`) — 24 entries, each
+`{ configPath, reason }`, declaring which multi-machine flags are deliberately outside coherence
+checking. Structurally identical to `NOT_A_GUARD`. Its only enforcement
+(`tests/unit/machine-coherence-manifest.test.ts:129-131`):
+
+```js
+for (const e of COHERENCE_MANIFEST_EXCLUSIONS) {
+  expect(e.reason.length).toBeGreaterThan(20);
+}
+```
+
+| register | the check | what passes it |
+|---|---|---|
+| `NOT_A_GUARD` | reason ≥ 12 **non-whitespace** chars | any 12 characters |
+| `COHERENCE_MANIFEST_EXCLUSIONS` | `reason.length > 20` — **raw** length | **21 spaces** |
+
+**The second is strictly weaker than the first**, because dropping the non-whitespace normalisation
+means pure whitespace satisfies it.
+
+**Credit where due:** the 24 reasons currently in that list are *good* — 45 to 248 characters, mean 106,
+each arguing specifically why its exclusion is correct (*"receive-only by default + per-machine sealed
+keys; a non-receiver simply re-enters a secret, no silent data-loss"*). **The content is not the
+problem. The absence of anything that would notice if it stopped being good is.**
+
+> **This is the whole phase in one comparison.** Two registers, same architecture, same obligation, both
+> checking that a justification is *long* and neither checking that it is *true* — and the one incident
+> we know about (a guard classified and never built) came through exactly this door. Where someone hit a
+> failure they built well; where nobody has hit it yet, there is a length check.
+
+**Verified with controls:** `NOT_A_GUARD` resolves in 6 files vs this register's 2, confirming the
+search works and the sparse referencing is real, not a missed grep.
+
+**Node status: B2.1 is LIVE** (unlike B4.1/B4.2, whose premises were stale). Its remedy must NOT be
+"add a closed set" — that was refuted in the B0.1 arc. The direction is the same as B1.4's: change what
+the author produces, or make the claim machine-evaluable.
