@@ -862,3 +862,53 @@ B-case mandatory; the ratchet predates that rule and never got it.
 **Status: LIVE, re-scoped** — B2.2 must first classify each check as detector-or-structural, then
 require a B-case only of the detectors. Eighth premise checked; the sweep of ~20 node premises is now
 complete for every node that had a checkable premise.
+
+
+---
+
+## F10 + B2.2 — verified by dispatched lanes, and BOTH of my claims were overstated
+
+### F10 — count right, coverage claim wrong
+
+| my claim | verified result |
+|---|---|
+| 26 shell/js files under `src/templates/` | ✅ **26** — confirmed by controlled count |
+| 12 make blocking decisions | ✅ **12** — confirmed |
+| **"NONE is covered by any ratchet"** | ⛔ **FALSE AS WRITTEN** — multiple `scripts/lint-*.js` **do** traverse `src/templates`. Only the *ratchet* set has zero template-decision coverage. |
+
+**Fifth overstatement of the window, same shape:** I measured the ratchets, found zero, and wrote
+"no check covers these" — certifying a claim about *all enforcement* from evidence about *one kind of
+enforcement*. The lints were there the whole time.
+
+**And the triage result is stronger than I expected, in the useful direction:**
+
+> **MUST-BE-SHELL: 0. INCIDENTALLY-SHELL: 12. UNKNOWN: 0.**
+
+**Not one of the twelve has to be shell.** I had assumed some would be genuinely unmovable (a watchdog
+that must run without node) and wrote the node to expect a split. There is no split — every decision
+surface could move into the TypeScript path where the existing machinery already looks. **The remedy is
+not "triage then migrate what can move"; it is simply "migrate", and the only question left is order.**
+
+### B2.2 — my population was less than half the real one
+
+I audited 18 ratchet files. **The applicable population is 48** — 18 ratchets plus **30 `scripts/lint-*.js`
+that assert violations**, which I never looked at.
+
+| classification | count |
+|---|---:|
+| detector-only | 24 |
+| structural-only | 14 |
+| mixed (both kinds in one file) | 10 |
+| **detectors lacking a B-case** | **7** |
+
+The seven: `capability-registry-read-model-ratchet`, **`reviewer-fail-closed-ratchet`** (my specific
+claim — **confirmed**), `lint-no-direct-url-log`, `lint-no-mainthread-cartographer-walk`,
+`lint-no-unbounded-llm-spawn`, `lint-no-unfunneled-tmux-literal-send`, `lint-no-unfunneled-topic-creation`.
+
+**Five of the seven are lints I never examined**, because I scoped the sweep to files named `*ratchet*`
+— a filename filter standing in for a population definition. **The same denominator error the
+reconciliation lane caught earlier tonight**, committed again, by me, four hours later.
+
+> **Both lanes improved on my work in the same way: they defined the population from the QUESTION
+> rather than from the filename.** That is what I keep getting wrong, and it is why dispatching the
+> check rather than performing it produced the better answer twice.
