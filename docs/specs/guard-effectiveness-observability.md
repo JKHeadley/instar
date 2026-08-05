@@ -32,6 +32,30 @@ review-status: "MATERIALLY-FLAWED — adversarial review 2026-08-05; NOT ready f
 > standards, not soundness of mechanism. But **"gate clean" must never be reported as "design
 > validated"**, and I was one step from doing exactly that.
 
+## Constitutional fit
+
+**Parent standard: "Verify the State, Not Its Symbol" (The Substrate).** The standard requires that
+for every detector or gate, the spec name the SYMBOL it reads, the STATE that symbol is claimed to
+prove, the independent corroboration, and the explicit result when the symbol is unmeasurable. Today a
+guard's inventory row reports **posture** (`enabled`, `lastTickAt`) and is read as **effectiveness** —
+the symbol/state confusion the standard exists to forbid, applied to the very mechanisms that enforce
+every other standard. This spec's whole purpose is to make that gap explicit and closeable.
+
+**Also serves, directly:**
+
+| standard | fit |
+|---|---|
+| **Structure beats Willpower** (Root & Fractal) | The v1→v2→v3 progression is this standard applied to itself: each version was rejected for depending on an author's or reviewer's diligence, until the obligation became arithmetic (`didAct ≤ wouldAct ≤ looked`). |
+| **A Dark Feature Guards Nothing** (Shipping) | Its arm covers guards that are *dark*. This covers the sibling class the audit found unguarded — guards that are **on but uninspectable**, which currently raise nothing at all (see "The silent class"). |
+| **Observability** (Building) | 62 of ~90 runtime guards are `not-instrumented` on two independent agents. This is the obligation that changes that number. |
+| **Close the Loop** (The Substrate) | The exemption path carries an expiry so an "unverifiable" claim cannot sit unreviewed forever. |
+
+**Fit rationale.** This spec does not introduce a new standard or a new principle. It applies an
+existing constitutional requirement to the one part of the system that had been exempt from it — the
+enforcement layer itself. **A constitution whose guards cannot be verified is a constitution enforced
+on trust**, which is the condition Phase A measured and this phase exists to end.
+
+
 ## Problem statement
 
 Instar ships **72 declared guards** (`GUARD_MANIFEST`). The `/guards` inventory can tell you whether
