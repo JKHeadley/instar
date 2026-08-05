@@ -6,6 +6,23 @@ this exists so that hitting the wall costs a re-read rather than a re-derivation
 
 ---
 
+## DURABILITY — checked, not believed (manager's ruling, 15:23Z)
+
+**Verified by measurement at 75 commits:** local HEAD `==` remote HEAD, working tree clean, and each
+required artifact confirmed present **on disk, in the commit, and on the remote** individually.
+
+**The check found two things I had wrongly believed were durable:**
+
+1. `docs/audits/phase-b/tree-review-4.md` — the round-4 gate verdict — was on disk, uncommitted.
+2. **The journal (14 KB) was not in the branch at all.** It lived only in the agent home, which is
+   **not a git repository** — while the handoff cited it as one of three must-reads.
+
+**That second one is Phase A's own lesson repeating verbatim**, corrected there and reproduced here.
+Both are now committed and pushed and re-verified on the remote.
+
+> **Nothing of consequence is now only in my context.** That statement is a measurement, not a belief —
+> and the measurement is the reason it is now true rather than evidence that it already was.
+
 ## Read these three, in this order. Nothing else is required.
 
 1. **`docs/plans/phase-b-remediation-tree.md`** — leads with an authoritative CURRENT-STATE header.
@@ -91,6 +108,30 @@ Each cost real time. Re-deriving them is the most likely way to waste the next s
    exactly the one I stop checking.**
 
 ---
+
+## Live positions a successor CANNOT reconstruct from the plan file
+
+The plan file records findings. It does not record **which conclusions are settled and what they cost**,
+and a fresh reader will not be able to tell. These four are settled:
+
+**1. The exit gate has failed FOUR times and caught something real every time.** It is converging, not
+spinning — round 3 confirmed 6 of 10 findings fixed, round 4 found the two I had patched incompletely.
+**Do not read four failures as a broken gate or a hopeless plan.** Run round 5. If it passes, say so
+plainly; four rounds of genuine repair make a false pass as damaging as a false failure.
+
+**2. TWO of the gate's catches were factual errors I had already reported upward as findings.** The
+constitution's "false claim" (not false — the job runs daily) and `CrashLoopPauser` "never constructed"
+(written and unit-tested; never wired at boot). **Both had been escalated, one had action sanctioned on
+it.** The gate is not polishing prose — it is catching claims that reached the operator.
+
+**3. Instance #14 is the purest example in the whole set.** `crash-loop-pauser.test.ts` has **8 passing
+unit tests** for a component that has paused nothing across a **492-consecutive-failure** streak. The
+tests measure *"the class behaves correctly when constructed"*; they are read as *"this guard works."*
+**A fully green test file is the entire distance between a passing suite and a job nobody paused.**
+
+**4. B3.1's remedy changed and this is easy to miss.** Not "build `CrashLoopPauser`" — it is built and
+tested. **"Wire it at boot and verify it pauses a seeded crash-loop."** Smaller job than the plan
+originally implied.
 
 ## Open decisions — operator's, not mine
 
