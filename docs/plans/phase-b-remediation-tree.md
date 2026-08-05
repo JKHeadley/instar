@@ -625,3 +625,37 @@ that. Two consequences:
 
 That is the same conclusion the B0.1 design arc reached after seven attempts, arrived at independently
 from the finding set — which is the strongest evidence available that it is the right one.
+
+---
+
+## B5 — GUARD-INVOCATION RE-ARCHITECTURE (new branch, created by ruling at window-7 cycle 1)
+
+**Created:** 2026-08-05, by operator ruling on the B0.1 fork. **Status: named, unscoped, not started.**
+
+**Scope.** Move guard families onto shared invocation chokepoints, so a caller outside the guard can
+count that it looked. Today 28 of 72 guards have such a caller; this branch is how that number grows.
+
+**Why it is its own branch and not a task inside B0.1.** It changes **how Instar runs guards**, not how
+it describes them. The ruling was explicit that this earns the plan's full discipline — its own spec
+through complete multi-model review — rather than being settled inside another node's design pass.
+
+**Relationship to B0.1 — they compose, and the ordering matters:**
+
+- B0.1 under ruling (a) applies the schema to the **28** and reports the **44** as
+  `unverifiable-by-construction` with individually named reasons
+  (`docs/audits/phase-b/guard-verifiability-28-and-44.md`).
+- **Nothing in (a) forecloses (b).** A guard moved onto a chokepoint by this branch simply changes
+  invocation class and becomes adoptable. **The 28 is a floor, not a ceiling.**
+- Each of the 44 rows is a candidate for this branch, and its `class` column is the difficulty estimate:
+  **SELF-DRIVEN (26)** needs an external tick owner; **EVENT-DRIVEN (16)** needs a funnel that does not
+  yet exist; **UNKNOWN (2)** needs its invocation path determined first.
+
+**Premise class: STRUCTURAL.** Unlike B4.1/B4.2, this does not self-resolve — a guard that owns its own
+timer will own it until someone deliberately changes that.
+
+**Known coupling, recorded so it is scheduled once rather than twice:** B0.5's reach is bounded by this
+branch. The 26 SELF-DRIVEN guards cannot be staged against either, so the harness and the
+re-architecture cover the same population. Tracked as `ACT-1755` (re-surfaces 2026-08-26).
+
+**Explicitly not designed here.** Naming a branch is not scoping it, and this tree has already been
+caught twice prescribing the first plausible remedy for a node whose domain nobody had investigated.

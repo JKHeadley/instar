@@ -9,6 +9,21 @@ review-status: "MATERIALLY-FLAWED — adversarial review 2026-08-05; NOT ready f
 
 # Guard Effectiveness Observability
 
+> ## ✅ SCOPE RULED — 2026-08-05: option (a), narrow to the 28
+>
+> The operator ruled the fork at the window-7 cycle-1 pass: **apply the design to the 28 adoptable
+> guards and report the 44 as structurally unverifiable, each with its named reason.** Delivered:
+> `docs/audits/phase-b/guard-verifiability-28-and-44.md` — every one of the 44 carries an individually
+> named, source-grounded reason, not a bucket label.
+>
+> **Option (b) — the chokepoint re-architecture — is NOT rejected.** It becomes a named Phase B branch
+> requiring its own spec through full multi-model review, because it changes how Instar runs guards.
+> **The two compose: nothing in (a) forecloses (b), and a guard moved onto a chokepoint by (b) simply
+> changes class and becomes adoptable. The 28 is a floor, not a ceiling.**
+>
+> Remaining blockers below are unchanged: the schema itself is still undefined, and the harness is
+> still a prerequisite. **The scope question is settled; the design question is not.**
+>
 > ## ⚠️ STATUS: DESIGN v3 — NOT READY TO BUILD
 >
 > This spec has been through two full design generations, both killed by review. **Nothing below
@@ -295,21 +310,17 @@ per-guard tracing with controls passed):
 | UNKNOWN | 2 | undetermined (honestly reported, not guessed) |
 | **total** | **72** | **28 feasible today** |
 
-> ### 28 of 72. That is the scope of v3 as it stands.
+> ### 28 of 72 — and as of the cycle-1 ruling, this IS the scope.
 >
 > **39% of guards can adopt this design without new plumbing. The other 44 would need to be
 > re-architected to be invoked through something.** The reviewer reached a similar magnitude
 > independently by a different measure (24 of 72 carry `expectRuntime: true`).
 >
-> **This is the number that makes the plan-level decision concrete**, and it is the architect's call,
-> not mine:
-> - **(a) Narrow** — apply v3 to the 28 and report the other 44 as `unverifiable-by-construction`,
->   honestly, with the architectural reason. Deliverable soon, covers a minority.
-> - **(b) Re-architect** — move guard families onto chokepoints so the number grows. Much larger, and
->   it is a change to how Instar runs guards, not to how it describes them.
->
-> **Option (a) is not a failure mode.** Reporting 44 guards as structurally unverifiable, with the
-> reason, is *strictly more honest than today*, where they read `on-unverified` and look fine.
+> **RULED: (a) now, (b) as its own branch.** The operator's reasoning, recorded because it is the
+> load-bearing argument: reporting 44 guards as structurally unverifiable with named reasons is
+> *strictly more honest* than 44 green lights nobody can question. **Option (a) is not a failure
+> mode**, and (b) is not rejected — it is held to the plan's full discipline rather than settled in a
+> single pass.
 
 ### Status of v3
 
