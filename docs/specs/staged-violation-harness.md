@@ -297,6 +297,13 @@ operator picks option (a) — narrow — then these 26 remain unstageable and mu
 **The coupling the tree did not show: B0.5's reach is bounded by B0.1's fork decision.** Recorded so
 the two are scheduled as one decision rather than two.
 
+**And it is TRACKED, not merely explained — `ACT-1755`, due 2026-08-26.** The conformance gate refused
+an explanation here and asked for active follow-through, which was the right call: "out of scope
+because it depends on a decision" is exactly the shape of a gap that quietly becomes permanent. The
+action registry refused to accept it without a follow-through choice, so the date is a **re-surface**
+date rather than a completion date I do not control: on 2026-08-26 either the fork has been decided and
+this gets scoped, **or the fork itself is overdue and that is the finding.**
+
 **3. Is a throwaway-agent verdict worth its cost? — RESOLVED as a deliberate two-half design.**
 It verifies the MECHANISM. That is explicitly half the value, and this spec claims only that half. The
 second half — "is this guard protecting THIS machine?" — is answered by the *combination* of a
