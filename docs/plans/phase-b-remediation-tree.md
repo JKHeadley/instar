@@ -1113,3 +1113,69 @@ operators actually read.**
 
 **Premise class: STRUCTURAL** — it recurs on every read, on every agent, and has already produced one
 near-miss escalation and one misdiagnosis of a peer.
+
+---
+
+## F12 — 53 checks executed, 6 certify nothing. Three distinct causes.
+
+A lane ran every executable check — 35 lint/check scripts and 18 ratchet tests — against the clean tree.
+All 53 exit 0. **Six of them cannot fail.** And the causes are not the same, which matters for the
+remedy.
+
+### Cause 1 — TAUTOLOGY (2). Unambiguous defects.
+
+Two real ratchets contain an assertion that is true regardless of input:
+
+```js
+// keyword-intent-decision-ratchet.test.ts:244-250
+//   "no allowlist entry is dead weight" — computes `dead`, warns if non-empty, then:
+expect(Array.isArray(dead)).toBe(true);     // a stale allowlist entry still passes
+
+// provenance-coverage-ratchet.test.ts:932-967
+//   builds `drift`, deliberately logs instead of asserting, then:
+expect(true).toBe(true);                     // divergent counts still pass
+```
+
+**Both sit inside ratchets that are otherwise genuinely strong** — `keyword-intent-decision-ratchet`
+carries ten negative controls and was verified by injection in Phase A. **The tautology is one `it`
+among many**, which is exactly why nobody saw it: the file passes, the suite is green, and the strong
+tests vouch for the weak one by association.
+
+### Cause 2 — NEVER WIRED (3). Scripts that exist and nothing runs.
+
+`lint-degradation-emit-sites`, `lint-machine-local-justification`, `lint-self-heal-fields` — **none
+appears in any CI workflow or package script.** Control: 12 workflow files reference 34 distinct lints,
+so the search is sound and these three are genuinely absent.
+
+### Cause 3 — STAGED, NEVER GRADUATED (1 + the mode itself).
+
+`lint-no-unregistered-self-action` **is** wired — and runs report-only. All four implement a `--strict`
+mode that enforces.
+
+> **`--strict` appears ZERO times across every workflow, package script, and shell script in the repo.**
+
+**The enforcing mode of four lints has never been invoked by anything.** Shipping report-only is a
+legitimate, deliberate rollout pattern here — the comments say so explicitly. But a staged rollout with
+no scheduled graduation and no invocation of its own enforcing path is indistinguishable, from the
+outside, from an abandoned one.
+
+### Why this is the phase's signature defect, again, at a fourth level
+
+| | |
+|---|---|
+| what the suite **measures** | 53 checks exited 0 |
+| what a green suite **certifies** | these 53 properties hold |
+| the gap | **6 of them assert nothing** — 2 tautologically, 3 by never running, 1 by design-not-yet-flipped |
+
+**A green CI run is read as "these checks passed."** For six of them the honest reading is "these checks
+were incapable of failing," and nothing on the surface distinguishes the two.
+
+### What I am NOT claiming
+
+**The three unwired lints and the report-only one are not bugs.** They are staged work, and the
+codebase's graduated-rollout discipline is deliberate and defensible. The finding is narrower and
+fairer: **nothing tracks the flip.** A `--strict` mode invoked nowhere is a guarantee that exists only
+in the future tense, and this tree already has a standard for that — *A Dark Feature Guards Nothing*.
+
+**The two tautologies are straightforwardly wrong** and are the only part of F12 I would call a defect
+without qualification.
