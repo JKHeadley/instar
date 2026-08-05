@@ -283,8 +283,33 @@ registration is not the same thing as a caller-owned evaluation count.
 > in which v3 is a schema change that can simply be applied to 72 entries.** It is an architectural
 > change to how guards are invoked, for most of them.
 
-This is exactly the number the chokepoint survey was dispatched to produce, arrived at independently by
-the reviewer first. Where the survey disagrees, the survey's per-guard tracing wins.
+**The survey has since landed and gives the definitive number** (`docs/audits/phase-b/chokepoint-survey.md`,
+per-guard tracing with controls passed):
+
+| invocation class | guards | caller-owned `looked` available today? |
+|---|---:|---|
+| TICK-LOOP | 19 | **yes** — a shared scheduler/interval invokes it |
+| FUNNEL | 9 | **yes** — a shared admission chokepoint |
+| EVENT-DRIVEN | 16 | no — scattered callsites, no common caller |
+| SELF-DRIVEN | 26 | no — owns its own timer; nothing invokes it |
+| UNKNOWN | 2 | undetermined (honestly reported, not guessed) |
+| **total** | **72** | **28 feasible today** |
+
+> ### 28 of 72. That is the scope of v3 as it stands.
+>
+> **39% of guards can adopt this design without new plumbing. The other 44 would need to be
+> re-architected to be invoked through something.** The reviewer reached a similar magnitude
+> independently by a different measure (24 of 72 carry `expectRuntime: true`).
+>
+> **This is the number that makes the plan-level decision concrete**, and it is the architect's call,
+> not mine:
+> - **(a) Narrow** — apply v3 to the 28 and report the other 44 as `unverifiable-by-construction`,
+>   honestly, with the architectural reason. Deliverable soon, covers a minority.
+> - **(b) Re-architect** — move guard families onto chokepoints so the number grows. Much larger, and
+>   it is a change to how Instar runs guards, not to how it describes them.
+>
+> **Option (a) is not a failure mode.** Reporting 44 guards as structurally unverifiable, with the
+> reason, is *strictly more honest than today*, where they read `on-unverified` and look fine.
 
 ### Status of v3
 
