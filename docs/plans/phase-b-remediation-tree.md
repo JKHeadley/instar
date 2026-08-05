@@ -471,3 +471,63 @@ and nobody checked the other half." Since Phase A already downgraded three of it
 exactly this, the model is behind its own practice.
 
 **This is the architect's call.** Recorded with its evidence rather than adopted.
+
+---
+
+## Node-premise validation pass (2026-08-05) — 4 of ~20 nodes were already wrong
+
+Acting on "every remaining remedy is a hypothesis," I checked the tree's own node premises against live
+state. **Four of roughly twenty do not survive**, and they fail in three distinct ways worth
+distinguishing.
+
+| node | premise as written | status |
+|---|---|---|
+| B0.1 ordering | schema before harness | **wrong** — harness is a prerequisite |
+| B1.4 remedy | "apply closed-set validation" | **disproved** by the B0.1 design arc |
+| **B4.1** | "the laptop is 2 versions behind" | **STALE** — both machines on 1.3.1126 |
+| **B4.2** | "laptop `resumeQueue` is off-runtime-divergent" | **STALE** — now `on-confirmed`, `divergence: none` |
+
+### The new failure mode: a node built from a TRANSIENT state
+
+B4.1 and B4.2 were not fixed by any plan action. **They self-resolved** — an update propagated, a
+restart reconciled a posture. Phase A measured the laptop at one moment; by the time the tree was
+written the moment had passed.
+
+> **A remediation tree that captures transient state as structural problem manufactures work that does
+> not exist.** Two of its twenty nodes were obsolete within hours of being written, and nobody would
+> have discovered that until someone was assigned to "fix" a machine that was already fine.
+
+**Nodes must therefore declare whether their premise is STRUCTURAL or TRANSIENT:**
+
+- **Structural** — persists until deliberately changed *(guards have no counters; a register checks
+  presence not truth)*. Safe to plan against.
+- **Transient** — a snapshot of live state that may self-heal *(version skew, a runtime divergence, a
+  quota level)*. **Must be re-measured at the moment of scheduling**, never planned against directly.
+
+Every node in this tree should carry that label. The four B4.x nodes are transient; most of B0/B1/B2
+are structural.
+
+### ⚠️ A near-miss that belongs in the record
+
+Checking B4.2, I found the laptop's `scheduler.enabled` in state **`missing`** — enabled in config,
+never registered at runtime — with **zero jobs, zero "Scheduler started" markers, and no activity log.**
+That reads unambiguously as *the laptop's scheduler is dead and jobs silently do not run there.*
+
+**It is not.** The Mini holds the serving lease (`holdsLease: true`, 42 jobs, 4 scheduler starts); the
+laptop is standby, and jobs run on the lease holder only. **The laptop having no scheduler is correct
+behaviour.**
+
+I was one step from filing a false defect against healthy infrastructure. The control that caught it
+was checking *whether the thing is supposed to be running* before calling it dead.
+
+**And that makes `missing` itself a finding.** The state conflates two conditions:
+
+| reality | current state | correct reading |
+|---|---|---|
+| enabled, should be running, isn't | `missing` | a genuine anomaly |
+| enabled, correctly not running because this machine is standby | `missing` | **normal** |
+
+`missing` certifies "anomaly" while measuring "not registered." **That is the same defect this entire
+phase keeps finding — a condition narrower than what it certifies — now in the guard-posture surface
+itself, and it produces false alarms on every standby machine in the fleet.** Filed as a new node
+under B0 (instrument truth), where it belongs.
