@@ -288,9 +288,16 @@ the reviewer first. Where the survey disagrees, the survey's per-guard tracing w
 
 ### Status of v3
 
-**Direction, not a finished design.** The chokepoint survey (which guards have a common caller?) is
-unstarted, and the fallback's honesty depends on `lookedProvenance` being carried through the whole
-surface. **This section is the design's current best answer and is explicitly not ready to build.**
+**Direction, not a finished design — and after two adversarial reviews, not even the right SHAPE of
+design.** ⚠️ *(A dead draft fragment referencing `lookedProvenance` lived here until the re-review
+caught it. It described the self-reported fallback that v3 had already removed — exactly the class of
+compromise v3 exists to reject. Removed, and noted because a stale sentence describing a rejected
+compromise is how a rejected compromise creeps back.)*
+
+**The honest conclusion after two hostile reads: this is not a schema change.** A schema change can be
+applied to 72 manifest entries. This requires most guards to be invoked through a chokepoint they do
+not currently have — an **architectural change to how guards run**, available to a minority today.
+**That is a plan-level decision, not an authoring one**, and it belongs to the architect.
 
 ---
 
@@ -337,6 +344,12 @@ type GuardObservabilityVerdict =
 //   | 'wired-not-effective'
 //   | 'evidence-backed-unmeasured'
 ```
+
+⚠️ **And the field it renders into matters as much as the value.** The existing `/guards` surface
+already names posture under a field called `effective` (`guardPostureView.ts:66-74`). Rendering
+`instrumented` there would be read as health by every existing consumer — the exact overread this
+whole document is trying to prevent, delivered by field name rather than by value. **The stage-one
+verdict must NOT be surfaced under `effective` or any health-coloured posture field.**
 
 **A consumer cannot render `effective-candidate` before the harness lands, because the value does not
 exist to render.** No discipline required, no reviewer needed, no way to forget. The prohibition is
