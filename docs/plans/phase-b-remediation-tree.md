@@ -770,3 +770,54 @@ relocated is the same logic that needs demoting from authority to signal.
 
 **Status: LIVE.** Seventh premise checked, fourth distinct failure mode: the premise holds, but the
 *stated cause* was wrong — and the wrong cause pointed at the expensive remedy.
+
+---
+
+## F10 — THE LANGUAGE BOUNDARY: 12 blocking decisions authored where no ratchet can see them
+
+Discovered while re-diagnosing B1.1, and it is larger than that node.
+
+**Our enforcement machinery is TypeScript-shaped.** Every ratchet walks `src/**/*.ts` and matches
+TypeScript syntax. Measured against the shipped tree:
+
+| authored in | files | make BLOCKING decisions (`exit 2` / deny / block) |
+|---|---:|---:|
+| `src/**/*.ts` | 1,629 | covered by ratchets |
+| `src/templates/**` (`.sh`, `.js`, `.mjs`) | **26** | **12** |
+
+**Twelve decision-making surfaces are enforced by no ratchet at all:**
+
+`free-text-guard.sh` · `grounding-before-messaging.sh` · `dangerous-command-guard.sh` ·
+`intercept-imsg-send.js` · `session-start.sh` · `model-tier-reconciler.js` · `build-stop-hook.sh` ·
+`instar-watchdog.sh` · `convergence-check.sh` · `imessage-reply.sh` · `emit-session-clock.sh` ·
+`serendipity-capture.sh`
+
+### The confirmation that this is causal, not coincidental
+
+**Phase A found two guards sharing the use-vs-mention blind spot — the grounding gate and
+`dangerous-command-guard`. Both are on this list.** Phase A treated that as two instances of one bug.
+It is better explained as **one instance of this gap**: they share a defect because they share the
+condition of being unguarded, not because two authors made the same mistake.
+
+Tonight's measurement of the grounding gate — **3 of 5 honest messages blocked, precision ~40%** — is
+what an unguarded decision surface drifts to. Nothing was watching it, so nothing stopped it.
+
+### Why this is not "write shell lints"
+
+The reflex remedy is a second detector for shell. That means **two detectors per standard, in two
+languages, kept in sync by discipline** — and this document has spent a night establishing what
+discipline is worth.
+
+**The better direction is to collapse the boundary rather than span it:** move decision logic out of
+shell and into the TypeScript path where the existing ratchets already look, leaving shell scripts as
+thin invocation shims that decide nothing. The grounding gate is the worked example — relocating its
+matching into the outbound TS path would simultaneously (a) bring it under the existing
+keyword-intent ratchet, (b) fix its over-blocking, and (c) remove one of the twelve.
+
+**Sizing, honestly:** twelve surfaces is not a small migration, and some are legitimately shell (a
+watchdog that must run without node). The claim is not "convert all twelve" — it is that **the twelve
+should be triaged into *must-be-shell* (then explicitly accepted as unguarded, in writing) and
+*incidentally-shell* (then relocated).** No such triage exists today, which is why the number is
+twelve rather than a smaller, argued figure.
+
+**Premise class: STRUCTURAL.** This does not self-resolve.
