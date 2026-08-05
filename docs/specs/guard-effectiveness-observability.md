@@ -421,11 +421,44 @@ declared-versus-registered to produce `missing`.
 | needs new machinery | a new parser | **none** — same shape as `expectRuntime` → `missing` |
 | can be evaded by writing the call differently | yes | **no** — evasion requires actually invoking it, which increments |
 
-So the claim, correctly stated: **partial adoption is detectable at runtime, because a guard that
-declares a wrapped invocation and never counts one is contradicting itself in live data.** That is
-propagation of the existing reconciliation pattern rather than a new lint — and it is *harder* to evade
-than the version I first wrote, because the only way to make `looked` move is to actually go through
-the wrapper.
+⛔ **AND THAT STATEMENT WAS ALSO TOO STRONG. The re-review refuted it — this is the ninth instance of
+the phase's own defect, in my own detector.**
+
+`looked === 0` **measures** "no counted invocation." I **certified** it as "not going through the
+wrapper." Those are different sets, and the gap contains at least five states:
+
+| `looked === 0` can mean | is it a bypass? |
+|---|---|
+| the guard is invoked directly, bypassing the wrapper | **yes** — the case I wanted |
+| the guard is **disabled** in config | no — classified before staleness today (`guardPostureView.ts:299-305`) |
+| it is a **FUNNEL** guard and no request arrived | no — legitimate idleness |
+| the machine is **standby**, so the loop was never constructed | no — e.g. the scheduler is built only under `isAwake` (`server.ts:7031-7034`) |
+| the **process just started** | no — and `/guards` passes `now` but **no uptime input at all** (`guardPostureView.ts:361-369`) |
+
+**The inputs are also missing, not merely unmodelled.** `expectedTickMs` is absent for **8 of the 19**
+TICK-LOOP guards (`holdForStability`, `staleOwnerRelease`, `preferredCaptainHandback`, `promptGate`, …),
+and **most FUNNEL guards have no cadence at all** — correctly, because a traffic-driven admission path
+has no period. A `5 × expectedTickMs` rule is meaningful for a periodic loop and **meaningless for a
+funnel**.
+
+### The claim, narrowed to what is actually true
+
+> For **an enabled tick-loop guard**, with **a declared `expectedTickMs`**, **a registered counters
+> row**, on a process **continuously eligible/awake for more than 5 × that cadence** — `looked === 0`
+> is strong evidence of no wrapped invocation.
+
+Everything outside that conjunction is **`adoption-unknown`**, not `never-evaluated`. And the schema
+must carry the inputs the conjunction needs — **process uptime and eligibility-window are new required
+inputs to the verdict computation**, not incidental context.
+
+**FUNNEL guards need a different detector entirely.** Their `looked === 0` is indistinguishable from a
+quiet day, so adoption for the nine must be established at conversion time (the callsite goes through
+`registry.invoke` or it does not — a code-review fact) rather than inferred from runtime counters.
+
+> **Three attempts at this one claim: "impossible" → "greppable" → "provable at runtime."** Each was
+> narrower and each was still wider than the evidence. The honest version is a five-clause conjunction
+> covering 11 of 72 guards. **I keep reaching for the strongest phrasing the finding will bear, and it
+> keeps bearing less than I reach for.**
 
 ### The manifest declaration
 
