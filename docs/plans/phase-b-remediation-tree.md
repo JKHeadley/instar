@@ -1063,3 +1063,53 @@ Three attempts, and **the first two failed**:
 
 *(Note also that his tone gate caught a genuine leak — a raw path in a queue item. His guard was right
 and mine was the sloppy input.)*
+
+### B0.3 — now precisely grounded, and the window is 24 HOURS
+
+Three sightings this window, all on the same surface. Root cause read from source:
+
+```ts
+// src/server/routes.ts:3638
+llmReliability = ctx.featureMetricsLedger.reliability({ sinceHours: 24 });
+```
+
+**Hardcoded to a full day.** I had estimated six hours from the query I happened to run; it is
+twenty-four, which makes the defect four times worse than described.
+
+With `FEATURE_RELIABILITY_MINIMUM_CALLS = 20` (`FeatureMetricsLedger.ts:194`), any component with 20+
+calls in a day gets a rate — and that rate is reported on `/health` as the component's **status**.
+
+### One word for three different states
+
+| reality | what `/health` says | why |
+|---|---|---|
+| failing right now | `failing` | correct |
+| **failed this morning, repaired since** | `failing` | the repair is inside the window |
+| **idle — no calls in hours** | `failing` | old calls still dominate the aggregate |
+
+**All three sightings were the middle or right column:**
+
+1. **~03:35Z** — Codey's PromptGate reported `failing 90.7%`. Narrow window: **0 errors in the last
+   hour**, all 32 errors predating a repair that had already landed. I was one step from escalating a
+   solved problem.
+2. **~13:20Z** — Codey reports `failing` again. Narrow windows: **zero calls in the last hour**, zero in
+   the last fifteen minutes. He is idle, not broken.
+3. The same surface is what made his laptop instance look degraded on inspection.
+
+> **A status field aggregating a 24-hour window is not a status field. It is a history field wearing a
+> status field's name** — and it is consumed as "is this component healthy *now*", which is the one
+> question it cannot answer.
+
+### Shape of the fix (not a design — the node is not scoped yet)
+
+The cheap half is **honesty**: the response already carries `minimumCalls`, `degradedErrorRate`, and
+`failingErrorRate` — it should carry **the window** too, so a reader can see that `failing` means
+"across 24 hours" rather than "now."
+
+The real half is **recency**: distinguishing *failing now* from *failed earlier* from *idle* needs at
+least a short-window rate alongside the long one, plus an explicit `idle` state when recent calls are
+zero. **An idle component is not a failing one, and today they are indistinguishable on the surface
+operators actually read.**
+
+**Premise class: STRUCTURAL** — it recurs on every read, on every agent, and has already produced one
+near-miss escalation and one misdiagnosis of a peer.
