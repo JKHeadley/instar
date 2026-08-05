@@ -378,3 +378,49 @@ being different questions** — which is the property this entire branch has bee
 
 Part 2 is the real remedy and is **not yet designed**. It is recorded as a direction with its rationale,
 not scheduled as a plan, because that is the honest state.
+
+---
+
+## F9 — a ninth finding, discovered while scoping B0.5 (2026-08-05)
+
+### We have no record of our guards deciding anything
+
+Scoping the staged-violation harness, I bounded it to guards whose test case could be derived from a
+**recorded incident** — the most trustworthy source available. Then I measured the corpus. All 26
+non-empty JSONL logs, control passed (8,600 hits for a term known present):
+
+| FUNNEL guard | incident records |
+|---|---:|
+| `models.tierEscalation` | **2** |
+| the other eight | **0** |
+
+**Eight of nine have nothing.** *(The first pass reported 1,141 for `tierEscalation` via a loose
+substring; 1,139 were false positives. Fourth keyword failure of this audit — the strict/loose
+comparison caught it.)*
+
+**What the corpus actually contains is operational history** — reaps, sentinel transitions, posture
+changes, restarts. Rich, and about *what the system did*. **It contains almost nothing about guards
+evaluating anything**, because guards do not record their evaluations. That is the same absence this
+entire phase is about, and I found it in the place I went looking for evidence *of* it.
+
+### Why this is a tree-level finding, not a harness detail
+
+It is the **empirical confirmation of F3**, arrived at independently. F3 said 62–64 guards are
+unaskable because they expose no counters. F9 says: *and there is no historical record either* — so
+there is no back door. You cannot reconstruct guard effectiveness from logs after the fact, because the
+logs never contained it.
+
+**Consequences that belong to the tree, not to one node:**
+
+1. **B0.5's A-cases must come from specifications, not history.** Weaker, and now unavoidable. The
+   harness spec states it as the weakness it is rather than dressing it up.
+2. **The harness's own output becomes the corpus that does not exist.** First verification is derived
+   from a description; subsequent ones need not be. That makes B0.5 self-improving in a way the tree
+   did not anticipate — and slightly raises its value relative to B0.1.
+3. **Any future node proposing to "analyse guard behaviour from the logs" is unbuildable as written.**
+   Recorded here so it is refuted once, at the tree, rather than rediscovered per node.
+
+> **The cost of finding this was about three minutes of grep.** The cost of not finding it would have
+> been a harness scoped to a corpus that does not exist — discovered during implementation. This is the
+> "check the premise before building" rule paying for itself, and it is the second time in this window
+> a scope decision I had already written down was refuted by one cheap measurement.
