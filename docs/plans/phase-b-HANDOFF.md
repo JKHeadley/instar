@@ -133,6 +133,19 @@ tests measure *"the class behaves correctly when constructed"*; they are read as
 tested. **"Wire it at boot and verify it pauses a seeded crash-loop."** Smaller job than the plan
 originally implied.
 
+## The window's root finding — recorded as a finding, not a reflection
+
+**Proposed as a candidate standard under my name** (manager's ruling, 16:30Z):
+`docs/proposals/standard-proposal-remove-what-demands-attention.md`.
+
+> **I could not have passed the exit gate by being more careful.** Care produced five consecutive
+> partial fixes. What worked was **deleting three copies of a number instead of keeping four in
+> agreement** — removing the thing that demanded attention rather than supplying more attention.
+
+Derived from six gate rounds, five failed identically, while ~4 of the ~14 instances of the defect the
+plan was auditing were committed **by me, in the document about that defect.** If diligence were the
+answer, the person hunting the defect would have been immune.
+
 ## Open decisions — operator's, not mine
 
 1. **The three-rung amendment** (acts / holds-back as two axes). Endorsed by the manager, carried to
