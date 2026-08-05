@@ -362,12 +362,31 @@ invoke<T>(key: string, run: () => T): T {
   return run();
 }
 
-/** The guard reports ONLY its own verdict, through a handle that cannot reach `looked`. */
+/** The guard reports ONLY its own verdict. It cannot reach `looked` OR `didAct`. */
 verdict(key: string): GuardVerdictSink {
   const c = this.counters(key);
-  return { wouldAct: () => { c.wouldAct++; }, didAct: () => { c.didAct++; } };
+  return { wouldAct: () => { c.wouldAct++; } };   // wouldAct ONLY
+}
+
+/** `didAct` belongs to the ACTION PATH, and is counted only AFTER the side
+ *  effect actually completes — so a throwing or short-circuited action counts
+ *  nothing, and the guard cannot count an action it merely requested. */
+act<T>(key: string, perform: () => T): T {
+  const result = perform();          // the side effect happens FIRST
+  this.counters(key).didAct++;       // ...and is counted only if it returned
+  return result;
 }
 ```
+
+⚠️ **The first draft of this schema handed the guard a `didAct()` it could call directly — and the gate
+caught it.** That silently reverted v3's entire trust split: the whole point is that the party which
+*decides* to act is not the party that *records having acted*. A guard could have incremented `didAct`
+on the line where it decided, with no side effect anywhere.
+
+**Eighth time in this document that a fix quietly re-introduced the defect it was fixing.** The pattern
+is consistent enough to state as a working rule: **when I write the implementation of a principle, I
+tend to collapse the very distinction the principle exists to hold** — because the collapsed version is
+simpler and reads fine. Only an outside check has caught it, every time.
 
 **Why a wrapper beats an increment call, concretely:**
 
