@@ -1,5 +1,23 @@
 # Phase B — handoff for the next Pathway session
 
+## WHERE YOU ARE AND WHAT TO OPEN (read this block first)
+
+**This file exists in two places, byte-identical. You are reading one of them:**
+- `~/.instar/agents/echo/.instar/phase-b/HANDOFF.md` — the agent-home copy (survives any branch state)
+- `<worktree>/docs/plans/phase-b-HANDOFF.md` — the committed copy, on the branch
+
+**The work lives on branch `echo/guard-effectiveness-observability`, 79+ commits, pushed.**
+Worktree: `~/.instar/agents/echo/.worktrees/guard-effectiveness-observability/`
+
+```bash
+cd ~/.instar/agents/echo/.worktrees/guard-effectiveness-observability && git log --oneline -3
+```
+
+**Status: the Phase B exit gate PASSED on round 6. The kickoff charter is CLOSED.**
+Nothing is queued. Do not re-run the gate. Do not start a new finding sweep.
+Three operator decisions are outstanding (bottom of this file) and none blocks work.
+
+
 **Written:** 2026-08-05 ~15:05Z, window 7, ~11h elapsed / ~13h remaining.
 **Written proactively**, before a context ceiling, at the manager's request. Nothing here is urgent —
 this exists so that hitting the wall costs a re-read rather than a re-derivation.
@@ -43,8 +61,8 @@ below is on it. The working tree is clean.
 Phase B's tree is built and its node premises have been swept: **eight checked, five did not survive**.
 The first build item is specified through three design generations and **is not ready to build** —
 correctly, and the operator has ruled that no build happens until the spec is approved. The plan has
-been through its own exit gate **three times and failed each time** (R4 in flight); **R3 confirmed 6 of
-10 findings fixed, so it is converging, not spinning.** The second failure was mostly my own repairs.
+been through its own exit gate **six times. Rounds 1-5 all failed; ROUND 6 PASSED (COHERENT).**
+The gate requirement is MET and the kickoff charter is closed. The second failure was mostly my own repairs.
 **Three operator decisions are outstanding** and none blocks work.
 
 ⚠️ **This paragraph was itself stale within the hour** — it said "twice" and "two decisions" while the
@@ -58,7 +76,7 @@ quietly fixed, because a successor should know how fast this document rots.
 
 | item | state |
 |---|---|
-| exit-gate rounds | **R1–R3 all INCOHERENT; R4 dispatched.** R3 confirmed **6 of 10 fixed**; its 3 open findings are now tombstoned in place. **It is converging** — do not abandon it, and do not assume it passes. |
+| exit-gate rounds | **DONE — R6 returned COHERENT; the gate PASSED.** R1–R5 all failed and each caught something real. **Do NOT re-run it.** Verdicts: `docs/audits/phase-b/tree-review-*.md`. |
 | Codey engagement | **DONE** — real scoped work filed with ACK (`ATT-echo-trustbcase-1785942194`), framed as a peer proposal he may decline. |
 | memory carry-over re-spec | **DONE** — re-specified against available memory, compressor trend, and pageout *delta*. |
 | two items for Justin's list | **DONE** — gate-demotion evidence page (published, current) and the enforcing-mode-never-invoked artifact. |
@@ -114,10 +132,10 @@ Each cost real time. Re-deriving them is the most likely way to waste the next s
 The plan file records findings. It does not record **which conclusions are settled and what they cost**,
 and a fresh reader will not be able to tell. These four are settled:
 
-**1. The exit gate has failed FOUR times and caught something real every time.** It is converging, not
-spinning — round 3 confirmed 6 of 10 findings fixed, round 4 found the two I had patched incompletely.
-**Do not read four failures as a broken gate or a hopeless plan.** Run round 5. If it passes, say so
-plainly; four rounds of genuine repair make a false pass as damaging as a false failure.
+**1. The exit gate failed FIVE times, caught something real every time, and PASSED on round 6.**
+It was converging, not spinning. **It is finished — do not re-run it.** What finally passed it was not
+more care: five rounds failed on the SAME defect (a count kept in four places). Round 6 passed because
+three of the four copies were DELETED. That is the window's root finding, below.
 
 **2. TWO of the gate's catches were factual errors I had already reported upward as findings.** The
 constitution's "false claim" (not false — the job runs daily) and `CrashLoopPauser` "never constructed"
@@ -159,9 +177,8 @@ answer, the person hunting the defect would have been immune.
 
 ## What I would do next, in order
 
-1. **Collect exit-gate round 4** (a waiter is attached; it will re-invoke you). If it passes, say so
-   plainly — the gate failing four times on a document repaired each round would be as misleading as a
-   false pass. If it fails, fix and re-run: it has converged every round.
+1. **Nothing is queued. The gate is PASSED and the charter is CLOSED.** Do not re-run the gate, and do
+   not start a new finding sweep — both are already done.
 2. **Leave the spec alone** unless the operator approves it. Four review rounds; the remaining gaps are
    prerequisites (the harness), not defects.
 3. **Nothing else is queued.** Three operator decisions are outstanding and none blocks work.
