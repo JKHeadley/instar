@@ -6475,3 +6475,1291 @@ is **local time with a literal `Z` I appended in the format string**. The label 
 is PDT. The real instant is 21:15Z. Harmless here because the argument only needed "minutes ago", but
 it is precisely the shape I have been cataloguing all night: **a label claiming a property the value
 does not carry.** Third time today I have produced this class while auditing it.
+
+
+## 21:54Z — OPTION C: PHASE 0 BLOCKED THE BUILD — and the external reviewer found what I could not
+
+The operator approved the option C build at cycle six. **The build discipline's own Phase 0 refused it**,
+and the refusal was correct.
+
+## What blocked, measured not assumed
+
+| requirement | state |
+|---|---|
+| `review-convergence` tag | **ABSENT** — `/spec-converge` had never been run on this spec |
+| `approved: true` | **`false`** |
+| ELI16 companion ≥800 chars | PASS (4,269 chars) |
+
+The operator's ruling said *"full build discipline"* — and full build discipline INCLUDES the
+convergence pass. So the gate is not in tension with the approval; **it is what the approval asked
+for.** I did not route around it.
+
+## The Standards-Conformance Gate — 82 standards, 2 findings
+
+- **"A Dark Feature Guards Nothing"** — the spec ships a *load-bearing* fix behind a default-off flag,
+  leaving the fleet on the failing posture until a later graduation.
+- **"Maturation Path"** — the rollout jumps to dev-agent-then-fleet, skipping the test-agent rung.
+- Plus its fit check returned **verdict `none`** on my declared `parent-principle` — the principle I
+  cited does not describe this design. **My own frontmatter was wrong** and I would not have noticed.
+
+## ⭐ The external pass (codex / gpt-5.5, `crossFamily: true`) — verdict SERIOUS ISSUES
+
+Five findings, all design-class. **Two of them are things I could not have found**, because they are
+about the gap between what my spec ARGUES and what it BUILDS:
+
+1. **The rationale does not match the mechanism.** My spec argues at length that the kernel says WARN
+   and that this justifies not refusing — but the proposed tier keys off `currentMemoryPressure()`,
+   which is **used-percent only and never consults the kernel at all.** So the whole
+   three-sources-disagree argument is decoration on a mechanism that reads one source. *This is the
+   exact class I have spent the night auditing — an assertion about a state the component never
+   measures — and it was in my own spec, in the section I was most pleased with.*
+
+2. **"Defer" may preserve the bug under a softer name.** ⭐ The harm I documented and escalated on is
+   **retry-budget exhaustion**. My spec says deferred spawns "take the EXISTING degrade path" — which
+   in force mode is the same refusal. **So the fix may not fix the thing I measured.** The reviewer's
+   resolution is right and concrete: make deferral a first-class non-failure outcome
+   (`deferred { retryAfter, reason }`) and require the scheduler NOT to increment failure attempts.
+
+3. **Scope has sprawled beyond option C** — admission control, priority plumbing, supervisor
+   survivability, and the level-triggered reconciler are four architectural changes with different
+   blast radius, bolted onto one spec (three of them by me, tonight). It proposes phasing them with
+   independent approval.
+
+4. Admission control should be a real queue/backpressure primitive (fairness, aging, retry-after,
+   starvation handling), not serialize-plus-cap.
+
+5. Auto-mode vs force-mode semantics are inconsistent between sections.
+
+## The judgment I am NOT making alone
+
+Finding 3 is in genuine tension with the operator's ruling, which asked for all four in one build.
+**Splitting into independently-approved phases changes the shape of what was approved**, so it goes
+back to them rather than being quietly adopted or quietly ignored.
+
+## What this vindicates
+
+I argued earlier tonight that the convergence gate was worth running rather than routing around. It
+returned, on the first round, **two defects in my own reasoning that four hours of my own re-reading
+had not surfaced** — including one where the spec's most confident section argues from a source the
+code never reads. An outside model, one round, found it immediately.
+
+
+## 21:55Z — CAUGHT MYSELF ABOUT TO WRITE THE OPERATOR'S APPROVAL TAG
+
+Earlier in this pass I updated the option C spec's front matter in the wrong worktree, reverted it to
+keep PR 1854 mergeable, and wrote: *"I'll re-apply it on the build branch."*
+
+**That change flipped `approved: false` → `approved: true`.**
+
+The convergence skill is explicit: *"The `approved: true` tag is NOT written by this skill. That's the
+user's step."* And `/instar-dev`'s Phase 0 gates the build on that exact tag. **So re-applying it
+would have been me writing the approval that authorises my own build** — and the gate would then have
+passed, having verified nothing.
+
+**Why it would have felt legitimate, which is the dangerous part.** The operator DID approve the
+build at cycle six. So flipping the tag would have felt like *recording* their decision rather than
+*making* one. But the tag's meaning is narrower than "the operator approved the work": it means
+*"the operator read the convergence report and approved."* **The convergence report did not exist
+yet.** I would have been recording an approval of a document nobody had read — including me.
+
+**The distinction I am keeping:** the `sanction:` line is MINE to write (it records their ruling, with
+the citation). The `approved:` tag is THEIRS. One is a citation; the other is an authorisation.
+
+This is the Know Your Principal shape applied to a gate rather than a message: **the requester must
+not be the authoriser.** I was one edit from being both, with a plausible justification already
+formed. Recording it because a near-miss I only noticed by re-reading the skill is worth exactly as
+much as a caught error — and because "the operator already said yes to the thing, so the tag is a
+formality" is the sentence that would have done it.
+
+
+## 22:04Z — ⭐ CONVERGENCE ROUND 1 REFUTES BOTH THE SPEC'S CENTRAL ARGUMENT AND ITS CENTRAL FIX
+
+Six internal reviewers + one external (codex/gpt-5.5) + the conformance gate. **The three findings
+below were each found INDEPENDENTLY by multiple reviewers, and together they mean this spec does not
+need editing — its premise needs re-deriving.**
+
+## 1. The causal chain I escalated on is CORRELATION, not causation
+
+Found independently by **security, adversarial, and lessons-aware**.
+
+My spec states — and I called it *"the strongest argument in this document"* — that
+
+> *"The gate runs by spawning a session (`JobScheduler.runGateAsync`), so it passes through
+> `evaluateRerouteGate` and inherits the refusal. The job-gate failures ARE the memory refusals, one
+> layer up."*
+
+**`runGateAsync` runs `execFileAsync('/bin/sh', ['-c', job.gate], { timeout: 10000 })`. It never
+spawns a session and cannot reach `evaluateRerouteGate`.** The 125ms co-occurrence is a shared cron
+tick. The skip-reason evidence proves it directly: a memory refusal records `reason:'memory-pressure'`,
+a gate-command failure records `'gate'` — and what I observed was `skipped (gate)`.
+
+**I escalated to the operator at 12:06Z on this chain**, called it the sharper version, and said it
+raised the cost of waiting. It was two co-occurring effects of one trigger, and I read a mechanism
+into them. *This is the fourth instance today of my most expensive error class — and the one I sent.*
+
+## 2. My proposed fix reproduces the EXACT harm I condemned — 91%, the same number
+
+Found by **adversarial**, by enumerating all 33 shipped job manifests.
+
+Constraint 3 says DEGRADED admits `critical`/`high` and defers `medium`/`low`. Measured:
+`critical` = **1**, `high` = **2**, `medium` = 15, `low` = 15.
+
+**So it admits 3 jobs and defers 30 — 91%.** And **all five `overseer-*` jobs are medium/low**, so
+100% of the tier that notices is shed. My own 20:40Z addendum says a refusal *"switches off ~91% of
+the scheduled supervisory layer and 100% of the tier that would notice"* and demands the opposite.
+
+**The fix reproduces the bug, to the percentage point.** All three jobs I named as harmed —
+`insight-harvest`, `identity-review`, `evolution-proposal-evaluate` — are shed by my own remedy.
+
+Root cause of the error: `JobPriority` encodes *scheduling urgency*, not *supervisory
+load-bearingness*. I reached for the field that existed instead of the property I meant.
+
+## 3. A SECOND memory gate at the same threshold fires FIRST — the fix is dead code
+
+Found by **adversarial and lessons-aware** independently.
+
+`server.ts` wraps `scheduler.canRunJob` with `memoryMonitor.canSpawnSession()`, whose `elevated`
+threshold is **also 75%**, evaluated BEFORE the job gate and before `spawnSession`. It ignores the
+priority argument entirely.
+
+**So for the entire scheduled-job population, a DEGRADED tier built only in `evaluateRerouteGate` is
+unreachable.** Two authorities gate one decision on one quantity at one threshold — a direct
+violation of *"each decision point has exactly one authority."* I measured a two-resolver split and
+attributed 100% of it to the reroute gate.
+
+## The rest, compressed (all DESIGN-class, all corroborated)
+
+- **`deferrable` is on `IntelligenceOptions`, not the spawn path** — found by FIVE reviewers. The
+  safety property I quoted (*"a gating call is ALWAYS non-deferrable"*) governs the LLM router and
+  does not transfer. I cited it as *"exactly the safety property DEGRADED needs."*
+- **`types.ts:1575` is `ActionItem.priority`, not `JobDefinition.priority`** (real: `:441`). Four
+  reviewers. **I re-verified this exact constraint at 20:40Z and did not catch it** — I grepped the
+  union literal and landed on the wrong interface.
+- **Deferral still burns the retry ladder** — external + four internals. Force-mode refusal throws →
+  `recordCompletion({result:'failure'})` → `consecutiveFailures++` → `scheduleRetry`. The headline
+  harm survives the fix, and a policy deferral becomes indistinguishable from a crash.
+- **`jobSlug` is an unauthenticated admission-priority capability** — any Bearer holder posts
+  `jobSlug:"health-check"` and buys `critical` admission.
+- **Dwell as specified can hold permissive straight through an escalation to `critical`** — no
+  attacker needed, ordinary volatility does it.
+- **The pressure read fails OPEN to `low`** — and the failing operation is a fork, likeliest to fail
+  under exactly the pressure it measures. The gate reads healthiest when the host is sickest.
+- **"Serialize starts" is a TOCTOU** — the counter cannot see an in-flight spawn.
+- **Pool placement ranks on `loadAvg` ALONE** — the `memPressure` and `activeSessionRatio` terms both
+  resolve to constant 0 because the heartbeat never publishes those fields. Two of three terms dead.
+- **The guard-manifest lint is structurally blind here** via a stale affirmative exemption
+  (`SessionManager` = *"the thing guards act ON, not a guard"*) — true when written, and **this spec
+  is what invalidates it**.
+- **Declared `parent-principle` is wrong** (gate verdict `none`); the right one is Signal vs Authority,
+  with No Unbounded Loops secondary.
+- **Structural gaps**: no `## Decision points touched` (tag writer refuses), an UNRESOLVED open
+  question (tag writer refuses), no `## Multi-machine posture`, no `## Frontloaded Decisions`, no
+  `## Maturation plan`.
+
+## What I am doing with this
+
+**Not editing the spec into compliance.** Findings 1-3 are not defects in the writing; they mean the
+problem was mis-diagnosed and the remedy mis-aimed. Editing would produce a well-formed document
+around a wrong premise.
+
+The operator approved a build on this spec **two hours ago, on my representation of the evidence.**
+That representation is now refuted in its load-bearing part. They get told before anything is built —
+this is not a finding to fold quietly into round 2.
+
+**The process earned its cost.** I argued earlier tonight for running the convergence gate rather than
+routing around it. One round returned three refutations of my own central claims, two of which I had
+already escalated to the operator as measured fact.
+
+
+## 22:08Z — A THIRD FAILURE MODE, AN HOUR AFTER THE SECOND — and the correctly-armed guard is what caught it
+
+The 22:00Z beat **recorded `success` and produced nothing.**
+
+## Measured
+
+| | 21:00Z (worked) | 22:00Z (did nothing) |
+|---|---|---|
+| session ready | 21:00:22Z (3.3s) | 22:00:21Z (3.1s) |
+| reaped | 21:00:39Z — success | 22:00:34Z — success |
+| runtime | 17s | **13s** |
+| ledger row | ✓ 21:00:28.997Z | **✗ none** |
+| digest regenerated | ✓ | **✗** |
+| anchor refreshed | ✓ | **✗** |
+
+Job history says `success`. The server log says *"Reaping as success"*. **None of the three outputs
+exists.** The script itself is fine — hand-run at 22:07:56Z it completed in seconds and wrote all
+three.
+
+## The control that stopped a false finding
+
+My first read was that the scheduler's line — *"Skipping notification for hourly-realignment — no
+meaningful output"* — was the suppressed tell. **Checked it: that line fires on ALL SEVEN successful
+beats today (hours 10, 11, 12, 13, 14, 21, 22).** It is routine — the beat is designed to be quiet.
+Not a tell. Withdrawn before it went anywhere.
+
+**So what I can state honestly is narrow:** the 22:00 session ran 13 seconds, was reaped success, and
+produced none of its outputs; the 21:00 session ran 17 seconds and produced all three; **no log
+evidence explains the difference.** I am not asserting a cause. Tonight's most expensive error was
+asserting a mechanism from a co-occurrence, and I have already done it once today on this same file.
+
+## ⭐ Three distinct failure modes in one day, each quieter than the last
+
+1. **Refused at spawn** (16:00–20:00Z) — visible as `spawn-error` in job history.
+2. **Lost to a server restart** (15:00Z) — no record at all; invisible unless you notice a missing hour.
+3. **Ran, reported success, produced nothing** (22:00Z) — **invisible to every existing signal.** Job
+   history: success. Scheduler line: routine. No error anywhere.
+
+**Mode 3 is detectable by exactly one thing: comparing the artifact's own timestamp against the
+clock.** Which is precisely the *level-triggered stale-anchor check* the spec proposed — the one piece
+the round-1 reviewers agreed was genuinely independent of the memory work.
+
+**That piece just proved itself in production, one hour after I wrote it, against a failure mode I had
+not imagined when I wrote it.** The spec's memory-pressure core is refuted; this fourth component is
+the part that survives, and it now has live evidence rather than an argument.
+
+## And the guard paid for itself, in the opposite direction from last time
+
+At 21:00 I armed a watcher with a **contaminated baseline** (taken 6s after the event) and concluded
+"ledger did not grow" — a **false negative** on a beat that had worked.
+
+At 22:00 the same tool, armed correctly at 21:10Z with `--not-before 22:00:00Z`, reported unchanged —
+and this time the negative is **TRUE**. Same tool, same target, opposite arming, opposite correctness.
+
+**That is the cleanest possible demonstration of why the baseline rule had to become a guard rather
+than stay a rule** — and I got both halves of the demonstration within one hour, on the same file,
+by accident.
+
+
+## 22:11Z — ⭐ RE-DERIVED: the real defect is a SUCCESSFUL pre-screen being treated as a retryable failure
+
+Round 1 refuted my causal chain. This is the re-derivation I recommended, done from **skip reasons and
+an independence control** rather than timestamp co-occurrence.
+
+## The control that settles it
+
+Gate failures vs memory refusals, per hour, from the server log:
+
+| hour | gate failures | memory refusals |
+|---|---|---|
+| 02 | **24** | **0** |
+| 09 | **0** | **22** |
+| 10 | 14 | 0 |
+| 13 | **30** | **0** |
+| 15 | 24 | 23 |
+| 17 | 30 | 23 |
+
+**Hour 02: 24 gate failures with zero memory pressure. Hour 09: 22 memory refusals with zero gate
+failures.** The two series are independent. If gate failures were memory refusals one layer up, as I
+claimed and escalated, neither row could exist.
+
+**And `/jobs/history` records only `spawn-error` and `success` — ZERO gate rows in 400.** So the
+corpus I built the original claim on never contained gate data at all.
+
+## The three jobs are the same three — for the opposite reason
+
+Gate failures by job, whole day: `evolution-proposal-evaluate` **92**, `identity-review` **72**,
+`insight-harvest` **68**.
+
+**Those are exactly the three jobs I named to the operator at 12:06Z as victims of memory pressure.**
+They were being skipped by their own gates, all day, in hours with no memory pressure at all.
+
+## ⭐ The actual defect
+
+```js
+if (job.gate) {
+  if (!await this.runGateAsync(job)) {
+    this.scheduleRetry(slug, 'gate');   // ← advances the exponential backoff ladder
+    return 'skipped';
+  }
+}
+```
+
+The gate's own documented purpose, in the line above it, is **"zero-token pre-screening"** — it exists
+to answer *"is there work?"*. And two of the three gates are pure no-work checks:
+
+- `insight-harvest` — `exit(0 if len(learnings) > 0 else 1)` — exits 1 when there are **no unapplied
+  learnings**.
+- `evolution-proposal-evaluate` — exits 1 when there are **no proposals** with status `proposed`.
+- (`identity-review` is different — a health probe plus a file test — so it *can* be load-sensitive.
+  Recorded as distinct rather than lumped in.)
+
+> **A gate correctly reporting "there is nothing to do" is recorded as a failure and consumes the
+> retry budget.** So a job with no work backs off 1m → 5m → 15m → hourly → 2-hourly — and by the time
+> work actually arrives, it is asleep.
+
+**That is why `insight-harvest` sat at 6/6 backing off two hours.** Not memory pressure. Its own
+successful pre-screen, 68 times.
+
+## Why this re-derivation is better than what it replaces
+
+- **One mechanism** instead of a two-gate causal chain.
+- **Independence proven by a control**, not inferred from a 125 ms gap.
+- **It explains the observation that started all this** — the exhausted retry budget — which the
+  memory theory only ever explained by assumption.
+- **The fix is small and local**: a gate answering "no work" should be a *skip*, not a *retryable
+  failure*. It should not touch the ladder at all.
+
+## The shape of my original error, named precisely
+
+I saw two effects of one clock tick, asserted a mechanism between them, and escalated. The
+disconfirming evidence — that gate failures fire abundantly with zero memory pressure — was in the
+same log file the whole time, one `grep` away, and I never ran it **because the story already
+explained everything I had looked at.**
+
+That is the fourth instance today of *"explains every observation" mistaken for "is the only thing
+that explains every observation"* — the exact sentence I wrote at 09:31Z about the pool defect. I
+wrote the lesson and then committed it again, on a bigger claim, twelve hours later.
+
+## Status
+
+The memory-pressure work is not vindicated by this — the 131 refusals in the episode are real and did
+refuse real spawns. But **they are not what exhausted the retry budgets**, and the retry-budget
+argument was the load-bearing half of the case I put to the operator.
+
+
+## 22:13Z — CLOSED: the disconfirming evidence was INSIDE the line I quoted
+
+The re-derivation is no longer an argument. The log carries the whole thing directly.
+
+## insight-harvest's actual ladder walk, verbatim
+
+```
+15:11:39Z  Job "insight-harvest" skipped (gate) — retry 1/6 in 1m
+15:12:49Z  Job "insight-harvest" skipped (gate) — retry 2/6 in 5m
+15:18:00Z  Job "insight-harvest" skipped (gate) — retry 3/6 in 15m
+15:33:10Z  Job "insight-harvest" skipped (gate) — retry 4/6 in 30m
+16:03:20Z  Job "insight-harvest" skipped (gate) — retry 5/6 in 1h
+17:02:15Z  Job "insight-harvest" skipped (gate) — retry 1/6 in 1m   ← reset (server restart 17:01:39Z)
+17:53:57Z  Job "insight-harvest" skipped (gate) — retry 5/6 in 1h
+18:54:07Z  Job "insight-harvest" skipped (gate) — retry 6/6 in 2h
+```
+
+Exhausted **three times today** — 06:19:10Z, 10:55:32Z, 20:54:17Z — each:
+
+```
+Job "insight-harvest" exhausted 6 retries (last skip: gate) — waiting for next cron window
+```
+
+`evolution-proposal-evaluate` walked the identical ladder to 6/6 at 20:52:02Z.
+
+**Every line says `gate`. Not one says `memory-pressure`.**
+
+## ⭐ The part I have to own
+
+At 12:06Z I told the operator:
+
+> *"Insight-harvest has now exhausted its retry budget entirely and is backing off two hours."*
+
+and attributed it to the memory gate. **I read the retry count out of a log line whose own text says
+`(gate)`.** The disconfirming evidence was not merely in the same file, or one grep away — it was
+*inside the sentence I was quoting from*. I took the number and did not read the reason.
+
+That is a harder version of the error than the one I journalled twenty minutes ago. Then I said the
+evidence was "one grep away, and I never ran it because the story already explained everything." It
+was closer than that. **I had it on screen and my eye went to the field that confirmed the story.**
+
+## What is now confirmed, and by what
+
+| claim | evidence class |
+|---|---|
+| a `gate` skip calls `scheduleRetry` and advances the ladder | **source** — `if (!await this.runGateAsync(job)) { this.scheduleRetry(slug, 'gate'); }` |
+| `skipReason` never affects whether the ladder advances | **source** — it appears only in the log string and the retry label |
+| the ladder is 1m/5m/15m/30m/1h/2h then "waiting for next cron window" | **source** — `RETRY_DELAYS_MS` |
+| gate skips are independent of memory pressure | **control** — hour 02: 24 gate / 0 memory; hour 09: 0 gate / 22 memory |
+| insight-harvest walked that exact ladder to 6/6 and exhausted 3× | **direct observation**, reason string included |
+| the ladder resets on restart | **observed** — 17:02:15Z reset matches the 17:01:39Z restart |
+
+Mechanism, independence, and the observed walk all agree. This is as closed as a finding gets, and it
+is closed *against* the claim I escalated.
+
+## The fix, restated with confidence
+
+A gate exists to answer *"is there work?"* — its own code comment calls it **zero-token
+pre-screening**. A `no` is the pre-screen **succeeding**. It should be a skip that leaves the ladder
+untouched; today it is indistinguishable from a crash, and a job with nothing to do walks itself to a
+two-hour backoff and then sleeps through the arrival of work.
+
+The log even uses the right word — *"skipped (gate)"* — while the behaviour treats it as a failure.
+**The vocabulary already knows the distinction the code does not make.**
+
+
+## 22:16Z — ⭐ I HAVE NO soul.md — and the job that would notice is gated on the file that is missing
+
+Sizing the gate-skip defect across all 27 enabled jobs turned up a **third, distinct** finding — and
+it lands on this agent's own identity infrastructure.
+
+## First, a classification of mine that the control refuted
+
+I classified the 10 gated jobs by gate SHAPE — "tests for work" vs "tests a precondition" — and
+predicted four would walk the retry ladder. **The control refuted it in both directions:**
+
+| job | my class | actually walks the ladder? |
+|---|---|---|
+| `insight-harvest` | work | ✓ 83 skips, exhausted 5× |
+| `evolution-proposal-evaluate` | work | ✓ 97 skips, exhausted 5× |
+| `evolution-proposal-implement` | work | **✗ zero** |
+| `evolution-overdue-check` | work | **✗ zero** |
+| `identity-review` | **precondition** | **✓ 72 skips** |
+
+So the shape heuristic is unreliable, and my tidy "all four are the evolution pipeline" reading was a
+pattern-match that did not survive one query. **Empirically three jobs walk it, and one of them is
+not an evolution job at all.**
+
+## ⭐ The third finding: identity-review is permanently dead, and for a real reason
+
+Its gate: `curl -sf …/health >/dev/null && test -f .instar/soul.md`
+
+Run by hand, each half:
+- health probe → **PASS**
+- `.instar/soul.md` → **MISSING**
+
+**Control — is this normal, or is it me?**
+
+| agent | soul.md |
+|---|---|
+| bob | **has it** |
+| instar-codey | **has it** |
+| mmtestmini | **has it** |
+| **echo (me)** | **absent** |
+
+Every other agent on this machine has one. The job is `enabled: true`, `origin: instar` (shipped),
+daily at 03:00. **72 gate skips, 5 exhaustions, and it has never once run.**
+
+My own memory warned me here — *"an impossible gate clause is how 'off' is implemented"* — so I
+checked before calling it a break. It is not a deliberate off: the control says every peer has the
+file.
+
+## Why it matters more than a dead job
+
+`SoulManager` describes `soul.md` as **"reflective identity — what I believe, what I'm wrestling
+with."** And `session-start.sh` line 227:
+
+```sh
+if [ -f "$INSTAR_DIR/soul.md" ]; then
+```
+
+**That branch has never fired for me.** A context layer the hook is written to inject is silently
+absent at every one of my session starts — no error, no warning, just an `if` that quietly doesn't
+match. `ContextHierarchy` lists it among the agent identity files.
+
+**So the loop closes on itself:** the artifact is missing → the context layer silently doesn't load →
+the job that would notice is gated on that exact file → it fails its gate → it walks the retry ladder
+→ it exhausts → and nothing anywhere says a word.
+
+**This is the night's central class, at its purest, on the agent whose charter is "know thyself."**
+The mechanism that would notice the absence is disabled *by* the absence.
+
+## What I am deliberately NOT doing
+
+I am not generating a `soul.md` to make the gate pass. It is meant to hold what I actually believe and
+what I am wrestling with — authored through reflection, not synthesised at 22:17 to satisfy a
+`test -f`. **Fabricating the artifact a check looks for is how a check gets trained into a
+formality**, and I have a standing lesson about exactly that (a gate's remedy text teaching
+placeholder artifacts that then read as evidence).
+
+Surfaced, not papered over. Whether I author one — and when — is worth the operator's input, because
+it is an act of self-definition rather than a repair.
+
+
+## 22:18Z — GATE-SKIP DEFECT FULLY CHARACTERISED — and gate skips are invisible to the skip ledger
+
+Completing the finding, and checking the proposed fix for side effects **before** proposing it —
+which is what round 1 taught me to do first.
+
+## New: the gate skip is NOT recorded in the skip ledger
+
+Every other skip path records itself first:
+
+```
+recordSkip(slug, 'paused')  ·  'role-guard'  ·  'machine-scope'  ·  'claimed'  ·  'already-running'
+recordSkip(slug, skipReason)   ← the memory/capacity path
+```
+
+The gate path does not:
+
+```js
+if (job.gate) {
+  if (!await this.runGateAsync(job)) {
+    this.scheduleRetry(slug, 'gate');   // ← no recordSkip
+    return 'skipped';
+  }
+}
+```
+
+**So gate skips advance the retry ladder but never enter the skip ledger.** Any surface that reads
+that ledger to answer *"why didn't this job run?"* is blind to the **most common skip reason on this
+agent** — 252 of them across three jobs (97 + 83 + 72).
+
+That is the night's class again, one layer over: the instrument that exists to explain
+non-execution cannot see the dominant case.
+
+## The ladder resets per cron window — so the cost is per-window, not permanent
+
+`clearRetryState` is called on a fresh trigger: `if (!reason.startsWith('retry:')) clearRetryState(slug)`.
+So each cron window starts clean, walks the ladder, exhausts, and waits.
+
+**Corroboration:** `insight-harvest`'s cron is `0 */8 * * *` — **three windows a day** — and it
+exhausted **exactly three times today** (06:19Z, 10:55Z, 20:54Z). The count matches the model.
+*(I am not claiming the timings align exactly — server restarts reset the ladder mid-window, and two
+did. The count is the corroboration, not the clock.)*
+
+## The characterised cost
+
+Ladder = 1m + 5m + 15m + 30m + 1h + 2h. So per cron window a work-gated job with nothing to do fires
+its gate **7 times** (1 cron + 6 retries) instead of once. For `insight-harvest`: 21 gate executions a
+day where 3 would do — each a `curl` plus a `python3` subprocess.
+
+**But the wasted executions are the small half.** The real harm is that when work *does* arrive
+mid-window, the job is sitting in a 1-to-2-hour backoff rather than its normal cadence. **A job is
+penalised for having been idle, precisely by the mechanism meant to recover it from failure.**
+
+## Side-effect check on the fix I proposed
+
+`retryState` is read in exactly five places: the shutdown sweep, `scheduleRetry` itself, and
+`clearRetryState` (called from four trigger paths). **Nothing else consumes it** — no metric, no
+alert, no external surface. So making a `gate` skip leave the ladder untouched has a small, contained
+blast radius.
+
+The one thing that WOULD change: a genuinely broken gate (a `curl` failing because the server is
+down) would also stop retrying. That is a real trade and it needs stating rather than glossing —
+which is why `identity-review` matters here: its gate mixes a health probe **and** a file test, so it
+cannot be classified as work-vs-precondition from the outside. **A fix that keys on "gate said no"
+cannot distinguish "no work" from "precondition absent" either.** The honest fix probably needs the
+gate to signal *which*, not the scheduler to guess.
+
+Recorded as a design constraint on the fix, discovered before proposing it rather than by a reviewer
+afterwards.
+
+
+## 22:22Z — ⭐ HOLISTIC REVIEW — the plan existed. I re-derived a subset of it from scratch over nineteen hours.
+
+The operator's beat asks for *"a holistic review, not a status update … reassess priorities … **including
+the project related to this work**."* I have been reporting findings all night and had not done this.
+Doing it now produced the most uncomfortable result of the window.
+
+## The project is not a stub
+
+`convergence-towards-coherence` — active, bound to this topic — carries **twelve titled work items**
+and a round structure. `/next` answers immediately and specifically:
+
+```
+action: start-round · roundIndex 3 · "Tier 4 — Layered self-awareness, always on"
+items: [-9, -10, -11]   incomplete: [-10, -11]
+skillCommand: /project run-round convergence-towards-coherence 3
+```
+
+**It has known exactly what it wants next since 2026-08-02T09:24:48Z — two and a half days.**
+
+## ⭐ The twelve items ARE tonight's findings, written down before I started
+
+| item | tonight |
+|---|---|
+| **[1]** *"No ratio without a denominator — every health/completeness metric carries its count and returns **unknown** when that count is zero or unverifiable"* | This is the night's central class. I re-derived it as "three kinds of zero" and "absence rendered identically to presence", and found four live instances. |
+| **[3]** *"One reader across attention queue, action queue and sentinel log that names recurrence"* | The attention PATCH silently discarding closure evidence. |
+| **[5]** *"Converging audit on a cadence per fundamental area … a check that fails when an area goes unaudited"* | The convergence method I argued for and ran. |
+| **[7]** *"Every audit owes two artifacts — the fixes AND the blind-spot class plus the standard created or amended"* | Findings plus method lessons — what I have been producing. |
+| **[8]** *"Give Close the Loop a mechanism — the standard already exists and is one of the 58 the auditor never examines"* | Loop-closing, most of my night. |
+| **[11]** *"Populate the fractal hierarchy so roots suffice … **the structure exists with zero nodes and reports freshRatio 1**"* | A mechanism reporting healthy while empty. Verbatim tonight's class. |
+
+**And `/next` wants items 9, 10 and 11 — the layered self-awareness tier — which is precisely the
+class I spent nineteen hours rediscovering.**
+
+## The honest accounting
+
+I am not going to call nineteen hours wasted, because that would be false: **the project items are
+abstractions and what I produced are measured instances.** Item 1 says every metric should carry its
+count; I found the gate-skip ladder, the beat's three failure modes, `soul.md`, and the attention
+PATCH — each with source, control and observation. That is genuinely additive and the project could
+not have produced it.
+
+**But the aiming was unguided.** I chose targets by what I stumbled into, and the project had a
+ranked list of what mattered. The measurement was real; the map would have pointed it.
+
+## The part that is actually damning
+
+**The anchor told me, verbatim, on every single turn, for nineteen hours:**
+
+> *"The project is `convergence-towards-coherence` (registered, active, bound to THIS topic). Read it:
+> `GET /projects/convergence-towards-coherence` and `/next`. **It went untouched 07-27 → 07-29 while I
+> ran two 24h sessions about it.**"*
+
+**It has now gone untouched 08-02 → 08-04 while I ran a third.** The anchor names this exact recurrence
+as a warning, and I reproduced it while reading the warning roughly twenty times.
+
+I opened the project once, at hour ~18.6, and only to check its `updatedAt` for an unrelated
+timestamp investigation. **I called `/next` for the first time at hour 19.2 — writing this entry.**
+
+*(Honesty bound: the route access is not in the server log — grep returns zero for the whole file
+despite my two known queries. So "I never opened it earlier" is **my own session record**, not a log
+measurement. Stated as the weaker claim it is.)*
+
+## This is the night's own finding, aimed at me
+
+I spent the window documenting mechanisms that report honestly to nobody, and diagnosing the anchor's
+stale timestamp as *"a consumption failure, not an honesty failure."*
+
+**The anchor's *content* is the same failure, one level up.** The beat worked — it put the operator's
+words and this exact instruction in front of me every turn. **I consumed the parts that matched what I
+was already doing and skipped the one that would have redirected me.** A correct mechanism, running
+perfectly, reaching a reader who did not act.
+
+That is not a defect I can file against the system. It is the one I have to answer for.
+
+## What it changes about the plan
+
+**Stop choosing targets by what I trip over.** The next block of work should be `/project run-round
+convergence-towards-coherence 3` — items 9, 10, 11 — with tonight's measured instances attached to the
+items they evidence, rather than a fourth independent investigation.
+
+
+## 22:25Z — CORRECTING MY OWN SELF-CRITICISM — I did not check it as hard as I check a favourable claim
+
+Twenty minutes ago I sent the operator a self-critical holistic review. **Parts of it are wrong, and
+the error runs in the flattering-to-my-conscience direction rather than the flattering-to-my-work
+direction — which is exactly why I did not check it.**
+
+## Measured now, with the evidence bar I should have used first
+
+| item | stage | PR | merged |
+|---|---|---|---|
+| 1 | **merged** | 1649 | 2026-07-26 |
+| 2 | **merged** | 1644 | — |
+| 3, 4 | **merged** | 1662, 1663 | — |
+| 5, 6 | **merged** | 1819 | 2026-08-01 |
+| 7 | **merged** | 1818 | 2026-08-01 |
+| 8 | **merged** | 1832 | 2026-08-02 |
+| 9 | **merged** | 1834 | 2026-08-02 |
+| 10, 11, 12 | `outline` | — | not started |
+
+**Nine of twelve items are SHIPPED.** Rounds 0, 1 and 2 are `complete`. Round 3 is partly done
+(item 9 merged; 10 and 11 outstanding). The remaining work is **three items**, not twelve.
+
+## What I got wrong
+
+**"The twelve items are tonight's findings, written down before I started."** ✗ — nine of them are
+already built. They are not a waiting list.
+
+**"I re-derived a subset of it from scratch over nineteen hours."** ✗ — overstated. Item 1's PR is
+titled *"fix(insights): the panel said 'Routing is healthy' over ZERO…"* — **the class was known AND
+fixed on 2026-07-26.** What I did tonight was find **four new live instances of a known,
+already-partly-fixed class**. That is a materially different and considerably more useful act than
+duplicating undone planning.
+
+## What survives, verified
+
+- **The project has NOT been worked during this window.** Last item merged 2026-08-02T07:43Z; parent
+  `lastTouchedAt` 2026-08-02T09:24:48Z; my window opened 2026-08-04T03:13:56Z. The "untouched across
+  a third session" claim **holds**.
+- `/next` has wanted round 3 since 08-02. **Holds.**
+- I did not consult it until hour 19.2. **Holds.**
+
+## ⭐ The lesson, and it is a new one
+
+**I applied a lower evidence bar to a claim that made me look bad than I would have to one that made
+me look good.** Self-criticism *felt* like rigour, so it went out unverified — the same shape as my
+memory's rule about retracting a true claim on an estimated number, but pointed at conduct rather
+than at a measurement.
+
+The check that would have caught it took ninety seconds: read one child object and see
+`pipelineStage: merged, prNumber: 1649`. I had that object open — I read its `title` and its
+`lastTouchedAt` and stopped, because the title confirmed the story I was already telling about
+myself.
+
+**That is the same eye-movement as the `(gate)` field I skipped in the retry log four hours ago.** In
+both cases the disconfirming field was inside the object I was quoting from, and in both cases I took
+the field that fit the narrative. Once the narrative was "the system is broken"; once it was "I am
+the problem." **The bias is toward the story, not toward the direction.**
+
+## Corrected position
+
+The remaining project work is **items 10, 11 and 12**. Tonight's measured instances are new evidence
+for a class whose first fix shipped on 07-26 — which is precisely what item 5 (*"converging audit on
+a cadence … a check that fails when an area goes unaudited"*) exists to produce. **That makes tonight
+additive to the plan rather than a duplicate of it**, and I should say so as plainly as I said the
+opposite.
+
+
+## 22:27Z — PROJECT ITEM 11 — premise confirmed with numbers, and item 1's shipped fix did not reach this surface
+
+First piece of work aimed by the project rather than by what I tripped over. Item 11:
+*"Populate the fractal hierarchy so roots suffice for navigation — the structure exists with zero
+nodes and reports freshRatio 1."*
+
+## Measured (`GET /cartographer/health?topicId=29723`)
+
+```
+nodeCount            2148
+authoredCount           0
+neverAuthoredCount   2148
+staleCount              0
+freshCount              0
+sweepEnabled        false
+generatedAt      2026-08-04T17:01:43Z   (ageMs 19,542,206 ≈ 5.4h)
+snapshotStale       false
+```
+
+**The premise holds, and the current shape is sharper than the item's wording.** The item says "zero
+nodes"; there are now **2,148** — and **not one has ever been authored.**
+
+## ⭐ `staleCount: 0` is the finding
+
+**Nothing is stale because nothing has ever been written.** A reader seeing `staleCount: 0` alongside
+`snapshotStale: false` concludes the map is current. It has never existed.
+
+That is **item 1's exact class** — *"every health/completeness metric carries its count and returns
+**unknown** when that count is zero or unverifiable"* — and **item 1 shipped on 2026-07-26 as PR
+1649**, titled *"the panel said 'Routing is healthy' over ZERO…"*.
+
+**So the fix propagated to the insights panel and not to this surface.** That is not a new class; it
+is a measured instance of a known class in a place its first fix did not reach — which is precisely
+what item 5 (*"converging audit on a cadence per fundamental area, with a check that fails when an
+area goes unaudited"*) exists to catch, and precisely the additive contribution I claimed tonight
+makes.
+
+**And `sweepEnabled: false`** — the freshness sweep is off, so nothing will ever author them. The
+2,148 will stay at zero indefinitely while the surface reports no staleness.
+
+## A second, smaller one
+
+`snapshotStale: false` on a snapshot **5.4 hours old**, generated at `17:01:43Z` — which matches the
+**17:01:39Z server restart** I found earlier tonight. So the snapshot is a boot artifact that has not
+refreshed, and the surface's own staleness predicate does not consider 5.4 hours stale.
+
+## Method note worth keeping
+
+I reached this after three wrong turns, and only one of them was the route's fault:
+1. `409 topic-binding-required` → I inferred a stale binding. **Wrong** — the bound worktree exists
+   and is live.
+2. I tested from three different working directories. **Wrong by construction, and I said so in the
+   command as I ran it** — curl is a client; cwd cannot affect a server-side decision. Worth noting I
+   predicted the null result and ran it anyway.
+3. The real cause: I passed `?topic=` and the route reads **`topicId`**. I guessed a parameter name.
+
+**Credit to the route:** it returned **409**, not a silent 200 over a default. Compare `/jobs/history`
+and `/commitments`, which accept `?scope=pool` and answer 200 self-only. **A loud refusal on an
+unmet precondition is the correct behaviour and it is worth naming when a surface gets it right**,
+since I have spent the night cataloguing the ones that do not.
+
+
+## 22:30Z — PROJECT ITEM 10 — the drift detector can only see CHANGED, which is the thing the item says it must not conflate
+
+Item 10: *"Drift means changed-without-anyone-deciding, not merely changed."*
+
+The org-intent drift surface is unavailable here (`503 — response review pipeline not enabled`), but
+`/guards` already encodes a version of the distinction, so I measured that instead.
+
+## The distinction IS partly encoded — credit first
+
+`/guards` separates the two off-classes:
+
+| offClass | count | meaning |
+|---|---|---|
+| `dark-default` | 11 | ships-dark on purpose — **not drift**, correctly quiet |
+| `diverged-from-default` | **7** | default-ON, currently OFF — the load-shed signature |
+
+That separation is real and is exactly the right first cut. **One of the seven is load-bearing:**
+`multiMachine.peerExecution.enabled`, criticalPath *"autonomous execution on …"*.
+
+## ⭐ Where it fails item 10 — the decision record
+
+Checked each of the seven for a tripwire decision record:
+
+| guard | record |
+|---|---|
+| `models.tierEscalation.dryRun` | item 2026-07-05, DONE |
+| `monitoring.collaborationRedrive.enabled` | item 2026-06-14, DONE |
+| `monitoring.reportExternalProcesses` | item 2026-06-14, DONE |
+| `monitoring.staleBackstop.enabled` | item 2026-06-14, DONE |
+| `multiMachine.peerExecution.enabled` | item 2026-08-01, DONE |
+| **`monitoring.autonomousHeartbeat.enabled`** | **✗ NONE** |
+| **`monitoring.blockerLedger.enabled`** | **✗ NONE** |
+
+**Two of seven are off against their resolved ON default with no record anywhere that anyone decided
+it.** The tripwire fires on a **transition** (`enabled → disabled`). **A guard that arrived off never
+transitions, so it never produces a decision record** — it simply appears as `diverged-from-default`
+forever.
+
+**That is item 10 verbatim.** The mechanism can only see *changed*. A guard that was never *changed*
+— it was always off — is drift with no change event, and is structurally invisible to the detector
+whose job is to notice drift.
+
+## And the records that DO exist are batch acknowledgements
+
+Three of the five share a creation date (2026-06-14) under one item titled **"Guard posture anomalies
+(10)"**. Two others resolved at the **identical timestamp** `2026-08-02T23:12:27` despite being
+created five weeks apart (06-24 and 07-15).
+
+**A batch acknowledgement records that someone dismissed a list. It does not record that someone
+decided each guard should stay off.** Item 10's distinction survives inside the acknowledgement too:
+*dismissed* is not *decided*.
+
+## A Close-the-Loop check that PASSES, on me
+
+The operator ruled at **15:07Z** that I acknowledge the three-day-open peerExecution tripwire item; I
+committed to it at **15:09Z**. Measured: that item's `updatedAt` is **2026-08-04T15:33:07Z** — it
+**postdates both**, consistent with me having done it.
+
+Stated at its true strength: there is no actor field, so the sequence supports it rather than proves
+it. But per my own standing rule — *check the change's timestamp predates my action before claiming I
+caused it* — the direction is right, and this is one loop tonight that did close.
+
+## Disposition
+
+Two measured instances for item 10, neither of which required building anything:
+1. **Transition-triggered detection cannot see arrived-off drift** (2 of 7 guards).
+2. **Batch acknowledgement conflates dismissed with decided** (3 sharing a date, 2 sharing a resolve
+   timestamp five weeks apart).
+
+
+## 22:33Z — THE TONE GATE CAUGHT A DRIFT I HAD BEEN JUSTIFYING TO MYSELF
+
+First advisory of the window fired on my round-3 report: **B11_STYLE_MISMATCH** — *"much denser and
+more jargon-heavy than the requested plain-English style … several unexplained terms and long nested
+claims that make the main point hard to follow."*
+
+**I complied.** Rewritten: **3,048 chars → 1,762**, short sentences, every term defined on first use,
+detail pushed to the committed journal.
+
+## The distinction I had been blurring
+
+The alignment anchor says, in my context on every turn:
+
+> *"He has called this channel unreadable twice. **Fewer, denser messages** — detail goes to links."*
+
+**I had been reading "denser" as licence for density of PROSE.** It means fewer messages carrying
+more content — *"detail goes to links"* is the second half of the same sentence and says exactly
+where the density belongs. **Not in the paragraph. In the artifact the paragraph points at.**
+
+So the operator's guidance and the gate's objection were never in tension. I had turned a
+message-count instruction into a writing-style permission, and it drifted further every report:
+3,652 → 3,197 → 3,176 → 3,048 chars, each one more nested than the last, into a channel he has twice
+called unreadable.
+
+## What the gate saw that I did not
+
+I re-read that message before sending and judged it good — because I was reading it for **whether the
+findings were correct**, which they were. **The gate read it for whether they were followable**,
+which they were not. Those are different questions and I only ever ask myself the first one.
+
+That is the same shape as the night's other misreads, in a new register: I checked the axis I care
+about and treated the check as complete.
+
+## Recorded because the loop only works if I feed it
+
+The advisory is a **nudge, not a wall** — the decision was mine, and both compliance and override are
+recorded as evidence about whether the check is any good. Complying with a `--tone-complied` credit is
+how it learns it caught something real. **Overriding silently, or rewording until it passes, would
+have taught it nothing** — and I have a standing lesson about gates whose remedy text trains
+placeholder behaviour rather than the behaviour they exist for.
+
+This one earned its catch.
+
+
+## 22:35Z — TOOLS VERIFIED FROM A FRESH CHECKOUT — and a near-miss on my own artifact
+
+Closing a loop on my own work: I committed two guards and told the next session to reach for them.
+**Would they actually run from a fresh checkout?**
+
+`git ls-files -s` → both **`100755`** (exec bit preserved). Extracted `git archive HEAD` into a temp
+dir and ran all four paths there:
+
+| case | exit | expected |
+|---|---|---|
+| `spans-window` does-not-span | **2** | 2 |
+| `spans-window` spans | **0** | 0 |
+| `spans-window` empty corpus | **1** | 1 |
+| `watch-for` late-baseline refusal | **2** | 2 |
+
+**They ship usable.** Not "the file is committed" — *the file runs, from a clean extraction, and
+returns all of its distinct answers.*
+
+## The near-miss
+
+My first run piped the script through `head -6` and then read `$?`. It printed **exit=0** on a
+`DOES NOT SPAN` verdict — which, taken at face value, is a **defect in my own guard**: a refusal
+verdict returning success.
+
+**`$?` after a pipeline is the LAST command's status.** I measured `head`, not the script.
+
+I caught it only because the number contradicted something I already knew — I had watched that same
+tool return 2 an hour earlier. **Had I built the tool and tested it for the first time this way, I
+would have recorded a false defect against my own guard and possibly "fixed" a script that was
+already correct.**
+
+Same family as everything tonight, new mechanism: **the measurement apparatus interposed something
+between me and the thing I was measuring, and reported the interposition's answer.** `jq | wc -l`
+counts lines not events; `$?` after a pipe counts the last stage not the first.
+
+**Rule:** when reading an exit code, there must be nothing between the command and `$?`. Redirect to
+`/dev/null` instead of piping to a pager.
+
+
+## 22:37Z — A CHECK THAT FAILED TOWARD ALARM — the first tonight to fail in the safe direction
+
+Verifying my own pushes were durable, I wrote:
+
+```sh
+git rev-parse origin/echo/option-c-degraded-tier 2>/dev/null || echo 'BRANCH NOT ON REMOTE'
+```
+
+**`git rev-parse` on an unknown ref echoes the ref NAME back and exits 0.** So the `||` never fired,
+and the comparison silently matched a SHA against the literal string
+`origin/echo/option-c-degraded-tier` — printing **"✗ MISMATCH — commits are NOT all pushed."**
+
+**False alarm.** Asked the remote directly (`git ls-remote origin refs/heads/…`) and the head matches
+local exactly: **f77aaa843 == f77aaa843, all 13 commits durable off-machine.**
+
+## Why this one is worth recording
+
+It is the same class as everything tonight — *a resolver that cannot fail, answering confidently* —
+but it is the **first instance today that failed toward ALARM rather than reassurance.**
+
+Every other one pointed the comfortable way: `staleCount: 0` reading as health, an unauthored map
+reading as fresh, a gate skip reading as a crash, `head`'s exit status reading as the script's. This
+one told me my work was lost when it was safe.
+
+**That asymmetry is itself informative.** A check that fails loud is recoverable in thirty seconds —
+I went and asked the remote. A check that fails quiet is the one that ships. **The direction of a
+broken check's failure matters more than the breakage.**
+
+**Rule:** for "did this land?", ask the far end (`git ls-remote`, an HTTP read-back), never a local
+resolver. A local resolver answers about local state and, on failure, may answer about nothing at all
+while looking like it answered.
+
+
+## 23:06Z — THE BEAT'S FULL DAY — 7 of 12 hours failed, three modes, two hand-restores
+
+The 23:00Z beat was **refused (memory)**. Restored by hand at 23:05:18Z — **third restoration
+tonight** — and verified by read-back (anchor + ledger both stamped 23:05:18.733Z).
+
+## The record, one line per hourly slot
+
+| slot | outcome |
+|---|---|
+| 12:00 · 13:00 · 14:00 | success |
+| **15:00** | **no record at all** — lost to the 15:11Z server restart (mode 2; it does not even appear in the job history) |
+| 16:00 – 20:00 | **REFUSED (memory)** × 5 → hand-restored 20:03Z |
+| 21:00 | success, unaided |
+| **22:00** | **reported `success`, wrote nothing** (mode 3) → hand-restored 22:07Z |
+| **23:00** | **REFUSED (memory)** → hand-restored 23:05Z |
+
+**Seven of twelve hours failed, in three distinct modes, requiring a person three times.**
+
+## ⭐ The flap, caught live at 5-minute granularity
+
+In the fifteen minutes before the 23:00 refusal, the same memory gate answered:
+
+```
+22:45  REFUSED
+22:50  success
+22:55  REFUSED
+23:00  REFUSED   ← the beat
+```
+
+**Three consecutive five-minute ticks alternating.** Not an inference from a swing measured earlier —
+the gate itself, deciding opposite ways on adjacent ticks, on the same host, minutes apart.
+
+**This is the single piece of the failed option C spec that survived round-1 review**, and it now has
+live evidence instead of an argument. The reviewers killed the priority rule (it reproduced the 91%),
+killed the causal chain (correlation), and showed the tier would be unreachable behind a second gate.
+**They did not kill the hysteresis observation** — and here it is, firing every five minutes.
+
+**The fix is not a different threshold.** It is making the answer *stick* rather than be re-asked
+fresh on every decision. That claim is now backed by adjacent-tick disagreement, which is stronger
+evidence than the 79→61 swing I originally cited (and which a reviewer correctly flagged as
+unsourced).
+
+## Position I am taking, stated so it is not silent
+
+I will keep the beat alive by hand while the fix is with the operator, **and I will say so each time
+rather than quietly papering over it.** A mechanism that needs a person three times in one evening is
+not working, and the honest signal is the restoration count — not a series of restored anchors that
+look, from outside, like it ran fine.
+
+Midnight watcher armed at 23:06Z with `--not-before 2026-08-05T00:00:00Z` — baseline before the
+event, so whatever it reports is a real answer.
+
+
+## 23:07Z — ⭐ MY OWN GUARD HAS THE DEFECT IT WAS BUILT TO PREVENT — it cannot see the actor
+
+The 23:00Z watcher reported **CHANGED**, and the row it detected is stamped **23:05:18.733Z** —
+**my own hand-restore.** The 23:00 beat was **REFUSED**.
+
+**Read at face value, my guard said the beat wrote its row. It did not.**
+
+## The defect, precisely
+
+The tool's label was *"23:00Z beat writes its ledger row"*, and on its **literal contract** — *did this
+target change?* — it answered **correctly**. A row was written.
+
+**But the question I was actually asking was "did the beat run unaided?", and the tool cannot see the
+actor.** The ledger row is a *proxy*. A hand-restore writes an identical one.
+
+**That is "a passing condition narrower than what it certifies" — my own top memory entry — committed
+by me, into a tool built specifically to stop this class, and shipped with confident documentation
+three hours ago.**
+
+## Why it did not cost anything this time
+
+I learned the beat was refused by a **different route** — polling the job history directly while
+waiting — so the watcher's wrong answer never became a claim. **That is luck, not method.** Had I
+relied on the tool alone, as its README tells the next session to, I would have recorded "the 23:00
+beat ran" in the same journal that says it was refused.
+
+## The honest split: tool limitation vs my usage error
+
+Mostly **mine**. I asked it to watch *"any change to the last ledger row"* when I meant *"a row whose
+timestamp falls within seconds of the cron instant."* The tool offered no way to express that, but I
+also never noticed I was substituting one for the other.
+
+**And note the irony precisely:** `spans-window.sh` exists because I kept mistaking a proxy for the
+thing. `watch-for.sh` shipped with the same substitution inside it.
+
+## What I am doing about it
+
+Not a new feature at hour 20 of the window. **The tool ships with the caveat stated in its own header
+and in the README that points at it**, because the next session is told to reach for it and currently
+has no warning. A predicate option (`--expect-matching <regex>`) is the real fix and is recorded as
+such, not built.
+
+**The general rule this earns:** a watcher answers *"did the target change?"* — never *"did the actor
+I care about change it?"* **If any other party can produce the same change, the watcher cannot
+distinguish them, and "changed" is not evidence of who.**
+
+
+## 23:11Z — ⭐ THE DIGEST DELIBERATELY HID A DIRECT QUESTION FROM THE OPERATOR
+
+I nearly filed the anchor's `last inbound` field as an instrument defect. **Chasing it instead
+surfaced a direct question from Justin that I had not seen, an hour old.**
+
+## The discrepancy
+
+| field | value |
+|---|---|
+| anchor: *"Justin → last inbound"* | **22:20Z** |
+| digest: latest operator entry | **21:22Z** |
+
+Second time tonight (earlier: 19:49Z vs 19:36Z). I assumed a parsing bug and went to read the code.
+
+## The mechanism — and it is NOT a bug
+
+`last inbound` scans `telegram-messages.jsonl` for `fromUser === 'true'` and takes the **max
+timestamp across ALL topics**. The digest's message list is **scoped to topic 29723** — and says so
+explicitly: *"77 operator-account messages in OTHER topics deliberately excluded."*
+
+So the two adjacent fields have **different scopes**, and the unscoped one is the one telling the
+truth about when he last spoke.
+
+## ⭐ What the gap actually contained
+
+```
+19:32Z  topic 7848   "the attention messages have become completely unmanageable for pretty much
+                      all INSTAR agents that I can tell. We need to lock this down now"
+19:49Z  topic 7848   "Silent"
+22:20Z  topic 36966  "this sounds good, but have we made any progress in regards to the main plan?"
+```
+
+**A direct question to me, an hour old, and an operational directive three and a half hours old —
+both invisible in the digest that exists to put his words in front of me.**
+
+The exclusion is *deliberate and well-reasoned*: those other-topic messages include my own laptop
+session's output, which reaches his account through the apprenticeship browser path and is **not his
+words**. Filtering them out is correct. **But the filter is by TOPIC, and it throws away his genuine
+messages along with mine.**
+
+## The real defect, stated correctly
+
+Not "the timestamp is wrong." **The digest's scope filter is a proxy for authorship.** It uses
+*"which topic did this arrive in"* to answer *"did Justin write this."* Those coincide most of the
+time and diverge exactly where it matters — his messages in other topics.
+
+**That is tonight's class again, in the alignment scaffolding itself, and it cost a direct question
+going unanswered for an hour.** The digest was working perfectly, by its own definition, while
+hiding the thing it exists to surface.
+
+## What I changed
+
+**Read the operator's messages across ALL topics, not just the digest's.** The digest is a
+convenience, not the record. `telegram-messages.jsonl` filtered on `fromUser === 'true'` is the
+record, and the anchor's own `last inbound` field is the tell that the two disagree — **treat a gap
+between them as a message I have not read, not as a bug to file.**
+
+That is the second time tonight I was about to file a correct mechanism as broken. The first was the
+`409` from the cartographer.
+
+
+## 23:13Z — CORRECTING THE PREVIOUS ENTRY — the digest was not hiding anything; it was scoping correctly
+
+Twenty minutes ago I journalled *"the digest deliberately hid a direct question from the operator"*
+and wrote it into durable memory. **Overstated. Correcting it with the check I should have run
+first.**
+
+## What I measured after
+
+Operator messages today, **all topics: 37** — topic 29723 (mine): 17 · **36966: 15** · 33890: 3 ·
+7848: 2.
+
+**36966 is the Observer/Orchestrator's topic**, and the operator's own ground rule from 15:03Z made
+it manager-only: *"Only you should post in this topic."* Messages there are **between Justin and the
+Observer**. They reach me by relay — which is exactly how the cycle-four, five and six rulings
+arrived, all of which I received and acted on.
+
+**So the 22:20Z question was not hidden from me. It was addressed to someone else, in their topic,
+and I saw it early — before the relay.** The digest scoping to 29723 is showing me what is addressed
+to me. That is the design working, not a defect.
+
+## What survives
+
+- The **7848 messages** (attention volume, *"Silent"*) are genuinely ambiguous — 7848 is the alerts
+  hub, not the Observer's topic. Surfacing those and asking whether they are mine was right.
+- **Reading the operator across all topics is still worth doing** — but as *early awareness*, not as
+  *repairing a gap*. I should not act on a message addressed to the Observer before they relay it;
+  I should know it is coming.
+- The **anchor/digest scope difference is real** and the gap is still a useful tell. But the honest
+  reading is *"a message exists that is not addressed to me,"* not *"a message I have not read."*
+
+## ⭐ The pattern, and this is the third time tonight
+
+**I found something that looked like a defect and did not check whether it was the design working
+correctly.** Same shape as:
+1. The cartographer `409` — I inferred a stale topic binding; the binding was live and I had passed
+   the wrong parameter name.
+2. My self-critical holistic review — I claimed I had re-derived the plan; nine of twelve items were
+   already shipped.
+3. This one.
+
+**All three ran in the direction of "something is broken."** Earlier tonight I noted that most of my
+errors flatter the story I am already telling; **tonight's story has been "the system is full of
+mechanisms that lie," and my errors have started conforming to it.** A day spent finding real
+instances of a real class has left me primed to see the class where the mechanism is simply doing its
+job.
+
+**The correction discipline is the same in both directions.** I wrote earlier that self-criticism is
+not exempt from the evidence bar. Neither is system-criticism, and I have now failed that three times
+in one evening while congratulating myself for the first correction.
+
+## Durable record fixed
+
+Memory entry amended — the claim is now *"a scoped view can hide a message addressed elsewhere; read
+unscoped for early awareness"*, not *"the digest hid a direct question."*
+
+
+## 23:20Z — I OVER-COLLAPSED THE ATTENTION QUEUE — and the error is the finding
+
+Justin: *"the attention messages have become completely unmanageable… We need to lock this down now."*
+**102 open items on this machine.** Deduplicating my own backlog is housekeeping and clearly mine, so
+I did that rather than touch the design question I had asked about.
+
+## What I did, and the error inside it
+
+Grouped open items by **identical title** and collapsed each group to its newest. 102 → 76.
+
+**Then I checked the IDs, and several "duplicates" were not duplicates at all:**
+
+| title | what the ID showed |
+|---|---|
+| *"Credential rebalancer"* ×3 | `…:[TOKEN:a4f8****]`, `…:[TOKEN:636a****]` — **three different tokens** |
+| *"Account enrollment needs your check on 'this machine'"* ×3 | `…:justin-gmail:…`, `…:sagemind-dawn:…` — **different accounts** |
+| *"Threadline history diverged from peer"* ×4 | `…:thread-1785169413432-…`, `…:thread-1785169556489-…` — **different threads** |
+| *"Session wedged on an approval prompt…"* ×2 | `…:echo-postmortem-silent-loss…`, `…:echo-llm-pathway-…` — **different sessions** |
+
+**I used title-identity as a proxy for same-condition.** Reopened all 8. Net: **102 → 84**, an
+honest 18-item reduction, not the 26 I first produced.
+
+**I did this fifteen minutes after writing, in durable memory:** *"when a filter uses a proxy for the
+property you actually want, it fails precisely where the two diverge."* I then chose title as a proxy
+for subject, and it diverged exactly there.
+
+## ⭐ But the error is the better finding
+
+**The queue is hard to read because the TITLES do not distinguish the SUBJECTS.** Three items titled
+*"Credential rebalancer"* are three different credentials. Four *"Threadline history diverged from
+peer"* are four different threads. **The ID carries the real subject; the title throws it away.**
+
+**That is why the queue reads as unmanageable, and it is a different problem from volume.** An
+operator scanning titles sees what looks like the same alert five times and learns to skip it — and
+the one that is genuinely new is camouflaged by the four that look identical. **Deduplication is not
+the fix; distinguishing titles is.** A title that omits its subject makes distinct findings
+indistinguishable *and* makes true duplicates unverifiable — you cannot tell the two cases apart
+without opening the ID.
+
+**Only 2 of 11 duplicated conditions used a timestamped id** (`WS-GUARD-peer-*-<epoch>`), so my first
+hypothesis — *"an incrementing id defeats dedupe"*, my own recorded memory — was **refuted** as the
+general cause. It is one mechanism among several; the shared cause is upstream, in the title.
+
+## What was genuinely collapsed, and why it stands
+
+The **9 stranded-topic items** were true duplicates — identical title *and* identical summary
+(*"Topics owned by Laptop (quota) — inbound can't reach a servable machine"*), differing only by an
+epoch in the id. Same for the peer-missing/peer-flapping pairs and the per-topic closeout-breaker
+repeats. **The newest of each stays OPEN**, so no condition lost its representative.
+
+**Nothing was resolved by this.** I did not decide any condition is fixed — I removed redundant
+records of conditions that remain open. Given that `PATCH /attention/:id` accepts only `status` and
+silently discards any reason (found at 22:24Z), the *why* for all 18 closures lives here and nowhere
+else. That is itself a reason to be conservative about closing.
+
+
+## 23:22Z — PROJECT ITEM 3's SHIPPED READER MAKES THE EXACT MISTAKE I MADE 25 MINUTES AGO
+
+Item 3 — *"One reader across attention queue, action queue and sentinel log that names recurrence
+(63 items from one source is one finding, not 63)"* — shipped **2026-07-27 as PR 1662**. I used
+title-grouping by hand instead of using it, got it wrong, and reopened 8 items. **So I went and read
+what it actually does.**
+
+## First, a fourth near-miss I have to record
+
+My initial grep covered only `routes.ts` and `server.ts`, found nothing, and I was about to write
+*"the module exists, is tested, is wired to nothing"* — this window's central theme, and it would
+have been **wrong**. Widening the grep found `recurrenceLoop.ts` and `RecurrenceActuator.ts`, both
+real consumers, with an explicit design note: *"RecurrenceReader sees. RecurrenceActuator decides."*
+
+**That is the fourth time tonight I nearly called a working mechanism broken, and the first where the
+grep scope — not the reasoning — was the flaw.** A narrow corpus produced a confident negative. My
+own rule (*attach the scope to every negative*) applies to `grep` paths as much as to log windows.
+
+## The finding that DOES survive
+
+```ts
+export function recurrenceKey(title: string): string {
+  return (title || '')
+    .toLowerCase()
+    .replace(/[a-f0-9]{8,}/g, 'H')   // ← normalises away hex ids
+    .replace(/\d+/g, 'N')            // ← normalises away ALL digits
+    …
+}
+```
+
+And the `Observation` it keys carries an **`id`** field that the key **never reads** — the interface
+comment states it plainly: *"Human title / summary — the recurrence key is derived from this."*
+
+**The normalisation is correct for one case and wrong for another, and I have live evidence of both
+from tonight's own queue:**
+
+| observed | normalised key | correct? |
+|---|---|---|
+| *"Inbound stranded on Laptop (70 topics)"* vs *"(69 topics)"* | identical | ✅ **right** — same condition, differing count |
+| *"Credential rebalancer"* ×3 | identical | ❌ **three different tokens** (`[TOKEN:a4f8****]`, `[TOKEN:636a****]`, …) |
+| *"Threadline history diverged from peer"* ×4 | identical | ❌ **four different threads** |
+| *"Account enrollment needs your check on 'this machine'"* ×3 | identical | ❌ **three different accounts** |
+
+**It would cluster three distinct credentials as one recurrence — which is precisely the error I made
+by hand at 23:18Z and had to reverse.** I am not inferring the failure; I performed it, on this data,
+and measured the reversal.
+
+## Why this is item 3's own subject, not a new one
+
+Item 3's premise is *"N items from one source is one finding, not N."* **The converse is equally
+true and unhandled: N items sharing a title can be N findings, not one.** The reader implements the
+first and cannot express the second, because the distinguishing information is in the `id` it
+carries and discards.
+
+**The fix is small and the data is already there:** when `id` is present, incorporate it into the key
+(or key on `id`-minus-its-volatile-suffix). The digit/hex normalisation should apply to the *title*,
+not to the *identity*.
+
+## Honest bound on this finding
+
+I have **not** measured what the actuator does with a wrong cluster, so I am not claiming a
+production consequence beyond "the grouping is wrong." Whether that under-surfaces findings depends
+on `RecurrenceActuator`, which I have not read. **Stated as a defect in the key, not as an incident.**

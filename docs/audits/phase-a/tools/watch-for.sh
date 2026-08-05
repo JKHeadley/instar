@@ -22,6 +22,15 @@
 # Same lineage as jrnl.sh, which removed hand-typed timestamps for the same
 # reason. A rule I re-read is still willpower.
 #
+# ⚠ LIMITATION — IT CANNOT SEE THE ACTOR. Proven against itself 2026-08-04T23:06Z.
+#   This answers "did the TARGET change?" — never "did the actor I care about change it?"
+#   If anything else can produce the same change, "changed" is NOT evidence of who.
+#   Real case: armed on a beat's ledger, the beat was REFUSED, I restored it by hand,
+#   and the watcher reported CHANGED — reading, at face value, as "the beat ran". It
+#   had not. The tool was correct on its literal contract and wrong on my question.
+#   Until --expect-matching exists, watch a target only YOUR subject can write, or
+#   verify the actor by a second, independent route before believing "changed".
+#
 # Usage:
 #   watch-for.sh [--not-before <ISO8601>] [--timeout <sec>] [--interval <sec>] \
 #                "<label>" "<shell command producing the measurement>"

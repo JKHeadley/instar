@@ -68,6 +68,16 @@ audit's founding subject:
 - `spans-window.sh` — spans (0), empty (1), **and does-not-span (2)**, the last replayed against a
   real error from this window rather than a synthetic case.
 
+**⚠ `watch-for.sh` has a known limitation, proven against itself.** It answers *"did the TARGET
+change?"* — **never** *"did the actor I care about change it?"* Armed on the re-alignment beat's
+ledger at 23:00Z, the beat was **refused**, I restored it **by hand**, and the watcher reported
+**CHANGED** — which reads, at face value, as "the beat ran". It had not. The tool was correct on its
+literal contract and wrong on the question being asked. **If anything else can produce the same
+change, "changed" is not evidence of who.** Until an `--expect-matching` predicate exists, either
+watch a target only your subject can write, or confirm the actor by a second independent route. This
+is the same proxy-for-the-thing substitution `spans-window.sh` exists to prevent, committed inside
+its sibling.
+
 **The measured need.** Five instances in one day, one of them published to the operator and retracted
 25 minutes later. The rule against it was written into durable memory and **failed again ninety
 minutes later, on the exact case it was written for** — which is the whole argument for these being
