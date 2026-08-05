@@ -1,6 +1,32 @@
 # Instar Constitutional Alignment — Phase B: The Remediation Tree
 
-> ## ⚠️ READ THIS FIRST — CURRENT STATE, which supersedes everything below
+> ## ✅ EXIT GATE: PASSED — round 6, 2026-08-05
+>
+> **Phase B's ratified exit condition is met.** An independent adversarial reviewer, on its sixth pass,
+> returned **COHERENT — passes the exit gate**, answering the gate question directly: *"Can I read this
+> start to finish without hitting a contradiction? Yes."*
+>
+> **It took six rounds and every one of them caught something real:**
+>
+> | round | verdict | what it caught |
+> |---|---|---|
+> | 1 | INCOHERENT | 6 contradictions — incl. a **duplicate B5 node id** and a wrong named file list |
+> | 2 | INCOHERENT | my B5 fix **created the same collision at B6**; 2 findings were review-harness artifacts |
+> | 3 | INCOHERENT | 6 of 10 fixed; **"CrashLoopPauser never constructed" is factually FALSE** |
+> | 4 | INCOHERENT | I had patched *some* occurrences and relied on a header warning for the rest |
+> | 5 | INCOHERENT | one breakpoint — the count said 13 in the header and 14 in the body |
+> | 6 | **COHERENT** | passes; names one residual drift risk, non-blocking |
+>
+> **Two of those catches were factual errors already reported to the operator as findings** — the
+> constitution's "false claim" (not false) and CrashLoopPauser (built and tested, never wired). **One had
+> an action sanctioned on it.** The gate was not polishing prose.
+>
+> **The residual, recorded rather than hidden:** one reference to "instance #14" survives outside the
+> enumeration. The reviewer judged it coherent today and flagged it as *"the one remaining place most
+> likely to drift"* if instances keep being appended. It is the last copy of a number that used to have
+> four.
+>
+> ## ⚠️ CURRENT STATE, which supersedes everything below
 >
 > **This document grew by appending over one working window.** Section 2 states the tree as first
 > drawn; sections after it refute, re-scope, or retire several of those nodes. **A reader taking
