@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-05T04:08:05.164Z",
+  "slug": "bounded-attention-notification-surface",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/DegradationReporter.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
