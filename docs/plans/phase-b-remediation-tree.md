@@ -1247,3 +1247,50 @@ in one file — it is a suite-wide pattern**, and every one of these files is ot
 
 **A green suite is read as "these behaviours are verified."** For eleven assertions the honest reading is
 "this value has the right *type*," and nothing on the surface distinguishes them.
+
+
+### F13 follow-up — the code is CORRECT. The test's name and comment are FALSE.
+
+Read from source while an execution lane verifies independently (`AgentTrustManager.ts:168-173`):
+
+```ts
+const DEFAULT_ALLOWED_OPS: Record<AgentTrustLevel, string[]> = {
+  untrusted:  ['ping', 'health'],
+  verified:   ['ping', 'health', 'message', 'query'],
+  trusted:    [...,'task-request', 'data-share'],
+  autonomous: [...,'spawn', 'delegate'],
+};
+```
+
+`getAllowedOperationsByFingerprint` returns `DEFAULT_ALLOWED_OPS.untrusted` for an unknown fingerprint
+(`:367-370`). **So an unknown peer receives `['ping','health']` — not an empty array.**
+
+| the test says | the code does |
+|---|---|
+| name: *"returns **empty array** for unknown fingerprint"* | returns `['ping','health']` |
+| comment: *"Untrusted agents get **no** operations"* | untrusted agents get two read-only liveness ops |
+
+**And the code is right.** Letting an unverified peer prove liveness — and nothing else — is a
+deliberate, defensible design; `InboundMessageGate:321-326` blocks every other op type by
+`allowedOps.includes(opType)`. There is no authorization defect here.
+
+> **So the tautology did not hide a broken implementation. It preserved a FALSE DESCRIPTION of a
+> correct one.**
+
+That is a subtler failure than a vulnerability and arguably a more corrosive one. **A vacuous assertion
+cannot fail — so the prose around it is never forced to stay true.** Anyone reading that test to learn
+what untrusted peers may do would come away believing "nothing," and would be wrong. The test is
+simultaneously the documentation and the thing that failed to check the documentation.
+
+**Two consequences worth carrying:**
+
+1. **The severity of F13's trust finding drops** — from "possible live authorization defect" to
+   "false documentation on a correct surface." I flagged it to the manager as urgent-adjacent and it is
+   not. Recording the downgrade as prominently as the alarm.
+2. **The latent risk is real and unchanged.** If someone later changed `untrusted` to include
+   `'message'`, both tests would still pass. The guard against that regression does not exist, which is
+   the finding that survives.
+
+*(Execution lane dispatched to confirm this by running the code rather than reading it — the reading
+above is grounded but is still a reading, and this window has now been wrong three times in exactly
+that way.)*
