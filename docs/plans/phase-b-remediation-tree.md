@@ -1523,3 +1523,44 @@ That is not self-flagellation; it is the strongest available evidence for the sy
 conclusion. **The defect is not carelessness by past authors — it is what happens by default when
 anyone builds a check**, including someone whose entire attention is on not doing it. If it were a
 discipline problem, the person actively hunting it would be immune. I was not, four times.
+
+
+---
+
+## Memory carry-over — RE-SPECIFIED against available memory (ruling, cycle 4)
+
+**The manager withdrew his own cycle-three memory ruling** and directed that the standing carry-over be
+re-specified. Recording the corrected form so it stops costing attention.
+
+### What the carry-over said, and why it was wrong
+
+*"Watch memory on both machines"*, tracked in practice against **swap used** — which read 93–97% and
+looked alarming for hours.
+
+**Swap allocation is a high-water mark the OS never returns.** It records the worst moment a machine has
+had, not its current state. Both of us quoted it: he cited 93%, I cited 97%, and neither number was a
+live pressure reading.
+
+### The corrected specification
+
+| watch | not |
+|---|---|
+| **available memory** (`memory_pressure` free %, or free+inactive+purgeable) | swap used |
+| **compressor occupancy trend** — it drained 7 GB → under 1 GB across the window | swap allocation, which never drains |
+| **pageout/swapout DELTA** between two samples | cumulative pageout counters |
+| what the **gate actually reads** — `vm_stat` RAM availability (`hostMemoryPressure.ts:119`) | any metric we assume it reads |
+
+**Current reading: ~42% of 16 GB available, compressor drained, zero paging between samples.** The
+machine is not under pressure and has not been for some time.
+
+### The residual, which is real and separate
+
+**626 job spawns were refused for "memory pressure" in ~36 hours, worst streak 492**, and the gate was
+behaving exactly as designed on the quantity it reads. **The open question is calibration** — our metric
+reads 18% where the OS reads 42% — and that is a real question I do not have the evidence to settle.
+**It is not a memory problem; it is a threshold problem**, and it should be tracked as one.
+
+> **The lesson worth keeping:** two people watched the same machine for a day and both used a gauge that
+> could not answer the question they were asking. Neither of us had read what the gate consumes.
+> **The carry-over specified a concern rather than a measurement, so it was satisfied by whichever
+> number was nearest to hand.**
