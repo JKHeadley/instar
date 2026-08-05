@@ -235,6 +235,24 @@ is the failure this spec exists to prevent, and a false "this guard is broken" w
 admit a source outside the closed set, cannot waive `attributedTo`, and cannot upgrade a
 `weak-derivation` marker. Judgment operates inside the floor; it does not move it.
 
+**Every arbitration is recorded and later graded — reusing existing machinery, not new logging.**
+Per *Decision Provenance & Outcome Review*, a judgment that is load-bearing and unlogged is a judgment
+nobody can ever find out was wrong. So each rung classification is an **enrolled decision point**:
+
+- The **full context handed to the arbiter** — the candidate A-case, the three candidate derivation
+  sources, and the rung chosen with its reason — is written to the existing judgment-provenance store
+  (machine-local, redacted on read, `GET /judgment-provenance`). Not a new store.
+- The classification is **enrolled in the decision-quality meter** (`GET /decision-quality`), so its
+  right/wrong/unknown rate accrues per model and prompt like every other enrolled decision.
+- **The grading signal is free and causally tied**, which is the part that makes this more than
+  ceremony: when a later staged run at rung 1 (branch-cited) *contradicts* an earlier rung-3
+  (description-derived) verdict for the same guard, that is direct evidence the weak derivation was
+  unfaithful. **The harness grades its own arbitrations as it deepens**, rather than needing a separate
+  review pass.
+
+This is deliberately a propagation of two systems that already exist and already work, not a bespoke
+audit trail — the same "propagate proven patterns" rule the tree applies to everything else.
+
 ## Multi-machine posture
 
 | surface | posture | notes |
