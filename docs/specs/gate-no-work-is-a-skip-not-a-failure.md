@@ -107,10 +107,27 @@ future author gets the wrong behaviour by forgetting.)*
 
 An optional field is a wish. So the two halves are split:
 
-- **Authoring (strict, structural).** A repo lint fails any job manifest that declares a
-  `gate` without a `gateMeans`. A future work-presence gate **cannot be authored** without
-  its author stating which case it is. This is the half that actually prevents recurrence,
-  and it lives in code, not in a convention someone must remember.
+- **Authoring (strict, structural).** A repo lint fails any job **manifest** that declares a
+  `gate` without a `gateMeans`. A future work-presence gate cannot be authored in a manifest
+  without its author stating which case it is.
+  **Code-constructed jobs are covered by the TYPE, not by the lint.** `JobDefinition`
+  becomes a discriminated union so the compiler itself refuses a gated job with no
+  declaration:
+
+  ```ts
+  type JobDefinition = BaseJob & (
+    | { gate?: undefined; gateMeans?: never }
+    | { gate: string;     gateMeans: 'no-work' | 'precondition' }
+  );
+  ```
+
+  A job constructed in code without `gateMeans` no longer compiles. Between the lint
+  (manifests) and the type (code), every job authored **inside this repo** must declare.
+
+  **The one remaining boundary, stated honestly:** a third-party plugin supplying a job as
+  runtime JSON is checked by neither — no static analysis can see it. It falls back to the
+  runtime default (`'precondition'`, today's behaviour), so it fails safe rather than
+  silently wrong. That residue is real and is named rather than claimed away.
 - **Runtime (tolerant, safe).** An absent `gateMeans` resolves to `'precondition'` —
   today's behaviour. A deployed agent carrying an older manifest keeps working exactly as
   it does now.
@@ -186,9 +203,21 @@ if (job.gate) {
 **4. Retry state is cleared narrowly, not wholesale.**
 
 An earlier draft called `clearRetryState(slug)`, which would retire backoff accumulated by a
-genuine *execution* failure simply because a later tick found no work. Retry state is
-therefore tagged by origin, and a `no-work` answer clears **only gate-origin** state.
-Execution-failure backoff survives untouched.
+genuine *execution* failure simply because a later tick found no work.
+
+Retry state is therefore keyed `(slug, origin)` where origin is `'gate' | 'execution'`,
+rather than by slug alone. Explicitly:
+
+- **Both origins may be active at once** (a job that failed execution, then later ticks with
+  no work). They are independent ladders with independent rung counts.
+- **Precedence when both are armed: the EARLIEST next-attempt time wins.** The job is
+  retried at whichever ladder comes due first; the other's timer is left intact.
+- **A `no-work` answer clears only the `gate` origin.** Execution backoff survives untouched.
+- **A successful run clears both**, as today.
+
+Stating this is necessary because "tagged by origin" sounds trivial and is not — the current
+model is keyed by slug alone, so this is a change to the retry-state shape, not a filter over
+it.
 
 **4a. An unverifiable declaration is trusted — but not forever.**
 
@@ -196,19 +225,37 @@ Execution-failure backoff survives untouched.
 means the job skips silently and indefinitely. Rather than pretend the declaration is proof,
 its authority is **bounded by corroboration**:
 
-> A `no-work` job that has answered N consecutive times (default 20) **and has never once
-> been observed passing** reverts to `'precondition'` behaviour — it resumes retrying — and
-> records `gate-declaration-uncorroborated` as its skip reason.
+> A `no-work` job that has **never once been observed passing** within
+> `uncorroboratedAfterDays` (default **30**) of its first recorded tick reverts to
+> `'precondition'` behaviour and records `gate-declaration-uncorroborated`.
 
-This does not decide the declaration is *wrong* (a genuinely monthly job will trip it too).
-It stops the scheduler acting on an **unproven** assertion indefinitely, and the fallback is
-the safe default rather than a new behaviour. A single observed pass corroborates the
-declaration and resets the counter permanently for that job — so a real work-check pays this
-cost at most once, before its first pass.
+**The threshold is elapsed TIME, not a tick count — and that correction matters.** A
+count-based rule (an earlier revision used 20 consecutive answers) recreates the exact bug
+this spec removes: an hourly job whose work genuinely arrives monthly trips 20 answers in
+under a day and gets pushed back into ladder churn, which is the failure mode the whole
+change exists to eliminate. Elapsed time is cadence-independent — a monthly job passes
+comfortably inside 30 days; a misdeclared gate never passes at all.
 
-The asymmetry is deliberate: a wrong `'no-work'` declaration silently starves a job forever,
-whereas the fallback's worst case is the retry churn this spec set out to reduce. Failing
-back toward the noisy-but-working behaviour is the correct direction.
+**Precisely what one observed pass does and does not establish.** It disproves exactly one
+proposition: *"this gate can never return zero."* That is the failure it is aimed at — a
+permanently broken command (a typo, a removed endpoint, a syntax error) which would otherwise
+skip its job silently forever. It establishes **nothing** about whether the `'no-work'`
+declaration is semantically correct: a gate that is really a health probe will also pass the
+moment the server is up, and that pass corroborates nothing about work presence.
+
+**No evidence available to the scheduler can close that second gap**, and this spec does not
+pretend otherwise. Whether a gate's non-zero exit truly means "no work" is a claim about
+author intent, checkable only by review — which is why §1a forces the claim to be stated
+explicitly where a reviewer will see it, rather than inferred at runtime where nobody will.
+This is a stated, accepted residual limit, not an oversight: the alternative to accepting it
+is to keep adding machinery that narrows the claim without ever grounding it.
+
+This does not decide the declaration is *wrong*. It stops the scheduler acting on an
+**unproven** assertion indefinitely, and the fallback is the safe default rather than a new
+behaviour. A single observed pass corroborates the declaration **permanently** for that job,
+so a real work-check pays this cost at most once, before its first pass — and a job whose
+work arrives less often than every 30 days sets `uncorroboratedAfterDays` explicitly, which
+is a declaration its author is uniquely able to make.
 
 **5. Skip reasons become distinguishable.** `gate` splits into `gate-no-work`,
 `gate-precondition`, `gate-timeout`, `gate-spawn-error` in the skip ledger and the
@@ -299,9 +346,36 @@ same in metadata; `JobDefinition` gains optional `gateMeans`. All are **additive
 consumers reading existing fields are unaffected, and absent `gateMeans` means current
 behaviour.
 
-Every machine runs the identical corrected logic for the jobs it owns. The retry ladder is,
-and remains, per-scheduler in-memory state — pre-existing locality, not introduced here.
-Nothing to replicate, proxy or reconcile; a topic transfer strands nothing.
+**The new state's durability and machine-scope, treated rather than dismissed.** An earlier
+draft waved this through as "no new state"; §4a introduced corroboration state and that is
+no longer true.
+
+- **`lastGatePassAt` MUST be durable, not in-memory.** It is derived from the persisted
+  skip-ledger / activity-event record, which already survives restarts. This is load-bearing:
+  if it lived in scheduler memory, every server restart would reset the §4a window and a
+  misdeclared gate would **never** reach its 30-day revert — the corroboration check would
+  be permanently unreachable, which is precisely the class of defect where a guard exists
+  but can never fire.
+- **The retry ladder stays in-memory, and that is unchanged and correct.** A restart clears
+  backoff and the job resumes on its cron — the pre-existing behaviour, not introduced here,
+  and the safe direction (a restart un-parks a job rather than stranding it).
+- **Corroboration is UNIFIED across machines, not per-machine.** An earlier draft made it
+  machine-local and justified that as "replication would buy nothing". That was wrong on the
+  merits, not merely undefended: **"can this gate ever pass?" is a property of the GATE, not
+  of the observer.** If machine A has seen the gate pass, the declaration is corroborated —
+  the gate demonstrably can pass — and machine B treating it as unproven would be acting on
+  ignorance rather than evidence. A remote observation is not stale data here; it is exactly
+  the evidence §4a asks for.
+  So `lastGatePassAt` is the **latest observation across the pool**, obtained by the existing
+  merged-read path rather than a new replication channel.
+- **Degraded behaviour is explicit.** When peers are unreachable, the local value is used.
+  That can only make the corroboration window look SHORTER than it truly is, so the worst
+  case is an earlier revert to `'precondition'` — more retrying, never less. The degraded
+  path therefore fails toward the safe default, which is the required direction.
+- **A topic/machine transfer strands nothing.** The receiving machine reads the pool-wide
+  value; if it cannot, it falls back to the safe default until it observes a pass itself.
+
+Every machine runs the identical corrected logic for the jobs it owns.
 
 ## Self-Heal Before Notify
 
@@ -318,14 +392,19 @@ an existing read surface and raises nothing. The change **removes** notification
    is opt-in per job.
 3. **Which jobs opt in as part of this change?** The 4 audited work-presence gates,
    `insight-harvest` first (the observed victim). In scope, not deferred.
-4. **Does an answered gate still retry internally?** Only `could-not-run` is retried.
+4. **Does an answered gate still retry internally?** Depends on the declaration, and this
+   is deliberate: for `'no-work'`, an answered non-zero is authoritative on the first attempt
+   (only `could-not-run` is re-attempted); for `'precondition'` (the default) the internal
+   `gateRetries` loop is **unchanged**, all attempts, on any non-zero. A previous revision of
+   this line contradicted §2a — the efficiency gain applies only to jobs that opted in.
 5. **Unrecognised rejection shape?** `could-not-run` → today's retry. Conservative, stated.
 6. **Does a `no-work` answer clear retry state?** Only **gate-origin** state. Execution-failure
    backoff is preserved.
-6a. **What if a `no-work` declaration is simply wrong?** After 20 consecutive answers with no
-   observed pass, the job reverts to `'precondition'` (resumes retrying) and records
-   `gate-declaration-uncorroborated`. One observed pass corroborates it permanently. The
-   declaration is trusted, but never indefinitely without evidence.
+6a. **What if a `no-work` declaration is simply wrong?** After `uncorroboratedAfterDays`
+   (default **30 days**, elapsed time — NOT a tick count) with no observed pass, the job
+   reverts to `'precondition'` and records `gate-declaration-uncorroborated`. One observed
+   pass corroborates it permanently. A count-based threshold was tried and rejected: it
+   re-creates this spec's own bug for a job whose work genuinely arrives rarely.
 7. **Where does the telemetry surface?** Existing `GET /jobs` / `GET /jobs/:slug`. No new
    route, watcher, or cadence.
 8. **Feature flag?** No. The default *is* the safe path, so a flag would add a switch whose
@@ -377,6 +456,74 @@ name for a tri-state value, which reads as a boolean to any API consumer.
 
 Every control pairs a must-pass with a must-fail case: a test asserting "no retry happened"
 passes trivially against a scheduler that never retries anything.
+
+## Test plan (Testing Integrity Standard — all three tiers)
+
+The controls above state WHAT must be proven; this states at which tier each is proven.
+Every tier is required; none is optional.
+
+**Tier 1 — Unit (`tests/unit/`), `JobScheduler` with real dependencies.**
+- `classifyGateRejection` over every rejection shape: numeric code, `signal`/`killed`,
+  string `code` (`ENOENT`/`EACCES`), 126, 127, and an unrecognised shape → `could-not-run`.
+- Routing: `answered` × `gateMeans: 'no-work'` → skip, gate ladder untouched;
+  `answered` × `'precondition'` (and × absent) → ladder advances. **Both sides of the
+  boundary with realistic inputs**, per the standard's semantic-correctness requirement.
+- Retry-state shape: gate-origin and execution-origin ladders coexist; a `no-work` answer
+  clears only gate-origin; precedence resolves to the earliest next-attempt time.
+- §4a: a job never observed passing reverts after `uncorroboratedAfterDays`; a job that
+  passed once never reverts (the corroboration latch).
+
+**Tier 2 — Integration (`tests/integration/`), full HTTP pipeline.**
+- `GET /jobs` and `GET /jobs/:slug` return `consecutiveAnswered` and `lastGatePassAt` with
+  the specified JSON types, including the `null` (never observed) and absent (insufficient
+  history) cases as **distinct** states.
+- Existing consumers reading existing fields are unaffected (additive-only assertion).
+
+**Tier 3 — E2E lifecycle (`tests/e2e/`), production init path mirroring `server.ts`.**
+- A scheduler booted the production way runs a real job with a real `gateMeans: 'no-work'`
+  manifest end-to-end and the feature is genuinely alive — the "is it actually wired?"
+  test the standard names as the single most important one.
+- The migration (§1b) runs against a fixture agent home whose manifests lack `gateMeans`,
+  stamps the correct values, and is idempotent across a second run.
+
+**Wiring integrity.** `gateMeans` must be shown to travel from the manifest on disk →
+`JobDefinition` → the routing decision. A test asserting the routing function in isolation
+cannot see a loader that never populates the field, which is exactly the class of defect
+wiring-integrity tests exist to catch.
+
+**Zero-Failure Standard.** The full suite (`npm run test:all`) must be green before the PR
+is opened, not only the new tests.
+
+## Standards-Conformance dispositions
+
+Ten conformance rounds were run. Nine findings were **fixed**. One is recorded here as
+**accepted with reason**, because the gate is signal-only and a signal that cannot be
+satisfied should be dispositioned rather than iterated against.
+
+**ACCEPTED — "Verify the State, Not Its Symbol": a `no-work` declaration permanently
+authorises skipping, and one observed pass does not prove the declaration semantically
+correct.**
+
+This is true, and it is stated in §4a rather than hidden. The reason it is accepted rather
+than fixed:
+
+- The proposition *"a non-zero exit from THIS command means no work"* is a claim about the
+  author's intent. **No evidence observable by the scheduler can settle it** — a health probe
+  and a work-check are byte-identical commands, which is the audit finding that produced this
+  entire design.
+- The standard's actual requirement in the unmeasurable case is that the value remain an
+  explicit `unknown` rather than collapse to a flattering fabricated one. It does: the spec
+  states plainly that nothing verifies semantic correctness, and §6 telemetry records rather
+  than adjudicates.
+- Every further round of machinery narrowed the claim without grounding it. Continuing would
+  add mechanism for the appearance of rigour, which is the opposite of what this standard
+  exists to enforce.
+- The mitigation is placed where the claim is actually checkable: §1a makes the declaration
+  **mandatory and explicit at authoring**, so a human reviewer sees the assertion at the one
+  moment it can be evaluated.
+
+Disposition owner: echo. Anyone who disagrees should read §4a's "Precisely what one observed
+pass does and does not establish" and overrule this in review.
 
 ## Open questions
 
