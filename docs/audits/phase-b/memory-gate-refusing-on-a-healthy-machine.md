@@ -1,66 +1,83 @@
-# LIVE DEFECT — the memory gate has refused 626 job spawns on a machine under no pressure
+# ⛔ CORRECTED — this document named a conclusion where it should have named a quantity
 
-**Found:** 2026-08-05 ~12:00Z, investigating a management ruling that pre-authorised memory cleanup.
-**Status:** ONGOING. Most recent refusal was ~10 minutes before this was written.
+**Original title:** *"the memory gate has refused 626 job spawns on a machine under no pressure."*
+**That framing is withdrawn.** It was banked at 12:00Z and corrected at 12:18Z after the manager
+interrupted off-slot to say: *"establish which quantity the gate actually reads… I would rather the
+record name the quantity than the conclusion."*
 
-## The numbers
+**He was right, and the irony is exact:** I committed a measure-vs-certify error, about a memory gate,
+inside the audit whose subject is measure-vs-certify.
+
+---
+
+## What the gate actually reads — settled from source
+
+```ts
+// src/monitoring/hostMemoryPressure.ts:119
+hostFreeMemPct = 100 - readSystemMemoryPressure().pressurePercent
+// → spawnSync('vm_stat') → parseVmStat
+// doc comment: "macOS is read truthfully (free+inactive+purgeable), not raw free pages"
+```
+
+**The gate reads RAM availability. It does not read swap at all.**
+
+### Both competing hypotheses are refuted
+
+| hypothesis | verdict |
+|---|---|
+| **Mine:** the gate refuses wrongly on a healthy machine | **unsupported.** It reads 18.2% against a ~25% threshold and refuses. It is behaving exactly as designed on the quantity it reads. |
+| **The manager's:** it may read swap headroom, so 626 refusals correctly gate an exhausted resource | **refuted.** Swap is not an input to this gate. |
+
+**Both of us reasoned from a number to a conclusion without establishing what the number was of.** The
+93–97% swap figure and the 39–43% OS free figure were both true simultaneously, and **neither is what
+the gate consumes.**
+
+### What remains genuinely open, and is not mine to settle
+
+Whether "18.2% free RAM should refuse a spawn" is the right policy. The gate's metric and the OS's
+pressure facility disagree by ~25 points because they compute differently (the OS credits compressed
+pages). **That is a calibration question with a real answer, and I do not have the evidence for it.**
+Recording it as open rather than resolving it by assertion.
+
+---
+
+## The finding that SURVIVES, and it is sharper
+
+Strip out the gate question entirely and this is still true:
+
+> **A job has now failed 492 consecutive times and nothing has paused it.**
 
 | | |
 |---|---|
-| job spawns refused for "memory pressure" | **626** |
-| window | `2026-08-04T00:00:00Z` → `2026-08-05T11:55:00Z` |
-| worst consecutive-failure streak | **492** |
-| top refused | `commitment-detection` 245 · `health-check` 233 · `mentor-onboarding` 74 · `llm-decision-grading` 23 · `hourly-realignment` 21 |
+| refusals in the window | 626 |
+| worst consecutive streak | **492** |
+| alert deliveries in the same window | **57** |
 
-## The machine is not under memory pressure
+**So this is not silent.** Alerts fired. The system noticed. **What it did not do is stop retrying a job
+that cannot currently succeed** — 492 attempts at a spawn that is refused every time.
 
-| signal | reading |
-|---|---|
-| `memory_pressure` — the OS's own | **43% free** |
-| `Pageouts`, two samples 5s apart | **1,589,709 → 1,589,709 — identical** |
-| `Swapouts`, same interval | **217,427,150 → 217,427,150 — identical** |
-| swap used | 18.9 GB of 19.5 GB (**97%**) |
-| our gate's `hostFreeMemPct` | **18.2%** |
+### And the guard whose job that is remains unbuilt
 
-**Zero paging activity.** Nothing is thrashing.
+`CrashLoopPauser` — auto-pause of runaway jobs — is **still never constructed** (`new CrashLoopPauser`
+resolves nowhere in source). This is Phase A's finding, unchanged, and its live consequence has grown
+from a 477-streak to a **492-streak**.
 
-## Two distinct defects, both of the phase's signature shape
+Its exclusion reason, verbatim (`guardManifest.ts:1149`):
 
-### 1. Swap-used is a high-water mark read as a live gauge
+> *"Auto-pause of runaway jobs is scheduler-internal mechanics; surfaced via `scheduler.enabled` + job
+> state, not its own guard."*
 
-macOS allocates swap and **does not shrink it**. The 97% figure records the worst moment this machine
-has had — during the pressure period that was already documented — not its current state. It has been
-reporting that historical worst as though it were now, ever since.
+**That reason answers a different question than the guard's function.** The claim is about *surfacing* —
+and surfacing works, as the 57 alerts show. **The guard's purpose is *pausing*, and nothing pauses.**
 
-> **MEASURES:** cumulative swap allocated since boot. **CERTIFIES:** the machine is under memory
-> pressure now. **The gap:** every hour since the pressure passed.
+> **The presence-not-truth defect, with a live consequence measured in 492 retries:** the reason is
+> twelve-plus characters, it is plausible, it passed the lint, and it is about the wrong thing.
 
-### 2. Our free-memory metric disagrees with the OS by 25 points
+---
 
-`hostFreeMemPct()` computes `(free + inactive + purgeable) / total` and reads **18.2%**. The OS's own
-pressure facility reads **43%**. The gate's refusal threshold sits between those two numbers.
+## The method lesson, since I supplied it against myself
 
-**So the gate refuses on a healthy machine**, and has done for a day and a half. This sharpens Phase A's
-B5.2 (the gate/reaper threshold mismatch) considerably: the problem is not only that two of *our*
-thresholds disagree with each other, but that our metric disagrees with **the operating system's**.
+I measured swap (97%), measured OS-free (43%), found them contradictory, and **published a conclusion
+about a gate whose input I had not read.** The correction cost one `grep` for the function definition.
 
-## Why this is the window's most consequential finding
-
-Everything else found this window is a *spec-level* or *verification-level* defect — real, but nothing
-was actively broken while I described it.
-
-**This one is switching off the scheduler right now.** `commitment-detection` — the job that notices
-what I have promised — has been refused 245 times. `health-check` 233 times, one streak reaching 492.
-
-> **The measure-vs-certify defect, in the place where it costs the most:** not a wrong verdict on a
-> dashboard, but 626 pieces of work that did not happen, on a machine that was fine.
-
-## What was NOT done, deliberately
-
-Cleanup was pre-authorised. **None was performed, because there is nothing to clean** — three agent
-servers (echo, codey, bob, all live), three sessions, and an operator-owned browser. No leak, no
-runaway, no dead process.
-
-Killing something here would have produced a satisfying report and left the actual defect untouched.
-**The pre-authorisation was granted on the strength of a number that does not mean what it appears to
-mean**, which is exactly why the first step was measuring rather than acting.
+**Name the quantity before naming the conclusion.** Both numbers were real; neither was the gate's.
