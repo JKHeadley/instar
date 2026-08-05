@@ -259,7 +259,7 @@ staged-violation harness stops being a nice-to-have and becomes the prerequisite
 > Reporting the first as though it were the second is the exact error this entire document exists to
 > prevent, so it is written here rather than left to be inferred.
 
-### What v3 does NOT yet specify — found by reading the whole document
+### What v3 did not specify — CLOSED above, retained for the record
 
 A section-by-section check kept passing while this gap sat in plain sight, which is its own small
 lesson. **v3 specifies the TRUST MODEL — who owns which number — and does not specify the SCHEMA.**
@@ -336,6 +336,98 @@ not currently have — an **architectural change to how guards run**, available 
 **That is a plan-level decision, not an authoring one**, and it belongs to the architect.
 
 ---
+
+## THE SCHEMA — the gap this document was named after, now closed (2026-08-05, post-ruling)
+
+Scope is settled (the 28), so the schema can finally be specified rather than gestured at. **A
+measurement drove the shape:** the 28 guards have **25 distinct caller mechanisms** — `server`
+intervals, `MultiMachineCoordinator` lease-pull ticks, `SelfActionGovernor.admit`, `StateManager`'s
+write funnel, and twenty-one more. There is almost no sharing.
+
+**So "the caller increments `looked`" would mean 25 callsites each remembering to increment.** That is
+the willpower pattern this project has rejected six times tonight. Rejected again here.
+
+### Count at the INVOCATION, not at the caller
+
+The registry supplies the wrapper the caller invokes *through*, so the count is a property of the call
+rather than a duty of the callsite:
+
+```ts
+// src/monitoring/GuardRegistry.ts — extends the EXISTING registry.
+// The caller changes from   guard.tick()
+//                     to    registry.invoke('monitoring.foo.enabled', () => guard.tick())
+
+invoke<T>(key: string, run: () => T): T {
+  this.counters(key).looked++;          // owned by the REGISTRY — neither guard nor caller writes it
+  return run();
+}
+
+/** The guard reports ONLY its own verdict, through a handle that cannot reach `looked`. */
+verdict(key: string): GuardVerdictSink {
+  const c = this.counters(key);
+  return { wouldAct: () => { c.wouldAct++; }, didAct: () => { c.didAct++; } };
+}
+```
+
+**Why a wrapper beats an increment call, concretely:**
+
+| | caller increments | registry wraps the invocation |
+|---|---|---|
+| a callsite that forgets | **silently undercounts** — looks like an idle guard | **impossible**: no wrapper, no invocation |
+| who owns `looked` | the caller (25 of them) | **the registry** — one owner |
+| can the guard reach `looked`? | yes, it is just a counter | **no** — its handle exposes only `wouldAct`/`didAct` |
+| adoption is visible? | a missing line looks like nothing | **a guard still called directly is greppable** |
+
+That last row is the one that matters: **partial adoption is detectable.** A guard invoked directly
+rather than through the wrapper is a lint-findable callsite, so "we instrumented 28 guards" becomes a
+checkable claim instead of an assertion.
+
+### The manifest declaration
+
+```ts
+export interface GuardManifestEntry {
+  // ... existing fields unchanged ...
+
+  /** How this guard is invoked — determines whether a caller-owned `looked` can
+   *  exist at all. Sourced from the chokepoint survey; REQUIRED, no default. */
+  invocation: 'tick-loop' | 'funnel' | 'event-driven' | 'self-driven' | 'unknown';
+
+  /** REQUIRED when invocation is 'tick-loop' | 'funnel': what ONE `looked`
+   *  increment means for this guard. Binds the number to its subject without
+   *  standardising semantics across guards. */
+  lookedMeans?: string;
+}
+```
+
+`invocation` is required with no default — the `COMPONENT_CATEGORY` rule. A guard declaring
+`tick-loop` or `funnel` **must** be reachable through `registry.invoke`; declaring either while being
+called directly is the lint's failure case. A guard declaring `event-driven`, `self-driven`, or
+`unknown` is `unverifiable-by-construction` and carries the named reason already published in
+`docs/audits/phase-b/guard-verifiability-28-and-44.md`.
+
+### What computes the verdict
+
+Derived at request time from live counters — never cached, never stored (anti-decay, node-contract
+rule 5):
+
+```
+invocation ∈ {event-driven, self-driven, unknown}  →  unverifiable-by-construction
+no counters registered, invocation ∈ {tick-loop, funnel}  →  missing-counters
+!(didAct <= wouldAct <= looked)                     →  inconsistent
+looked === 0                                        →  never-evaluated
+otherwise                                           →  instrumented
+```
+
+**Stage one stops there.** `effective-candidate` and its siblings do not exist in the union until the
+staged-violation harness lands — the forbidden claim is unrepresentable rather than prohibited.
+
+### Honest cost, stated
+
+**This is ~25 callsite conversions plus one registry change**, not a field addition. Mechanical and
+individually trivial, but it is 25 of them, and each is a real edit to a live invocation path. **The
+narrowed option (a) is still a day of careful work, not an afternoon** — recorded here so the estimate
+is not discovered later.
+
 
 ## Prerequisite — the staged-violation harness comes FIRST
 
