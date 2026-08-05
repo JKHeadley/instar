@@ -177,6 +177,31 @@ detectable by assertion — at request time, on live values, with no reviewer in
 impossible to state consistently."** v2 achieved the former and I wrongly called it structural. v3 is
 the structural version, and it exists because the gate refused the softer claim twice.
 
+### The invariant tested against real data (not just asserted)
+
+`selfActionGovernor` is the one guard already carrying this shape, and it is a **FUNNEL** guard — the
+exact class v3 claims can have a caller-owned `looked`. Measured live on Echo, 2026-08-05:
+
+| class | looked | wouldAct | `wouldAct ≤ looked` |
+|---|---|---|---|
+| 0 | 1790 | 1602 | ✅ |
+| 3 | 10 | 4 | ✅ |
+| 5 | 46 | 21 | ✅ |
+| 6 | 184 | 57 | ✅ |
+| 1,2,4,7,8 | 0 | 0 | ✅ |
+
+**9 of 9 hold.** The invariant is not merely a nice property of the design — it is already true of the
+best existing instance, which is meaningful evidence that a caller-owned `looked` is achievable rather
+than theoretical.
+
+**What this does NOT test, stated:** only the `wouldAct ≤ looked` half was verified. The `didAct` field
+name on this route was not resolved, so `didAct ≤ wouldAct` is **untested** here. Reporting a
+half-verified invariant as verified would be this document's own recurring error, so it is written down
+as half.
+
+Note also: **4 of 9 classes read `looked: 0`** — genuinely idle, and now *legibly* idle rather than
+silently so. That is the reporting improvement v3 delivers even before any effectiveness claim exists.
+
 ### What v3 costs, honestly
 
 - **It is a bigger change than v2.** Framework-owned `looked` requires a common invocation point per
