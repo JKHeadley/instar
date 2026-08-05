@@ -1,0 +1,39 @@
+## What Changed
+
+**Routine "housekeeping" notices no longer reach you, and there is now a ceiling on how many messages your agent can send into one conversation.**
+
+Measured on two agents on 2026-08-04: 64 and 65 messages into the attention conversation in 24 hours, of which 25 and 33 were pure housekeeping — "one of my background checks fell back to a simpler method and carried on", "memory is getting tight", "spawn refused". None named anything the operator could act on. The volume also *scaled with how degraded the system was*, so the agent got loudest exactly when its messages were worth least.
+
+Four changes, all defaults:
+
+- **`monitoring.degradationReporter.notifyUser` (new, default `false`)** — routine degradation reports stop being messaged to you. They are still written to the log, to disk, and to the feedback system, and your agent can read any of them back on request. Set to `true` to restore the old behaviour.
+- **`notificationBatcher` (new, top-level config block)** — the batching layer's settings were previously hardcoded and unreachable by any config. They now live in config: `enabled`, `summaryIntervalMinutes`, `digestIntervalMinutes`, `maxMessagesPerTopicPerHour` (default 4, `0` disables), `suppressionTtlHours`, `maxHoldHours`, `maxHeldItemsPerTopic`.
+- **A rolling limit of 4 batched messages per hour, per conversation.** Past it, further routine notices wait and send themselves as soon as there is room — nothing is dropped, and you are not told about the waiting.
+- **The "I already told them this" memory now survives a restart.** Previously it lived only in memory, so every restart re-sent notices you had already seen.
+
+**Untouched:** urgent notices, anything action-required, and attention-queue items. A limit on routine chatter must never become a limit on urgency, so `IMMEDIATE`-tier delivery does not enter any of this machinery.
+
+**Multi-machine:** only the machine that owns a conversation sends routine notices into it, so the limit is exact rather than multiplied by the number of machines.
+
+## Summary of New Capabilities
+
+- `monitoring.degradationReporter.notifyUser` — turn routine degradation reports to the operator back on.
+- `notificationBatcher.maxMessagesPerTopicPerHour` — tune or disable (`0`) the per-conversation hourly limit.
+- `notificationBatcher.enabled` — a batching kill-switch that is now actually honoured on the degradation path (it previously existed and was silently skipped there).
+- `logs/notification-ceiling.jsonl` — metadata-only audit of every hold, expiry, fold, and failed send.
+- New `getStats()` counters: `heldCount`, `heldSince`, `notOwnerSkipped`, `notOwnerExpired`, `heldExpired`, `foldedItems`, `rateStateReadable`.
+
+## What to Tell Your User
+
+Your agent will be noticeably quieter, and deliberately so. The messages that stop are the ones it could not act on either — "a background check fell back and carried on", "memory is getting tight". Everything that stops is still recorded, and you can ask your agent to read any of it back.
+
+Anything urgent still reaches you immediately, and so does anything needing your decision. If it goes *too* quiet for your taste, ask your agent to turn routine reports back on, or to raise the hourly limit — both are settings now, not code changes.
+
+If you run your agent on more than one machine, you will not get duplicate copies: whichever machine owns a conversation is the only one that sends routine notices into it.
+
+## Evidence
+
+- **Measured baseline:** 64 messages/24h into the attention topic on one agent (25 housekeeping), 65/33 on a second, against 781 recorded `[DEGRADATION]` events in the same window. Two agents with independent workloads showing the same proportions localised the cause to shared code.
+- **Control-verified gap:** no message-volume limit existed. Searched under seven candidate names across five sources, with the known-present symbols `topicCreationBudget`, `maxTopicsPerSource`, and `attentionTopicGuard` returning non-zero from the same grep to prove the search read the right tree. `topicCreationBudget` bounds *new topic creation*; messages into an existing topic were never covered.
+- **Tests:** 37 new unit assertions, every one paired with a control that fails when its guard is removed. Full suite green: 40,828 passing, 0 failing.
+- **Review:** 13 rounds against the constitutional conformance gate and 4 cross-model passes. The review changed the design rather than merely documenting it — the multi-machine approach was rewritten three times and ultimately replaced (dividing a budget across machines cannot produce an exact shared bound; enforcing on the single owning machine avoids the problem instead of approximating it), and the second-pass review caught three real implementation defects: a failed send being recorded as a delivery (silent loss plus 24h suppression), corrupt rate state minting fresh capacity by two routes, and a documented circuit-breaker that was counted but never consulted — and, on investigation, could never have fired at all. Both unreachable brakes were removed rather than repaired, on the principle that a documented brake that cannot fire is worse than none.

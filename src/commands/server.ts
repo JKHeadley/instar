@@ -218,7 +218,7 @@ import { cleanupGlobalInstalls } from '../core/GlobalInstallCleanup.js';
 import { ForegroundRestartWatcher } from '../core/ForegroundRestartWatcher.js';
 import { NotificationBatcher } from '../messaging/NotificationBatcher.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
-import type { NotificationTier } from '../messaging/NotificationBatcher.js';
+import type { NotificationTier, BatcherQuietHours } from '../messaging/NotificationBatcher.js';
 import { resolveTelegramStartupTopology, wireTelegramSendSide } from '../messaging/telegramSendSideComposition.js';
 import { MessageStore } from '../messaging/MessageStore.js';
 import { MessageFormatter } from '../messaging/MessageFormatter.js';
@@ -3726,11 +3726,29 @@ export async function startServer(options: StartOptions): Promise<void> {
   // SUMMARY = batched every 30 min (degradations, coherence, orphan reports)
   // DIGEST = batched every 2 hrs (updates, wake events, routine lifecycle)
   // Principle: Log everything, notify selectively.
+  // Bounded-attention-notification-surface (C2): built FROM CONFIG rather than
+  // literals. Every key falls back to the previous hardcoded value when absent,
+  // so an install with no `notificationBatcher` block behaves byte-for-byte as
+  // before. NOTE the key is TOP-LEVEL: `messaging` is an array of adapters, so a
+  // key nested there is unreachable (same trap as `outboundAdvisory`).
+  const nbCfg = (config as unknown as { notificationBatcher?: Record<string, unknown> }).notificationBatcher ?? {};
   const notificationBatcher = new NotificationBatcher({
-    enabled: true,
-    summaryIntervalMinutes: 30,
-    digestIntervalMinutes: 120,
+    enabled: (nbCfg.enabled as boolean | undefined) ?? true,
+    summaryIntervalMinutes: (nbCfg.summaryIntervalMinutes as number | undefined) ?? 30,
+    digestIntervalMinutes: (nbCfg.digestIntervalMinutes as number | undefined) ?? 120,
+    maxMessagesPerTopicPerHour: (nbCfg.maxMessagesPerTopicPerHour as number | undefined) ?? 4,
+    suppressionTtlHours: (nbCfg.suppressionTtlHours as number | undefined) ?? 24,
+    maxHoldHours: (nbCfg.maxHoldHours as number | undefined) ?? 6,
+    maxHeldItemsPerTopic: (nbCfg.maxHeldItemsPerTopic as number | undefined) ?? 200,
+    quietHours: nbCfg.quietHours as BatcherQuietHours | undefined,
   });
+
+  // C3 persistence is wired UNCONDITIONALLY here, not inside the pool block:
+  // a single-machine install never reaches that block, and it is the majority
+  // case. With no resolver the ownership verdict is `unresolvable-no-pool`,
+  // i.e. this machine is trivially the owner — a strict single-process limiter.
+  // The pool block later calls configureBounds AGAIN to add the resolver.
+  notificationBatcher.configureBounds({ stateDir: config.stateDir });
 
   // State reference — set once StateManager is created, used by notify()
   let _notifyState: { get<T>(key: string): T | null | undefined } | null = null;
@@ -20271,6 +20289,24 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         _writeAdmissionOwnershipStore = ownershipStore;
         const ownReg = sessionOwnershipRegistry;
+
+        // C4.1 (bounded-attention-notification-surface): ONLY the machine that
+        // owns a topic sends batched notifications into it. With exactly one
+        // enforcer per topic the rolling-window limit is an ordinary
+        // single-process rate limit — exact, with no shared counter, no machine
+        // count, and no cross-machine call on the send path. Reaching this block
+        // at all means a pool IS wired, so an unreadable placement resolves to
+        // `unresolvable-pool` (HOLD) rather than to "I am the owner".
+        notificationBatcher.configureBounds({
+          stateDir: config.stateDir,
+          ownershipResolver: (topicId: number) => {
+            const self = _meshSelfId;
+            if (!self) return 'unresolvable-pool';
+            const owner = ownReg.ownerOf(String(topicId));
+            if (!owner) return 'unresolvable-pool';
+            return owner === self ? 'owner' : 'other';
+          },
+        });
         // WS1.1: expose a read-only ownership lookup to the drain's
         // spawn-boundary re-check (module-scope; the drain closure is defined
         // before this block runs).
@@ -25077,6 +25113,12 @@ export async function startServer(options: StartOptions): Promise<void> {
         // jargon / self-heal / CTA discipline and the user sees raw
         // ops-pager output. See upgrades/side-effects/agent-health-alert-authority-routing.md.
         toneGate: messagingToneGate ?? null,
+        // C1 (bounded-attention-notification-surface): user-facing degradation
+        // alerts default OFF. The console line, disk record, and feedback
+        // submission are unaffected — only delivery to the operator stops.
+        notifyUser:
+          (config.monitoring as unknown as { degradationReporter?: { notifyUser?: boolean } } | undefined)
+            ?.degradationReporter?.notifyUser === true,
       });
       // Never-silent degradation tracking (Resilient Degradation Ladder §4): dev-gated
       // (live-on-dev / dark-on-fleet via resolveDevAgentGate). When enabled, a timer drives the

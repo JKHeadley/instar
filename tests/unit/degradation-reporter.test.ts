@@ -125,6 +125,7 @@ describe('DegradationReporter', () => {
       feedbackSubmitter,
       telegramSender,
       alertTopicId: 42,
+      notifyUser: true, // C1: these tests exercise the ALERT path; the gate now defaults OFF
     });
 
     // Wait for async drain — use vi.waitFor to handle CPU-loaded environments
@@ -270,7 +271,7 @@ describe('DegradationReporter', () => {
 
       const feedbackSubmitter = vi.fn().mockResolvedValue({});
       const telegramSender = vi.fn().mockResolvedValue({});
-      reporter.connectDownstream({ feedbackSubmitter, telegramSender, alertTopicId: 99 });
+      reporter.connectDownstream({ feedbackSubmitter, telegramSender, alertTopicId: 99, notifyUser: true });
 
       const dispatched: NormalizedDegradationEvent[] = [];
       reporter.setRemediator({
@@ -307,7 +308,7 @@ describe('DegradationReporter', () => {
       // NO setRemediator() call — this is the backward-compat path.
       const feedbackSubmitter = vi.fn().mockResolvedValue({});
       const telegramSender = vi.fn().mockResolvedValue({});
-      reporter.connectDownstream({ feedbackSubmitter, telegramSender, alertTopicId: 7 });
+      reporter.connectDownstream({ feedbackSubmitter, telegramSender, alertTopicId: 7, notifyUser: true });
 
       reporter.report({
         feature: 'BackwardCompat',

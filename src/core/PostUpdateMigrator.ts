@@ -509,6 +509,51 @@ export interface MigratorConfig {
  *   - key === true         → leave it (false). An operator's explicit fleet-flip wins.
  * A stripped seamlessness block left empty is removed so the file stays clean.
  */
+/**
+ * Bounded Attention-Notification Surface (docs/specs/bounded-attention-notification-surface.md).
+ * Adds the operator-facing levers so they are DISCOVERABLE and editable, rather
+ * than inline code defaults an operator cannot see. The runtime already falls
+ * back to these exact values when the block is absent, so this migration changes
+ * NO behaviour — it makes the off-switch real, which is half the point of the
+ * change ("a lever that looks like it works and does not" was the original defect).
+ *
+ * `notificationBatcher` is TOP-LEVEL on purpose: `messaging` is an array of
+ * adapters, so a key nested there is unreachable (same trap as outboundAdvisory).
+ *
+ * Existence-checked per field and idempotent: an operator value is never
+ * overwritten, and re-running adds nothing.
+ */
+export function migrateConfigBoundedNotificationSurface(config: Record<string, unknown>): boolean {
+  let changed = false;
+
+  const monitoring = (config.monitoring ??= {}) as Record<string, unknown>;
+  const degradation = (monitoring.degradationReporter ??= {}) as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(degradation, 'notifyUser')) {
+    // Default FALSE — operator-approved 2026-08-04 (topic 7848, "Silent").
+    degradation.notifyUser = false;
+    changed = true;
+  }
+
+  const nb = (config.notificationBatcher ??= {}) as Record<string, unknown>;
+  const defaults: Record<string, unknown> = {
+    enabled: true,
+    summaryIntervalMinutes: 30,
+    digestIntervalMinutes: 120,
+    maxMessagesPerTopicPerHour: 4,
+    suppressionTtlHours: 24,
+    maxHoldHours: 6,
+    maxHeldItemsPerTopic: 200,
+  };
+  for (const [k, v] of Object.entries(defaults)) {
+    if (!Object.prototype.hasOwnProperty.call(nb, k)) {
+      nb[k] = v;
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
 export function migrateConfigWs44PoolLinks(config: Record<string, unknown>): boolean {
   const mm = config.multiMachine as Record<string, unknown> | undefined;
   if (!mm || typeof mm !== 'object') return false;
@@ -10687,6 +10732,16 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // WS4.4(f) global pool-cache unification (CMT-1416) — same omitted-gate
     // invariant as ws44PoolLinks: strip a default-shaped literal `false` so the
     // developmentAgent gate resolves it (live on dev, dark on the fleet).
+    // Bounded Attention-Notification Surface: surface the notification levers in
+    // config so the operator can actually reach them. Behaviour-neutral (the
+    // runtime already defaults to these values when absent).
+    if (migrateConfigBoundedNotificationSurface(config)) {
+      patched = true;
+      result.upgraded.push('config.json: added notificationBatcher limits + monitoring.degradationReporter.notifyUser (housekeeping silent by default)');
+    } else {
+      result.skipped.push('config.json: bounded notification surface already present');
+    }
+
     if (migrateConfigWs44PoolCache(config)) {
       patched = true;
       result.upgraded.push('config.json: stripped default-shaped multiMachine.seamlessness.ws44PoolCache=false so the developmentAgent gate resolves it live');

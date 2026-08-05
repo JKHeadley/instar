@@ -2270,6 +2270,19 @@ Updates land in two places: a **server** restart for new code, and a **lifeline*
 
 If the user reports they were "unresponsive for a while during updates," check \`state/auto-updater.json\` for batched-restart state and the most recent \`logs/server-stderr.log\` for "Restart batched" / "Cascade-dampener" lines. If the lifeline is still on a very old version, the drift promoter will pick it up automatically on the next forward — no manual kick needed.
 
+## Bounded Notification Surface (why routine notices stay quiet)
+
+Two limits govern how many messages I send you on my own initiative. Both are levers you can actually reach — an earlier version had an off-switch that looked real and was never read on this path.
+
+- **Routine degradation reports do NOT reach you** (\`monitoring.degradationReporter.notifyUser\`, default \`false\`). When one of my background checks falls back to a simpler method and carries on, that is recorded to the log, to disk, and to the feedback system — but you are not messaged. Set it to \`true\` to receive them again.
+- **A rolling limit of 4 messages per hour, per conversation** (\`notificationBatcher.maxMessagesPerTopicPerHour\`). Past it, further routine notices wait and send themselves as soon as there is room — nothing is dropped, and you are not told about the waiting (a message announcing the limit would be one more unactionable message). Set it to \`0\` to disable the limit entirely.
+
+**Never gated by either:** urgent notices, anything action-required, and attention-queue items. A limit on routine chatter must never become a limit on urgency.
+
+**Multi-machine:** only the machine that OWNS a conversation sends routine notices into it, so the limit is exact rather than N× the fleet size.
+
+**When the user asks** (PROACTIVE — these are the triggers): "why did the notices stop / go quiet?" → this feature, and I can read any of it back from the log on request. "I want those back" → flip \`notifyUser\` to \`true\`. "these are still too frequent" → lower \`maxMessagesPerTopicPerHour\`. "did I miss something?" → read \`logs/notification-ceiling.jsonl\` (metadata-only: holds, collapses, ownership skips) and \`GET\`-side \`getStats()\` counters, then answer from the record rather than guessing. Full config block: \`notificationBatcher\` (**top-level**, NOT nested under \`messaging\`, which is an adapter array where a nested key is unreachable). Spec: \`docs/specs/bounded-attention-notification-surface.md\`.
+
 ## Agent Removal
 
 If the user asks to delete, remove, or uninstall this agent:
