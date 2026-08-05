@@ -466,12 +466,51 @@ otherwise                                           →  instrumented
 **Stage one stops there.** `effective-candidate` and its siblings do not exist in the union until the
 staged-violation harness lands — the forbidden claim is unrepresentable rather than prohibited.
 
-### Honest cost, stated
+### The wrapper FITS — verified against real callsites (adversarial review, 2026-08-05)
 
-**This is ~25 callsite conversions plus one registry change**, not a field addition. Mechanical and
-individually trivial, but it is 25 of them, and each is a real edit to a live invocation path. **The
-narrowed option (a) is still a day of careful work, not an afternoon** — recorded here so the estimate
-is not discovered later.
+The first positive finding this design has earned. An independent reviewer traced five of the 28 to
+source and confirmed each has **a single invocation expression the registry can bracket**:
+
+| guard callsite | the bracketable expression |
+|---|---|
+| server interval | `topicReachabilityVerifier.tick()` — one call in one callback (`server.ts:10024-10027`) |
+| lease-pull rider | `attachLeasePullTickListener(() => ropeProber.onTick())` (`server.ts:5740`) |
+| WS13 reconciler | `runWs13Tick(...)` → `reconciler.tick()` once per pass (`server.ts:20690-20694`) |
+| SelfActionGovernor | both handle methods delegate to one `core.admitFor(...)` (`governor.ts:1672-1679`, core at `:510-529`) |
+| StateManager funnel | writes already centralised; one `wa.guardStoreWrite(...)` (`StateManager.ts:180-214`) |
+
+**And the codebase supplies its own precedent for the design choice.** The reviewer noted that
+`StateManager` already handles **eleven `saveSession` callsites through a single `saveSession` funnel**
+(`StateManager.ts:296-304`) — the code having previously learned, in a different context, that
+per-site wiring drifts and a funnel does not. **This is propagation of a lesson the codebase already
+paid for**, which is the charter's framing, arrived at by a reviewer who was not looking for it.
+
+### Honest cost — CORRECTED upward by the same review
+
+I wrote *"~25 callsite conversions plus one registry change."* **The second half is materially wrong.**
+Four surfaces need changes, and none currently has the needed shape:
+
+| surface | current state |
+|---|---|
+| `GuardRegistry` | getter-only — `register`/`has`/`registeredKeys`/`read`. **No `invoke`, no `verdict`, no counters map** (`GuardRegistry.ts:40-71`) |
+| `GuardManifestEntry` | **no `invocation`, no `lookedMeans`** (`guardManifest.ts:24-65`) |
+| `guardPostureView` | no `GuardObservabilityVerdict`; still projects `effective` (`guardPostureView.ts:27-37, 66-74`) |
+| `lint-guard-manifest.js` | **no wrapper-adoption rule at all** (`:202-250`) |
+
+**So: ~25 callsite conversions across FOUR surfaces, not one.** Recorded because an understated
+estimate is how a day of work becomes a surprise mid-build — and because I produced the understatement
+by counting the change I had designed rather than the changes it requires.
+
+### ⚠️ The health-colouring hazard is worse than I recorded
+
+I noted that stage-one `instrumented` must not be rendered under a health-coloured field. The reviewer
+sharpened it: **the existing state union is *entirely* health-coloured** (`on-confirmed`, `on-stale`,
+…) and the row field is literally named `effective` (`guardPostureView.ts:27-37, 66-74`). There is no
+neutral place to put an observability verdict today.
+
+So the wrapper alone does not defeat the v3 attack — **it relocates the false-health value from
+`effective` to `instrumented`**, and if `instrumented` lands in a field named `effective`, nothing has
+been gained. **The new verdict needs its own field, not a new value in the old one.**
 
 
 ## Prerequisite — the staged-violation harness comes FIRST
