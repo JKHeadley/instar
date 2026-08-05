@@ -968,3 +968,51 @@ recommends for every guard, applied to the process auditing the guards.
 
 **Premise class: STRUCTURAL.** It does not self-resolve; it recurs every time a lane is dispatched
 without one.
+
+
+---
+
+## B2.2 SETTLED — the gap is ONE, not seven. Three passes, each narrowing.
+
+| pass | method | population | verdict |
+|---|---|---|---|
+| mine | keyword match on `*ratchet*` filenames | 18 files | 5 flagged — **2 were false positives** |
+| lane 1 | read the test bodies | **48 files** (18 ratchets + 30 lints) | 7 flagged |
+| lane 2 | **ran the detectors against the clean repo** | same 48 | **6 of 7 misclassified — 1 genuine** |
+
+### The insight both earlier passes missed
+
+> **An always-firing detector returns a violation for every scanned input. So a repo-wide lint that
+> exits 0 on the clean tree has already demonstrated it does not fire on everything — the repository
+> IS its negative control.**
+
+Lane 2 established this by *executing* all six: `check-capability-registry-read-model`,
+`lint-no-direct-url-log`, `lint-no-mainthread-cartographer-walk`, `lint-no-unbounded-llm-spawn`,
+`lint-no-unfunneled-tmux-literal-send`, `lint-no-unfunneled-topic-creation` — **all exit 0**.
+
+**Lane 1 and I both READ. Lane 2 RAN.** That is the whole difference, and it is the lesson
+*execution refutes, measurement confirms* arriving for the third time this window.
+
+*(Caveat carried from the lane: a clean-repo pass is a coarse control. It disproves "fires on
+everything" but not "fires on some legitimate forms." Those six may still deserve fixture-level
+B-cases for precision — a smaller, different claim than the one being settled here.)*
+
+### The one genuine gap, precisely stated
+
+**`reviewer-fail-closed-ratchet`** — my original specific claim, surviving all three passes:
+
+> Current tests prove an **errored** reviewer abstains. **Nothing proves that usable reviewer output is
+> NOT tagged as abstained.**
+
+A reviewer that abstained on every call — including successful ones — passes, and is useless. This is
+the strongest guard in the codebase (exhaustive over its whole population, injects a forced error into
+every member) and it is exhaustive **in one direction only**.
+
+### What this does to the node
+
+**B2.2's scope collapses from "propagate B-cases across the enforcement tiers" to "add one B-case to one
+ratchet."** That is not a disappointment — it is the node being *finished* by measurement rather than
+carried as an assumption. The propagation the node imagined was already done, implicitly, by every lint
+that runs clean in CI.
+
+**Five node premises now refuted or collapsed, out of eight checked.**
