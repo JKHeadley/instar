@@ -821,3 +821,44 @@ should be triaged into *must-be-shell* (then explicitly accepted as unguarded, i
 twelve rather than a smaller, argued figure.
 
 **Premise class: STRUCTURAL.** This does not self-resolve.
+
+### B2.2 premise — PLAUSIBLE, not measurable as written, and one genuine candidate found
+
+B2.2 asks *"which rung-3 claims lack a negative control?"* A keyword pass over the 18 ratchet tests
+flagged 5 as one-sided. **Reading them, at least two of the five are false positives** — which is the
+fourth time this audit that keyword bucketing produced a confident wrong answer, and this time I caught
+it before recording it.
+
+**The distinction the node is missing:** not every check has a meaningful negative control.
+
+| check kind | needs a B-case? | example |
+|---|---|---|
+| **detector** — fires on a violation | **yes** — without it, "always fires" passes | `keyword-intent-decision-ratchet` (10 negative cases) |
+| **structural completeness** — asserts every member of a set has a property | **no** — the assertion IS total; there is no "compliant input to allow" | `llm-bench-coverage-ratchet` ("every key has an entry", "no dangling entries", "pending set is shrink-only") |
+
+`stall-coverage-ratchet` and `llm-bench-coverage-ratchet` are the second kind. My flag was wrong about
+both.
+
+### The one genuine candidate — and it is the exemplar
+
+**`reviewer-fail-closed-ratchet` has a single assertion**
+(`tests/unit/reviewer-fail-closed-ratchet.test.ts:55`):
+
+> *"a forced LLM error → `abstained: true` (NOT a silent permissive pass)"*
+
+That is a pure A-case. **A reviewer that abstained on EVERY call — including successful ones — would
+pass this ratchet and be completely useless.** The B-case ("a normal call returns a real verdict, NOT
+abstained") is absent.
+
+**This is the same guard I praised two hours ago** as the model of complete-population forced-error
+injection — and it is exhaustive over its population, which is genuinely excellent. **It is exhaustive
+in one direction only.** Phase A downgraded three of its own verdicts for exactly this and made the
+B-case mandatory; the ratchet predates that rule and never got it.
+
+> **The strongest guard in the codebase is one-sided.** That is not an argument against it — it is the
+> clearest possible illustration that the B-case rule is *new*, is *not yet propagated*, and that being
+> excellent in one dimension is what makes the missing dimension invisible.
+
+**Status: LIVE, re-scoped** — B2.2 must first classify each check as detector-or-structural, then
+require a B-case only of the detectors. Eighth premise checked; the sweep of ~20 node premises is now
+complete for every node that had a checkable premise.
