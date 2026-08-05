@@ -30,7 +30,7 @@
 > | **B3.1** CrashLoopPauser | build it | **unchanged** — still never constructed; streak now **492** |
 > | **B4.1** version parity | laptop behind | **STALE — self-resolved** |
 > | **B4.2** laptop resumeQueue | divergent | **STALE — self-resolved** |
-> | **B6** guard-invocation re-architecture | — | **NEW branch** (operator ruling), named + unscoped. *(Renumbered from B5 — it collided with the existing live-faults branch.)* |
+> | **B7** guard-invocation re-architecture | — | **NEW branch** (operator ruling), named + unscoped. *(Renumbered B5→B6→B7 — the first two both collided; B0–B6 were taken.)* |
 >
 > ### Findings raised this window (F9–F14)
 >
@@ -45,8 +45,13 @@
 >
 > ### The synthesis (§ "SYNTHESIS", line ~578) is the single most load-bearing section
 >
-> Every defect found is **one defect**: *the passing condition is narrower than what the result
-> certifies.* **The SYNTHESIS section below still says "seven" and lists seven rows — it was written
+> ⚠️ **Scoped claim, corrected after review flagged it as overfitted.** **Every defect found *in a
+> verification, alerting, classification or reporting surface* is one defect**: *the passing condition
+> is narrower than what the result certifies.* It does **NOT** cover every finding in this tree — F8's
+> live faults (an argv ceiling, a threshold mismatch, an unconstructed component) are ordinary
+> operational faults with unrelated causes, and B5 groups them by *measured harm*, not by cause. The
+> review was right that "every defect" read as universal; the claim is strong enough without the
+> overreach and false with it. **The SYNTHESIS section below still says "seven" and lists seven rows — it was written
 > when there were seven and never revised. The enumerated current figure is 13** (see "The synthesis
 > instances, ENUMERATED"), and a reader who counts 12 is not wrong (one instance may be an aggregate of
 > another). It now has **13 instances** across verification, alerting, classification, reporting, and
@@ -683,12 +688,24 @@ from the finding set — which is the strongest evidence available that it is th
 
 ---
 
-## B6 — GUARD-INVOCATION RE-ARCHITECTURE (new branch, created by ruling at window-7 cycle 1)
+## B7 — GUARD-INVOCATION RE-ARCHITECTURE (new branch, created by ruling at window-7 cycle 1)
 
-⚠️ **RENUMBERED B5 → B6.** I originally created this as "B5", colliding with the pre-existing
-**B5 — LIVE FAULTS WITH MEASURED HARM** (§2). Two live branches shared one id, which the exit-gate
-review correctly called *"not just stale prose — two current-looking B5 meanings"*. The
-re-architecture branch is **B6**; B5 remains the live-faults branch as originally drawn.
+⚠️ **RENUMBERED TWICE — B5 → B6 → B7, and the second attempt collided exactly like the first.**
+
+I created this branch as **B5**, colliding with **B5 — LIVE FAULTS WITH MEASURED HARM** (§2). The
+exit-gate review caught it: *"not just stale prose — two current-looking B5 meanings."* I renumbered to
+**B6** — which collided with **B6 — MAKE THE METHOD DURABLE** (§2). The re-review caught that too:
+*"the old contradiction moved; it did not disappear."*
+
+**The taken ids are B0–B6. This branch is B7.** Established by listing them, which took five seconds
+and which I did not do either of the first two times.
+
+> **I fixed a duplicate-id defect by creating the identical defect, then had to be told.** The reviewer
+> had been instructed specifically to check whether my fixes reintroduced the problems they fixed — and
+> it found one on its first pass. **The convenience move (pick the next number) beat the verification
+> move (list what is taken) twice in a row**, on a defect whose entire content was "you did not check."
+
+B5 remains live-faults; B6 remains method-durability; both as originally drawn.
 
 **Created:** 2026-08-05, by operator ruling on the B0.1 fork. **Status: named, unscoped, not started.**
 
