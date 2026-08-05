@@ -723,3 +723,50 @@ sampled.**
 **Status: LIVE, re-scoped.** Unlike B2.4 (saturated) and B4.x (stale), there is real work here — it is
 just different work than the node originally described. Sixth premise checked, third distinct failure
 mode: not wrong, not obsolete, **mis-framed**.
+
+### B1.1 premise — CONFIRMED LIVE, but Phase A's diagnosis was wrong, and the remedy changes with it
+
+Phase A framed the repo↔agent gap as: *"The outbound grounding check lives **agent-side**
+(`.instar/scripts/`), outside the ratchet's scope **by construction**."*
+
+**"By construction" is false, and the correction matters.** Both files are in the repo:
+
+```
+src/templates/scripts/convergence-check.sh
+src/templates/hooks/grounding-before-messaging.sh
+```
+
+The *deployed* copy lives agent-side; the *source* is in-tree, greppable, and shippable from the same
+repository the ratchets run in. Nothing about the topology excludes it.
+
+**The real barrier, read from source** (`tests/unit/keyword-intent-decision-ratchet.test.ts:43-44,
+119-133`):
+
+```js
+const TARGET_DIRS = ['core', 'monitoring', 'server', 'threadline', 'messaging'];
+//  walk filter:  e.name.endsWith('.ts')
+```
+
+The agent-side violation is excluded **twice** — wrong directory *and* wrong extension — and a third
+time in substance: **the detector matches TypeScript syntax** (message-like variable names, decision
+tests). Pointing it at a `.sh` file would find nothing even if the scope allowed it.
+
+> **So the gap is not a missing bridge. It is that our enforcement is LANGUAGE-BOUND: the standard is
+> enforced in TypeScript, and the violation is written in shell.** Any standard whose guard is a
+> TS-syntax detector is unenforceable wherever we author behaviour in another language — and hooks,
+> relay scripts, and job runners are all shell.
+
+**Two candidate remedies, and the second is the propagation the charter prefers:**
+
+1. **A shell-aware detector** — new machinery, a second detector to keep in sync with the first, and a
+   standing risk that the two drift. This is what "build a bridge" meant, and it is the expensive read.
+2. **Move the logic to where the guard already looks** — relocate the outbound matching out of
+   `convergence-check.sh` into the TypeScript outbound path, where the existing ratchet covers it
+   automatically. **No new detector, no drift, and it collapses the language boundary instead of
+   spanning it.**
+
+Option 2 also happens to fix B1.2 (the gate's over-blocking) in the same move, since the logic being
+relocated is the same logic that needs demoting from authority to signal.
+
+**Status: LIVE.** Seventh premise checked, fourth distinct failure mode: the premise holds, but the
+*stated cause* was wrong — and the wrong cause pointed at the expensive remedy.
