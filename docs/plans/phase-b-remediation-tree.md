@@ -912,3 +912,59 @@ reconciliation lane caught earlier tonight**, committed again, by me, four hours
 > **Both lanes improved on my work in the same way: they defined the population from the QUESTION
 > rather than from the filename.** That is what I keep getting wrong, and it is why dispatching the
 > check rather than performing it produced the better answer twice.
+
+---
+
+## F11 — the dispatch-and-collect loop had no return step (found in my own operating loop)
+
+**Raised by the manager, 2026-08-05 06:00Z:** a lane finished at 05:15 and sat uncollected until 06:00.
+Laptop utilisation was back to zero within an hour of being restored. The question posed was exact:
+*either the idle is deliberate, or the loop has no step that brings you back when a lane lands — in
+which case the gap is structural and belongs on the tree, not something to be solved by remembering to
+check.*
+
+**It was the second one.**
+
+### The shape
+
+| step | mechanism | reliable? |
+|---|---|---|
+| dispatch a lane | HTTP spawn to the laptop | ✅ |
+| lane runs | tmux session on the laptop | ✅ |
+| lane writes its file | enforced by the dispatch prompt | ✅ |
+| **collect the result** | **I remember to look** | ⛔ |
+
+**Every step was structural except the last one, and the last one is where the value is.** A lane that
+finishes and is never read costs *more* than one never dispatched: it spent the allowance and returned
+nothing.
+
+> **"Remember to collect" is the failure mode this entire plan exists to remove — and it was running
+> inside the session performing the audit.** The plan's own premise, violated by the plan's own
+> execution, for forty-five minutes.
+
+### The fix — a return step, not a resolution
+
+`docs/audits/phase-b/lane-waiter.sh`. Run in the background alongside every dispatch, it blocks until
+the lane's output lands (or the lane dies, or it times out) and then **exits** — and a background
+command exiting **re-invokes the session**. The return step stops being something I remember and
+becomes something the system does.
+
+Three outcomes, all explicit, none silent: `LANE-LANDED` (0) · `LANE-DIED-EMPTY` (3) · `LANE-TIMEOUT` (4).
+A lane that dies without writing is a *reported* failure rather than an absence I might not notice.
+
+**Verified two-sided before use**, per the rule this window keeps re-earning:
+
+| case | expected | actual |
+|---|---|---|
+| lane that does not exist | fail, do not hang | `LANE-DIED-EMPTY` after 0s ✅ |
+| output that already exists | succeed immediately | `LANE-LANDED` after 0s ✅ |
+
+### Why this belongs on the tree rather than in a habit
+
+The manager's framing is the reason it is recorded here: **a gap closed by my noticing it will reopen
+the next time I do not notice.** The waiter outlives the noticing. It is also, precisely, the
+`Structure beats Willpower` standard applied to the auditor's own workflow — the same move the tree
+recommends for every guard, applied to the process auditing the guards.
+
+**Premise class: STRUCTURAL.** It does not self-resolve; it recurs every time a lane is dispatched
+without one.
