@@ -1,5 +1,54 @@
 # Instar Constitutional Alignment — Phase B: The Remediation Tree
 
+> ## ⚠️ READ THIS FIRST — CURRENT STATE, which supersedes everything below
+>
+> **This document grew by appending over one working window.** Section 2 states the tree as first
+> drawn; sections after it refute, re-scope, or retire several of those nodes. **A reader taking
+> section 2 at face value gets a wrong picture** — which is precisely the stale-artifact defect this
+> phase keeps finding, occurring in the phase's own plan.
+>
+> History is retained deliberately (the corrections *are* the evidence). **This table is
+> authoritative.**
+>
+> ### Node status after the premise sweep — 8 checked, 5 did not survive
+>
+> | node | as drawn | CURRENT |
+> |---|---|---|
+> | **B0.1** schema | first build item | **scope RULED to the 28**; design at v3; 4 review rounds; **not ready to build** |
+> | **B0.2** census | survey counters | **DONE** — 4 full / 7 partial / 62 none of 80 |
+> | **B0.3** health-window | suspected | **CONFIRMED + grounded** — `sinceHours: 24`, hardcoded; one word for three states |
+> | **B0.4** positional ceiling | operator decision | **open** — still the architect's |
+> | **B0.5** harness | later node | **PREREQUISITE of B0.1** (ordering was wrong) |
+> | **B1.1** repo↔agent bridge | "no bridge exists" | **LIVE, re-diagnosed** — barrier is *language*, not topology |
+> | **B1.2** grounding gate | suspected over-block | **MEASURED** — 3 of 5 honest messages blocked; verdict `over-blocks` |
+> | **B1.3** use-vs-mention | suspected | **CONFIRMED** — 3 self-demonstrations |
+> | **B1.4** NOT_A_GUARD truth | "apply closed-set" | **remedy DISPROVED**; direction re-stated |
+> | **B2.1** declare-or-fail | which registers? | **LIVE** — a second register found, weaker than the first |
+> | **B2.2** B-case propagation | broad propagation | **SETTLED — the gap is ONE**, not seven |
+> | **B2.3** forced-error injection | which paths? | **LIVE, re-framed** — populations, not paths |
+> | **B2.4** shrink-only sets | propagate | **REFUTED — already saturated** (4/4 lints, 8/8 ratchets) |
+> | **B3.1** CrashLoopPauser | build it | **unchanged** — still never constructed; streak now **492** |
+> | **B4.1** version parity | laptop behind | **STALE — self-resolved** |
+> | **B4.2** laptop resumeQueue | divergent | **STALE — self-resolved** |
+> | **B5** guard-invocation re-architecture | — | **NEW branch** (operator ruling), named + unscoped |
+>
+> ### Findings raised this window (F9–F13)
+>
+> | # | finding | status |
+> |---|---|---|
+> | F9 | no record exists of our guards deciding anything | confirmed |
+> | F10 | 12 blocking decisions authored where no ratchet looks | confirmed; **all 12 are movable** |
+> | F11 | my dispatch loop had no return step | **fixed structurally** |
+> | F12 | 53 checks run, **6 cannot fail** — 3 distinct causes | confirmed |
+> | F13 | **11 tautological assertions** in the suite | confirmed; trust case **downgraded** to false-documentation |
+>
+> ### The synthesis (§ "SYNTHESIS", line ~578) is the single most load-bearing section
+>
+> Every defect found is **one defect**: *the passing condition is narrower than what the result
+> certifies.* It now has **13 instances** across verification, alerting, classification, reporting, and
+> the test suite — including four committed by me, in this document, about that defect.
+
+
 **Parent:** `ALIGNMENT-PLAN-ROOT.md` (ratified 2026-08-03) · `ALIGNMENT-PLAN-LEVEL1.md`
 **Author:** Echo — Pathway (topic 29723), window seven
 **Written:** 2026-08-05, from Phase A ground truth
