@@ -572,3 +572,56 @@ search works and the sparse referencing is real, not a missed grep.
 **Node status: B2.1 is LIVE** (unlike B4.1/B4.2, whose premises were stale). Its remedy must NOT be
 "add a closed set" — that was refuted in the B0.1 arc. The direction is the same as B1.4's: change what
 the author produces, or make the claim machine-evaluable.
+
+---
+
+# SYNTHESIS — these are not seven defects. They are one defect, seven times.
+
+Every substantive finding of this window has the identical shape. Setting them side by side is the most
+useful thing produced tonight, because it changes what the remediation should be.
+
+| # | surface | what it MEASURES | what it CERTIFIES | the gap |
+|---|---|---|---|---|
+| 1 | `NOT_A_GUARD.reason` | ≥12 non-whitespace chars | "this exclusion is justified" | any 12 characters |
+| 2 | `COHERENCE_MANIFEST_EXCLUSIONS.reason` | `.length > 20` (raw) | "this exclusion is justified" | **21 spaces** |
+| 3 | `/guards` → `missing` | no runtime getter registered | "should be running, isn't" | every standby machine |
+| 4 | three-rung `effective` | acts when it should | "aligned" | never asks if it *refrains* |
+| 5 | B0.1 v1 counter paths | a counter exists at a path | "this guard is instrumented" | borrow any positive number |
+| 6 | `enforcedRatio: 72%` | a ref of that shape resolves | "the standard is enforced" | ref ≠ running, asserting, or in CI |
+| 7 | `/health` `llmReliability` | error rate over a 6h window | "this component is failing **now**" | a fix inside the window |
+
+**One sentence, seven times: the passing condition is narrower than what the result certifies.**
+
+And they are not clustered in one subsystem — they span **verification** (1, 2, 5), **alerting** (3, 7),
+**classification** (4), and **reporting** (6). A defect that appears independently across four unrelated
+surfaces is not a series of mistakes. **It is the default failure mode of the way we build checks**, and
+it recurs because writing a check that measures the easy proxy is always cheaper than writing one that
+measures the claim.
+
+## What this changes about the remediation
+
+**Fixing seven things individually is the wrong response**, and this tree originally proposed roughly
+that. Two consequences:
+
+1. **The remedy is a STANDARD, not seven patches.** Something of the form: *a check must state what it
+   measures and what it certifies, and the two must be argued equal.* Instar already has the enforcement
+   vocabulary for this — the spec-converge gate flagged exactly this class against my own spec five
+   times tonight, under *Verify the State, Not Its Symbol*. **The standard exists; what is missing is
+   its application to CHECKS themselves rather than to features.**
+
+2. **The B-case is the general antidote, and it is already proven.** Every one of the seven would have
+   been caught at authoring time by asking *"what input passes this check while failing the claim?"* —
+   which is precisely the negative control Phase A adopted mid-audit and `standards-coverage-ratchet`
+   already carries eleven of. **This is a propagation target, not an invention** — exactly the framing
+   the charter set.
+
+> **The honest reframing of Phase B:** the problem was never that Instar lacks guards. It is that a
+> guard's *passing condition* is written by the same person, at the same moment, under the same
+> assumptions as the guard itself — so the check inherits the author's blind spot by construction.
+>
+> **Everything that worked tonight worked by breaking that coupling**: an adversarial reader who did not
+> write the design, a control the author had to run against their own search, a B-case that asks what
+> passes-while-failing. **Not more care. A different producer.**
+
+That is the same conclusion the B0.1 design arc reached after seven attempts, arrived at independently
+from the finding set — which is the strongest evidence available that it is the right one.
