@@ -233,6 +233,25 @@ staged-violation harness stops being a nice-to-have and becomes the prerequisite
 > Reporting the first as though it were the second is the exact error this entire document exists to
 > prevent, so it is written here rather than left to be inferred.
 
+### What v3 does NOT yet specify — found by reading the whole document
+
+A section-by-section check kept passing while this gap sat in plain sight, which is its own small
+lesson. **v3 specifies the TRUST MODEL — who owns which number — and does not specify the SCHEMA.**
+This document is titled after a schema. Concretely, still undefined:
+
+- **The manifest-side declaration.** v2 had `expectCounters: boolean`; it left with v2. v3 has no
+  replacement, so there is currently **no way to state that a given guard is expected to carry
+  caller-owned counters** — and therefore no way to detect one that should and doesn't.
+- **Where the caller's count lives.** `looked` is owned by the invoking chokepoint, but the data
+  structure holding it (registry-side? per-key counter in `GuardRegistry`?) is unspecified.
+- **What computes the verdict.** The stage-1 union is defined; the function mapping live counters to
+  it is not.
+
+**This gap is why the chokepoint survey blocks the schema, not merely informs it** — the survey's
+answer (how many guards have a common caller today) determines whether the manifest declaration is a
+boolean, an enum of invocation classes, or something else entirely. Designing the schema before that
+number exists would be guessing, and this document has already demonstrated where guessing leads.
+
 ### Status of v3
 
 **Direction, not a finished design.** The chokepoint survey (which guards have a common caller?) is
