@@ -30,9 +30,9 @@
 > | **B3.1** CrashLoopPauser | build it | **unchanged** — still never constructed; streak now **492** |
 > | **B4.1** version parity | laptop behind | **STALE — self-resolved** |
 > | **B4.2** laptop resumeQueue | divergent | **STALE — self-resolved** |
-> | **B5** guard-invocation re-architecture | — | **NEW branch** (operator ruling), named + unscoped |
+> | **B6** guard-invocation re-architecture | — | **NEW branch** (operator ruling), named + unscoped. *(Renumbered from B5 — it collided with the existing live-faults branch.)* |
 >
-> ### Findings raised this window (F9–F13)
+> ### Findings raised this window (F9–F14)
 >
 > | # | finding | status |
 > |---|---|---|
@@ -41,11 +41,15 @@
 > | F11 | my dispatch loop had no return step | **fixed structurally** |
 > | F12 | 53 checks run, **6 cannot fail** — 3 distinct causes | confirmed |
 > | F13 | **11 tautological assertions** in the suite | confirmed; trust case **downgraded** to false-documentation |
+> | F14 | a dispatched check confirms my PREMISE when I state it as fact | confirmed — I contaminated a lane's prompt |
 >
 > ### The synthesis (§ "SYNTHESIS", line ~578) is the single most load-bearing section
 >
 > Every defect found is **one defect**: *the passing condition is narrower than what the result
-> certifies.* It now has **13 instances** across verification, alerting, classification, reporting, and
+> certifies.* **The SYNTHESIS section below still says "seven" and lists seven rows — it was written
+> when there were seven and never revised. The enumerated current figure is 13** (see "The synthesis
+> instances, ENUMERATED"), and a reader who counts 12 is not wrong (one instance may be an aggregate of
+> another). It now has **13 instances** across verification, alerting, classification, reporting, and
 > the test suite — including four committed by me, in this document, about that defect.
 
 
@@ -160,8 +164,8 @@ explicitly classified `unknown` with a named reason — and the ambiguous-zero c
 
 | node | scope | measurable exit | lane |
 |---|---|---|---|
-| **B0.1 — the `{looked, wouldAct, didAct}` schema** ⭐ FIRST BUILD ITEM | every guard inventory row gains the three counters | a guard with 0/3 or 2/3 counters fails a lint; `/guards` rows carry the triple; control run proves the lint bites AND allows the compliant form | build → Codex lane; spec + review → me |
-| **B0.2 — counter-surface census** | which guards expose which counters TODAY | a machine-readable row per guard with `evidence: file:line`; `partial` class explicitly flagged | Codex lane (**IN FLIGHT**, laptop) |
+| **B0.1 — the `{looked, wouldAct, didAct}` schema** ⚠️ *(was 'FIRST BUILD ITEM' — SUPERSEDED: B0.5 is its prerequisite; see header)* | every guard inventory row gains the three counters | a guard with 0/3 or 2/3 counters fails a lint; `/guards` rows carry the triple; control run proves the lint bites AND allows the compliant form | build → Codex lane; spec + review → me |
+| **B0.2 — counter-surface census** | which guards expose which counters TODAY | a machine-readable row per guard with `evidence: file:line`; `partial` class explicitly flagged | ✅ **DONE** — 4 full / 7 partial / 62 none / 7 unknown of 80 |
 | **B0.3 — health-window honesty** | readouts that cannot distinguish "broken now" from "was broken, fixed" | `/health` llmReliability distinguishes current from historical; a fixed component stops reporting `failing` within one window | build → Codex lane |
 | **B0.4 — positional-ceiling resolution** | the 10 guards untestable from a workstation | a DECISION artifact: CI-side observation, or scope explicitly narrowed and recorded | **operator/architect decision — not a build** |
 | **B0.5 — staged-violation harness** | the 8 `unmeasured` leaves | a throwaway agent + demo channel that can stage a violation on demand; one previously-unmeasured leaf settled through it | build → Codex lane |
@@ -309,9 +313,11 @@ honest answer today is no: the method lives in a document.
 
 ## 4. What happens next
 
-1. **B0.1 spec** → `/spec-converge` → operator pre-approval → build under full `/instar-dev`
-   discipline with a control run → PR **held** for pre-approval. *(charter's first build item)*
-2. **B0.2 census** lands from the Codex lane and makes F3's "64 unaskable" precise.
+⚠️ **THIS SECTION IS SUPERSEDED — retained because the reviews reference it. See the header.**
+Both items below are stale: B0.5 (harness) now precedes B0.1, and B0.2 has landed.
+
+1. ~~**B0.1 spec** → build under full `/instar-dev` discipline.~~ **B0.5 is its prerequisite.**
+2. ~~**B0.2 census** lands from the Codex lane.~~ **Landed:** 4 full / 7 partial / 62 none of 80.
 3. **Exit gate:** this tree goes through multi-model plan review to 80/20 convergence, per the
    ratified Phase B exit condition. §3 exists to give that review its starting targets.
 
@@ -677,7 +683,12 @@ from the finding set — which is the strongest evidence available that it is th
 
 ---
 
-## B5 — GUARD-INVOCATION RE-ARCHITECTURE (new branch, created by ruling at window-7 cycle 1)
+## B6 — GUARD-INVOCATION RE-ARCHITECTURE (new branch, created by ruling at window-7 cycle 1)
+
+⚠️ **RENUMBERED B5 → B6.** I originally created this as "B5", colliding with the pre-existing
+**B5 — LIVE FAULTS WITH MEASURED HARM** (§2). Two live branches shared one id, which the exit-gate
+review correctly called *"not just stale prose — two current-looking B5 meanings"*. The
+re-architecture branch is **B6**; B5 remains the live-faults branch as originally drawn.
 
 **Created:** 2026-08-05, by operator ruling on the B0.1 fork. **Status: named, unscoped, not started.**
 
@@ -834,12 +845,47 @@ TypeScript syntax. Measured against the shipped tree:
 | `src/**/*.ts` | 1,629 | covered by ratchets |
 | `src/templates/**` (`.sh`, `.js`, `.mjs`) | **26** | **12** |
 
-**Twelve decision-making surfaces are enforced by no ratchet at all:**
+**Twelve decision-making surfaces are enforced by no ratchet at all** — ⛔ **and the list I first
+published was WRONG. Corrected below.**
+
+### ⛔ The count was right BY ACCIDENT — four wrong in, four wrong out
+
+The triage lane checked each named file and found **the total 12 is correct while the membership was
+not**: four I named do not block, and four genuine blockers were missing.
+
+**Not blocking decisions — remove (4), each grounded in the file's own words:**
+
+| named in error | what it actually does |
+|---|---|
+| `session-start.sh` | injects startup context; **exits open** when config/port/health are unavailable |
+| `model-tier-reconciler.js` | its header states it **"never blocks the turn"**; exits 0 on failure |
+| `instar-watchdog.sh` | monitors, self-heals, escalates — **recovery, not refusal** of an action |
+| `emit-session-clock.sh` | its header states **"Signal-only: pure stdout, never blocks"** |
+
+**Genuine blockers I MISSED — add (4):**
+
+`telegram-reply.sh` · `slack-reply.sh` · `whatsapp-reply.sh` · `git-sync-gate.sh`
+
+**The corrected twelve:**
 
 `free-text-guard.sh` · `grounding-before-messaging.sh` · `dangerous-command-guard.sh` ·
-`intercept-imsg-send.js` · `session-start.sh` · `model-tier-reconciler.js` · `build-stop-hook.sh` ·
-`instar-watchdog.sh` · `convergence-check.sh` · `imessage-reply.sh` · `emit-session-clock.sh` ·
-`serendipity-capture.sh`
+`intercept-imsg-send.js` · `build-stop-hook.sh` · `convergence-check.sh` · `imessage-reply.sh` ·
+`serendipity-capture.sh` · **`telegram-reply.sh`** · **`slack-reply.sh`** · **`whatsapp-reply.sh`** ·
+**`git-sync-gate.sh`**
+
+> ### Two things about this correction that matter more than the list
+>
+> **1. A correct total over incorrect membership — for the second time this window.** The earlier
+> instance was my keyword pass on the 16 unenforced standards: right count, only 10 of 16 correct.
+> **Both times the matching total read as corroboration**, and both times I reported the number upward
+> before the membership was checked. *A count agreeing with an independent count is not evidence the
+> sets agree.*
+>
+> **2. I omitted `telegram-reply.sh` — the guard that blocked me five times tonight.** Every message I
+> send to the manager goes through it, and it refused five of them. **I left it off a list of things
+> that block**, while being blocked by it, in the window where I was cataloguing blocks. I do not have
+> a clean explanation for that beyond the obvious one: I enumerated by scanning a directory rather than
+> by asking "what has actually refused something?" — the population-from-convenience error, again.
 
 ### The confirmation that this is causal, not coincidental
 
