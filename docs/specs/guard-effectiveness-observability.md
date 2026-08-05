@@ -350,8 +350,33 @@ non-zero `didAct` be read as alignment** — see Decision points.
 update path, but the manifest is compile-time source — so the migration is authoring work, not a
 runtime migrator. Sequence:
 
-1. Land the type as **required**, plus the lint assertions, plus all 72 declarations in one change.
-   A staged rollout with an optional field would permit the partial state the union exists to forbid.
+⚠️ **Scope corrected by measurement (B0.2 reconciliation).** This change touches **two** lists, and the
+second is the larger one:
+
+| list | entries | what it needs |
+|---|---|---|
+| `GUARD_MANIFEST` | **72** | the full `observability` declaration |
+| `NOT_A_GUARD` | **81** | the upgraded `reason` (closed set + ratification + expiry) |
+| **total touched** | **153** | |
+
+I had been sizing this at 72. **`NOT_A_GUARD` is the bigger list**, and it is the one that actually
+concealed `CrashLoopPauser`. A 153-entry all-at-once migration is not a single session's work, so the
+sequencing below is the design's answer — **not** an optional field, which would reopen exactly the
+loophole the union exists to close.
+
+1. **New entries are strict from day one.** The type is required; a new `GUARD_MANIFEST` or
+   `NOT_A_GUARD` entry cannot be added without a complete declaration. **The hole stops widening
+   immediately** — this is the part that cannot be deferred.
+2. **Existing entries are grandfathered with a HARD EXPIRY, not indefinitely.** Each pre-existing entry
+   is admitted under a `legacyUntil` date. Past it, **the build fails**. The same arithmetic that
+   forces exemption review forces migration completion — so the backlog drains on a clock rather than
+   on someone's intention. *(This is the one place the design permits a transitional state, and it is
+   bounded, dated, and build-enforced. A grandfather clause with no expiry would be the deferral this
+   spec exists to make impossible.)*
+3. The census (B0.2, landed) supplies the ground truth for which guards already expose counters, so
+   most `GUARD_MANIFEST` declarations are transcription rather than discovery.
+4. Guards with no counters today declare `kind: 'none'` **or** get instrumented. The split is a finding,
+   not a formality: **it converts the 62 not-instrumented guards into a precise, owned worklist.**
 2. The census (`.instar/phase-b/` — Codex lane, in flight) supplies the ground truth for which guards
    already expose counters, so most declarations are transcription rather than discovery.
 3. Guards with no counters today declare `kind: 'none'` with a closed-set reason **or** get counters.
@@ -421,9 +446,12 @@ contracts across 72 call sites, so they are settled here.
 1. **Does `didAct` need to distinguish *acted* from *acted correctly*?** The design says no — that is
    decision point 4, and it belongs to the staged-violation harness. Flagged for reviewers who may
    disagree.
-2. **72 declarations in one commit is a large diff.** It is mechanical and lint-verified, but a
-   reviewer may reasonably want it split. Splitting reintroduces a window where the field is optional,
-   which is the state the design forbids. **Recorded as a genuine tension, not resolved.**
+2. **Is the `legacyUntil` grandfather window the right length, and is it the right mechanism?** The
+   measured scope is **153 entries across two lists**, which is why the design admits a bounded,
+   build-enforced transitional state rather than an all-at-once migration. A reviewer may reasonably
+   argue that any grandfather clause — even a dated, failing one — is the camel's nose. The
+   counter-argument is that the alternative in practice is an optional field, which is strictly worse.
+   **Recorded as the design's single genuine compromise, and the thing I most want challenged.**
 
 ## Control run (required before the PR)
 
