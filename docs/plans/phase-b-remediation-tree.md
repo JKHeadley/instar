@@ -27,7 +27,7 @@
 > | **B2.2** B-case propagation | broad propagation | **SETTLED — the gap is ONE**, not seven |
 > | **B2.3** forced-error injection | which paths? | **LIVE, re-framed** — populations, not paths |
 > | **B2.4** shrink-only sets | propagate | **REFUTED — already saturated** (4/4 lints, 8/8 ratchets) |
-> | **B3.1** CrashLoopPauser | build it | **unchanged** — still never constructed; streak now **492** |
+> | **B3.1** CrashLoopPauser | build it | **CORRECTED** — it is written and unit-tested; it is never constructed **at boot**. Streak now **492**. |
 > | **B4.1** version parity | laptop behind | **STALE — self-resolved** |
 > | **B4.2** laptop resumeQueue | divergent | **STALE — self-resolved** |
 > | **B7** guard-invocation re-architecture | — | **NEW branch** (operator ruling), named + unscoped. *(Renumbered B5→B6→B7 — the first two both collided; B0–B6 were taken.)* |
@@ -229,7 +229,7 @@ without a negative control cannot be distinguished from a guard that rejects eve
 
 | node | scope | measurable exit |
 |---|---|---|
-| **B3.1 — `CrashLoopPauser`** | classified in the guard manifest; **never constructed** (control passed) while 21 jobs failed, top **477 consecutive**, none paused | constructed, wired, and demonstrated pausing a seeded crash-loop; its manifest exclusion reason removed |
+| **B3.1 — `CrashLoopPauser`** | classified in the guard manifest; **never constructed IN THE BOOT PATH** (see the correction below) while 21 jobs failed, top **477 consecutive**, none paused | constructed, wired, and demonstrated pausing a seeded crash-loop; its manifest exclusion reason removed |
 
 **Why this is one node and not a branch:** Phase A called it *"the one clean buildable gap"*. It is
 also the sharpest illustration of B1.4 — it stayed invisible to the audit because its exclusion
@@ -926,11 +926,14 @@ thin invocation shims that decide nothing. The grounding gate is the worked exam
 matching into the outbound TS path would simultaneously (a) bring it under the existing
 keyword-intent ratchet, (b) fix its over-blocking, and (c) remove one of the twelve.
 
-**Sizing, honestly:** twelve surfaces is not a small migration, and some are legitimately shell (a
-watchdog that must run without node). The claim is not "convert all twelve" — it is that **the twelve
-should be triaged into *must-be-shell* (then explicitly accepted as unguarded, in writing) and
-*incidentally-shell* (then relocated).** No such triage exists today, which is why the number is
-twelve rather than a smaller, argued figure.
+**Sizing, honestly:** ⛔ **[STALE — the triage was subsequently RUN. See "F10 + B2.2 — verified by
+dispatched lanes".] The text below predicted a mixed result and there was none: MUST-BE-SHELL 0,
+INCIDENTALLY-SHELL 12. All twelve can move, so the remedy is simply "migrate" and the only open
+question is order.** Retained because the prediction being wrong is the point.
+
+~~twelve surfaces is not a small migration, and some are legitimately shell (a watchdog that must run
+without node). The claim is not "convert all twelve" — it is that the twelve should be triaged into
+must-be-shell and incidentally-shell. No such triage exists today.~~
 
 **Premise class: STRUCTURAL.** This does not self-resolve.
 
@@ -971,8 +974,10 @@ B-case mandatory; the ratchet predates that rule and never got it.
 > clearest possible illustration that the B-case rule is *new*, is *not yet propagated*, and that being
 > excellent in one dimension is what makes the missing dimension invisible.
 
-**Status: LIVE, re-scoped** — B2.2 must first classify each check as detector-or-structural, then
-require a B-case only of the detectors. Eighth premise checked; the sweep of ~20 node premises is now
+**Status:** ⛔ **[STALE — B2.2 is now SETTLED. See "B2.2 SETTLED — the gap is ONE, not seven".] A lane
+RAN the detectors and found 6 of 7 candidates misclassified; the real gap is one B-case in one
+ratchet.** ~~LIVE, re-scoped — B2.2 must first classify each check as detector-or-structural, then
+require a B-case only of the detectors.~~ Eighth premise checked; the sweep of ~20 node premises is now
 complete for every node that had a checkable premise.
 
 
@@ -1564,3 +1569,46 @@ reads 18% where the OS reads 42% — and that is a real question I do not have t
 > could not answer the question they were asking. Neither of us had read what the gate consumes.
 > **The carry-over specified a concern rather than a measurement, so it was satisfied by whichever
 > number was nearest to hand.**
+
+---
+
+## ⛔ FACTUAL CORRECTION — "CrashLoopPauser was never constructed" is FALSE, and I repeated it five times
+
+The exit-gate reviewer ran the control I never did. **Verified independently by me before recording:**
+
+| claim | reality |
+|---|---|
+| *"never constructed"* — Phase A's phrasing, which I inherited | `src/monitoring/CrashLoopPauser.ts` is **6,476 bytes** of complete implementation (`:67-82` — history, neverPause, windowHours, failureThreshold, shortRunThreshold) |
+| *"`new CrashLoopPauser` resolves nowhere"* | it resolves **8 times** — all in `tests/unit/crash-loop-pauser.test.ts` (`:64, 74, 83, 89, 98, 106, 117, 135`) |
+| — | **zero** constructions anywhere in `src/` |
+
+**The accurate claim: the class is written, unit-tested, and never constructed in the production boot
+path.**
+
+### Why the distinction is not pedantic
+
+| *"never constructed"* implies | *"written, tested, never wired"* means |
+|---|---|
+| someone declared a guard and never built it | someone **built and tested** a guard, and one wiring line is missing |
+| the fix is: write it | the fix is: **construct it at boot** |
+
+The second is a smaller fix and a **stranger** failure. **Eight unit tests pass against a component that
+never runs in production.** A fully green test file, for a guard that has paused nothing while a job
+failed 492 consecutive times.
+
+> **Which makes it instance #14 of the synthesis, and one of the purest:** the tests *measure* "this
+> class behaves correctly when constructed" and are *read as* certifying "this guard works." The gap
+> between those is the entire distance between a passing suite and a paused job.
+
+### How I got it wrong: an inherited claim I never controlled
+
+**Phase A wrote "never constructed (control passed)". I repeated it five times across this window
+without ever running `new CrashLoopPauser` myself.** The control that refutes it takes one command.
+
+**I have spent this window insisting that a claim is not a fact until measured — while propagating an
+unmeasured claim from a prior phase because it arrived pre-labelled as verified.** A finding inherited
+from trusted upstream work is exactly the kind I stop checking, which is precisely when it should be
+checked.
+
+**B3.1's remedy changes accordingly:** not "build `CrashLoopPauser`" but **"construct it at boot and
+verify it pauses a seeded crash-loop."** The building is done.
