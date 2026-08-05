@@ -1016,3 +1016,50 @@ carried as an assumption. The propagation the node imagined was already done, im
 that runs clean in CI.
 
 **Five node premises now refuted or collapsed, out of eight checked.**
+
+---
+
+## Codey liveness — he is IDLE, not broken, and I now have a verified write path
+
+**Standing carry-over check, 2026-08-05 ~13:30Z.**
+
+### His health says "failing." It is the stale-window artifact again.
+
+| window | PromptGate calls | errors |
+|---|---:|---:|
+| last 15 min | 0 | 0 |
+| last 1 hour | 0 | 0 |
+| last 6 hours | 25 | 17 |
+
+`/health` reports `llmReliability: failing` off the 6-hour figure. **No calls have been made in the last
+hour at all** — and a fixed-string scan of his recent log tail shows no PromptGate or codex errors.
+Codex reports `available: true` with no rate limit.
+
+**This is B0.3 (health-window honesty) firing on the same agent for the second time in one window.** Last
+night the same readout said "failing 90.7%" for a fault that had already been repaired. Tonight it says
+"failing" for an agent that is simply not making calls. **A readout that cannot distinguish "broken"
+from "idle" from "already fixed" is one readout for three states.**
+
+### The actual finding: 0 active sessions
+
+He is not degraded. **He has nothing to do.** That is the collaboration-liveness gap the standing policy
+exists to catch, and it is invisible on a health surface that reports him as "failing" for an unrelated
+reason.
+
+### A verified write path — established, with ACKs, not assumed
+
+Three attempts, and **the first two failed**:
+
+1. `POST /attention` without an `id` → `"id" must be a string under 200 characters`. **ACK check: 0 items.**
+2. Retry with an id → **blocked by Codey's OWN tone gate** (`B2_FILE_PATH`) because the body contained a
+   raw file path. **ACK check: 0 items.**
+3. Retry without the path → accepted. **ACK check: item present, `status: OPEN`, his queue 75 → 76.**
+
+> **Only the third attempt actually delivered anything, and I would not have known that without checking
+> his queue after each try.** The first two returned an error I could easily have read past; a report
+> saying "I filed this with Codey" after attempt 1 or 2 would have been a fabrication with a plausible
+> command behind it. **The ACK is the difference between a claim and a fact** — this is the
+> cross-agent-communication standard working exactly as written, against three chances to get it wrong.
+
+*(Note also that his tone gate caught a genuine leak — a raw path in a queue item. His guard was right
+and mine was the sloppy input.)*
