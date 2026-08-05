@@ -378,9 +378,35 @@ verdict(key: string): GuardVerdictSink {
 | can the guard reach `looked`? | yes, it is just a counter | **no** — its handle exposes only `wouldAct`/`didAct` |
 | adoption is visible? | a missing line looks like nothing | **a guard still called directly is greppable** |
 
-That last row is the one that matters: **partial adoption is detectable.** A guard invoked directly
-rather than through the wrapper is a lint-findable callsite, so "we instrumented 28 guards" becomes a
-checkable claim instead of an assertion.
+That last row is the one that matters — but ⚠️ **my first statement of it was wrong, and I caught it by
+testing my own claim.**
+
+I wrote that a directly-invoked guard is *"a lint-findable callsite."* **It is not reliably findable.**
+`src/commands/server.ts` alone holds **39 `setInterval` sites** in at least three shapes — a bare
+function reference (`setInterval(refreshTestRunnerGuard, 60_000)`), a one-line arrow
+(`setInterval(() => { void cjScan(); }, ms)`), and multi-line block bodies. A lint that parses source as
+TEXT (which this one must — it cannot import TS) would have to recognise every shape, and a guard
+invoked three lines inside a block body is not a pattern.
+
+**The real detector is runtime reconciliation, and it is stronger than grep.**
+
+A guard that declares `invocation: 'tick-loop'` and reports **`looked === 0` after the process has been
+up longer than 5× its `expectedTickMs`** is provably not being invoked through the wrapper. The manifest
+already carries `expectedTickMs`; the staleness window already exists; `/guards` already reconciles
+declared-versus-registered to produce `missing`.
+
+| | lint (my first claim) | runtime reconciliation |
+|---|---|---|
+| detects a bypassed wrapper | unreliably — must match every call shape | **yes** — the counter simply never moves |
+| detects a guard that stopped being called | no | **yes** — same signal |
+| needs new machinery | a new parser | **none** — same shape as `expectRuntime` → `missing` |
+| can be evaded by writing the call differently | yes | **no** — evasion requires actually invoking it, which increments |
+
+So the claim, correctly stated: **partial adoption is detectable at runtime, because a guard that
+declares a wrapped invocation and never counts one is contradicting itself in live data.** That is
+propagation of the existing reconciliation pattern rather than a new lint — and it is *harder* to evade
+than the version I first wrote, because the only way to make `looked` move is to actually go through
+the wrapper.
 
 ### The manifest declaration
 
