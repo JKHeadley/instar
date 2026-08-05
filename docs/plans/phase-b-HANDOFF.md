@@ -35,9 +35,11 @@ repairs. **Two operator decisions are outstanding** and neither blocks work.
 
 | item | state |
 |---|---|
-| exit-gate review round 3 | **not dispatched.** R1 and R2 both returned INCOHERENT; all findings from both are fixed. R3 is the next obvious step. |
-| Codey engagement | one attention item filed **with ACK** (`ATT-echo-bcase-1785936015`). Ruling four asks for real work, not a notification. |
-| memory carry-over re-spec | directed at cycle 4 — re-specify against **available memory**, not swap. |
+| exit-gate rounds | **R1–R3 all INCOHERENT; R4 dispatched.** R3 confirmed **6 of 10 fixed**; its 3 open findings are now tombstoned in place. **It is converging** — do not abandon it, and do not assume it passes. |
+| Codey engagement | **DONE** — real scoped work filed with ACK (`ATT-echo-trustbcase-1785942194`), framed as a peer proposal he may decline. |
+| memory carry-over re-spec | **DONE** — re-specified against available memory, compressor trend, and pageout *delta*. |
+| two items for Justin's list | **DONE** — gate-demotion evidence page (published, current) and the enforcing-mode-never-invoked artifact. |
+| two candidate standards | **DONE** — both filed as proposals, deliberately NOT written into the registry. |
 
 **Laptop lanes are intentionally at zero.** The manager explicitly declined to flag this: serial
 plan-coherence work does not parallelise. **Do not dispatch lanes to look busy.**
@@ -56,6 +58,7 @@ Each cost real time. Re-deriving them is the most likely way to waste the next s
 | **28 of 72** guards can carry a caller-owned counter; the other 44 cannot | Settled by per-guard tracing. `docs/audits/phase-b/guard-verifiability-28-and-44.md`. |
 | The constitution's "false claim" is **NOT false** — the audit job runs daily | I reported it twice and a correction PR was sanctioned before I retracted. |
 | The trust code is **CORRECT**; only its test's name and comment are false | I escalated this as urgent-adjacent. It is not. |
+| **`CrashLoopPauser` IS written and unit-tested** — it is never constructed *at boot* | Phase A said "never constructed"; I repeated it 5× without control. `new CrashLoopPauser` resolves 8× in tests, 0× in `src`. **The remedy is wiring, not building.** |
 | `telegram-reply.sh` flags go **before** the topic id | A flag after it becomes message text silently. |
 | The reviewer's tree needs `git fetch origin <branch> && git checkout FETCH_HEAD` | Otherwise every cited artifact reads as absent. **Two review findings were this.** |
 
@@ -74,6 +77,12 @@ Each cost real time. Re-deriving them is the most likely way to waste the next s
    *read*, every time.
 5. **Appending under an "authoritative" header.** The header I wrote to stop the plan going stale was
    itself stale within the hour.
+6. **Correcting in a NEW section instead of tombstoning in place.** Three gate rounds told me this in
+   three different ways: a reader hits the stale text first and the correction second. **Strike it
+   where it sits.**
+7. **Inheriting a claim from trusted upstream work.** I repeated Phase A's "never constructed" five
+   times without running a one-command control. **A finding that arrives pre-labelled as verified is
+   exactly the one I stop checking.**
 
 ---
 
@@ -90,12 +99,12 @@ Each cost real time. Re-deriving them is the most likely way to waste the next s
 
 ## What I would do next, in order
 
-1. **Dispatch exit-gate review round 3.** Both prior rounds failed; all findings are fixed; the gate is
-   the ratified Phase B exit condition. **Fetch the branch into the reviewer's tree first.**
-2. **Give Codey real work** (ruling four), not a notification.
-3. **Re-specify the memory carry-over** against available memory (ruling three).
-4. **Leave the spec alone** unless the operator approves it. It has had four review rounds and the
-   remaining gaps are prerequisites (the harness), not defects.
+1. **Collect exit-gate round 4** (a waiter is attached; it will re-invoke you). If it passes, say so
+   plainly — the gate failing four times on a document repaired each round would be as misleading as a
+   false pass. If it fails, fix and re-run: it has converged every round.
+2. **Leave the spec alone** unless the operator approves it. Four review rounds; the remaining gaps are
+   prerequisites (the harness), not defects.
+3. **Nothing else is queued.** Three operator decisions are outstanding and none blocks work.
 
 **Do not start a new finding sweep.** The tree has more confirmed findings than it has capacity to
 remediate, and the manager's cycle-four read was explicit that this window's value was tree work rather
