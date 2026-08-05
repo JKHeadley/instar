@@ -51,11 +51,17 @@
 > live faults (an argv ceiling, a threshold mismatch, an unconstructed component) are ordinary
 > operational faults with unrelated causes, and B5 groups them by *measured harm*, not by cause. The
 > review was right that "every defect" read as universal; the claim is strong enough without the
-> overreach and false with it. **The SYNTHESIS section below still says "seven" and lists seven rows — it was written
-> when there were seven and never revised. The enumerated current figure is 13** (see "The synthesis
-> instances, ENUMERATED"), and a reader who counts 12 is not wrong (one instance may be an aggregate of
-> another). It now has **13 instances** across verification, alerting, classification, reporting, and
-> the test suite — including four committed by me, in this document, about that defect.
+> overreach and false with it.
+>
+> **The instance count is stated in exactly ONE place: the section "The synthesis instances,
+> ENUMERATED".** It is deliberately not restated here, in the SYNTHESIS section, or anywhere else — and
+> a reader who counts one fewer is not wrong, since one instance may be an aggregate of another.
+>
+> ⚠️ **Why the number is absent from this "authoritative" header:** it drifted across four locations
+> over five gate rounds. I fixed one site and left another *every single time*, and round five failed on
+> exactly that. **The fix is not to synchronise four copies — it is to have one.** Anything needing the
+> count reads it from the enumeration. Roughly a third of the instances are mine, committed in this
+> document, about this defect.
 
 
 **Parent:** `ALIGNMENT-PLAN-ROOT.md` (ratified 2026-08-03) · `ALIGNMENT-PLAN-LEVEL1.md`
@@ -635,12 +641,12 @@ the author produces, or make the claim machine-evaluable.
 
 ---
 
-# SYNTHESIS — these are not separate defects. They are one defect, now **fourteen** times.
+# SYNTHESIS — these are not separate defects. They are one defect, repeatedly.
 
-⚠️ **This section was written when the count was seven and the table below still shows those first
-seven.** The count is now **14** and the claim is scoped — see "The synthesis instances, ENUMERATED"
-for the full list, and the current-state header for the scope. The seven rows below are the original
-seven, retained because they are where the pattern was first seen, not because they are the whole set.
+⚠️ **The seven rows below are the ORIGINAL seven** — where the pattern was first seen, not the whole
+set. **The authoritative list and its count live in "The synthesis instances, ENUMERATED"**; this
+section deliberately states no figure, because a count repeated in two places drifts, and this one did,
+five times.
 
 Every substantive finding of this window has the identical shape. Setting them side by side is the most
 useful thing produced tonight, because it changes what the remediation should be.
@@ -655,8 +661,9 @@ useful thing produced tonight, because it changes what the remediation should be
 | 6 | `enforcedRatio: 72%` | a ref of that shape resolves | "the standard is enforced" | ref ≠ running, asserting, or in CI |
 | 7 | `/health` `llmReliability` | error rate over a 6h window | "this component is failing **now**" | a fix inside the window |
 
-**One sentence, fourteen times: the passing condition is narrower than what the result certifies.**
-*(Seven shown below — the first seven found. The full enumerated list is in its own section.)*
+**One sentence, every time: the passing condition is narrower than what the result certifies.**
+*(Seven shown below — the first seven found. The enumerated list, and the only stated count, is in its
+own section.)*
 
 And they are not clustered in one subsystem — they span **verification** (1, 2, 5), **alerting** (3, 7),
 **classification** (4), and **reporting** (6). A defect that appears independently across four unrelated
@@ -1525,11 +1532,12 @@ who counts 12 is not wrong.** Stating it because a headline number defended by n
 
 ### The ratio I did not expect
 
-**Four of the thirteen are mine** — #5, #9, #13, and the "greppable" claim I folded into #9 rather than
+**Four of them are mine** — #5, #9, #13, and the "greppable" claim I folded into #9 rather than
 counting twice.
 
 > **Nearly a third of the instances of the defect I am auditing were committed by me, during the audit,
-> in the document about that defect.**
+> in the document about that defect.** *(Ratio stated as a fraction, not a figure — same reason the
+> count appears in only one place.)*
 
 That is not self-flagellation; it is the strongest available evidence for the synthesis's own
 conclusion. **The defect is not carelessness by past authors — it is what happens by default when
