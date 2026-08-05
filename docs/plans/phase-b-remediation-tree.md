@@ -97,6 +97,15 @@ Phase B — Remediation
 **Scope:** the measurement surface every later verdict rests on.
 **Why first:** 64 of 90 runtime guards cannot currently be asked whether they work. Phase A's §15
 states plainly that further sweeping is not worth spending until this lands.
+
+⚠️ **ORDERING CORRECTED 2026-08-05 — B0.5 now precedes B0.1.** The adversarial review and the
+conformance gate independently converged on the same dependency: **a counter proves a guard is
+instrumented; only a staged violation proves the counter is honest.** Shipping the schema first would
+produce 72 guards reporting numbers nobody can trust — strictly worse than today, because the numbers
+would carry an unearned appearance of rigour. The harness is a **prerequisite**, not a follow-on.
+
+**This was the tree's first structural error, and it was found by review rather than by planning** —
+which is the argument for the exit gate being an adversarial pass rather than a self-check.
 **Branch exit:** every guard in the `/guards` inventory answers `{looked, wouldAct, didAct}` or is
 explicitly classified `unknown` with a named reason — and the ambiguous-zero class is empty.
 
