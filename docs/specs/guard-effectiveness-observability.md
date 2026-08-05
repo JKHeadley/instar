@@ -4,9 +4,37 @@ slug: "guard-effectiveness-observability"
 author: "echo"
 eli16-overview: "docs/specs/guard-effectiveness-observability.eli16.md"
 approved: false
+review-status: "MATERIALLY-FLAWED — adversarial review 2026-08-05; NOT ready for pre-approval"
 ---
 
 # Guard Effectiveness Observability
+
+> ## ⛔ STATUS: NOT READY FOR APPROVAL
+>
+> An independent adversarial cross-model review returned **MATERIALLY-FLAWED** with five grounded
+> findings — *after* this spec passed the deterministic Standards-Conformance Gate cleanly at round 8.
+> Full review: `docs/audits/phase-b/adversarial-review-guard-observability.md`.
+>
+> **The finding that matters most refutes a claim made below.** §"Self-limiting by design" argues that
+> instrumenting a guard is cheaper than exempting it, so the incentive gradient points toward
+> observability. It does not. The reviewer found a third path: **declare BORROWED counters** — point
+> `looked` at an unrelated existing field like `JobScheduler.jobCount` that already returns a positive
+> number. Assertion E only checks the *route* exists, never that the counter is semantically tied to
+> the guard or that it ever moves. **Declaring borrowed counters is cheaper than both instrumenting
+> and exempting**, which inverts the incentive the design rests on.
+>
+> **Do not read the sections below as settled.** They are retained unedited so the redesign can be
+> reviewed against what was actually proposed. The four other material findings — an unbound
+> `ratificationRef` that can be borrowed across guards, an expiry that fails the build but not the
+> live surface (deployed agents fail open), a migration scope of ~153 not 72, and an existing lint
+> whose regex-over-stripped-text parser "is not a small extension point" — are each recorded in the
+> review with file:line grounding.
+>
+> **Instrument note (this is itself a Phase A-class finding).** The conformance gate went from 2
+> findings to clean over 8 rounds while five material design holes remained. That is not a defect in
+> the gate — it measures *conformance to standards*, not *soundness of mechanism*. But it means a
+> clean gate must never be reported as design validation, and the two must be run as separate
+> instruments with separate claims.
 
 ## Problem statement
 
