@@ -424,3 +424,50 @@ logs never contained it.
 > been a harness scoped to a corpus that does not exist — discovered during implementation. This is the
 > "check the premise before building" rule paying for itself, and it is the second time in this window
 > a scope decision I had already written down was refuted by one cheap measurement.
+
+---
+
+## PROPOSED AMENDMENT to the ratified node contract (needs the architect's decision)
+
+**This is a change to something Justin ratified on 2026-08-03, so it is proposed here, not adopted.**
+
+The node contract's rule 4 defines the guard verdict as three rungs:
+
+> EXISTS → WIRED → **EFFECTIVE**. *Only rung three is "aligned"; rungs one and two are findings.*
+
+**Tonight's B1.2 measurement found a guard that does not fit.** The grounding gate:
+
+- caught **2 of 2** genuine faults — it bites, correctly, on what it targets;
+- blocked **3 of 5** honest messages — including the conclusion of a measurement and an in-session
+  tool observation.
+
+**By the three-rung model this guard is EFFECTIVE, which means ALIGNED.** It is not aligned. It is
+actively costing correct work and training the agent to route around it.
+
+### The gap
+
+The ladder measures only whether a guard **acts when it should**. It has no cell for whether a guard
+**refrains when it should** — and a guard is a two-sided instrument. A rung-3 verdict obtained from an
+A-case alone certifies half of a guard and reads as certifying all of it.
+
+**This is the same shape as everything else this phase has found**: a check whose passing condition is
+narrower than what it certifies.
+
+### The proposed amendment — one rung becomes two axes
+
+| | acts when it should | refrains when it should |
+|---|---|---|
+| **yes / yes** | **aligned** | |
+| **yes / no** | `over-blocks` — effective AND harmful | |
+| **no / yes** | `inert` — the current "not effective" | |
+| **no / no** | broken in both directions | |
+
+Rungs one and two (EXISTS, WIRED) are unchanged. Only rung three splits, and the B-case — already
+mandatory in practice since Phase A adopted it mid-audit — becomes the thing that supplies the second
+axis rather than an informal quality bar.
+
+**Cost of not amending:** every `effective` verdict this phase produces means "acts when it should,
+and nobody checked the other half." Since Phase A already downgraded three of its own verdicts for
+exactly this, the model is behind its own practice.
+
+**This is the architect's call.** Recorded with its evidence rather than adopted.
