@@ -1409,3 +1409,54 @@ carried an expectation produced a wrong verdict over correct data.**
 unknown peer, and `InboundMessageGate:321-326` blocks every other op type. The `DEFECTIVE` label is an
 artifact of my prompt and carries no finding. **The test's name and comment remain false**, and that —
 false documentation preserved by a vacuous assertion — is the whole of F13's trust case.
+
+
+---
+
+## The synthesis instances, ENUMERATED — because a running count is not a measurement
+
+I have been incrementing "instances of the defect" as I found them. My own standing rule is that
+**every bad number I have produced was a scope error, not arithmetic** — so the headline deserved an
+explicit enumeration rather than a tally I trusted.
+
+| # | surface | MEASURES | CERTIFIES |
+|---:|---|---|---|
+| 1 | `NOT_A_GUARD.reason` | reason ≥12 non-ws chars | the exclusion is justified |
+| 2 | `COHERENCE_MANIFEST_EXCLUSIONS` | `reason.length > 20` (raw) | the exclusion is justified |
+| 3 | `/guards → missing` | no runtime getter registered | should be running and isn't |
+| 4 | three-rung `effective` | acts when it should | aligned |
+| 5 | **B0.1 v1 counter paths** | a counter exists at a path | the guard is instrumented |
+| 6 | `enforcedRatio: 0.72` | a ref of that shape resolves | the standard is enforced |
+| 7 | `/health` llmReliability | error rate over **24h** | failing **now** |
+| 8 | `falseClaimCount` | no resolvable *guard* ref | the standard is lying |
+| 9 | **my `looked===0` detector** | no counted invocation | the wrapper was bypassed |
+| 10 | a green CI suite | 53 checks exited 0 | 53 properties hold |
+| 11 | the trust test | the result is an array | untrusted agents get none |
+| 12 | swap-used 97% | cumulative allocation | current memory pressure |
+| 13 | **my F10 coverage claim** | zero *ratchet* coverage | no check covers these |
+
+**Count confirmed at 13.** The tally was right this time — but the enumeration surfaced something the
+tally hid.
+
+### The caveat the running count concealed
+
+**#10 is arguably not independent of #11.** "A green suite certifies 53 properties" is *composed of*
+the individual vacuous checks, of which #11 is one. They are the same shape at two scales — an
+aggregate signal and one of its constituents.
+
+I judge them distinguishable (one is a claim about how an aggregate is *read*, the other about what a
+single assertion *asserts*) and I am counting both. **But that is a judgment, not a fact, and a reader
+who counts 12 is not wrong.** Stating it because a headline number defended by nobody drifts.
+
+### The ratio I did not expect
+
+**Four of the thirteen are mine** — #5, #9, #13, and the "greppable" claim I folded into #9 rather than
+counting twice.
+
+> **Nearly a third of the instances of the defect I am auditing were committed by me, during the audit,
+> in the document about that defect.**
+
+That is not self-flagellation; it is the strongest available evidence for the synthesis's own
+conclusion. **The defect is not carelessness by past authors — it is what happens by default when
+anyone builds a check**, including someone whose entire attention is on not doing it. If it were a
+discipline problem, the person actively hunting it would be immune. I was not, four times.
