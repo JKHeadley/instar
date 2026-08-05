@@ -659,3 +659,36 @@ re-architecture cover the same population. Tracked as `ACT-1755` (re-surfaces 20
 
 **Explicitly not designed here.** Naming a branch is not scoping it, and this tree has already been
 caught twice prescribing the first plausible remedy for a node whose domain nobody had investigated.
+
+### B2.4 premise — REFUTED. The pattern is already saturated.
+
+B2.4 proposed propagating the shrink-only pending-set discipline (*"which pending sets can grow
+silently?"*). Measured against source:
+
+| population | shrink-only? |
+|---|---|
+| lint baselines (`BASELINE` constants in `scripts/*.js`) | **4 of 4** |
+| ratchet tests (`tests/unit/*ratchet*.ts`) | **8 of 8** |
+
+**Every baseline in the codebase already ratchets down.** One of them (`lint-rollout-evidence-resolvable.js`)
+records in its own comments that its baseline reached **empty** *"the way the design intended:
+shrink-only."*
+
+**So B2.4 has no propagation target left in this domain** and should be closed rather than scheduled.
+That is node **five** of roughly twenty whose premise does not survive contact with the code:
+
+| node | premise | fate |
+|---|---|---|
+| B0.1 ordering | schema before harness | wrong — harness is prerequisite |
+| B1.4 remedy | "apply closed-set validation" | disproved by the B0.1 arc |
+| B4.1 | laptop 2 versions behind | stale — self-resolved |
+| B4.2 | laptop resumeQueue divergent | stale — self-resolved |
+| **B2.4** | **pending sets can grow silently** | **refuted — already saturated** |
+
+**Five of twenty. The tree was 25% wrong within a day of being written**, and every single error was
+found by a cheap check rather than by planning. The pattern in the failures is consistent: **a node
+written before its domain was investigated proposes work that is already done, already impossible, or
+already obsolete.**
+
+This is the strongest argument available for the rule the tree adopted mid-window — *every remaining
+remedy is a hypothesis until measured* — and for spending the cheap check before the expensive build.
