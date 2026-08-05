@@ -122,9 +122,50 @@ machine on the node's path — applied to the harness's own output.)*
   bCase: {input, expected, observed, passed},
   verdict: 'catches' | 'does-not-catch' | 'over-blocks' | 'inconclusive',
   configFingerprint,
+  sourceFingerprint,                 // commit SHA of the guard's implementation
+  harnessDefFingerprint,             // hash of the A/B case definitions used
+  attributedTo,                      // WHICH mechanism acted — see below
   provenance: 'harness-throwaway',   // a CLASS marker, never a real identity
   at }
 ```
+
+### ⛔ ATTRIBUTION — the finding that nearly made this harness a liar
+
+The adversarial review found a case where **the harness would manufacture a false verification**, and
+it is worth stating at length because it is the harness committing the exact error it exists to prevent.
+
+Take `writeAdmission`, one of the FUNNEL nine. Staging an A-case looks like: call the write funnel with
+a write that should be refused, observe a refusal, record `catches`. **That is wrong.**
+
+`StateManager.guardWrite` consults `WriteAdmission` only after an instance is attached
+(`StateManager.ts:180-197`). Its typed-refusal authority is live **only** when `dryRun:false` AND the
+inventory latch is complete (`WriteAdmission.ts:271-276`) — and in production
+`WRITE_SURFACE_INVENTORY_COMPLETE = false` (`WriteDomainRegistry.ts:91-99`). While dry-run holds,
+`guardStoreWrite` returns `legacy` and the caller **falls through to the old blanket standby verdict**
+(`WriteAdmission.ts:421-438`).
+
+> **So a refusal WOULD occur, and it would come from the legacy guard — while the harness recorded it
+> as `writeAdmission: catches`.** A guard that is structurally inert would be certified as working, by
+> the instrument built to detect exactly that.
+
+**Therefore: observing that the action occurred is NOT sufficient. The harness must attribute the
+action to the mechanism under test.** `attributedTo` is required, and a run that cannot determine which
+mechanism acted records **`inconclusive`**, never `catches`.
+
+**This is the same defect the whole phase has been chasing** — a passing condition narrower than what
+it certifies — and it appeared in the design meant to close it. It was found by an independent reader,
+not by me.
+
+### Anti-decay applies to the harness's own output
+
+A verdict is a claim about a *mechanism*, and a mechanism changes with its source. `configFingerprint`
+alone is insufficient: **a guard's implementation can change while its config stays byte-identical.**
+So a verdict carries `sourceFingerprint` (the commit the guard was verified at) and
+`harnessDefFingerprint` (the A/B cases used), and a verdict whose source fingerprint does not match the
+reading tree renders **`stale`**, never inherited.
+
+This is node-contract rule 5 (*any claim consuming a verdict re-measures at claim time*) applied to the
+harness rather than exempting it.
 
 ⚠️ **`agentId` and `machineId` were in the first draft and are REMOVED — the gate caught a repeat of a
 real incident.** The harness runs on throwaway agents; recording their identities and then *replicating
@@ -155,8 +196,44 @@ to remove.
 |---|---|---|---|
 | 1 | **Did the A-case trip the guard?** | **invariant** | An observable side effect occurred or did not. Deterministic. |
 | 2 | **Did the B-case pass through?** | **invariant** | Same. |
-| 3 | **Is the staged condition a faithful instance of what the guard protects against?** | **judgment-candidate** | The genuinely hard one. A crafted input can trip a guard for the wrong reason. **Floor:** the A-case must be derived from a *real recorded incident* where available, not invented; conservative default is `inconclusive`; the ladder terminates at "refuse to record a verdict". **Arbiter:** the reviewing agent/human, never the harness. |
+| 3 | **Is the staged condition a faithful instance of what the guard protects against?** | **judgment-candidate** | The load-bearing one, with a complete floor below. |
 | 4 | **Does a verdict from a throwaway agent apply to this machine?** | **invariant** | **No.** Deterministic and deliberately absolute — the config fingerprint either matches or it does not. |
+
+### The floor under decision point 3 (Judgment Within Floors)
+
+A-case faithfulness is the spec's load-bearing judgment, so its deterministic floor is specified in
+full rather than left to the arbiter's discretion:
+
+**Bounded action space — a CLOSED set of three admissible derivation sources**, in precedence order:
+
+1. **A code branch** the guard evaluates — cited as `file:line`. The A-case must be an input that
+   reaches *that branch*.
+2. **The guard's manifest `criticalPath`** — the named thing it protects.
+3. **The guard's manifest `description`.**
+
+Nothing else is admissible. An A-case an author invented because it "seems like what this guard is
+for" is **not** in the action space.
+
+**Evidence requirement, per rung:** rung 1 requires the `file:line` and the branch condition quoted.
+Rung 2 requires the `criticalPath` string plus a stated reason the input instantiates it. Rung 3
+requires the `description` plus that reason, and is **marked `weak-derivation` on the verdict** — a
+verdict derived from prose alone is visibly weaker on its face, not silently equal.
+
+**Fallback ladder, terminating deterministically:**
+`branch-cited` → `criticalPath-derived` → `description-derived (weak)` → **`refuse-to-run`**.
+The terminal rung performs no staging and records **no verdict at all** — not a negative one. A guard
+whose A-case cannot be derived from any of the three sources is reported as
+**`no-admissible-a-case`**, which is a statement about the harness's reach, never about the guard.
+
+**Conservative default on ANY uncertainty:** `inconclusive`. Specifically — if the run cannot establish
+`attributedTo`, cannot reach the cited branch, or the B-case does not complete, the result is
+`inconclusive` and **never** `does-not-catch`. The asymmetry is deliberate: a false "this guard works"
+is the failure this spec exists to prevent, and a false "this guard is broken" wastes an investigation.
+**Both are errors; only the first is silent.**
+
+**Arbiter:** the reviewing agent or human, on the *rung-1/2/3 classification only*. The arbiter cannot
+admit a source outside the closed set, cannot waive `attributedTo`, and cannot upgrade a
+`weak-derivation` marker. Judgment operates inside the floor; it does not move it.
 
 ## Multi-machine posture
 
