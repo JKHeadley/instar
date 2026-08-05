@@ -16,7 +16,7 @@ this exists so that hitting the wall costs a re-read rather than a re-derivation
    the reviews that killed them.
 3. **`.instar/phase-b/phase-b-journal.md`** — what surprised me, per the node contract.
 
-**Branch: `echo/guard-effectiveness-observability`, 67 commits, pushed and remote-verified.** Everything
+**Branch: `echo/guard-effectiveness-observability`, 72+ commits, pushed and remote-verified.** Everything
 below is on it. The working tree is clean.
 
 ---
@@ -26,8 +26,14 @@ below is on it. The working tree is clean.
 Phase B's tree is built and its node premises have been swept: **eight checked, five did not survive**.
 The first build item is specified through three design generations and **is not ready to build** —
 correctly, and the operator has ruled that no build happens until the spec is approved. The plan has
-been through its own exit gate **twice and failed both times**; the second failure was mostly my own
-repairs. **Two operator decisions are outstanding** and neither blocks work.
+been through its own exit gate **three times and failed each time** (R4 in flight); **R3 confirmed 6 of
+10 findings fixed, so it is converging, not spinning.** The second failure was mostly my own repairs.
+**Three operator decisions are outstanding** and none blocks work.
+
+⚠️ **This paragraph was itself stale within the hour** — it said "twice" and "two decisions" while the
+table below said otherwise, because I updated the table and not the prose. **That is trap #6 on the
+list below, committed in the same edit that added trap #6 to the list.** Left visible rather than
+quietly fixed, because a successor should know how fast this document rots.
 
 ---
 
