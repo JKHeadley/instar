@@ -426,7 +426,7 @@ simpler and reads fine. Only an outside check has caught it, every time.
 |---|---|---|
 | a callsite that forgets | **silently undercounts** — looks like an idle guard | **impossible**: no wrapper, no invocation |
 | who owns `looked` | the caller (25 of them) | **the registry** — one owner |
-| can the guard reach `looked`? | yes, it is just a counter | **no** — its handle exposes only `wouldAct`/`didAct` |
+| can the guard reach `looked`? | yes, it is just a counter | **no** — its handle (`GuardVerdictSink`) exposes `wouldAct` **only** |
 | adoption is visible? | a missing line looks like nothing | **a guard still called directly is greppable** |
 
 That last row is the one that matters — but ⚠️ **my first statement of it was wrong, and I caught it by
@@ -483,6 +483,18 @@ Everything outside that conjunction is **`adoption-unknown`**, not `never-evalua
 must carry the inputs the conjunction needs — **process uptime and eligibility-window are new required
 inputs to the verdict computation**, not incidental context.
 
+### ⛔ `eligibleForMs` DOES NOT EXIST — this is a prerequisite, not an assumption
+
+The conjunction above requires **uptime and a continuous-eligibility window**. Neither is threaded into
+the posture pipeline today: `/guards` passes `now` and nothing else (`guardPostureView.ts:361-369`,
+`routes.ts:8703-8708`), while awake/standby gating that determines whether a guard loop exists at all
+lives elsewhere entirely (`server.ts:7031-7034, 7101-7102, 10742-10746`).
+
+**So `never-evaluated` is unreachable until that input is built** — every `looked === 0` resolves to
+`adoption-unknown` in the interim. That is the correct degradation (unknown, not a false verdict), but
+it must be stated as a **build prerequisite** rather than assumed available. Adding it to the
+implementation surface list below.
+
 **FUNNEL guards need a different detector entirely.** Their `looked === 0` is indistinguishable from a
 quiet day, so adoption for the nine must be established at conversion time (the callsite goes through
 `registry.invoke` or it does not — a code-review fact) rather than inferred from runtime counters.
@@ -523,12 +535,26 @@ Derived at request time from live counters — never cached, never stored (anti-
 rule 5):
 
 ```
-invocation ∈ {event-driven, self-driven, unknown}  →  unverifiable-by-construction
-no counters registered, invocation ∈ {tick-loop, funnel}  →  missing-counters
+invocation ∈ {event-driven, self-driven, unknown}   →  unverifiable-by-construction
+no counters registered, invocation ∈ {tick,funnel}  →  missing-counters
 !(didAct <= wouldAct <= looked)                     →  inconsistent
-looked === 0                                        →  never-evaluated
-otherwise                                           →  instrumented
+looked > 0                                          →  instrumented
+
+// looked === 0 does NOT resolve on its own. It requires the full conjunction:
+looked === 0
+  && invocation === 'tick-loop'          // funnels are traffic-driven; 0 is normal
+  && configEnabled                        // a disabled guard legitimately never looks
+  && expectedTickMs != null               // 8 of 19 tick-loops have none
+  && eligibleForMs > 5 * expectedTickMs   // uptime AND awake-window, not just `now`
+                                          →  never-evaluated
+looked === 0, any clause unmet            →  adoption-unknown
 ```
+
+⚠️ **The previous revision fixed this claim in prose and left the table implementing the wide
+version** — `looked === 0 → never-evaluated`, unconditionally. The narrowed conjunction was written
+three paragraphs above the code that contradicted it. **That is the stale-artifact pattern, in the
+document that keeps cataloguing the stale-artifact pattern.** `adoption-unknown` is now a first-class
+verdict rather than a sentence.
 
 **Stage one stops there.** `effective-candidate` and its siblings do not exist in the union until the
 staged-violation harness lands — the forbidden claim is unrepresentable rather than prohibited.
@@ -563,6 +589,17 @@ Four surfaces need changes, and none currently has the needed shape:
 | `GuardManifestEntry` | **no `invocation`, no `lookedMeans`** (`guardManifest.ts:24-65`) |
 | `guardPostureView` | no `GuardObservabilityVerdict`; still projects `effective` (`guardPostureView.ts:27-37, 66-74`) |
 | `lint-guard-manifest.js` | **no wrapper-adoption rule at all** (`:202-250`) |
+
+**And four is still short.** A neutral observability verdict cannot simply appear on a row — it has to
+travel: `/guards` response assembly (`routes.ts:8710-8718`), pool forwarding (`routes.ts:8780-8793`),
+the heartbeat posture type (`types.ts:2311-2340`), and existing consumers of `effective`
+(`CapabilityIndex.ts:123-131`, `ApprenticeshipStallGate.ts:807-845`).
+
+**Plus a normative wiring constraint, not just a type:** an `ActionSink` must never be placed on the
+broad server/route contexts where funnel guard code already lives (`routes.ts:1517-1521, 3174-3183,
+24587-24599`; `AgentServer.ts:709-710, 3105-3118, 3748-3756`). Declaring two interfaces achieves
+nothing if both are reachable from the same `ctx`. **The capability split is a wiring rule; the types
+only describe it.**
 
 **So: ~25 callsite conversions across FOUR surfaces, not one.** Recorded because an understated
 estimate is how a day of work becomes a surprise mid-build — and because I produced the understatement
