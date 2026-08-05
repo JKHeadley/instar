@@ -223,6 +223,8 @@ export class DegradationReporter {
   private telegramSender: TelegramSender | null = null;
   private alertTopicId: number | null = null;
   private toneGate: MessagingToneGate | null = null;
+  /** C1 gate — see connectDownstream(). Defaults to false (silent). */
+  private notifyUser = false;
   private healers: Map<string, SelfHealer> = new Map();
 
   // Dedup: track last alert time per feature to avoid spamming Telegram
@@ -305,11 +307,25 @@ export class DegradationReporter {
     telegramSender?: TelegramSender;
     alertTopicId?: number | null;
     toneGate?: MessagingToneGate | null;
+    /**
+     * Whether a degradation event reaches the USER. Default FALSE
+     * (bounded-attention-notification-surface spec, C1). A degradation event is
+     * by construction a report that the system fell back and KEPT WORKING —
+     * housekeeping. Of 25 sampled on 2026-08-04, zero were actionable.
+     *
+     * When false ONLY the telegram branch is skipped: the console line,
+     * persistToDisk(), and the feedback submission are unchanged, so the record
+     * is fully preserved. A genuinely user-affecting degradation still reaches
+     * the operator via the attention queue, the health-alert path, and
+     * IMMEDIATE-tier notices — none of which this flag touches.
+     */
+    notifyUser?: boolean;
   }): void {
     this.feedbackSubmitter = opts.feedbackSubmitter ?? null;
     this.telegramSender = opts.telegramSender ?? null;
     this.alertTopicId = opts.alertTopicId ?? null;
     this.toneGate = opts.toneGate ?? null;
+    this.notifyUser = opts.notifyUser === true;
 
     // Drain queued events that weren't reported yet
     this.drainQueue();
@@ -774,7 +790,9 @@ export class DegradationReporter {
     }
 
     // Send Telegram alert (with per-feature cooldown to avoid spam)
-    if (this.telegramSender && this.alertTopicId && !event.alerted) {
+    // C1: user-facing degradation alerts are OFF by default. The record above
+    // (feedback) and below (persistToDisk) is unaffected — only delivery stops.
+    if (this.telegramSender && this.alertTopicId && !event.alerted && this.notifyUser) {
       const lastAlert = this.lastAlertTime.get(event.feature) ?? 0;
       const now = Date.now();
 

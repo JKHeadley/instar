@@ -59,6 +59,69 @@ describe('DegradationReporter — self-heal-first', () => {
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/unit/degradation-reporter-self-heal.test.ts' });
   });
 
+  // ── C1: bounded-attention-notification-surface ──────────────
+  // The gate that makes routine degradation reports stop reaching the operator.
+  // Measured 2026-08-04: 25 of 64 daily attention messages were these, and zero
+  // were actionable. Operator-approved default (topic 7848, "Silent").
+
+  it('C1: does NOT alert the user by default — notifyUser is opt-in', async () => {
+    const reporter = DegradationReporter.getInstance();
+    reporter.configure({ stateDir: tmpDir, agentName: 'test', instarVersion: '0.0.0' });
+    const telegramSender = vi.fn(async () => undefined);
+    const feedbackSubmitter = vi.fn(async () => undefined);
+    // notifyUser deliberately OMITTED — this is the shipped default.
+    reporter.connectDownstream({
+      feedbackSubmitter,
+      telegramSender,
+      alertTopicId: 1234,
+      toneGate: gateThatPasses(),
+    });
+
+    reporter.report(event);
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(telegramSender).not.toHaveBeenCalled();
+    // The RECORD is preserved — only delivery stops. A gate that also dropped
+    // the record would be data loss, not noise reduction.
+    expect(feedbackSubmitter).toHaveBeenCalled();
+  });
+
+  it('C1 CONTROL: with notifyUser:true the SAME event alerts', async () => {
+    const reporter = DegradationReporter.getInstance();
+    reporter.configure({ stateDir: tmpDir, agentName: 'test', instarVersion: '0.0.0' });
+    const telegramSender = vi.fn(async () => undefined);
+    reporter.connectDownstream({
+      telegramSender,
+      alertTopicId: 1234,
+      notifyUser: true,
+      toneGate: gateThatPasses(),
+    });
+
+    reporter.report(event);
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Without this control the test above would pass equally well against a
+    // reporter whose alert path was simply broken.
+    expect(telegramSender).toHaveBeenCalled();
+  });
+
+  it('C1: an explicit notifyUser:false is honoured', async () => {
+    const reporter = DegradationReporter.getInstance();
+    reporter.configure({ stateDir: tmpDir, agentName: 'test', instarVersion: '0.0.0' });
+    const telegramSender = vi.fn(async () => undefined);
+    reporter.connectDownstream({
+      telegramSender,
+      alertTopicId: 1234,
+      notifyUser: false,
+      toneGate: gateThatPasses(),
+    });
+
+    reporter.report(event);
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(telegramSender).not.toHaveBeenCalled();
+  });
+
   it('suppresses user alert when self-heal succeeds', async () => {
     const reporter = DegradationReporter.getInstance();
     reporter.configure({ stateDir: tmpDir, agentName: 'test', instarVersion: '0.0.0' });
@@ -66,6 +129,7 @@ describe('DegradationReporter — self-heal-first', () => {
     reporter.connectDownstream({
       telegramSender,
       alertTopicId: 1234,
+      notifyUser: true, // C1: these tests exercise the ALERT path; the gate now defaults OFF
       toneGate: gateThatPasses(),
     });
     reporter.registerHealer('TestFeature', vi.fn(async () => true));
@@ -84,6 +148,7 @@ describe('DegradationReporter — self-heal-first', () => {
     reporter.connectDownstream({
       telegramSender,
       alertTopicId: 1234,
+      notifyUser: true, // C1: these tests exercise the ALERT path; the gate now defaults OFF
       toneGate: gateThatPasses(),
     });
     reporter.registerHealer('TestFeature', vi.fn(async () => false));
@@ -101,6 +166,7 @@ describe('DegradationReporter — self-heal-first', () => {
     reporter.connectDownstream({
       telegramSender,
       alertTopicId: 1234,
+      notifyUser: true, // C1: these tests exercise the ALERT path; the gate now defaults OFF
       toneGate: gateThatPasses(),
     });
 
@@ -117,6 +183,7 @@ describe('DegradationReporter — self-heal-first', () => {
     reporter.connectDownstream({
       telegramSender,
       alertTopicId: 1234,
+      notifyUser: true, // C1: these tests exercise the ALERT path; the gate now defaults OFF
       toneGate: gateThatBlocks('B12_HEALTH_ALERT_INTERNALS'),
     });
     // No healer → proceeds to gate path
@@ -137,6 +204,7 @@ describe('DegradationReporter — self-heal-first', () => {
     reporter.connectDownstream({
       telegramSender,
       alertTopicId: 1234,
+      notifyUser: true, // C1: these tests exercise the ALERT path; the gate now defaults OFF
       toneGate: gateThatPasses(),
     });
 
@@ -156,6 +224,7 @@ describe('DegradationReporter — self-heal-first', () => {
     reporter.connectDownstream({
       telegramSender,
       alertTopicId: 1234,
+      notifyUser: true, // C1: these tests exercise the ALERT path; the gate now defaults OFF
       toneGate: gateThatPasses(),
     });
     reporter.registerHealer('TestFeature', vi.fn(async () => {
@@ -175,6 +244,7 @@ describe('DegradationReporter — self-heal-first', () => {
     reporter.connectDownstream({
       telegramSender,
       alertTopicId: 1234,
+      notifyUser: true, // C1: these tests exercise the ALERT path; the gate now defaults OFF
       // toneGate omitted — backwards compat path
     });
 

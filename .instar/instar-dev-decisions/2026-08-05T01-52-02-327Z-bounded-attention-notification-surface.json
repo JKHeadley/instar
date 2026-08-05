@@ -1,0 +1,30 @@
+{
+  "ts": "2026-08-05T01:52:02.327Z",
+  "slug": "bounded-attention-notification-surface",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 599,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/messaging/NotificationBatcher.ts",
+      "src/monitoring/DegradationReporter.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 567,
+    "deletedLines": 32
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
