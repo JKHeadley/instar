@@ -305,3 +305,45 @@ session — which is precisely Phase A's "two of three is worse than none", now 
 `GUARD_MANIFEST` holds **72** entries. These three populations are drawn differently and have not been
 reconciled. **No total in this appendix should be treated as the authoritative guard count** until that
 reconciliation is done — it is a tracked item under B0.2, not a rounding difference to wave away.
+
+
+---
+
+## Dependency re-analysis (2026-08-05, after the B0.1 review)
+
+The adversarial review found **one** ordering error in this tree (B0.5 before B0.1). That prompted the
+obvious question — *was it isolated?* — and it was not. Applying the same lens to every node:
+
+**The question that exposes it:** *"to claim this node is DONE, what must be staged?"*
+
+| node | needs a staged violation to verify? | consequence |
+|---|---|---|
+| **B0.1** schema | **YES** — a counter proves instrumentation, not honesty | already reordered |
+| **B2.2** B-case propagation | **PARTLY** — cheap for lints (inject a file); needs the harness for every RUNTIME guard | runtime half blocked on B0.5 |
+| **B3.1** `CrashLoopPauser` | **YES** — "constructed" is not "works"; proving it pauses a runaway job means staging a crash-loop | blocked on B0.5 |
+| **B1.2 / B1.3** grounding gate, use-vs-mention | **NO** — harm is already measured (precision 15–25% from live blocks) | independent, can proceed |
+| **B1.1** repo↔agent bridge | **NO** — a scope-coverage comparison is static | independent |
+| **B4.x** cross-machine | **NO** — posture is directly readable per machine | independent |
+
+> ### B0.5 is the tree's SPINE, not one of its nodes.
+> Three branches cannot make a DONE claim without it. It was drawn as a peer node sitting in B0
+> alongside four others, which understated it badly — and that mis-drawing is exactly what let B0.1 be
+> scheduled ahead of it.
+
+### And a second error the review's lesson exposes — in B1.4
+
+**B1.4's stated remedy is already known to be insufficient.** The node says: fix `NOT_A_GUARD`'s
+presence-vs-truth defect by *"applying closed-set validation, proven on two other guards."*
+
+**The B0.1 design arc refuted precisely that.** A closed set was version 2 of seven, and it fell for the
+same reason all the others did: the author still picks the member. Writing this node's remedy before
+that arc happened means **B1.4 currently prescribes a fix this project has since disproved.**
+
+Corrected framing for B1.4: the remedy is not a stronger validator over an author-supplied reason — it
+is to change **who produces the claim**, or to accept that the claim is unverifiable and make *that*
+visible. The concrete design is deliberately left open rather than re-guessed here.
+
+> **The general lesson for this tree:** a remediation node written before its own domain was
+> investigated will tend to prescribe the FIRST plausible fix. Two of ~20 nodes did. Every remaining
+> node's stated remedy should be treated as a **hypothesis**, not a plan — and the exit gate's
+> adversarial pass is what converts one into the other.
