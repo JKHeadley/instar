@@ -1343,3 +1343,69 @@ simultaneously the documentation and the thing that failed to check the document
 *(Execution lane dispatched to confirm this by running the code rather than reading it — the reading
 above is grounded but is still a reading, and this window has now been wrong three times in exactly
 that way.)*
+
+
+---
+
+## F14 — A DISPATCHED CHECK CONFIRMS MY PREMISE, NOT REALITY, WHEN I STATE THE PREMISE AS FACT
+
+The most useful thing this window produced about how to use lanes, and it came from nearly poisoning one.
+
+### What happened
+
+I dispatched a lane to settle whether the trust code was correct **by execution**, because I had been
+wrong three times reasoning from readings. The prompt included, as scaffolding for the check:
+
+> *"print the actual returned operations for: an unknown / never-seen fingerprint **(expected: empty)**"*
+
+**That parenthetical came from the test's NAME — which I had already established, in the same hour, was
+false.** I carried a claim I knew to be wrong into the prompt as the specification.
+
+### What the lane returned
+
+**Values — exactly correct**, and matching my independent reading:
+
+| level | actual, by execution |
+|---|---|
+| unknown / never-seen | `["ping","health"]` |
+| untrusted | `["ping","health"]` |
+| verified | `+ "message","query"` |
+| trusted | `+ "task-request","data-share"` |
+| autonomous | `+ "spawn","delegate"` |
+
+**Verdict — `DEFECTIVE`**, because it compared the real values against the expectation I supplied.
+
+**The lane did exactly what it was asked.** It also, to its credit, independently grounded the *intended*
+table from source (`AgentTrustManager.ts:168-173`) and printed it alongside — which is the only reason
+the contradiction was visible at all.
+
+### The failure mode, named
+
+> **A dispatched check inherits the framing of its prompt. If I encode a wrong assumption as
+> "expected", the lane returns my error back to me carrying the authority of execution.**
+
+This is worse than being wrong alone. **I dispatch lanes specifically to break my own anchoring** — and
+a premise stated as fact in the prompt reproduces the anchor inside the instrument meant to escape it.
+The result would have read as *independent confirmation*: "I did not just reason about this, I ran it."
+
+**Had I not read the permission table myself twenty minutes earlier, I would now be reporting a live
+authorization defect to the operator — on the strength of an execution I contaminated.** That is the
+fourth time this window a false claim nearly reached him, and the first where the vehicle would have
+been evidence I had deliberately gathered to be trustworthy.
+
+### The correction, mechanical
+
+**A lane prompt must supply the QUESTION and withhold the ANSWER.** Not *"print X (expected: empty)"* but
+*"print X, and separately state what the source says it should be."* The lane already does the second
+half well — every one of them has independently grounded its own expectations. **My parenthetical added
+nothing and could only mislead.**
+
+Every dispatch prompt this window that produced a clean result asked an open question. **The one that
+carried an expectation produced a wrong verdict over correct data.**
+
+### Substantive conclusion, unchanged
+
+**The trust code is CORRECT.** `getAllowedOperationsByFingerprint` returns `["ping","health"]` for an
+unknown peer, and `InboundMessageGate:321-326` blocks every other op type. The `DEFECTIVE` label is an
+artifact of my prompt and carries no finding. **The test's name and comment remain false**, and that —
+false documentation preserved by a vacuous assertion — is the whole of F13's trust case.
