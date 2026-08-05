@@ -692,3 +692,34 @@ already obsolete.**
 
 This is the strongest argument available for the rule the tree adopted mid-window — *every remaining
 remedy is a hypothesis until measured* — and for spending the cheap check before the expensive build.
+
+### B2.3 premise — LIVE, but the node asks the wrong question
+
+B2.3 was written as *"which fail-closed paths are never exercised?"* That question is unbounded: 129
+source files reference fail-closed behaviour, and deciding per path whether its test truly injects a
+failure (rather than merely mentioning one) is exactly the per-item judgment that has burned this audit
+four times by keyword.
+
+**The proven pattern is narrower and better than the node assumed.** `reviewer-fail-closed-ratchet.test.ts`
+does not spot-check paths — it **enumerates a complete population and injects into every member**:
+
+> *"This ratchet drives every registered reviewer through a forced error and fails the build if any
+> returns a verdict without the abstain tag — so a future reviewer (or a future override) cannot
+> silently reintroduce the fail-open this work removed."*
+
+Two properties make it strong, and both are about **population**, not paths:
+
+1. **It is exhaustive over a named set** — every registered reviewer, discovered rather than listed.
+2. **It closes against the future** — a reviewer added tomorrow is covered without anyone remembering.
+
+**Restated node:** not *"which paths are unexercised"* but **"which other guard POPULATIONS deserve a
+complete-population forced-error ratchet like the reviewers have?"**
+
+That converts an unbounded per-path audit into a bounded question with a small answer set — the
+sentinel population, the gate population, the lint population — each of which either has an
+enumerable registry or does not. **A node that can be finished, instead of one that can only be
+sampled.**
+
+**Status: LIVE, re-scoped.** Unlike B2.4 (saturated) and B4.x (stale), there is real work here — it is
+just different work than the node originally described. Sixth premise checked, third distinct failure
+mode: not wrong, not obsolete, **mis-framed**.
