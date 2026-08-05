@@ -167,3 +167,52 @@ possibly acted on.**
 confident, not where I am least.** Each followed a genuine, hard-won result — a correct instrument
 read, a real incident, four correctly-eliminated hypotheses. **Confidence earned in the immediately
 preceding step is the reliable precondition for the next error.**
+
+---
+
+## #25 — Read the primary source before editing it. Three findings, three false alarms averted.
+
+**Directed into these lessons by the operator at window-7 cycle 2**, after it stopped a sanctioned edit
+to the constitution.
+
+**The habit, stated as small as it actually is:** before concluding a thing is broken, ask **whether it
+was supposed to be doing what it isn't doing.** One question about *intent*, before one conclusion about
+*health*.
+
+Three times in one window a finding looked unambiguous and was wrong:
+
+| what I saw | what it looked like | what it was |
+|---|---|---|
+| laptop `scheduler.enabled = missing`, **0 jobs, 0 boot markers, no activity log** | the scheduler is dead; scheduled work silently isn't running | **correct** — the other machine holds the serving lease; jobs run on the holder only |
+| the coverage script: *"asserts running machinery… names no resolvable guard"* | the constitution contains a false claim | **correct claim** — the audit runs daily, 40 events, last one four hours earlier |
+| `correction-analyzer`: **no run history at all** | an enabled job that never fires | **correct** — registered 4h earlier, first fire is Wednesday 09:00 |
+
+**Each had corroborating detail that made it feel settled.** Zero jobs *and* zero boot markers *and* no
+activity log is three signals agreeing — and all three were measuring the same irrelevant thing.
+**Signals that agree because they share a cause are not independent corroboration**, which is the trap
+underneath all three.
+
+### The one that mattered, and how close it came
+
+The middle row had been reported upward **twice** and the operator had **sanctioned a correction PR**
+against the constitution. Executing that ruling would have deleted a true statement from the
+constitution *carrying an operator's sanction* — far harder to reverse than an ordinary mistake.
+
+**It was caught only because I opened the entry to edit it and noticed its `Applied through` section was
+more honest than its `In practice` section.** That mismatch — a document disagreeing with itself —
+prompted a check instead of an edit. **Not diligence. A noticed inconsistency, on the last step before
+the damage.**
+
+The chain is worth seeing whole: *a mis-scoped check produced a confident verdict → I relayed the
+verdict as a finding → the finding was escalated → action was sanctioned on it.* **Four steps, three of
+them mine, and the only thing that stopped it was reading the primary source at the last one.**
+
+### Why "read before edit" and not "verify findings"
+
+"Verify your findings" is advice I would agree with and not execute — it has no trigger. **"Open the
+thing before you change it" has a trigger: the edit itself.** You cannot perform the destructive action
+without passing the checkpoint, which is the difference between a lesson and a structure.
+
+Pairs with #18/#22/#24 (failures cluster where confidence is highest): all three false alarms arrived
+**immediately after a genuine, hard-won result** — a correct instrument read, a real measured defect, a
+correctly-run control. The tool that had just been right was the reason the next output felt settled.
