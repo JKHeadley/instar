@@ -94,7 +94,7 @@ A node that cannot name one is a design smell and must justify itself explicitly
 | F5 | **8 of 16 leaves are `unmeasured`, not `false`** — the guard never had an opportunity | settling them requires a staged violation → a harness that does not exist |
 | F6 | **Load-bearing gaps DIFFER per machine** — a fleet-wide verdict would be wrong about both | `orphanedWorkSentinel` blind on Mini, OFF on laptop; laptop `resumeQueue` off-runtime-divergent |
 | F7 | **The audit's dominant risk was the auditor's own error rate** — 12 false results, 0 genuine guard failures by injection; 6 retractions in 90 min | 3 were repeats of lessons already written down |
-| F8 | **Live faults with measured harm** | interactive-pool argv ceiling (100% of 23 sends); memory threshold mismatch; `CrashLoopPauser` never constructed while 21 jobs ran away (top 477 consecutive) |
+| F8 | **Live faults with measured harm** | interactive-pool argv ceiling (100% of 23 sends); memory threshold mismatch; `CrashLoopPauser` **written + unit-tested but never constructed AT BOOT** while jobs ran away (streak now 492) |
 
 ### The one thing Phase A asked to have decided
 
@@ -229,7 +229,7 @@ without a negative control cannot be distinguished from a guard that rejects eve
 
 | node | scope | measurable exit |
 |---|---|---|
-| **B3.1 — `CrashLoopPauser`** | classified in the guard manifest; **never constructed IN THE BOOT PATH** (see the correction below) while 21 jobs failed, top **477 consecutive**, none paused | constructed, wired, and demonstrated pausing a seeded crash-loop; its manifest exclusion reason removed |
+| **B3.1 — `CrashLoopPauser`** | classified in the guard manifest; **written and unit-tested, never constructed at boot** while jobs failed, streak now **492**, none paused | **wired at boot** and demonstrated pausing a seeded crash-loop; its manifest exclusion reason removed. *(The building is done — the remedy is wiring.)* |
 
 **Why this is one node and not a branch:** Phase A called it *"the one clean buildable gap"*. It is
 also the sharpest illustration of B1.4 — it stayed invisible to the audit because its exclusion
@@ -424,7 +424,7 @@ This is producer-independent: the claim is the author's, the contradicting evide
 system's.
 
 **⚠️ And it would NOT have caught `CrashLoopPauser`** — the incident that motivates the whole branch.
-That component was *never constructed*, so it registers nothing, so there is nothing to contradict.
+That component is **written and unit-tested but never constructed at boot**, so it registers nothing at runtime, so there is nothing to contradict.
 **Stating this plainly because a check that misses its own motivating case must not be presented as the
 fix.** It closes a different, real hole; it does not close that one.
 
@@ -635,7 +635,12 @@ the author produces, or make the claim machine-evaluable.
 
 ---
 
-# SYNTHESIS — these are not seven defects. They are one defect, seven times.
+# SYNTHESIS — these are not separate defects. They are one defect, now **fourteen** times.
+
+⚠️ **This section was written when the count was seven and the table below still shows those first
+seven.** The count is now **14** and the claim is scoped — see "The synthesis instances, ENUMERATED"
+for the full list, and the current-state header for the scope. The seven rows below are the original
+seven, retained because they are where the pattern was first seen, not because they are the whole set.
 
 Every substantive finding of this window has the identical shape. Setting them side by side is the most
 useful thing produced tonight, because it changes what the remediation should be.
@@ -650,7 +655,8 @@ useful thing produced tonight, because it changes what the remediation should be
 | 6 | `enforcedRatio: 72%` | a ref of that shape resolves | "the standard is enforced" | ref ≠ running, asserting, or in CI |
 | 7 | `/health` `llmReliability` | error rate over a 6h window | "this component is failing **now**" | a fix inside the window |
 
-**One sentence, seven times: the passing condition is narrower than what the result certifies.**
+**One sentence, fourteen times: the passing condition is narrower than what the result certifies.**
+*(Seven shown below — the first seven found. The full enumerated list is in its own section.)*
 
 And they are not clustered in one subsystem — they span **verification** (1, 2, 5), **alerting** (3, 7),
 **classification** (4), and **reporting** (6). A defect that appears independently across four unrelated
@@ -1502,8 +1508,9 @@ explicit enumeration rather than a tally I trusted.
 | 11 | the trust test | the result is an array | untrusted agents get none |
 | 12 | swap-used 97% | cumulative allocation | current memory pressure |
 | 13 | **my F10 coverage claim** | zero *ratchet* coverage | no check covers these |
+| 14 | `crash-loop-pauser.test.ts` — 8 passing tests | the class behaves correctly **when constructed** | this guard works |
 
-**Count confirmed at 13.** The tally was right this time — but the enumeration surfaced something the
+**Count confirmed at 13, then 14** (CrashLoopPauser's 8 passing unit tests, added after the factual correction). The tally was right this time — but the enumeration surfaced something the
 tally hid.
 
 ### The caveat the running count concealed
