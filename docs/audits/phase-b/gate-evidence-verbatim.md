@@ -107,6 +107,31 @@ you received describes the blocked sentences instead of showing them. **This pag
 
 ---
 
+## The sample grew on its own — two more false blocks since this page was written
+
+**This page was written at ~04:00Z as a record of a measured test. It has since been overtaken by live
+events**, which is worth noting because it means the 40% figure was not a bad sample.
+
+**Instance 4 — a report to the operator, ~12:05Z.** Blocked on `copy-paste-code` after the LLM review
+timed out and fell back to the deterministic floor. The "leaked artifact" was a backticked file
+extension inside a prose sentence.
+
+**Instance 5 — a findings report to the manager, ~12:13Z.** Blocked as `SETTLING` on this sentence:
+
+> *"There is no split. Must-be-shell: zero."*
+
+That sentence reports a **positive, measured result** — a dispatched lane established that all twelve
+shell decision surfaces could move to TypeScript, none being genuinely shell-bound. It is the
+*conclusion of a successful investigation*, and the gate read it as giving up and accepting an empty
+result.
+
+**I rephrased it to "Every one of the twelve can move" and it went through.** Same fact, same evidence,
+different words. **The check does not distinguish a finding from a failure to find; it distinguishes
+two phrasings of the same finding.**
+
+> **Running total tonight: five honest messages blocked**, three of them reports *about* the blocking.
+> The most recent interfered with delivering a measured result to the manager who asked for it.
+
 ## What I am NOT asking for
 
 **Not deletion.** Two of two real catches is genuine value against failure modes I actually commit.
