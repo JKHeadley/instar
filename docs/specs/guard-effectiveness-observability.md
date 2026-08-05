@@ -368,15 +368,47 @@ verdict(key: string): GuardVerdictSink {
   return { wouldAct: () => { c.wouldAct++; } };   // wouldAct ONLY
 }
 
-/** `didAct` belongs to the ACTION PATH, and is counted only AFTER the side
- *  effect actually completes — so a throwing or short-circuited action counts
- *  nothing, and the guard cannot count an action it merely requested. */
-act<T>(key: string, perform: () => T): T {
-  const result = perform();          // the side effect happens FIRST
-  this.counters(key).didAct++;       // ...and is counted only if it returned
+/** `didAct` belongs to the ACTION PATH, counted only AFTER the side effect
+ *  actually completes. MUST be await-correct: several in-scope action paths
+ *  are async (e.g. TelegramAdapter.createForumTopic, TelegramAdapter.ts:1489). */
+async act<T>(key: string, perform: () => T | Promise<T>): Promise<T> {
+  const result = await perform();    // the side effect COMPLETES first
+  this.counters(key).didAct++;       // ...and only then is it counted
   return result;
 }
 ```
+
+⚠️ **Two corrections from the re-review, both of which I had got wrong:**
+
+**(a) It was sync-shaped, which broke the property it existed to provide.** `perform(): T` returning a
+Promise would have incremented `didAct` **when the Promise was created**, not when the side effect
+succeeded — the exact "counted an action that did not happen" this wrapper exists to prevent, in the
+wrapper. In-scope async paths make this live, not theoretical: `createForumTopic` is `async` and its
+effect is awaited later (`TelegramAdapter.ts:1489-1543`).
+
+**(b) The capability restriction was a CONVENTION, not a capability.** I wrote that "the guard cannot
+reach `didAct`." But `GuardRegistry` is an ordinary exported mutable class, constructed once at boot and
+**threaded as a whole object into server and route contexts** (`server.ts:6941-6945`,
+`AgentServer.ts:709-710, 3748-3756`, `routes.ts:1517-1521`). A public `act()` on that object is callable
+by anything holding `ctx.guardRegistry` — including a guard.
+
+**So the split must be a capability split, not a method-naming convention:**
+
+```ts
+// Guard code receives ONLY this. It is not the registry.
+export interface GuardVerdictSink { wouldAct(): void }
+
+// Side-effect seams receive ONLY this, and only where the effect happens.
+export interface ActionSink { act<T>(perform: () => T | Promise<T>): Promise<T> }
+```
+
+Each is a **narrow handle minted per key and handed to exactly one party** — the registry itself is
+never passed to guard code. Otherwise the trust split is enforced by everyone agreeing not to call the
+method that is right there, which is the definition of willpower.
+
+> **Ninth and tenth times in this document that I claimed a structural property and delivered a
+> convention.** The tell is identical each time: I describe what the code *should* be used for instead
+> of what it *permits*. **A capability is what the holder CAN do, never what the design intends.**
 
 ⚠️ **The first draft of this schema handed the guard a `didAct()` it could call directly — and the gate
 caught it.** That silently reverted v3's entire trust split: the whole point is that the party which
@@ -478,8 +510,10 @@ export interface GuardManifestEntry {
 ```
 
 `invocation` is required with no default — the `COMPONENT_CATEGORY` rule. A guard declaring
-`tick-loop` or `funnel` **must** be reachable through `registry.invoke`; declaring either while being
-called directly is the lint's failure case. A guard declaring `event-driven`, `self-driven`, or
+`tick-loop` or `funnel` **must** be reachable through `registry.invoke`. *(An earlier draft called a
+direct call "the lint's failure case" — stale, and removed: the lint parses manifest classification
+only (`lint-guard-manifest.js:104-150, 202-250`) and has no adoption rule. Adoption is established at
+conversion time for funnels and by the narrowed runtime conjunction for tick-loops.)* A guard declaring `event-driven`, `self-driven`, or
 `unknown` is `unverifiable-by-construction` and carries the named reason already published in
 `docs/audits/phase-b/guard-verifiability-28-and-44.md`.
 
