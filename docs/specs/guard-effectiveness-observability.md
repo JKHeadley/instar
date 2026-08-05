@@ -49,6 +49,54 @@ guardStatus(): { enabled: boolean; dryRun: boolean; reason?: string }      // Re
    `lint-guard-manifest.js` Assertion B checks only that a reason is **≥12 non-whitespace characters**
    (`MIN_REASON_NON_WS`), never that it is **true**.
 
+### The silent class — measured on two agents, grounded in source
+
+The codebase **already has a field for this**: `runtimeReason: 'not-instrumented'`
+(`src/monitoring/guardPostureView.ts:74,240`). It knows which guards cannot be inspected. It simply
+never requires any of them to become inspectable.
+
+Measured live, 2026-08-05, on two independent agents running the same version (1.3.1126):
+
+| | Echo (Mini) | Codey (Mini) |
+|---|---|---|
+| guard rows | 90 | 87 |
+| `runtimeEnriched` | 26/90 | 17/87 |
+| **`not-instrumented`** | **62** | **62** |
+| loadBearing | 13 | 13 |
+| **loadBearing AND not-instrumented** | **8** | **8** |
+
+**62 on both, independently.** That corroborates Phase A's "64 unaskable" from a completely different
+measurement path, and it matches the B0.2 census's 62 `none` exactly.
+
+**And here is the gap inside the gap.** The summary emits `loadBearingUninspectableKeys` — a category
+for exactly this problem. On both agents it is **empty**, while 8 load-bearing guards are
+not-instrumented. The reason, read from source:
+
+```ts
+// src/monitoring/guardPostureView.ts:135
+const LOAD_BEARING_UNINSPECTABLE_STATES: ReadonlySet<GuardEffectiveState> = new Set([
+  'missing', 'errored', 'on-stale', 'on-blind', 'off-runtime-divergent',
+]);
+```
+
+**`on-unverified` is not in that set** — and `on-unverified` is the state a guard lands in when it is
+switched ON but has no runtime instrumentation. So a load-bearing guard that is *on*, *uninspectable*,
+and *depended upon by a critical path* is counted as neither a gap nor uninspectable. **It raises
+nothing.** Three guards sit in that silent class on Echo right now:
+
+| guard | the critical path it protects |
+|---|---|
+| `monitoring.ropeHealth.enabled` | **mesh partition alerting** |
+| `apprenticeship.stallCoverageGate.enabled` | apprenticeship onboarding sign-off |
+| `multiMachine.seamlessness.ws13PinReplicate` | operator pin survives a lease change |
+
+> **Stated carefully: these three are not known to be broken. They are structurally incapable of being
+> known to work** — and because they are *on*, every surface reports them as fine. The guard that
+> alerts you when your machines have partitioned is itself unverifiable, and nothing says so.
+
+This is the concrete consequence the schema change removes, and it is why the obligation must be
+*required* rather than encouraged.
+
 ## Proposed design
 
 **This is a propagation, not new machinery.** Every element below already exists and is verified by
