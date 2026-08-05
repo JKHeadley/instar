@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.JKHeadley%2Fthreadline-mcp.svg)](https://mcptoplist.com/server/io.github.JKHeadley%2Fthreadline-mcp)
+
 <p align="center">
   <img src="assets/logo.png" alt="Instar" width="180" />
 </p>
