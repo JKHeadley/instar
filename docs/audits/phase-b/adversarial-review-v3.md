@@ -1,0 +1,81 @@
+# Q1. Is prior finding #3 actually dead?
+
+Partly, but not enough to approve.
+
+The exact v1 attack "declare dotted paths to unrelated existing positive fields" is dead in v3's trust model for `looked`, because v3 no longer proposes manifest-owned counter paths and says `looked` is caller-owned (`/tmp/spec-v3.md:160`-`/tmp/spec-v3.md:164`). I ran an absence control before relying on this: `expectRuntime`, `CrashLoopPauser`, and `guard-accepted-fallbacks` are present in current source (`src/monitoring/guardManifest.ts:47`, `src/monitoring/guardManifest.ts:1149`, `src/monitoring/guardAcceptedFallbacks.ts:7`), while `expectCounters`, `ratificationRef`, `ratifiedUntil`, `lookedProvenance`, and any source `GuardObservabilityVerdict` are absent from the reviewed source surface.
+
+The broader gaming problem survives. The cheapest path under v3 is no longer "borrow a positive dotted path"; it is "report no would-act decisions." A guard on a real caller chokepoint can have caller-owned `looked > 0`, guard-owned `wouldAct = 0`, and action-owned `didAct = 0`. The invariant holds (`0 <= 0 <= looked`), the row is arithmetically consistent, and the guard may still be useless. The spec itself concedes `wouldAct` remains guard-owned (`/tmp/spec-v3.md:163`) and that only staged violations prove honesty (`/tmp/spec-v3.md:221`-`/tmp/spec-v3.md:227`).
+
+There is also no current source structure that prevents the guard-owned half from borrowing. Today's registry accepts an arbitrary synchronous getter (`src/monitoring/GuardRegistry.ts:33`-`src/monitoring/GuardRegistry.ts:46`) and returns whatever status object it yields after only checking that `enabled` is boolean (`src/monitoring/GuardRegistry.ts:59`-`src/monitoring/GuardRegistry.ts:67`). v3 has not specified the replacement schema or storage for caller-owned counters (`/tmp/spec-v3.md:236`-`/tmp/spec-v3.md:248`). Until that exists, finding #3 is not "dead"; only its original v1 mechanism is gone.
+
+# Q2. Is the invariant real?
+
+The arithmetic is real, but its evidentiary value is narrow.
+
+`didAct <= wouldAct <= looked` can be checked mechanically if all three counters have trustworthy ownership and a common denominator. A violation proves only an accounting impossibility: someone counted an action without a prior would-act, or counted a would-act without a caller-observed evaluation. That is useful. It catches over-reporting and denominator mismatch.
+
+It does not prove usefulness. A guard that always returns `wouldAct = 0` satisfies the invariant forever. A guard that lies conservatively also satisfies it. A guard can undercount `wouldAct`, or increment `didAct` at an unrelated action sink, and arithmetic will not catch it unless a staged violation exercises the expected reason. v3 says this plainly: `didAct` can increment for the wrong reason, and only a staged violation closes that floor (`/tmp/spec-v3.md:221`-`/tmp/spec-v3.md:227`).
+
+The SelfActionGovernor evidence in the spec is weaker than stated. The route exposes `windowCount` and `counters` (`src/monitoring/selfaction/governor.ts:1559`-`src/monitoring/selfaction/governor.ts:1579`; `src/monitoring/selfaction/types.ts:227`-`src/monitoring/selfaction/types.ts:235`), but `admits` is not a generic "looked" count. It increments in `recordAdmit` (`src/monitoring/selfaction/governor.ts:1039`-`src/monitoring/selfaction/governor.ts:1043`), while enforcing denials increment `denies` without calling `recordAdmit` (`src/monitoring/selfaction/governor.ts:670`-`src/monitoring/selfaction/governor.ts:684`), and token-sink rejections can also increment `denies` (`src/monitoring/selfaction/governor.ts:924`-`src/monitoring/selfaction/governor.ts:944`). So the measured `wouldDeny <= admits` shape can hold for the current observe-heavy data while still not being a general proof that caller-owned `looked` exists for enforced paths.
+
+# Q3. Status of the other four prior findings
+
+Finding #1, unbound `ratificationRef`: mostly moot in v3, not solved as an exemption design. v3 removed the v1/v2 counter-exemption path from the live design, so the specific string `ratificationRef` attack no longer applies. However, the document still claims an "exemption path carries an expiry" (`/tmp/spec-v3.md:51`) while later saying guards without caller-owned `looked` get no fallback (`/tmp/spec-v3.md:210`-`/tmp/spec-v3.md:215`). Current accepted-fallback records are still only `{ reason, owner, acceptedAt }` (`src/monitoring/guardAcceptedFallbacks.ts:22`-`src/monitoring/guardAcceptedFallbacks.ts:29`) written after a PIN-gated route (`src/server/routes.ts:8817`-`src/server/routes.ts:8839`). If v3 reintroduces any exemption or accepted-unverifiable path, the prior authority-binding issue returns unless the artifact is specified.
+
+Finding #2, expiry fails only build/lint: moot only if v3 truly has no exemptions. The old expiry mechanism is gone from the proposed v3 mechanics. But because `/tmp/spec-v3.md:51` still mentions expiring exemptions and no runtime expiry rule is defined, this is unresolved for any future exemption branch. Current accepted fallbacks have no expiry field at all (`src/monitoring/guardAcceptedFallbacks.ts:22`-`src/monitoring/guardAcceptedFallbacks.ts:29`), and the `/guards` route reads them at request time as accepted suppressions (`src/server/routes.ts:8699`-`src/server/routes.ts:8709`; `src/monitoring/guardPostureView.ts:340`-`src/monitoring/guardPostureView.ts:351`).
+
+Finding #4, migration is ~153 not 72 because `NOT_A_GUARD` also needed ratification: addressed/moot for v3. v3 no longer asks `NOT_A_GUARD.reason` to become a ratified observability declaration. The current manifest still has `GUARD_MANIFEST` and `NOT_A_GUARD` as separate lists (`src/monitoring/guardManifest.ts:67`, `src/monitoring/guardManifest.ts:1126`), with `CrashLoopPauser` still in `NOT_A_GUARD` (`src/monitoring/guardManifest.ts:1149`), but the v3 obligation has not been specified as a migration over that list.
+
+Finding #5, lint parser cannot support nested union assertions: the old nested-manifest parser concern is moot, but the integration problem is still open. v3 explicitly says the manifest declaration, counter storage, and verdict mapping are undefined (`/tmp/spec-v3.md:242`-`/tmp/spec-v3.md:248`). Current lint still extracts only manifest components and `NOT_A_GUARD` reasons via regex (`scripts/lint-guard-manifest.js:123`-`scripts/lint-guard-manifest.js:150`) and enforces only reason length/classification (`scripts/lint-guard-manifest.js:202`-`scripts/lint-guard-manifest.js:248`). If the final v3 schema needs a manifest or source declaration, this lint remains insufficient unless rewritten.
+
+# Q4. Is caller-owned `looked` feasible?
+
+Feasible for some guard families. Not feasible as a fleet-wide premise yet.
+
+SelfActionGovernor has a real admission chokepoint: per-controller handles expose `admit` and `admitSync`, both delegating to `core.admitFor` (`src/monitoring/selfaction/governor.ts:1665`-`src/monitoring/selfaction/governor.ts:1680`). The core evaluation path is centralized enough that a caller-owned/evaluator-owned "looked" can be added there (`src/monitoring/selfaction/governor.ts:510`-`src/monitoring/selfaction/governor.ts:529`). It also has a protected action-sink pattern via `consumeToken` (`src/monitoring/selfaction/governor.ts:917`-`src/monitoring/selfaction/governor.ts:944`).
+
+JobScheduler has a dispatch chokepoint for jobs, not for guards generally. Cron callbacks call `triggerJob` (`src/scheduler/JobScheduler.ts:442`-`src/scheduler/JobScheduler.ts:448`), and `triggerJob` contains several guard-like decisions: read-only standby refusal (`src/scheduler/JobScheduler.ts:568`-`src/scheduler/JobScheduler.ts:583`), role guard refusal (`src/scheduler/JobScheduler.ts:597`-`src/scheduler/JobScheduler.ts:635`), remote claim skip (`src/scheduler/JobScheduler.ts:638`-`src/scheduler/JobScheduler.ts:668`), double-run skip (`src/scheduler/JobScheduler.ts:670`-`src/scheduler/JobScheduler.ts:690`), quota skip (`src/scheduler/JobScheduler.ts:693`-`src/scheduler/JobScheduler.ts:708`), and configured job gate skip (`src/scheduler/JobScheduler.ts:711`-`src/scheduler/JobScheduler.ts:717`). That can support caller-owned looked for scheduler-internal job gates, but the manifest row for `scheduler.enabled` is only one guard (`src/monitoring/guardManifest.ts:982`-`src/monitoring/guardManifest.ts:989`), and scheduler-internal `CrashLoopPauser` is explicitly not a guard row today (`src/monitoring/guardManifest.ts:1149`).
+
+The common invocation point does not exist for most current guards. Current `/guards` assembly reads a per-key runtime getter from `GuardRegistry` (`src/monitoring/guardPostureView.ts:383`-`src/monitoring/guardPostureView.ts:404`); that is an observation read, not the point where the guard evaluated its protected condition. The registry itself is just a map of arbitrary getters (`src/monitoring/GuardRegistry.ts:40`-`src/monitoring/GuardRegistry.ts:47`). Many guards are independent components with their own `guardStatus()`/`guardRuntimeStatus()` methods, and those methods mostly report posture/liveness, not invocation counts; a source search found 46 call/definition hits across the reviewed tree, including independent sentinel getters such as `SessionReaper.guardStatus`, `SocketDisconnectSentinel.guardStatus`, `ExternalHogSentinel.guardRuntimeStatus`, and `OwnershipReconciler.guardStatus` (`src/monitoring/SessionReaper.ts:1265`, `src/monitoring/SocketDisconnectSentinel.ts:301`, `src/monitoring/ExternalHogSentinel.ts:297`, `src/core/OwnershipReconciler.ts:840`).
+
+The manifest numbers reinforce this. A comment-stripped read of `GUARD_MANIFEST` found 72 entries, 24 with `expectRuntime: true`, 48 with `expectRuntime: false`, and 13 load-bearing entries. That count is consistent with the source shape: current runtime registration covers a minority of manifest guards, and runtime registration is still not a caller-owned evaluation count.
+
+# Q5. New findings
+
+v3 is a better trust direction than v1/v2, but it is not yet a buildable design. The new design removes one bad surface and replaces it with undefined ownership plumbing. The largest new risk is that the arithmetic invariant will be mistaken for effectiveness when it only proves counter consistency.
+
+# MATERIAL findings
+
+1. **The spec still has no schema, so the obligation cannot be implemented or enforced.**
+
+   v3 itself says the manifest-side declaration, caller-owned counter storage, and verdict computation are undefined (`/tmp/spec-v3.md:236`-`/tmp/spec-v3.md:248`). Current source has no place for these fields: `GuardRuntimeStatus` contains only posture/liveness fields (`src/monitoring/GuardRegistry.ts:19`-`src/monitoring/GuardRegistry.ts:31`), the `/guards` runtime projection allowlist only forwards existing fields (`src/monitoring/guardPostureView.ts:54`-`src/monitoring/guardPostureView.ts:64`, `src/monitoring/guardPostureView.ts:131`-`src/monitoring/guardPostureView.ts:134`), and row projection is closed (`src/monitoring/guardPostureView.ts:122`-`src/monitoring/guardPostureView.ts:130`). A design titled as a declare-or-fail obligation cannot be approved while the declaration and failure computation are absent.
+
+2. **The invariant can be satisfied by a useless or lying guard.**
+
+   v3 claims impossible rows are mechanically detectable (`/tmp/spec-v3.md:172`-`/tmp/spec-v3.md:178`), but the invariant only catches over-counting. A guard can report `wouldAct = 0` forever and pair it with `didAct = 0`; with caller-owned `looked >= 0`, `didAct <= wouldAct <= looked` always holds. Current registry mechanics would not prevent arbitrary getter content if v3 reused that surface (`src/monitoring/GuardRegistry.ts:33`-`src/monitoring/GuardRegistry.ts:46`, `src/monitoring/GuardRegistry.ts:59`-`src/monitoring/GuardRegistry.ts:67`). The spec correctly says staged violations are required (`/tmp/spec-v3.md:263`-`/tmp/spec-v3.md:279`), but then its stage-one verdict still labels consistent counters `instrumented` (`/tmp/spec-v3.md:291`-`/tmp/spec-v3.md:300`). That is acceptable only if every consumer treats "instrumented" as "counter-consistent, not guard-useful."
+
+3. **Caller-owned `looked` has no general chokepoint in the current guard architecture.**
+
+   The current inventory's common path is `/guards` reading registered status getters (`src/monitoring/guardPostureView.ts:383`-`src/monitoring/guardPostureView.ts:404`), not guard evaluation. The registry only stores getters (`src/monitoring/GuardRegistry.ts:40`-`src/monitoring/GuardRegistry.ts:47`). SelfActionGovernor has a real funnel through `admit`/`admitSync` to `admitFor` (`src/monitoring/selfaction/governor.ts:1665`-`src/monitoring/selfaction/governor.ts:1680`; `src/monitoring/selfaction/governor.ts:510`-`src/monitoring/selfaction/governor.ts:529`), and JobScheduler has job-dispatch seams (`src/scheduler/JobScheduler.ts:442`-`src/scheduler/JobScheduler.ts:448`, `src/scheduler/JobScheduler.ts:555`-`src/scheduler/JobScheduler.ts:784`). But those do not cover 72 manifest guards. A comment-stripped manifest count found 24 `expectRuntime:true` and 48 `expectRuntime:false` entries; the existing architecture is mostly per-component, not one invocation framework.
+
+4. **The SelfActionGovernor exemplar does not prove the claimed denominator.**
+
+   v3 presents SelfActionGovernor as already carrying the shape and says 9 of 9 classes satisfy `wouldAct <= looked` (`/tmp/spec-v3.md:180`-`/tmp/spec-v3.md:199`). In source, the public route returns `windowCount` and raw counters (`src/monitoring/selfaction/governor.ts:1559`-`src/monitoring/selfaction/governor.ts:1579`), where `wouldDeny` and `denies` are fields (`src/monitoring/selfaction/types.ts:227`-`src/monitoring/selfaction/types.ts:235`). `admits` increments only in `recordAdmit` (`src/monitoring/selfaction/governor.ts:1039`-`src/monitoring/selfaction/governor.ts:1043`); enforced denials increment `denies` without recording an admit (`src/monitoring/selfaction/governor.ts:670`-`src/monitoring/selfaction/governor.ts:684`). Therefore `admits` is not a stable caller-owned `looked` denominator across modes. The example is useful evidence that a funnel exists, but it is not evidence that the proposed invariant is already represented correctly.
+
+5. **`didAct` ownership is underspecified outside SelfActionGovernor's token sink.**
+
+   v3 says `didAct` is owned by the action path and incremented where the side effect happens (`/tmp/spec-v3.md:164`). SelfActionGovernor has a clear protected sink with token consumption (`src/monitoring/selfaction/governor.ts:917`-`src/monitoring/selfaction/governor.ts:944`). JobScheduler's role guard, by contrast, performs the refusal, skip-ledger write, event append, and optional attention callback inline in `triggerJob` (`src/scheduler/JobScheduler.ts:619`-`src/scheduler/JobScheduler.ts:634`). Many sentinels similarly own their own action paths. Without a specified action-sink API or per-guard action counter attachment point, `didAct` becomes another local convention.
+
+# MINOR findings
+
+1. **v3 contains a stale contradiction about fallback/provenance.**
+
+   The live design says guards with no framework-owned `looked` get no fallback and become `unverifiable-by-construction` (`/tmp/spec-v3.md:210`-`/tmp/spec-v3.md:215`). The status section then says "the fallback's honesty depends on `lookedProvenance`" (`/tmp/spec-v3.md:255`-`/tmp/spec-v3.md:259`). That appears to be a dead draft fragment. It matters because fallback/provenance was exactly the class of compromise v3 says it removed.
+
+2. **The stage-one vocabulary is better than an effectiveness verdict, but `instrumented` is still easy to overread.**
+
+   Stage one removes `effective-candidate` until the harness exists (`/tmp/spec-v3.md:291`-`/tmp/spec-v3.md:309`), which is a real improvement. But `instrumented` means only "counters registered and arithmetically consistent" (`/tmp/spec-v3.md:295`-`/tmp/spec-v3.md:299`). Given the existing `/guards` surface currently names posture as `effective` (`src/monitoring/guardPostureView.ts:66`-`src/monitoring/guardPostureView.ts:74`), the final schema should avoid rendering `instrumented` under an `effective` field or other health-colored posture.
+
+# Overall verdict
+
+MATERIALLY-FLAWED.

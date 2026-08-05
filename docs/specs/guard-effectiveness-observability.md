@@ -48,7 +48,7 @@ every other standard. This spec's whole purpose is to make that gap explicit and
 | **Structure beats Willpower** (Root & Fractal) | The v1→v2→v3 progression is this standard applied to itself: each version was rejected for depending on an author's or reviewer's diligence, until the obligation became arithmetic (`didAct ≤ wouldAct ≤ looked`). |
 | **A Dark Feature Guards Nothing** (Shipping) | Its arm covers guards that are *dark*. This covers the sibling class the audit found unguarded — guards that are **on but uninspectable**, which currently raise nothing at all (see "The silent class"). |
 | **Observability** (Building) | 62 of ~90 runtime guards are `not-instrumented` on two independent agents. This is the obligation that changes that number. |
-| **Close the Loop** (The Substrate) | The exemption path carries an expiry so an "unverifiable" claim cannot sit unreviewed forever. |
+| **Close the Loop** (The Substrate) | ⚠️ **Contradiction removed.** Earlier text here described "an exemption path that carries an expiry" — inherited from v2 and **false of v3**, which has no exemption or fallback path at all (a guard without caller-owned `looked` is `unverifiable-by-construction`, full stop). If any future revision reintroduces an exemption, the authority-binding and runtime-expiry problems from the killed designs return with it. |
 
 **Fit rationale.** This spec does not introduce a new standard or a new principle. It applies an
 existing constitutional requirement to the one part of the system that had been exempt from it — the
@@ -190,9 +190,20 @@ exact class v3 claims can have a caller-owned `looked`. Measured live on Echo, 2
 | 6 | 184 | 57 | ✅ |
 | 1,2,4,7,8 | 0 | 0 | ✅ |
 
-**9 of 9 hold.** The invariant is not merely a nice property of the design — it is already true of the
-best existing instance, which is meaningful evidence that a caller-owned `looked` is achievable rather
-than theoretical.
+**9 of 9 hold — but ⛔ THIS EVIDENCE IS WEAKER THAN I FIRST WROTE, and the correction matters.**
+
+My original text said this was "meaningful evidence that a caller-owned `looked` is achievable." The
+adversarial re-review read the source and refuted it: **`admits` is not a generic "looked" count.** It
+increments in `recordAdmit` (`selfaction/governor.ts:1039-1043`), while **enforcing denials increment
+`denies` WITHOUT calling `recordAdmit`** (`governor.ts:670-684`), and token-sink rejections can also
+increment `denies` (`governor.ts:924-944`).
+
+So `wouldDeny ≤ admits` holds **because this governor is currently observe-heavy** — nearly everything
+is admitted. On an *enforcing* path the denominator relationship is not guaranteed at all.
+
+> **I measured a real number and drew a conclusion the number did not support.** The arithmetic was
+> right; the claim about what it demonstrated was wrong, and it was already committed and reported
+> before the review caught it. Recorded rather than quietly amended.
 
 **What this does NOT test, stated:** only the `wouldAct ≤ looked` half was verified. The `didAct` field
 name on this route was not resolved, so `didAct ≤ wouldAct` is **untested** here. Reporting a
@@ -251,6 +262,29 @@ This document is titled after a schema. Concretely, still undefined:
 answer (how many guards have a common caller today) determines whether the manifest declaration is a
 boolean, an enum of invocation classes, or something else entirely. Designing the schema before that
 number exists would be guessing, and this document has already demonstrated where guessing leads.
+
+### The premise does NOT hold fleet-wide — measured, not assumed
+
+v3 rests on caller-owned `looked`. The re-review checked whether that is achievable across the guard
+population and the answer is **only for some families**:
+
+| family | common invocation chokepoint? | evidence |
+|---|---|---|
+| `SelfActionGovernor` | **YES** — `admit`/`admitSync` both delegate to `core.admitFor` | `selfaction/governor.ts:1665-1680`, `:510-529` |
+| `JobScheduler` job gates | **PARTLY** — `triggerJob` funnels several guard-like decisions, but for JOBS, not guards generally | `JobScheduler.ts:442-448`, `:568-717` |
+| independent sentinels (most guards) | **NO** — each owns its own loop and reports *posture*, not invocation counts | `SessionReaper.ts:1265`, `SocketDisconnectSentinel.ts:301`, `ExternalHogSentinel.ts:297`, `OwnershipReconciler.ts:840` |
+
+**And the manifest confirms the scale of the problem: of 72 entries, only 24 carry
+`expectRuntime: true` — 48 are `false`.** Runtime registration already covers a minority, and
+registration is not the same thing as a caller-owned evaluation count.
+
+> **So v3's central mechanism is available to a minority of guards today.** That does not kill it — a
+> guard *family* moving onto a chokepoint is a real, incremental path — but **it does kill any framing
+> in which v3 is a schema change that can simply be applied to 72 entries.** It is an architectural
+> change to how guards are invoked, for most of them.
+
+This is exactly the number the chokepoint survey was dispatched to produce, arrived at independently by
+the reviewer first. Where the survey disagrees, the survey's per-guard tracing wins.
 
 ### Status of v3
 
