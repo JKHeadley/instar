@@ -17,6 +17,29 @@ cd ~/.instar/agents/echo/.worktrees/guard-effectiveness-observability && git log
 Nothing is queued. Do not re-run the gate. Do not start a new finding sweep.
 Three operator decisions are outstanding (bottom of this file) and none blocks work.
 
+> **SINCE THIS WAS WRITTEN (09:12) — three commits landed. Read this before acting on "nothing is queued".**
+> The charter is still closed and the gate still must not be re-run. What changed is that the operator
+> ruled on the five proposed standards, and the placement work is DONE:
+> - **`docs/audits/phase-b/standards-placement-verdicts.md`** — all five read against all 82 registry
+>   standards under the operator's placement rule. Net: **0 discards · 1 amendment · 4 tree nodes (2
+>   admissible, 2 were blocked on the case-study condition) · 0 new root nodes.** Priors were
+>   pre-registered first, so the verdicts are scoreable; parentage came out 2 of 5.
+> - **`docs/proposals/amendment-verify-the-state-declare-measured-and-certified.md`** — **this WITHDRAWS
+>   the standalone measure-vs-certify proposal.** Do not re-propose it as a standard; it is an amendment
+>   to *Verify the State, Not Its Symbol*. Re-proposing it is the most likely successor mistake here.
+> - **`docs/proposals/standard-proposal-recall-by-meaning-not-word-match.md`** and
+>   **`...-decisions-live-where-checks-can-see-them.md`** — the two case studies that unblock P2 and P3.
+> - **P2's case is CURRENT, not historical** — measured, not read. The vector path works at
+>   `/semantic/search/hybrid`; the endpoint the capability list documents as *the* search endpoint,
+>   `/semantic/search`, is keyword-only. **Add to the do-not-re-derive list: a search returning ZERO for
+>   real-but-absent words is a word-matcher — a vector search always has nearest neighbours.**
+> - **Also do not re-derive:** operationalFacts delivers ~2 of 50 facts at boot (byte cap, trimmed from the
+>   END, so the newest fact dies first). A boot pointer recorded there does not reach a fresh session.
+>
+> **Capacity is the binding constraint as of 14:20:** the account is at ~93% of its weekly allowance with
+> ~44h to reset. The manager has closed the remainder of the window to everything except his final cycle,
+> the run summary, and the between-windows review. **Do not start new work to fill time.**
+
 
 **Written:** 2026-08-05 ~15:05Z, window 7, ~11h elapsed / ~13h remaining.
 **Written proactively**, before a context ceiling, at the manager's request. Nothing here is urgent —
