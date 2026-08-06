@@ -519,9 +519,20 @@ logs never contained it.
 
 ---
 
-## PROPOSED AMENDMENT to the ratified node contract (needs the architect's decision)
+## ~~PROPOSED~~ **RATIFIED** AMENDMENT to the node contract — decided 2026-08-06
 
-**This is a change to something Justin ratified on 2026-08-03, so it is proposed here, not adopted.**
+> **STRUCK IN PLACE, NOT SUPERSEDED ELSEWHERE.** This section read *"needs the architect's decision"*
+> until 2026-08-06. **Justin ratified it** ("Yes, please proceed with your recommendations for my
+> approvals", 12:14 PDT, topic 36966), and it is now rule 4 of the node contract.
+>
+> **The ratified text is `docs/plans/node-contract-rung-three-amendment.md`** (durable copy) and the
+> amended rule 4 in `ALIGNMENT-PLAN-ROOT.md`. **Read those, not the proposal below** — the section that
+> follows is retained as the reasoning that earned it, not as the current state.
+>
+> One thing the ratified version adds that the proposal below does not: **a rung-three verdict claimed
+> from an A-case alone is `acts-only` — unmeasured on the second axis, not passing it.**
+
+**~~This is a change to something Justin ratified on 2026-08-03, so it is proposed here, not adopted.~~**
 
 The node contract's rule 4 defines the guard verdict as three rungs:
 

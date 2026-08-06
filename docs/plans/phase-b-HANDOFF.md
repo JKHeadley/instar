@@ -189,12 +189,19 @@ answer, the person hunting the defect would have been immune.
 
 ## Open decisions — operator's, not mine
 
-1. **The three-rung amendment** (acts / holds-back as two axes). Endorsed by the manager, carried to
-   Justin. Two-axis is working practice until he rules.
-2. **Gate demotion** — the outbound message check from hard block to advisory. Endorsed, on Justin's
-   list. Evidence page is published and current.
-3. **B0.4** — the positional ceiling: 10 of 27 enforcement guards cannot be tested from an agent
-   workstation. Still unanswered; nothing downstream can be sized until it is.
+> **UPDATED 2026-08-06 (window 8). Two of these three are CLOSED — struck in place, not corrected
+> below.** Justin ratified the boundary items at 12:14 PDT (topic 36966). **Only B0.4 remains open.**
+
+1. ~~**The three-rung amendment** (acts / holds-back as two axes).~~ **RATIFIED 2026-08-06.** It is now
+   rule 4 of the node contract. **One source: `docs/plans/node-contract-rung-three-amendment.md`** —
+   every other mention points here rather than restating it. It is no longer "working practice until he
+   rules"; it is the contract. Note the clause the proposal did not have: **a rung-three verdict from an
+   A-case alone is `acts-only`, not `aligned`.**
+2. ~~**Gate demotion**~~ — **RATIFIED as part of the same boundary approval.** Keep the finding, demote
+   the block.
+3. **B0.4 — STILL OPEN, and explicitly NOT ratified.** The positional ceiling: 10 of 27 enforcement
+   guards cannot be tested from an agent workstation. The window-8 kickoff names it by exception: *"Do
+   not size downstream work on an assumed answer."* Nothing downstream can be sized until it is answered.
 
 ---
 
