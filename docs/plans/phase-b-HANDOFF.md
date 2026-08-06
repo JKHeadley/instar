@@ -2,9 +2,50 @@
 
 ## WHERE YOU ARE AND WHAT TO OPEN (read this block first)
 
-**This file exists in two places, byte-identical. You are reading one of them:**
-- `~/.instar/agents/echo/.instar/phase-b/HANDOFF.md` — the agent-home copy (survives any branch state)
-- `<worktree>/docs/plans/phase-b-HANDOFF.md` — the committed copy, on the branch
+> ## ⚠️ WINDOW 8 CURRENT STATE — 2026-08-06 ~21:30 PDT. THIS SUPERSEDES EVERYTHING BELOW.
+>
+> **~~This file exists in two places, byte-identical.~~ It does not, as of 2026-08-06.** There is now
+> **ONE source** — the file you are reading, on the branch — and the agent-home path
+> `~/.instar/agents/echo/.instar/phase-b/HANDOFF.md` is a **POINTER** to it, not a copy. It was a
+> duplicate; it went stale twice in two hours; *Remove What Demands Attention* was ratified this
+> morning and this was its first application. **Do not restore the duplicate.**
+>
+> **The work lives on branch `echo/guard-effectiveness-observability`. HEAD `b604af33a`, pushed and
+> remote-verified.** Worktree: `~/.instar/agents/echo/.worktrees/guard-effectiveness-observability/`.
+>
+> ### What window 8 landed (all pushed, all verified on the remote)
+>
+> | item | state |
+> |---|---|
+> | Three-rung amendment (acts AND holds back) | **RATIFIED**, now rule 4 of the node contract. One source: `docs/plans/node-contract-rung-three-amendment.md` |
+> | P1 measure-vs-certify | **WITHDRAWN as a standalone**, folded into *Verify the State* as a Rule clause + tooth (D) |
+> | P3 decisions-live-where-checks-can-see-them | **IN**, under *Observation Needs Structure* |
+> | P4 remove-what-demands-attention | **IN**, under *Distrust Temporary Success* (NOT under the Root) |
+> | P5 dispatch-withholds-the-answer | **IN**, under *Verify the State* (a cousin of tooth D, not its child) |
+> | P2 recall-by-meaning | **IN**, under *Intelligence Infers* |
+> | B3.1 CrashLoopPauser | **WIRED AT BOOT**, dry-run, now a declared guard |
+>
+> Registry: 82 → 86 articles, enforced share **0.7195 → 0.7326**. Five new lints, all in the `lint`
+> chain, all proven two-sided by injection.
+>
+> ### 🔴 THE ONE THING BLOCKING GREEN — and it is NOT yours to fix
+>
+> **`standards-coverage --check` fails on exactly one line: the Substrate family audit is stale.**
+> That is BY DESIGN. An external review of the amended family returned **NOT ACCEPTED**, and the audit
+> record's `verdict` field accepts only `accepted` — so the constitution refuses to grow while its
+> family has open findings.
+>
+> **Four of the five findings are about PRE-EXISTING articles and are Justin-class rulings.** The
+> observer is carrying them up. **Do not draft resolutions. Do not touch those articles. Do not start
+> new tree work until the rulings land** (observer directive, 3:25pm cycle). The findings are recorded
+> verbatim in the section *"The four open findings — VERBATIM"* below, and in full at
+> `docs/audits/phase-b/substrate-family-review-2026-08-06.txt`.
+>
+> **A PR is open** so review starts and nothing lives only on a branch. It sits red on that one gate;
+> that is expected and correct.
+>
+> ### The exit gate is still PASSED and the kickoff charter is still CLOSED.
+> Do not re-run the gate. Do not start a new finding sweep.
 
 **The work lives on branch `echo/guard-effectiveness-observability`, 79+ commits, pushed.**
 Worktree: `~/.instar/agents/echo/.worktrees/guard-effectiveness-observability/`
@@ -13,9 +54,9 @@ Worktree: `~/.instar/agents/echo/.worktrees/guard-effectiveness-observability/`
 cd ~/.instar/agents/echo/.worktrees/guard-effectiveness-observability && git log --oneline -3
 ```
 
-**Status: the Phase B exit gate PASSED on round 6. The kickoff charter is CLOSED.**
-Nothing is queued. Do not re-run the gate. Do not start a new finding sweep.
-Three operator decisions are outstanding (bottom of this file) and none blocks work.
+**~~Status: the Phase B exit gate PASSED on round 6. The kickoff charter is CLOSED.**
+Nothing is queued.~~** — superseded by the window-8 block above; the gate status holds, "nothing is
+queued" does not. Do not re-run the gate. Do not start a new finding sweep.
 
 > **SINCE THIS WAS WRITTEN (09:12) — three commits landed. Read this before acting on "nothing is queued".**
 > The charter is still closed and the gate still must not be re-run. What changed is that the operator
@@ -205,14 +246,91 @@ answer, the person hunting the defect would have been immune.
 
 ---
 
+## The four open findings — VERBATIM (window 8; Justin-class rulings)
+
+**Do not paraphrase these, do not draft resolutions, do not touch the named articles.** They came from
+an external reviewer dispatched with the answer withheld — it was never told which articles were new,
+what was expected, or that acceptance was wanted. Full transcript:
+`docs/audits/phase-b/substrate-family-review-2026-08-06.txt`.
+
+> **1. COHERENCE — No.** *Intelligence Infers, Keywords Only Guard* says whether a message is a command
+> "**is made by an LLM**" and a keyword/regex list is "**NEVER the decision-maker**." Yet *The Operator
+> Channel Is Sacred* says "**a message-CONSUMING decision requires a DETERMINISTIC match, never a
+> bare-LLM guess**," and specifically permits pause consumption "**ONLY on a deterministic fast-path
+> match**." For benign pause commands, this is an unqualified conflict over who decides.
+>
+> **2. REDUNDANCY — Yes.** *A Wall Is a Hypothesis*, *Never a False Blocker*, and *Self-Unblock Before
+> Escalating* all require inventorying and exhausting existing means before declaring a blocker or
+> involving a human: "**first inventory the mechanisms**," "**inventory the means already in hand and
+> try them**," and "**Exhaust every unblock path… before requiring anything from a human**." Their
+> feasibility/agency/resolution labels do not establish a clear governing boundary for an ordinary
+> escalation.
+>
+> **3. PLACEMENT — Yes.** Several articles are operational engineering controls rather than "facts about
+> the substrate," notably *Bounded Blast Radius*, *Capacity Safety*, *Ownership-Gated Side Effects*, and
+> *Live-User-Channel Proof Before Done*. Additionally, articles explicitly described as "**A tree node
+> under**" another article—such as *Recall Over Our Own Material* and *A Dispatch Supplies the
+> Question*—are presented as peer headings, not children.
+>
+> **4. OVERREACH — Yes.** *Session Input Is a Principal* requires authority to be "**structurally
+> distinguishable**," but its implementation admits "**required practice… (acknowledged as willpower
+> until the structural fix lands)**." *Close the Loop* likewise claims "**Every loop the agent opens…
+> must be durably registered and re-surfaced**," while listing only several example mechanisms and
+> instructing "**Where there is no cadence, add one**"; that does not substantiate universal coverage.
+>
+> **5. GAPS — Yes.** *The Body and the Mind* says learned judgments become structure "**once proven by
+> repetition**" and that "**Every decision of consequence**" is recorded, but no article defines what
+> counts as sufficient proof, a consequential decision, or the required promotion/audit record. The
+> central "moving threshold" therefore lacks a stated governance obligation.
+>
+> **VERDICT: NOT ACCEPTED** — The family contains a direct decision-authority conflict, overlapping
+> blocker standards, misplaced operational controls, and structural claims whose enforcement is
+> incomplete.
+
+**Finding 3's SECOND half was mine and is already FIXED** — `scripts/lint-registry-tree-parentage.mjs`
+makes a declared parentage claim real (the parent must exist and must name the child back). The
+heading-level half is unfixable without breaking the registry parser: it matches `###` exactly, so a
+`####` child would silently vanish from the constitution's own accounting — a worse defect than the one
+being fixed. **Findings 1, 2, 4, 5 and the first half of 3 are untouched and are the operator's.**
+
+---
+
+## Window-8 traps — these are NEW and they will catch you
+
+1. **Your worktree may run ZERO commit and push gates, while looking fully equipped.**
+   `core.hooksPath` is relative and `.husky/_` is generated, not tracked. **Measured: 85 commits on
+   this branch went through with every gate inert.** Probe it: `git hook run pre-commit` — a missing
+   hook says *"cannot find a hook named pre-commit"*; the main checkout finds and runs it (that is your
+   control). **If inert, run them by hand before pushing** — `npm run lint`,
+   `node scripts/instar-dev-precommit.js`, `check-rule3-coverage.cjs`, `protect-migration-guarantee.js`,
+   `check-e2e-pairing.cjs`, then `pre-push-gate.js`, `pre-push-fixture-guard.mjs`, `npm run test:smoke`.
+   Running them by hand immediately caught three real things.
+2. **An injection proof can pass for the WRONG reason.** A check erroring on an unrelated bug exits
+   non-zero in every case, so the B-cases look like they passed and the A-case failure is the only tell.
+   **Assert the specific error string, not `$?`, and always run the A-case in the same harness.**
+   Happened once today on the recall-surface lint and was nearly recorded as a proven guard.
+3. **The agent home carries a stale copy of the whole source tree, and it greps perfectly cleanly.**
+   Your working directory WILL drift if you `cd` to send a message. Today I read a two-month-old
+   registry for several minutes; the only tell was that 30 articles did not reconcile with 34.
+   **Print `pwd` before trusting any grep of the registry or `src/`.**
+4. **A ratified standard's proposed guard can be forbidden by another ratified standard.** P5 nominated
+   a phrase-scan; it measured 100% false positives AND *Intelligence Infers* forbids a regex from making
+   that judgment. Check a proposed guard against the registry before building it.
+
+---
+
 ## What I would do next, in order
 
-1. **Nothing is queued. The gate is PASSED and the charter is CLOSED.** Do not re-run the gate, and do
-   not start a new finding sweep — both are already done.
-2. **Leave the spec alone** unless the operator approves it. Four review rounds; the remaining gaps are
-   prerequisites (the harness), not defects.
-3. **Nothing else is queued.** Three operator decisions are outstanding and none blocks work.
-
-**Do not start a new finding sweep.** The tree has more confirmed findings than it has capacity to
-remediate, and the manager's cycle-four read was explicit that this window's value was tree work rather
-than volume.
+1. **HOLD. Do not start new tree work.** Observer directive, 3:25pm cycle: the four findings are
+   Justin-class rulings, being presented with recommendations. Do not draft resolutions and do not
+   touch the named articles until the rulings land.
+2. **Do not re-run the exit gate and do not start a new finding sweep** — both already done, and the
+   tree has more confirmed findings than capacity to remediate.
+3. **Do not re-propose measure-vs-certify as a standard.** It is WITHDRAWN and folded into *Verify the
+   State*. This remains the most likely successor mistake here.
+4. **Leave the B0.1 schema spec alone** unless the operator approves it. Four review rounds; the
+   remaining gaps are prerequisites (the harness), not defects.
+5. **B0.4 is still open and explicitly NOT ratified** — do not size anything against an assumed answer.
+6. When the rulings land, the Substrate family audit needs a fresh converged review recorded with real
+   reviewers and a fingerprinted report. **Never hand-write that record.** It would make the build pass
+   in a minute and it would be a fabricated review inside the constitution.
