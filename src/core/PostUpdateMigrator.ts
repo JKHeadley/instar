@@ -1374,6 +1374,7 @@ export class PostUpdateMigrator {
     this.migrateDevGateTeethStrip(result);
     this.migrateThreeStandardsReviewChecks(result);
     this.migrateSymbolStateReviewCheck(result);
+    this.migrateDispatchWithholdsAnswer(result);
     this.migrateSpecConvergeAnthropicReviewerDisclosure(result);
     this.migrateCommitmentOwnerBackfill(result);
     this.migratePlaywrightProfilesSeed(result);
@@ -2243,6 +2244,81 @@ export class PostUpdateMigrator {
         result.errors.push(
           `${file.label}: ${err instanceof Error ? err.message : String(err)}`,
         );
+      }
+    }
+  }
+
+  // ── Dispatch-withholds-answer protocol (constitutional standard "A Dispatch
+  // Supplies the Question and Withholds the Answer", ratified 2026-08-06) ──
+  //
+  // Every bundled spec-converge reviewer template gains a `dispatch-withholds-answer`
+  // protocol block telling the dispatched reviewer to treat any expectation in its
+  // prompt as untrusted, ground its own expectations from source, and report a
+  // refutation as the more valuable result.
+  //
+  // Per Migration Parity case 5b: installBuiltinSkills() never overwrites an
+  // installed template, so a CONTENT update reaches already-installed agents ONLY
+  // through a dedicated idempotent migration.
+  //
+  // Idempotent via the marker. Fails SAFE in both directions: a bundled template
+  // that does not carry the complete protocol is reported rather than copied (a
+  // marker without its instructions is a symbol standing in for the protocol —
+  // the exact defect the parent standard forbids), and an installed template whose
+  // anchor is missing or ambiguous is left byte-for-byte untouched.
+  private migrateDispatchWithholdsAnswer(result: MigrationResult): void {
+    const MARKER = 'dispatch-withholds-answer';
+    // The three instructions that make the block load-bearing. Kept in sync with
+    // scripts/lint-dispatch-withholds-answer.mjs, which refuses a bundled template
+    // missing any of them — so this list cannot silently drift out of agreement
+    // with the shipped clause.
+    const REQUIRED = [
+      'untrusted context, not a finding',
+      'refuting it is the more valuable result',
+      'separately from any hypothesis',
+    ] as const;
+    const TEMPLATE_DIR = ['skills', 'spec-converge', 'templates'];
+    let bundledDir: string;
+    try {
+      bundledDir = path.join(__dirname, '..', '..', ...TEMPLATE_DIR);
+      if (!fs.existsSync(bundledDir)) return; // no bundled templates — nothing to migrate
+    } catch {
+      return;
+    }
+    let names: string[];
+    try {
+      names = fs.readdirSync(bundledDir).filter((f) => /^reviewer-.*\.md$/.test(f)).sort();
+    } catch (err) {
+      result.errors.push(`dispatch-withholds-answer: cannot read bundled templates — ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    for (const name of names) {
+      const label = `spec-converge ${name} (dispatch-withholds-answer protocol)`;
+      try {
+        const installed = path.join(this.config.projectDir, '.claude', ...TEMPLATE_DIR, name);
+        if (!fs.existsSync(installed)) continue; // not installed here — installBuiltinSkills will ship it
+        const bundledContent = fs.readFileSync(path.join(bundledDir, name), 'utf8');
+        // Extract the protocol block from the BUNDLED file rather than restating
+        // it in code: two copies of one clause is the defect the sibling standard
+        // Remove What Demands Attention names.
+        const blockLines = bundledContent.split('\n').filter((l) => l.startsWith('> '));
+        const block = blockLines.join('\n');
+        if (!block.includes(MARKER) || REQUIRED.some((c) => !block.includes(c))) {
+          result.errors.push(`${label}: bundled template does not carry the complete protocol — refusing to copy a partial clause`);
+          continue;
+        }
+        const current = fs.readFileSync(installed, 'utf8');
+        if (current.includes(MARKER)) continue; // already migrated — idempotent
+        // Anchor: the role paragraph that every reviewer template opens with.
+        const anchorMatch = /^(# .+\n\n.+?\n)/m.exec(current);
+        if (!anchorMatch) {
+          result.skipped.push(`${label}: customized or unknown layout — left untouched`);
+          continue;
+        }
+        const at = anchorMatch.index + anchorMatch[1].length;
+        fs.writeFileSync(installed, `${current.slice(0, at)}\n${block}\n${current.slice(at)}`);
+        result.upgraded.push(label);
+      } catch (err) {
+        result.errors.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
