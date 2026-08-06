@@ -1,0 +1,144 @@
+{
+  "$comment": [
+    "Declared blocking-decision surfaces authored OUTSIDE the TypeScript population the",
+    "ratchets walk. Enforces the constitutional standard 'A Decision That Can Block Must",
+    "Live Where the Checks Can See It' (Standards Registry, The Substrate).",
+    "",
+    "blocking[] is SHRINK-ONLY against blockingCeiling: migrate a decision into TypeScript",
+    "and lower the ceiling. Raising the ceiling is a deliberate, reviewable act.",
+    "",
+    "nonBlocking[] is CONTENT-PINNED: a declared non-blocking script whose bytes change must",
+    "be re-declared. That closes the gap the declaration alone leaves open -- a file declared",
+    "non-blocking could otherwise silently acquire a refusal and stay unwatched.",
+    "",
+    "Seeded 2026-08-06 from the controlled 2026-08-05 F10 census",
+    "(docs/audits/phase-b/f10-triage.md): 26 files, 12 genuine decision surfaces,",
+    "MUST-BE-SHELL 0 / INCIDENTALLY-SHELL 12 / UNKNOWN 0 -- every one of the twelve can move."
+  ],
+  "population": "src/templates/**/*.{sh,js,mjs}",
+  "censusRef": "docs/audits/phase-b/f10-triage.md",
+  "seededAt": "2026-08-06",
+  "blockingCeiling": 12,
+  "blocking": [
+    {
+      "path": "src/templates/hooks/build-stop-hook.sh",
+      "decision": "blocks the owning session's Stop while a build is active"
+    },
+    {
+      "path": "src/templates/hooks/dangerous-command-guard.sh",
+      "decision": "blocks catastrophic commands always; risky commands at safety level 1"
+    },
+    {
+      "path": "src/templates/hooks/free-text-guard.sh",
+      "decision": "blocks AskUserQuestion for free-text credential/identity input"
+    },
+    {
+      "path": "src/templates/hooks/grounding-before-messaging.sh",
+      "decision": "blocks Bash messaging commands when convergence-check reports issues"
+    },
+    {
+      "path": "src/templates/hooks/intercept-imsg-send.js",
+      "decision": "blocks direct/indirect iMessage send attempts from Bash"
+    },
+    {
+      "path": "src/templates/scripts/convergence-check.sh",
+      "decision": "exits non-zero to stop outbound messaging on heuristic quality issues"
+    },
+    {
+      "path": "src/templates/scripts/git-sync-gate.sh",
+      "decision": "stops/skips the git-sync job when preconditions are not met"
+    },
+    {
+      "path": "src/templates/scripts/imessage-reply.sh",
+      "decision": "refuses send unless the server validates and returns a single-use token"
+    },
+    {
+      "path": "src/templates/scripts/serendipity-capture.sh",
+      "decision": "refuses capture when disabled, rate-limited, invalid, or secrets present"
+    },
+    {
+      "path": "src/templates/scripts/slack-reply.sh",
+      "decision": "blocks send on malformed delivery id, absent binding, or tone-gate denial"
+    },
+    {
+      "path": "src/templates/scripts/telegram-reply.sh",
+      "decision": "refuses misplaced flags, live-credential exposure, and reasonless tone overrides"
+    },
+    {
+      "path": "src/templates/scripts/whatsapp-reply.sh",
+      "decision": "blocks send on server tone-gate denial"
+    }
+  ],
+  "nonBlocking": [
+    {
+      "path": "src/templates/hooks/compaction-recovery.sh",
+      "sha256": "ffbdc114a6845550085e282d2da08dd8790dc584539110f11c4bb2c8365b6e57",
+      "reason": "AUTO-SEEDED: not identified as a blocking decision by the 2026-08-05 F10 census; re-review on content change"
+    },
+    {
+      "path": "src/templates/hooks/model-tier-reconciler.js",
+      "sha256": "445550f4904ea45da8382c1bb1b5b461c298622d5fbddb87256ecb6d57a37d78",
+      "reason": "states 'never blocks the turn'; exits 0 on missing prerequisites"
+    },
+    {
+      "path": "src/templates/hooks/model-tier-skill-entry.sh",
+      "sha256": "29a6dc1f5b1fd4f86017c203746f1f81a0fd02de4817071a4eeec6c1810ea90f",
+      "reason": "AUTO-SEEDED: not identified as a blocking decision by the 2026-08-05 F10 census; re-review on content change"
+    },
+    {
+      "path": "src/templates/hooks/session-start.sh",
+      "sha256": "985941e22ff1b68fdaab400c96e55320d8ed345a1ed154cac178d032076031bc",
+      "reason": "injects startup context; exits open when config/port/health are unavailable"
+    },
+    {
+      "path": "src/templates/hooks/skill-usage-telemetry.sh",
+      "sha256": "77fb4080da1555c4961b22a0cb27cb71c5384718991a7ed14ceba7801a77e60f",
+      "reason": "AUTO-SEEDED: not identified as a blocking decision by the 2026-08-05 F10 census; re-review on content change"
+    },
+    {
+      "path": "src/templates/hooks/slack-channel-context.sh",
+      "sha256": "45f3eddcd4feab6f15f270edc5c8be3131c362fe0e4b9232834d62bbe0a3dbad",
+      "reason": "AUTO-SEEDED: not identified as a blocking decision by the 2026-08-05 F10 census; re-review on content change"
+    },
+    {
+      "path": "src/templates/hooks/telegram-topic-context.sh",
+      "sha256": "c4af64e9364ed241b3480fd07e4822faf036612ac73a9d8b4afb22a1ea7fdc15",
+      "reason": "AUTO-SEEDED: not identified as a blocking decision by the 2026-08-05 F10 census; re-review on content change"
+    },
+    {
+      "path": "src/templates/scripts/emit-session-clock.sh",
+      "sha256": "6111425eed298b093b95677bd8dc8f0c751344e103b3b4fed7042b327852663b",
+      "reason": "states 'signal-only: pure stdout, never blocks'; exits 0 on unsupported modes"
+    },
+    {
+      "path": "src/templates/scripts/health-watchdog.sh",
+      "sha256": "4be25bb6180bc16e0039359ed15688e3c6c1fc99fe369297d5e100c0eb1bad18",
+      "reason": "AUTO-SEEDED: not identified as a blocking decision by the 2026-08-05 F10 census; re-review on content change"
+    },
+    {
+      "path": "src/templates/scripts/instar-watchdog.sh",
+      "sha256": "207d3cf08ac5bd1030dd35f6d30f472aef9c087e5635e23d92bd574d6291af6b",
+      "reason": "monitors/self-heals/escalates; recovery, not refusal of a user or tool action"
+    },
+    {
+      "path": "src/templates/scripts/instar-worktree-create.sh",
+      "sha256": "c258707dafb41518f376ffbab4ea3c5a824d6ab7dc9b1df5f8b8a2f7f99fbaee",
+      "reason": "boundary case: constrains its own fallback path; accepts no alternate destination to refuse"
+    },
+    {
+      "path": "src/templates/scripts/load-assess.sh",
+      "sha256": "0d8c335b167a7e46099b8636692849a48d4c0ca5722853a453d1a963427c9b88",
+      "reason": "AUTO-SEEDED: not identified as a blocking decision by the 2026-08-05 F10 census; re-review on content change"
+    },
+    {
+      "path": "src/templates/scripts/secret-drop-retrieve.mjs",
+      "sha256": "fb5b4e3d31f7b7398ced63fd9578477dce4fc13e4890a77ac1edbc1221d8eb54",
+      "reason": "boundary case: secret-handoff error/consume semantics, not an enforcement block"
+    },
+    {
+      "path": "src/templates/scripts/secret-get.mjs",
+      "sha256": "2b206fc53579a824cc07da769338bb822a1a455532b3f73c7e0ab1dabccfa424",
+      "reason": "boundary case: retrieval failure containment (emits zero secret bytes), not a policy block"
+    }
+  ]
+}
