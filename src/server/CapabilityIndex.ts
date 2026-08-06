@@ -787,8 +787,8 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       endpoints: [
         'POST /semantic/remember — store a memory',
         'GET /semantic/recall/:id — fetch a memory by id',
-        'GET /semantic/search?q=... — semantic search',
-        'GET /semantic/search/hybrid?q=... — hybrid (vector + keyword) search',
+        'GET /semantic/search/hybrid?q=... — RECALL BY MEANING (vector + keyword). Use this one: it returns nearest neighbours, so a miss is a real absence.',
+        'GET /semantic/search?q=... — LITERAL keyword match only (SQLite FTS5). Zero results means "no literal match in the tokens you tried", NOT "this does not exist".',
         'POST /semantic/connect — link two memories',
         'GET /semantic/explore/:id — graph traversal from a memory',
         'POST /semantic/verify/:id — mark a memory verified',
