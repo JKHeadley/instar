@@ -7056,6 +7056,83 @@ export async function startServer(options: StartOptions): Promise<void> {
       scheduler.start();
       console.log(pc.green('  Scheduler started'));
 
+      // ── CrashLoopPauser (B3.1) — the construction that was missing ──────
+      //
+      // The class shipped written and unit-tested with EIGHT constructions in
+      // its own test file and ZERO in production source, while a job failed 492
+      // consecutive times and nothing paused it. The tests measured "this class
+      // behaves correctly when constructed" and were read as "this guard works."
+      // That gap is the whole finding; this block closes it.
+      //
+      // Ships DRY-RUN by default because pausing disables a job — real
+      // authority. `dryRun: true` evaluates and logs the intended pause without
+      // rewriting the jobs file, so the graduated-rollout ladder is walked
+      // rather than skipped.
+      const clpCfg = config.monitoring?.crashLoopPauser ?? {};
+      if (clpCfg.enabled !== false) {
+        const { CrashLoopPauser } = await import('../monitoring/CrashLoopPauser.js');
+        const clpDryRun = clpCfg.dryRun !== false;
+        const sched = scheduler;
+        const pauser = new CrashLoopPauser(sched.getRunHistory(), {
+          windowHours: clpCfg.windowHours,
+          failureThreshold: clpCfg.failureThreshold,
+          shortRunThreshold: clpCfg.shortRunThreshold,
+          // Config slugs ADD to the built-in deny-list; they never replace it,
+          // so an operator cannot accidentally make session-reaper pausable by
+          // naming one unrelated job.
+          neverPause: clpCfg.neverPause?.length
+            ? new Set<string>([
+                'infrastructure-auto-fixer', 'orphan-reaper', 'session-reaper',
+                ...clpCfg.neverPause,
+              ])
+            : undefined,
+        });
+        let clpLastResult: { candidates: number; paused: string[]; dryRun: boolean; at: string } | null = null;
+        let clpLastError: string | null = null;
+        const runCrashLoopPass = (): void => {
+          try {
+            const result = pauser.run({
+              jobs: sched.getJobs(),
+              jobsFile: config.scheduler.jobsFile,
+              dryRun: clpDryRun,
+            });
+            clpLastResult = {
+              candidates: result.candidates.length,
+              paused: result.paused,
+              dryRun: result.dryRun,
+              at: new Date().toISOString(),
+            };
+            clpLastError = null;
+            if (result.candidates.length > 0) {
+              const verb = result.dryRun ? 'WOULD pause' : 'paused';
+              console.log(pc.yellow(
+                `  CrashLoopPauser: ${verb} ${result.candidates.length} job(s) — ` +
+                result.candidates.map((c) => `${c.slug} (${c.reason}, ${c.failureCount} failures)`).join(', '),
+              ));
+            }
+          } catch (err) {
+            // Never let a pauser fault take down the boot path or the interval.
+            clpLastError = err instanceof Error ? err.message : String(err);
+            console.error(pc.red(`  CrashLoopPauser pass failed: ${clpLastError}`));
+          }
+        };
+        const clpInitialDelay = clpCfg.initialPassDelayMs ?? 10 * 60_000;
+        if (clpInitialDelay > 0) setTimeout(runCrashLoopPass, clpInitialDelay).unref?.();
+        const clpInterval = setInterval(runCrashLoopPass, clpCfg.intervalMs ?? 60 * 60_000);
+        clpInterval.unref?.();
+        // Registered as a real guard: it is no longer scheduler-internal
+        // mechanics once it is constructed and running on its own cadence.
+        guardRegistry.register('monitoring.crashLoopPauser', () => ({
+          enabled: true,
+          dryRun: clpDryRun,
+          lastResult: clpLastResult,
+          lastError: clpLastError,
+        }));
+        console.log(pc.green(
+          `  CrashLoopPauser: wired at boot (${clpDryRun ? 'DRY-RUN — logs intended pauses only' : 'ARMED — will disable crash-looping jobs'})`,
+        ));
+      }
+
       // Wire up Baseline TelemetryCollector now that scheduler is available
       if (telemetryHeartbeat && scheduler) {
         const sched = scheduler; // capture for closure narrowing

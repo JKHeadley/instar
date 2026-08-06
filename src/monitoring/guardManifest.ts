@@ -510,6 +510,25 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Reclaims merged+clean+unused agent worktrees.',
   },
   {
+    // B3.1. Previously listed in NOT_A_GUARD as "scheduler-internal mechanics …
+    // not its own guard" — a reason that PRESUMED it ran. It was constructed
+    // eight times in its own unit test file and zero times in production source
+    // while a job failed 492 consecutive times. The exemption was removed
+    // together with the missing construction: once it is wired on its own
+    // cadence and registered, it is a guard, and the inventory must be able to
+    // report whether it is actually on.
+    key: 'monitoring.crashLoopPauser',
+    kind: 'config',
+    configPath: 'monitoring.crashLoopPauser.enabled',
+    defaultEnabled: true,
+    dryRunConfigPath: 'monitoring.crashLoopPauser.dryRun',
+    expectedTickMs: 3_600_000,
+    process: 'server',
+    expectRuntime: true,
+    component: 'CrashLoopPauser',
+    description: 'Auto-pauses a job that keeps crash-looping; ships dry-run because pausing disables a job.',
+  },
+  {
     // Machine-coherence guard (machine-coherence-guard §6/§7, roadmap 4.1
     // F4/P0-1). `enabled` is deliberately OMITTED from ConfigDefaults — the
     // runtime resolves it through the developmentAgent dark-feature gate (dark
@@ -1146,7 +1165,6 @@ export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
   { component: 'TemplatesDriftVerifier', reason: 'Deployed-script drift lint; CI-style verifier, not a runtime guard.' },
   { component: 'TokenLedger', reason: 'Read-only token observability (never gates); the spec class-precedent for always-on read-only features.' },
   { component: 'TokenLedgerPoller', reason: 'Background scanner feeding TokenLedger; observability plumbing.' },
-  { component: 'CrashLoopPauser', reason: 'Auto-pause of runaway jobs is scheduler-internal mechanics; surfaced via scheduler.enabled + job state, not its own guard.' },
   { component: 'QuotaTrackerPoller', reason: 'Polling arm of QuotaTracker; covered by monitoring.quotaTracking.' },
   { component: 'StuckSignatureClassifier', reason: 'Pure classifier (standby honesty); signal-only, no enabled switch, no action.' },
   { component: 'MessageSentinel', reason: 'Emergency-stop message classifier; inbound-dispatch mechanics inseparable from messaging, no operator switch.' },
