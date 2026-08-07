@@ -162,6 +162,17 @@ function writeFixture(decisionPointsSection: string | null): { spec: string; rep
       '## Open questions',
       '*(none)*',
       ...(decisionPointsSection === null ? [] : ['', '## Decision points touched', decisionPointsSection]),
+      // The maturation-plan gate REFUSES as of 2026-08-07 (Maturation Path clause
+      // (a)); without this section the fixture would fail on THAT gate rather than
+      // the decision-point gate under test here.
+      '',
+      '## Maturation plan',
+      '',
+      '- **test-agent-live:** immediately',
+      '- **dev-agent-live:** after one clean soak day',
+      '- **fleet:** after operator review',
+      '- **graduation criterion:** stated',
+      '- **dark-window:** 14d',
       '',
       '## Non-goals',
       'nothing',
