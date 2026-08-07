@@ -195,3 +195,44 @@ that gained a guard while keeping a stale countdown.
 **Rollback.** Delete the script and its one entry in the `lint` chain; revert one heading constant.
 The countdown declarations would then be inert prose — which is precisely the state this guard exists
 to make impossible, so the rollback is loud by construction.
+
+---
+
+## Addendum 2 — the maturation refusal (ruling 5)
+
+**Changed:** `skills/spec-converge/scripts/write-convergence-tag.mjs` (warn → refuse),
+`src/core/StandardsRegistryParser.ts` (the second owner of the recognized-heading set).
+
+**Over-block — this one is real and deliberate.** A spec that reaches convergence without a complete
+`## Maturation plan` can no longer be stamped. That is the point of clause (a): v1 was a warning, and a
+warning that never blocks is advice, which is exactly what "ships dark, matures never" already ignores.
+The refusal is STRUCTURAL — missing / duplicated / field-incomplete section — never a judgment about
+whether a plan is any good, which stays with the lessons-aware reviewer. The failure message names every
+required field so the fix is mechanical.
+
+**Under-block, named:** clauses (b) graduation-evidence quality, (c) ship-time registration, and (d)
+routing have NO mechanical check. Only (a) has teeth. This is written into the article's own
+*Applied through* rather than left for a reader to assume the whole amendment is enforced.
+
+**A latent defect this change introduced and caught before shipping.** The new refusal message
+interpolates `REQUIRED_FIELDS`, which was not imported — a `ReferenceError` on the refusal path only.
+It would have passed every A-case, every lint, and every existing test, and blown up the first time a
+real spec was missing its plan: the error path is the one nobody exercises. Caught by running the
+B-case rather than reasoning about it.
+
+**Proof.** Two-sided against the REAL script, with a single-variable difference: the A-case spec tags
+through to a convergence stamp; the B-case, identical except for the maturation section, is refused by
+name (`MATURATION_PLAN_REFUSED … missing-section`) with the field list rendering correctly — which is
+also what proves the import fix.
+
+**A second finding, worth its own line.** The recognized-heading set has TWO owners:
+`scripts/standards-coverage.mjs` and `src/core/StandardsRegistryParser.ts`. Adding the countdown field
+to only the first was accepted by the coverage check and then REFUSED by the asset generator's canary
+("refusing to ship a constitution that the runtime would classify as untrustworthy"). Two owners of one
+list is the defect ruling 2 was raised about, sitting inside the machinery that enforces the registry.
+Both are updated here; consolidating them is NOT done in this change and is flagged rather than
+silently left — it is a shared-constant refactor across a runtime parser, which does not belong in a
+batch executing documentation rulings.
+
+**Rollback.** Revert the call-site block to its warn form (the detector module is unchanged), and revert
+one heading constant in each of the two owners.

@@ -48,7 +48,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkEli16Overview } from '../../../scripts/eli16-overview-check.mjs';
-import { findMaturationPlanGaps } from '../../../scripts/feature-maturation-plan-gate.mjs';
+import { findMaturationPlanGaps, REQUIRED_FIELDS } from '../../../scripts/feature-maturation-plan-gate.mjs';
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -319,8 +319,19 @@ if (!dpGate.ok) {
   process.exit(1);
 }
 
-// Feature Maturation Discipline v1: SIGNAL only. Missing/partial structure is
-// visible during convergence but MUST NOT change the stamp's exit status.
+// Feature Maturation Discipline v2: REFUSES. Promoted from warn-only by operator
+// ruling 2026-08-07 (Maturation Path amendment clause (a)).
+//
+// v1 shipped as SIGNAL deliberately, so the corpus of real specs could be reviewed
+// before promotion. That review is what promoted it: a warn that never blocks is
+// advice, and advice is exactly what "ships dark, matures never" already ignores.
+// The standard's own words are "'ships dark' is a starting state, never a finished
+// one" — a check that merely mentions the missing plan cannot hold that line.
+//
+// The refusal is STRUCTURAL, not semantic: it fires only on a missing, duplicated,
+// or field-incomplete `## Maturation plan` section. Whether a plan is any GOOD
+// remains spec-converge's lessons-aware reviewer's judgment — this refuses the
+// absence of a declaration, never the adequacy of one.
 const maturationGate = findMaturationPlanGaps(content);
 if (!maturationGate.ok) {
   const details = [
@@ -328,7 +339,14 @@ if (!maturationGate.ok) {
     maturationGate.missing?.length ? `missing=${maturationGate.missing.join(',')}` : '',
     maturationGate.duplicates?.length ? `duplicates=${maturationGate.duplicates.join(',')}` : '',
   ].filter(Boolean).join(' ');
-  console.error(`MATURATION_PLAN_WARN ${specArg}: ${details}`);
+  console.error(
+    `MATURATION_PLAN_REFUSED ${specArg}: ${details}\n\n` +
+    `A spec cannot converge without a complete \`## Maturation plan\`. Add the section with ` +
+    `every required field (${REQUIRED_FIELDS.join(', ')}), each declared exactly once, then re-run.\n` +
+    `A feature with no declared path to maturity ships dark forever — which is incoherence on the ` +
+    `maturation axis, not caution.`,
+  );
+  process.exit(1);
 }
 
 // Parse YAML frontmatter manually (no dependency).

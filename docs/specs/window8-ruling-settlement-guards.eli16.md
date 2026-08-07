@@ -137,3 +137,51 @@ build. Stronger on every axis that matters, but it *is* a substitution, so it's 
 **Proved the same way as the others** — by breaking it three ways: a deadline set in the past (the arm
 that matters), a relabelled rule with no countdown at all, and a rule that quietly gained a guard but
 kept its countdown anyway. Each was caught, each named the right reason, each restored afterwards.
+
+## Problem four: "we'll mature it later" with nothing to make later arrive
+
+Instar ships risky features **dark** — built, but switched off — and then graduates them in stages. The
+rule says dark is a *starting* state, never a finished one. In practice things shipped dark and stayed
+there, because the check that asked for a maturation plan only ever **warned**. You could converge a
+spec with no plan at all; you'd just see a note go by.
+
+A warning that never blocks is advice. And advice is exactly what "ship it dark and move on" already
+ignores — nobody who was going to skip the plan is stopped by a line of console output.
+
+So it **refuses** now. No complete maturation plan, no convergence stamp. It refuses on *structure* —
+the section is missing, duplicated, or missing fields — never on whether the plan is any good, which
+stays a human judgement.
+
+Three more clauses came with it. A feature graduates on **its own logged behaviour** — what it actually
+did while dark, what it decided, when it fired and when it held back — not on a green test suite. That
+distinction is not pedantry: we have a component with eight passing tests that paused nothing across
+four hundred and ninety-two consecutive failures, because the tests measured "this class works when
+someone builds it" and everyone read them as "this guard works." The decision to arm a feature gets
+**recorded when it ships**, not whenever someone next remembers. And such decisions have exactly **one
+home** — recorded anywhere else, the thing built to resurface them never will.
+
+**Honest about the teeth:** only the first clause is mechanically enforced. The other three are stated
+obligations with no check yet, and that is written into the rule itself, so nobody reads the whole
+amendment as guarded.
+
+## A bug this change made, and caught before it shipped
+
+The new refusal message lists the required fields — and the variable holding them **wasn't imported**.
+That would have thrown an error instead of printing the message, but *only* on the refusal path. Every
+healthy case would have passed. Every check would have been green. It would have exploded the first
+time someone genuinely forgot a maturation plan — which is to say, the exact moment it was needed.
+
+It was caught by running the failing case rather than reasoning about it. The error path is the one
+nobody exercises, which is why it has to be exercised deliberately.
+
+## And one more, found by a canary rather than by me
+
+The list of recognised section names in the constitution turns out to have **two owners** — one used by
+the coverage checker, one used by the code that ships the constitution with the product. I added the new
+countdown field to the first, everything passed, and then the second refused to build, saying it would
+not ship a constitution the runtime would classify as untrustworthy.
+
+That is the same defect as problem two — one thing with two owners — sitting inside the machinery that
+polices the constitution. Both are updated here. Merging them is deliberately **not** done in this
+change: it is a refactor across a runtime parser, and it does not belong in a batch that is executing
+documentation rulings. It is written down instead of quietly left.
