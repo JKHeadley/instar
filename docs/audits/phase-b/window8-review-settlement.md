@@ -79,3 +79,69 @@ after each.
 pins the *disposition contract*, not the *contents* of the literal stop set. A stop phrasing that
 neither the floor matches nor the model infers is still missed, and no test in this file would
 notice.
+
+---
+
+## §2 — BLOCKER STANDARDS: one obligation, one owner
+
+**Finding 2, verbatim.** *REDUNDANCY — Yes. A Wall Is a Hypothesis, Never a False Blocker, and
+Self-Unblock Before Escalating all require inventorying and exhausting existing means before
+declaring a blocker or involving a human: "first inventory the mechanisms," "inventory the means
+already in hand and try them," and "Exhaust every unblock path… before requiring anything from a
+human." Their feasibility/agency/resolution labels do not establish a clear governing boundary for
+an ordinary escalation.*
+
+**The ruling.** Fold the three into the self-unblock ladder as the single governing article. *"Remove
+what demands attention — delete the duplication, do not reconcile it."*
+
+**The interpretive fork, and the evidence that closed it.** The ruling admits two readings: DELETE the
+two sibling articles, or delete the duplicated OBLIGATION and leave one owner. This is recorded rather
+than silently resolved, because the two readings produce materially different registries.
+
+The measurement that decided it: those two article NAMES are referenced across **~20 files** —
+`docs/specs/wall-is-a-hypothesis-standard.eli16.md`, `docs/specs/never-a-false-blocker-standard.md`,
+`docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md` (which the `/spec-converge` lessons-aware reviewer
+reads), the **B16_UNVERIFIED_WALL** and **B17_FALSE_BLOCKER** tone-gate rules named after them, and
+four test files that assert them BY NAME
+(`tests/unit/messaging-tone-gate-b16.test.ts`, `-b17`, and two integration siblings).
+
+Deleting the headings would therefore either **strand ~20 stale references** — the precise rot this
+phase has spent two days fighting — or **drag a rename of two live safety guards into a documentation
+ruling**. Neither is what the finding asked for. What the reviewer actually named as the defect is the
+missing **governing boundary**, and that is what is now fixed: the obligation has one owner, the
+siblings keep only what each uniquely detects, and each disclaims and hands off explicitly.
+
+**If the operator meant heading-deletion, that is a second and larger change.** Named here rather than
+quietly foreclosed, because a fork resolved silently is indistinguishable from a fork never noticed.
+
+**Why this is deletion and not reconciliation.** Reconciling would mean writing a paragraph explaining
+how three articles coexist and which wins when — *more* words to keep in agreement, which is the exact
+failure mode *Remove What Demands Attention* was earned from. What was done instead: the restatement
+was removed from two articles so there is nothing left to reconcile.
+
+**What was built.** `scripts/lint-single-governing-obligation.mjs`, wired into the `lint` chain.
+Prose saying "one owner" is exactly the class of claim that rots — the next author to strengthen a
+sibling will restate the ladder there in good faith and nothing would notice.
+
+**The proof, four injections, each failing for its OWN reason:**
+
+| injection | observed failure | discriminates? |
+|---|---|---|
+| ladder restated in a sibling | `the ladder is stated in 2 articles … delete the copy, do not reconcile it` | yes — named both holders |
+| sibling drops its disclaimer | `"A Wall Is a Hypothesis" does not carry the disclaimer …` | yes — other arms clean |
+| governing article drops its declaration | `no longer carries the governing declaration …` | yes — other arms clean |
+| sibling stops naming the owner | `does not name "Self-Unblock Before Escalating"` (both siblings) | yes — other arms clean |
+
+**A process failure worth recording, because it destroyed work.** The first injection run used
+`git checkout --` to restore between injections, while the item-2 registry edits were still
+UNCOMMITTED. The first restore reverted them, so injections 2 and 3 ran against the reverted file and
+their "failures" measured the absence of the fold rather than the injection. The tell was the RESTORED
+CONTROL arm coming back dirty instead of clean — which is the only reason it was caught. **A control
+arm is not ceremony; it is the thing that catches you when your harness is lying.** The edits were
+redone, committed FIRST, and the injections re-run against a scratchpad backup.
+
+**What it does not certify:** a restatement in DIFFERENT words. That limit is deliberate — judging
+whether new prose MEANS the same obligation is an open-domain semantic call, and *Intelligence Infers,
+Keywords Only Guard* forbids a regex from making it (window-8 trap 4: a proposed guard can be
+forbidden by another ratified standard). The population is also DECLARED, not discovered: a new
+article inventing a fourth surrender surface is invisible until someone adds it to the constant.
