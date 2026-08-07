@@ -57,6 +57,19 @@
 >    (The side-effects review even had an over-block section arguing the refusal was the point — and
 >    it never asked what already depended on the warn. Analysing your change is not analysing its
 >    dependents.)
+> 10. **`instar dev:preflight` reports `lint: FAIL` in a worktree even when lint is CLEAN — and the
+>    obvious "fix" is dangerous.** Measured 2026-08-07: `npm run lint` exits 0, while preflight reports
+>    a lint failure. Cause: `resolveLintCommand` PREFERS `pnpm lint` when pnpm is present, and in an
+>    `instar worktree create` layout `node_modules` is a SYMLINK to the shared `.build/instar/node_modules`.
+>    pnpm treats that as a foreign modules dir, decides to reinstall, and aborts with
+>    `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` — *"Aborted removal of modules directory due to no TTY."*
+>    **The abort is the safe outcome.** pnpm's own suggested remedies are to set `CI=true` or
+>    `confirmModulesPurge=false` — either of which converts the abort into an actual PURGE of the
+>    node_modules that EVERY worktree on this machine symlinks to. **Do not apply that remedy.** Run
+>    `npm run lint` directly to get the real lint verdict. CI is unaffected (real node_modules, fresh
+>    install), which is why `tests/e2e/dev-preflight-cli.test.ts` is green there and red here — a
+>    local-only red that is an environment/layout interaction, not a code defect, and NOT caused by the
+>    window-8 commits (that file and `devPreflight.ts` are untouched by them).
 > 9. **The eli16 CI gate checks the PR DESCRIPTION, not the `.eli16.md` file.** A perfect ELI16
 >    committed to `docs/specs/` does not satisfy it. Fix by PATCHing the PR body (it re-runs on
 >    `edited`). `gh` is absent here; the GitHub token is reachable via `git credential fill` for
