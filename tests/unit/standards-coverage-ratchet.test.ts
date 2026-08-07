@@ -862,8 +862,18 @@ describe('standards-coverage ratchet script', () => {
       }>;
     };
 
-    expect(report.total).toBe(82);
-    expect(report.enforcedRatio).toBe(0.7195);
+    // Snapshot of the LIVE constitution. These literals are measurements, updated
+    // deliberately when the registry changes — never loosened to make a run pass.
+    //
+    // 2026-08-07: 82 -> 86 and 0.7195 -> 0.7326. The 82 had been stale since the
+    // four tree nodes were ratified on 2026-08-06; this assertion was already RED
+    // before the window-8 ruling batch touched it, and nothing caught it because
+    // the commit gates in this worktree are inert (`.husky/_` is generated and
+    // untracked, so `git hook run pre-commit` finds no hook). A ratchet that is
+    // never executed is indistinguishable from one that passes — which is the
+    // registry's own "a dark feature guards nothing", pointed at a test.
+    expect(report.total).toBe(86);
+    expect(report.enforcedRatio).toBe(0.7326);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',
     ]);
