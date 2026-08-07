@@ -2,7 +2,53 @@
 
 ## WHERE YOU ARE AND WHAT TO OPEN (read this block first)
 
-> ## ⚠️ WINDOW 8 CURRENT STATE — 2026-08-06 ~21:30 PDT. THIS SUPERSEDES EVERYTHING BELOW.
+> ## ⚠️ 2026-08-07 ~04:15 PDT — THE FIVE RULINGS ARE LANDED. THIS SUPERSEDES EVERY BLOCK BELOW.
+>
+> **Justin ruled YES TO ALL FIVE on 2026-08-07 00:53. All five are executed, committed, pushed, and
+> remote-verified at `956229aed`** (local == FETCH_HEAD, verified with a negative control — a plain
+> `git log origin/<branch>` returns EMPTY in this worktree and that looks identical to "absent",
+> which is trap-shaped; fetch explicitly and read FETCH_HEAD).
+>
+> | ruling | landed as | teeth |
+> |---|---|---|
+> | 1 · emergency-stop floor/intelligence split | doctrine into *Intelligence Infers*; *Operator Channel* points at it | `tests/unit/emergency-stop-floor-intelligence-split.test.ts` |
+> | 2 · blocker fold, one owner | *Self-Unblock* governs; two siblings disclaim + hand off | `scripts/lint-single-governing-obligation.mjs` |
+> | 3 · misfiled knobs | 4 articles Substrate → Building, byte-identical | (placement; exposed the Building floor) |
+> | 4 · honest labels + countdown | both relabelled; new `Documented-only until` field | `scripts/lint-documented-only-countdown.mjs` |
+> | 5 · maturation amendment | plan check REFUSES; clauses (b)(c)(d) stated | the convergence chokepoint refusal |
+>
+> ### 🔴 THE ONE THING LEFT — and it is the SAME kind of red as before
+> **Three family audit records are stale** (Building, Shipping, The Substrate — Shipping joined
+> because ruling 5 amended it). That is now the ONLY failure in `standards-coverage --check`. All
+> family floors HOLD. Aggregate enforced ratio 0.7326; dangling 0; unclassified sections 0.
+>
+> **The re-review is PREPARED and NOT RUN:** `docs/audits/phase-b/family-review-2026-08-07/`.
+> **DO NOT hand-write the audit record** — that is a fabricated review inside the constitution.
+> Blocked because the codex account hit its usage limit (resets 20:37); gemini has no key and there is
+> no vault on this machine; pi is absent. A second codex home on this machine works but is NOT
+> registered to this agent — spending it is an operator approval, not an agent decision.
+>
+> ### Live positions a successor cannot reconstruct
+> 1. **Ruling 2 had an interpretive fork and I took the smaller reading** — deleted the duplicated
+>    OBLIGATION, not the two articles, because those names are load-bearing across ~20 files including
+>    B16/B17 and four tests. **If Justin meant heading-deletion, that is a second, larger change.**
+> 2. **The Substrate sits at EXACTLY its floor** (20/30). Zero margin — the next honesty-driven
+>    downgrade in that family trips the build.
+> 3. **The recognized-heading set has TWO OWNERS** (`scripts/standards-coverage.mjs` and
+>    `src/core/StandardsRegistryParser.ts`). Both updated; consolidating them is deliberately NOT done.
+> 4. **Ruling 5 shipped teeth for clause (a) ONLY.** (b), (c), (d) are stated obligations with no check.
+>
+> ### New traps, earned tonight
+> 5. **Injecting into an UNCOMMITTED file and restoring with `git checkout --` DESTROYS the work under
+>    test.** Two "injections" then measured the reverted file. Caught only because the restored-control
+>    arm came back DIRTY. Commit first, or back up outside the repo.
+> 6. **An error path is the one nobody exercises.** Ruling 5's new refusal message interpolated a
+>    variable that was never imported — a ReferenceError on the refusal path only, invisible to every
+>    A-case, every lint and every test. Run the B-case.
+> 7. **`npm run test:smoke` can SKIP itself** ("affected-test listing timed out — CI is the authority")
+>    and still exit 0. That exit code is not evidence.
+>
+> ## ⚠️ WINDOW 8 EARLIER STATE — 2026-08-06 ~21:30 PDT.
 >
 > **~~This file exists in two places, byte-identical.~~ It does not, as of 2026-08-06.** There is now
 > **ONE source** — the file you are reading, on the branch — and the agent-home path
