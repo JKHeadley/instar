@@ -222,3 +222,32 @@ patterns back was caught immediately. **Deleting an entry from the list was not*
 *shape* of the exception but never noticed the list getting shorter, and a shorter list is a weaker
 safety net. So a second check was added for that, and re-proved. The breakage that found a hole in the
 guard was worth more than the one that confirmed it.
+
+## Problem six: two rules owning the same job, twice more
+
+The reviewers found the same defect as problem two, in two more places.
+
+**One pair was about notifications.** One rule says "don't flood the user — if you're looping over a
+hundred things, send one summary, not a hundred messages." The other says "a notice that doesn't belong
+to any conversation goes to the one alerts topic, never a brand-new one." Both rules were *also*
+restating the other's job, so a reader had two places telling them the same thing and no way to know
+which governed.
+
+The split is genuinely clean once you name it: one owns **how many**, the other owns **where**. So the
+first now explicitly owns aggregation and the creation budget, and the second explicitly says it does
+*not* own aggregation and points at the first.
+
+**The other pair was about runaway loops.** One rule says every repeating behaviour needs brakes —
+backoff, a breaker, a cap. The other says a self-triggered action must be *proven* to settle down under
+sustained pressure. Those sound alike and are not: the first is what an author fits while writing the
+loop; the second is the proof the whole class has to satisfy. Now the first owns the brakes and the
+second owns the proof, and each says so.
+
+**The check that keeps all three honest got generalised.** It used to be hard-coded to the single
+obligation from problem two. It is now a small table — one row per obligation, naming who governs, who
+defers, and what each must say. Adding the two new pairs was adding two rows.
+
+That matters beyond convenience: the reviewers found this defect three times in three different
+families. A check that only knew about the first instance would have watched one door while the same
+thing happened behind two others. Each row was proved by deliberately breaking it and confirming the
+check names *that* row rather than failing vaguely.

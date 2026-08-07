@@ -282,3 +282,38 @@ narrows a classifier's authority.
 **Rollback cost.** Low and mechanical: restore the two pattern arrays and the all-caps block. **But
 rolling back restores the shouted-agreement kill**, so a rollback should re-remove the all-caps layer
 even if the prefix layers return.
+
+---
+
+## Addendum 4 — ruling B: generalising the single-owner lint to a table
+
+**Changed:** `scripts/lint-single-governing-obligation.mjs` — from one hard-coded obligation to an
+OBLIGATIONS table; two new rows (notification-volume, self-action-convergence).
+
+**Why generalise rather than add two more scripts.** The reviewers found the same defect — one
+obligation, several owners, no boundary — in THREE families. A check that knew only about the first
+instance would have watched one door while the same thing happened behind two others. Three near-copy
+scripts would also have been the very defect under repair, in the guard layer.
+
+**Over-block.** Same shape as before and now three times as much surface: an author rewording a
+declaration or renaming an article gets a refusal. Each failure NAMES its row id, the exact literal it
+wanted, and the article and line — so the fix is mechanical. The `canonical` field is optional
+precisely so a row can be added for an obligation that has no single canonical phrasing, rather than
+forcing a fake one.
+
+**Under-block, unchanged and still named:** a paraphrase is invisible. Deciding whether new prose MEANS
+the same obligation is a semantic judgment, and *Intelligence Infers* forbids a regex from making it.
+The population is declared, not discovered — a FOURTH pair nobody adds to the table is not seen.
+
+**Interactions.** `resolveArticle` gained comma-subtitle tolerance (`Name, Subtitle`), needed because the
+alerts-topic article's heading uses a comma where others use an em dash. That is a widening of the
+resolver only; a name that resolves ambiguously still returns null and fails closed.
+
+**Feedback loops.** None — reads the registry, exits.
+
+**Rollback.** Delete the two new rows; the first obligation's behaviour is unchanged by the refactor,
+which is why it was kept as row one rather than rewritten.
+
+**Proof.** Three injections, one per failure mode, each naming ITS OWN row: a notification deferrer
+reacquiring aggregation, a convergence deferrer reacquiring the obligation, and a governing article
+dropping its declaration. Control clean after each.

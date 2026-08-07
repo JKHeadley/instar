@@ -58,28 +58,46 @@ const ROOT = path.resolve(path.dirname(__filename), '..');
 const JSON_OUT = process.argv.includes('--json');
 const REGISTRY_REL = 'docs/STANDARDS-REGISTRY.md';
 
-/** The single governing article for the exhaust-before-escalating obligation. */
-const GOVERNING = 'Self-Unblock Before Escalating';
-
 /**
- * The detection-surface articles that hand off to the governing article. This
- * population is DECLARED, deliberately: the check must fail closed if one of
- * them is renamed or removed, rather than silently shrinking to nothing.
+ * The obligation table. Each row is ONE obligation with ONE governing article and
+ * the articles that DEFER to it. Generalised 2026-08-07 from a single hard-coded
+ * obligation, because the external Building review found a second and a third
+ * instance of the same defect — one obligation, several owners, no boundary.
+ *
+ *   governing   — the article that OWNS the obligation and states it.
+ *   deferrers   — articles that touch the same ground and must disclaim it.
+ *   declaration — the literal the governing article must carry.
+ *   disclaimer  — the literal each deferrer must carry.
+ *   canonical   — a phrase that IS the obligation's statement. It may appear in
+ *                 exactly one article; a second copy is the duplication returning.
+ *                 Optional: omit where the obligation has no single canonical form.
  */
-const DETECTION_SURFACES = ['A Wall Is a Hypothesis', 'Never a False Blocker'];
-
-/** The governing article's own declaration that it owns the obligation. */
-const GOVERNING_DECLARATION = 'THE SINGLE GOVERNING ARTICLE for exhaust-before-escalating';
-
-/** A detection-surface article's disclaimer that it does NOT own the obligation. */
-const SURFACE_DISCLAIMER = 'does NOT own the exhaust-before-escalating obligation';
-
-/**
- * The ladder's canonical rung enumeration. This exact form may exist in exactly
- * one article — it IS the obligation's statement, and a second copy is the
- * duplication returning.
- */
-const LADDER_CANONICAL = '**nothing** (resolve it yourself) → **an approval**';
+const OBLIGATIONS = [
+  {
+    id: 'exhaust-before-escalating',
+    governing: 'Self-Unblock Before Escalating',
+    deferrers: ['A Wall Is a Hypothesis', 'Never a False Blocker'],
+    declaration: 'THE SINGLE GOVERNING ARTICLE for exhaust-before-escalating',
+    disclaimer: 'does NOT own the exhaust-before-escalating obligation',
+    canonical: '**nothing** (resolve it yourself) → **an approval**',
+  },
+  {
+    id: 'notification-volume',
+    governing: 'Bounded Notification Surface',
+    deferrers: ['Notices Route to the Alerts Topic, Never a New One'],
+    declaration: 'THE SINGLE GOVERNING ARTICLE for notification VOLUME',
+    disclaimer: 'does NOT own the aggregation obligation',
+    canonical: null,
+  },
+  {
+    id: 'self-action-convergence',
+    governing: 'Capacity Safety',
+    deferrers: ['No Unbounded Loops'],
+    declaration: 'THE SINGLE GOVERNING ARTICLE for self-action convergence',
+    disclaimer: 'does NOT own the convergence obligation',
+    canonical: null,
+  },
+];
 
 const abs = path.join(ROOT, REGISTRY_REL);
 if (!fs.existsSync(abs)) {
@@ -112,86 +130,81 @@ if (articles.length === 0) {
 function resolveArticle(name) {
   const exact = articles.find((a) => a.name === name);
   if (exact) return exact;
-  const prefixed = articles.filter((a) => a.name.startsWith(`${name} —`) || a.name.startsWith(`${name}.`));
+  const prefixed = articles.filter((a) => a.name.startsWith(`${name} —`) || a.name.startsWith(`${name}.`) || a.name.startsWith(`${name}, `));
   return prefixed.length === 1 ? prefixed[0] : null;
 }
 
 const failures = [];
+const relations = [];
 
-// (1) The governing article exists and declares that it governs.
-const governing = resolveArticle(GOVERNING);
-if (!governing) {
-  failures.push(
-    `the governing article "${GOVERNING}" resolves to no article. The obligation's single owner cannot be missing — ` +
-    `if it was renamed, update GOVERNING in this lint in the same change.`,
-  );
-} else if (!governing.body.join('\n').includes(GOVERNING_DECLARATION)) {
-  failures.push(
-    `${REGISTRY_REL}:${governing.lineNo} — "${governing.name}" no longer carries the governing declaration ` +
-    `"${GOVERNING_DECLARATION}". Without it the registry has an obligation with no declared owner, which is the ` +
-    `pre-2026-08-07 state the operator ruled against.`,
-  );
-}
-
-// (2) Each detection surface disclaims the obligation and names the governing article.
-for (const name of DETECTION_SURFACES) {
-  const a = resolveArticle(name);
-  if (!a) {
+for (const ob of OBLIGATIONS) {
+  const governing = resolveArticle(ob.governing);
+  if (!governing) {
     failures.push(
-      `detection-surface article "${name}" resolves to no article. This population is declared, so a rename or ` +
-      `removal must be reflected in DETECTION_SURFACES in the same change rather than silently shrinking the check.`,
+      `[${ob.id}] the governing article "${ob.governing}" resolves to no article. An obligation's single ` +
+      `owner cannot be missing — if it was renamed, update OBLIGATIONS in this lint in the same change.`,
     );
-    continue;
-  }
-  const text = a.body.join('\n');
-  if (!text.includes(SURFACE_DISCLAIMER)) {
+  } else if (!governing.body.join('\n').includes(ob.declaration)) {
     failures.push(
-      `${REGISTRY_REL}:${a.lineNo} — "${a.name}" does not carry the disclaimer "${SURFACE_DISCLAIMER}". ` +
-      `A detection-surface article that stops disclaiming the obligation has reacquired it, and the registry is ` +
-      `back to one obligation with several owners and no boundary.`,
+      `${REGISTRY_REL}:${governing.lineNo} — [${ob.id}] "${governing.name}" no longer carries its governing ` +
+      `declaration "${ob.declaration}". Without it the registry has an obligation with no declared owner.`,
     );
   }
-  if (!text.includes(GOVERNING)) {
-    failures.push(
-      `${REGISTRY_REL}:${a.lineNo} — "${a.name}" does not name "${GOVERNING}". A hand-off that does not say where ` +
-      `it hands off to leaves the reader exactly where the external reviewer found them.`,
-    );
+
+  for (const name of ob.deferrers) {
+    const a = resolveArticle(name);
+    if (!a) {
+      failures.push(
+        `[${ob.id}] deferring article "${name}" resolves to no article. This population is declared, so a ` +
+        `rename must be reflected in OBLIGATIONS in the same change rather than silently shrinking the check.`,
+      );
+      continue;
+    }
+    const text = a.body.join('\n');
+    if (!text.includes(ob.disclaimer)) {
+      failures.push(
+        `${REGISTRY_REL}:${a.lineNo} — [${ob.id}] "${a.name}" does not carry the disclaimer "${ob.disclaimer}". ` +
+        `An article that stops disclaiming an obligation has reacquired it, and the registry is back to one ` +
+        `obligation with several owners and no boundary.`,
+      );
+    }
+    if (!text.includes(ob.governing)) {
+      failures.push(
+        `${REGISTRY_REL}:${a.lineNo} — [${ob.id}] "${a.name}" does not name "${ob.governing}". A hand-off that ` +
+        `does not say where it hands off to leaves the reader exactly where the reviewer found them.`,
+      );
+    }
   }
+
+  if (ob.canonical) {
+    const holders = articles.filter((a) => a.body.join('\n').includes(ob.canonical));
+    if (holders.length === 0) {
+      failures.push(`[${ob.id}] the canonical statement is present in NO article — it was reworded (update OBLIGATIONS) or lost.`);
+    } else if (holders.length > 1) {
+      failures.push(
+        `[${ob.id}] the obligation is stated in ${holders.length} articles: ` +
+        `${holders.map((a) => `"${a.name}" (:${a.lineNo})`).join(', ')}. It may be stated in exactly one. ` +
+        `This is the duplication growing back — delete the copy, do not reconcile it.`,
+      );
+    } else if (governing && holders[0].name !== governing.name) {
+      failures.push(
+        `[${ob.id}] the obligation is stated in "${holders[0].name}", not in the governing article ` +
+        `"${governing.name}". The owner of an obligation must be the article that states it.`,
+      );
+    }
+  }
+
+  relations.push({ id: ob.id, governing: ob.governing, deferrers: ob.deferrers });
 }
 
-// (3) The ladder is stated in exactly one article.
-const ladderHolders = articles.filter((a) => a.body.join('\n').includes(LADDER_CANONICAL));
-if (ladderHolders.length === 0) {
-  failures.push(
-    `the ladder's canonical rung enumeration is present in NO article. Either the ladder was reworded — in which ` +
-    `case update LADDER_CANONICAL in the same change — or the obligation lost its statement entirely.`,
-  );
-} else if (ladderHolders.length > 1) {
-  failures.push(
-    `the ladder is stated in ${ladderHolders.length} articles: ${ladderHolders.map((a) => `"${a.name}" (:${a.lineNo})`).join(', ')}. ` +
-    `It may be stated in exactly one. This is the duplication growing back — delete the copy, do not reconcile it.`,
-  );
-} else if (governing && ladderHolders[0].name !== governing.name) {
-  failures.push(
-    `the ladder is stated in "${ladderHolders[0].name}" (:${ladderHolders[0].lineNo}), not in the governing article ` +
-    `"${governing.name}". The owner of the obligation must be the article that states it.`,
-  );
-}
-
-const report = {
-  articles: articles.length,
-  governing: governing?.name ?? null,
-  detectionSurfaces: DETECTION_SURFACES,
-  ladderHolders: ladderHolders.map((a) => a.name),
-  failures,
-};
+const report = { articles: articles.length, obligations: relations, failures };
 
 if (JSON_OUT) {
   console.log(JSON.stringify(report, null, 2));
 } else if (failures.length === 0) {
   console.log(
-    `lint-single-governing-obligation: clean — "${governing.name}" governs; ` +
-    `${DETECTION_SURFACES.length} detection surface(s) disclaim and hand off; ladder stated exactly once.`,
+    `lint-single-governing-obligation: clean — ${OBLIGATIONS.length} obligation(s), each with one declared ` +
+    `governing article and ${OBLIGATIONS.reduce((n, o) => n + o.deferrers.length, 0)} deferring article(s).`,
   );
 }
 
