@@ -94,3 +94,46 @@ yesterday, walked into within a day.
 No behaviour changes for anyone using the agent. No new setting, no new endpoint, no new message. Both
 checks run in development and continuous integration only; neither can refuse a user's message or affect
 a running session. Removing either is a one-line revert.
+
+## Problem three: "we haven't built that yet" quietly becoming permanent
+
+Two rules in the constitution promised more than they delivered. One says an agent must be able to
+*structurally* tell whether an instruction really came from its operator — but the actual mechanism is a
+convention people follow, not something the code enforces. The other says *every* loop the agent opens
+gets tracked until it closes, while the machinery that exists covers several kinds of loop, not all of
+them.
+
+The honest fix is to label both as **documented-only**: the rule stands, the enforcement doesn't exist
+yet, and the registry says so out loud instead of implying protection that isn't there.
+
+**But the operator attached a condition, and it's the sharp part of this whole batch:**
+
+> "the documented-only MUST force a change in the near future. It can't remain documented only."
+
+He's right, and it's worth spelling out why. An honest gap label is better than a false claim of
+enforcement — but *only if it expires*. A permanent "documented-only" is a false claim with better
+manners: the registry stops lying about the guard, and starts quietly accepting its absence forever.
+Nothing changes; everyone just feels better about it.
+
+So each relabelled rule now carries a **deadline and a tracked id**, and a check turns that deadline
+into teeth. When the date passes, the build goes red — and stays red until someone either builds the
+missing guard or the operator deliberately picks a new date. Deliberately re-dating is allowed, on
+purpose: a check that forced you to choose between a rushed guard and deleting a real standard would be
+buying honesty with worse engineering. What it makes impossible is the *silent* version, where a gap
+nobody looks at again just sits there for a year.
+
+**One design decision worth flagging.** The new field is registered as *narrative*, not *enforcement*.
+A countdown says a guard is **owed**, not that one **exists**. Had it been filed as enforcement, a
+promise-to-build would have flipped these rules to "enforced" — which is precisely the over-claiming
+this ruling exists to stop. Getting that classification backwards would have quietly undone the ruling
+while appearing to implement it.
+
+**A substitution, named rather than slipped in.** The instruction said to register these on the
+maturation track. That tracker writes to a file on one machine — invisible to continuous integration,
+and invisible to whoever picks this up on a different computer. Putting the countdown in the registry
+instead means it's reviewed when it's created, it travels with the code, and it can actually fail a
+build. Stronger on every axis that matters, but it *is* a substitution, so it's written down.
+
+**Proved the same way as the others** — by breaking it three ways: a deadline set in the past (the arm
+that matters), a relabelled rule with no countdown at all, and a rule that quietly gained a guard but
+kept its countdown anyway. Each was caught, each named the right reason, each restored afterwards.

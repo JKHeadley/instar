@@ -150,3 +150,48 @@ introduces a runtime decision, a self-triggered action, or an external surface.
 - Injection proofs: tabled in the settlement doc, §1 and §2, each injection recorded with the specific
   failure REASON it produced and which sibling arms still passed. **One injection attempt in §1 failed
   to compile and was caught only because the reason was checked rather than the exit code.**
+
+---
+
+## Addendum — the countdown guard (ruling 4)
+
+**Added:** `scripts/lint-documented-only-countdown.mjs`, plus one narrative heading
+(`Documented-only until`) in `scripts/standards-coverage.mjs`.
+
+**What it pins.** Justin's condition on ruling 4: *"the documented-only MUST force a change in the near
+future. It can't remain documented only."* An honest gap label beats a false enforcement claim only if
+the label EXPIRES — otherwise it is a false claim with better manners: the registry stops lying about
+the guard and starts quietly accepting its absence. The lint turns each relabel's deadline into teeth.
+
+**Schema classification is the load-bearing decision here.** The new heading is registered in the
+EXCLUDED-NARRATIVE set, never the ENFORCEMENT set. A countdown says a guard is OWED, not that one
+exists; putting it in the enforcement set would let a promise-to-build flip an article to `enforced`,
+which is exactly the over-claim finding 4 was raised about. Its refs are deliberately not scanned.
+
+**Deliberate substitution, recorded rather than silent.** The ruling said "register on the
+maturation/initiative track". `InitiativeTracker` persists to `.instar/initiatives.json` — per-machine
+RUNTIME state, invisible to CI and to a successor on another machine. The countdown is declared in the
+registry instead, which is reviewed in the PR that creates it, travels with the repo, and can fail a
+build. Stronger on every axis that matters; named here so the substitution is reviewable.
+
+**Over-block.** On 2026-09-07 this check turns a green build red. That is the feature, not a
+regression, and the failure message says so and names the two legitimate exits (ship the guard, or have
+the operator deliberately re-date). A deliberate re-dating passes — it must, because a check that
+forced either a rushed guard or a deleted standard would buy honesty with worse engineering.
+
+**Under-block, named:** a newly-relabelled article that nobody adds to `REQUIRE_COUNTDOWN` is invisible.
+The population is declared, not discovered. And the check cannot judge whether a stated remedy is the
+right one, whether a deadline is reasonable, or whether anyone is working on it — only that the gap
+cannot become permanent silently.
+
+**Interactions.** It shells out to `standards-coverage.mjs --json` for the gap set rather than
+reimplementing enforcement classification — two owners of one judgment is the defect ruling 2 was
+raised about. If that call fails, the lint FAILS rather than reporting a partial pass as clean.
+
+**Proof.** Two-sided by injection, three arms, each failing for its own reason with the others clean:
+an expired deadline (the load-bearing arm), a required article carrying no countdown, and an article
+that gained a guard while keeping a stale countdown.
+
+**Rollback.** Delete the script and its one entry in the `lint` chain; revert one heading constant.
+The countdown declarations would then be inert prose — which is precisely the state this guard exists
+to make impossible, so the rollback is loud by construction.

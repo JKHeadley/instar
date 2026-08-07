@@ -137,6 +137,16 @@ const EXCLUDED_NARRATIVE_SECTION_HEADINGS = [
   'Distinct from Cross-Machine Coherence',
   'Distinct from Deferral = Deletion',
   'Distinct from the OnboardingGate',
+  // Added 2026-08-07 by operator ruling on external-review finding 4: an article
+  // honestly labelled `documented-only` must carry a COUNTDOWN — a deadline and a
+  // tracked item — because "documented-only MUST force a change in the near
+  // future. It can't remain documented only."
+  //
+  // Deliberately classified NARRATIVE and never ENFORCEMENT: a countdown says a
+  // guard is OWED, not that one exists. Placing it in the enforcement set would
+  // let a promise-to-build flip an article to `enforced`, which is precisely the
+  // over-claim finding 4 was raised about. Its refs must not be scanned.
+  'Documented-only until',
   'Neither is whole alone',
   'Notice and fight the reflex (the load-bearing awareness)',
   'Per-feature posture (2026-06-12 widening)',
