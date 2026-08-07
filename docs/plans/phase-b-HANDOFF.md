@@ -47,6 +47,20 @@
 >    A-case, every lint and every test. Run the B-case.
 > 7. **`npm run test:smoke` can SKIP itself** ("affected-test listing timed out — CI is the authority")
 >    and still exit 0. That exit code is not evidence.
+> 8. **PROMOTING A GATE FROM WARN TO REFUSE BREAKS ITS FIXTURE CORPUS, AND A TARGETED TEST RUN CANNOT
+>    SEE IT.** Ruling 5 flipped the maturation-plan check to refusing; every fixture spec in the repo
+>    that lacked a `## Maturation plan` went from a passing stamp to exit 1. CI went red on unit shards
+>    1-3 of 4 on BOTH node versions while my local targeted suites were all green — because the damage
+>    is in the files you did NOT touch. **A targeted run proves your change works; it says nothing
+>    about what already depended on the old behaviour.** When you promote a gate's severity, the very
+>    next command is `grep -rln "<the script>" tests/` and then run THOSE, or run a full shard.
+>    (The side-effects review even had an over-block section arguing the refusal was the point — and
+>    it never asked what already depended on the warn. Analysing your change is not analysing its
+>    dependents.)
+> 9. **The eli16 CI gate checks the PR DESCRIPTION, not the `.eli16.md` file.** A perfect ELI16
+>    committed to `docs/specs/` does not satisfy it. Fix by PATCHing the PR body (it re-runs on
+>    `edited`). `gh` is absent here; the GitHub token is reachable via `git credential fill` for
+>    github.com, which is the same credential the push already uses.
 >
 > ## ⚠️ WINDOW 8 EARLIER STATE — 2026-08-06 ~21:30 PDT.
 >

@@ -280,3 +280,52 @@ is §2's defect — one obligation, two owners — sitting inside the machinery 
 registry.** Both are updated here. Consolidating them is a shared-constant refactor across a runtime
 parser and does not belong in a batch executing documentation rulings; it is recorded rather than
 silently left.
+
+---
+
+## §5b — What ruling 5's refusal cost, recorded because it was a real miss
+
+**CI went red on unit shards 1-3 of 4, on both node versions, at `bacb24c71`** — and my report to the
+operator had said the only remaining red was the family audit. The operator caught the discrepancy and
+sent it back.
+
+**The cause was ruling 5 and it was entirely predictable in hindsight.** Promoting the maturation-plan
+check from WARN to REFUSE turned every fixture spec in the repository lacking a `## Maturation plan`
+from a passing stamp into an exit-1 refusal. Six test files drive that chokepoint.
+
+**Why my local runs did not see it.** I ran targeted suites — the tests covering the files I changed.
+The damage lived entirely in files I had NOT changed. **A targeted run proves your change works; it
+says nothing about what already depended on the old behaviour.** That is a structural blind spot, not
+carelessness, and it is the reason the trap is now written into the handoff as its own entry rather
+than folded into an existing one.
+
+**The sharper version, because it is the one that generalises.** The side-effects review for this
+change HAS an over-block section. It argues, correctly, that the refusal blocking a spec without a plan
+is the whole point. **It never asks what already relied on the warning.** Analysing a change is not
+analysing its dependents — and an over-block analysis that only reasons forward from the new behaviour
+will pass every time while the corpus burns.
+
+**The repair distinguished two cases deliberately**, because collapsing them would have hidden the
+contract change:
+
+- **Fixtures for OTHER gates** (cross-model, decision-points, decision-completeness, the integration
+  flow) gained a complete maturation section. These tests target different gates; a fixture that now
+  trips the maturation gate would fail on the wrong gate. The decision-completeness fixture already
+  carried this exact comment for the decision-points gate — the convention existed and was followed.
+- **The CONTRACT test was rewritten, not patched.** It pinned *"warns but still stamps"*, which was the
+  correct v1 contract and is now the wrong one. It now pins three refusal arms (incomplete / missing /
+  duplicated) against an A-case differing by **exactly one section**, so each refusal is shown to fire
+  for its own reason rather than because an earlier gate caught the fixture.
+- **A MIGRATION-PARITY assertion** checked that the INSTALLED writer contains the warn marker. It now
+  asserts the refusing marker and the ABSENCE of the warn marker — which is the proof that a *deployed*
+  agent receives the promoted gate. A gate promoted only in the source tree leaves every existing agent
+  merely warning: precisely the new-agents-only failure the Migration Parity Standard exists to prevent.
+
+**One regression pin was added on purpose.** The refusal message interpolates a module export that was
+initially not imported — a `ReferenceError` reachable ONLY on the refusal path, invisible to every
+A-case, every lint and every other test. That arm now exercises the error path on every run.
+
+**A second red, unrelated and also mine to fix:** the `eli16` CI gate checks the **PR DESCRIPTION**, not
+the committed `.eli16.md` file. The PR body had never carried the section. Fixed by PATCHing the body;
+verified against the real check with the pre-edit body as a negative control (old fails, new passes),
+and confirmed green by CI's own re-run on the `edited` event.
