@@ -343,7 +343,19 @@ being fixed. **Findings 1, 2, 4, 5 and the first half of 3 are untouched and are
 
 ## Window-8 traps — these are NEW and they will catch you
 
-1. **Your worktree may run ZERO commit and push gates, while looking fully equipped.**
+1. > **REMEDY FOUND 2026-08-07: run `npm run build` (or `npm install`) in the worktree.** Husky's
+   > `prepare` step regenerates `.husky/_`, and the gates go LIVE. Confirmed by measurement: at the
+   > start of that session `git hook run pre-commit` reported *"cannot find a hook named pre-commit"*
+   > and `.husky/_` was absent; after a build (run for an unrelated reason — regenerating the registry
+   > asset) the same probe RUNS the lint chain and a `git push` prints *"🔒 Running path-scoped e2e
+   > gate…"*. **So the whole session's by-hand gate discipline was one command away from being
+   > automatic, and nobody knew.** Re-probe after any build; the trap below is about the state BEFORE
+   > that, which is what a fresh worktree still starts in.
+   >
+   > **Second-order lesson:** the push that runs real gates is SLOW (it ran past a 2-minute command
+   > budget and reported a timeout while the push had NOT landed). A timed-out push is not a failed
+   > push and not a successful one — re-fetch and compare refs before believing either.
+   **Your worktree may run ZERO commit and push gates, while looking fully equipped.**
    `core.hooksPath` is relative and `.husky/_` is generated, not tracked. **Measured: 85 commits on
    this branch went through with every gate inert.** Probe it: `git hook run pre-commit` — a missing
    hook says *"cannot find a hook named pre-commit"*; the main checkout finds and runs it (that is your
