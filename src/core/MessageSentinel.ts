@@ -170,7 +170,7 @@ const MAX_PAUSE_DIRECTIVE_WORDS = 25;
  * Exact-match patterns that bypass LLM classification.
  * These are unambiguous emergency signals.
  */
-const FAST_STOP_EXACT: ReadonlySet<string> = new Set([
+export const FAST_STOP_EXACT: ReadonlySet<string> = new Set([
   'stop',
   'stop!',
   'stop!!',
@@ -190,12 +190,40 @@ const FAST_STOP_EXACT: ReadonlySet<string> = new Set([
   'halt',
   'quit',
   'terminate',
+  // ── Enumerated 2026-08-07 under *Structure Decides Alone Only on an Exact
+  // Match* (operator ruling A). These were previously reached by PREFIX regexes
+  // (`/^stop\b/i`, `/^please stop/i`, `/^no!?\s*stop/i`, `/^don'?t do (that|this|anything)/i`).
+  // A prefix is a substring, and the rule forbids structure deciding alone on a
+  // substring — so each unambiguous WHOLE-message phrasing is enumerated here
+  // and the prefix layer is gone. What the prefixes also caught and this
+  // deliberately does NOT — "stop the build please", "stop deploying for now" —
+  // are scoped requests that structure must not read as "halt everything".
+  'stop everything',
+  'stop it now',
+  'stop this now',
+  'stop that now',
+  "no stop don't",
+  'no stop dont',
+  'stop it',
+  'stop this',
+  'stop that',
+  'please stop',
+  'please stop!',
+  'no stop',
+  'no! stop',
+  'no, stop',
+  "don't do that",
+  'dont do that',
+  "don't do this",
+  'dont do this',
+  "don't do anything",
+  'dont do anything',
 ]);
 
 /**
  * Slash command patterns — always fast-path.
  */
-const SLASH_STOP: ReadonlySet<string> = new Set([
+export const SLASH_STOP: ReadonlySet<string> = new Set([
   '/stop',
   '/kill',
   '/abort',
@@ -203,7 +231,7 @@ const SLASH_STOP: ReadonlySet<string> = new Set([
   '/terminate',
 ]);
 
-const SLASH_PAUSE: ReadonlySet<string> = new Set([
+export const SLASH_PAUSE: ReadonlySet<string> = new Set([
   '/pause',
   '/wait',
   '/hold',
@@ -224,16 +252,25 @@ const SLASH_PAUSE: ReadonlySet<string> = new Set([
  * See docs/specs/standard-intelligence-infers-keywords-only-guard.md and the
  * keyword-intent-decision ratchet (tests/unit/keyword-intent-decision-ratchet.test.ts).
  */
-const FAST_STOP_PATTERNS: readonly RegExp[] = [
-  /^stop\b/i,                         // "stop" at start of message
-  /^don'?t do (that|this|anything)/i,  // "don't do that/this/anything"
-  /^no!?\s*stop/i,                     // "no stop", "no! stop"
-  /^STOP/,                             // All caps STOP (without /i — caps matters)
-  /^please stop/i,                     // "please stop"
-  /^stop\s*(it|this|that|now)/i,       // "stop it", "stop this", "stop now"
-];
+/**
+ * WITHDRAWN 2026-08-07 by operator ruling A (*Structure Decides Alone Only on an
+ * Exact Match*). This layer matched by PREFIX — `/^stop\b/i` fired on
+ * "stop the build please" and "stop deploying for now", so structure alone read a
+ * SCOPED request as "halt everything" and killed the session. A prefix is a
+ * substring, and the rule permits structure to decide alone ONLY on an exact
+ * whole-message match from an enumerated list.
+ *
+ * The unambiguous whole-message phrasings these covered are now enumerated in
+ * FAST_STOP_EXACT. Everything else routes to the mind, which may still stop it —
+ * the floor/intelligence UNION is what keeps the removal safe, not the prefixes.
+ *
+ * Kept as an empty, named constant rather than deleted so the withdrawal is
+ * visible where the patterns used to live (strike it where it sits, do not
+ * correct it elsewhere).
+ */
+export const FAST_STOP_PATTERNS: readonly RegExp[] = [];
 
-const FAST_PAUSE_EXACT: ReadonlySet<string> = new Set([
+export const FAST_PAUSE_EXACT: ReadonlySet<string> = new Set([
   'wait',
   'wait!',
   'hold on',
@@ -244,14 +281,17 @@ const FAST_PAUSE_EXACT: ReadonlySet<string> = new Set([
   'hang on',
 ]);
 
-const FAST_PAUSE_PATTERNS: readonly RegExp[] = [
-  /^wait\b/i,
-  /^hold on/i,
-  /^pause\b/i,
-  /^hang on/i,
-  /^one (sec|moment|minute)/i,
-  /^let me think/i,
-];
+/**
+ * WITHDRAWN 2026-08-07 by the same ruling, and the pause side was the worse of
+ * the two: a pause CONSUMES the operator's message. `/^hold on/i` swallowed
+ * "hold on a sec" — while this very file's classifier prompt states that
+ * "hold on" is NORMAL unless the user is directing the agent. The regex
+ * contradicted the article's own guidance at the one surface whose failure mode
+ * (*The Operator Channel Is Sacred*) was earned from consumed operator messages.
+ *
+ * Whole-message pause phrasings remain enumerated in FAST_PAUSE_EXACT.
+ */
+export const FAST_PAUSE_PATTERNS: readonly RegExp[] = [];
 
 // ── Continue-ping intent classification (P0.4) ───────────────────────
 //
@@ -663,18 +703,22 @@ export class MessageSentinel {
       }
     }
 
-    // All caps message (short) — likely an emergency
-    if (trimmed === trimmed.toUpperCase() && trimmed.length > 2 && trimmed.length < 50 && /[A-Z]/.test(trimmed)) {
-      // Only if it contains stop-like words
-      if (/\b(STOP|NO|DON'?T|CANCEL|ABORT|HALT|QUIT)\b/.test(trimmed)) {
-        return {
-          category: 'emergency-stop',
-          confidence: 0.8,
-          action: { type: 'kill-session' },
-          reason: `All-caps stop signal: "${trimmed}"`,
-        };
-      }
-    }
+    // ── WITHDRAWN 2026-08-07 (operator ruling A) ──────────────────────────
+    // An all-caps heuristic used to kill here: any short SHOUTED message
+    // CONTAINING one of STOP|NO|DON'T|CANCEL|ABORT|HALT|QUIT. That is a
+    // substring decision, which *Structure Decides Alone Only on an Exact Match*
+    // forbids — and it was not merely doctrinally wrong, it was live-wrong.
+    // Measured before removal, every one of these killed the session:
+    //
+    //     "NO WORRIES"  "OK NO PROBLEM"  "LGTM NO CHANGES"  "NO RUSH"
+    //     "DONT MERGE YET"  "YES CANCEL THAT"  "PLEASE STOP THE BUILD"
+    //
+    // An operator typing enthusiastic agreement in caps destroyed the work they
+    // were agreeing with. Nothing is lost by removal: the enumerated sets are
+    // matched case-insensitively, so "STOP" / "STOP NOW" / "CANCEL EVERYTHING"
+    // still hit the floor exactly. What no longer decides here is the
+    // *unenumerated* shout — which routes to the mind, and the mind may still
+    // stop it. That union is the safety, not the heuristic.
 
     // No fast-path match
     return null;

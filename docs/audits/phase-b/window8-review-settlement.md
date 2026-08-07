@@ -329,3 +329,66 @@ A-case, every lint and every other test. That arm now exercises the error path o
 the committed `.eli16.md` file. The PR body had never carried the section. Fixed by PATCHing the body;
 verified against the real check with the pre-edit body as a negative control (old fails, new passes),
 and confirmed green by CI's own re-run on the `edited` event.
+
+---
+
+## §A — RULING A: structure decides alone only on an exact match
+
+**The ruling (Justin, 2026-08-07 ~14:01).** The Body-and-the-Mind conflict is resolved with an
+exact-match carve-out: *structure may decide ALONE only in rare enumerated cases of EXACT message
+matching (e.g. "stop", "stop everything" — exact matches, NEVER substrings); every other decision of
+consequence remains the mind's.* Write the missing rule so the emergency-stop split, *The Body and the
+Mind*, and the new rule form one coherent set.
+
+**What measuring first turned it into.** Before writing a word of the article, the code was driven with
+NO model attached — the isolation that shows what structure decides entirely on its own. **The
+implementation had never obeyed the rule it was about to be given.** Three layers were deciding alone,
+and only one of them was exact:
+
+| layer | authority | verdict under ruling A |
+|---|---|---|
+| `FAST_STOP_EXACT` / `SLASH_STOP` / `FAST_PAUSE_EXACT` | exact whole-message set | **compliant** |
+| `FAST_STOP_PATTERNS` / `FAST_PAUSE_PATTERNS` | **prefix** regexes | violates — withdrawn |
+| an all-caps heuristic | **substring** of a shouted message | violates — withdrawn |
+
+**The prefix layer was what actually fired**, including on the operator's own example: `stop everything`
+matched a pattern, not the enumerated list. And it read SCOPED requests as global halts —
+`stop the build please` and `stop deploying for now` killed the whole session. That is precisely the
+class of decision the ruling assigns to the mind.
+
+**The pause side was worse**, because a pause CONSUMES the operator's message: `/^hold on/i` swallowed
+`hold on a sec` — while this same file's classifier prompt states in plain words that "hold on" is
+NORMAL unless it directs the agent. **The regex contradicted the prompt sitting beside it**, at the one
+surface whose failure mode (*The Operator Channel Is Sacred*) was earned from consumed operator
+messages.
+
+**The third layer was not a doctrine violation — it was a live bug**, and it was found only because the
+sweep continued past the two layers the ruling obviously implicated. An all-caps heuristic killed the
+session on any short SHOUTED message merely *containing* STOP|NO|DON'T|CANCEL|ABORT|HALT|QUIT. Measured
+before removal, every one of these killed the session:
+
+> `NO WORRIES` · `OK NO PROBLEM` · `LGTM NO CHANGES` · `NO RUSH` · `DONT MERGE YET` · `YES CANCEL THAT`
+
+**An operator typing enthusiastic agreement in capitals destroyed the work they were agreeing with.**
+Nothing was lost by removing it: the enumerated sets match case-insensitively, so `STOP`, `STOP NOW` and
+`CANCEL EVERYTHING` still hit the floor exactly. Only the *unenumerated* shout now routes to the mind.
+
+**What was built.** `tests/unit/structure-decides-alone-exact-match-only.test.ts`. Its load-bearing arm
+is a PROPERTY over the whole enumerated list rather than a sample: no entry may decide when it is merely
+a prefix of a longer message. Plus a ratchet that the pattern arrays stay empty, and the operator's
+scoped phrasings route through.
+
+**The injection that exposed a hole in my own guard.** Two injections were run. Re-introducing the
+prefix layer was caught by three arms (28 property violations, the scoped-phrasing kill, the empty-array
+ratchet). **REMOVING an enumerated entry passed everything silently** — the exactness rule bounds the
+FORM of the exception, so nothing noticed the list getting SMALLER, and a smaller list is a narrower
+safety floor. A shrink-only arm pinning the committed core was added and re-proven. **The second
+injection is the one that improved the guard; the first only confirmed it.**
+
+**Blast radius, checked BEFORE committing this time** (the lesson from §5b): every test referencing the
+sentinel was enumerated and run — 33 files, 613 tests. Five failed, and they split into two honest
+kinds. `don't do that` and `stop it now` still stop, but now via the enumerated list rather than a
+prefix, so their assertions were updated to say so. `wait a second`, `hold on a minute` and `let me
+think` no longer pause — **those tests were pinning the contradiction**, asserting that structure
+consumes phrasings the prompt beside it calls normal, and they were rewritten to assert the corrected
+behaviour rather than patched to preserve it.

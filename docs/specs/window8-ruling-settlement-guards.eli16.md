@@ -185,3 +185,40 @@ That is the same defect as problem two — one thing with two owners — sitting
 polices the constitution. Both are updated here. Merging them is deliberately **not** done in this
 change: it is a refactor across a runtime parser, and it does not belong in a batch that is executing
 documentation rulings. It is written down instead of quietly left.
+
+## Problem five: who is allowed to stop the agent without asking
+
+The constitution says the agent's *mind* makes every decision of consequence, and that code is a signal,
+never a command. It also says a typed "stop" halts everything immediately, and the mind cannot overrule
+that. An outside reviewer noticed those are contradictory as written, and asked for the missing rule.
+
+The operator's answer: code may decide entirely on its own **only** when your message is an *exact*
+match against a short written-down list — "stop", "stop everything", "/stop". Never a fragment of a
+message. Everything else is the mind's call.
+
+**Then measuring the code against that rule found it had never worked that way.** Underneath the exact
+list sat patterns matching the *beginning* of a message — and those were what actually fired. So
+"stop the build please" and "stop deploying for now" — specific, scoped requests — were read by code
+alone as *halt everything*, and killed the whole session. The pause side was worse: "hold on a sec" was
+swallowed before the agent ever saw it, even though the instructions we give the model in the very same
+file say "hold on" is ordinary conversation.
+
+**And a third layer nobody had mentioned turned out to be a real bug.** Any short message typed in
+capitals that merely *contained* STOP, NO, DON'T, CANCEL, ABORT, HALT or QUIT killed the session. Which
+means: "NO WORRIES". "OK NO PROBLEM". "LGTM NO CHANGES". "NO RUSH". **Typing enthusiastic agreement in
+capitals destroyed the work you were agreeing with.** That was found only because the sweep kept going
+past the two layers the ruling obviously implicated.
+
+All three loose layers are gone. The genuinely unambiguous phrasings they caught are now written into
+the list explicitly, so the same messages still stop the agent — the difference is that the authority is
+a list someone maintains on purpose rather than a pattern that quietly matches more than it looks like.
+
+**The honest cost:** if the model is unreachable, code halts only on the exact list and nothing else.
+That is the rule working as intended rather than a regression, but it is a real narrowing and it is
+written into the rule itself instead of left for someone to discover.
+
+**One nice thing about how this was checked.** Two deliberate breakages were tried. Putting the prefix
+patterns back was caught immediately. **Deleting an entry from the list was not** — the guard checked the
+*shape* of the exception but never noticed the list getting shorter, and a shorter list is a weaker
+safety net. So a second check was added for that, and re-proved. The breakage that found a hole in the
+guard was worth more than the one that confirmed it.

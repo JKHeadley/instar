@@ -236,3 +236,49 @@ batch executing documentation rulings.
 
 **Rollback.** Revert the call-site block to its warn form (the detector module is unchanged), and revert
 one heading constant in each of the two owners.
+
+---
+
+## Addendum 3 — ruling A: the exact-match carve-out (a RUNTIME change)
+
+**Changed:** `src/core/MessageSentinel.ts` — withdrew two prefix-regex layers and an all-caps
+heuristic from the un-vetoable floor; enumerated the unambiguous whole-message phrasings they covered.
+This is the first addendum in this batch that changes RUNTIME behaviour on the operator's own channel,
+so it is reviewed harder than the doc-and-lint changes above.
+
+**Decision-point inventory.** `structure-decides-alone-exact-match-only` — `invariant`. Exact set
+membership plus a property over the enumerated list. No judgment; a string is a member or it is not.
+The change REMOVES judgment from structure rather than adding any.
+
+**Over-block (the direction that costs safety).** The floor is now strictly NARROWER: with no model
+reachable, structure halts only on the enumerated list. `stop the build please` no longer kills. This
+is the ruling, not a side effect — but it is a real reduction in what structure catches unaided, and it
+is stated in the article's own *In practice* rather than left to be discovered. **The floor/intelligence
+UNION is what makes it safe**: the mind may still stop anything, and an unenumerated halt reaches it.
+The residual risk is narrow and named: model unreachable AND the operator phrases a halt outside the
+list. Mitigation is the enumerated list itself, which is why it was widened (`stop everything`,
+`stop it now`, `please stop`, `no stop`, the `don't do …` family) rather than left minimal.
+
+**Under-block (the direction that was actually broken).** Removing the all-caps heuristic REMOVES false
+kills. Measured before the change, `NO WORRIES`, `OK NO PROBLEM`, `LGTM NO CHANGES`, `NO RUSH`,
+`YES CANCEL THAT` all killed the session. That is a destructive false positive on shouted agreement,
+and the fix is a strict improvement independent of the ruling.
+
+**What the guard does not certify:** whether the enumerated list is the RIGHT list. Adding a bad entry
+passes. The shrink-only arm pins the committed core so the floor cannot silently narrow, but growing it
+is a reviewed diff and nothing more.
+
+**Interactions — checked, not assumed.** Every test referencing the sentinel was enumerated and run
+(33 files, 613 tests). Five failed and were repaired: two because the same verdict now comes from the
+enumerated list rather than a prefix, three because they were pinning the contradiction itself
+(asserting structure consumes phrasings the classifier prompt calls normal). Those three were rewritten
+to assert the corrected behaviour, not patched to preserve the old.
+
+**Feedback-loop check.** None. No emit, notify, spawn, retry, or state write is added; the change only
+narrows a classifier's authority.
+
+**Multi-machine posture.** Unchanged — the sentinel decides per-message in the receiving process.
+
+**Rollback cost.** Low and mechanical: restore the two pattern arrays and the all-caps block. **But
+rolling back restores the shouted-agreement kill**, so a rollback should re-remove the all-caps layer
+even if the prefix layers return.
