@@ -999,3 +999,40 @@ instinct. 28 dated sub-obligations, up from 23.
 13 relations, 8 obligations, 3 article + 28 sub-obligation countdowns, full lint chain green.
 The Substrate's stored floor still reads 20/30 and re-baselines to 16/26 when its audit is re-recorded
 after an accepting review — the order the ruling implies.
+
+---
+
+## Addendum 21 — post-move rounds: The Substrate re-accepted, Building converged to one criterion
+
+**Changed:** `docs/STANDARDS-REGISTRY.md` — nine more gaps dated across three review rounds.
+
+**THE SUBSTRATE: ACCEPTED again after the re-filing**, once the population contradiction I introduced
+was fixed. Its text said "now holds 30 articles" while also describing the move to 26.
+
+**BUILDING: converged to a single failing criterion, and it is a methodological one.** Across the
+final rounds it went from failing (a), (b) and (c) to: *"The current family is governable"* — criterion
+(c) met, no coherence or duplicate-owner defect found — with every named gap now dated (criterion (b)).
+The sole remaining refusal: *"the supplied text does not independently substantiate a genuine cross-pass
+decline in finding magnitude."*
+
+**That is a limit of the per-family method, not a defect in Building.** A single family's text cannot
+evidence a trend across passes of a review of three families. The Substrate passed the same test only
+because its own text NARRATES its repair history ("two articles each claiming to own it"), which
+Building's does not. **The honest options are to give the reviewer verifiable cross-pass evidence it can
+check, or to accept that per-family review structurally cannot close criterion (a) for a family that
+does not narrate its own history — and the wrong option is to write repair narration into Building
+purely so a reviewer can cite it back.** That would be manufacturing the evidence, which is the same
+family of move as citing a guard that does not guard. Left for the operator.
+
+**Dated across these rounds:** cross-family parentage (created by the move itself — *A Decision That Can
+Block* is now a Building article whose declared parent stayed in The Substrate); metrics universality;
+runtime-probe generalization; observation-duty enumeration; exact-list entry validation; the
+inefficiency instinct; silent-by-default emitters; doorway scan-liveness; the self-action funnel.
+**30 dated sub-obligations, up from 15 this morning.**
+
+**A protocol correction, not a text change.** One Building refusal was that the density-gap commitment
+could not be found — correctly, because it lives in The Substrate's text, the family that LOST the
+articles. The protocol now says where to look. The refusal was fair and the fix was to the prompt.
+
+**State:** 87 articles, enforced 0.7356, false-claims 0, dangling 0, unrecognized sections 0,
+13 relations, 8 obligations, 3 article + 30 sub-obligation countdowns, full lint chain green.
