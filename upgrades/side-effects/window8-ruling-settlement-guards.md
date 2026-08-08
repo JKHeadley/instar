@@ -719,3 +719,41 @@ failure mode than the fixes that created genuine contradictions, and it is a dif
 
 **State:** 87 articles, enforced 0.7356, dangling 0, unrecognized sections 0, 12 relations,
 7 obligations, 3 article + 12 sub-obligation countdowns, all floors held, full lint chain green.
+
+---
+
+## Addendum 14 — posture ownership, a blocked placement, and the first-match defect AGAIN
+
+**Changed:** `docs/STANDARDS-REGISTRY.md` (three edits), `scripts/lint-single-governing-obligation.mjs`
+(one row), `scripts/lint-documented-only-countdown.mjs` (read ALL occurrences, not the first).
+
+**Multi-machine posture ownership split.** The Building review's remaining redundancy: *Cross-Machine
+Coherence* and *An Instar Agent Is Always a Multi-Machine Entity* both owned the posture DECLARATION.
+The latter governs (it enumerates the permitted postures); the former owns the broader robustness rule
+a posture serves, and now disclaims. Registered — eight obligations.
+
+**A placement I measured and did NOT make.** Two passes said *Token-Audit Completeness* belongs with
+*Observable Intelligence* rather than Shipping. Before moving it I measured: Shipping holds 7 articles,
+5 resolving, against a floor of 5-of-7. Removing an ENFORCED article leaves 4 of 6 and TRIPS the floor.
+So the move requires first building a guard for one of Shipping's two gaps. Recorded in the article
+with the measurement and a countdown, rather than either done hastily or quietly dropped — a placement
+fix must not be paid for by silently lowering a family's enforcement.
+
+**THE FIRST-MATCH DEFECT, SECOND OCCURRENCE THIS SESSION.** The sub-obligation arm from addendum 9
+took the FIRST countdown per article. *Token-Audit Completeness* now names two gaps; the second was
+invisible and could have expired unnoticed behind the first. I caught it only because the countdown
+TOTAL failed to rise after I added one — the number was the tell, not the check. Now every trigger and
+every countdown in an article is read, the counts must match, and each date is validated separately.
+
+This is the same defect as the parentage extractor earlier today (`.match` where `.matchAll` was
+needed, silently reducing a set to its first element). Twice in one session, in two different guards I
+wrote, is a pattern rather than a slip: **when a check reads a document for occurrences of a thing,
+the default must be ALL of them**, because the failure is silent — the guard reports clean while
+covering a subset, which is the exact shape of every finding these reviews keep returning.
+
+**Negative controls:** two named gaps with one countdown fails naming the counts; a SECOND countdown
+expired (first still valid) fails naming that tracked id — the case the old code could not see.
+Registry restored byte-identical after each.
+
+**State:** 87 articles, enforced 0.7356, dangling 0, unrecognized sections 0, 12 relations,
+8 obligations, 3 article + 13 sub-obligation countdowns, full lint chain green.

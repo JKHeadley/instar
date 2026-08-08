@@ -109,7 +109,7 @@ const COUNTDOWN_RE = /\*\*Documented-only until\.\*\*\s*`?(\d{4}-\d{2}-\d{2})`?\
  * `Documented-only until` trips this lint's own "no longer a gap" arm).
  */
 const SUB_TRIGGER = 'UNENFORCED SUB-OBLIGATION';
-const SUB_COUNTDOWN_RE = /\*\*Sub-obligation countdown\.\*\*\s*`?(\d{4}-\d{2}-\d{2})`?\s*—\s*tracked as\s*`([A-Za-z0-9-]+)`/;
+const SUB_COUNTDOWN_RE = /\*\*Sub-obligation countdown\.\*\*\s*`?(\d{4}-\d{2}-\d{2})`?\s*—\s*tracked as\s*`([A-Za-z0-9-]+)`/g;
 
 /** Today, as a date-only UTC string, so the comparison is timezone-stable. */
 const TODAY = new Date().toISOString().slice(0, 10);
@@ -217,7 +217,23 @@ const subCountdowns = [];
 for (const a of articles) {
   const text = a.body.join('\n');
   if (!text.includes(SUB_TRIGGER)) continue;
-  const m = text.match(SUB_COUNTDOWN_RE);
+  // ALL countdowns and ALL triggers, not the first of each. An article may name more
+  // than one unenforced sub-obligation — *Token-Audit Completeness* names two — and a
+  // first-match check would validate one date while a second gap sat undated and could
+  // expire unnoticed. Found 2026-08-08 by watching the countdown TOTAL fail to rise
+  // after adding a second countdown to an article that already had one: the same
+  // "stopped reading after the first match" defect this same session already produced
+  // once, in the parentage extractor. Twice is a pattern, so it is written down here.
+  const triggers = (text.match(new RegExp(SUB_TRIGGER, 'g')) ?? []).length;
+  const found = [...text.matchAll(SUB_COUNTDOWN_RE)];
+  if (found.length < triggers) {
+    failures.push(
+      `${REGISTRY_REL}:${a.lineNo} — "${a.name}" names ${triggers} unenforced sub-obligation(s) but carries only ` +
+      `${found.length} countdown(s). Every named gap needs its own date; a shared one lets the undated gap expire ` +
+      `unnoticed behind the dated one.`,
+    );
+  }
+  const m = found[0] ?? null;
   if (!m) {
     failures.push(
       `${REGISTRY_REL}:${a.lineNo} — "${a.name}" names an UNENFORCED SUB-OBLIGATION but carries no ` +
@@ -227,16 +243,17 @@ for (const a of articles) {
     );
     continue;
   }
-  const [, deadline, trackedAs] = m;
-  subCountdowns.push({ article: a.name, deadline, trackedAs, lineNo: a.lineNo });
-  if (Number.isNaN(Date.parse(deadline))) {
-    failures.push(`${REGISTRY_REL}:${a.lineNo} — "${a.name}" declares an unparseable sub-obligation deadline "${deadline}".`);
-  } else if (deadline < TODAY) {
-    failures.push(
-      `${REGISTRY_REL}:${a.lineNo} — "${a.name}" still names an unenforced sub-obligation whose countdown EXPIRED on ` +
-      `${deadline} (today ${TODAY}). Build the guard, or have the operator deliberately re-date it — but a named gap ` +
-      `inside an enforced article may not simply sit there.`,
-    );
+  for (const [, deadline, trackedAs] of found) {
+    subCountdowns.push({ article: a.name, deadline, trackedAs, lineNo: a.lineNo });
+    if (Number.isNaN(Date.parse(deadline))) {
+      failures.push(`${REGISTRY_REL}:${a.lineNo} — "${a.name}" declares an unparseable sub-obligation deadline "${deadline}".`);
+    } else if (deadline < TODAY) {
+      failures.push(
+        `${REGISTRY_REL}:${a.lineNo} — "${a.name}" still names an unenforced sub-obligation (\`${trackedAs}\`) whose ` +
+        `countdown EXPIRED on ${deadline} (today ${TODAY}). Build the guard, or have the operator deliberately re-date ` +
+        `it — but a named gap inside an enforced article may not simply sit there.`,
+      );
+    }
   }
 }
 

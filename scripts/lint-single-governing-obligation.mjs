@@ -111,6 +111,18 @@ const OBLIGATIONS = [
     canonical: null,
   },
   {
+    // Added 2026-08-08 (fourth pass). The Building review: "*Cross-Machine Coherence*
+    // requires every feature to declare its multi-machine posture; *An Instar Agent Is
+    // Always a Multi-Machine Entity* again requires it. The latter strengthens the
+    // permitted answers, but both still own the declaration/review obligation."
+    id: 'cross-machine-posture-declaration',
+    governing: 'An Instar Agent Is Always a Multi-Machine Entity',
+    deferrers: ['Cross-Machine Coherence'],
+    declaration: 'THE SINGLE GOVERNING ARTICLE for the cross-machine posture declaration',
+    disclaimer: 'does NOT own the posture-declaration obligation',
+    canonical: null,
+  },
+  {
     // Added 2026-08-08 (third pass). Draft 3 declared *Side-Effects Review Gate* the
     // owner of "pre-ship evidence validation" — a phrase that reads as owning the
     // EVIDENCE, colliding head-on with *Bug-Fix Evidence Bar*. Two rows, because

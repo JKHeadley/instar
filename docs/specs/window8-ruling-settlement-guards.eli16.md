@@ -492,3 +492,31 @@ hard build failure by design.
 Two of those nine did turn out to have a real missing structural parent, and they were declared. The
 other seven were fine. The distinction now sits in the printed tree itself, where someone reading it
 will actually meet the question — not in a commit message nobody reads twice.
+
+## The same bug, twice, in two different checks (2026-08-08)
+
+A check I wrote reads the constitution looking for rules that admit a gap, and demands a deadline next
+to each one. It found the first admission in a rule and stopped looking. So when one rule admitted two
+gaps, the second had no deadline and nothing noticed.
+
+I caught it by accident. I added a deadline and the running total didn't go up. The number was the
+tell — the check itself said "clean" the whole time.
+
+What makes this worth writing down is that it is the *second* time today. Earlier, the code that reads
+"this rule sits under that one" also stopped at the first match, which made a check for "two parents"
+impossible to trigger. Different file, different author-sitting, same mistake.
+
+So it's not a slip, it's a default I get wrong: **when something scans a document for occurrences,
+assume there is more than one.** The failure is always silent, and silence from a check is
+indistinguishable from good news.
+
+## A move I measured and didn't make
+
+Two reviews said one rule is filed in the wrong family. Before moving it I checked what moving it would
+do: that family has seven rules, five of them backed by a real check, against a floor of five-of-seven.
+Taking a backed rule out leaves four of six — under the floor. The build would go red, and the honest
+description of that red is "we improved the filing by lowering the enforcement."
+
+So it stays where it is, with the measurement and a deadline written into it. The move is available the
+moment someone builds a check for one of that family's two unbacked rules. That is the right order, and
+it is worth naming because the wrong order would have *looked* like progress.
