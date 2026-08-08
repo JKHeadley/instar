@@ -48,6 +48,10 @@ const REQUIRED_LINTS = [
   // is in the chain", and a guard that escapes the ratchet on a naming technicality
   // is exactly the hole the ratchet exists to close (2026-08-08).
   'generate-standards-hierarchy.mjs',
+  // Window 10: the FUNCTION-verifying half of *Deferral = Deletion*. The existing
+  // precommit step proves a tracking marker EXISTS; this proves the marker refers
+  // to something the repository can show a reader. 62% of tracked deferrals did not.
+  'lint-deferral-referent-resolves.mjs',
   'lint-no-duplicate-definitions.mjs',
   'lint-recall-surface-names-match-mechanism.mjs',
   'lint-registry-tree-parentage.mjs',

@@ -158,6 +158,14 @@ const ALLOWLIST = new Set([
   // git invocations are READ-ONLY (`rev-parse HEAD^{tree}`, `ls-tree`, `show
   // HEAD:<path>`) to re-derive staleness — never a destructive op.
   'scripts/cartographer-freshness.mjs',
+  // Window-10 FUNCTION guard for *Deferral = Deletion* (2026-08-08). A standalone
+  // .mjs that runs in the lint chain with NO build step, so it cannot import the TS
+  // SafeGitExecutor funnel. Its ONLY git invocation is `ls-files` — read-only, and
+  // load-bearing rather than incidental: the resolving corpus must be TRACKED files,
+  // because an untracked file is not something a reviewer can follow, so a
+  // filesystem walk would silently accept referents that do not exist for anyone
+  // else. Never a destructive op.
+  'scripts/lint-deferral-referent-resolves.mjs',
   // Bootstrap script for the builtin-manifest — runs as part of `npm run
   // build` before tsc emits dist/.
   'scripts/generate-builtin-manifest.cjs',
