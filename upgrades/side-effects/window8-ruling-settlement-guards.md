@@ -1028,11 +1028,25 @@ family of move as citing a guard that does not guard. Left for the operator.
 Block* is now a Building article whose declared parent stayed in The Substrate); metrics universality;
 runtime-probe generalization; observation-duty enumeration; exact-list entry validation; the
 inefficiency instinct; silent-by-default emitters; doorway scan-liveness; the self-action funnel.
-**30 dated sub-obligations, up from 15 this morning.**
+**32 dated sub-obligations, up from 15 this morning.**
 
 **A protocol correction, not a text change.** One Building refusal was that the density-gap commitment
 could not be found — correctly, because it lives in The Substrate's text, the family that LOST the
 articles. The protocol now says where to look. The refusal was fair and the fix was to the prompt.
 
 **State:** 87 articles, enforced 0.7356, false-claims 0, dangling 0, unrecognized sections 0,
-13 relations, 8 obligations, 3 article + 30 sub-obligation countdowns, full lint chain green.
+13 relations, 8 obligations, 3 article + 32 sub-obligation countdowns, full lint chain green.
+
+---
+
+## Addendum 22 — a correction to addendum 21's own numbers
+
+Addendum 21 and its commit message both said **30** dated sub-obligations. The lint reports **32**: I wrote the
+artifact before the last two dates (doorway scan-liveness, the self-action funnel) landed, and did not re-read the
+counter afterwards. Corrected above.
+
+Small, and worth a commit anyway. The whole point of these artifacts is that a number in the record can be
+trusted without re-deriving it, and I have spent this window demonstrating — twice with classifiers, once with an
+enforcement ratio that rose on an edit that built nothing — that a plausible number is the easiest thing to get
+wrong and the hardest to notice. A record that is right except where nobody checked is the artifact equivalent of
+a guard that reports clean while covering a subset.
