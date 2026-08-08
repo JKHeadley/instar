@@ -686,3 +686,36 @@ same class as every other prose-meaning question here and belongs to family revi
 
 **State:** 87 articles, enforced 0.7356, dangling 0, unrecognized sections 0, 12 relations,
 7 obligations, 3 article + 10 sub-obligation countdowns, full lint chain green.
+
+---
+
+## Addendum 13 — the Substrate admission rule, and the exemption with no governance
+
+**Changed:** `docs/STANDARDS-REGISTRY.md` (two edits: the family intro, *Token-Audit Completeness*).
+
+**THE ADMISSION RULE.** "This family has no membership criterion" was the one finding that appeared in
+ALL FOUR passes, unchanged. Three tests now define membership: it is a fact about the MODEL not the
+software; it is invisible from outside; and a competent engineer could not derive it from the code.
+The third does most of the work — if code review would find it, it is engineering discipline and
+*Building* is its home.
+
+**Applied to a current member rather than left abstract:** *Iterative Audit to Convergence* fails test
+3 and is engineering discipline shelved among model-level truths. Deliberately NOT re-filed in this
+change: re-filing a family's worth of articles in the same commit that first defines the test turns a
+placement decision into an unreviewed reorganisation, and the family floors are ratchets that move
+with article counts. Named, dated, and left for a reviewed pass.
+
+**THE EXEMPTION WITH NO GOVERNANCE — created visible by my own fix.** Addendum 7 disambiguated the
+cannot-surface exemption set from the attribution allowlist, correctly, and in doing so exposed that
+the exemption needs only "a reason": no approval, no challenge path, no expiry, no obligation to
+reassess when a provider gains usage reporting. An exemption granted once can outlive its
+justification indefinitely — *Close the Loop*, applied to an exemption rather than a task. What the
+rule should require is now stated (name the capability genuinely absent rather than merely unwired,
+carry a reassessment date, lose the exemption when the provider is upgraded) and dated.
+
+Worth recording as a pattern: three separate findings this window were made VISIBLE by a previous fix
+of mine rather than by the fix being wrong. Precision surfaces the next question. That is a healthier
+failure mode than the fixes that created genuine contradictions, and it is a different thing.
+
+**State:** 87 articles, enforced 0.7356, dangling 0, unrecognized sections 0, 12 relations,
+7 obligations, 3 article + 12 sub-obligation countdowns, all floors held, full lint chain green.
