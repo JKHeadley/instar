@@ -96,3 +96,41 @@ never at a line start and never adjacent to a heading.
 
 **State:** 87 articles (unchanged), enforced 0.7471, false-claims 0, dangling 0, unrecognized 0,
 36 sub-obligation countdowns, full lint chain green.
+
+---
+
+## Increment 3 — the two properties that resist checking, assessed honestly
+
+**Changed:** `docs/STANDARDS-REGISTRY.md` (two assessments). **No guard added, and the enforced ratio
+did not move (0.7471 before and after) — which is the correct outcome, because nothing was built.**
+
+**Sovereignty — a live guard appears to cover its failure mode, and I deliberately did not cite it.**
+The observable failure is narrow: an outbound message asking the operator to do, approve or supply
+something the agent already owns. That symptom IS evaluated on every outbound message by the messaging
+tone gate's park-your-own-work signals — a check on real behaviour, not on existence. So the honest
+state is that this article is marked a GAP while a running guard covers its main observable failure:
+an UNDER-claim, the opposite of this registry's usual defect.
+
+I did not convert that into an Applied-through citation. The reason is conflict of interest rather
+than doubt: a citation raises the article's enforcement class with nothing new built, and I nearly
+manufactured enforcement twice on 2026-08-08 — once refused knowingly, once walked into while
+restoring honesty, caught only because a ratio rose on an edit that built nothing. **The party who
+benefits from the citation should not be the party who judges it.** Referred for independent judgement
+(the laptop lane and the family reviewer both have standing to rule on it), dated, and left as a gap
+meanwhile. Leaving an article understated is the cheaper error.
+
+**The Right to Stand Ground — I cannot produce a function check, and that is the finding.** The
+failure is a reversal under pressure without new evidence, and both halves defeat a build-time guard:
+reversals are not recorded as reversals anywhere (the decision journal models a decision and its
+guiding principle but has no notion of superseding an earlier position), and "without new evidence" is
+a semantic judgement that *Intelligence Infers, Keywords Only Guard* forbids a matcher from making.
+
+The nearest checkable thing — requiring that a decision reversing an earlier one names what changed —
+is offered explicitly as NOT the property: it needs reversals modelled first, and it would verify
+bookkeeping rather than backbone, since an agent can record a reason and still be capitulating. The
+charter said to say so plainly and date it rather than ship a check that counts mentions; this is that.
+
+**Both carry named, dated sub-obligations.** 38 sub-obligation countdowns, up from 36.
+
+**State:** 87 articles, enforced 0.7471 unchanged, false-claims 0, dangling 0, unrecognized 0,
+lint chain green.
