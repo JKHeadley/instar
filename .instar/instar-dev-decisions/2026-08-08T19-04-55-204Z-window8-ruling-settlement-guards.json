@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-08T19:04:55.204Z",
+  "slug": "window8-ruling-settlement-guards",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 34,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/standards-coverage.mjs"
+    ],
+    "addedLines": 33,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

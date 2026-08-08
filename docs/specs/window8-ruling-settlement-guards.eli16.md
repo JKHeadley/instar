@@ -573,3 +573,41 @@ them, now dated.
 
 That is the difference between a review that stops you and a review that moves you. Same reviewer, same
 document, better question.
+
+## All three families passed, and the last one needed a different question (2026-08-08)
+
+Building refused nine times. Not because its rules were bad — the last few rounds said the family was
+"governable" — but because it was being asked to prove something it could not see. The criterion asks
+whether findings are getting smaller *across rounds*, and a reviewer handed one family's text cannot
+know what happened in earlier rounds. I had been asserting the history at it, which is worth exactly
+what an assertion is worth.
+
+The operator's answer: let it check. So the reviewer was given read access to the repository and
+pointed at the audit record and the actual repair commits — explicitly as facts it was allowed to
+reject.
+
+It rejected some of them. It noticed that the recorded verdicts file did not cover Building and said
+so, refusing to treat those verdicts as evidence for the family it was reviewing. Then it read the
+commit history itself and accepted on that basis. That is a better outcome than agreement would have
+been, because it means the acceptance rests on something I could not have faked in the prompt.
+
+**The option I keep not taking.** I could have written a paragraph into Building narrating its own
+repair history, so the reviewer would have something to quote. It would have worked. It is also
+manufacturing the evidence, which is the same move as pointing at a safety check that does not
+actually check the thing — something I nearly did earlier today and caught only because a number went
+up when nothing had been built.
+
+## Lowering a bar on purpose, so it stays a bar
+
+One of the four rules moved between sections carried a working safety check with it, so the section it
+left now scores lower. That number is honest — the section was never as protected as it looked; the
+departing rules were propping it up. But the tooling is built to *refuse* a lower bar, on the sensible
+grounds that things should not quietly get worse.
+
+Two bad ways to resolve that: edit the stored number by hand where nobody sees it, or remove the
+refusal. Instead there is now a switch that must be typed out with a written reason, and the reason
+ends up in the commit. Without the switch, the bar still refuses to move — I checked by running it both
+ways.
+
+What the switch proves is only that a human meant to do it. It does not prove they were right. That
+distinction is the whole point.

@@ -1050,3 +1050,46 @@ trusted without re-deriving it, and I have spent this window demonstrating — t
 enforcement ratio that rose on an edit that built nothing — that a plausible number is the easiest thing to get
 wrong and the hardest to notice. A record that is right except where nobody checked is the artifact equivalent of
 a guard that reports clean while covering a subset.
+
+---
+
+## Addendum 23 — ALL THREE FAMILIES ACCEPTED, and the floor lever
+
+**Changed:** `docs/STANDARDS-REGISTRY.md` (three edits), `scripts/standards-coverage.mjs`
+(`--rebaseline-floor` lever), the audit record and ledger.
+
+**BUILDING: ACCEPTED.** All three families now pass under the convergence criterion. It took a change
+of METHOD, not more edits — per Justin's instruction the reviewer was given REPOSITORY READ ACCESS and
+pointed at independently checkable artifacts as facts it could refuse. It then did exactly the right
+thing: rejected the recorded verdicts as evidence for itself ("its replacement file … omits Building,
+so I do not treat the recorded verdicts as evidence for this family") and verified the git history
+instead, concluding that "finding magnitude has therefore declined from usability-blocking defects to
+non-blocking tracked work."
+
+**Three real defects closed on the way.** The absolute no-new-topic rule contradicted the enumerated
+legacy exception in two FURTHER restatements beyond the one I had already fixed — the same claim
+repeated in several places, each needing the carve-out. And the sharpest catch of the entire review:
+the rule defining what a *pending operator ratification* article governs was stated INSIDE a pending
+article. A pending, advisory article cannot authoritatively establish what pending articles bind. That
+is circular, and the statement now lives in the registry's own joining rules.
+
+**THE FLOOR LEVER — a deliberate weakening of a ratchet, which deserves scrutiny.** Justin's ruling
+required The Substrate's floor to re-baseline 20/30 → 16/26 after the enforcement-neutral re-filing.
+The recorder is built to REFUSE that: it keeps the old floor whenever the measured ratio is lower, so
+a family can never quietly lower its own bar. Rather than hand-edit the ledger (invisible) or delete
+the ratchet (dangerous), a `--rebaseline-floor="<reason>"` flag now exists. It is deliberately
+awkward: it must be typed, it must carry a reason, and the reason lands in the command and the commit.
+**Proven still a ratchet without it:** recording once with the flag ABSENT left the floor at 20/30.
+What the flag certifies is only that the lowering was DELIBERATE and attributed — never that it was
+justified. Enforcement-neutrality remains the author's to establish and state; here it was measured
+(identical registry-wide ratio, byte-identical title list).
+
+**Recording mechanics, learned the hard way.** The audit chain is ledger → artifact → report BYTES.
+Editing the report after recording invalidates every entry pinned to it, and the recorder refuses to
+overwrite an invalid ledger — so the report must be FINAL before recording. Recovery is to reset the
+ledger to a state whose artifact chain is intact, then record forward. Three failed attempts before
+that was clear.
+
+**State:** 87 articles, enforced 0.7356, false-claims 0, dangling 0, unrecognized sections 0,
+13 relations, 8 obligations, 3 article + 33 sub-obligation countdowns, **coverage check exits 0**,
+`standards-coverage-ratchet` 35/35 green, full lint chain green.

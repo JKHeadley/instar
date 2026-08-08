@@ -61,6 +61,30 @@ const args = new Set(process.argv.slice(2));
 const CHECK = args.has('--check');
 const JSON_ONLY = args.has('--json');
 const QUIET = args.has('--quiet');
+/**
+ * `--rebaseline-floor="<reason>"` — the ONLY way a family's enforcement floor may go
+ * DOWN, and it exists because of a specific operator ruling (Justin, 2026-08-08).
+ *
+ * The floor normally ratchets: `recordAreaAudit` keeps the OLD floor whenever the
+ * measured ratio is below it, so a family can never quietly lower its own bar. That is
+ * right for the case it was built for — enforcement genuinely regressing.
+ *
+ * It is WRONG for one case. When articles are re-filed between families to correct a
+ * MISFILING, the losing family's density changes for a reason that has nothing to do
+ * with whether anything is better guarded. The ruling: *a floor satisfied by misfiled
+ * articles was passing on false composition, and fixing a filing mistake must not be
+ * punishable by the meter the mistake was inflating.*
+ *
+ * So this flag is deliberately awkward: it must be typed, it must carry a reason, and
+ * the reason belongs in the commit and the audit report where a reviewer will see it.
+ * It does NOT verify enforcement-neutrality itself — the author must establish that
+ * separately (registry-wide enforced ratio identical before and after) and say so. What
+ * it certifies is only that the lowering was DELIBERATE and attributed, never that it
+ * was justified. A floor that can never move is a floor that eventually protects a lie;
+ * a floor that moves silently is not a floor.
+ */
+const REBASELINE_ARG = [...args].find((arg) => arg.startsWith('--rebaseline-floor='));
+const REBASELINE_REASON = REBASELINE_ARG?.slice('--rebaseline-floor='.length) ?? null;
 const RECORD_AREA_ARG = [...args].find((arg) => arg.startsWith('--record-area-audit='));
 const RECORD_AREA = RECORD_AREA_ARG?.slice('--record-area-audit='.length) ?? null;
 const AUDIT_REF_ARG = [...args].find((arg) => arg.startsWith('--audit-ref='));
@@ -1345,9 +1369,17 @@ function recordAreaAudit(report, selection, auditRef) {
     }
     const measuredFloor = { enforced: measurement.enforced, total: measurement.total };
     const oldFloor = existing.areas?.[area]?.refResolutionFloor;
-    const refResolutionFloor = validFloor(oldFloor) && ratioBelowFloor(measuredFloor.enforced, measuredFloor.total, oldFloor)
+    const rebaselining = typeof REBASELINE_REASON === 'string' && REBASELINE_REASON.trim().length > 0;
+    const refResolutionFloor = !rebaselining
+      && validFloor(oldFloor) && ratioBelowFloor(measuredFloor.enforced, measuredFloor.total, oldFloor)
       ? oldFloor
       : measuredFloor;
+    if (rebaselining && validFloor(oldFloor) && ratioBelowFloor(measuredFloor.enforced, measuredFloor.total, oldFloor)) {
+      console.log(
+        `[standards-coverage] FLOOR RE-BASELINED for ${area}: ${oldFloor.enforced}/${oldFloor.total} -> ` +
+        `${measuredFloor.enforced}/${measuredFloor.total} — reason: ${REBASELINE_REASON}`,
+      );
+    }
     nextAreas[area] = {
       lastAuditedAt,
       auditRef,

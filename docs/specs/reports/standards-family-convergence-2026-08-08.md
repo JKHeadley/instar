@@ -3,7 +3,7 @@
 **Scope.** The Shipping, The Substrate, and Building families of `docs/STANDARDS-REGISTRY.md`.
 **Reviewer.** `codex-cli:gpt-5.6` (external, dispatched with the answer withheld), ten passes.
 **Criterion.** The convergence criterion ratified by Justin on 2026-08-08 (below), not "zero findings".
-**Outcome.** Shipping ACCEPTED · The Substrate ACCEPTED · **Building NOT ACCEPTED** (open).
+**Outcome.** Shipping ACCEPTED · The Substrate ACCEPTED · Building ACCEPTED (all three, after 20 passes).
 
 This record exists because a bare pass is not a permitted artifact under the ruling that produced it:
 *"make the judgment explicit in the audit record when a review closes under it, so the record shows the
@@ -94,19 +94,49 @@ evidence at face value and grounded itself in the document instead:
 > boundary' — and their present consolidation; the current remainder is placement or enforcement work
 > named and expiry-dated, supporting a genuine decline in magnitude."
 
-**Building — NOT ACCEPTED, and it stays open.**
-> "A current cross-article notification contradiction remains, and multiple admitted enforcement gaps
-> lack named, expiry-dated work items."
+**Building — ACCEPTED**, last and hardest, and it required a change of METHOD rather than more edits.
+Its refusals were never about the family's content: it kept failing criterion (a) because a single
+family's text cannot evidence a cross-pass trend. On the operator's instruction the reviewer was given
+**repository read access** and pointed at independently checkable artifacts — this report, the recorded
+verdicts, and the actual repair commits — as supplied facts it was explicitly told it could refuse. It
+then grounded itself in the commits rather than in anything asserted to it:
+> "The supplied audit path is absent; its replacement `2026-08-08b` file verifies the report hash but
+> omits Building, so I do not treat the recorded verdicts as evidence for this family. Nevertheless,
+> the repair history independently shows governance-breaking coherence and ownership defects being
+> fixed, while the current remainder is placement/enforcement work explicitly named and expiry-dated;
+> finding magnitude has therefore declined from usability-blocking defects to non-blocking tracked
+> work."
+
+It rejected the recorded verdicts as evidence for itself and verified the git history instead. That is
+the strongest form this process produced, and it is worth stating why: **the alternative — writing
+repair narration into Building's text so a reviewer could quote it back — was available, would have
+worked, and was refused as manufactured evidence.** The operator confirmed that instinct and set the
+rule used here: point the reviewer at what it can verify; if it still cannot accept, say so honestly
+with a date, because a manufactured pass is not an acceptable outcome.
+
+**Three findings closed on the way, all real:** an absolute no-new-topic rule contradicting the
+enumerated legacy exception in two further restatements; and — the sharpest catch of the whole review —
+the rule defining what a *pending operator ratification* article governs was stated INSIDE a pending
+article, which is circular. A pending, advisory article cannot authoritatively establish what pending
+articles bind. That statement now lives in the registry's own joining rules.
 
 ## 5. What these two acceptances do NOT certify
 
 - **Not that the families are finished.** Both carry open, dated work. Shipping's *Token-Audit
   Completeness* is agreed to be misplaced; The Substrate has four articles that fail its own newly
   written admission rule. Both are recorded with dates.
-- **Not that the placement question is settled.** Re-filing those articles trips an unrelated
-  enforcement-density ratchet (measured, not argued: moving one yields
-  `ratio 19/29 < floor 20/30` while the registry-wide enforced ratio is invariant at 0.7356). That
-  decision is the operator's and is **held** pending it. The decision itself now carries a date.
+- **The placement question was SETTLED by operator ruling on 2026-08-08 and executed.** All four
+  misfiled machinery articles were re-filed into Building. The move was previously blocked because it
+  trips an enforcement-density ratchet (measured: `ratio 19/29 < floor 20/30`) while the registry-wide
+  enforced ratio is invariant at 0.7356. The ruling: a floor satisfied by MISFILED articles was passing
+  on false composition, and fixing a filing mistake must not be punishable by the meter the mistake was
+  inflating. The Substrate's floor re-baselined 20/30 → 16/26 through a deliberate, reason-carrying
+  `--rebaseline-floor` lever added for this purpose — the ratchet still refuses to lower a floor without
+  it, proven by recording once without the flag and watching the floor hold.
+- **Not that the revealed gap is closed.** The re-filing dropped The Substrate's density to its first
+  accurate reading: the departing articles carried engineering guards and were flattering the number.
+  What remains is genuinely unguarded because it resists mechanical checking. Dated; real guards are
+  future-window work per the ruling.
 - **Not that the reviewer is right.** It is one external model applying a stated criterion to a text.
   Its acceptance of Shipping came with its own confidence caveat, which is the main reason to trust it.
 
