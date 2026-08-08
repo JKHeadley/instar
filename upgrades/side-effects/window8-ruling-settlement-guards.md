@@ -864,3 +864,41 @@ One set, extensible by the operator — not two sets with one unacknowledged.
 
 **State:** 87 articles, enforced 0.7356, **false-claims 0**, dangling 0, unrecognized sections 0,
 13 relations, 8 obligations, 3 article + 15 sub-obligation countdowns, full lint chain green.
+
+---
+
+## Addendum 18 — reviewed under the CONVERGENCE criterion, and closing what it named
+
+**Changed:** `docs/STANDARDS-REGISTRY.md` (six edits), `scripts/lint-single-governing-obligation.mjs`
+(one imperative literal).
+
+**The protocol changed, deliberately and on the record.** Justin ruled that acceptance is not zero
+findings: it is a defensible judgement that finding MAGNITUDE is declining, that the remainder is
+converted to named expiry-dated work, and that nothing remains which makes a family unusable as
+governance. Six passes had been judged against "zero findings" because that is the bar I gave the
+reviewer — it never knew another existed. The criterion now sits in the protocol, with the cross-pass
+data the reviewer cannot derive from one reading, flagged as untrusted and with an explicit
+instruction to refuse if the text does not support it. **I did not reinterpret a NOT ACCEPTED as an
+accept**; that would make me both the reviewed party and the judge of whether the review counts.
+
+**It refused again — and the refusals are now entirely criterion (b).** Every family: gaps I
+acknowledged in prose but never DATED. That is precise and closable, and it is a far better refusal
+than "there are findings".
+
+Closed this round: *Maturation Path* clauses (b)(c)(d) — three of its four ratified clauses rest on
+author diligence, now dated; *A Dispatch Supplies the Question* — the ad-hoc dispatch path that
+bypasses the templated chokepoint, which is exactly how the crystallizing failure happened; *Recall
+Over Our Own Material* — an unadvertised recall surface. Eighteen dated sub-obligations, from fifteen.
+
+**Two real defects, both mine, both from earlier fixes.** *The Body and the Mind* still described the
+exception as the emergency-stop floor after its child extended the same mechanism to pause — parent
+text stale relative to child. And *The Operator Channel Is Sacred* disclaimed owning the MECHANISM and
+then stated it as an operative rule two sentences later: a deferral in name only, and precisely the
+shape arm (4) of the ownership lint exists to catch. It did not catch it because the literal was not
+registered. Registered now.
+
+**The pattern, third instance:** the guard exists, the guard works, and the guard's COVERAGE is a list
+I maintain. Twice today that list was incomplete and the review found what the lint could not.
+
+**State:** 87 articles, enforced 0.7356, false-claims 0, dangling 0, unrecognized sections 0,
+13 relations, 8 obligations, 3 article + 18 sub-obligation countdowns, full lint chain green.

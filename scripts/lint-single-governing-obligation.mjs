@@ -174,7 +174,12 @@ const OBLIGATIONS = [
     declaration: 'THIS ARTICLE OWNS EMERGENCY-STOP DECISION AUTHORITY',
     disclaimer: 'does NOT own emergency-stop decision authority',
     canonical: 'Stop = floor OR model, never floor AND model',
-    imperatives: ['always stops', 'decides alone and is un-overridable'],
+    // 'requires a deterministic match' added 2026-08-08 (sixth pass): *The Operator
+    // Channel Is Sacred* disclaimed owning the MECHANISM and then stated it as an
+    // operative rule two sentences later — a deferral in name only, and the exact
+    // shape arm (4) exists for. Caught by the review, not by this lint, because the
+    // literal was not registered.
+    imperatives: ['always stops', 'decides alone and is un-overridable', 'requires a DETERMINISTIC match'],
   },
 ];
 

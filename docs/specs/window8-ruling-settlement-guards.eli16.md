@@ -548,3 +548,28 @@ disappears; put it back and it returns.
 
 Approving the rule isn't mine to do. Making the gap visible instead of letting the layout imply an
 authority the rule doesn't have — that part was.
+
+## Changing the question, not the answer (2026-08-08)
+
+Six rounds of review all came back "not accepted", and I had started to wonder whether the bar was
+reachable at all. It turned out I had set the bar myself, badly: the reviewer was measuring against
+"are there any findings", because that is what I asked it. A document this size will always have
+findings. Measured that way, it can never pass, and passing would be suspicious if it did.
+
+The operator's ruling replaced that with something better. Accepted means: the findings are getting
+*smaller* — not just fewer, but less damaging to the document's usability as a set of rules — what's
+left has been written down as dated work rather than vague acknowledgement, and nothing remains that
+makes the rules unusable *today*, like two rules contradicting each other.
+
+The important part of how I applied it: I did **not** take the existing "not accepted" and decide it
+really meant "accepted" under the new definition. That would make me both the thing being reviewed and
+the judge of whether the review counts. I put the new definition into the reviewer's instructions, gave
+it the across-rounds numbers it cannot see from reading one family once, told it that data is untrusted
+and to refuse if the text doesn't back it up — and let it answer.
+
+It refused again. And the refusal was worth having: every family failed on the same specific thing —
+gaps I had admitted in words but never given a deadline. Not "there are problems." A list. Three of
+them, now dated.
+
+That is the difference between a review that stops you and a review that moves you. Same reviewer, same
+document, better question.
