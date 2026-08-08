@@ -641,3 +641,48 @@ is the follow-through, not the detector.
 
 **State:** 87 articles, enforced 0.7356, dangling 0, unrecognized sections 0, 12 relations,
 7 obligations, 3 article + 10 sub-obligation countdowns, floors held, full lint chain green.
+
+---
+
+## Addendum 12 — fourth-pass repairs: pause authority, and two parentage vocabularies
+
+**Changed:** `docs/STANDARDS-REGISTRY.md` (two article edits + regenerated block),
+`scripts/generate-standards-hierarchy.mjs` (block header text only — no logic change).
+
+**Convergence this pass:** Shipping COHERENCE and REDUNDANCY both clean ("no direct inter-article
+contradiction found", "no ambiguous duplicate owner found"). Building REDUNDANCY "mostly resolved" and
+PLACEMENT no longer flags the declared children. The addendum-10 fix for exception counting created
+the remaining Substrate finding, which is the pattern this whole sequence keeps showing: each fix
+resolves the finding it targeted and exposes the next imprecision underneath.
+
+**PAUSE AUTHORITY, split properly.** Addendum 10 said the exact-match mechanism "applies at both
+chokepoints", which correctly answered "how many exceptions" and created a new overlap: pause then had
+two governing articles. Resolved by separating the two obligations rather than the two gates —
+*Structure Decides Alone* owns whether structure may decide alone and BY WHAT MECHANISM; *The Operator
+Channel Is Sacred* owns whether a decision may CONSUME the operator's message (never on a bare-LLM
+judgement, because a swallowed message is unrecoverable and model confidence is uninformative).
+Separately, *Intelligence Infers* scoped its keyword-floor survivor to emergency-stop ALONE while the
+pause chokepoint has always run the same enumerated exact-match sets — so that article banned a list
+the registry elsewhere required. The survivor is scoped by FORM (exact whole-message match against an
+enumerated list, which cannot silently widen), not by severity; severity selects the consequence
+policy, which is the other article's.
+
+**TWO PARENTAGE VOCABULARIES — a documentation fix, not a mechanism change.** The reviewer read
+`Parent principle → X` (used in 9 articles) as an undeclared tree edge. It is not: `a tree node under
+*X*` is a structural parent, single-valued, acknowledged by the parent, validated and rendered;
+`Parent principle → X` is a lineage note naming which root an article descends from in spirit. The
+evidence is in the registry rather than in an assertion: *Scrape/Parser Fixture Realness* carries BOTH,
+and its lineage note names TWO roots — which a tree edge structurally cannot have, since a second
+parent is a hard failure in the generator's own diagnostics. The distinction is now stated in the
+generated block itself, where a reader meets the tree, not in a commit message.
+
+**Over-block:** none — the generator change is header prose; the check compares generated to
+checked-in and both moved together. Verified `--check` clean after regeneration, which is the arm that
+would catch me shipping the text without regenerating.
+
+**Under-block, named honestly:** nothing enforces the vocabulary distinction. An author who writes
+`Parent principle` intending a structural parent still gets no tree edge and no warning. That is the
+same class as every other prose-meaning question here and belongs to family review.
+
+**State:** 87 articles, enforced 0.7356, dangling 0, unrecognized sections 0, 12 relations,
+7 obligations, 3 article + 10 sub-obligation countdowns, full lint chain green.

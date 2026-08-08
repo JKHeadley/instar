@@ -176,6 +176,17 @@ lines.push(
   'because "no declared parent" and "top-level by design" are different facts and only the first one is known here.',
 );
 lines.push('');
+lines.push(
+  '**Two vocabularies, and only one is a tree edge** (stated 2026-08-08 after a reviewer read them as the same thing). ' +
+  '`a tree node under *X*` is a STRUCTURAL parent: exactly one per article, acknowledged by the parent, validated by ' +
+  '`scripts/lint-registry-tree-parentage.mjs`, and rendered above. `Parent principle → X` is a LINEAGE note: which root ' +
+  'principle an article descends from in spirit. It is many-valued and deliberately not a tree edge — *Scrape/Parser ' +
+  'Fixture Realness* carries both, and its lineage note names TWO roots (*Testing Integrity* / *Structure beats ' +
+  'Willpower*), which a tree edge structurally cannot have. So an article carrying a lineage note and no tree edge is ' +
+  'not necessarily a misplaced child; it may simply have no single structural parent. Where it DOES have one, declare ' +
+  'it — two of those were found and declared on 2026-08-08 precisely because this view showed them missing.',
+);
+lines.push('');
 
 let rendered = 0;
 for (const family of familiesInOrder) {

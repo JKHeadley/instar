@@ -458,3 +458,37 @@ next heading with a parenthesis.
 Two failures look identical from the outside — "the rule is broken" and "the tool that reads the rule
 is broken" — and only one of them is fixed by editing the rule. Worth slowing down for, because the
 green build is equally convincing either way.
+
+## Splitting "who decides" from "what may be swallowed" (2026-08-08, fourth pass)
+
+Last pass I said the word-for-word-match rule applies at two places, not one. True, and it created the
+next problem: the *pause* path then had two rules claiming to govern it.
+
+The fix was to notice they are answering different questions. One rule owns **may code decide this by
+itself, and by what method** — word-for-word match against a written list. The other owns **may a
+decision swallow the operator's message**, and its answer is: never on the model's say-so, because a
+swallowed message is gone and the model reports high confidence whether it is right or wrong. Those
+compose. They only looked like a conflict because one of them was quietly stating both.
+
+A related thing fell out of it. A third rule said the "safe list" exception applies to emergency stop
+*only* — while the pause path has always used the same kind of list. So one rule banned something
+another rule required, in the same codebase, about the same lines. What justifies the exception is the
+**form** (an exact match against a written list, which can't quietly widen), not how bad the mistake
+would be. How bad it would be decides something else: whether the message may be swallowed.
+
+## Two things that looked like the same thing
+
+The reviewer flagged nine rules that say "Parent principle → X" as children that were never properly
+filed. They aren't. We have two different notes that both use the word *parent*:
+
+- "a tree node under X" — a real structural parent. One per rule, the parent has to name it back, and
+  it shows up in the printed tree.
+- "Parent principle → X" — which founding idea this rule descends from. It can name more than one.
+
+The proof isn't an argument, it's in the document: one rule carries both, and its "parent principle"
+line names *two* roots — which the structural kind cannot do, because a second structural parent is a
+hard build failure by design.
+
+Two of those nine did turn out to have a real missing structural parent, and they were declared. The
+other seven were fine. The distinction now sits in the printed tree itself, where someone reading it
+will actually meet the question — not in a commit message nobody reads twice.
