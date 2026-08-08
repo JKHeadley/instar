@@ -1,0 +1,304 @@
+{
+  "generatedAt": "2026-08-05T04:34:18.564Z",
+  "registryFound": true,
+  "rootSelfWiring": {
+    "status": "wired",
+    "errors": []
+  },
+  "total": 82,
+  "byKind": {
+    "ratchet": 22,
+    "gate": 34,
+    "lint": 3,
+    "spec-only": 7,
+    "documented-only": 16
+  },
+  "enforcedRatio": 0.7195,
+  "gaps": [
+    "The Body and the Mind",
+    "Documentation IS Being",
+    "Deferral = Deletion",
+    "Name the Gravity Wells",
+    "Architectural Agency in the Gap",
+    "Sovereignty — \"I own what is mine\"",
+    "The Right to Stand Ground",
+    "Session Input Is a Principal",
+    "Cross-Store Coherence Is an Invariant",
+    "LLM-Supervised Execution",
+    "Observability — you can't tune what you can't see",
+    "Bug-Fix Evidence Bar (verify before you claim)",
+    "User-Facing Fixes Ship Live",
+    "Never-Waste Feedback — corrections compound",
+    "Near-Silent Notifications",
+    "Truthful Provenance — Speak Only as Yourself"
+  ],
+  "enforcementScope": {
+    "recognizedHeadings": [
+      "Applied through",
+      "Enforced by (structure, not willpower)",
+      "Enforcement",
+      "Full spec",
+      "Full specs"
+    ],
+    "excludedProvenanceHeadings": [
+      "Derives from",
+      "Earned from",
+      "Ratified by",
+      "Source documents",
+      "Traces to the goal"
+    ],
+    "excludedNarrativeHeadings": [
+      "Applied at the shipping layer",
+      "Balanced by — Responsible Resource",
+      "Benchmarks earn a real job",
+      "Composition with No Silent Degradation",
+      "Constrain the model's output with structure, never by matching its prose",
+      "Distinct from Cross-Machine Coherence",
+      "Distinct from Deferral = Deletion",
+      "Distinct from the OnboardingGate",
+      "Neither is whole alone",
+      "Notice and fight the reflex (the load-bearing awareness)",
+      "Per-feature posture (2026-06-12 widening)",
+      "Restart-survival corollary",
+      "The Eternal Sentinel exemption (ratified with the standard)",
+      "The moving threshold (mastery)",
+      "The near-total ban",
+      "Three obligations, in increasing blast radius",
+      "Three postures, in increasing order of ambition"
+    ],
+    "capturedSections": 53,
+    "unrecognizedSections": []
+  },
+  "areas": {
+    "Building": {
+      "total": 30,
+      "enforced": 24,
+      "byKind": {
+        "ratchet": 13,
+        "gate": 9,
+        "lint": 2,
+        "spec-only": 3,
+        "documented-only": 3
+      },
+      "refResolutionRatio": 0.8,
+      "gaps": [
+        "Cross-Store Coherence Is an Invariant",
+        "LLM-Supervised Execution",
+        "Observability — you can't tune what you can't see"
+      ],
+      "currentAreaSha256": "2a8e73099d642eb4549754313762c45800c0465ce711184080056ce1d3506cae",
+      "lastAuditedAt": "2026-08-01T07:31:10.091Z",
+      "auditRef": "docs/audits/standards-area-audit-2026-08-01.json",
+      "auditedAreaSha256": "2a8e73099d642eb4549754313762c45800c0465ce711184080056ce1d3506cae",
+      "auditCurrent": true,
+      "refResolutionFloor": {
+        "enforced": 24,
+        "total": 30
+      },
+      "refResolutionRatioFloor": 0.8
+    },
+    "Interaction": {
+      "total": 13,
+      "enforced": 8,
+      "byKind": {
+        "ratchet": 1,
+        "gate": 6,
+        "lint": 1,
+        "spec-only": 2,
+        "documented-only": 3
+      },
+      "refResolutionRatio": 0.6154,
+      "gaps": [
+        "Never-Waste Feedback — corrections compound",
+        "Near-Silent Notifications",
+        "Truthful Provenance — Speak Only as Yourself"
+      ],
+      "currentAreaSha256": "edad271c188bb3b9ca6287d48014f73da7fb41c30415b1809bb26bd11d39e6b8",
+      "lastAuditedAt": "2026-08-01T07:31:10.091Z",
+      "auditRef": "docs/audits/standards-area-audit-2026-08-01.json",
+      "auditedAreaSha256": "edad271c188bb3b9ca6287d48014f73da7fb41c30415b1809bb26bd11d39e6b8",
+      "auditCurrent": true,
+      "refResolutionFloor": {
+        "enforced": 8,
+        "total": 13
+      },
+      "refResolutionRatioFloor": 0.6154
+    },
+    "Shipping": {
+      "total": 7,
+      "enforced": 5,
+      "byKind": {
+        "ratchet": 1,
+        "gate": 4,
+        "lint": 0,
+        "spec-only": 0,
+        "documented-only": 2
+      },
+      "refResolutionRatio": 0.7143,
+      "gaps": [
+        "Bug-Fix Evidence Bar (verify before you claim)",
+        "User-Facing Fixes Ship Live"
+      ],
+      "currentAreaSha256": "b20bbc1a5a845eb3007f9ba5e44bb7ce61591404c50bd2d78d491f4cc3c7563d",
+      "lastAuditedAt": "2026-08-01T07:31:10.091Z",
+      "auditRef": "docs/audits/standards-area-audit-2026-08-01.json",
+      "auditedAreaSha256": "b20bbc1a5a845eb3007f9ba5e44bb7ce61591404c50bd2d78d491f4cc3c7563d",
+      "auditCurrent": true,
+      "refResolutionFloor": {
+        "enforced": 5,
+        "total": 7
+      },
+      "refResolutionRatioFloor": 0.7143
+    },
+    "The Fractal": {
+      "total": 1,
+      "enforced": 1,
+      "byKind": {
+        "ratchet": 0,
+        "gate": 1,
+        "lint": 0,
+        "spec-only": 0,
+        "documented-only": 0
+      },
+      "refResolutionRatio": 1,
+      "gaps": [],
+      "currentAreaSha256": "88f5c3dd5ae11faae70dfbdf2b91509fdeebf4599197134cc98b2d223cf73da7",
+      "lastAuditedAt": "2026-08-01T07:31:10.091Z",
+      "auditRef": "docs/audits/standards-area-audit-2026-08-01.json",
+      "auditedAreaSha256": "88f5c3dd5ae11faae70dfbdf2b91509fdeebf4599197134cc98b2d223cf73da7",
+      "auditCurrent": true,
+      "refResolutionFloor": {
+        "enforced": 1,
+        "total": 1
+      },
+      "refResolutionRatioFloor": 1
+    },
+    "The Root": {
+      "total": 1,
+      "enforced": 1,
+      "byKind": {
+        "ratchet": 1,
+        "gate": 0,
+        "lint": 0,
+        "spec-only": 0,
+        "documented-only": 0
+      },
+      "refResolutionRatio": 1,
+      "gaps": [],
+      "currentAreaSha256": "c303bc03648d06ddc7b35fc890afe52ac3537fc270218cfd09cea76f88c1d0ba",
+      "lastAuditedAt": "2026-08-01T07:31:10.091Z",
+      "auditRef": "docs/audits/standards-area-audit-2026-08-01.json",
+      "auditedAreaSha256": "c303bc03648d06ddc7b35fc890afe52ac3537fc270218cfd09cea76f88c1d0ba",
+      "auditCurrent": true,
+      "refResolutionFloor": {
+        "enforced": 1,
+        "total": 1
+      },
+      "refResolutionRatioFloor": 1
+    },
+    "The Substrate": {
+      "total": 30,
+      "enforced": 20,
+      "byKind": {
+        "ratchet": 6,
+        "gate": 14,
+        "lint": 0,
+        "spec-only": 2,
+        "documented-only": 8
+      },
+      "refResolutionRatio": 0.6667,
+      "gaps": [
+        "The Body and the Mind",
+        "Documentation IS Being",
+        "Deferral = Deletion",
+        "Name the Gravity Wells",
+        "Architectural Agency in the Gap",
+        "Sovereignty — \"I own what is mine\"",
+        "The Right to Stand Ground",
+        "Session Input Is a Principal"
+      ],
+      "currentAreaSha256": "26771e0e33663b7677bcff2797adac1576b22f64fa51cf05d12790176ee19a12",
+      "lastAuditedAt": "2026-08-01T07:31:10.091Z",
+      "auditRef": "docs/audits/standards-area-audit-2026-08-01.json",
+      "auditedAreaSha256": "26771e0e33663b7677bcff2797adac1576b22f64fa51cf05d12790176ee19a12",
+      "auditCurrent": true,
+      "refResolutionFloor": {
+        "enforced": 20,
+        "total": 30
+      },
+      "refResolutionRatioFloor": 0.6667
+    }
+  },
+  "areaAudit": {
+    "status": "current",
+    "path": "docs/standards-registry-area-audits.json",
+    "schemaVersion": 2,
+    "currentCount": 6,
+    "totalAreas": 6,
+    "protectedBaseStatus": "not-assessed",
+    "errors": []
+  },
+  "areaModelAudit": {
+    "status": "current",
+    "path": "docs/standards-registry-area-model-audit.json",
+    "schemaVersion": 1,
+    "currentAreaSetSha256": "0f2117ae2e8539d22bd58f239a1302ff35ad4dc4daf8b2968a6b9cbded304b30",
+    "auditedAreaSetSha256": "0f2117ae2e8539d22bd58f239a1302ff35ad4dc4daf8b2968a6b9cbded304b30",
+    "auditCurrent": true,
+    "lastAuditedAt": "2026-08-02T02:17:22.219Z",
+    "auditRef": "docs/audits/standards-area-model-audit-2026-08-01.json",
+    "errors": []
+  },
+  "cadence": {
+    "reviewAfterDays": 90,
+    "dueAreas": [],
+    "areaModelReviewDue": false,
+    "blocking": false
+  },
+  "falseClaimCount": 1,
+  "falseClaims": [
+    {
+      "standard": "Cross-Store Coherence Is an Invariant",
+      "claims": [
+        "A scheduled coherence audit",
+        "on every machine daily",
+        "walks the list"
+      ]
+    }
+  ],
+  "danglingCount": 0,
+  "danglingByStandard": [],
+  "floors": {
+    "enforcedRatio": 0.7,
+    "danglingCeiling": 0,
+    "falseClaimCeiling": 1,
+    "unrecognizedSectionCeiling": 0,
+    "byArea": {
+      "Building": {
+        "enforced": 24,
+        "total": 30
+      },
+      "Interaction": {
+        "enforced": 8,
+        "total": 13
+      },
+      "Shipping": {
+        "enforced": 5,
+        "total": 7
+      },
+      "The Fractal": {
+        "enforced": 1,
+        "total": 1
+      },
+      "The Root": {
+        "enforced": 1,
+        "total": 1
+      },
+      "The Substrate": {
+        "enforced": 20,
+        "total": 30
+      }
+    }
+  },
+  "inputHash": "5413a0c6ef9ba2bd"
+}

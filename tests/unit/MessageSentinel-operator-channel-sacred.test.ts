@@ -8,7 +8,7 @@
  * the circuit-breaker bounds the blast radius. Both sides of every boundary.
  */
 import { describe, it, expect } from 'vitest';
-import { MessageSentinel, hasStopToken } from '../../src/core/MessageSentinel.js';
+import { MessageSentinel, isExactStopMessage } from '../../src/core/MessageSentinel.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
 
 /** Mock LLM: 'pause' → classifies as pause; 'capacity' → throws capacity-unavailable; 'normal' → normal. */
@@ -42,17 +42,37 @@ describe('decideInboundDisposition — the operator-channel-sacred fix', () => {
     expect(d.disposition).toBe('route-through'); // capacity-shed pause must NOT consume
   });
 
-  it('RESCUES a long-form genuine stop that was capacity-shed → kill (not route-through)', async () => {
+  // ── REVERSED 2026-08-07 under operator ruling A ────────────────────────────
+  // These two asserted that a long-form message CONTAINING a stop word is rescued
+  // to a KILL during capacity shed. That is structure deciding alone on a
+  // SUBSTRING, which *Structure Decides Alone Only on an Exact Match* forbids —
+  // and the same actuator killed "please do not cancel the review because it is
+  // complete", inverting the operator's meaning. Found by Codey's advisory review
+  // and reproduced before being changed.
+  //
+  // The safety they were protecting is NOT lost: an EXACT stop short-circuits
+  // before the provider is consulted, so it never reaches this path. A non-exact
+  // message now ROUTES THROUGH — delivered to the agent, not consumed, not killed.
+  it('DOES NOT kill a long-form non-exact stop that was capacity-shed — it routes through', async () => {
     const s = new MessageSentinel({ intelligence: mockIntel('capacity') });
     const d = await s.decideInboundDisposition('I really need you to stop deleting everything right now', 28130);
-    expect(d.disposition).toBe('kill'); // stop-token scan rescues it
-    expect(d.category).toBe('emergency-stop');
+    expect(d.disposition).toBe('route-through'); // delivered to the agent, not killed by a substring
   });
 
-  it('RESCUES a long-form stop the LLM mislabeled as pause → kill', async () => {
+  it('DOES NOT kill a long-form non-exact stop the LLM mislabeled as pause — it routes through', async () => {
     const s = new MessageSentinel({ intelligence: mockIntel('pause') });
     const d = await s.decideInboundDisposition('please could you stop the current operation', 28130);
-    expect(d.disposition).toBe('kill');
+    expect(d.disposition).toBe('route-through');
+  });
+
+  it('but an EXACT stop still kills on BOTH fallback paths — the floor is intact', async () => {
+    for (const behavior of ['capacity', 'pause'] as const) {
+      for (const m of ['stop', 'stop everything', '/stop']) {
+        const s = new MessageSentinel({ intelligence: mockIntel(behavior) });
+        const d = await s.decideInboundDisposition(m, 28131);
+        expect(d.disposition, `exact "${m}" under ${behavior}`).toBe('kill');
+      }
+    }
   });
 
   it('a deterministic emergency-stop still kills instantly', async () => {
@@ -98,23 +118,39 @@ describe('decideInboundDisposition — the operator-channel-sacred fix', () => {
   });
 });
 
-describe('hasStopToken — non-word-count-gated deterministic stop scan', () => {
-  it('detects stop words anywhere (no length gate)', () => {
-    expect(hasStopToken('I really need you to stop everything now please')).toBe(true);
-    expect(hasStopToken('stop')).toBe(true);
-    expect(hasStopToken('cancel the operation')).toBe(true);
-    expect(hasStopToken('please abort')).toBe(true);
-    expect(hasStopToken('kill it')).toBe(true);
-    expect(hasStopToken('/stop')).toBe(true);
+describe('isExactStopMessage — EXACT membership, not a substring scan', () => {
+  // Renamed and inverted 2026-08-07 (ruling A). The old `hasStopToken` scanned for
+  // a stop word ANYWHERE and accepted slash PREFIXES; it was the actuator behind
+  // the capacity-shed substring kills. Exact membership replaces it.
+  it('accepts EXACT enumerated stops, including slash commands', () => {
+    expect(isExactStopMessage('stop')).toBe(true);
+    expect(isExactStopMessage('stop everything')).toBe(true);
+    expect(isExactStopMessage('cancel everything')).toBe(true);
+    expect(isExactStopMessage('kill it')).toBe(true);
+    expect(isExactStopMessage('/stop')).toBe(true);
+    expect(isExactStopMessage('  STOP  ')).toBe(true); // trimmed + case-insensitive
   });
-  it('does NOT fire on benign messages or pause', () => {
-    expect(hasStopToken('Testing')).toBe(false);
-    expect(hasStopToken('pause')).toBe(false);
-    expect(hasStopToken('can you check the build status?')).toBe(false);
-    expect(hasStopToken('')).toBe(false);
-    expect(hasStopToken('stopwords are common in NLP pipelines')).toBe(false); // "stopwords" is not whole-word "stop"
+
+  it('REFUSES every non-exact message the old substring scan accepted', () => {
+    // Each of these was previously `true` and produced a real kill under shed.
+    expect(isExactStopMessage('I really need you to stop everything now please')).toBe(false);
+    expect(isExactStopMessage('cancel the operation')).toBe(false);
+    expect(isExactStopMessage('please abort')).toBe(false);
+    expect(isExactStopMessage('/stop the build only')).toBe(false); // slash PREFIX, not the command
   });
-  it('is intentionally CONSERVATIVE: a whole-word stop (even in "non-stop") rescues to kill — a kill is recoverable, a missed stop is not', () => {
-    expect(hasStopToken('this was a non-stop session')).toBe(true); // hyphen is a word boundary → whole-word "stop"
+
+  it('THE CASE THAT SETTLES IT: a message whose MEANING IS THE OPPOSITE is refused', () => {
+    // The old scan killed this. The operator says do NOT cancel; a substring cannot
+    // carry negation, which is why no scan can be safe on this path.
+    expect(isExactStopMessage('please do not cancel the review because it is complete')).toBe(false);
+    // And the hyphen case the old test explicitly ASSERTED should kill:
+    expect(isExactStopMessage('this was a non-stop session')).toBe(false);
+  });
+
+  it('still refuses benign messages and pause', () => {
+    expect(isExactStopMessage('Testing')).toBe(false);
+    expect(isExactStopMessage('pause')).toBe(false);
+    expect(isExactStopMessage('can you check the build status?')).toBe(false);
+    expect(isExactStopMessage('')).toBe(false);
   });
 });

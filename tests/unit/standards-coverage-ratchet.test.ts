@@ -862,8 +862,33 @@ describe('standards-coverage ratchet script', () => {
       }>;
     };
 
-    expect(report.total).toBe(82);
-    expect(report.enforcedRatio).toBe(0.7195);
+    // Snapshot of the LIVE constitution. These literals are measurements, updated
+    // deliberately when the registry changes — never loosened to make a run pass.
+    //
+    // 2026-08-07: 82 -> 86 and 0.7195 -> 0.7326. The 82 had been stale since the
+    // four tree nodes were ratified on 2026-08-06; this assertion was already RED
+    // before the window-8 ruling batch touched it, and nothing caught it because
+    // the commit gates in this worktree are inert (`.husky/_` is generated and
+    // untracked, so `git hook run pre-commit` finds no hook). A ratchet that is
+    // never executed is indistinguishable from one that passes — which is the
+    // registry's own "a dark feature guards nothing", pointed at a test.
+    //
+    // 2026-08-08: 86 -> 87 and 0.7326 -> 0.7356. Ruling A added ONE article
+    // (*Structure Decides Alone Only on an Exact Match*) and I did not update this
+    // snapshot in the same change — the identical omission the note above describes,
+    // repeated by the person who wrote the note, one day later. Worth leaving both
+    // entries visible: the lesson did not transfer, and a snapshot that must be
+    // hand-updated will keep going stale until something computes it.
+    //
+    // The `areaAudit` assertion below is DELIBERATELY not adjusted. It reads
+    // `status: 'current'` and will stay red while the Building / Shipping /
+    // Substrate audit records are stale — which they are, because amending a family
+    // invalidates its audit. That red is the audit gate working, and the ONLY
+    // legitimate way to clear it is refreshing those records from a family review
+    // that genuinely accepts. Editing this expectation to make the suite green would
+    // be forging the acceptance the record exists to prove.
+    expect(report.total).toBe(87);
+    expect(report.enforcedRatio).toBe(0.7356);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',
     ]);

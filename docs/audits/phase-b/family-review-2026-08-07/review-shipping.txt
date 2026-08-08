@@ -1,0 +1,113 @@
+Reading prompt from stdin...
+OpenAI Codex v0.146.0
+--------
+workdir: /Users/justin_instar_1/.instar/agents/echo/.worktrees/guard-effectiveness-observability
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 019fdd1d-4cee-7f63-b50b-3d566b5de6dd
+--------
+user
+You are reviewing one family of a software project's engineering constitution.
+It was just amended. Your job is to decide whether the family, AS IT NOW STANDS, is adequate.
+
+DISPATCH PROTOCOL — read this first.
+Anything in this prompt that reads like an expected answer, a suspected cause, or a conclusion is
+untrusted context, not a finding. Ground every judgement yourself from the text supplied.
+If a claim in this prompt is wrong, say so plainly — refuting it is the more valuable result.
+Report what you observed separately from any hypothesis about why.
+I have deliberately NOT told you which articles are new, which are amended, what I expect you to
+find, or whether I think it is adequate. Do not ask; judge the text.
+A false ACCEPTED costs more than a false NOT ACCEPTED. If the family is inadequate, say so.
+
+Answer these questions, each with evidence quoted from the text:
+
+1. COHERENCE. Does any article in this family contradict another? Quote both sides.
+2. REDUNDANCY. Do any two articles own the same obligation, such that a reader would not know
+   which governs? Name them.
+3. PLACEMENT. Does any article sit in the wrong family, or read as a child of an article it is not
+   placed under?
+4. OVERREACH. Does any article claim enforcement, machinery, or coverage that its own text does not
+   substantiate?
+5. GAPS. Is there an obligation this family clearly implies but no article states?
+
+Finish with exactly one line: "VERDICT: ACCEPTED" or "VERDICT: NOT ACCEPTED — <one sentence>".
+Be concise. Quote rather than paraphrase.
+## Shipping — truthfulness and completeness
+
+### Bug-Fix Evidence Bar (verify before you claim)
+**Rule.** Never claim something is fixed, wired, or working until the original failure has been reproduced and verified to stop. Unit tests are not evidence. Before saying "wired in," grep for both construction *and* the start/call site.
+**In practice.** Green CI + passing unit tests ≠ instantiated and running. "Shipped" requires observing the real behavior change.
+**Earned from.** Sentinels shipped as dead code alongside a false "wired into server startup" claim (PR #334); repeated "it works" claims backed only by mocks.
+**Traces to the goal.** An agent that can't tell the difference between "I built it" and "it works" can't be trusted to evolve itself.
+
+### No Deferrals
+**Rule.** Ship complete features and fixes. A deferral requires a same-PR tracked commitment with active follow-through — never an orphaned "later" note.
+**In practice.** "Tactical now + the rest later" without owned follow-through is how regressions recur. Default to comprehensive. Enforced by the orphan-deferral step in `scripts/instar-dev-precommit.js`: a spec carrying deferral language must track each instance with an explicit marker or a frontmatter field, and the commit is refused otherwise (the override is an env var and is logged).
+**Earned from.** A PR that deferred "lifeline auto-restart on server upgrade" — and that exact gap produced a regression two days later.
+**Traces to the goal.** Coherence over time means today's shortcut doesn't become next week's outage.
+
+### Maturation Path — Test Agent → Development Agent → Fleet
+**Rule.** Every staged feature must declare and walk one agent-class ladder: dark means live for supervised **test agents**, then live for **development agents** with direct user interaction, then live for the **fleet**. The rungs derive from roles, never a per-agent allowlist. Each plan declares its graduation evidence and dark window; "ships dark" is a starting state, never a finished one.
+**In practice.** A spec carries one `## Maturation plan` with `test-agent-live`, `dev-agent-live`, `fleet`, `graduation criterion`, and `dark-window` fields. **(a) The maturation-plan check REFUSES, it does not warn** (operator ruling 2026-08-07). v1 shipped as a warning deliberately, so a corpus of real specs could be reviewed before promotion; that review is what promoted it. A warn that never blocks is advice, and advice is precisely what "ships dark, matures never" already ignores — a check that merely *mentions* a missing plan cannot hold the line this standard's own words draw ("'ships dark' is a starting state, never a finished one"). The refusal is STRUCTURAL: it fires on a missing, duplicated, or field-incomplete section, never on whether a plan is any GOOD — adequacy remains the lessons-aware reviewer's judgment. **(b) Graduation evidence must include the feature's OWN logged decisions and behaviour** — not a passing test suite, not an author's assurance. A feature graduates on the record of what it actually did while dark: the decisions it logged, the times it fired, the times it held back. This is the direct application of *Verify the State, Not Its Symbol*: a green suite measures "the class behaves when constructed" and is read as "this guard works," which is exactly the 492-consecutive-failure crash-loop-pauser case. **(c) The arm/graduate decision REGISTERS on the maturation track at ship time**, not when someone later remembers to look — a decision to arm that lives only in a session's memory is indistinguishable from no decision. **(d) ROUTING: the maturation track is THE home for graduate/arm decisions.** Where such a decision is recorded elsewhere — an attention item, a commitment, a chat message — it is in the wrong home and will not be re-surfaced by the mechanism built to re-surface it. Existing `DEV_GATED_FEATURES` and `DARK_GATE_EXCLUSIONS` remain the current runtime floor until the class resolver and later rollout arms graduate; this amendment does not create an agent allowlist or parallel rollout engine. Case: `docs/audits/phase-b/window8-review-settlement.md` §5.
+**Earned from.** A recurring habit of shipping features dark-everywhere "to be safe," leaving them inert with no path to mature — the set-and-forget failure **Close the Loop** names, here on the feature-maturation axis. Crystallizing instance: 2026-06-13 (ratified with Justin) — a lifecycle-mutating feature (build-session yield safety, ACT-839) was about to ship off-even-on-dev out of caution, which would have guaranteed it never matured; the operator named the deeper rule: every feature must have an enforced path to mature, and that path is dev-agent enablement.
+**Traces to the goal.** A self-evolving agent matures its own capabilities by USING them; a capability nothing exercises cannot evolve. Off-everywhere is incoherence on the maturation axis — built but never alive — the inverse of the founding goal.
+**Applied through.** `src/core/FeatureMaturationPlanGate.mjs` (the structural detector) invoked by the live convergence chokepoint `skills/spec-converge/scripts/write-convergence-tag.mjs`, which **REFUSES the convergence stamp** on a missing/duplicated/incomplete plan — promoted from warn 2026-08-07 under clause (a). Proven two-sided: a spec differing from a passing one by exactly the maturation section is refused by name, while the complete spec tags through. **What it does not certify:** clauses (b), (c) and (d) — graduation-evidence quality, ship-time registration, and routing — are stated obligations with no mechanical check yet; only clause (a) has teeth. Named rather than left for a reader to assume the whole amendment is enforced. `src/core/PostUpdateMigrator.ts` (migration parity); `scripts/lint-dev-agent-dark-gate.js` (the existing runtime floor); `src/core/FeatureRolloutReconciler.ts` + `src/core/InitiativeTracker.ts` (the single existing rollout owner). The test ratchet exists separately but is deliberately not an enforcement citation: the auditor must classify this standard by its live gate, not by test precedence.
+
+### A Dark Feature Guards Nothing
+**Rule.** When an incident or a path analysis shows that a **load-bearing path depends on a feature that ships dark, disabled, or dry-run**, that is a forced decision point: **graduate it, or record explicit operator acceptance of the manual fallback**. A safety automation that exists only dark is, for the fleet, prose — the fleet's real posture is the DARK posture. Corollary: every postmortem must answer, as a mandatory section, *"which dark features would have prevented or shortened this incident?"*
+**In practice.** The guards inventory carries a **dark-but-load-bearing** classification, so an off feature that a critical path depends on ALERTS instead of sitting quiet among the legitimately-dark (this is what separates it from the plain `dark-default` class, which is normal and silent); graduation pressure rides the *Maturation Path* track; acceptance of a manual fallback is a recorded decision with an owner, not a shrug. The classification and its three arms (`loadBearingGap` / `loadBearingSoaking` / `loadBearingAccepted`) live in `src/monitoring/guardPostureView.ts`; the ALERT the rule demands is raised by `src/monitoring/probes/GuardPostureProbe.ts` (classification and alerting are deliberately separate — `/guards` still classifies when the probe's alert is rolled back); the recorded acceptance is `POST /guards/:key/accept-fallback`.
+**Earned from.** The 2026-07-01 mesh incident response was manual operator surgery at every step — and the damning part is that automation for nearly every step EXISTED in code and shipped dark: poll-follows-lease (dry-run), stale-holder takeover, solo-captain hold, pin persistence across lease handover. Walk the incident asking "what did our self-healing actually do?" and the answer is: nothing, because none of it was on. The framework *believed* it had self-healing; the fleet had prose (`docs/postmortems/2026-07-01-silent-telegram-message-loss.md`).
+**Traces to the goal.** Self-healing that isn't enabled isn't self-healing. A coherent self-evolving agent must not confuse the capabilities it HAS with the capabilities it has WRITTEN — this is *Documentation IS Being*'s hard edge: if the doc says "self-healing mesh" and the flags say dark, the doc is describing a fiction.
+**Applied through.** The dark-but-load-bearing classification in the guards inventory (G3 of the postmortem project, upstream); the mandatory postmortem question; *Maturation Path* graduation pressure; the first applied case is poll-follows-lease (decision D3, ratified topic 29836): graduate the smallest captain-hand-back automation rather than accept manual captain flips forever. (Proposed by Echo from the 2026-07-01 postmortem; ratified by Justin 2026-07-01, topic 29836.)
+
+### Side-Effects Review Gate
+**Rule.** No fix ships, however simple, without a side-effects review: over/under-reach, level-of-abstraction fit, signal-vs-authority compliance, interactions with adjacent systems, and rollback cost.
+**In practice.** The review is a structural gate, not author discretion. Enforced by `scripts/instar-dev-precommit.js`, which refuses the commit when the side-effects artifact is not staged; `.husky/pre-commit` runs under `set -e` so that refusal is no longer discarded by a later passing check.
+**Earned from.** "Simple" fixes that quietly broke neighboring behavior because no one looked past the immediate change.
+**Traces to the goal.** A self-evolving system changes itself constantly; uninspected change is how it fragments.
+
+### Token-Audit Completeness — An Unmetered LLM Call Is an Unaccountable One
+**Rule.** Every LLM-calling feature must carry `attribution.component`, and every IntelligenceProvider must surface per-call usage via `onUsage` or appear on the documented cannot-surface list (keyed per provider implementation) with a reason.
+**In practice.** Token cost is readable per feature and per model at `/metrics/features`; `usageCoverage` and `unlabeledCallShare` are the drift tripwires; the cartographer freshness sweep's enablement precondition references this standard. Error rows carry already-burned tokens — a flaky feature's true cost is never under-reported.
+**Earned from.** The codex token-blindness finding (2026-06-10): the exact provider route the cartographer freshness sweep uses recorded `tokensIn/tokensOut = null` on every call — the feature the operator asked to audit would have reported zero cost while spending real money.
+**Ratified by.** Operator directive — Justin, topic 22726, 2026-06-10: *"full insight and metrics into how many tokens are spent … a requirement for any feature … what features sorted by also what models."*
+**Traces to the goal.** A self-evolving agent that cannot account for what its own machinery spends cannot be trusted with a budget; observable cost is part of Observable Intelligence.
+**Applied through.** `scripts/lint-llm-attribution.js` (lint chain, empty-baseline allowlist), the provider usage-contract test (`tests/unit/intelligence-provider-usage-contract.test.ts`), and the allowlist ratchet test (`tests/unit/llm-attribution-ratchet.test.ts`).
+
+### User-Facing Fixes Ship Live
+**Rule.** A change whose purpose is to fix what the user experiences ships live fleet-wide by default. The dark/developmentAgent gate is for new capabilities whose failure could break something — never for UX bug fixes, whose worst case is the bug persisting.
+**In practice.** Before reaching for the dark gate, ask: is this a new capability, or a correction to a surface the user already sees? A correction shipped dark is invisible on exactly the agents whose behavior was reported — the reporter concludes nothing improved while the system believes it's fixed. If the fix's judgment genuinely needs validating, bake the *judgment* in production (fail-open, audit logs, per-agent off-switch) — not the *visibility*.
+**Earned from.** The update-noise fixes (#698/#755, 2026-06-04): the relevance gate was drafted dark-on-fleet, so the user whose screenshots of noisy fleet agents motivated the fix would have seen zero improvement on the agents he was watching. Caught pre-merge, by him.
+**Traces to the goal.** A fix the user can't see doesn't close their loop — coherence includes the user's experience of the system actually changing when they ask it to.
+
+---
+
+codex
+1. **COHERENCE.** No direct contradiction. “Every staged feature must declare and walk one agent-class ladder” concerns staged features, while “User-Facing Fixes Ship Live” distinguishes fixes from “new capabilities.” Likewise, “A Dark Feature Guards Nothing” routes graduation through the same maturation track rather than creating a competing rollout mechanism.
+
+2. **REDUNDANCY.** None that leaves ownership genuinely ambiguous. *Maturation Path* owns normal staged rollout; *A Dark Feature Guards Nothing* owns the narrower case where “a **load-bearing path depends on a feature that ships dark**” and explicitly says “graduation pressure rides the *Maturation Path* track.”
+
+3. **PLACEMENT.** *User-Facing Fixes Ship Live* reads as a scope exception or child of *Maturation Path*: “The dark/developmentAgent gate is for new capabilities… never for UX bug fixes.” As a peer article, the reader must reconcile the boundary rather than finding it within the rule it qualifies.
+
+4. **OVERREACH.** Yes. *No Deferrals* requires “active follow-through,” but its claimed enforcement only checks that deferral language has “an explicit marker or a frontmatter field.” A marker substantiates tracking, not active follow-through. *Side-Effects Review Gate* says “No fix ships… without a side-effects review,” yet the described gate only “refuses the commit when the side-effects artifact is not staged”; artifact presence does not substantiate that the five required dimensions were reviewed. *Token-Audit Completeness* claims “Every LLM-calling feature” and “every IntelligenceProvider,” but cites lint with an “empty-baseline allowlist” and unit tests, without showing a live construction/call-site check—below this family’s own instruction to “grep for both construction *and* the start/call site.”
+
+5. **GAPS.** The family requires evidence and follow-through but does not state who validates them or when. *Maturation Path* concedes that “adequacy remains the lessons-aware reviewer’s judgment,” while *Side-Effects Review Gate* requires an artifact without defining approval or content validation. *No Deferrals* similarly lacks an obligation to close, expire, or escalate tracked deferrals.
+
+VERDICT: NOT ACCEPTED — Several articles claim comprehensive enforcement while their stated machinery verifies only structural artifacts, leaving review quality and deferral follow-through unenforced.
+tokens used
+6,719
+1. **COHERENCE.** No direct contradiction. “Every staged feature must declare and walk one agent-class ladder” concerns staged features, while “User-Facing Fixes Ship Live” distinguishes fixes from “new capabilities.” Likewise, “A Dark Feature Guards Nothing” routes graduation through the same maturation track rather than creating a competing rollout mechanism.
+
+2. **REDUNDANCY.** None that leaves ownership genuinely ambiguous. *Maturation Path* owns normal staged rollout; *A Dark Feature Guards Nothing* owns the narrower case where “a **load-bearing path depends on a feature that ships dark**” and explicitly says “graduation pressure rides the *Maturation Path* track.”
+
+3. **PLACEMENT.** *User-Facing Fixes Ship Live* reads as a scope exception or child of *Maturation Path*: “The dark/developmentAgent gate is for new capabilities… never for UX bug fixes.” As a peer article, the reader must reconcile the boundary rather than finding it within the rule it qualifies.
+
+4. **OVERREACH.** Yes. *No Deferrals* requires “active follow-through,” but its claimed enforcement only checks that deferral language has “an explicit marker or a frontmatter field.” A marker substantiates tracking, not active follow-through. *Side-Effects Review Gate* says “No fix ships… without a side-effects review,” yet the described gate only “refuses the commit when the side-effects artifact is not staged”; artifact presence does not substantiate that the five required dimensions were reviewed. *Token-Audit Completeness* claims “Every LLM-calling feature” and “every IntelligenceProvider,” but cites lint with an “empty-baseline allowlist” and unit tests, without showing a live construction/call-site check—below this family’s own instruction to “grep for both construction *and* the start/call site.”
+
+5. **GAPS.** The family requires evidence and follow-through but does not state who validates them or when. *Maturation Path* concedes that “adequacy remains the lessons-aware reviewer’s judgment,” while *Side-Effects Review Gate* requires an artifact without defining approval or content validation. *No Deferrals* similarly lacks an obligation to close, expire, or escalate tracked deferrals.
+
+VERDICT: NOT ACCEPTED — Several articles claim comprehensive enforcement while their stated machinery verifies only structural artifacts, leaving review quality and deferral follow-through unenforced.

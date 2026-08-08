@@ -62,6 +62,14 @@ Route it through codex.
 
 ## Decision points touched
 *(none)*
+
+## Maturation plan
+
+- **test-agent-live:** immediately
+- **dev-agent-live:** after one clean soak day
+- **fleet:** after operator review
+- **graduation criterion:** stated
+- **dark-window:** 14d
 `;
 
 const ELI16 = 'overview '.repeat(120); // > 800 chars

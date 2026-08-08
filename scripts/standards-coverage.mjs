@@ -61,6 +61,30 @@ const args = new Set(process.argv.slice(2));
 const CHECK = args.has('--check');
 const JSON_ONLY = args.has('--json');
 const QUIET = args.has('--quiet');
+/**
+ * `--rebaseline-floor="<reason>"` — the ONLY way a family's enforcement floor may go
+ * DOWN, and it exists because of a specific operator ruling (Justin, 2026-08-08).
+ *
+ * The floor normally ratchets: `recordAreaAudit` keeps the OLD floor whenever the
+ * measured ratio is below it, so a family can never quietly lower its own bar. That is
+ * right for the case it was built for — enforcement genuinely regressing.
+ *
+ * It is WRONG for one case. When articles are re-filed between families to correct a
+ * MISFILING, the losing family's density changes for a reason that has nothing to do
+ * with whether anything is better guarded. The ruling: *a floor satisfied by misfiled
+ * articles was passing on false composition, and fixing a filing mistake must not be
+ * punishable by the meter the mistake was inflating.*
+ *
+ * So this flag is deliberately awkward: it must be typed, it must carry a reason, and
+ * the reason belongs in the commit and the audit report where a reviewer will see it.
+ * It does NOT verify enforcement-neutrality itself — the author must establish that
+ * separately (registry-wide enforced ratio identical before and after) and say so. What
+ * it certifies is only that the lowering was DELIBERATE and attributed, never that it
+ * was justified. A floor that can never move is a floor that eventually protects a lie;
+ * a floor that moves silently is not a floor.
+ */
+const REBASELINE_ARG = [...args].find((arg) => arg.startsWith('--rebaseline-floor='));
+const REBASELINE_REASON = REBASELINE_ARG?.slice('--rebaseline-floor='.length) ?? null;
 const RECORD_AREA_ARG = [...args].find((arg) => arg.startsWith('--record-area-audit='));
 const RECORD_AREA = RECORD_AREA_ARG?.slice('--record-area-audit='.length) ?? null;
 const AUDIT_REF_ARG = [...args].find((arg) => arg.startsWith('--audit-ref='));
@@ -137,6 +161,16 @@ const EXCLUDED_NARRATIVE_SECTION_HEADINGS = [
   'Distinct from Cross-Machine Coherence',
   'Distinct from Deferral = Deletion',
   'Distinct from the OnboardingGate',
+  // Added 2026-08-07 by operator ruling on external-review finding 4: an article
+  // honestly labelled `documented-only` must carry a COUNTDOWN — a deadline and a
+  // tracked item — because "documented-only MUST force a change in the near
+  // future. It can't remain documented only."
+  //
+  // Deliberately classified NARRATIVE and never ENFORCEMENT: a countdown says a
+  // guard is OWED, not that one exists. Placing it in the enforcement set would
+  // let a promise-to-build flip an article to `enforced`, which is precisely the
+  // over-claim finding 4 was raised about. Its refs must not be scanned.
+  'Documented-only until',
   'Neither is whole alone',
   'Notice and fight the reflex (the load-bearing awareness)',
   'Per-feature posture (2026-06-12 widening)',
@@ -357,6 +391,38 @@ function canonicalTimestamp(value) {
   if (typeof value !== 'string' || !RFC3339_UTC_RE.test(value)) return false;
   const date = new Date(value);
   return !Number.isNaN(date.getTime()) && date.toISOString() === value;
+}
+
+/**
+ * A permit authorises exactly ONE floor decrease, for one area, from one specific
+ * floor to one specific floor. Anything less exact is ignored, so a stale permit
+ * cannot silently authorise a LATER, different decrease.
+ *
+ * It also requires the entry to assert enforcement-neutrality by stating the
+ * registry-wide enforced ratio before and after, and those must be EQUAL. That is the
+ * whole justification for the exception: a re-filing moves articles between families
+ * without changing how much of the constitution is guarded. A permit whose own numbers
+ * show enforcement dropping is refused — the mechanism cannot be used to launder a real
+ * regression as a filing correction.
+ *
+ * What it does NOT verify: that the stated ratios are true. They are an author's
+ * assertion, reviewed in the PR alongside the diff that produced them. This certifies
+ * that the decrease was named, bounded, attributed and claimed-neutral — never that the
+ * claim was audited.
+ */
+function findRebaselinePermit(area, priorFloor, nextFloor) {
+  const abs = path.join(ROOT, 'docs/standards-floor-rebaselines.json');
+  if (!fs.existsSync(abs)) return null;
+  let doc;
+  try { doc = JSON.parse(fs.readFileSync(abs, 'utf-8')); } catch { return null; }
+  if (!Array.isArray(doc?.rebaselines)) return null;
+  return doc.rebaselines.find((entry) => entry?.area === area
+    && validFloor(entry?.from) && validFloor(entry?.to)
+    && entry.from.enforced === priorFloor.enforced && entry.from.total === priorFloor.total
+    && entry.to.enforced === nextFloor.enforced && entry.to.total === nextFloor.total
+    && typeof entry.authority === 'string' && entry.authority.trim().length > 0
+    && Number.isFinite(entry.registryEnforcedRatioBefore) && Number.isFinite(entry.registryEnforcedRatioAfter)
+    && entry.registryEnforcedRatioBefore === entry.registryEnforcedRatioAfter) ?? null;
 }
 
 function validFloor(value) {
@@ -998,7 +1064,22 @@ function compareLedgerToBase(candidate) {
     }
     if (validFloor(prior?.refResolutionFloor) && validFloor(next.refResolutionFloor) &&
       ratioBelowFloor(next.refResolutionFloor.enforced, next.refResolutionFloor.total, prior.refResolutionFloor)) {
-      errors.push(`area floor for ${area} may not decrease from ${prior.refResolutionFloor.enforced}/${prior.refResolutionFloor.total} to ${next.refResolutionFloor.enforced}/${next.refResolutionFloor.total}`);
+      // A floor may fall ONLY with a committed, reviewed record naming this exact
+      // decrease. Operator ruling 2026-08-08: a floor satisfied by MISFILED articles
+      // was passing on false composition, and correcting a filing mistake must not be
+      // punishable by the meter the mistake was inflating. The escape is deliberately
+      // narrow — it authorises one named decrease, not a lower bar in general — and it
+      // lives in the diff where a reviewer meets it.
+      const permit = findRebaselinePermit(area, prior.refResolutionFloor, next.refResolutionFloor);
+      if (permit) {
+        console.log(
+          `[standards-coverage] FLOOR RE-BASELINE PERMITTED for ${area}: ` +
+          `${prior.refResolutionFloor.enforced}/${prior.refResolutionFloor.total} -> ` +
+          `${next.refResolutionFloor.enforced}/${next.refResolutionFloor.total} — ${permit.authority}`,
+        );
+      } else {
+        errors.push(`area floor for ${area} may not decrease from ${prior.refResolutionFloor.enforced}/${prior.refResolutionFloor.total} to ${next.refResolutionFloor.enforced}/${next.refResolutionFloor.total}`);
+      }
     }
     if (canonicalTimestamp(prior?.lastAuditedAt) && canonicalTimestamp(next.lastAuditedAt) &&
       Date.parse(next.lastAuditedAt) < Date.parse(prior.lastAuditedAt)) {
@@ -1335,9 +1416,17 @@ function recordAreaAudit(report, selection, auditRef) {
     }
     const measuredFloor = { enforced: measurement.enforced, total: measurement.total };
     const oldFloor = existing.areas?.[area]?.refResolutionFloor;
-    const refResolutionFloor = validFloor(oldFloor) && ratioBelowFloor(measuredFloor.enforced, measuredFloor.total, oldFloor)
+    const rebaselining = typeof REBASELINE_REASON === 'string' && REBASELINE_REASON.trim().length > 0;
+    const refResolutionFloor = !rebaselining
+      && validFloor(oldFloor) && ratioBelowFloor(measuredFloor.enforced, measuredFloor.total, oldFloor)
       ? oldFloor
       : measuredFloor;
+    if (rebaselining && validFloor(oldFloor) && ratioBelowFloor(measuredFloor.enforced, measuredFloor.total, oldFloor)) {
+      console.log(
+        `[standards-coverage] FLOOR RE-BASELINED for ${area}: ${oldFloor.enforced}/${oldFloor.total} -> ` +
+        `${measuredFloor.enforced}/${measuredFloor.total} — reason: ${REBASELINE_REASON}`,
+      );
+    }
     nextAreas[area] = {
       lastAuditedAt,
       auditRef,

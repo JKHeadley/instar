@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-08T19:03:46.000Z",
+  "reviewers": [
+    "codex-cli:gpt-5.6",
+    "external-answer-withheld",
+    "repo-read-access",
+    "convergence-criterion-2026-08-08"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 52
+  },
+  "convergenceReport": "docs/specs/reports/standards-family-convergence-2026-08-08.md",
+  "convergenceSha256": "79db5c838d2b295bcb0e4de03157dce448854ee759aa1fb72c65665161572cbf",
+  "areas": {
+    "Building": {
+      "areaSha256": "415107d4581ab557f8927a9a3341fb35183e5b062fc592eb7079ea9f6c88a24b",
+      "verdict": "accepted"
+    },
+    "Shipping": {
+      "areaSha256": "b8e9b4bfe331ad1cb8c76c7367d1e900a2d0a64ea9e10b90c97da2170c20a00f",
+      "verdict": "accepted"
+    },
+    "The Substrate": {
+      "areaSha256": "180ad615fc7e119ce4ebf479ed396fa9d9f058e84618c92d766ec33b3502838c",
+      "verdict": "accepted"
+    }
+  }
+}

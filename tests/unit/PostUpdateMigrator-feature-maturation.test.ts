@@ -38,7 +38,13 @@ describe('migrateFeatureMaturationGate', () => {
     expect(fs.readFileSync(detector, 'utf8')).toContain('FeatureMaturationPlanGate.mjs');
     expect(fs.readFileSync(installedDetector, 'utf8')).toContain('FeatureMaturationPlanGate.mjs');
     expect(fs.readFileSync(installedSource, 'utf8')).toContain('findMaturationPlanGaps');
-    expect(fs.readFileSync(writer, 'utf8')).toContain('MATURATION_PLAN_WARN');
+    // 2026-08-07 (Maturation Path clause (a)): the chokepoint REFUSES, it no longer
+    // warns. This assertion is the migration-parity proof that a DEPLOYED agent
+    // receives the refusing writer — a gate promoted only in the source tree would
+    // leave every existing agent still merely warning, which is the exact
+    // new-agents-only failure the Migration Parity Standard exists to prevent.
+    expect(fs.readFileSync(writer, 'utf8')).toContain('MATURATION_PLAN_REFUSED');
+    expect(fs.readFileSync(writer, 'utf8')).not.toContain('MATURATION_PLAN_WARN');
     const before = fs.readFileSync(writer);
     expect(run().upgraded).toEqual([]);
     expect(fs.readFileSync(writer)).toEqual(before);

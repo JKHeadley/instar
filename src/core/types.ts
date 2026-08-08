@@ -6265,6 +6265,37 @@ export interface MonitoringConfig {
     githubMergeCheck?: boolean;
   };
   /**
+   * CrashLoopPauser — auto-pause a job that keeps crashing (B3.1).
+   *
+   * The class was written and unit-tested in 2026, constructed EIGHT times in its
+   * own test file and ZERO times in production source, while a job failed 492
+   * consecutive times with nothing pausing it. Eight green tests measured "this
+   * class behaves correctly when constructed"; they were read as "this guard
+   * works." Wiring it at boot is what makes the tests mean what they were read to
+   * mean — the remedy was one construction, not an implementation.
+   *
+   * Ships DRY-RUN (it disables jobs, which is real authority): it evaluates and
+   * logs what it WOULD pause until a deliberate `dryRun: false`.
+   */
+  crashLoopPauser?: {
+    /** Master switch. Default: true — the class's own dryRun is the safety. */
+    enabled?: boolean;
+    /** Log intended pauses without rewriting the jobs file. Default: TRUE. */
+    dryRun?: boolean;
+    /** Cadence between evaluation passes. Default: 1h. */
+    intervalMs?: number;
+    /** Delay before the one-time pass after boot. Default: 10 min; <=0 disables. */
+    initialPassDelayMs?: number;
+    /** Lookback window for failures (hours). Default: 24. */
+    windowHours?: number;
+    /** Non-timeout failures that trigger a pause. Default: 3. */
+    failureThreshold?: number;
+    /** Short (<60s) failing runs that trigger a pause. Default: 5. */
+    shortRunThreshold?: number;
+    /** Job slugs never auto-paused, ADDED to the built-in deny-list. */
+    neverPause?: string[];
+  };
+  /**
    * SingleInstanceLock — the server-boot fork-bomb guard (docs/specs/
    * forkbomb-prevention-simple.md). This block tunes the 2026-07-08 hostname-flap
    * auto-heal: when this host's `os.hostname()` FLAPS (e.g. mac.lan ↔

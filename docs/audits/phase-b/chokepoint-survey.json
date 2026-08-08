@@ -1,0 +1,506 @@
+[
+  {
+    "guard": "multiMachine.peerExecution.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "MutualSshRuntime.start() owns its own interval",
+    "evidence": "src/core/MutualSshRuntime.ts:146",
+    "notes": "Server starts the runtime at src/commands/server.ts:21993; the runtime then calls tick() and installs setInterval itself. No external caller-owned looked seam today."
+  },
+  {
+    "guard": "multiMachine.sessionPool.inboundQueue.enabled",
+    "invocation": "TICK-LOOP",
+    "caller": "server inbound queue drain interval",
+    "evidence": "src/commands/server.ts:22888",
+    "notes": "The shared server interval invokes _inboundQueue.tick(); looked can be counted in that caller before the QueueDrainLoop guard runs."
+  },
+  {
+    "guard": "writeAdmission",
+    "invocation": "FUNNEL",
+    "caller": "StateManager write-admission funnel",
+    "evidence": "src/core/StateManager.ts:160",
+    "notes": "StateManager attaches WriteAdmission and routes guarded writes through guardWrite/guardStoreWrite; looked can be owned by the StateManager write chokepoint."
+  },
+  {
+    "guard": "multiMachine.seamlessness.ws13Reconcile",
+    "invocation": "TICK-LOOP",
+    "caller": "server WS13 reconciliation interval",
+    "evidence": "src/commands/server.ts:20701",
+    "notes": "runWs13Tick('cadence') is scheduled by the server and calls the reconciler. The interval wrapper can count looked centrally."
+  },
+  {
+    "guard": "multiMachine.seamlessness.ws13PinReplicate",
+    "invocation": "EVENT-DRIVEN",
+    "caller": "TopicPinMutation emit/read paths",
+    "evidence": "src/core/TopicPinMutation.ts:65",
+    "notes": "Topic pin records are emitted from mutation paths and read through fold-view refresh/read paths rather than through one common caller. Needs an emitter/fold-view chokepoint or per-caller looked counters."
+  },
+  {
+    "guard": "multiMachine.meshTransport.recoveryProbeEnabled",
+    "invocation": "TICK-LOOP",
+    "caller": "MultiMachineCoordinator lease-pull tick listener",
+    "evidence": "src/commands/server.ts:5740",
+    "notes": "The prober is attached with coordinator.attachLeasePullTickListener(() => ropeProber.onTick()). The lease-pull tick carrier can own looked."
+  },
+  {
+    "guard": "monitoring.ropeHealth.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "RopeHealthMonitor.start() owns its own interval",
+    "evidence": "src/monitoring/RopeHealthMonitor.ts:326",
+    "notes": "The monitor installs setInterval(() => evaluate()). Needs an external scheduler/wrapper if looked must be caller-owned."
+  },
+  {
+    "guard": "multiMachine.sessionPool.holdForStability.enabled",
+    "invocation": "TICK-LOOP",
+    "caller": "QueueDrainLoop holdVerdict inside inbound queue tick",
+    "evidence": "src/commands/server.ts:22800",
+    "notes": "The hold verdict closure is passed into QueueDrainLoop and evaluated from the queue drain loop. The queue tick caller can own looked for the verdict."
+  },
+  {
+    "guard": "multiMachine.sessionPool.staleOwnerRelease.enabled",
+    "invocation": "TICK-LOOP",
+    "caller": "OwnershipReconciler tick",
+    "evidence": "src/commands/server.ts:20575",
+    "notes": "Server comments and wiring show stale-owner release is invoked from reconciler.tick(); looked can be owned by the reconciler tick caller."
+  },
+  {
+    "guard": "multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled",
+    "invocation": "TICK-LOOP",
+    "caller": "MultiMachineCoordinator lease-pull tick hook",
+    "evidence": "src/core/MultiMachineCoordinator.ts:1405",
+    "notes": "The coordinator calls config.onLeasePullTick(), wired in server.ts to _leaseHandbackReconciler.observe(). The lease-pull carrier can own looked."
+  },
+  {
+    "guard": "subscriptionPool.proactiveSwap.antiThrash.enabled",
+    "invocation": "FUNNEL",
+    "caller": "ProactiveSwapMonitor swap decision path",
+    "evidence": "src/core/ProactiveSwapMonitor.ts:325",
+    "notes": "The anti-thrash engine is consulted from the proactive swap decision flow rather than by its own timer. Looked can be counted by ProactiveSwapMonitor before invoking the engine."
+  },
+  {
+    "guard": "subscriptionPool.swapContinuity.enabled",
+    "invocation": "EVENT-DRIVEN",
+    "caller": "multiple session refresh/swap mutation paths",
+    "evidence": "src/core/SessionRefresh.ts:590",
+    "notes": "SwapWorkGate.probe() is called from ProactiveSwapMonitor and SessionRefresh/session mutation paths. There is no single caller outside the guard API. Needs a common session-kill/swap admission wrapper or per-caller looked counters."
+  },
+  {
+    "guard": "monitoring.sessionReaper.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "SessionReaper.start() owns its own interval",
+    "evidence": "src/monitoring/SessionReaper.ts:482",
+    "notes": "SessionReaper.start() installs setInterval(() => tick()). Needs an external tick owner for caller-owned looked."
+  },
+  {
+    "guard": "monitoring.resumeQueue.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "ResumeQueue/ResumeDrainer start lifecycle",
+    "evidence": "src/commands/server.ts:9407",
+    "notes": "The queue and drainer are started as services; runtime is not driven by one external guard caller. Needs a queue-drain scheduler wrapper or explicit caller counter."
+  },
+  {
+    "guard": "monitoring.reapNotify.enabled",
+    "invocation": "EVENT-DRIVEN",
+    "caller": "session reaped event plus ReapNoticeDrain",
+    "evidence": "src/commands/server.ts:10235",
+    "notes": "Notifications are fed from session-reaped events and drained separately. Needs a common reaped-notice admission/drain wrapper or per-event looked counters."
+  },
+  {
+    "guard": "monitoring.greenPrAutoMerge.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "GreenPrAutoMerger.start() owns its own interval",
+    "evidence": "src/monitoring/GreenPrAutoMerger.ts:322",
+    "notes": "The class start method installs its own tick interval. Needs external scheduling for caller-owned looked."
+  },
+  {
+    "guard": "monitoring.watchdog.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "SessionWatchdog.start() owns its own polling interval",
+    "evidence": "src/monitoring/SessionWatchdog.ts:290",
+    "notes": "SessionWatchdog.start() schedules poll(). Needs an outside poll owner if looked cannot be self-reported."
+  },
+  {
+    "guard": "monitoring.socketDisconnectSentinel.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "SocketDisconnectSentinel.start() owns its own interval",
+    "evidence": "src/monitoring/SocketDisconnectSentinel.ts:124",
+    "notes": "The sentinel has its own setInterval tick loop. Needs external tick ownership."
+  },
+  {
+    "guard": "monitoring.activeWorkSilenceSentinel.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "ActiveWorkSilenceSentinel.start() owns its own interval",
+    "evidence": "src/monitoring/ActiveWorkSilenceSentinel.ts:167",
+    "notes": "The sentinel owns its tick timer and verification timers. Needs a scheduler/caller wrapper for looked."
+  },
+  {
+    "guard": "monitoring.permissionPromptAutoResolver.enabled",
+    "invocation": "TICK-LOOP",
+    "caller": "SessionManager monitor loop",
+    "evidence": "src/core/SessionManager.ts:1795",
+    "notes": "SessionManager's shared monitor loop sweeps sessions and invokes prompt/resolver logic. Looked can be counted by that monitor caller."
+  },
+  {
+    "guard": "intelligence.selfActionGovernor.enabled",
+    "invocation": "FUNNEL",
+    "caller": "SelfActionGovernor.admit/admitSync admission funnel",
+    "evidence": "src/monitoring/selfaction/governor.ts:1673",
+    "notes": "Self actions route through the governor's shared admission API. Looked can be owned at the admission boundary instead of at downstream action code."
+  },
+  {
+    "guard": "monitoring.externalHogSentinel.enabled",
+    "invocation": "TICK-LOOP",
+    "caller": "server external-hog sentinel interval",
+    "evidence": "src/commands/server.ts:19055",
+    "notes": "The server installs a setInterval that calls ehRef.tick(); that interval wrapper can count looked."
+  },
+  {
+    "guard": "monitoring.contextWedgeSentinel.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "ContextWedgeSentinel.start() owns its own interval",
+    "evidence": "src/monitoring/ContextWedgeSentinel.ts:204",
+    "notes": "The sentinel owns setInterval(() => tick()). Needs an external tick owner for caller-owned looked."
+  },
+  {
+    "guard": "monitoring.contextWedgeSentinel.autoRecovery.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "ContextWedgeSentinel parent tick",
+    "evidence": "src/monitoring/ContextWedgeSentinel.ts:220",
+    "notes": "Auto-recovery is a sub-arm of the self-driven ContextWedgeSentinel tick. Needs a parent-owned sub-arm counter or extraction behind an external admission caller."
+  },
+  {
+    "guard": "monitoring.agentWorktreeReaper.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "AgentWorktreeReaper.start() owns its own interval",
+    "evidence": "src/monitoring/AgentWorktreeReaper.ts:194",
+    "notes": "The reaper installs its own recurring and initial timers. Needs outside scheduling for caller-owned looked."
+  },
+  {
+    "guard": "monitoring.machineCoherence.enabled",
+    "invocation": "TICK-LOOP",
+    "caller": "server peerPresenceTick interval",
+    "evidence": "src/commands/server.ts:23661",
+    "notes": "Machine coherence evaluation rides the shared 30s peerPresenceTick. That caller can own looked."
+  },
+  {
+    "guard": "monitoring.singleMachineFailoverGap.enabled",
+    "invocation": "TICK-LOOP",
+    "caller": "server peerPresenceTick interval",
+    "evidence": "src/commands/server.ts:23730",
+    "notes": "The detector is invoked from peerPresenceTick. The shared tick caller can count looked."
+  },
+  {
+    "guard": "monitoring.missingLoginSession.enabled",
+    "invocation": "TICK-LOOP",
+    "caller": "server peerPresenceTick interval",
+    "evidence": "src/commands/server.ts:23734",
+    "notes": "The detector is invoked from peerPresenceTick. The shared tick caller can count looked."
+  },
+  {
+    "guard": "monitoring.orphanedWorkSentinel.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "OrphanedWorkSentinel.start() owns its own interval",
+    "evidence": "src/monitoring/OrphanedWorkSentinel.ts:172",
+    "notes": "The sentinel installs setInterval(() => scan()). Needs external scheduling for caller-owned looked."
+  },
+  {
+    "guard": "monitoring.strandedTopicSentinel.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "StrandedTopicSentinel.start() owns its own interval",
+    "evidence": "src/monitoring/StrandedTopicSentinel.ts:119",
+    "notes": "The sentinel owns its tickHandle. Needs outside tick ownership."
+  },
+  {
+    "guard": "monitoring.durableOutputScrub.enabled",
+    "invocation": "EVENT-DRIVEN",
+    "caller": "durable-output persistence chokepoints",
+    "evidence": "src/commands/server.ts:16002",
+    "notes": "The scrubber is injected into durable output persistence paths rather than a single shared caller across all writes. Needs a common durable-output write wrapper or per-persistence caller counters."
+  },
+  {
+    "guard": "monitoring.degradedTmuxGuard.enabled",
+    "invocation": "EVENT-DRIVEN",
+    "caller": "SessionManager tmux exec and sleep-wake stall feeds",
+    "evidence": "src/core/SessionManager.ts:706",
+    "notes": "The guard is fed by tmux execution failures and sleep/wake stall events. Needs a shared degraded-tmux report funnel or counters at each emitter."
+  },
+  {
+    "guard": "monitoring.mcpProcessReaper.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "McpProcessReaper.start() owns its own interval",
+    "evidence": "src/monitoring/McpProcessReaper.ts:183",
+    "notes": "The reaper installs setInterval(() => reap()). Needs external scheduling for caller-owned looked."
+  },
+  {
+    "guard": "monitoring.staleBackstop.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "StaleBackstop service start lifecycle",
+    "evidence": "src/commands/server.ts:19384",
+    "notes": "The backstop is started as an owning service. Needs its tick moved under an external caller or scheduler wrapper."
+  },
+  {
+    "guard": "monitoring.agentSleep.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "SleepController.start() owns the sleep decision loop",
+    "evidence": "src/commands/server.ts:19302",
+    "notes": "SleepController is started as the owner of hard-sleep decisions. Needs an external decision tick/admission caller for looked."
+  },
+  {
+    "guard": "monitoring.bootHealthBeacon.enabled",
+    "invocation": "EVENT-DRIVEN",
+    "caller": "server boot lifecycle",
+    "evidence": "src/commands/server.ts:3922",
+    "notes": "The beacon starts once during boot and is closed around handoff. It is not a recurring common caller; looked would need explicit boot-lifecycle instrumentation."
+  },
+  {
+    "guard": "monitoring.blockerLifecycleLedger.enabled",
+    "invocation": "EVENT-DRIVEN",
+    "caller": "commitment/blocker lifecycle event hooks",
+    "evidence": "src/server/AgentServer.ts:1773",
+    "notes": "BlockerLifecycleService is constructed against server lifecycle dependencies and observes events. Needs a shared lifecycle event wrapper or per-hook looked counters."
+  },
+  {
+    "guard": "monitoring.enforcedTermination.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "EnforcedTerminationWatchdog.start() owns its own loop",
+    "evidence": "src/commands/server.ts:9965",
+    "notes": "The watchdog is started as its own service. Needs external tick ownership."
+  },
+  {
+    "guard": "monitoring.rateLimitSentinel.enabled",
+    "invocation": "EVENT-DRIVEN",
+    "caller": "watchdog, idle-error, and codex-poll report feeds",
+    "evidence": "src/commands/server.ts:12405",
+    "notes": "Rate-limit observations are reported from multiple signal paths. Needs a shared reportRateLimit() caller/funnel or per-feed looked counters."
+  },
+  {
+    "guard": "monitoring.proactiveAutonomousCompaction.enabled",
+    "invocation": "TICK-LOOP",
+    "caller": "server proactive-compaction interval",
+    "evidence": "src/commands/server.ts:12555",
+    "notes": "The server interval calls proactiveCompaction.tick(); looked can be counted by the interval wrapper."
+  },
+  {
+    "guard": "monitoring.parallelWorkSentinel.enabled",
+    "invocation": "TICK-LOOP",
+    "caller": "AgentServer parallel-work interval",
+    "evidence": "src/server/AgentServer.ts:1266",
+    "notes": "AgentServer owns the shared interval that calls the sentinel tick. That caller can own looked."
+  },
+  {
+    "guard": "monitoring.resourceLedger.enabled",
+    "invocation": "EVENT-DRIVEN",
+    "caller": "breaker and rate-limit event subscriptions",
+    "evidence": "src/monitoring/ResourceLedgerPoller.ts:68",
+    "notes": "ResourceLedgerPoller subscribes to breaker trip/recover and rate-limit events rather than one scheduler caller. Needs event-wrapper looked counters."
+  },
+  {
+    "guard": "monitoring.processFootprintMonitor.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "ProcessFootprintMonitor.start() owns its own interval",
+    "evidence": "src/monitoring/ProcessFootprintMonitor.ts:165",
+    "notes": "The monitor installs setInterval(() => sample()). Needs external sample scheduling for caller-owned looked."
+  },
+  {
+    "guard": "monitoring.memoryMonitoring",
+    "invocation": "SELF-DRIVEN",
+    "caller": "MemoryPressureMonitor.start() owns its own monitor loop",
+    "evidence": "src/commands/server.ts:12124",
+    "notes": "The memory monitor is started as its own service. Needs external polling ownership."
+  },
+  {
+    "guard": "monitoring.quotaTracking",
+    "invocation": "SELF-DRIVEN",
+    "caller": "QuotaManager/QuotaPoller service loop",
+    "evidence": "src/core/QuotaPoller.ts:413",
+    "notes": "Quota tracking is fed by QuotaPoller.start(), which installs an interval. Needs caller-owned scheduling outside the quota tracking service."
+  },
+  {
+    "guard": "monitoring.telemetry.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "TelemetryHeartbeat.start() owns the heartbeat loop",
+    "evidence": "src/commands/server.ts:7169",
+    "notes": "TelemetryCollector is wired into TelemetryHeartbeat, and the heartbeat owns start/submit cadence. Needs external heartbeat ownership for looked."
+  },
+  {
+    "guard": "monitoring.burnDetection.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "BurnDetector.start() owns its own interval",
+    "evidence": "src/monitoring/BurnDetector.ts:125",
+    "notes": "BurnDetector.start() installs its own interval. Needs external tick ownership."
+  },
+  {
+    "guard": "monitoring.sentinelTelegramEscalation",
+    "invocation": "UNKNOWN",
+    "caller": "not determined; appears as a notifier/escalation config flag",
+    "evidence": "src/commands/server.ts:12643",
+    "notes": "I found the flag consumed in sentinel notifier wiring, but not a guard tick/evaluate/admission method. Needs an identified invocation seam before looked ownership can be assigned."
+  },
+  {
+    "guard": "monitoring.triage.enabled",
+    "invocation": "EVENT-DRIVEN",
+    "caller": "Telegram/Slack stall-detected handlers",
+    "evidence": "src/commands/server.ts:10887",
+    "notes": "StallTriageNurse is fed by platform stall callbacks. Needs a shared stall-event funnel or per-platform caller counters."
+  },
+  {
+    "guard": "monitoring.triageOrchestrator.enabled",
+    "invocation": "UNKNOWN",
+    "caller": "not determined from the traced source",
+    "evidence": "src/monitoring/guardManifest.ts:836",
+    "notes": "I found manifest/config and server context wiring but did not identify a common tick/evaluate caller confidently. Needs source-level tracing to the concrete orchestration entrypoint."
+  },
+  {
+    "guard": "monitoring.failureLearning.enabled",
+    "invocation": "TICK-LOOP",
+    "caller": "off-by-default built-in scheduler job hitting analyzer route",
+    "evidence": "src/server/routes.ts:13364",
+    "notes": "The route documents the failure analyzer as invoked by a builtin job. JobScheduler is the common caller and can own looked for the analyzer run."
+  },
+  {
+    "guard": "monitoring.correctionLearning.enabled",
+    "invocation": "EVENT-DRIVEN",
+    "caller": "correction capture hooks plus backlog/analyzer paths",
+    "evidence": "src/commands/server.ts:14419",
+    "notes": "Correction learning has hot-path capture, backlog drain, and analyzer route paths. Needs a shared correction-learning admission/capture wrapper or per-path caller counters."
+  },
+  {
+    "guard": "monitoring.correctionClassReview.enabled",
+    "invocation": "EVENT-DRIVEN",
+    "caller": "correction record/review capture paths",
+    "evidence": "src/server/routes.ts:24395",
+    "notes": "Correction class review records come from correction capture/route paths. Needs a common post-record review caller or per-caller looked counters."
+  },
+  {
+    "guard": "monitoring.completionClaimVerification.enabled",
+    "invocation": "FUNNEL",
+    "caller": "completion-claim observation route",
+    "evidence": "src/server/routes.ts:24594",
+    "notes": "The route validates a claim observation and calls completionClaimVerifier.enqueue(). Looked can be owned by the route/funnel before enqueue."
+  },
+  {
+    "guard": "monitoring.correctionLearning.selfViolationSignal",
+    "invocation": "FUNNEL",
+    "caller": "outbound message check funnel",
+    "evidence": "src/server/routes.ts:3174",
+    "notes": "Self-violation signal observation is attached to checkOutboundMessage/evaluateOutbound. The outbound funnel can count looked."
+  },
+  {
+    "guard": "monitoring.apprenticeshipCycleSla.enabled",
+    "invocation": "TICK-LOOP",
+    "caller": "TokenLedgerPoller afterTick server hook",
+    "evidence": "src/server/AgentServer.ts:5168",
+    "notes": "AgentServer hooks the SLA monitor into a shared token-ledger poll afterTick. That poll caller can own looked."
+  },
+  {
+    "guard": "monitoring.geminiCapacityEscalation.enabled",
+    "invocation": "TICK-LOOP",
+    "caller": "TokenLedgerPoller afterTick server hook",
+    "evidence": "src/server/AgentServer.ts:5170",
+    "notes": "Gemini capacity escalation runs from the same token-ledger afterTick hook. That caller can own looked."
+  },
+  {
+    "guard": "monitoring.releaseReadiness.enabled",
+    "invocation": "TICK-LOOP",
+    "caller": "release-readiness scheduler route",
+    "evidence": "src/server/routes.ts:12813",
+    "notes": "The release-readiness tick is exposed as a route for the scheduled job path. JobScheduler/route can own looked."
+  },
+  {
+    "guard": "monitoring.promptGate.enabled",
+    "invocation": "TICK-LOOP",
+    "caller": "SessionManager capture/monitor path",
+    "evidence": "src/core/SessionManager.ts:2082",
+    "notes": "SessionManager calls promptDetector.onCapture() from the shared session capture path. SessionManager can own looked."
+  },
+  {
+    "guard": "monitoring.growthAnalyst.enabled",
+    "invocation": "EVENT-DRIVEN",
+    "caller": "digest build and route callers",
+    "evidence": "src/server/AgentServer.ts:2935",
+    "notes": "GrowthMilestoneAnalyst is called by GrowthDigestPublisher buildDigest and route surfaces, not one external common caller. Needs a shared buildDigest caller or per-caller looked counters."
+  },
+  {
+    "guard": "monitoring.growthAnalyst.blockedDigestEscalation.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "GrowthDigestPublisher.start() owns delivery cadence",
+    "evidence": "src/server/AgentServer.ts:2976",
+    "notes": "The publisher is started as its own delivery stage. Needs external scheduler/caller ownership for looked."
+  },
+  {
+    "guard": "monitoring.blockerLedger.enabled",
+    "invocation": "EVENT-DRIVEN",
+    "caller": "blocker ledger route/API calls",
+    "evidence": "src/server/routes.ts:10578",
+    "notes": "BlockerLedger is mutated from route/API paths. Needs a common blocker-ledger command funnel or per-route caller counters."
+  },
+  {
+    "guard": "scheduler.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "JobScheduler.start() owns Cron callbacks",
+    "evidence": "src/scheduler/JobScheduler.ts:444",
+    "notes": "The scheduler itself creates Cron callbacks for jobs. A looked counter for scheduler.enabled would need to be owned by a boot/runtime wrapper, not by JobScheduler alone."
+  },
+  {
+    "guard": "models.tierEscalation.enabled",
+    "invocation": "FUNNEL",
+    "caller": "model tier escalation admission/swap service",
+    "evidence": "src/server/AgentServer.ts:3105",
+    "notes": "ModelTierEscalation is wired into server model escalation/swap admission. Looked can be counted at that admission/service boundary."
+  },
+  {
+    "guard": "intelligence.testRunnerCap",
+    "invocation": "TICK-LOOP",
+    "caller": "server test-runner guard refresh interval",
+    "evidence": "src/commands/server.ts:6971",
+    "notes": "The server refreshes HostTestRunnerSemaphore posture every 60s and registers the snapshot. The refresh caller can own looked."
+  },
+  {
+    "guard": "lifeline.driftPromoter.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "lifeline drift promoter process/service",
+    "evidence": "src/monitoring/guardManifest.ts:1032",
+    "notes": "The manifest describes a lifeline-side promoter; I did not find a server caller. Treat as self-driven/out-of-process for looked purposes unless a lifeline scheduler wrapper is identified."
+  },
+  {
+    "guard": "multiMachine.secretSync.enabled",
+    "invocation": "EVENT-DRIVEN",
+    "caller": "mesh secret-share receive/deliver handlers",
+    "evidence": "src/commands/server.ts:21278",
+    "notes": "SecretSync wiring is attached to mesh secret-share handlers. Needs a common secret-sync message funnel or per-handler looked counters."
+  },
+  {
+    "guard": "multiMachine.sessionPool.enabled",
+    "invocation": "EVENT-DRIVEN",
+    "caller": "session pool delivery/claim/queue paths",
+    "evidence": "src/commands/server.ts:22572",
+    "notes": "SessionPool spans delivery, local claim, inbound queue, promotion, and failover paths. Needs a narrower common admission/tick seam or per-subpath counters."
+  },
+  {
+    "guard": "multiMachine.coherenceJournal.enabled",
+    "invocation": "SELF-DRIVEN",
+    "caller": "CoherenceJournal flush/retry timers",
+    "evidence": "src/core/CoherenceJournal.ts:727",
+    "notes": "CoherenceJournal owns flush/retry timers and also receives append events. For looked, the flush-side needs external scheduling; append-side would need a write funnel."
+  },
+  {
+    "guard": "messaging.attentionTopicGuard",
+    "invocation": "FUNNEL",
+    "caller": "TelegramAdapter attention-topic creation path",
+    "evidence": "src/messaging/TelegramAdapter.ts:3995",
+    "notes": "AttentionTopicGuard.decide() is invoked from the topic creation/admission path. That adapter method can own looked."
+  },
+  {
+    "guard": "messaging.topicCreationBudget",
+    "invocation": "FUNNEL",
+    "caller": "TelegramAdapter createForumTopic path",
+    "evidence": "src/messaging/TelegramAdapter.ts:1489",
+    "notes": "TopicCreationBudget.decide() is invoked from createForumTopic. The topic creation chokepoint can own looked."
+  },
+  {
+    "guard": "apprenticeship.stallCoverageGate.enabled",
+    "invocation": "FUNNEL",
+    "caller": "ApprenticeshipProgram transition gate",
+    "evidence": "src/core/ApprenticeshipProgram.ts:652",
+    "notes": "Program transition evaluates ApprenticeshipStallGate before allowing progression. The transition/admission caller can own looked."
+  }
+]

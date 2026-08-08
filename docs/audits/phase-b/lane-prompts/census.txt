@@ -1,0 +1,16 @@
+REPO: /Users/justin/.instar/agents/echo/.worktrees/phaseb-census-main
+FILE: docs/STANDARDS-REGISTRY.md  (~250KB — read ALL of it)
+
+TASK: produce a COMPLETE census of every standard in this registry. This is an enumeration, not an analysis.
+
+For each standard, report:
+  1. exact heading as written
+  2. one sentence stating its claim, in the registry's own terms
+  3. its stated enforcement mechanism — QUOTE the enforcement text verbatim (if it names none, write "none stated")
+
+RULES:
+  - Report the TOTAL count first, then the full list. Omit nothing.
+  - Do NOT judge, rank, comment, or recommend.
+  - If you cannot read the entire file, say so explicitly rather than presenting a partial census as complete.
+
+Write to: /Users/justin/.instar/agents/echo/.worktrees/phaseb-census-main/.phase-b-census/registry-census.md

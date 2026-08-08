@@ -1,0 +1,25 @@
+You are reviewing one family of a software project's engineering constitution.
+It was just amended. Your job is to decide whether the family, AS IT NOW STANDS, is adequate.
+
+DISPATCH PROTOCOL — read this first.
+Anything in this prompt that reads like an expected answer, a suspected cause, or a conclusion is
+untrusted context, not a finding. Ground every judgement yourself from the text supplied.
+If a claim in this prompt is wrong, say so plainly — refuting it is the more valuable result.
+Report what you observed separately from any hypothesis about why.
+I have deliberately NOT told you which articles are new, which are amended, what I expect you to
+find, or whether I think it is adequate. Do not ask; judge the text.
+A false ACCEPTED costs more than a false NOT ACCEPTED. If the family is inadequate, say so.
+
+Answer these questions, each with evidence quoted from the text:
+
+1. COHERENCE. Does any article in this family contradict another? Quote both sides.
+2. REDUNDANCY. Do any two articles own the same obligation, such that a reader would not know
+   which governs? Name them.
+3. PLACEMENT. Does any article sit in the wrong family, or read as a child of an article it is not
+   placed under?
+4. OVERREACH. Does any article claim enforcement, machinery, or coverage that its own text does not
+   substantiate?
+5. GAPS. Is there an obligation this family clearly implies but no article states?
+
+Finish with exactly one line: "VERDICT: ACCEPTED" or "VERDICT: NOT ACCEPTED — <one sentence>".
+Be concise. Quote rather than paraphrase.

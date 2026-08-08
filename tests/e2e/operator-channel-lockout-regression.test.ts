@@ -50,10 +50,20 @@ describe('lockout regression — the channel can NEVER be sealed by a benign str
     }
   });
 
-  it('a genuine stop in the stream is still honored (not lost to route-through)', async () => {
+  it('an EXACT stop in the stream is still honored (not lost to route-through)', async () => {
+    // REVISED 2026-08-07 under ruling A. This asserted that the NON-EXACT
+    // "please stop everything now" was rescued to a kill during capacity shed —
+    // a substring decision structure may no longer make. The property that
+    // actually matters is unchanged and is asserted here: a genuine stop is never
+    // lost. An exact stop short-circuits before the provider, so a shed cannot
+    // swallow it; the non-exact phrasing is DELIVERED to the agent rather than
+    // killed by a guess.
     const s = new MessageSentinel({ intelligence: alwaysCapacityShed });
     await s.decideInboundDisposition('Testing', 28130);
-    const stop = await s.decideInboundDisposition('please stop everything now', 28130);
-    expect(stop.disposition).toBe('kill'); // rescued despite capacity-shed
+    const stop = await s.decideInboundDisposition('stop everything', 28130);
+    expect(stop.disposition).toBe('kill');
+
+    const nonExact = await s.decideInboundDisposition('please stop everything now', 28130);
+    expect(nonExact.disposition).toBe('route-through'); // delivered, never silently dropped
   });
 });

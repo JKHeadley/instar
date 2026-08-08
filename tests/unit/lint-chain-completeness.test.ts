@@ -34,6 +34,24 @@ const REQUIRED_LINTS = [
   // could not see it, and why it was unprotected.
   'check-codex-rule1-drift.js',
   'lint-canonical-pipeline-completeness.mjs',
+  // Registry-integrity lints. The first five landed 2026-08-06 with the ratified
+  // standards batch and the last two on 2026-08-07 with the operator rulings; NONE
+  // were registered here, so this inverse check had been failing since 2026-08-06
+  // and nothing surfaced it — the worktree's commit hooks were inert (window-8
+  // trap 1), so the ratchet that exists to protect these guards was itself never
+  // executed. Verified against the base commit rather than assumed.
+  'lint-blocking-decisions-declared.mjs',
+  'lint-dispatch-withholds-answer.mjs',
+  'lint-documented-only-countdown.mjs',
+  // Not named "lint-*": it is a generator whose --check mode IS the guard. Listed
+  // here anyway, because the property this ratchet protects is "a registry guard
+  // is in the chain", and a guard that escapes the ratchet on a naming technicality
+  // is exactly the hole the ratchet exists to close (2026-08-08).
+  'generate-standards-hierarchy.mjs',
+  'lint-no-duplicate-definitions.mjs',
+  'lint-recall-surface-names-match-mechanism.mjs',
+  'lint-registry-tree-parentage.mjs',
+  'lint-single-governing-obligation.mjs',
   'lint-cas-emit-placement.js',
   'lint-dev-agent-dark-gate.js',
   'lint-emit-without-admit.js',

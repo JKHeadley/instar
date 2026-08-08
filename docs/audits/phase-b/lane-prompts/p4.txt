@@ -1,0 +1,30 @@
+You are auditing a standards registry for OVERLAP ONLY. You must NOT produce a verdict or recommendation.
+
+REPO: /Users/justin/.instar/agents/echo/.worktrees/phaseb-census-main
+FILE: docs/STANDARDS-REGISTRY.md  (~250KB, ~82 standards — read ALL of it)
+
+PROPOSED STANDARD UNDER EXAMINATION:
+=== Remove what demands attention — do not supply more attention ===
+When something repeatedly goes wrong because it requires constant care to stay correct, the fix is to DELETE the thing requiring the care, not to try harder at supplying it.
+How it was earned: a plan failed a hostile coherence review six consecutive rounds. Five failures were the identical shape — fix one site, leave another. What finally passed was not more diligence: it was DELETING three copies of a number rather than keeping four copies in agreement. Stated by its author: 'I could not have passed this gate by being more careful. Care produced five consecutive partial fixes.'
+The proposal carries its own strongest objection, filed by its author: this may be an existing standard restated rather than a genuinely new one.
+=== end proposal ===
+
+TASK: identify EVERY standard already in the registry that overlaps, in whole or in part, with the proposed standard above.
+
+For each overlapping standard you find, report:
+  1. its exact heading as written in the registry
+  2. a VERBATIM QUOTE of the registry text that establishes the overlap (quote it; a paraphrase is not evidence)
+  3. which specific clauses of the proposal that text ALREADY covers
+  4. which specific clauses of the proposal it does NOT cover
+  5. whether that standard's own stated enforcement mechanism would already catch the failure the proposal describes
+
+HARD RULES:
+  - An EMPTY result is a valid, acceptable answer. If nothing overlaps, write "NO OVERLAPPING STANDARDS FOUND" and show what you searched to establish it.
+  - Do NOT recommend keeping, discarding, merging, adjusting, or promoting anything. Retrieval and clause-level comparison ONLY.
+  - Do NOT rank by importance. List EVERY candidate including weak ones, and state plainly how weak each is.
+  - Search by MEANING, not keyword. The registry may express the same idea in completely different words. State which search strategies you used.
+  - Report the TOTAL number of standards in the registry and how many you actually examined, so your coverage is measurable.
+  - If you cannot read the whole file, say so explicitly rather than reporting a partial sweep as complete.
+
+Write findings as plain markdown to: /Users/justin/.instar/agents/echo/.worktrees/phaseb-census-main/.phase-b-census/overlap-p4-remove-what-demands-attention.md
