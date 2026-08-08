@@ -520,3 +520,31 @@ description of that red is "we improved the filing by lowering the enforcement."
 So it stays where it is, with the measurement and a deadline written into it. The move is available the
 moment someone builds a check for one of that family's two unbacked rules. That is the right order, and
 it is worth naming because the wrong order would have *looked* like progress.
+
+## The thing that was actually wrong, and is now fixed (2026-08-08, fifth pass)
+
+Every review since this started opened with the same complaint in every family: two rules claiming the
+same job, so a reader can't tell which one governs. This pass, all three families came back clean on
+that. The reviewer listed the pairs and confirmed each one now says which side owns what — and checked
+both sides rather than taking the declaration's word for it.
+
+That is the one class of defect that is genuinely closed. It took five rounds, and three of those
+rounds found duplications that my own fixes had created. Worth being precise about: the original set is
+resolved, and the ones I introduced along the way are resolved too.
+
+## A rule that wasn't approved yet was quietly acting like it was
+
+The reviewer noticed something I would not have. One rule is marked "pending operator ratification" —
+it hasn't been formally adopted. And in the tree we print, it sits above another rule as its parent.
+So the printed structure was presenting an unapproved rule as settled authority over an approved one.
+
+Nothing was *wrong* in the sense of a bug. It just read as more official than it is, which is the whole
+category of problem these reviews keep finding.
+
+The tree now says so, right on that row. And it works out the status by reading the rule itself rather
+than from a list I keep — because a list I keep is a list I forget, which is the lesson this session has
+now taught me three separate times. I checked it both ways: mark the rule approved and the warning
+disappears; put it back and it returns.
+
+Approving the rule isn't mine to do. Making the gap visible instead of letting the layout imply an
+authority the rule doesn't have — that part was.

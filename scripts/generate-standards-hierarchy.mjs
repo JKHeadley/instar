@@ -152,6 +152,7 @@ for (const start of parentOf.keys()) {
 // ── Render ─────────────────────────────────────────────────────────────────
 const order = new Map(articleList.map((a, i) => [a.name, i]));
 const familyOf = new Map(articleList.map((a) => [a.name, a.family]));
+const pendingOf = new Map(articleList.map((a) => [a.name, !!a.pendingRatification]));
 const familiesInOrder = [...new Set(articleList.map((a) => a.family))];
 
 function shortFamily(f) {
@@ -197,7 +198,10 @@ for (const family of familiesInOrder) {
   lines.push(`**${shortFamily(family)}**`);
   lines.push('');
   for (const p of parents) {
-    lines.push(`- [${p}](${anchor(p)})`);
+    // An article whose own status is unsettled should not read as settled structural
+    // authority just because the tree renders it above something.
+    const pendingMark = pendingOf.get(p) ? ' — ⚠︎ *this parent is itself pending operator ratification*' : '';
+    lines.push(`- [${p}](${anchor(p)})${pendingMark}`);
     for (const c of childrenOf.get(p).sort((a, b) => order.get(a) - order.get(b))) {
       const cf = shortFamily(familyOf.get(c));
       const crossFamily = familyOf.get(c) !== family ? ` — *declared from ${cf}*` : '';

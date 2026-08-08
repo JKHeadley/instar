@@ -797,3 +797,40 @@ unilaterally. Reported to the observer with the measurement.
 
 **State:** 87 articles, enforced 0.7356 (unchanged), dangling 0, unrecognized sections 0, 12 relations,
 8 obligations, 3 article + 13 sub-obligation countdowns, full lint chain green.
+
+---
+
+## Addendum 16 — fifth-pass: the ownership work is DONE, plus three fixes
+
+**Changed:** `docs/STANDARDS-REGISTRY.md` (three edits + regenerated block),
+`scripts/lint-registry-tree-parentage.mjs` (emit ratification status),
+`scripts/generate-standards-hierarchy.mjs` (mark an unratified parent).
+
+**A verified milestone rather than a claim.** Pass 5 reports, unprompted: Shipping — "No direct
+contradiction remains" and "No unresolved duplicate owner"; Building — "No material ownership
+ambiguity remains", naming all four resolved pairs and confirming *Testing Integrity* /
+*Live-User-Channel Proof* now read "correctly as parent and child". The duplicate-ownership class that
+opened every family in pass 1 is closed across all three, and the reviewer verified BOTH sides of each
+boundary rather than accepting the declaration.
+
+**Third parentage declared:** *Test Identity Never Enters Production State* → *Testing Integrity*.
+Real, and only ever implied.
+
+**The per-item routing contradiction, bounded.** *Notices Route* forbade per-alert topics while its own
+practice section documented how to enable them via a legacy opt-out. Same shape as the maturation
+exception and fixed the same way: enumerate the exception in the rule that forbids it, mark it
+deprecated and rollback-only, and name what is unenforced (nothing stops a NEW install choosing legacy
+mode, nothing dates its removal) with a countdown.
+
+**AN UNRATIFIED ARTICLE WAS ACTING AS STRUCTURAL AUTHORITY.** The review noticed *Observable
+Intelligence* is "pending operator ratification" while already parenting a child in the generated tree
+— its constitutional status unsettled, its structural authority rendered as settled. The tree now MARKS
+such a parent inline. The trigger is DISCOVERED from the article's own text rather than a maintained
+list, per this session's repeated lesson; proven both directions by editing the status and watching the
+marker appear and vanish, then restoring byte-identical.
+
+Ratifying the article is the operator's, not mine. What was mine was making the gap visible instead of
+letting the rendering imply an authority the article does not yet have.
+
+**State:** 87 articles, enforced 0.7356, dangling 0, unrecognized sections 0, 13 relations,
+8 obligations, 3 article + 14 sub-obligation countdowns, full lint chain green.

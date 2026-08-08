@@ -136,7 +136,18 @@ const report = {
   // Emitted so a CONSUMER (the hierarchy generator) can render from this
   // extraction instead of parsing the registry a second time. Two parsers of
   // one structure is the drift defect this whole area keeps producing.
-  articleList: articles.map((a) => ({ name: a.name, family: a.family, lineNo: a.lineNo })),
+  // `pendingRatification` is emitted so the hierarchy renderer can MARK a parent
+  // whose own constitutional status is unsettled. The 2026-08-08 fifth-pass review
+  // found *Observable Intelligence* "pending operator ratification" while already
+  // parenting a child in the generated tree — an unratified article acting as
+  // structural authority, silently. Discovered from the article's own text rather
+  // than a maintained list, per the lesson of this same session.
+  articleList: articles.map((a) => ({
+    name: a.name,
+    family: a.family,
+    lineNo: a.lineNo,
+    pendingRatification: /pending operator ratification/i.test(a.body.join('\n')),
+  })),
 };
 
 if (JSON_OUT) {
