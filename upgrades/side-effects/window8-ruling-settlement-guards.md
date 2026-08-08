@@ -902,3 +902,48 @@ I maintain. Twice today that list was incomplete and the review found what the l
 
 **State:** 87 articles, enforced 0.7356, false-claims 0, dangling 0, unrecognized sections 0,
 13 relations, 8 obligations, 3 article + 18 sub-obligation countdowns, full lint chain green.
+
+---
+
+## Addendum 19 — FIRST ACCEPTANCE (Shipping), and the evidence error that was blocking it
+
+**Changed:** `docs/STANDARDS-REGISTRY.md` (six edits). Review protocol: severity-classified evidence
+replacing a count series.
+
+**SHIPPING IS ACCEPTED.** First acceptance across nine passes. Its own words on the judgement:
+"the severity stream is non-monotonic (6, 4, 5, 4, 1, 0) but materially declines from
+governance-breaking contradictions and duplicate ownership to none in the present family … the
+evidence under the current protocol is only a several-to-zero comparison across one repair round, so
+confidence is limited, but the remainder is explicitly named and expiry-dated and does not presently
+prevent determining which article governs." The caveat is why it is trustworthy.
+
+**The evidence error that was blocking it, and it was mine.** Pass 8 refused on criterion (a) —
+"the evidence supplied does not establish declining magnitude and severity". Correct: I had supplied a
+COUNT of clean answers, which is not severity. Rebuilt using the review's OWN severity notion — a
+coherence contradiction or a duplicate-owner finding is what makes a family unusable as governance;
+placement and dated gaps are not — measured over the 6 such slots per pass. Supplied WITH the caveat
+that the protocol changed mid-series and the reviewer became STRICTER, not laxer, immediately
+afterwards, so the numbers either side are not strictly comparable.
+
+**Two measurement errors of my own, caught before publishing.** My automated classifier read a bare
+"COHERENCE — No." as a finding in one pass and as clean in another — the reviewer uses the same words
+for opposite verdicts. It produced a severity series showing findings INCREASING, which was an artifact
+of format. Then a second classifier missed Building's lowercase heading and counted clean answers as
+findings. Both were caught by reading the answers instead of trusting the parse. A precise-looking
+number derived from fuzzy parsing is worse than no number, and I nearly reported one to the operator.
+
+**An over-correction, found by the review.** My false-claim fix on *Cross-Store Coherence* replaced a
+present-tense claim ("a sweep runs daily") with a flat denial ("no sweep walks the list on any
+machine") — while the same article cites a per-machine audit job deployed on the originating fleet.
+Over-correcting a false claim into a false denial leaves the reader exactly as misinformed. What is
+actually missing is the GENERALIZED template that would make it universal, which is what the article's
+wording promises.
+
+**Dated this round:** the measure-vs-certify CI ratchet; the loop-safety audit (in progress ≠ landed);
+*Friction Is a Spec* (a reviewer prompt is not a gate); and — deliberately — the misfiling deadlock
+ITSELF. The outcome there is the operator's to choose, but the DECISION now carries a date, because
+recording ownership without a deadline is exactly how a blocked item becomes a permanent one.
+23 dated sub-obligations, up from 15 this morning.
+
+**State:** 87 articles, enforced 0.7356, false-claims 0, dangling 0, unrecognized sections 0,
+13 relations, 8 obligations, 3 article + 23 sub-obligation countdowns, full lint chain green.
