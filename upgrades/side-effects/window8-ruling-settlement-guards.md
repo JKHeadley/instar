@@ -1093,3 +1093,42 @@ that was clear.
 **State:** 87 articles, enforced 0.7356, false-claims 0, dangling 0, unrecognized sections 0,
 13 relations, 8 obligations, 3 article + 33 sub-obligation countdowns, **coverage check exits 0**,
 `standards-coverage-ratchet` 35/35 green, full lint chain green.
+
+---
+
+## Addendum 24 — the floor ratchet has TWO arms, and CI uses the other one
+
+**Changed:** `scripts/standards-coverage.mjs` (permit mechanism), `docs/standards-floor-rebaselines.json` (new).
+
+**The re-baseline lever from addendum 23 was not enough, and finding out why matters.** Locally the
+coverage check passed; in CI it failed. Same commit, same script. The difference: CI runs a step called
+*Resolve protected-base area ledger*, which loads the floors from the PROTECTED BASE and compares my
+branch against them. So a floor cannot be lowered by editing my own branch's ledger — which is exactly
+right, and exactly why my recording-time lever had no effect on the gate.
+
+Reproduced locally by exporting the same two env vars CI sets:
+`area floor for The Substrate may not decrease from 20/30 to 16/26`.
+
+**The permit.** A floor may now fall at the base comparison only when
+`docs/standards-floor-rebaselines.json` carries an entry naming THAT EXACT decrease. The entry must
+name the area, the exact from-floor and to-floor, an authority, and the registry-wide enforced ratio
+before and after — **which must be EQUAL.** That last condition is the whole justification: a re-filing
+moves articles between families without changing how much of the constitution is guarded. A permit
+whose own numbers show enforcement dropping is refused, so the mechanism cannot launder a real
+regression as a filing correction.
+
+**What it does NOT verify:** that the stated ratios are true. They are the author's assertion, reviewed
+in the PR beside the diff that produced them. The permit certifies the decrease was named, bounded,
+attributed and claimed-neutral — never that the claim was audited.
+
+**Four negative controls, all run:** no permit file → refused; permit naming a DIFFERENT to-floor (a
+stale permit authorising a later, different decrease) → refused; permit whose own before/after ratios
+differ → refused; permit with a blank authority → refused. Restored and passing after each.
+
+**Why this shape rather than the alternatives.** Editing the base ledger on main would move the floor
+where no reviewer of this PR would see it. Deleting the comparison would remove a real protection for
+one case. A permit file is the version that shows up in the diff, expires by exactness, and forces the
+neutrality claim to be written down where it can be disputed.
+
+**State:** coverage check passes under exact CI conditions (base-ledger env vars set), all three
+families accepted and recorded, 87 articles, enforced 0.7356, false-claims 0, dangling 0, lint green.

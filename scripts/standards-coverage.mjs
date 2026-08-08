@@ -393,6 +393,38 @@ function canonicalTimestamp(value) {
   return !Number.isNaN(date.getTime()) && date.toISOString() === value;
 }
 
+/**
+ * A permit authorises exactly ONE floor decrease, for one area, from one specific
+ * floor to one specific floor. Anything less exact is ignored, so a stale permit
+ * cannot silently authorise a LATER, different decrease.
+ *
+ * It also requires the entry to assert enforcement-neutrality by stating the
+ * registry-wide enforced ratio before and after, and those must be EQUAL. That is the
+ * whole justification for the exception: a re-filing moves articles between families
+ * without changing how much of the constitution is guarded. A permit whose own numbers
+ * show enforcement dropping is refused — the mechanism cannot be used to launder a real
+ * regression as a filing correction.
+ *
+ * What it does NOT verify: that the stated ratios are true. They are an author's
+ * assertion, reviewed in the PR alongside the diff that produced them. This certifies
+ * that the decrease was named, bounded, attributed and claimed-neutral — never that the
+ * claim was audited.
+ */
+function findRebaselinePermit(area, priorFloor, nextFloor) {
+  const abs = path.join(ROOT, 'docs/standards-floor-rebaselines.json');
+  if (!fs.existsSync(abs)) return null;
+  let doc;
+  try { doc = JSON.parse(fs.readFileSync(abs, 'utf-8')); } catch { return null; }
+  if (!Array.isArray(doc?.rebaselines)) return null;
+  return doc.rebaselines.find((entry) => entry?.area === area
+    && validFloor(entry?.from) && validFloor(entry?.to)
+    && entry.from.enforced === priorFloor.enforced && entry.from.total === priorFloor.total
+    && entry.to.enforced === nextFloor.enforced && entry.to.total === nextFloor.total
+    && typeof entry.authority === 'string' && entry.authority.trim().length > 0
+    && Number.isFinite(entry.registryEnforcedRatioBefore) && Number.isFinite(entry.registryEnforcedRatioAfter)
+    && entry.registryEnforcedRatioBefore === entry.registryEnforcedRatioAfter) ?? null;
+}
+
 function validFloor(value) {
   return isPlainObject(value) && Number.isSafeInteger(value.enforced) && Number.isSafeInteger(value.total) &&
     value.enforced >= 0 && value.total > 0 && value.enforced <= value.total &&
@@ -1032,7 +1064,22 @@ function compareLedgerToBase(candidate) {
     }
     if (validFloor(prior?.refResolutionFloor) && validFloor(next.refResolutionFloor) &&
       ratioBelowFloor(next.refResolutionFloor.enforced, next.refResolutionFloor.total, prior.refResolutionFloor)) {
-      errors.push(`area floor for ${area} may not decrease from ${prior.refResolutionFloor.enforced}/${prior.refResolutionFloor.total} to ${next.refResolutionFloor.enforced}/${next.refResolutionFloor.total}`);
+      // A floor may fall ONLY with a committed, reviewed record naming this exact
+      // decrease. Operator ruling 2026-08-08: a floor satisfied by MISFILED articles
+      // was passing on false composition, and correcting a filing mistake must not be
+      // punishable by the meter the mistake was inflating. The escape is deliberately
+      // narrow — it authorises one named decrease, not a lower bar in general — and it
+      // lives in the diff where a reviewer meets it.
+      const permit = findRebaselinePermit(area, prior.refResolutionFloor, next.refResolutionFloor);
+      if (permit) {
+        console.log(
+          `[standards-coverage] FLOOR RE-BASELINE PERMITTED for ${area}: ` +
+          `${prior.refResolutionFloor.enforced}/${prior.refResolutionFloor.total} -> ` +
+          `${next.refResolutionFloor.enforced}/${next.refResolutionFloor.total} — ${permit.authority}`,
+        );
+      } else {
+        errors.push(`area floor for ${area} may not decrease from ${prior.refResolutionFloor.enforced}/${prior.refResolutionFloor.total} to ${next.refResolutionFloor.enforced}/${next.refResolutionFloor.total}`);
+      }
     }
     if (canonicalTimestamp(prior?.lastAuditedAt) && canonicalTimestamp(next.lastAuditedAt) &&
       Date.parse(next.lastAuditedAt) < Date.parse(prior.lastAuditedAt)) {

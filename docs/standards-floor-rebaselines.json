@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "note": "Each entry permits ONE floor decrease, and only the exact decrease it names. Reviewed in the PR that adds it. A floor may never fall without an entry here, and an entry that does not match the observed change exactly is ignored.",
+  "rebaselines": [
+    {
+      "area": "The Substrate",
+      "from": { "enforced": 20, "total": 30 },
+      "to": { "enforced": 16, "total": 26 },
+      "authority": "Justin, operator ruling 2026-08-08 (option 1): a floor satisfied by MISFILED articles was passing on false composition, and fixing a filing mistake must not be punishable by the meter the mistake was inflating.",
+      "cause": "Enforcement-neutral re-filing of 4 misfiled engineering-machinery articles from The Substrate into Building.",
+      "registryEnforcedRatioBefore": 0.7356,
+      "registryEnforcedRatioAfter": 0.7356
+    }
+  ]
+}

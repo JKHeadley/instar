@@ -611,3 +611,34 @@ ways.
 
 What the switch proves is only that a human meant to do it. It does not prove they were right. That
 distinction is the whole point.
+
+## The check that passes on my machine and fails on the server (2026-08-08)
+
+The coverage check went green locally and red in CI, same commit, same script. That combination usually
+means someone's machine is lying, and it is worth knowing which.
+
+Neither was. CI runs an extra step first: it fetches the *previous* version of the stored bars from the
+protected branch and compares my work against those, not against the copy sitting in my branch. That is
+deliberate and correct — otherwise lowering a bar would be as easy as editing the file that records it,
+which is no bar at all. My earlier fix let me lower the bar in *my* copy, and the gate was never reading
+my copy.
+
+## So the exception had to go where the gate actually looks
+
+There is now a small file that lists permitted bar-lowerings. An entry has to name the exact section,
+the exact old number, the exact new number, who authorised it, and the overall protection figure before
+and after — **and those two figures have to match**. That last requirement is the entire point: this
+exception exists because moving rules between sections changes a section's score without changing how
+much of the whole document is actually protected. If your own numbers show protection dropping, the
+permit is refused. You cannot use "we just moved some files around" to hide a real loss.
+
+It does not check whether those two figures are *true*. They are a claim, written down, in the diff,
+where a reviewer meets them. What the file guarantees is that the lowering was named, bounded,
+attributed, and claimed harmless — not that anyone verified the claim.
+
+I tried four ways to abuse it before trusting it: delete the permit file, point the permit at a
+different number than the one actually changing, write a permit whose own figures show protection
+falling, and leave the "who authorised this" field blank. All four refused.
+
+The version I did not build: quietly change the stored number on the main branch, where nobody
+reviewing this work would ever see it. It would have been two minutes and completely invisible.
