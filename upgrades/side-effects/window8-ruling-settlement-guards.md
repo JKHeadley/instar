@@ -604,3 +604,40 @@ guesses.
 7 obligations, 3 article countdowns + 4 sub-obligation countdowns, all floors held.
 
 **Rollback.** Remove the two rows and the resolver clause; the registry text reverts independently.
+
+---
+
+## Addendum 11 — the OVERREACH class, dated
+
+**Changed:** `docs/STANDARDS-REGISTRY.md` (six articles marked), two proposal files added from Codey's
+branches.
+
+**Why.** The recurring OVERREACH findings were the one class three passes never moved, because naming
+a gap honestly was where the obligation stopped. With the sub-obligation countdown arm from addendum 9
+in place, each named gap now carries a date: *Observable Intelligence* (nothing prevents a call
+bypassing the funnel), *Constitutional Traceability* (a weak fit ships unjudged while the semantic
+layer is down, and the record does not distinguish that from a judged strong fit), *Framework-Agnostic*
+(off-surface features can be single-engine unnoticed), *Zero-Failure* (nothing observes the suite
+between gates), *Testing Integrity* and *LLM-Supervised Execution* (undefined "significant" and
+"critical"). Ten dated sub-obligations, from four.
+
+**On Zero-Failure specifically, and why the Rule did NOT change.** The reviewer is right that the
+machinery establishes green-AT-GATE. The Rule stays absolute because its subject is OWNERSHIP, not
+sampling: it exists to delete "pre-existing failure" as a defence. Weakening it to "green at every
+gate" would restore exactly the loophole it was written to close — a red found between gates becomes
+nobody's. The gap is named and dated instead of the standard being softened to match its tooling.
+
+**Codey's scope-terms proposal, integrated as DIRECTION rather than mechanism.** Building the typed
+obligation profile is not this window's work, and claiming it as ratified machinery would be the
+over-claim these reviews keep finding. What is recorded in the articles is the load-bearing design:
+three INDEPENDENT fields that must not collapse into one importance bit, and an inventory that cannot
+be the authority because it moves the escape to "nobody added it" — so an unregistered boundary stays
+UNRESOLVED and fails closed. Both proposal files are committed so the direction is auditable.
+
+**Over-block.** Six more articles now carry the sub-obligation trigger, so each must keep a valid
+unexpired countdown or the build fails — intended. Under-block unchanged: an over-claim nobody marks
+stays invisible to the lint, which is why family review remains the discovery mechanism and this arm
+is the follow-through, not the detector.
+
+**State:** 87 articles, enforced 0.7356, dangling 0, unrecognized sections 0, 12 relations,
+7 obligations, 3 article + 10 sub-obligation countdowns, floors held, full lint chain green.
