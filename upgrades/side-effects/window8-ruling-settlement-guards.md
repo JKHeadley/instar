@@ -947,3 +947,55 @@ recording ownership without a deadline is exactly how a blocked item becomes a p
 
 **State:** 87 articles, enforced 0.7356, false-claims 0, dangling 0, unrecognized sections 0,
 13 relations, 8 obligations, 3 article + 23 sub-obligation countdowns, full lint chain green.
+
+---
+
+## Addendum 20 — the re-filing, on Justin's ruling
+
+**Changed:** `docs/STANDARDS-REGISTRY.md` — four articles MOVED from The Substrate to Building, plus
+seven text edits.
+
+**Authority: Justin's ruling of 2026-08-08, not my judgement and not the reviewer's.** He took option 1:
+the floor re-baselines on an enforcement-neutral move. His principle, recorded in the registry: a floor
+satisfied by MISFILED articles was passing on false composition, and fixing a filing mistake must not be
+punishable by the meter the mistake was inflating.
+
+**Moved:** *Iterative Audit to Convergence*, *A Decision That Can Block Must Live Where the Checks Can
+See It*, *No Silent Degradation to Brittle Fallback*, *An Autonomous Run Must Outlive Its Session* —
+all engineering machinery, all failing the Substrate's own admission tests 1 and 3.
+
+**Enforcement-neutrality, verified rather than asserted:** registry-wide enforced ratio is 0.7356
+before AND after; 87 articles before and after; the sorted heading set is byte-identical across the
+move. Only two families' composition changed.
+
+**What the move reveals, which is the honest cost.** The Substrate's density drops 20/30 → 16/26. That
+is not a regression, it is the first accurate reading: the four departing articles carried engineering
+guards and were flattering the measurement. What remains — *Sovereignty*, *The Right to Stand Ground*,
+*Documentation IS Being*, *Deferral = Deletion* — is genuinely unguarded because it resists mechanical
+checking. **The family was never as enforced as it looked.** Recorded as dated work; building real
+guards for the deep properties is queued as future-window work per the ruling, not squeezed into the
+change that revealed the gap.
+
+**A countdown RETIRED, correctly.** `STD-SUBCOUNTDOWN-misfiling-deadlock-decision` existed to force
+the decision. The decision was made, so it is gone — replaced by `STD-SUBCOUNTDOWN-deep-property-guards`
+for the gap the decision exposed. Verified both by count rather than assumed.
+
+**The cross-family render branch finally fired.** *A Decision That Can Block* is a declared child of
+*Observation Needs Structure*, which stayed in The Substrate — so the hierarchy now renders its first
+cross-family relation, tagged "declared from Building". That branch was written on 2026-08-08 and
+flagged as unexercised; it is exercised now.
+
+**A regression I caused and fixed within the round.** The post-move review dropped The Substrate from
+ACCEPTED back to NOT ACCEPTED: the family text still said it "now holds 30 articles" and that no pass
+had covered "the existing 30 members" while simultaneously describing the move to 26. Changing a
+population without updating the prose describing it is the same stale-text pattern this window has now
+produced five or six times, and it is the one my guards cannot see.
+
+**Also dated this round** (all from the post-move review): metrics universality, runtime-probe
+generalization, observation-duty enumeration, exact-list entry validation, and the inefficiency
+instinct. 28 dated sub-obligations, up from 23.
+
+**State:** 87 articles, enforced 0.7356, false-claims 0, dangling 0, unrecognized sections 0,
+13 relations, 8 obligations, 3 article + 28 sub-obligation countdowns, full lint chain green.
+The Substrate's stored floor still reads 20/30 and re-baselines to 16/26 when its audit is re-recorded
+after an accepting review — the order the ruling implies.
