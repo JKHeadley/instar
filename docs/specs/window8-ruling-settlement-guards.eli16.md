@@ -292,3 +292,30 @@ rather than glossed: model overloaded, plus a genuine halt worded outside the li
 busy to read it.
 
 Third time this week that green tests were protecting a contradiction instead of a property.
+
+## Problem eight: defining the line between what code may decide and what the agent must
+
+Our foundational rule says code informs the agent, and "past a threshold of importance" it may only
+inform, never decide. It never said where that threshold is. So the rule drew a line and gave nobody a
+way to find it.
+
+Codey drafted the answer and the good part is that it **isn't a new idea** — it's a promotion of one we
+already use. Every spec here already has to label each decision it touches as either an *invariant*
+(a closed set: is this string one of five allowed values?) or a *judgment* (what did this person mean?
+is this safe? is it ready to ship?). That labelling **was** the threshold all along; nobody had ever
+written it down as the rule.
+
+So: below the line, code may refuse malformed input. Above it — what someone meant, which owner to
+affect, whether something irreversible should happen — code offers signals and the agent decides and
+records why. The emergency-stop floor stays the one narrow, separately-listed exception.
+
+It landed as an **amendment** to the existing rule rather than a new one, which matters practically:
+that family is sitting exactly on its enforcement floor, so a new rule without a working check would
+have failed the build the moment it was added.
+
+**And it carries an expiry rather than a claim.** No check today proves anyone labelled a decision
+*correctly* — only that a label exists and the named decider is wired up. The honest counterexample is
+written into the rule: a route labelled "invariant" because its name comes from a fixed list, which
+then picks an owner based on who is asking. Bounded on paper, consequential in fact. That's a question
+for a human reviewer — explicitly **not** an argument for adding a keyword matcher, which another rule
+forbids outright.

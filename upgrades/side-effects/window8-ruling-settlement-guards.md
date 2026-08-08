@@ -372,3 +372,23 @@ two-sided: Codey's four route through; exact stops still kill under shed AND und
 
 **Rollback.** Restore the scan and the five assertions — but note that restores the meaning-inverted
 kill, so a rollback should keep exact membership even if other parts revert.
+
+---
+
+## Addendum 6 — serial integration of the GAP drafts (ruling B)
+
+**Changed:** `scripts/lint-documented-only-countdown.mjs` — one entry added to `REQUIRE_COUNTDOWN`.
+
+**Why.** Draft 1 (drafted by Codey under brief 1, integrated by me) amends *The Body and the Mind* with
+the threshold definition, and states an obligation with no guard yet — so it carries a countdown like
+the ruling-4 relabels. Registering it is what gives that deadline teeth; an unregistered countdown is
+the declared-population hole this lint already names as its own blind spot.
+
+**Over/under-block.** Unchanged in kind: one more article must carry a valid, unexpired countdown. The
+same escape remains — an article relabelled by someone who does not add it here is invisible.
+
+**Interactions.** Registry article count does NOT move (amendment, not a new article), so The
+Substrate stays at exactly its enforcement floor rather than dropping below it. Verified after
+integration: 87 articles, enforced 0.7356, 3 countdowns all unexpired, unrecognized sections 0.
+
+**Rollback.** Remove the one entry; the amendment text reverts with the registry.

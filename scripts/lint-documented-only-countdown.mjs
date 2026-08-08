@@ -75,6 +75,10 @@ const REGISTRY_REL = 'docs/STANDARDS-REGISTRY.md';
 const REQUIRE_COUNTDOWN = [
   'Session Input Is a Principal',
   'Close the Loop',
+  // Added 2026-08-08 (ruling B, brief 1): the threshold-of-importance amendment
+  // states an obligation with no guard yet, so it carries a countdown like the
+  // relabels above. Grow-only — see the header.
+  'The Body and the Mind',
 ];
 
 /** `**Documented-only until.** \`2026-09-07\` — tracked as \`STD-COUNTDOWN-x\`.` */
