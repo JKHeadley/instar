@@ -834,3 +834,33 @@ letting the rendering imply an authority the article does not yet have.
 
 **State:** 87 articles, enforced 0.7356, dangling 0, unrecognized sections 0, 13 relations,
 8 obligations, 3 article + 14 sub-obligation countdowns, full lint chain green.
+
+---
+
+## Addendum 17 — false-claims to ZERO, and a near-miss on my own rule
+
+**Changed:** `docs/STANDARDS-REGISTRY.md` (two articles).
+
+**The registry's last FALSE CLAIM is closed — the count is 0 for the first time.** *Cross-Store
+Coherence Is an Invariant* described a daily per-machine sweep and a deduped drift notice in the
+PRESENT TENSE, as things the system performs. Neither exists. Restated as the requirement it actually
+is, with the gap named and dated.
+
+**A near-miss worth more than the fix.** My first attempt cited `scripts/standards-coverage.mjs` in
+the article while restating it. The claim became honest AND the article classified as ENFORCED —
+enforced-ratio rose 0.7356 → 0.7471 on an edit that built nothing. That is precisely the cheap unlock I
+had refused an hour earlier in the placement deadlock, and I walked into it from the other direction
+without noticing. **The rising number was the tell**: an edit that only restores honesty must not raise
+the enforcement figure. Ref removed; ratio back to 0.7356 with false-claims 0 — the correct outcome.
+
+**And a second-order trap in the same edit:** quoting the old false wording verbatim RE-CREATED the
+false claim, because a literal scan cannot distinguish a quotation from an assertion. The old phrasing
+is now described rather than reproduced.
+
+**Sixth-pass coherence fix.** *Structure Decides Alone* said the code constants are the whole authority
+and "no other set anywhere confers this authority", then added operator-supplied entries as though
+beside them. The review read that as an entry both conferring and not conferring authority, correctly.
+One set, extensible by the operator — not two sets with one unacknowledged.
+
+**State:** 87 articles, enforced 0.7356, **false-claims 0**, dangling 0, unrecognized sections 0,
+13 relations, 8 obligations, 3 article + 15 sub-obligation countdowns, full lint chain green.
