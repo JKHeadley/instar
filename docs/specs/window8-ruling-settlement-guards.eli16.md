@@ -319,3 +319,51 @@ written into the rule: a route labelled "invariant" because its name comes from 
 then picks an owner based on who is asking. Bounded on paper, consequential in fact. That's a question
 for a human reviewer — explicitly **not** an argument for adding a keyword matcher, which another rule
 forbids outright.
+
+---
+
+## The re-review, and the two things it caught me doing (2026-08-08)
+
+I ran the outside reviewer again on the amended families. It rejected all three, and two of the
+findings were mine in the area I had just "fixed".
+
+**The first is embarrassing in a useful way.** The operator ruled that the emergency-stop floor may
+only match a message EXACTLY — never a prefix, because `stop the build please` is a scoped request,
+not a halt. I changed the running code. I wrote the new rule that way. And I left the article next
+door still describing the floor as matching anything that *starts with* "stop". So the constitution
+said both things at once. Nobody was lying; I edited one article and didn't re-read its neighbour.
+
+**The second is the interesting one.** The old defect was "one obligation, several owners, and no
+boundary" — a reader cannot tell which article governs. I fixed three instances of that. Then, fixing
+them, I created a fresh one: the article that used to own emergency-stop authority still claimed it,
+and the new article said "this article is its whole extent". Two owners again, one day later.
+
+So the fix isn't the text. It's that the ownership boundary is now **registered in a check** — a small
+table saying *this obligation, this owner, these articles must disclaim it* — and the check fails the
+build if an owner stops declaring, or a disclaimer disappears. I proved it by putting the defect back
+and confirming it failed for the right reason, then restoring the file byte-for-byte.
+
+## A hole in a guard I had already built
+
+The same review found an article that formally hands an obligation to another article — and then, three
+paragraphs later, gives the order anyway ("must AGGREGATE"). My check verified the hand-off was
+*declared*. It never checked whether the article actually stopped commanding.
+
+That is worse than plain duplication, and the reason is the part worth remembering: **a reader who goes
+looking for the owner finds the denial and stops looking.** A disclaimer plus an imperative is a
+duplicate obligation wearing a disguise. The check now also fails when a deferring article states the
+obligation in one of its known order-giving forms — added the way regression tests are, from literals
+that were actually found doing it, not from guesses about what someone might write.
+
+## Where I disagreed with the reviewer
+
+It said the token-accounting rule contradicts itself: it permits providers onto a "cannot-surface"
+list, while its implementation describes a list that starts empty and may only shrink — so nothing can
+ever be added. That would be a real contradiction if it were one list. It's two: one for *call sites
+that forgot to tag themselves* (empty, shrink-only, because the debt was paid off when the check was
+written), and one for *tools that genuinely cannot report token counts* (not empty, not shrinking,
+because that's a fact about the tool, not a debt).
+
+The reviewer was wrong. The ambiguity that misled it was mine, so the text changed and the mechanism
+didn't. Worth naming: the honest response to a review finding is sometimes "no, and here is why" —
+recorded, so the next reader sees the reasoning rather than the concession.

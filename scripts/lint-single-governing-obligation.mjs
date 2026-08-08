@@ -27,19 +27,31 @@
  *               declaration; (2) each detection-surface article carries the
  *               literal disclaimer AND names the governing article; (3) the
  *               ladder's canonical rung enumeration appears in EXACTLY ONE
- *               article across the whole registry.
+ *               article across the whole registry; (4) no deferring article
+ *               states the obligation in one of its DECLARED imperative forms.
  *   CERTIFIED — the obligation has exactly one declared owner, and no article
  *               in the population silently reacquires it in the ladder's own
- *               canonical form.
+ *               canonical form or in a declared order-giving form.
  *
- * It does NOT certify that no article restates the obligation in DIFFERENT
- * words. A paraphrase is invisible here. That limit is deliberate and is why
- * this is a structural declaration check rather than a prose scan: judging
- * whether new prose MEANS the same obligation is a semantic judgment, and
- * *Intelligence Infers, Keywords Only Guard* forbids a regex from making it
- * (window-8 trap 4 — a proposed guard can be forbidden by another standard).
- * What is checkable structurally is checked structurally; the rest belongs to
- * family review, which is where this finding came from in the first place.
+ * Arm (4) was added 2026-08-08 because the re-review found the hole: *Notices
+ * Route to the Alerts Topic* carried the disclaimer ("does NOT own the
+ * aggregation obligation") in its Rule and then commanded "must AGGREGATE" in
+ * its practice. Arms (1)-(3) all passed. **A disclaimer plus an imperative is
+ * worse than plain duplication** — the reader who checks ownership finds the
+ * denial and stops looking. The check that verified the deferral was declared
+ * could not see that the deferral was untrue.
+ *
+ * It still does NOT certify that no article restates the obligation in words
+ * outside the declared `imperatives` list. A fresh paraphrase is invisible
+ * here. That limit is deliberate and is why this is a structural declaration
+ * check rather than a prose scan: judging whether new prose MEANS the same
+ * obligation is a semantic judgment, and *Intelligence Infers, Keywords Only
+ * Guard* forbids a regex from making it (window-8 trap 4 — a proposed guard can
+ * be forbidden by another standard). The `imperatives` rows are not an attempt
+ * to infer meaning: each is a literal that was ACTUALLY found duplicating an
+ * obligation, added after the fact, the way a regression test is. What is
+ * checkable structurally is checked structurally; the rest belongs to family
+ * review, which is where both of these findings came from.
  *
  * What input passes this check while failing the claim? An article outside the
  * declared population that invents a fourth surrender surface and states the
@@ -88,6 +100,7 @@ const OBLIGATIONS = [
     declaration: 'THE SINGLE GOVERNING ARTICLE for notification VOLUME',
     disclaimer: 'does NOT own the aggregation obligation',
     canonical: null,
+    imperatives: ['must aggregate'],
   },
   {
     id: 'self-action-convergence',
@@ -96,6 +109,33 @@ const OBLIGATIONS = [
     declaration: 'THE SINGLE GOVERNING ARTICLE for self-action convergence',
     disclaimer: 'does NOT own the convergence obligation',
     canonical: null,
+  },
+  {
+    // Added 2026-08-08 from the Shipping re-review, which read *A Dark Feature Guards
+    // Nothing*'s "record explicit operator acceptance" as an EXIT from *Maturation
+    // Path*'s mandatory ladder. Registering the boundary is what keeps the resolution
+    // from being prose that the next author quietly re-opens.
+    id: 'feature-graduation',
+    governing: 'Maturation Path',
+    deferrers: ['A Dark Feature Guards Nothing'],
+    declaration: 'THE SINGLE GOVERNING ARTICLE for feature graduation',
+    disclaimer: 'does NOT own the graduation obligation',
+    canonical: null,
+  },
+  {
+    // Added 2026-08-08. The floor/intelligence union was ratified into *Intelligence
+    // Infers* on 2026-08-07, and the exact-match carve-out was added the next day
+    // saying "this article is its whole extent" — so BOTH claimed the same
+    // obligation. The re-review caught it. Registering it here is the point: the
+    // fix for a duplicate-ownership defect reproduced the defect, which is exactly
+    // the failure a declared table prevents and a careful author does not.
+    id: 'emergency-stop-authority',
+    governing: 'Structure Decides Alone Only on an Exact Match',
+    deferrers: ['Intelligence Infers, Keywords Only Guard'],
+    declaration: 'THIS ARTICLE OWNS EMERGENCY-STOP DECISION AUTHORITY',
+    disclaimer: 'does NOT own emergency-stop decision authority',
+    canonical: 'Stop = floor OR model, never floor AND model',
+    imperatives: ['always stops', 'decides alone and is un-overridable'],
   },
 ];
 
@@ -173,6 +213,21 @@ for (const ob of OBLIGATIONS) {
         `${REGISTRY_REL}:${a.lineNo} — [${ob.id}] "${a.name}" does not name "${ob.governing}". A hand-off that ` +
         `does not say where it hands off to leaves the reader exactly where the reviewer found them.`,
       );
+    }
+
+    // A disclaimer says "not mine"; an imperative gives the order anyway. An article
+    // that does both has not deferred — it has kept the obligation and added a
+    // sentence denying it, which is strictly worse than the plain duplication because
+    // the denial is what a reader (and this lint, until 2026-08-08) trusts.
+    for (const imperative of ob.imperatives ?? []) {
+      const hit = new RegExp(imperative.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').exec(text);
+      if (hit) {
+        failures.push(
+          `${REGISTRY_REL}:${a.lineNo} — [${ob.id}] "${a.name}" disclaims the obligation but still states it as an ` +
+          `order: "${hit[0]}". Delete the restatement — a deferral that keeps giving the command is not a deferral, ` +
+          `and the disclaimer above it makes the duplication harder to see, not easier.`,
+        );
+      }
     }
   }
 

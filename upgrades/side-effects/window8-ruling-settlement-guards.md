@@ -392,3 +392,51 @@ Substrate stays at exactly its enforcement floor rather than dropping below it. 
 integration: 87 articles, enforced 0.7356, 3 countdowns all unexpired, unrecognized sections 0.
 
 **Rollback.** Remove the one entry; the amendment text reverts with the registry.
+
+---
+
+## Addendum 7 — re-review repairs: emergency-stop ownership, the deferral hole, graduation boundary
+
+**Changed:** `scripts/lint-single-governing-obligation.mjs` — two new obligation rows
+(`emergency-stop-authority`, `feature-graduation`), one new optional field (`imperatives`) plus the arm
+that consumes it. `docs/STANDARDS-REGISTRY.md` — five article edits (text only).
+
+**Why.** The 2026-08-08 family re-review returned NOT ACCEPTED on all three families. Three findings
+were real defects of mine: (1) *Intelligence Infers* still illustrated the floor as `^stop` after
+ruling A withdrew prefix matching, so the registry asserted both positions; (2) that article and
+*Structure Decides Alone Only on an Exact Match* each claimed to OWN emergency-stop authority — the
+duplicate-ownership class, reproduced by the fix for it; (3) *Notices Route* disclaimed the aggregation
+obligation and then commanded "must AGGREGATE" anyway, which arms (1)-(3) of this lint could not see.
+
+**Over-block risk — the one worth watching.** The `imperatives` arm is a case-insensitive literal
+search over a deferring article's body. It CAN over-block: prose that discusses an obligation while
+correctly deferring it will trip if it happens to contain the literal. That is why the field is
+per-obligation and opt-in rather than a global phrase list, why each entry is a literal observed
+actually duplicating an obligation (added the way a regression test is), and why the failure message
+names the matched text so the author can see whether it is a real restatement. I hit this myself: my
+first rewrite of *Notices Route* said "whether a per-element notifier must aggregate is Bounded
+Notification Surface's call" — correct prose, but it would have tripped the new arm. I rewrote the
+sentence rather than weaken the check to case-sensitive, because a check that only catches SHOUTED
+imperatives is a check that a lowercase restatement walks past.
+
+**Under-block, named.** A restatement worded outside the declared literals is still invisible. Judging
+whether new prose MEANS the same obligation is semantic, and *Intelligence Infers* forbids a regex from
+making that call — so this stays a structural declaration check and family review keeps the rest. Both
+of these findings came from family review, which is the evidence that the division works.
+
+**Interactions.** `feature-graduation` makes *Maturation Path* the sole owner of the ladder and
+*A Dark Feature Guards Nothing* a deferrer, resolving the Shipping finding that recorded operator
+acceptance appeared to be an EXIT from a mandatory lifecycle. It changes no runtime behaviour: neither
+article was enforced by code, and the acceptance route (`POST /guards/:key/accept-fallback`) is
+untouched — what changed is that acceptance is now documented as a deferral with an owner rather than
+a terminal state. No article was added or removed: 87 articles, enforced 0.7356, dangling 0,
+unrecognized sections 0, every family floor unchanged.
+
+**Two verification notes, because both nearly fooled me.** The registry edits initially produced
+`unrecognized-sections=1` (a bold lead-in starting a line reads as a section heading) and `dangling=1`
+(a symbol ref into `scripts/`, which the resolver does not scan) — both caught by running the checks
+rather than by reading the diff. And `standards-coverage.mjs --check` is a DIFFERENT gate from the bare
+run: my previous commit reported clean locally and went red in CI because I had only run the latter.
+
+**Rollback.** Remove the two obligation rows and the `imperatives` block; the registry text reverts
+independently. Removing a row weakens a boundary but breaks nothing at runtime.
