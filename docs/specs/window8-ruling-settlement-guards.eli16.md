@@ -425,3 +425,36 @@ anywhere mentions; it failed immediately, by name.
 
 Same lesson as everything else here: the check that depends on someone remembering is the check that
 eventually doesn't fire.
+
+## Counting exceptions the wrong way (2026-08-08, third pass)
+
+We allow code to make exactly one kind of decision on its own: when the operator's message is a
+word-for-word match against a short written-down list. Everything else goes to the agent. The rule
+said "exactly one exception."
+
+The reviewer found a second one — the *pause* path also decides on its own from a fast match — and it
+was right that the text said one thing and the system did another. But the fix is not to admit a second
+exception. It is that we were counting the wrong noun. There is one *mechanism* (word-for-word match
+against a written list), used at two places. Count exceptions by place and the number grows every time
+another part of the system adopts the same safe pattern — which punishes doing the safe thing. Count by
+mechanism and the sentence stays checkable: something not on the list does not exist.
+
+## Two articles, one phrase, one collision
+
+I wrote that one rule owns "pre-ship evidence validation". Another rule already owned what counts as
+evidence a fix works — reproduce the original failure, watch it stop. The phrase covered both jobs, so
+both rules claimed the same ground.
+
+They are genuinely two jobs: *what must be shown* and *who may sign it off*. Now each rule owns one and
+explicitly says the other is not its business, and a check enforces that boundary in both directions.
+
+## The false alarm that nearly taught the wrong lesson
+
+Registering those boundaries failed with "this article does not exist" — and it does exist. The
+matcher didn't handle headings with a parenthesis in them. The quick fix was to paste the full heading
+into the check's list, which would have gone green immediately and left the matcher broken for the
+next heading with a parenthesis.
+
+Two failures look identical from the outside — "the rule is broken" and "the tool that reads the rule
+is broken" — and only one of them is fixed by editing the rule. Worth slowing down for, because the
+green build is equally convincing either way.

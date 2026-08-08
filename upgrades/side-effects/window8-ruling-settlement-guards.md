@@ -557,3 +557,50 @@ naming the article; both restored byte-identical. Registry: 87 articles, enforce
 unrecognized sections 0, 11 declared relations, floors unchanged.
 
 **Rollback.** Remove the sub-obligation block and its four markers; the other lints are untouched.
+
+---
+
+## Addendum 10 — third-pass repairs: exception counting, evidence ownership, one more parentage
+
+**Changed:** `docs/STANDARDS-REGISTRY.md` (five article edits + regenerated block),
+`scripts/lint-single-governing-obligation.mjs` (two new obligation rows + a resolver fix).
+
+**Convergence, measured rather than asserted.** Pass 1: duplicate-ownership findings in all three
+families. Pass 3: "No unresolved duplicate owner found" (Substrate), placement "mostly sound with one
+unresolved case" (Building). The two remaining redundancy findings this pass were both introduced BY
+my own previous fixes, not survivors of the original set.
+
+**"Exactly one exception" was counted by GATE, not by mechanism.** The reviewer found *The Operator
+Channel Is Sacred* letting `'pause'` consume on a deterministic fast-path match — structure deciding
+alone about natural language, a second time. Fair reading of what was written. The exception is the
+exact-whole-message-match MECHANISM applied at two chokepoints (which is why the pause sets were
+already enumerated in that article), and what differs is the CONSEQUENCE of a miss. Counting by gate
+would grow the count with every chokepoint adopting the same bounded mechanism; counting by mechanism
+keeps "an exception not on the enumerated list does not exist" checkable.
+
+**An ownership collision I created in draft 3.** Declaring *Side-Effects Review Gate* the owner of
+"pre-ship evidence validation" reads as owning the EVIDENCE, colliding with *Bug-Fix Evidence Bar*.
+There are genuinely two obligations and one phrase covered both: WHO may attest (validator, at which
+gate) and WHAT must be shown (reproduce the failure, observe it stop). Split into two registered rows
+pointing opposite directions, so each article owns one and disclaims the other.
+
+**One more parentage declared:** *A Dark Feature Guards Nothing* → *Maturation Path*. It had deferred
+graduation to that article since the same morning without declaring the relation — a deferral declared
+while the parentage was not, which the generated tree made visible.
+
+**A resolver bug found by a FALSE ALARM, and worth naming.** The new row failed with "the governing
+article resolves to no article" — not a violation, a resolver gap: headings with a parenthetical
+subtitle ("Bug-Fix Evidence Bar (verify before you claim)") were not matched. The tempting fix was
+pasting the full heading into the table, which would have worked and left the resolver broken for the
+next paren-suffixed article. Fixed in the resolver.
+
+**Over/under-block.** Two more rows tighten two more boundaries; each can only fail on a missing
+declaration or disclaimer, both of which are literals visible in a diff. The resolver widening is
+strictly more permissive and could in principle make an ambiguous short name resolve where it
+previously did not — the filter still requires EXACTLY one match, so ambiguity fails rather than
+guesses.
+
+**State:** 87 articles, enforced 0.7356, dangling 0, unrecognized sections 0, 12 declared relations,
+7 obligations, 3 article countdowns + 4 sub-obligation countdowns, all floors held.
+
+**Rollback.** Remove the two rows and the resolver clause; the registry text reverts independently.

@@ -111,6 +111,27 @@ const OBLIGATIONS = [
     canonical: null,
   },
   {
+    // Added 2026-08-08 (third pass). Draft 3 declared *Side-Effects Review Gate* the
+    // owner of "pre-ship evidence validation" — a phrase that reads as owning the
+    // EVIDENCE, colliding head-on with *Bug-Fix Evidence Bar*. Two rows, because
+    // there are genuinely two obligations here and the collision came from one
+    // phrase covering both: WHO may attest, and WHAT must be shown.
+    id: 'pre-ship-evidence-standard',
+    governing: 'Bug-Fix Evidence Bar',
+    deferrers: ['Side-Effects Review Gate'],
+    declaration: 'THE SINGLE GOVERNING ARTICLE for the pre-ship evidence STANDARD',
+    disclaimer: 'does NOT own the evidence-standard obligation',
+    canonical: null,
+  },
+  {
+    id: 'pre-ship-evidence-validator',
+    governing: 'Side-Effects Review Gate',
+    deferrers: ['Bug-Fix Evidence Bar'],
+    declaration: 'THE SINGLE GOVERNING ARTICLE for pre-ship evidence VALIDATION',
+    disclaimer: 'does NOT own the validator obligation',
+    canonical: null,
+  },
+  {
     // Added 2026-08-08 from the Shipping re-review, which read *A Dark Feature Guards
     // Nothing*'s "record explicit operator acceptance" as an EXIT from *Maturation
     // Path*'s mandatory ladder. Registering the boundary is what keeps the resolution
@@ -176,7 +197,14 @@ if (articles.length === 0) {
 function resolveArticle(name) {
   const exact = articles.find((a) => a.name === name);
   if (exact) return exact;
-  const prefixed = articles.filter((a) => a.name.startsWith(`${name} —`) || a.name.startsWith(`${name}.`) || a.name.startsWith(`${name}, `));
+  // Headings carry subtitles in several shapes: an em dash, a full stop, a comma,
+  // or a parenthetical. The paren form was missing until 2026-08-08, so
+  // "Bug-Fix Evidence Bar (verify before you claim)" resolved to nothing and the
+  // lint reported a MISSING article rather than a real violation. Worth fixing in
+  // the resolver rather than pasting the full heading into the table: the table
+  // entry would have worked and left the next paren-suffixed article broken.
+  const prefixed = articles.filter((a) => a.name.startsWith(`${name} —`)
+    || a.name.startsWith(`${name}.`) || a.name.startsWith(`${name}, `) || a.name.startsWith(`${name} (`));
   return prefixed.length === 1 ? prefixed[0] : null;
 }
 
