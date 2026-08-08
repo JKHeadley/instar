@@ -317,3 +317,58 @@ which is why it was kept as row one rather than rewritten.
 **Proof.** Three injections, one per failure mode, each naming ITS OWN row: a notification deferrer
 reacquiring aggregation, a convergence deferrer reacquiring the obligation, and a governing article
 dropping its declaration. Control clean after each.
+
+---
+
+## Addendum 5 — the third actuator, found by peer review after ruling A shipped
+
+**Changed:** `src/core/MessageSentinel.ts` — `hasStopToken` (a substring scan) replaced by
+`isExactStopMessage`; `STOP_TOKEN_SCAN` emptied.
+
+**How it was found.** Codey's take-or-decline advisory review of the ruling-A commit. Verdict:
+changes requested, one material remaining violation. **Reproduced before acting** — 4/4 of his cases
+killed the session.
+
+**What was wrong.** Ruling A withdrew two prefix layers and an all-caps heuristic. It MISSED a third
+actuator on a different path: after any non-deterministic pause, a scan looked for a stop word
+ANYWHERE in the message (plus slash PREFIXES) and upgraded the result to KILL. So when the provider
+was present but UNAVAILABLE — capacity shed — the classifier fell back to `pause` and this scan killed
+on a substring.
+
+| message | old | why it matters |
+|---|---|---|
+| `stop the build please` | KILL | a scoped request read as a global halt |
+| `this was a non-stop session` | KILL | "non-stop" contains "stop" |
+| `please do not cancel the review because it is complete` | KILL | **MEANING INVERTED** |
+| `/stop the build only` | KILL | a slash PREFIX, not the command |
+
+**The third row is the argument.** The operator says do NOT cancel and structure cancels. A substring
+cannot carry negation, so no scan is safe on this path — this is not a tuning problem.
+
+**Why my own guard missed it, which is the transferable part.** Every arm of
+`structure-decides-alone-exact-match-only` constructed the sentinel with **NO provider**. Production
+constructs one WITH a provider. "No provider" and "provider present but unavailable" are different
+branches, and only the second reaches the rescue. **So the rule was satisfied on the path my tests
+drove and violated on the path production uses** — a harness that proves the property in a condition
+production never runs in. The file now carries capacity-shed and model-pause arms.
+
+**Safety analysis of the removal, stated because it narrows a safety path.** The rescue existed so a
+long-form genuine stop was never dropped during a shed. It is not dropped now: an EXACT stop
+short-circuits in `fastClassify` BEFORE the provider is consulted, so it never reaches this path, and
+a model-inferred stop already returns `emergency-stop`. What changes is that a NON-exact message under
+shed ROUTES THROUGH — **delivered to the agent, not consumed and not killed.** Delivery is the safe
+direction for the operator channel; killing on a guessed substring is not. The residual: provider
+unavailable AND a genuine halt phrased outside the enumerated set AND the session too busy to read it.
+Narrow, named, and mitigated by the enumerated list rather than by a scan.
+
+**Five older tests REQUIRED the contradictory behaviour** — including one whose name argued the
+rationale ("a kill is recoverable, a missed stop is not") and which explicitly asserted `non-stop`
+should kill. That rationale was a real design position, now superseded by ruling A. All five were
+REVERSED to assert the corrected behaviour, each carrying why. That is the third time this window that
+green tests were pinning a contradiction rather than protecting a property.
+
+**Verification.** 33 sentinel-dependent files, 621 tests, all green. Both fallback paths exercised
+two-sided: Codey's four route through; exact stops still kill under shed AND under model-pause.
+
+**Rollback.** Restore the scan and the five assertions — but note that restores the meaning-inverted
+kill, so a rollback should keep exact membership even if other parts revert.

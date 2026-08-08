@@ -19,6 +19,22 @@
  */
 import { describe, it, expect } from 'vitest';
 import { MessageSentinel, FAST_STOP_EXACT, FAST_PAUSE_EXACT, SLASH_STOP, SLASH_PAUSE, FAST_STOP_PATTERNS, FAST_PAUSE_PATTERNS } from '../../src/core/MessageSentinel.js';
+import type { IntelligenceProvider } from '../../src/core/types.js';
+
+/**
+ * A provider that is PRESENT but UNAVAILABLE — the capacity-shed condition.
+ * This is the blind spot the first version of this file had: it constructed the
+ * sentinel with NO provider, which takes a different branch entirely. Production
+ * always has a provider, so "no provider" never exercised the fallback path where
+ * a substring rescue was still killing. Found by Codey's advisory review.
+ */
+function shedProvider(): IntelligenceProvider {
+  return { evaluate: async () => { throw Object.assign(new Error('cap'), { capacityUnavailable: true }); } } as unknown as IntelligenceProvider;
+}
+/** A provider that returns `pause` — the other route into the same rescue path. */
+function pauseProvider(): IntelligenceProvider {
+  return { evaluate: async () => 'pause' } as unknown as IntelligenceProvider;
+}
 
 /** No provider → every non-pass-through verdict is structure acting on its own. */
 function structureOnly() {
@@ -120,6 +136,43 @@ describe('structure decides alone ONLY on an exact match', () => {
     ];
     const missing = COMMITTED_CORE.filter((e) => !FAST_STOP_EXACT.has(e));
     expect(missing, 'an enumerated halt phrasing was removed from the safety floor').toEqual([]);
+  });
+
+  /**
+   * THE ARM THE FIRST VERSION OF THIS FILE LACKED.
+   *
+   * Every test above builds the sentinel with NO provider. Production builds one
+   * WITH a provider, and a provider that is present-but-unavailable takes the
+   * capacity-shed branch: the classifier falls back to `pause`, and a substring
+   * rescue then upgraded that to KILL. So the exactness rule was satisfied on the
+   * path the tests drove and violated on the path production uses.
+   *
+   * Reproduced before being fixed — all four of these killed the session.
+   */
+  it.each([
+    ['stop the build please', 'a scoped request'],
+    ['this was a non-stop session', '"non-stop" contains "stop"'],
+    ['please do not cancel the review because it is complete', 'MEANING INVERTED — the operator says do NOT cancel'],
+    ['/stop the build only', 'a slash-command PREFIX, not an exact command'],
+  ])('CAPACITY SHED: %j must not be killed by structure (%s)', async (message) => {
+    const d = await new MessageSentinel({ intelligence: shedProvider() }).decideInboundDisposition(message, 8100 + message.length);
+    expect(d.disposition).not.toBe('kill');
+  });
+
+  it('CAPACITY SHED A-CASE: an EXACT stop still kills when the provider is unavailable', async () => {
+    let topic = 8200;
+    for (const m of ['stop', 'stop everything', '/stop', 'cancel everything']) {
+      const d = await new MessageSentinel({ intelligence: shedProvider() }).decideInboundDisposition(m, topic++);
+      expect(d.disposition, `exact "${m}" must still kill under shed`).toBe('kill');
+    }
+  });
+
+  it('MODEL-PAUSE: an EXACT stop still kills; a non-exact message does not', async () => {
+    // The second route into the same rescue: the model returns `pause`.
+    const exact = await new MessageSentinel({ intelligence: pauseProvider() }).decideInboundDisposition('stop everything', 8300);
+    expect(exact.disposition).toBe('kill');
+    const inexact = await new MessageSentinel({ intelligence: pauseProvider() }).decideInboundDisposition('please stop warning me about memory', 8301);
+    expect(inexact.disposition).not.toBe('kill');
   });
 
   it('DISCRIMINATOR: the harness can produce a kill, so the refusals above mean something', async () => {

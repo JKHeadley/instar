@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-08T00:49:43.205Z",
+  "slug": "window8-ruling-settlement-guards",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 62,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/MessageSentinel.ts"
+    ],
+    "addedLines": 50,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

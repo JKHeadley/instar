@@ -384,22 +384,58 @@ export function classifyContinuePingIntent(message: string): ContinuePingIntent 
 // capacity-shed) still fails toward STOP rather than being silently delivered.
 
 /** Whole-word stop tokens (no word-count gate, anywhere in the message). */
-const STOP_TOKEN_SCAN: readonly RegExp[] = [
-  /\b(stop|abort|cancel|halt|cease|terminate)\b/i,
-  /\bkill\s+(it|this|that|the\s+\w+|everything|session)\b/i,
-];
+/**
+ * WITHDRAWN 2026-08-07 (operator ruling A). These matched a stop word ANYWHERE in
+ * a message and were the actuator behind the capacity-shed substring kills — most
+ * damningly "please do not cancel the review because it is complete". Emptied
+ * rather than deleted so the withdrawal is visible where the patterns lived.
+ */
+const STOP_TOKEN_SCAN: readonly RegExp[] = [];
 
 /**
- * Non-word-count-gated deterministic scan: does this message contain a genuine
- * STOP token anywhere? Used before routing a non-deterministic/capacity-shed result
- * through, so a long-form real stop is never dropped. Slash-stop commands count too.
+ * EXACT-ONLY stop membership for the non-deterministic / capacity-shed rescue path.
+ *
+ * ── Why this is exact and no longer a substring scan ───────────────────────
+ * Until 2026-08-07 this was `hasStopToken`: a scan for a stop word ANYWHERE in the
+ * message, plus slash-command PREFIXES. It ran after any non-deterministic pause —
+ * so when the intelligence provider was present but UNAVAILABLE (capacity shed),
+ * the classifier fell back to `pause` and this scan upgraded the result to KILL.
+ * That is structure deciding alone on a substring, which *Structure Decides Alone
+ * Only on an Exact Match* (operator ruling A) forbids.
+ *
+ * Found by Codey's advisory review of the ruling-A commit and REPRODUCED before
+ * being acted on. All four of these killed the session under capacity shed:
+ *
+ *     "stop the build please"                                    (scoped request)
+ *     "this was a non-stop session"                              ("non-stop")
+ *     "please do not cancel the review because it is complete"   (MEANING INVERTED)
+ *     "/stop the build only"                                     (slash PREFIX)
+ *
+ * The third is the one that matters: the operator says do NOT cancel, and structure
+ * cancels. A substring cannot carry negation, so a scan can never be safe here.
+ *
+ * ── Why removing it does not lose the safety it was built for ─────────────
+ * The rescue existed so a long-form genuine stop was never dropped during a shed.
+ * It is not dropped now: an EXACT enumerated stop short-circuits in `fastClassify`
+ * BEFORE the provider is ever consulted, so it never reaches this path; and a
+ * model-inferred stop already returns `emergency-stop` on its own. What changes is
+ * that a NON-exact message under shed now ROUTES THROUGH — delivered to the agent,
+ * not consumed and not killed. Delivery is the safe direction for the operator
+ * channel; killing on a guessed substring is not.
  */
-export function hasStopToken(message: string): boolean {
+export function isExactStopMessage(message: string): boolean {
   const t = (message ?? '').toLowerCase().trim();
   if (!t) return false;
-  for (const s of SLASH_STOP) if (t === s || t.startsWith(s + ' ')) return true;
-  for (const re of STOP_TOKEN_SCAN) if (re.test(t)) return true;
-  return false;
+  return SLASH_STOP.has(t) || FAST_STOP_EXACT.has(t);
+}
+
+/**
+ * @deprecated Retained ONLY so an out-of-tree caller does not silently change
+ * behaviour on upgrade. It now delegates to the exact-match test; the substring
+ * scan it used to perform is withdrawn under operator ruling A.
+ */
+export function hasStopToken(message: string): boolean {
+  return isExactStopMessage(message);
 }
 
 /** The disposition the inbound consume sites act on (the ONE place the standard lives). */
@@ -488,7 +524,9 @@ export class MessageSentinel {
       }
       // Non-deterministic 'pause' (bare LLM verdict, capacity-shed), OR a deterministic
       // pause suppressed by the breaker: NEVER consume. First rescue a genuine stop.
-      if (hasStopToken(message)) {
+      // EXACT membership only — see isExactStopMessage. A substring rescue here
+      // let structure kill on a guessed token under capacity shed (ruling A).
+      if (isExactStopMessage(message)) {
         this.dispositionStats.stopRescued++;
         return {
           disposition: 'kill', category: 'emergency-stop', method,

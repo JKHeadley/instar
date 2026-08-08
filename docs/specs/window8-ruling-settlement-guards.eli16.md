@@ -251,3 +251,44 @@ That matters beyond convenience: the reviewers found this defect three times in 
 families. A check that only knew about the first instance would have watched one door while the same
 thing happened behind two others. Each row was proved by deliberately breaking it and confirming the
 check names *that* row rather than failing vaguely.
+
+## Problem seven: the third door, found by someone else
+
+After the exact-match rule shipped, Codey reviewed it — a take-or-decline advisory ask, and he took it.
+Verdict: **changes requested.** He was right, and I reproduced every one of his cases before touching
+anything.
+
+The rule was supposed to close every door where code decides on its own. I closed two and missed a
+third, on a different path. **After any uncertain "pause" result, a separate helper searched the whole
+message for a stop-ish word and upgraded the result to "kill".** So whenever the model was reachable
+but *overloaded* — which is exactly when things are going badly — code was still killing sessions
+based on a word appearing somewhere in a sentence.
+
+What that actually did:
+
+- "stop the build please" → killed everything, not just the build
+- "this was a non-stop session" → the word "stop" is in "non-stop" → killed
+- "/stop the build only" → killed everything
+- **"please do not cancel the review because it is complete" → cancelled it**
+
+That last one is the whole argument. **You said do NOT cancel, and it cancelled.** A fragment of a
+sentence cannot carry a "not" — so no amount of tuning makes a word-search safe here.
+
+**Why my own tests didn't catch it, which is the part worth remembering.** Every test I wrote built the
+system with *no model attached at all*. Production always has one attached. "No model" and "model
+attached but overloaded" are different paths through the code, and only the second reached the broken
+helper. **So I proved the rule held in a situation that never happens in production.** A test can be
+thorough and still be pointed at the wrong world.
+
+**And five existing tests were demanding the broken behaviour** — one of them named after its own
+reasoning ("a kill is recoverable, a missed stop is not") and explicitly insisting that "non-stop"
+should kill. That reasoning wasn't stupid; it was a deliberate call, now overruled. All five were
+turned around.
+
+**Nothing was lost by removing it.** An exact "stop" is caught *before* the model is ever consulted, so
+overload can't swallow it. A non-exact message now gets *delivered to the agent* instead of killed —
+which is the safe direction: the agent reads it and decides. The narrow remaining risk is written down
+rather than glossed: model overloaded, plus a genuine halt worded outside the list, plus a session too
+busy to read it.
+
+Third time this week that green tests were protecting a contradiction instead of a property.
