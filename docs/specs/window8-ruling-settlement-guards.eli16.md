@@ -395,3 +395,33 @@ wrong declaration more visible, not more correct.
 have caught anything: the code that reads declarations stopped at the first one, so a second parent was
 invisible before my check ever ran. I found it by trying to trigger the failure and getting silence.
 A guard that cannot fire looks exactly like a guard that passes.
+
+## Naming a gap is where the work starts (2026-08-08, second pass)
+
+Our rules are written as absolutes — "every feature must work on every engine", "every LLM call is
+recorded" — and the checks behind them usually cover a slice. We already require each rule to SAY so:
+here is what the check measures, here is what it does not. Three separate reviews read those honest
+admissions and called them overreach.
+
+They had a point, and it took me a while to see it. Saying "there's a hole here" is not the same as
+doing anything about it. A hole that is described politely and left alone is still a hole — and it
+reads as candour, which makes it *less* likely anyone fixes it.
+
+So a named gap now needs a date. If the date passes and the gap is still there, the build goes red
+until someone either builds the missing check or deliberately moves the date — the same rule the
+operator set for rules we relabelled last week, applied one level down to gaps *inside* rules that do
+work.
+
+**The part I'd want a reviewer to notice.** The older version of this idea keeps a hand-written list
+of which rules need a date. That list has already failed once this week: I added a rule saying "one
+article owns this decision", listed the articles that had to defer to it, missed one — and the missed
+one kept claiming ownership for another whole review cycle. A list you maintain by hand is a list you
+forget to update.
+
+This new check doesn't have a list. It looks for the words "unenforced sub-obligation" anywhere in the
+document and demands a date next to them. Write a new rule that admits a gap, and it's caught the same
+day, with nothing to remember. I proved that by dropping a fake admission into a rule that no list
+anywhere mentions; it failed immediately, by name.
+
+Same lesson as everything else here: the check that depends on someone remembering is the check that
+eventually doesn't fire.

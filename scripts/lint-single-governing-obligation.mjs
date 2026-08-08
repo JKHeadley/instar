@@ -131,7 +131,13 @@ const OBLIGATIONS = [
     // the failure a declared table prevents and a careful author does not.
     id: 'emergency-stop-authority',
     governing: 'Structure Decides Alone Only on an Exact Match',
-    deferrers: ['Intelligence Infers, Keywords Only Guard'],
+    // *The Operator Channel Is Sacred* was added 2026-08-08 (second pass). It named
+    // the OLD owner and the first pass did not list it, so the row shipped and the
+    // stale attribution survived it — the declared-population blind spot this file's
+    // header names, biting on the change that introduced the row. Adding a deferrer
+    // is cheap; noticing one is missing is the expensive part, and here the family
+    // review did it, not the lint.
+    deferrers: ['Intelligence Infers, Keywords Only Guard', 'The Operator Channel Is Sacred'],
     declaration: 'THIS ARTICLE OWNS EMERGENCY-STOP DECISION AUTHORITY',
     disclaimer: 'does NOT own emergency-stop decision authority',
     canonical: 'Stop = floor OR model, never floor AND model',

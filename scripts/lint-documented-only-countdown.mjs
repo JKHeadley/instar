@@ -84,6 +84,33 @@ const REQUIRE_COUNTDOWN = [
 /** `**Documented-only until.** \`2026-09-07\` — tracked as \`STD-COUNTDOWN-x\`.` */
 const COUNTDOWN_RE = /\*\*Documented-only until\.\*\*\s*`?(\d{4}-\d{2}-\d{2})`?\s*—\s*tracked as\s*`([A-Za-z0-9-]+)`/;
 
+/**
+ * A SUB-obligation countdown. Same teeth, different subject.
+ *
+ * Added 2026-08-08. The family re-reviews kept returning OVERREACH findings that
+ * were not overreach at all — they were the honest scope declarations this
+ * registry's own *Verify the State, Not Its Symbol* tooth (D) REQUIRES:
+ *
+ *   "*Framework-Agnostic* says 'Every feature must work across all execution
+ *    engines,' but certifies only engine-parity on THAT surface."
+ *   "*No Deferrals* requires active follow-through … but admits 'no guard yet
+ *    tracks owner, deadline, closure evidence, or escalation.'"
+ *
+ * The reviewer is not wrong that the gap exists — a rule saying "every" with a
+ * guard covering a subset HAS a gap. What was wrong is that naming the gap was
+ * the END of the obligation. An honestly-labelled permanent gap is still a
+ * permanent gap; Justin's condition on the article-level relabels applies with
+ * equal force one level down: **it cannot remain documented-only.**
+ *
+ * So an article that names an UNENFORCED SUB-OBLIGATION must date it. Unlike the
+ * article-level countdown, this does NOT require the article to be a gap — the
+ * whole point is that these sit inside ENFORCED articles, which is why the
+ * article-level mechanism could not carry them (an enforced article carrying a
+ * `Documented-only until` trips this lint's own "no longer a gap" arm).
+ */
+const SUB_TRIGGER = 'UNENFORCED SUB-OBLIGATION';
+const SUB_COUNTDOWN_RE = /\*\*Sub-obligation countdown\.\*\*\s*`?(\d{4}-\d{2}-\d{2})`?\s*—\s*tracked as\s*`([A-Za-z0-9-]+)`/;
+
 /** Today, as a date-only UTC string, so the comparison is timezone-stable. */
 const TODAY = new Date().toISOString().slice(0, 10);
 
@@ -185,6 +212,34 @@ for (const name of REQUIRE_COUNTDOWN) {
   }
 }
 
+// Every article that NAMES an unenforced sub-obligation must date it.
+const subCountdowns = [];
+for (const a of articles) {
+  const text = a.body.join('\n');
+  if (!text.includes(SUB_TRIGGER)) continue;
+  const m = text.match(SUB_COUNTDOWN_RE);
+  if (!m) {
+    failures.push(
+      `${REGISTRY_REL}:${a.lineNo} — "${a.name}" names an UNENFORCED SUB-OBLIGATION but carries no ` +
+      `"**Sub-obligation countdown.** \`YYYY-MM-DD\` — tracked as \`ID\`" declaration. Naming a gap honestly is where ` +
+      `the obligation STARTS, not where it ends — an acknowledged gap with no expiry is a permanent one that reads ` +
+      `as candour.`,
+    );
+    continue;
+  }
+  const [, deadline, trackedAs] = m;
+  subCountdowns.push({ article: a.name, deadline, trackedAs, lineNo: a.lineNo });
+  if (Number.isNaN(Date.parse(deadline))) {
+    failures.push(`${REGISTRY_REL}:${a.lineNo} — "${a.name}" declares an unparseable sub-obligation deadline "${deadline}".`);
+  } else if (deadline < TODAY) {
+    failures.push(
+      `${REGISTRY_REL}:${a.lineNo} — "${a.name}" still names an unenforced sub-obligation whose countdown EXPIRED on ` +
+      `${deadline} (today ${TODAY}). Build the guard, or have the operator deliberately re-date it — but a named gap ` +
+      `inside an enforced article may not simply sit there.`,
+    );
+  }
+}
+
 if (gaps === null) {
   failures.push(
     'could not obtain the gap set from scripts/standards-coverage.mjs --json, so the "silently gained a guard" arm did ' +
@@ -192,14 +247,15 @@ if (gaps === null) {
   );
 }
 
-const report = { articles: articles.length, today: TODAY, required: REQUIRE_COUNTDOWN, countdowns, failures };
+const report = { articles: articles.length, today: TODAY, required: REQUIRE_COUNTDOWN, countdowns, subCountdowns, failures };
 
 if (JSON_OUT) {
   console.log(JSON.stringify(report, null, 2));
 } else if (failures.length === 0) {
   const soonest = [...countdowns].sort((a, b) => a.deadline.localeCompare(b.deadline))[0];
   console.log(
-    `lint-documented-only-countdown: clean — ${countdowns.length} countdown(s), all unexpired` +
+    `lint-documented-only-countdown: clean — ${countdowns.length} article countdown(s) + ${subCountdowns.length} ` +
+    `sub-obligation countdown(s), all unexpired` +
     (soonest ? `; soonest ${soonest.deadline} ("${soonest.article}")` : '') + '.',
   );
 }

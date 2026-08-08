@@ -495,3 +495,65 @@ legitimate way to clear it is refreshing them from a review that genuinely accep
 
 **Rollback.** Delete the generator, drop the chain entry and the test registration, remove the block
 and its markers; revert the two lint changes. Nothing at runtime touches this.
+
+---
+
+## Addendum 9 — second-pass repairs + sub-obligation countdowns
+
+**Changed:** `docs/STANDARDS-REGISTRY.md` (seven article edits + regenerated hierarchy),
+`scripts/lint-single-governing-obligation.mjs` (one deferrer added),
+`scripts/lint-documented-only-countdown.mjs` (new sub-obligation arm).
+
+**The second pass caught a THIRD article** still attributing emergency-stop authority to the old
+owner: *The Operator Channel Is Sacred*. The ownership row I added in addendum 7 listed only one
+deferrer, so the row shipped and the stale attribution survived it — the declared-population blind spot
+this lint names in its own header, biting on the very change that added the row. Also stale in that
+article: a "stop-token scan … fails toward STOP" describing machinery ruling A withdrew. Both fixed;
+the deferrer list now carries all three articles.
+
+**And a contradiction I created the same morning.** Addendum 7's *Maturation Path* declaration said
+"no other article may create an exit from this ladder" — while *User-Facing Fixes Ship Live* has been
+exactly such an exit since 2026-08-07. The exception is now ENUMERATED in the parent, which is the
+pattern *The Body and the Mind* already uses for the emergency-stop floor. Strengthening one article
+without reading its declared children is how a fix becomes a defect; twice in two days now.
+
+**Two parentages declared** that had been asserted in prose for weeks: *Live-User-Channel Proof Before
+Done* → *Testing Integrity*, *Session Input Is a Principal* → *Know Your Principal*. Notable because
+the generated hierarchy from addendum 8 is what surfaced them — the reviewer observed that an article
+reads as a child while "the generated hierarchy places it under none of them". The rendered view found
+a real omission against its own author on its first pass.
+
+**A rendering bug caught by the lint refusing a half-declared relation:** the child acknowledgement is
+matched per-statement, so `Tree nodes beneath it: *A*, *B*` declared only *A* and silently dropped *B*.
+Two separate sentences instead; the comma form is now called out in the text so the next author does
+not repeat it.
+
+**NEW ARM — sub-obligation countdowns.** The recurring OVERREACH findings across all three families
+were not overreach: they were the honest scope declarations *Verify the State* tooth (D) REQUIRES
+("Every feature must work across all execution engines … certifies only engine-parity on THAT
+surface"). The reviewer is right that the gap exists; what was wrong is that NAMING the gap was
+treated as discharging it. An honestly-labelled permanent gap is still permanent. So an article naming
+an `UNENFORCED SUB-OBLIGATION` must now date it, and an expired date fails the build — Justin's
+condition on the article-level relabels, applied one level down.
+
+**Why a separate marker rather than reusing `Documented-only until`.** These gaps sit inside ENFORCED
+articles, and an enforced article carrying an article-level countdown trips that lint's own "carries a
+countdown but is no longer a gap" arm. Different subject, different marker.
+
+**The design difference worth noting: this arm is DISCOVERED, not declared.** The article-level
+countdown checks a hand-maintained `REQUIRE_COUNTDOWN` list — the blind spot that let the third
+emergency-stop article through this same morning. The sub-obligation arm triggers on the article's own
+text, so a NEW article naming a gap is caught with no list to update. Proven with exactly that case:
+injecting a named gap into *Structure beats Willpower* — an article in no declared population — fails
+by name.
+
+**Over-block.** An article that discusses the phrase `UNENFORCED SUB-OBLIGATION` without declaring one
+(this artifact's own prose, for instance) would trip it if it lived in the registry. It does not, and
+the trigger is a deliberately unusual capitalised literal. Under-block: a gap named in different words
+is invisible, same bound as every structural check here.
+
+**Negative controls:** expired sub-countdown fails naming the date; a named gap with no countdown fails
+naming the article; both restored byte-identical. Registry: 87 articles, enforced 0.7356, dangling 0,
+unrecognized sections 0, 11 declared relations, floors unchanged.
+
+**Rollback.** Remove the sub-obligation block and its four markers; the other lints are untouched.
