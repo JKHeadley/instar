@@ -757,3 +757,43 @@ Registry restored byte-identical after each.
 
 **State:** 87 articles, enforced 0.7356, dangling 0, unrecognized sections 0, 12 relations,
 8 obligations, 3 article + 13 sub-obligation countdowns, full lint chain green.
+
+---
+
+## Addendum 15 — the placement deadlock, measured
+
+**Changed:** `docs/STANDARDS-REGISTRY.md` (the Substrate admission-rule paragraph).
+
+**Why this is the most important entry in this file.** The fifth review pass said the admission rule
+is SOUND and objected that the family "knowingly retains unreviewed and explicitly misfiled
+engineering-process articles that violate it" — i.e. naming a deferral honestly does not satisfy this
+reviewer, only doing the work does. That is a fair standard and it sharpened the task from documenting
+to executing.
+
+**So I attempted the execution rather than reasoning about it, and it fails.** Physically moving
+*Iterative Audit to Convergence* into Building yields
+`area "The Substrate" ref-resolution ratio 19/29 < floor 20/30` — a hard build failure. The Substrate
+sits EXACTLY on its floor (20 of 30), and all four misfiled candidates named by the review are
+ENFORCED, so removing any one drops the ratio below the floor it currently equals. The registry-wide
+enforced ratio is **invariant at 0.7356** across the move: a pure re-filing costs the constitution zero
+enforcement.
+
+**The deadlock, stated plainly.** The review requires the re-filing. The re-filing trips a family
+floor. The floor re-baselines only when the family audit is re-recorded. The audit may only be
+re-recorded from a review that accepts. The review will not accept while the misfiling stands.
+
+**What I deliberately did NOT do.** The cheap unlock is to cite an existing guard for one of the
+Substrate's remaining gaps, raising its enforcement enough to absorb the move. Every remaining gap is
+one of the deep properties (*Documentation IS Being*, *Deferral = Deletion*, *Sovereignty*, *The Right
+to Stand Ground*, …) that resists mechanical checking — which is WHY they are gaps. Citing a guard
+that does not really guard them would trade a visible misfiling for an invisible false claim, which is
+precisely the trade these reviews exist to catch, and it would have worked. Recorded because a
+near-miss on that kind of shortcut is worth more in the file than in my head.
+
+**Escalated rather than decided.** The legitimate options — build a genuine new guard, make a
+placement-only move re-baseline a floor it cannot affect, or record the misfiling as an accepted
+standing exception — are operator decisions about the machinery's semantics, not mine to take
+unilaterally. Reported to the observer with the measurement.
+
+**State:** 87 articles, enforced 0.7356 (unchanged), dangling 0, unrecognized sections 0, 12 relations,
+8 obligations, 3 article + 13 sub-obligation countdowns, full lint chain green.
