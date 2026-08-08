@@ -440,3 +440,58 @@ run: my previous commit reported clean locally and went red in CI because I had 
 
 **Rollback.** Remove the two obligation rows and the `imperatives` block; the registry text reverts
 independently. Removing a row weakens a boundary but breaks nothing at runtime.
+
+---
+
+## Addendum 8 — the rendered hierarchy (placement finding, all three families)
+
+**Changed:** `scripts/generate-standards-hierarchy.mjs` (new), `scripts/lint-registry-tree-parentage.mjs`
+(two changes), `docs/STANDARDS-REGISTRY.md` (generated block + two markers), `package.json` (chain),
+`tests/unit/lint-chain-completeness.test.ts`, `tests/unit/standards-coverage-ratchet.test.ts`.
+
+**Why.** All three family reviews independently found the same defect: articles declare "a tree node
+under X" and render as peers, and the registry "supplies no structural hierarchy that resolves them."
+Designed by Codey under a brief that asked him to argue for OR against generation
+(`docs/proposals/standard-proposal-rendered-standards-hierarchy.md`); he argued for it and named the
+bound this implementation keeps — the view says **declared**, never *canonical* or *approved*.
+
+**The rejected alternative, and why.** Promoting children to `####` would silently rewrite enforcement
+classification: the parser keys on `###` and family floors count articles, so nine promotions would
+remove nine articles from the census and move every ratio CI ratchets. A rendering fix must not move
+the numbers that decide whether the build passes. Verified after landing: 87 articles, enforced
+0.7356, unchanged.
+
+**One extraction, two consumers.** The generator does NOT parse the registry for relations — it
+consumes `lint-registry-tree-parentage.mjs --json`. Codey's point, and correct: two parsers of one
+structure is the drift defect this area keeps producing. The lint gained an `articleList` field so the
+consumer never needs its own parse.
+
+**A dead guard found while proving it.** The multi-parent diagnostic was unreachable as first written:
+the lint's parent-claim regex was non-global, so an article declaring two parents was silently reduced
+to one and `parentOf.has(child)` could never be true. Fixed by making the extraction find ALL claims.
+This matters beyond the fix — I would have shipped a check that could not fire and reported it as a
+guarantee. Zero articles declare two parents today, so the change is safe now and load-bearing later.
+
+**Over/under-block.** The `--check` arm can only fail on a stale/hand-edited block or a non-tree
+relation set; it cannot fail on article content, so it adds no new way for ordinary registry edits to
+break the build — except one that is intended: declaring a relation without regenerating. Under-block
+is the whole honest bound: a conceptually wrong relation that resolves and is acknowledged renders as
+confidently as a correct one, and the block says so in its own text.
+
+**Negative controls, all run, each asserted on its REASON rather than its exit code.** (1) Stale block
+→ fails naming "STALE or hand-edited". (2) An article declaring two acknowledged parents → the
+parentage lint reports CLEAN at 10 relations and the generator fails naming "declares TWO parents".
+(3) A mutual parent cycle → lint CLEAN at 11 relations, generator fails naming "parentage CYCLE".
+Cases 2 and 3 are the evidence the two checks are complementary rather than redundant. (4) Removing the
+generator from the lint chain → `lint-chain-completeness` fails and names it. Registry restored
+byte-identical after each.
+
+**Also in this batch, and it is a correction to me.** `standards-coverage-ratchet.test.ts` asserted 86
+articles / 0.7326 against a live registry holding 87 / 0.7356. Ruling A added one article and I did not
+update the snapshot in the same change — the exact omission the test's own 2026-08-07 comment
+describes, repeated by its author a day later. Literals corrected. The `areaAudit` assertion is
+deliberately NOT adjusted: it stays red while three family audit records are stale, and the only
+legitimate way to clear it is refreshing them from a review that genuinely accepts.
+
+**Rollback.** Delete the generator, drop the chain entry and the test registration, remove the block
+and its markers; revert the two lint changes. Nothing at runtime touches this.

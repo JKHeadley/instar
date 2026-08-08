@@ -50,7 +50,7 @@ const JSON_OUT = process.argv.includes('--json');
 const REGISTRY_REL = 'docs/STANDARDS-REGISTRY.md';
 
 /** "A tree node under *Parent Name*" / "a tree node under **Parent Name**" */
-const PARENT_CLAIM_RE = /\ba tree node (?:under|beneath) \*{1,2}([^*]+?)\*{1,2}/i;
+const PARENT_CLAIM_RE = /\ba tree node (?:under|beneath) \*{1,2}([^*]+?)\*{1,2}/gi;
 /** "Tree node beneath it: *Child Name*" — the parent's acknowledgement. */
 const CHILD_CLAIM_RE = /\btree nodes? (?:beneath|under) it:?\s*\*{1,2}([^*]+?)\*{1,2}/gi;
 
@@ -65,14 +65,17 @@ const lines = fs.readFileSync(abs, 'utf-8').split('\n');
 const articles = [];
 let current = null;
 let fence = null;
+let family = null;
 for (let i = 0; i < lines.length; i++) {
   const line = lines[i];
   const t = line.trimStart();
   const f = t.match(/^(`{3,}|~{3,})/);
   if (fence === null && f) { fence = f[1]; if (current) current.body.push(line); continue; }
   if (fence !== null) { if (new RegExp(`^${fence[0]}{${fence.length},}\\s*$`).test(t)) fence = null; if (current) current.body.push(line); continue; }
+  const fam = line.match(/^##\s+(.+?)\s*$/);
+  if (fam) { family = fam[1].trim(); current = null; continue; }
   const h = line.match(/^###\s+(.+?)\s*$/);
-  if (h) { current = { name: h[1].trim(), lineNo: i + 1, body: [] }; articles.push(current); continue; }
+  if (h) { current = { name: h[1].trim(), lineNo: i + 1, family, body: [] }; articles.push(current); continue; }
   if (current) current.body.push(line);
 }
 
@@ -94,9 +97,12 @@ function resolveArticle(claim) {
 const relations = [];
 for (const a of articles) {
   const text = a.body.join('\n');
-  const m = text.match(PARENT_CLAIM_RE);
-  if (!m) continue;
-  const claimed = m[1].trim();
+  // ALL parent claims, not just the first. Taking only the first silently reduced
+  // a two-parent declaration to one, which made the "an article has two parents"
+  // diagnostic in generate-standards-hierarchy.mjs unreachable — a guard that
+  // cannot fire is a guarantee that is not being given (2026-08-08).
+  const claims = [...text.matchAll(PARENT_CLAIM_RE)].map((m) => m[1].trim());
+  for (const claimed of claims) {
   const parent = resolveArticle(claimed);
   if (!parent) {
     failures.push(`${REGISTRY_REL}:${a.lineNo} — "${a.name}" declares a tree node under "${claimed}", which resolves to no article. A parent that does not exist is a dangling relation.`);
@@ -120,9 +126,18 @@ for (const a of articles) {
     continue;
   }
   relations.push({ child: a.name, parent: parent.name });
+  }
 }
 
-const report = { articles: articles.length, relations, failures };
+const report = {
+  articles: articles.length,
+  relations,
+  failures,
+  // Emitted so a CONSUMER (the hierarchy generator) can render from this
+  // extraction instead of parsing the registry a second time. Two parsers of
+  // one structure is the drift defect this whole area keeps producing.
+  articleList: articles.map((a) => ({ name: a.name, family: a.family, lineNo: a.lineNo })),
+};
 
 if (JSON_OUT) {
   console.log(JSON.stringify(report, null, 2));

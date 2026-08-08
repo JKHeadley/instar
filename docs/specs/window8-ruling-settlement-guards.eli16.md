@@ -367,3 +367,31 @@ because that's a fact about the tool, not a debt).
 The reviewer was wrong. The ambiguity that misled it was mine, so the text changed and the mechanism
 didn't. Worth naming: the honest response to a review finding is sometimes "no, and here is why" —
 recorded, so the next reader sees the reasoning rather than the concession.
+
+## Making the tree visible (2026-08-08)
+
+Nine articles in the constitution say, in their own text, "this one sits underneath that one." And
+every one of them is printed as an ordinary top-level entry, often pages away from its parent. All
+three reviews found this separately, and one named the thing underneath it: the document keeps
+asserting a structure it never shows you.
+
+The obvious fix — indent the children — is the wrong one, and the reason is worth knowing. The tooling
+counts entries by their heading depth, and several build checks compare those counts against fixed
+floors. Indenting nine children would quietly remove nine entries from the count and move every ratio
+CI checks. A change meant to help a reader must not move the numbers that decide whether the build
+passes.
+
+So the tree is now **generated** from the declarations and printed near the top, and a check fails the
+build if that printed tree stops matching what the articles say. You cannot edit it by hand; you edit
+the article and regenerate.
+
+**What it deliberately does not claim.** Codey designed this, and the sharpest part of his proposal was
+the counterexample against his own idea: someone files a narrow deployment rule under a foundational
+one, every mechanical check passes, and *the generated view makes the bad placement look official*. His
+answer is the right one — the view is labelled **declared**, never *approved*. A generated tree makes a
+wrong declaration more visible, not more correct.
+
+**And one thing I nearly shipped.** The check that catches "this article claims two parents" could not
+have caught anything: the code that reads declarations stopped at the first one, so a second parent was
+invisible before my check ever ran. I found it by trying to trigger the failure and getting silence.
+A guard that cannot fire looks exactly like a guard that passes.

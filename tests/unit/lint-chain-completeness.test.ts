@@ -43,6 +43,11 @@ const REQUIRED_LINTS = [
   'lint-blocking-decisions-declared.mjs',
   'lint-dispatch-withholds-answer.mjs',
   'lint-documented-only-countdown.mjs',
+  // Not named "lint-*": it is a generator whose --check mode IS the guard. Listed
+  // here anyway, because the property this ratchet protects is "a registry guard
+  // is in the chain", and a guard that escapes the ratchet on a naming technicality
+  // is exactly the hole the ratchet exists to close (2026-08-08).
+  'generate-standards-hierarchy.mjs',
   'lint-no-duplicate-definitions.mjs',
   'lint-recall-surface-names-match-mechanism.mjs',
   'lint-registry-tree-parentage.mjs',
