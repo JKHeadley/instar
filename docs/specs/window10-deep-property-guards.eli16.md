@@ -544,3 +544,22 @@ over-claim as everything else this week.
 
 I did not tighten the rule further. Rejecting bare numbers would be another invention, and this window's
 plain evidence is that my inventions open holes. Sized, named, left for the reviewer to rule on.
+
+## The seventh no, and two things I said that were not true
+
+**The archive I built so my summaries could be checked was itself missing a piece.** I told the reviewer
+all six previous verdicts were on file and to audit me against them. Five were. I built the archive before
+the sixth review existed and never went back — so my own instruction to "check me against the sources"
+pointed at a gap. Both missing verdicts are filed now.
+
+**And a promise was counting as kept because of a coincidence inside a picture file.** One tracked note
+was marked resolved because its identifier's letters happen to appear in the raw bytes of a GIF in the
+repository. My checker was reading every non-document file as if it were text. So the ninety-two percent I
+reported included at least one resolution that was pure chance. Image and other binary files can no longer
+count. The honest figure is now 200 unresolved out of 217.
+
+Also: I had added proper date validation and told you it covered the class. It covered one of the three
+places dates are used; a nonsense date still passed in the other two. Both fixed.
+
+Seven readings, seven rejections. Load-bearing problems have sat at four for the last four rounds. That is
+the honest state, and the family reviews stay unrecorded because none has been accepted.

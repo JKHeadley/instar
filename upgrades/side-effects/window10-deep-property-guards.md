@@ -982,3 +982,30 @@ this window — an unquantified hedge reads as a small one.
 **Not fixed under time pressure.** Tightening the token rule to reject bare numbers is a further
 invention, and this window's evidence is that my inventions open holes. It is sized, named, and left to
 review 7 to rule on rather than patched at speed.
+
+## Increment 27 — pass 7: seventh reject, and it caught two of my own false statements
+
+Pass 7 reviewed the snapshot at `e7f2a3f80`; two of its six findings were already closed by `66e71f433`
+(the regenerator erasing history), which it noted itself. The rest are real and now fixed.
+
+**The archive I built to make my summaries auditable was itself incomplete.** I told pass 7 that all six
+verbatim verdicts were committed and to audit me against them. **Only five were.** I wrote the archive
+before pass 6 existed and never went back. So the instruction "check me against the sources" pointed at a
+hole — the fix for unauditability, unaudited. Passes 6 and 7 are now archived too.
+
+**A live false closure, reproducible.** The marker `R-8` counted as RESOLVED because that byte sequence
+occurs by accident inside the binary `assets/demo.gif`. My resolver read every non-document file as UTF-8,
+so a coincidence in a GIF was being read as follow-through. That is the manufactured-resolution family one
+layer *below* prose, and it means the 92% figure I reported contained at least one resolution that was
+pure chance. Binaries (any NUL byte) can no longer resolve. Debt: 199 → **200 of 217**.
+
+**I fixed one of three date fields and reported it as the class.** `canonicalDate` covered retirement rows;
+`countdown` and `sweptAt` on gaps still used the bare regex, so `9999-99-99` still passed there. Both now
+use the same validator. Arm proven.
+
+**Three editorial splices repaired** — a duplicated clause and two countdown ids with foreign text welded
+onto them, all artefacts of paragraph-folding earlier in the window.
+
+**Its trajectory ruling stands and is fair:** load-bearing defects 4 → 4 → 4 → 4 across passes 4–7. Seven
+external passes, seven rejects. Both family audits remain stale, which is the honest state: no accepting
+review exists to record, and I will not record one that has not happened.

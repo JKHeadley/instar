@@ -294,7 +294,7 @@ for (const gap of gaps) {
     );
   }
   if (!sweep) {
-    if (!ISO_DATE.test(String(gap?.countdown ?? ''))) {
+    if (!canonicalDate(gap?.countdown)) {
       failures.push(`${id} — is UNSWEPT (sweep: null) and its countdown is "${gap?.countdown}", not a YYYY-MM-DD date. An unvalidated countdown lets \`"never"\` sit green forever (review pass 3, finding 6).`);
     } else if (gap.countdown < today) {
       failures.push(`${id} — is UNSWEPT and its countdown ${gap.countdown} has expired. Sweep it against the ${live.length} fingerprinted standard(s), or close the gap honestly.`);
@@ -303,7 +303,7 @@ for (const gap of gaps) {
   }
 
   swept += 1;
-  if (!ISO_DATE.test(String(sweep.sweptAt ?? ''))) {
+  if (!canonicalDate(sweep.sweptAt)) {
     failures.push(`${id} — sweptAt is "${sweep.sweptAt}", not a YYYY-MM-DD date. An unvalidated date field is not a date: a sweep without one cannot be told apart from one that never happened.`);
   }
 

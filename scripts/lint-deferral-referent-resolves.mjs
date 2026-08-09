@@ -198,7 +198,14 @@ const wanted = [...declared.keys()]
   .filter((w) => w.tokens.length > 0);
 for (const rel of resolvingFiles) {
   let text;
-  try { text = withoutComments(fs.readFileSync(path.join(ROOT, rel), 'utf-8'), rel); } catch { continue; }
+  let raw;
+  try { raw = fs.readFileSync(path.join(ROOT, rel)); } catch { continue; }
+  // A BINARY file cannot resolve a referent. Review pass 7 proved a live false closure: the marker
+  // `R-8` counted as resolved because that byte sequence occurs by accident inside assets/demo.gif.
+  // Reading every non-document file as UTF-8 made coincidence look like follow-through — the same
+  // manufactured-resolution family as counting prose, one layer lower.
+  if (raw.includes(0)) continue;
+  try { text = withoutComments(raw.toString('utf-8'), rel); } catch { continue; }
   for (const w of wanted) {
     if (resolved.has(w.id)) continue;
     if (w.tokens.some((re) => re.test(text))) resolved.add(w.id);
