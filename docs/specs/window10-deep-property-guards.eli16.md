@@ -346,3 +346,29 @@ that is the whole thing I have been chasing all week.
 Four passes, four rejections, and every round found something true. The count of my own claims graded
 "real fix, overstated report" is now consistent across all four. That is not a run of bad luck; it is a
 measurement.
+
+## A check for the thing that went wrong most often
+
+Counting up the night: the single most common defect was not a broken mechanism. It was a **sentence that
+used to be true.** A family heading announcing six entries while holding thirty, for two months. An
+article saying "three teeth" while listing five. A paragraph insisting nothing declares where it is
+enforced, hours after six things did. A statistic left standing after being re-measured twice. Every one
+found by someone else.
+
+So there is now a check for the part of that which is arithmetic: when the registry states a number about
+itself, the number is re-derived from the document and compared. If the family gains an entry and the
+sentence still says twenty-six, the build stops.
+
+**The claims are found by looking, not by being registered.** A list of "numbers to check" would have
+exactly the blind spot of the problem — someone has to remember to add each one, and the forgotten ones
+are the ones that rot. So it reads the prose and finds them.
+
+**Two things worth saying about its first run.** It flagged a discrepancy immediately — and the article
+was right, my matcher was wrong, because one heading is written slightly differently from its siblings. I
+checked before believing it. And it produced a second flag I threw away: my own way of counting something
+disagreed with the tool that already owns that number and verifies it properly. Shipping mine would have
+meant a check that blocks builds over a correct value. I removed it and wrote down why.
+
+**And what it cannot do**, in its own header: only numbers. "A reader cannot see the tree" and "the gate
+already blocks this" were two of the worst examples tonight and neither has a number in it. It closes the
+cheapest third of the problem, and says so rather than implying it closed the problem.

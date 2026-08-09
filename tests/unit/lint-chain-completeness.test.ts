@@ -60,6 +60,9 @@ const REQUIRED_LINTS = [
   // against every FINGERPRINT, and adding a fingerprint STALES every sweep — so one
   // failure upgrades every standard sharing the hole-shape.
   'lint-enforcement-gap-records.mjs',
+  // Window 10: a count the registry states about ITSELF must be true. Stale self-description
+  // was the night's most frequent defect ("six properties" against thirty, for two months).
+  'lint-registry-self-counts.mjs',
   'lint-no-duplicate-definitions.mjs',
   'lint-recall-surface-names-match-mechanism.mjs',
   'lint-registry-tree-parentage.mjs',

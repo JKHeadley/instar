@@ -695,3 +695,45 @@ passed while disagreeing with each other. Closed, arm proven. **Finding 7** — 
 enumerating five. **Finding 5** — a baseline stamped `2026-08-09` because the generator uses UTC while
 every surrounding record means local; recorded as a two-meanings-for-one-name defect rather than silently
 picking one.
+
+## Increment 18 — a guard for the night's most frequent defect: stale self-description
+
+`scripts/lint-registry-self-counts.mjs`. The charter's third item asked for a guard proposal for the
+stale-text class; the night made the case overwhelming, so it is built rather than proposed.
+
+**The evidence, from one night:** the family intro announced "six properties" while holding thirty —
+false for over two months; *Verify the State* said "Three teeth" while enumerating five; the same article
+said "no standard carries a fingerprint field" hours after six did; the measurement doc said "86 of 87"
+against 82 of 88; a paragraph said "a reader cannot see the tree" hours after the tree was rendered
+directly above it; the deferral headline carried 178/110/62% after two re-measurements. **Every one was
+caught by an external reviewer, never by me.**
+
+**The trigger is DISCOVERED, not declared** — deliberately. A check reading a hand-maintained list of
+"counts to verify" has the same blind spot as the thing it guards: someone must remember to register each
+claim, and the unregistered ones are exactly the ones that rot. Claims are found by scanning the
+registry's own prose, so a NEW count is checked the moment it is written.
+
+Four claims currently checked, both arms injection-proven: a stale family count fails by name, a stale
+tooth count fails by name.
+
+**Two things I did NOT do, both recorded in the script:**
+
+1. **It caught a real discrepancy on its first run and I checked before believing it.** The tooth count
+   read 5 against a derived 4 — because the article writes `**TOOTH (E)` where the others write `**(A)`.
+   The article was right and my matcher was wrong. Fixed by reading the actual marker forms out of the
+   text rather than assuming a shape.
+2. **It produced a second discrepancy that I refused to ship.** My independent re-derivation of "The
+   other 75 articles declare no parent" gave 79 — because a relation is declared bidirectionally and a
+   phrase count sees one side. That number already has an authoritative owner whose `--check` fails on
+   drift. Shipping my weaker derivation as a blocking check would have been a false finding against a
+   correct number, so the check was **removed with the reason written in**, not silently dropped.
+
+**What it does NOT certify, in the script header:** only COUNTS are checkable this way — "a reader cannot
+see the tree" and "the gate already hard-blocks these modes" were two of the worst instances and have no
+number in them; only RECOGNISED SHAPES are found, and the pattern list is mine, so its coverage is as
+good as my imagination on the day — the same limit that made the deferral guard see 47% and then 89% of
+its subject while claiming the subject, **named here in the guard rather than discovered later by a
+reviewer**; and claims in files other than the registry are out of scope, which is where two of the six
+instances lived.
+
+It closes the cheapest third of a class it does not close.
