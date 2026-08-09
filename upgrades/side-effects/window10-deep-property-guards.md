@@ -381,3 +381,37 @@ believing it. It was wrong within hours. No existence check would ever have said
 present, enabled, inventoried and green. What found it was a shape learned from three unrelated guards
 being pointed at the newest fingerprint and asked "could you have this hole too?" — which is exactly the
 propagation the operator specified, paying for itself on day one, against its own author.
+
+## Increment 9 — the external review REJECTED increment 8, and what that cost
+
+`docs/specs/reports/` will carry the pass record; this is the engineering summary. The Substrate delta
+review returned **VERDICT: reject** with six major findings and no criticals. All six were acted on; none
+were argued away.
+
+| # | Finding | Action |
+|---|---|---|
+| 2 | The commit-time surface is unreachable (also for docs-only commits, not just Tier 1) | already withdrawn independently, hours earlier, by the loop's own first sweep |
+| 3 | The deferral guard's population is narrower than the marker it polices | **widened**; measured 102 of 194 marker ids (53%) were invisible — the guard saw 47% of its subject |
+| 4 | The loop certifies freshness bookkeeping, not failure capture or upgrade | **certification clause widened to four items** in both the script and the registry |
+| 5 | matched/unmatched may overlap; unmatched may be a bare name | **both closed and injection-proven** |
+| 6 | Placement fails The Substrate's own admission rule | **moved to Building** as its own article |
+| 7 | `GAP` and `FINGERPRINT` collide with existing meanings | **namespaced** as ENFORCEMENT GAP / ENFORCEMENT FINGERPRINT |
+
+**The number changed, and the new one is the honest one.** 62% of 178 became **54% of 194**. The first
+figure was measured over a population that excluded every tracking marker not using two numeric id forms.
+The baseline was re-set from 81 to 104 with the reason recorded IN the baseline file — a shrink-only
+ratchet that can be reset without an argument is not a ratchet.
+
+**Finding 6 produced the registry's 88th article**, *One Failure Teaches Every Guard — Record the Shape,
+Sweep It Everywhere*, in *Building*. Tooth (E) keeps a one-line cross-reference rather than a restatement.
+The move is enforcement-neutral: no article gained or lost a guard.
+
+**And then the loop fired on its own birth.** The instant that article gained an enforcement fingerprint,
+the population went 1 → 2 and **all three sweeps went red**, refusing the build until the new standard was
+checked against every recorded failure-shape. Not a test — the real mechanism, in the real build, refusing
+its own author on the day it was written. The three verdicts are recorded with reasons; the strongest is
+`alive-but-inert`'s unmatch, whose evidence is precisely that event.
+
+**Still open and NOT resolved by this increment:** The Substrate's area audit remains stale. A rejected
+review does not become an acceptance because the findings were fixed afterwards — it becomes a second
+pass, and the record will say which pass accepted and on what.

@@ -55,11 +55,26 @@
  *   CERTIFIED — no fingerprinted standard can exist that has not been LOOKED AT
  *               through every recorded failure-shape.
  *
- * **It does NOT certify the sweep was done WELL.** A lazy author can write every
- * standard into `unmatched` with an empty reason and pass. What the check forces is
- * that the question was asked about each one, in writing, in the diff — the same
- * narrow guarantee the fingerprint check makes, and stated here for the same
- * reason: a registry mistaken for proof of propagation would rebuild the defect it
+ * **What it does NOT certify — the full list, because a short list here is the same
+ * over-claim this registry exists to record** (external review, 2026-08-08, which
+ * REJECTED an earlier draft of this file for declaring only the first item):
+ *
+ *   1. That a sweep was done WELL. A thin reason on every standard passes.
+ *   2. **That a real failure ever BECOMES a gap record.** Every record here is
+ *      VOLUNTARILY authored. Nothing detects an unrecorded failure, so the registry
+ *      is silent about exactly the failures nobody wrote down — which is the
+ *      population that matters most.
+ *   3. **That a MATCH is ever acted on.** A matched fingerprint needs no
+ *      remediation to stay green; the match is a finding, not a fix, and the loop
+ *      does not close it.
+ *   4. That an unswept gap gets swept — only that it is visibly unswept and dated.
+ *
+ * So the honest name for what this check delivers is **freshness bookkeeping over
+ * voluntarily authored records**, not failure capture and not automatic upgrade. The
+ * phrase "one failure upgrades every standard sharing the hole-shape" describes the
+ * PRACTICE this file supports; the machinery only guarantees that a recorded shape
+ * cannot silently go unswept as fingerprints are added. Stating that gap plainly,
+ * because a registry mistaken for proof of propagation would rebuild the defect it
  * exists to catch, one level up.
  *
  * Exit codes: 0 — clean; 1 — a malformed gap, a stale sweep, a non-partitioning
@@ -179,6 +194,10 @@ for (const gap of gaps) {
   const matched = (Array.isArray(sweep.matched) ? sweep.matched : []).map(nameOf).filter(Boolean);
   const unmatched = (Array.isArray(sweep.unmatched) ? sweep.unmatched : []).map(nameOf).filter(Boolean);
   const verdicts = new Set([...matched, ...unmatched]);
+  const both = matched.filter((s) => unmatched.includes(s));
+  if (both.length > 0) {
+    failures.push(`${id} — the sweep reaches CONTRADICTORY verdicts on ${both.join(', ')}: named in both matched and unmatched. A standard cannot both have and not have a failure-shape; the union test alone accepted this, which is the same over-claim this registry records.`);
+  }
   const missing = population.filter((s) => !verdicts.has(s));
   const extra = [...verdicts].filter((s) => !popSet.has(s));
   if (missing.length > 0) {
@@ -187,9 +206,15 @@ for (const gap of gaps) {
   if (extra.length > 0) {
     failures.push(`${id} — the sweep reaches a verdict on ${extra.join(', ')}, which is not in its own fingerprintPopulation. The population must be the exact set swept.`);
   }
-  for (const m of Array.isArray(sweep.matched) ? sweep.matched : []) {
-    if (typeof m === 'object' && !m?.why) {
-      failures.push(`${id} — matched standard "${m?.standard ?? '?'}" gives no reason. A match is a finding about another standard; unexplained, it cannot be acted on.`);
+  for (const [bucket, entries] of [['matched', sweep.matched], ['unmatched', sweep.unmatched]]) {
+    for (const m of Array.isArray(entries) ? entries : []) {
+      if (typeof m === 'string' || !m?.why) {
+        failures.push(
+          `${id} — ${bucket} standard "${typeof m === 'string' ? m : (m?.standard ?? '?')}" gives no reason. ` +
+          `A MATCH is a finding about another standard and is useless unexplained; an UNMATCH is the claim "I looked and this one does not have the shape", ` +
+          `which is exactly the claim a bare name cannot support. Requiring a reason on BOTH sides is what makes "the question was asked in writing" true rather than asserted.`,
+        );
+      }
     }
   }
 }

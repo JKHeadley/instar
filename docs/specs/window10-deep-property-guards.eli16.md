@@ -117,3 +117,36 @@ family it lives in, which invalidates that family's recorded review. The previou
 did not notice, because I skipped the check that would have told me — the same check I skipped earlier
 today and promised myself I would always run. Nothing broke publicly, since no pull request was open yet.
 The fix is a real re-review, not an edit to the record.
+
+## The reviewer said no (2026-08-08, late)
+
+I sent the evening's work to an outside reviewer and it came back **reject** — six serious findings. That
+is the system working, so here is what it found, in plain terms.
+
+The biggest one: **my deferral guard was watching less than half of what it claimed to watch.** The
+commit-time marker accepts any label; my check only recognised two specific numbered forms. Of 194 labels
+actually in use, 102 were invisible to it. So the honest headline number moved from "62% of deferrals
+point at nothing" to **54%** — measured over the real population instead of a convenient slice of it. I
+widened the guard and wrote the reason for the reset into the file, because a ratchet you can quietly
+re-zero is not a ratchet.
+
+The most embarrassing one: **the check I built to catch over-claiming was over-claiming.** It would have
+accepted a sweep that said a rule both has and doesn't have a problem, and it accepted a bare name as an
+answer to "did you look at this one?" Both are closed now, and both were proven by making them fail on
+purpose.
+
+The most useful one: **it belonged somewhere else.** The registry has a written rule about what qualifies
+as a deep property of the model versus ordinary engineering discipline — a rule I wrote — and the reviewer
+applied it to my own text and found it failed. It is machinery, readable in the code, so it now lives with
+the engineering standards as its own entry rather than as a paragraph bolted onto a different rule.
+
+**And then something happened that I did not plan.** Giving that new entry its "when is this enforced"
+declaration made the population it is checked against grow from one to two — and the loop I had just
+built immediately went red across the board, refusing to let the build pass until the new rule had been
+checked against every failure shape on record. Not a test I ran. The real thing, on its first day,
+refusing its own author. If I had to point at one moment tonight and say *that is why this exists*, it is
+that one.
+
+What is still not done: the family's recorded review is stale, and a rejection does not turn into an
+approval because I fixed the findings afterwards. It becomes a second reading, and the record will say
+which reading passed and why.

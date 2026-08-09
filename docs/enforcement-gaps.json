@@ -17,13 +17,27 @@
         "sweptAt": "2026-08-08",
         "method": "Read each fingerprinted standard's declared surfaces and ask: does this surface leave a per-decision record a later reader can audit, or only an outcome?",
         "fingerprintPopulation": [
-          "Deferral = Deletion"
+          "Deferral = Deletion",
+          "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere"
         ],
         "matched": [],
         "unmatched": [
           {
             "standard": "Deferral = Deletion",
             "why": "Both declared surfaces are build-time checks whose every decision is a visible outcome \u2014 a failing build names the offending id, a passing run prints its counts, and the shrink-only baseline file is a durable per-id record in version control. The residual, named honestly: a PASSING lint records that it passed, not which ids it examined, so a matcher that silently stopped seeing a population would look identical to a clean corpus. That is a weaker form of this shape and it is why the script refuses to report clean when it parses zero ids."
+          },
+          {
+            "standard": "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere",
+            "why": "Its single declared surface is a build-time lint whose every decision surfaces as a visible outcome: a failure names the gap, the standard and the rule that refused it, and a pass prints the gap count plus the population size it swept against. The same weaker residual as Deferral = Deletion applies and is not hidden: a PASSING run records that it passed, not the identity of every record it examined \u2014 so a matcher that silently stopped seeing gaps would look like a clean registry. That is why the script refuses to report clean when it parses zero articles or finds no gaps array."
+          }
+        ],
+        "sweepHistory": [
+          {
+            "at": "2026-08-08",
+            "trigger": "the gap-propagation standard itself gained a fingerprint; the staleness arm refused the build until this sweep was done",
+            "added": [
+              "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere"
+            ]
           }
         ]
       },
@@ -45,19 +59,33 @@
         "sweptAt": "2026-08-08",
         "method": "Mechanical: an article matches this shape iff it declares no enforcement fingerprint. Derived from scripts/lint-enforcement-fingerprint.mjs --json rather than by hand.",
         "fingerprintPopulation": [
-          "Deferral = Deletion"
+          "Deferral = Deletion",
+          "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere"
         ],
         "matched": [],
         "unmatched": [
           {
             "standard": "Deferral = Deletion",
             "why": "Declares moments commit-time and ci-time, names the surface acting at each, and states where it does NOT reach (the periodic moment when promised work comes due; deferrals written into source comments rather than specs)."
+          },
+          {
+            "standard": "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere",
+            "why": "It declares moments: ci-time, names the surface acting there, and states the moment it does NOT cover \u2014 the one where a real failure is never written down at all, which no mechanism detects. It is the second article in the registry to leave the grandfathered baseline, and the first born under the requirement rather than retrofitted into it."
           }
         ],
         "outsidePopulation": {
           "count": 86,
           "why": "The 86 grandfathered articles all carry this shape by construction \u2014 that is what the grandfathered baseline IS. They are not listed here because the baseline file is already their record and duplicating it would create two lists that can disagree. The match set shrinks by one each time a standard is genuinely fingerprinted."
-        }
+        },
+        "sweepHistory": [
+          {
+            "at": "2026-08-08",
+            "trigger": "the gap-propagation standard itself gained a fingerprint; the staleness arm refused the build until this sweep was done",
+            "added": [
+              "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere"
+            ]
+          }
+        ]
       },
       "countdown": "2026-09-07",
       "trackedAs": "STD-SUBCOUNTDOWN-fingerprint-field"
@@ -77,7 +105,8 @@
         "sweptAt": "2026-08-08",
         "method": "For each surface a fingerprint declares, ask whether a case is known in THIS repository where that surface fails \u2014 a proven negative control, not a plausible one.",
         "fingerprintPopulation": [
-          "Deferral = Deletion"
+          "Deferral = Deletion",
+          "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere"
         ],
         "matched": [
           {
@@ -87,7 +116,21 @@
             "residual": "The Tier-1 commit class has NO commit-time deferral surface at all. Extending enforceTier1 to run the orphan-deferral check is real work on the gate and is not done here."
           }
         ],
-        "unmatched": []
+        "unmatched": [
+          {
+            "standard": "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere",
+            "why": "The best-evidenced unmatch in the registry, and the evidence is not a claim: the surface FIRED IN PRODUCTION ON ITS OWN BIRTH. The moment this standard gained a fingerprint, the population grew from 1 to 2 and all three sweeps \u2014 including this one \u2014 went red, refusing the build until the new standard was checked against every recorded shape. Six arms are injection-proven (staleness, partition, self-contradiction, reasonless verdict, expired unswept gap, and the clean baseline). A guard that has been observed refusing its own author is the opposite of alive-but-inert."
+          }
+        ],
+        "sweepHistory": [
+          {
+            "at": "2026-08-08",
+            "trigger": "the gap-propagation standard itself gained a fingerprint; the staleness arm refused the build until this sweep was done",
+            "added": [
+              "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere"
+            ]
+          }
+        ]
       },
       "countdown": "2026-09-07",
       "trackedAs": "STD-SUBCOUNTDOWN-guard-negative-control",

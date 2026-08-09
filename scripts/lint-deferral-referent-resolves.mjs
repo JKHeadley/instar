@@ -70,7 +70,20 @@ const JSON_OUT = process.argv.includes('--json');
 const UPDATE = process.argv.includes('--update-baseline');
 const BASELINE_REL = 'docs/deferral-referent-baseline.json';
 
-const ID_RE = /\b(?:CMT|ACT)-\d+\b/g;
+/**
+ * POPULATION — every id inside a tracking MARKER, which is the thing the commit-time
+ * step actually admits: `<!-- tracked: <id> -->` with the SAME character class that
+ * step accepts. Widened 2026-08-08 after an external review REJECTED the narrower
+ * version: the original matched `CMT-\d+` / `ACT-\d+` anywhere in prose, which (a) let
+ * a bare mention of an id count as a tracked deferral and (b) MISSED every marker
+ * using any other id form. Measured at the moment of the fix: of 194 distinct marker
+ * ids in docs/specs, only 92 were CMT/ACT-numeric — **102 (53%) were invisible to the
+ * guard that claimed to police them.** A guard covering 47% of its own subject while
+ * claiming the subject is the shape this whole window exists to catch.
+ */
+const MARKER_RE = /<!--\s*tracked:\s*([A-Za-z0-9._/-]+)\s*-->/g;
+/** Resolving mentions may appear as bare ids anywhere outside docs/. */
+const idPattern = (id) => new RegExp(`(?:^|[^A-Za-z0-9._/-])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9._/-])`);
 
 /** Files that may RESOLVE a marker — anything a reader can follow that is not the prose asserting it. */
 function repoFiles() {
@@ -94,7 +107,10 @@ const declared = new Map(); // id -> Set(spec paths)
 for (const rel of specFiles) {
   let text;
   try { text = fs.readFileSync(path.join(ROOT, rel), 'utf-8'); } catch { continue; }
-  for (const id of text.match(ID_RE) ?? []) {
+  MARKER_RE.lastIndex = 0;
+  let m;
+  while ((m = MARKER_RE.exec(text)) !== null) {
+    const id = m[1];
     if (!declared.has(id)) declared.set(id, new Set());
     declared.get(id).add(rel);
   }
@@ -107,11 +123,14 @@ if (declared.size === 0) {
 
 // One pass over the resolving corpus rather than one grep per id.
 const resolved = new Set();
+const wanted = [...declared.keys()].map((id) => ({ id, re: idPattern(id) }));
 for (const rel of resolvingFiles) {
   let text;
   try { text = fs.readFileSync(path.join(ROOT, rel), 'utf-8'); } catch { continue; }
-  if (!text.includes('CMT-') && !text.includes('ACT-')) continue;
-  for (const id of text.match(ID_RE) ?? []) resolved.add(id);
+  for (const w of wanted) {
+    if (resolved.has(w.id)) continue;
+    if (w.re.test(text)) resolved.add(w.id);
+  }
 }
 
 const orphans = [...declared.keys()].filter((id) => !resolved.has(id)).sort();
