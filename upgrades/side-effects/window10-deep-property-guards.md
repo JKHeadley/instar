@@ -415,3 +415,36 @@ its own author on the day it was written. The three verdicts are recorded with r
 **Still open and NOT resolved by this increment:** The Substrate's area audit remains stale. A rejected
 review does not become an acceptance because the findings were fixed afterwards — it becomes a second
 pass, and the record will say which pass accepted and on what.
+
+## Increment 10 — three honest fingerprints, two of them `none`, and the loop's second catch
+
+Charter steps 2 and 4, on the three articles whose enforcement I could establish rather than guess.
+
+- ***Documentation IS Being*** → `moments: none`. **Nothing detects an agent that worked and did not write
+  it down.** The violation is an ABSENCE, and every surface this registry counts fires on a PRESENCE — a
+  file changed, a commit made, a message emitted. That mismatch, not neglect, is why the article has had no
+  teeth for fifteen months. A real guard would need a moment nothing occupies: a session-end comparison
+  between the durable artifacts produced and the work the transcript shows. Dated, not papered over.
+- ***The Right to Stand Ground*** → `moments: none`. The violation is CAPITULATION, and detecting it
+  requires knowing the critique was wrong — the very judgment in dispute. The self-stop family sits at the
+  right moment but catches quitting, and agreeing too readily looks on the wire exactly like cooperation.
+  **The refusal to cite that gate is recorded on the article**, because citing it would be manufactured
+  enforcement.
+- ***Iterative Audit to Convergence*** → `moments: commit-time, ci-time`, with the honest hole named: a
+  falsely-claimed convergence is caught, but **starting no audit at all is caught by nothing**, because the
+  trigger lives in the agent's judgment that a task is audit-shaped and no surface observes that judgment.
+  The guard binds the honest auditor and is invisible to the one who never starts.
+
+**Then the loop fired for the third time in one evening, and caught a second real over-claim.** Three new
+fingerprints took the population 2 → 5 and every sweep went red until they were checked. Sweeping
+`alive-but-inert` produced a MATCH on *Iterative Audit to Convergence*: it cites
+`scripts/write-audit-convergence.mjs` as refusing an unearned stamp, and **that arm has never been
+injection-tested here.** It is believed to work because the code reads correctly — which is exactly the
+belief that was wrong about the orphan-deferral arm four hours earlier. Same test, same shape, second hit.
+
+**A distinction the sweep forced, worth keeping:** a `none` fingerprint produces a VACUOUS unmatch against
+any shape about surface behaviour. That is not reassurance — a standard with no surface is in a worse
+condition than one whose surface leaves no trace — so each vacuous unmatch says so explicitly rather than
+letting an empty pass read as a clean one.
+
+Registry: 88 articles, **5 fingerprinted**, 83 grandfathered.

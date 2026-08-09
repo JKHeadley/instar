@@ -150,3 +150,30 @@ that one.
 What is still not done: the family's recorded review is stale, and a rejection does not turn into an
 approval because I fixed the findings afterwards. It becomes a second reading, and the record will say
 which reading passed and why.
+
+## Saying "nothing guards this" out loud (2026-08-08, later still)
+
+Three more rules now say when they are enforced. Two of them say **nothing** — and that is the useful part.
+
+*Documentation IS Being* — the rule that an agent's undocumented hour effectively did not happen — has no
+guard, and now I understand why rather than just noticing it. Every check we have fires when something
+*happens*: a file changes, a commit lands, a message goes out. This rule is broken by something *not*
+happening. There is no moment at which "you didn't write it down" arrives to be caught. That is a design
+problem, not a backlog item, and writing `none` makes it a dated question instead of an invisible one.
+
+*The Right to Stand Ground* — don't fold to a critique that is wrong — is worse. To catch a violation you
+would have to know the critique was wrong, which is the exact judgment in dispute. We do have a check
+sitting at the right moment, and I could have cited it and looked greener. I wrote down the refusal
+instead, because agreeing too easily and giving up are different failures, and on the wire the first one
+looks just like ordinary cooperation.
+
+The third, *Iterative Audit to Convergence*, does have real enforcement — you cannot stamp an audit
+"converged" unless the rounds you recorded actually earn it. But there is a hole I had not named: nothing
+catches an audit that was never *started*, because the decision that a task needs one lives in my judgment
+and no check watches judgment. So the guard binds the careful auditor and is invisible to the careless one.
+
+**And the loop caught me a second time.** Adding those three declarations grew the population it checks,
+so every sweep went red again — and this time it matched: *Iterative Audit to Convergence* names a guard
+that has never been made to fail on purpose. It is trusted because the code reads correctly. That is the
+identical mistake I made four hours earlier with a different guard, found by the identical question. Twice
+in one evening, the same shape, the same author.
