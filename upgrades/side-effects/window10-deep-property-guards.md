@@ -209,3 +209,48 @@ done tonight: the comment corpus is large, the false-positive profile is unmeasu
 this window has repeatedly proved is measure-then-design.
 
 **State:** 87 articles, enforced 0.7471 unchanged, false-claims 0, dangling 0, lint chain green.
+
+---
+
+## Increment 6 — enforcement fingerprints: the measurement pass
+
+**Changed:** `docs/specs/enforcement-fingerprint-measurement.md` (new), one registry amendment
+extending tooth (E) with the moment axis. No guard added; enforced ratio unchanged at 0.7471.
+
+**Step 1 of the charter only — MEASURE FIRST.** Steps 2-4 (a fingerprint field on every standard,
+required at birth) are not built and are not claimed.
+
+**The surfaces, counted rather than asserted:** 12 CI workflows, 25 CI jobs, 42 build-time lint chain
+entries, 2 git hooks, 33 shipped scheduled jobs, 21 per-outbound-message tone-gate rules, 11 response
+reviewers, 12 session hook scripts. The total is not the point; the point is that these are seven
+distinct MOMENTS, and a standard can be covered at several of them while unguarded at the one where
+its violations actually occur.
+
+**The motivating case re-measured, and it is worse than the framing given to me.** The charter said
+the self-unblock standard failed because "nothing enforced it at the one moment violations occur."
+Measured, something IS there: five rules in that family, all classified `blocking` —
+`B15_CONTEXT_DEATH_STOP`, `B16_UNVERIFIED_WALL`, `B17_FALSE_BLOCKER`, `B18_AUTONOMY_STOP`,
+`B19_PARKED_ON_USER`. B16's stated population — telling the user a path is blocked "WITHOUT any
+evidence that the agent first inventoried the capabilities it already has" — is a fair description of
+what I did on 2026-08-07. The gate was demonstrably live (it held a message of mine earlier today).
+**The moment was watched, by rules that plausibly cover the manifestation, and the violation passed.**
+
+**Why nobody can say more than that, which is the real finding.** The gate's rule-level verdicts are
+recorded NOWHERE. The advisory log captures the deterministic preflight layer only (`advisories: []`,
+`action: "clean"`). Nothing on disk says which `B…` rules were evaluated against a message or what each
+returned. So we cannot distinguish "fired and was overridden" from "never fired" from "judged wrongly",
+and cannot say whether these rules have ever fired at all. **A surface whose decisions leave no trace
+cannot be audited for effectiveness — which is exactly why the failure was invisible.**
+
+**The design consequence, and it is the reason this increment matters more than a count.** A
+fingerprint that records only WHICH SURFACE and WHICH MOMENT is an existence claim wearing a new name,
+and would rebuild this week's central defect one level up. It needs three legs: surface+moment
+(derivable now), covered manifestations (readable from the rule), and OBSERVED EFFECTIVENESS (requires
+the surface to keep a record — which for the most consequential surface we have, it does not).
+
+**Explicitly not claimed:** that those five rules are broken. They may be working as designed and my
+2026-08-07 message may have fallen honestly outside their populations. I cannot tell, and neither can
+anyone else — that is the point, and settling it needs the verdict record that does not exist.
+
+**Two dated findings** rather than papered over: no rule-level verdict record at the outbound surface;
+no standard carries a fingerprint field. 39 sub-obligation countdowns.
