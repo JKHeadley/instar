@@ -389,3 +389,38 @@ whether the work was done *well*, and all three attacks went after whether the o
 of "things this doesn't promise" was entirely about quality. I have written the root down rather than
 three patches, because a tidy list of three plugged holes is an invitation to find a fourth of the same
 kind.
+
+## Fifth reading, fifth no — and this one answered the question we actually asked
+
+We asked the reviewer to rule on whether we were converging, and it did, on its own terms. It picked its
+measure and defended it: not how MANY problems, but how many of them let a machine certify something it
+has not actually established — weighted by how much future work leans on that machine. A typo bothers one
+reader; a lock that anyone can edit invalidates every decision made behind it.
+
+**Its answer: not converging.** The totals have drifted down, but the serious ones have not — four in the
+fourth reading, four in the fifth, all still inside the machinery rather than in the writing about it. So
+it declined to close, and it was right.
+
+What it found, and all four are now fixed:
+
+**My ratchets were not ratchets.** They compared the current file against the current file. One change
+could add a debt and add it to the exemption list in the same breath and pass. They now compare against
+the accepted version — something the change did not write. Growing is still allowed, but only with a dated
+reason that later commits cannot delete.
+
+**My "unremovable" list was removable.** Built four hours earlier specifically to stop a recorded failure
+being erased, it lived in a file the same commit could edit. Fixed the same way, and its escape hatch now
+demands a date, a reason and evidence rather than a bare name.
+
+**My resolver treated English as identifiers**, so a note written in prose "pointed at" something real via
+the word *future*. It now requires a digit. The honest number of unresolved promises went from 103 to 137
+out of 217 — exactly where the independent counter had been all along.
+
+**And one record said "this is covered" and "coverage is unknown" in adjacent lines.** Fixing the check
+that should have caught it revealed the problem was not one record but every record: all five claimed a
+failure slipped past a declaration that did not exist yet, because nothing had one until this week.
+
+Two smaller things worth keeping. A test I ran produced *silence* — and silence is what a check that
+cannot fire looks like; it was pointing the wrong way and I only found out by trying it. And archiving the
+reviewers' own words gave me a fake promise, because one of their examples was a promise, and quoting one
+made it mine.

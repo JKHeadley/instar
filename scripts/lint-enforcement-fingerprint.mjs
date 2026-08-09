@@ -81,6 +81,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkShrinkOnlyAgainstHistory } from './lib/baseline-history.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), '..');
@@ -189,6 +190,10 @@ if (!baseline) {
       `name would silently INHERIT the old exemption. Membership must be exact in BOTH directions (review pass 3, finding 2).`,
     );
   }
+  failures.push(...checkShrinkOnlyAgainstHistory({
+    relPath: BASELINE_REL, cwd: ROOT, field: 'grandfathered', current: [...grandfathered],
+    label: 'fingerprint exemption baseline',
+  }));
   const staleExemptions = [...grandfathered].filter((name) => fingerprinted.has(name));
   for (const name of staleExemptions) {
     failures.push(

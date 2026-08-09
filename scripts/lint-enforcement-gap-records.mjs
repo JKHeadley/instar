@@ -96,6 +96,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { checkShrinkOnlyAgainstHistory, checkGrowOnlyAgainstHistory } from './lib/baseline-history.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), '..');
@@ -198,6 +199,35 @@ if (!floor || !Array.isArray(floor.knownGapIds)) {
       `green build. Restore it, or record a deliberate retirement in ${FLOOR_REL} with a reason.`,
     );
   }
+  // The floor is only a floor if its own reference point is outside the commit. Review pass 5:
+  // "deleting an ID simultaneously from both current JSON files passes; the purported external
+  // grow-only floor is another editable list, not historical enforcement."
+  failures.push(...checkGrowOnlyAgainstHistory({
+    relPath: FLOOR_REL, cwd: ROOT, field: 'knownGapIds', current: floor.knownGapIds,
+    retiredIds: (floor.retired ?? []).map((r) => r?.id).filter(Boolean), label: 'gap floor',
+  }));
+  failures.push(...checkGrowOnlyAgainstHistory({
+    relPath: FLOOR_REL, cwd: ROOT, field: 'everSweptGapIds', current: floor.everSweptGapIds ?? [],
+    retiredIds: (floor.retired ?? []).map((r) => r?.id).filter(Boolean), label: 'ever-swept floor',
+  }));
+  const seenFloorIds = new Set();
+  for (const fid of floor.knownGapIds) {
+    if (seenFloorIds.has(fid)) failures.push(`${FLOOR_REL} lists "${fid}" more than once — a duplicate id makes the floor's own count untrue.`);
+    seenFloorIds.add(fid);
+  }
+  // A retirement is a deliberate act and must look like one. The note promised a reason; the check did not.
+  for (const r of floor.retired ?? []) {
+    const missing = ['id', 'at', 'reason', 'evidence'].filter((k) => !r?.[k] || String(r[k]).trim().length === 0);
+    if (missing.length > 0) {
+      failures.push(
+        `${FLOOR_REL} retires "${r?.id ?? '?'}" without ${missing.join(', ')}. Retiring a failure-shape ends its ` +
+        `propagation to every future standard, permanently — the note promised a reason, a date and evidence, and ` +
+        `the check accepted a bare id, which is the promise-vs-mechanism gap this whole registry records.`,
+      );
+    } else if (!/^\d{4}-\d{2}-\d{2}$/.test(String(r.at)) || String(r.reason).trim().length < 40) {
+      failures.push(`${FLOOR_REL} retires "${r.id}" with a malformed date or a reason under 40 characters. A one-word reason is not a reason.`);
+    }
+  }
   for (const g of gaps) {
     if (g?.id && !floor.knownGapIds.includes(g.id)) {
       failures.push(`${g.id} is recorded in ${GAPS_REL} but absent from ${FLOOR_REL}'s knownGapIds. Add it — the floor is what makes it undeletable.`);
@@ -217,6 +247,19 @@ for (const gap of gaps) {
     failures.push(`${id} — a gap must record its SHAPE and a shapeDescription stating the NATURE of how a violation got through, not merely that one did. Without the nature there is nothing to match against other fingerprints, and the record cannot propagate.`);
   }
   // Leg 2 — which fingerprint it evaded, and HOW.
+  const evadedName = String(gap?.evaded?.standard ?? '').replace(/\s*\(.*$/s, '').trim();
+  const evadedResolves = liveDigest.has(evadedName);
+  const allNames = new Set(liveEntries.map((e) => e.name));
+  void allNames;
+  if (gap?.evaded?.standard && !evadedResolves && gap?.evaded?.hadNoFingerprint !== true) {
+    failures.push(
+      `${id} — evaded.standard names "${evadedName}", which carries no enforcement fingerprint, and the record ` +
+      `does not declare evaded.hadNoFingerprint. A gap that says a failure evaded a FINGERPRINT which never ` +
+      `existed is manufactured enforcement inside the registry built to catch it (review pass 4 found exactly ` +
+      `that here). Either name a fingerprinted standard, or set hadNoFingerprint:true and say what was actually ` +
+      `there instead.`,
+    );
+  }
   if (!gap?.evaded?.standard || !gap?.evaded?.how) {
     failures.push(`${id} — a gap must name the FINGERPRINT it evaded (evaded.standard) and HOW it got past it (evaded.how). "It failed" is an outcome; this loop runs on the mechanism.`);
   }

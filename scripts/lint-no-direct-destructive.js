@@ -166,6 +166,13 @@ const ALLOWLIST = new Set([
   // filesystem walk would silently accept referents that do not exist for anyone
   // else. Never a destructive op.
   'scripts/lint-deferral-referent-resolves.mjs',
+  // Window-10 ratchet-history helper (2026-08-09). Same shape and same reason: a standalone
+  // .mjs in the lint chain with no build step, so it cannot import the TS SafeGitExecutor
+  // funnel. Its ONLY git invocations are `rev-parse --verify` and `show <ref>:<path>` — both
+  // read-only, and load-bearing rather than incidental: a shrink-only baseline compared
+  // against its own working copy is not a ratchet at all (review pass 5, 2026-08-09), so the
+  // reference point MUST come from committed history. Never a destructive op.
+  'scripts/lib/baseline-history.mjs',
   // Bootstrap script for the builtin-manifest — runs as part of `npm run
   // build` before tsc emits dist/.
   'scripts/generate-builtin-manifest.cjs',

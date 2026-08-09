@@ -761,3 +761,51 @@ three patches, because a list of three plugged holes invites a fourth of the sam
 **One honest correction to the lane's baseline note:** it observed that the fingerprinted population was
 2 of 88, so "swept against every fingerprint" meant swept against two. It is 6 of 88 now, which is still
 small enough that the phrase deserves its qualifier rather than its confidence.
+
+## Increment 20 — pass 5: a fifth REJECT with an explicit convergence ruling, and all four blockers closed
+
+**The convergence ruling, which is the point of the pass.** The reviewer chose its own magnitude metric
+— *load-bearing enforcement integrity*: how many defects let machinery certify a state it has not
+established, weighted by how much future work rests on it. Its reasoning for that over count: "a typo
+affects one reader, while an editable 'grow-only' floor or a false resolver invalidates every future
+decision that relies on it."
+
+**Verdict on the trajectory: NOT declining.** It accepted the raw series (6 → 9 → 8 → 7 → 6, majors
+6 → 7 → 6 → 4 → 4) and ruled the decisive series has **stalled** — four load-bearing defects in pass 4,
+four in pass 5, all inside the machinery. "The remainder has not shifted to merely descriptive,
+expiry-dated work." So it declined to close, correctly.
+
+**The four blockers, all closed, all injection-proven where an arm could be proven:**
+
+1. **The baselines were not ratchets.** They compared the current registry to the current baseline file, so
+   one commit adding an unfingerprinted article *and* adding it to the exemption list passed clean. Every
+   "may never be added back" sentence was manufactured enforcement. Now `scripts/lib/baseline-history.mjs`
+   compares against the **accepted base** (`origin/main`), with growth admitted only via an append-only,
+   dated `rebaselines` entry that cannot later be deleted. Three outcomes kept distinct — verified,
+   *establishing* (file new at base), *unreadable ref* (fails closed) — because collapsing them is how
+   unknown becomes clean.
+2. **The gap floor was another editable list.** Deleting an id from both files in one commit passed. Now
+   grow-only against history, and a retirement requires id + date + reason ≥ 40 chars + evidence — the note
+   had promised all three and the check accepted a bare id.
+3. **The resolver counted English as identifiers.** Any 3-character word, so a prose marker resolved
+   through *future*. A token must now contain a digit. **The honest count moved 103 → 137 orphans of 217
+   (63%)** — landing where the independent lane's re-derivation had been all along.
+4. **A gap record asserted and withdrew the same claim in adjacent fields**, and the check never required
+   the evaded mechanism to exist. Both fixed — and the new arm then found the defect was **not one record
+   but all five**: every gap here named a standard with no fingerprint. Pass 4 caught one instance; the
+   mechanism caught the class. Each now declares `hadNoFingerprint: true` with the honest statement that
+   nothing recorded before this window can have evaded a field this window created.
+
+**An arm that produced SILENCE, and what that meant.** The floor was wired through the *shrink*-only
+helper, so deleting an id read as legitimate shrinkage and the co-edit attack passed quietly. Per tooth
+(E), an injection producing silence is the signature of an arm that cannot fire — and it was, until it was
+tested. Added the grow-only direction; arm now proven.
+
+**Honest limit on two of the three history arms:** the baseline files are new on this branch, so
+`origin/main` has no copy and the history check reports *establishing* rather than biting. Both were proven
+against a ref where the file does exist. Until this branch merges, that protection is real in code and
+unexercised in fact.
+
+**And the archive bit me within minutes.** Persisting the reviewers' verbatim verdicts introduced one of
+*their* example markers as a live orphan of mine — a document acquiring a promise by quoting one. Markers
+inside fenced blocks are now displayed, not declared.

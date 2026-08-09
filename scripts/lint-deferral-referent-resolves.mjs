@@ -13,11 +13,13 @@
  * point into are PER-MACHINE RUNTIME STATE (`.instar/`), not tracked in the
  * repository. A build has no way to resolve `ACT-1153`.
  *
- * Measured on 2026-08-08 across `docs/specs/`: **194 distinct tracked deferral
- * marker ids, of which 104 (54%) resolve to nothing OUTSIDE THE DOCUMENTATION TREE.**
- * (An earlier figure of 178 / 110 / 62% is SUPERSEDED — it was measured over the
- * narrower prose-id population this guard originally used, before external review
- * rejected that population as narrower than its name. Do not quote it.) For
+ * Measured 2026-08-09 across `docs/specs/`: **217 distinct tracked deferral marker ids,
+ * of which 137 (63%) resolve to nothing OUTSIDE THE DOCUMENTATION TREE.**
+ * (TWO earlier figures are SUPERSEDED and neither should be quoted: 178/110/62% measured
+ * a narrow prose-id population; 194/104/54% measured the marker but through a character
+ * class a SPACE terminates AND counted ordinary English words as identifiers. Each was
+ * published before it was found wrong — the 194 figure to the operator directly. Do not
+ * quote either.) For
  * those, "tracked" is an unfalsifiable claim — the exact shape the standard was
  * written to forbid, wearing a tracking number.
  *
@@ -55,7 +57,7 @@
  * I briefly mistook a correct refusal for a broken check.
  *
  * ── Why a baseline ─────────────────────────────────────────────────────────
- * 104 pre-existing orphans cannot be fixed by the change that discovers them —
+ * 137 pre-existing orphans cannot be fixed by the change that discovers them —
  * each needs its referent found or the deferral honestly closed. The baseline is
  * SHRINK-ONLY: the count may never rise, so the debt can only be paid down. A
  * new orphan fails immediately.
@@ -67,6 +69,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { checkShrinkOnlyAgainstHistory } from './lib/baseline-history.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), '..');
@@ -97,8 +100,26 @@ const BASELINE_REL = 'docs/deferral-referent-baseline.json';
  * construction, because it promises nothing a reader can chase.
  */
 const MARKER_RE = /<!--\s*tracked:\s*([^>]*?)\s*-->/g;
-/** Id-shaped tokens INSIDE a marker payload. A payload naming none is an orphan by construction. */
+/**
+ * Id-shaped tokens INSIDE a marker payload. A payload naming none is an orphan by construction.
+ *
+ * MUST CONTAIN A DIGIT — corrected 2026-08-09 after review pass 5 found the previous version accepted
+ * every three-character alphanumeric word, so a marker whose payload is PROSE ("a future 'swap-target
+ * output sanity' hardening…") resolved through the ordinary English word `future` appearing somewhere
+ * in the repository. That did not merely inflate the resolved count; it meant the guard was reporting
+ * prose as a followable referent, which is the exact claim it exists to test. The reported 114-resolved
+ * figure was published to the operator before this was caught.
+ *
+ * The digit requirement is the discriminator that separates an identifier from a word: CMT-1103,
+ * PR-495, 29723 and topic-29836/close-the-loop-registrations all qualify; `future`, `swap-target` and
+ * `hardening` do not. **What it misses, named rather than discovered later:** a purely alphabetic id
+ * (`dedupKey=session-context-injectors-lack-compaction-parity`) is not recognised, so its marker counts
+ * as an orphan. That is the safe direction — an unrecognised id is reported as debt rather than as
+ * satisfied — and such an id is in any case not mechanically distinguishable from prose, which is why
+ * the rule is what it is.
+ */
 const TOKEN_RE = /[A-Za-z0-9][A-Za-z0-9._/-]{2,}/g;
+const isIdShaped = (t) => /\d/.test(t);
 /** Resolving mentions may appear as bare ids anywhere outside docs/. */
 const idPattern = (id) => new RegExp(`(?:^|[^A-Za-z0-9._/-])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9._/-])`);
 
@@ -124,9 +145,14 @@ const declared = new Map(); // id -> Set(spec paths)
 for (const rel of specFiles) {
   let text;
   try { text = fs.readFileSync(path.join(ROOT, rel), 'utf-8'); } catch { continue; }
+  // Strip fenced blocks first. A marker QUOTED inside a fence is being displayed — in an archived
+  // review verdict, a syntax example, a transcript — not declared as this repository's own deferral.
+  // Discovered immediately: archiving the reviewers' verbatim answers made one of THEIR example
+  // markers a live orphan of mine, which is a document acquiring a promise by quoting one.
+  const scanned = text.replace(/^(?:```|~~~)[\s\S]*?^(?:```|~~~)\s*$/gm, '');
   MARKER_RE.lastIndex = 0;
   let m;
-  while ((m = MARKER_RE.exec(text)) !== null) {
+  while ((m = MARKER_RE.exec(scanned)) !== null) {
     const id = m[1].replace(/\s+/g, ' ').trim();
     if (!id) continue;
     if (!declared.has(id)) declared.set(id, new Set());
@@ -144,7 +170,7 @@ const resolved = new Set();
 // A marker resolves when ANY id-shaped token in its payload resolves. A payload with no such
 // token can never resolve — it names nothing followable, which is the condition, not a parser gap.
 const wanted = [...declared.keys()]
-  .map((id) => ({ id, tokens: (id.match(TOKEN_RE) ?? []).map((t) => idPattern(t)) }))
+  .map((id) => ({ id, tokens: (id.match(TOKEN_RE) ?? []).filter(isIdShaped).map((t) => idPattern(t)) }))
   .filter((w) => w.tokens.length > 0);
 for (const rel of resolvingFiles) {
   let text;
@@ -195,6 +221,10 @@ if (!baseline) {
   if (orphans.length > baselineSet.size) {
     failures.push(`orphan count rose from ${baselineSet.size} to ${orphans.length} — the baseline is shrink-only.`);
   }
+  // The ratchet's reference point must be ACCEPTED HISTORY, not the same commit's own baseline file.
+  failures.push(...checkShrinkOnlyAgainstHistory({
+    relPath: BASELINE_REL, cwd: ROOT, field: 'orphans', current: [...baselineSet], label: 'deferral orphan baseline',
+  }));
 }
 
 const report = {
