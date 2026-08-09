@@ -223,7 +223,8 @@ if (!baseline) {
   }
   // The ratchet's reference point must be ACCEPTED HISTORY, not the same commit's own baseline file.
   failures.push(...checkShrinkOnlyAgainstHistory({
-    relPath: BASELINE_REL, cwd: ROOT, field: 'orphans', current: [...baselineSet], label: 'deferral orphan baseline',
+    relPath: BASELINE_REL, cwd: ROOT, field: 'orphans', current: [...baselineSet],
+    label: 'deferral orphan baseline', envPrefix: 'DEFERRAL_REFERENT',
   }));
 }
 

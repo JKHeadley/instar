@@ -871,3 +871,45 @@ registry's signature failure one level up.
 **Charter item 3 confirmed complete rather than assumed:** the *solo-captain-hold* defect is filed — it is
 case (1) of tooth (E) and carries the evidence for `GAP-alive-but-inert`. The stale-text guard was the
 second half and shipped in increment 18. Checked rather than remembered.
+
+## Increment 23 — three of four pass-6 blockers closed by COPYING the repo's proven patterns
+
+The steer was: stop inventing at 4am, go and read what already works. Three waves of invented fixes had
+each opened a new hole. So I read first, and the existing patterns are better than what I built.
+
+**Pattern 1 — base-binding.** `.github/workflows/ci.yml` already resolves a PINNED base SHA from the event
+(`pull_request.base.sha || github.event.before || <sha>^`), extracts the base file to `$RUNNER_TEMP`, and
+hands the checker a `_FILE` path plus a separate `_REQUIRED` flag — so the script never touches git.
+`standards-coverage.mjs` also carries a **self-wiring validator** that parses the workflow and fails the
+build if that step drifts. My version used a mutable branch name and inferred "establishing" itself; both
+holes are exactly what pass 6 named. Rewritten to copy the shape, with three CI-bound baselines added in
+the same form. **One deliberate faithful copy I nearly "improved":** with no base env at all the check is
+PERMISSIVE, because the ratchet is a CI-time guarantee. My instinct was to fail closed locally — which
+would have broken every local commit and ended with the opt-out set permanently, a stricter-looking rule
+that decays into a weaker one.
+
+**Pattern 2 — append-only.** `src/threadline/ThreadLog.ts` runs a production hash chain:
+`hash = sha256(prevHash + canonical(entry-without-hash))`, verified from an anchor, reporting the first
+broken index. Copied. It is strictly stronger than the base comparison it replaces: deleting, reordering
+or editing any earlier row breaks the chain **inside the file**, no base ref required.
+
+**Pattern 3 — evidence and dates.** Copied from the protected-base ledger reader: dates validated by
+round-trip with a future clamp, and a referent expressed as a jailed, normalised repo-relative path plus
+the sha256 of its bytes. `evidence: true` and `9999-99-99` now fail by construction rather than by a
+bespoke check I would have had to think of. Retirement tombstones are append-only too, so an exemption
+cannot evaporate once it becomes the base.
+
+**Four arms, all injection-proven:**
+
+| Arm | Injection | Result |
+|---|---|---|
+| pinned base | add an exemption with a real base bound | fails, naming the entry and the required row |
+| hash chain | edit an earlier row's reason | fails at `rebaselines[0]`, naming recorded vs computed |
+| evidence | `evidence: true`, `at: 9999-99-99` | both fail, each naming what a real one looks like |
+| duplicate id | same gap id twice in the records file | fails — pass 6 found my check covered only the floor |
+
+**Still open: pass-6 defect (d), circular resolution.** `PR-495 follow-up` resolves only because `PR-495`
+appears in this lint's own comments and in this very narrative. The repo's proven answer is `ref` +
+`contentSha256`, which cannot be retrofitted to 217 marker sites today. Next increment adopts its
+principle — prose and comments do not resolve a referent; code, tests, fixtures and config do — rather
+than claiming the stronger form is in place.

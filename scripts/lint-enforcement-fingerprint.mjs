@@ -192,7 +192,7 @@ if (!baseline) {
   }
   failures.push(...checkShrinkOnlyAgainstHistory({
     relPath: BASELINE_REL, cwd: ROOT, field: 'grandfathered', current: [...grandfathered],
-    label: 'fingerprint exemption baseline',
+    label: 'fingerprint exemption baseline', envPrefix: 'ENFORCEMENT_FINGERPRINT',
   }));
   const staleExemptions = [...grandfathered].filter((name) => fingerprinted.has(name));
   for (const name of staleExemptions) {

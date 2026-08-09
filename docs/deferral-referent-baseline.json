@@ -56,7 +56,7 @@
     "CMT-905",
     "CMT-906",
     "CMT-944",
-    "CMT-944 \u2014 token usage accounting (item 1) ships as sibling PR B referencing this same spec; durably tracked as commitment CMT-944, explicitly phased, not dropped.",
+    "CMT-944 — token usage accounting (item 1) ships as sibling PR B referencing this same spec; durably tracked as commitment CMT-944, explicitly phased, not dropped.",
     "CMT-statesync-lightbeat-carryforward",
     "ID",
     "R-2",
@@ -109,7 +109,7 @@
     "platform/p17-system-origin-topic-budget",
     "process-health-dashboard-tab",
     "programNeeds",
-    "programNeeds \u00a74",
+    "programNeeds §4",
     "project-daily-digest",
     "project-pr-label-autoseed",
     "project-scope",
@@ -146,7 +146,8 @@
       "at": "2026-08-09",
       "from": 103,
       "to": 137,
-      "reason": "THIRD widening in one night, and the one that made the guard honest. Review pass 5 found the resolver accepted every three-character alphanumeric word as an identifier, so a marker whose payload is PROSE resolved through ordinary English \u2014 'a future \"swap-target output sanity\" hardening' resolved via the word 'future'. That did not merely inflate the resolved count; the guard was reporting prose as a followable referent, which is the exact claim it exists to test, and the 114-resolved figure had already been published to the operator. A token must now contain a digit. The orphan count rose 103 to 137 because the instrument stopped counting words as promises, not because the debt grew."
+      "reason": "THIRD widening in one night, and the one that made the guard honest. Review pass 5 found the resolver accepted every three-character alphanumeric word as an identifier, so a marker whose payload is PROSE resolved through ordinary English — 'a future \"swap-target output sanity\" hardening' resolved via the word 'future'. That did not merely inflate the resolved count; the guard was reporting prose as a followable referent, which is the exact claim it exists to test, and the 114-resolved figure had already been published to the operator. A token must now contain a digit. The orphan count rose 103 to 137 because the instrument stopped counting words as promises, not because the debt grew.",
+      "hash": "695860411a9286d23baf1694f8bca2476cf08e4df634e3b9cd205c56af6a391d"
     }
   ]
 }

@@ -96,7 +96,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { checkShrinkOnlyAgainstHistory, checkGrowOnlyAgainstHistory } from './lib/baseline-history.mjs';
+import { checkGrowOnlyAgainstHistory, validateEvidenceRef, canonicalDate } from './lib/baseline-history.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), '..');
@@ -186,6 +186,13 @@ const liveSet = new Set(live);
 const liveDigest = new Map(liveEntries.map((e) => [e.name, e.digest]));
 const failures = [];
 const today = new Date().toISOString().slice(0, 10);
+const gapIdSeen = new Set();
+for (const g of gaps) {
+  if (!g?.id) continue;
+  if (gapIdSeen.has(g.id)) failures.push(`${GAPS_REL} contains "${g.id}" more than once — two records under one id can disagree and both pass. (Pass 6 finding: the duplicate check covered only the floor.)`);
+  gapIdSeen.add(g.id);
+}
+
 if (!floor || !Array.isArray(floor.knownGapIds)) {
   failures.push(`${FLOOR_REL} is missing or unparseable — refusing to report clean without the grow-only floor that makes a gap record undeletable.`);
 } else {
@@ -205,10 +212,12 @@ if (!floor || !Array.isArray(floor.knownGapIds)) {
   failures.push(...checkGrowOnlyAgainstHistory({
     relPath: FLOOR_REL, cwd: ROOT, field: 'knownGapIds', current: floor.knownGapIds,
     retiredIds: (floor.retired ?? []).map((r) => r?.id).filter(Boolean), label: 'gap floor',
+    envPrefix: 'ENFORCEMENT_GAP_FLOOR',
   }));
   failures.push(...checkGrowOnlyAgainstHistory({
     relPath: FLOOR_REL, cwd: ROOT, field: 'everSweptGapIds', current: floor.everSweptGapIds ?? [],
     retiredIds: (floor.retired ?? []).map((r) => r?.id).filter(Boolean), label: 'ever-swept floor',
+    envPrefix: 'ENFORCEMENT_GAP_FLOOR',
   }));
   const seenFloorIds = new Set();
   for (const fid of floor.knownGapIds) {
@@ -217,15 +226,26 @@ if (!floor || !Array.isArray(floor.knownGapIds)) {
   }
   // A retirement is a deliberate act and must look like one. The note promised a reason; the check did not.
   for (const r of floor.retired ?? []) {
-    const missing = ['id', 'at', 'reason', 'evidence'].filter((k) => !r?.[k] || String(r[k]).trim().length === 0);
+    const evErr = validateEvidenceRef(r?.evidence, ROOT);
+    if (evErr) {
+      failures.push(
+        `${FLOOR_REL} retires "${r?.id ?? '?'}" — ${evErr}. Evidence is a JAILED repo-relative path plus the sha256 ` +
+        `of its bytes (the shape standards-coverage.mjs already requires of auditRef/auditSha256), because a free ` +
+        `string cannot be checked: the previous version accepted the literal value \`true\`.`,
+      );
+    }
+    if (!canonicalDate(r?.at)) {
+      failures.push(`${FLOOR_REL} retires "${r?.id ?? '?'}" with at=${JSON.stringify(r?.at)} — not a real, non-future YYYY-MM-DD date. The previous version accepted 9999-99-99.`);
+    }
+    const missing = ['id', 'reason'].filter((k) => !r?.[k] || String(r[k]).trim().length === 0);
     if (missing.length > 0) {
       failures.push(
         `${FLOOR_REL} retires "${r?.id ?? '?'}" without ${missing.join(', ')}. Retiring a failure-shape ends its ` +
         `propagation to every future standard, permanently — the note promised a reason, a date and evidence, and ` +
         `the check accepted a bare id, which is the promise-vs-mechanism gap this whole registry records.`,
       );
-    } else if (!/^\d{4}-\d{2}-\d{2}$/.test(String(r.at)) || String(r.reason).trim().length < 40) {
-      failures.push(`${FLOOR_REL} retires "${r.id}" with a malformed date or a reason under 40 characters. A one-word reason is not a reason.`);
+    } else if (String(r.reason).trim().length < 40) {
+      failures.push(`${FLOOR_REL} retires "${r.id}" with a reason under 40 characters. A one-word reason is not a reason.`);
     }
   }
   for (const g of gaps) {

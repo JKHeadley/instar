@@ -1,183 +1,245 @@
 /**
- * baseline-history.mjs — a ratchet must compare against ACCEPTED HISTORY, not against itself.
+ * baseline-history.mjs — a ratchet must compare against a PINNED accepted base, not a branch name.
  *
- * ── Why this exists ────────────────────────────────────────────────────────
- * Review pass 5, 2026-08-09, on three "shrink-only" baselines built the same night:
+ * ── Why this file was rewritten rather than patched ────────────────────────
+ * The first version ran `git show origin/main:<path>` from inside the lint. Review pass 6:
  *
- *   "A change can add a fingerprint-less article to both the registry AND `grandfathered`,
- *    or add an orphan marker to both the corpus AND `orphans`, and remain clean. Neither
- *    check compares against the accepted Git state. Therefore 'may never be added back',
- *    'the debt can only be paid down', and 'a new orphan fails immediately' are manufactured
- *    enforcement claims."
+ *   "The 'accepted base' is not reliably the accepted change boundary. It defaults to mutable
+ *    `origin/main`, while the lint CI job neither fetches full history nor supplies the event's
+ *    protected base SHA... On a main-branch checkout, `origin/main` can instead denote the commit
+ *    under test, recreating self-comparison. The repository already demonstrates the correct
+ *    pattern elsewhere in ci.yml, where protected base SHAs are supplied explicitly."
  *
- * It was right, and the same defect had already been found once that night in a different
- * dress: the enforcement-gap floor was "grow-only" while living in a file the same commit
- * could edit. Both share one root — **a ratchet whose reference point travels with the
- * change it is meant to constrain is not a ratchet.** A list cannot floor itself.
+ * Right on both counts, and the second is the one that mattered: **the pattern already existed and
+ * I invented a weaker one instead of reading it.** Three consecutive waves of invented fixes each
+ * opened a new hole in the fix machinery. This file now COPIES the proven shape used by
+ * `standards-coverage.mjs` together with the `area-audit-base` step in `.github/workflows/ci.yml`:
  *
- * So the reference point is the file as of the ACCEPTED base (`origin/main` by default): a
- * commit can only be compared against something it did not author.
+ *   1. CI resolves a PINNED base SHA from the event
+ *      (`pull_request.base.sha || github.event.before || <sha>^`) — never a branch name.
+ *   2. CI extracts the base copy of each baseline file to `$RUNNER_TEMP` and exports
+ *      `<PREFIX>_BASE_FILE` plus `<PREFIX>_BASE_REQUIRED` (1 when the file existed at that SHA).
+ *   3. This module reads the FILE. It never invokes git, so no ambient ref can fool it and it needs
+ *      no destructive-tool allowlist entry.
+ *   4. `REQUIRED=0` is CI ASSERTING the file genuinely did not exist at the base — an ESTABLISHING
+ *      baseline. An absent env var is "nobody bound a base", a different thing, and fails closed.
  *
- * ── Widening is legitimate; widening SILENTLY is not ───────────────────────
- * Three of tonight's re-baselines were real: the population was measured, found narrower
- * than its own description, and widened. That must stay possible. What it may not do is
- * happen without a permanent trace, so growth is admitted only when the file carries an
- * APPEND-ONLY `rebaselines` log that gained exactly one entry for it — with a date, the
- * before/after counts, and a reason. The log is checked against the base too, so an entry
- * cannot be deleted later to hide that a debt grew.
+ * ── The append-only log is now HASH-CHAINED, also copied ───────────────────
+ * Pass 6 found the previous rebaseline log was not append-only in any enforceable sense: it
+ * returned before checking for deleted rows whenever the list had not grown, and when it had, any
+ * row with a truthy date and a 40-character reason authorised every addition.
+ *
+ * `src/threadline/ThreadLog.ts` already solves this in production with a hash chain —
+ * `hash = sha256(prevHash + canonical(entry-without-hash))`, verified from an anchor, reporting the
+ * first broken index. That shape is copied here, and it is strictly stronger than the base
+ * comparison it replaces: deleting, reordering or editing ANY earlier row breaks the chain inside
+ * the file itself, with no base ref needed.
+ *
+ * ── Evidence and dates validated the way this repo already validates them ──
+ * Copied from `standards-coverage.mjs`'s protected-base ledger reader: dates checked by round-trip
+ * (`new Date(v).toISOString()` must reproduce the input) with a future clamp, and a referent
+ * expressed as a JAILED, normalised repo-relative path plus the sha256 of the bytes it points at —
+ * not a free string. `evidence: true` and `9999-99-99` both fail by construction rather than by a
+ * bespoke check I would have had to think of.
  *
  * ── What this measures, and what it certifies ──────────────────────────────
- *   MEASURED  — the baseline's own entries at HEAD against the same file at the base ref,
- *               plus the append-only-ness of its rebaselines log.
- *   CERTIFIED — an entry cannot be ADDED to a shrink-only list, and a debt cannot GROW,
- *               without a dated reason that itself cannot later be removed.
+ *   MEASURED  — the baseline's entries at HEAD against the same file at the CI-pinned base SHA;
+ *               the internal hash-chain integrity of its rebaselines log; and each row's date,
+ *               counts and evidence shape.
+ *   CERTIFIED — an entry cannot be added to a shrink-only list, and a row cannot be removed from or
+ *               edited into the rebaseline history, without breaking a check.
  *
- * **It does NOT certify the reason is honest.** "Population widening" is a sentence, and a
- * sentence can be wrong or self-serving — three of mine were overstated on the night this
- * was written. What is forced is that a human-readable claim exists, in the diff, attached
- * to the exact numbers, and survives.
- *
- * **It fails CLOSED when the base cannot be read.** An unreadable base is exactly the state
- * in which a ratchet silently stops ratcheting, so it is an error rather than a pass. Point
- * it elsewhere with INSTAR_BASELINE_HISTORY_BASE=<ref> for a legitimately detached checkout.
+ * **It does NOT certify that a reason is honest**, or that the counts a row states are the counts
+ * that actually occurred. A hash chain protects the record's integrity, not its truthfulness.
+ * Named here because the previous version of this file claimed more than it delivered, twice.
  */
 
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
-const BASE_REF = process.env.INSTAR_BASELINE_HISTORY_BASE || 'origin/main';
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const SHA256_RE = /^[0-9a-f]{64}$/;
+const canonicalText = (v) => v.replace(/\r\n?/g, '\n');
+const sha256 = (v) => crypto.createHash('sha256').update(canonicalText(v)).digest('hex');
 
-/**
- * The file's content at the accepted base.
- *
- * THREE outcomes, kept distinct on purpose — collapsing them is how "unknown" becomes "clean":
- *   ok        — the base copy was read; the ratchet has a real reference point.
- *   absent    — the REF is fine but the file did not exist there. That is a NEW baseline
- *               establishing itself, which is legitimate exactly once and is reported as such
- *               rather than silently treated as an empty list (an empty list would make every
- *               entry look "added" and the first commit unpassable, or worse, make a deleted
- *               baseline look new).
- *   unreadable— the ref itself could not be resolved. This is the state in which a ratchet
- *               silently stops ratcheting, so it is an ERROR.
- */
-export function readAtBase(relPath, cwd) {
-  try {
-    execFileSync('git', ['rev-parse', '--verify', `${BASE_REF}^{commit}`], { cwd, stdio: 'ignore' });
-  } catch {
-    return { ok: false, kind: 'unreadable', reason: `base ref ${BASE_REF} does not resolve in this checkout` };
-  }
-  try {
-    const out = execFileSync('git', ['show', `${BASE_REF}:${relPath}`], {
-      cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    return { ok: true, kind: 'present', text: out };
-  } catch {
-    return { ok: false, kind: 'absent', reason: `${relPath} does not exist at ${BASE_REF} (new baseline)` };
-  }
+/** Copied from standards-coverage.mjs: a date that round-trips is a real date. */
+export function canonicalDate(value) {
+  if (typeof value !== 'string' || !DATE_RE.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) return false;
+  return date.getTime() <= Date.now() + 24 * 60 * 60 * 1000; // no future-dated history
 }
 
 /**
- * Compare a shrink-only id list against its own accepted history.
- *
- * @param {object} o
- * @param {string} o.relPath       the baseline file, repo-relative
- * @param {string} o.cwd           repo root
- * @param {string} o.field         the array field holding the ids (e.g. 'orphans')
- * @param {string[]} o.current     the ids at HEAD
- * @param {string} o.label         human label for messages
- * @returns {string[]} failures
+ * A referent is a JAILED repo-relative path plus the sha256 of its bytes — the shape
+ * `standards-coverage.mjs` already requires of `auditRef`/`auditSha256`. A free string cannot be
+ * evidence: `evidence: true` is not a thing that can be checked, and the previous version took it.
  */
-export function checkShrinkOnlyAgainstHistory({ relPath, cwd, field, current, label }) {
+export function validateEvidenceRef(ev, cwd) {
+  if (!ev || typeof ev !== 'object') return 'evidence must be an object {ref, sha256}';
+  const { ref, sha256: want } = ev;
+  if (typeof ref !== 'string' || ref.length === 0) return 'evidence.ref must be a repo-relative path';
+  if (ref.includes('\\') || ref.startsWith('/') || path.posix.normalize(ref) !== ref || ref.split('/').includes('..')) {
+    return `evidence.ref "${ref}" is not a normalised, jailed repo-relative path`;
+  }
+  if (typeof want !== 'string' || !SHA256_RE.test(want)) return 'evidence.sha256 must be a 64-hex digest';
+  let bytes;
+  try { bytes = fs.readFileSync(path.join(cwd, ref), 'utf-8'); } catch { return `evidence.ref "${ref}" does not exist`; }
+  const got = sha256(bytes);
+  if (got !== want) return `evidence.ref "${ref}" hashes to ${got.slice(0, 12)}…, not the recorded ${want.slice(0, 12)}…`;
+  return null;
+}
+
+/** The canonical bytes a rebaseline row hashes over — everything except the hash itself. */
+function canonicalRow(row) {
+  return JSON.stringify({ at: row?.at, from: row?.from, to: row?.to, reason: row?.reason, evidence: row?.evidence ?? null });
+}
+
+/** Copied from ThreadLog: hash = sha256(prevHash + canonical(entry-without-hash)). */
+export function chainHash(prevHash, row) {
+  return sha256(String(prevHash) + canonicalRow(row));
+}
+
+export const CHAIN_ROOT = '0'.repeat(64);
+
+/**
+ * Verify the rebaselines log is a well-formed hash chain. Deleting, reordering or editing ANY
+ * earlier row breaks it — no base ref required, which is why this is stronger than the base
+ * comparison it replaces.
+ */
+export function verifyRebaselineChain(rows, cwd) {
   const failures = [];
-  const base = readAtBase(relPath, cwd);
+  let prev = CHAIN_ROOT;
+  rows.forEach((row, i) => {
+    if (!canonicalDate(row?.at)) {
+      failures.push(`rebaselines[${i}].at is ${JSON.stringify(row?.at)} — not a real, non-future YYYY-MM-DD date.`);
+    }
+    if (!Number.isInteger(row?.from) || !Number.isInteger(row?.to)) {
+      failures.push(`rebaselines[${i}] must record integer from/to counts; got ${JSON.stringify(row?.from)} → ${JSON.stringify(row?.to)}.`);
+    }
+    if (typeof row?.reason !== 'string' || row.reason.trim().length < 40) {
+      failures.push(`rebaselines[${i}].reason must be a string of at least 40 characters — a one-word reason is not a reason.`);
+    }
+    if (row?.evidence !== undefined && row?.evidence !== null) {
+      const err = validateEvidenceRef(row.evidence, cwd);
+      if (err) failures.push(`rebaselines[${i}].evidence — ${err}`);
+    }
+    const want = chainHash(prev, row ?? {});
+    if (row?.hash !== want) {
+      failures.push(
+        `rebaselines[${i}] breaks the hash chain: recorded ${String(row?.hash).slice(0, 12)}…, computed ` +
+        `${want.slice(0, 12)}…. The log is append-only and chained (the shape src/threadline/ThreadLog.ts uses in ` +
+        `production): deleting, reordering or editing any earlier row breaks it here.`,
+      );
+      prev = typeof row?.hash === 'string' ? row.hash : want; // keep walking; report the FIRST break
+    } else {
+      prev = want;
+    }
+  });
+  return failures;
+}
+
+/**
+ * Read a baseline's PINNED base copy from the file CI extracted.
+ *
+ * Four outcomes, kept distinct because collapsing them is how "unknown" becomes "clean":
+ *   present            — the base copy exists and was read.
+ *   establishing       — CI asserted (REQUIRED=0) the file did not exist at the base SHA.
+ *   local-unbound      — no base env at all: a LOCAL run. Permissive, exactly as the proven
+ *                        pattern is, because the ratchet is a CI-TIME guarantee. Stated plainly:
+ *                        **a clean local run does not verify the shrink-only claim.**
+ */
+export function readPinnedBase(envPrefix) {
+  const file = process.env[`${envPrefix}_BASE_FILE`];
+  if (process.env[`${envPrefix}_BASE_REQUIRED`] === '0') return { kind: 'establishing' };
+  if (!file) {
+    // COPIED FAITHFULLY from standards-coverage.mjs's readBaseAreaAuditLedger: with no base env at
+    // all this is a LOCAL run, and the check is permissive. The ratchet is a CI-TIME guarantee — CI
+    // always sets both vars, so absence there is impossible. My first instinct was to fail closed
+    // locally, which would have broken every local commit and ended with the opt-out set
+    // permanently — a stricter-looking rule that decays into a weaker one. The proven pattern is
+    // the right trade and it is copied rather than improved.
+    return { kind: 'local-unbound' };
+  }
+  try { return { kind: 'present', text: fs.readFileSync(file, 'utf-8') }; } catch (err) {
+    return { kind: 'unreadable', reason: String(err.message).split('\n')[0] };
+  }
+}
+
+function readCurrentDoc(relPath, cwd) {
+  try { return JSON.parse(fs.readFileSync(path.join(cwd, relPath), 'utf-8')); } catch { return null; }
+}
+
+
+/** Compare a shrink-only id list against its PINNED accepted base. */
+export function checkShrinkOnlyAgainstHistory({ relPath, cwd, field, current, label, envPrefix }) {
+  const failures = [];
+  const doc = readCurrentDoc(relPath, cwd);
+  failures.push(...verifyRebaselineChain(Array.isArray(doc?.rebaselines) ? doc.rebaselines : [], cwd));
+
+  const base = readPinnedBase(envPrefix);
+  if (base.kind === 'local-unbound') return failures; // local run: CI owns this guarantee
   if (base.kind === 'unreadable') {
-    failures.push(
-      `${relPath} — ${base.reason}, so the shrink-only claim is UNVERIFIABLE and this check refuses to ` +
-      `report clean. A ratchet compared only against itself is not a ratchet: the same commit can add an ` +
-      `entry to the list and to the thing the list exempts. Set INSTAR_BASELINE_HISTORY_BASE to a reachable ` +
-      `ref if this checkout is legitimately detached.`,
-    );
+    failures.push(`${relPath} — the pinned base copy could not be read (${base.reason}); refusing to report clean.`);
     return failures;
   }
-  if (base.kind === 'absent') {
-    // A baseline being ESTABLISHED. Legitimate once, and it must say so in its own bytes so a later
-    // reader can tell an establishing baseline from one whose history was quietly dropped.
-    if (!currentDoc(relPath, cwd)?.measuredAt) {
-      failures.push(`${relPath} — is new at ${BASE_REF} but carries no measuredAt. An establishing baseline must date itself, or it is indistinguishable from one whose history was dropped.`);
+  if (base.kind === 'establishing') {
+    if (!doc?.measuredAt) {
+      failures.push(`${relPath} — CI reports this file did not exist at the base, but it carries no measuredAt. An establishing baseline must date itself.`);
     }
     return failures;
   }
 
   let baseDoc;
   try { baseDoc = JSON.parse(base.text); } catch (err) {
-    failures.push(`${relPath} — the base copy is unparseable (${err.message}); refusing to report clean.`);
+    failures.push(`${relPath} — the pinned base copy is unparseable (${err.message}); refusing to report clean.`);
     return failures;
+  }
+
+  const baseRows = Array.isArray(baseDoc?.rebaselines) ? baseDoc.rebaselines : [];
+  const headRows = Array.isArray(doc?.rebaselines) ? doc.rebaselines : [];
+  if (headRows.length < baseRows.length) {
+    failures.push(`${relPath} — the rebaselines log SHRANK (${baseRows.length} rows at the pinned base, ${headRows.length} now). It is append-only.`);
+  } else {
+    for (let i = 0; i < baseRows.length; i += 1) {
+      if (headRows[i]?.hash !== baseRows[i]?.hash) {
+        failures.push(`${relPath} — rebaselines[${i}] was REWRITTEN since the pinned base (hash changed). Earlier history is immutable.`);
+        break;
+      }
+    }
   }
 
   const baseIds = new Set(Array.isArray(baseDoc?.[field]) ? baseDoc[field] : []);
   const added = current.filter((id) => !baseIds.has(id));
   if (added.length === 0) return failures;
 
-  // Growth is admitted only with an append-only, dated rebaseline entry covering it.
-  const headLog = currentLog(relPath, cwd);
-  const baseLog = Array.isArray(baseDoc?.rebaselines) ? baseDoc.rebaselines : [];
-  const removed = baseLog.filter((e) => !headLog.some((h) => h.at === e.at && h.reason === e.reason));
-  if (removed.length > 0) {
-    failures.push(
-      `${relPath} — ${removed.length} rebaseline log entr(ies) present at ${BASE_REF} are missing at HEAD. ` +
-      `The log is APPEND-ONLY: deleting an entry hides that a debt once grew, which is the record this ` +
-      `mechanism exists to keep.`,
-    );
-  }
-  const fresh = headLog.filter((h) => !baseLog.some((e) => e.at === h.at && e.reason === h.reason));
-  const covering = fresh.find((h) => h.at && h.reason && String(h.reason).trim().length >= 40 && Number.isFinite(h.to));
+  const fresh = headRows.slice(baseRows.length);
+  const covering = fresh.find((r) => canonicalDate(r?.at) && r?.to === current.length && Number.isInteger(r?.from));
   if (!covering) {
     failures.push(
-      `${label}: ${added.length} entr(ies) were ADDED to "${field}" since ${BASE_REF} — ` +
-      `${added.slice(0, 4).join(', ')}${added.length > 4 ? ', …' : ''} — with no new rebaselines entry ` +
-      `explaining it. This list is shrink-only against ACCEPTED HISTORY, not against itself: a change that ` +
-      `adds a debt AND exempts it in one commit is exactly what the sentence "may never be added back" ` +
-      `promised was impossible. Append {"at":"YYYY-MM-DD","from":N,"to":M,"reason":"…"} stating why the ` +
-      `population grew, or shrink the list.`,
+      `${label}: ${added.length} entr(ies) were ADDED to "${field}" since the pinned base — ` +
+      `${added.slice(0, 4).join(', ')}${added.length > 4 ? ', …' : ''} — with no new rebaselines row whose \`to\` ` +
+      `equals the resulting count (${current.length}). This list is shrink-only against the ACCEPTED BASE, not ` +
+      `against itself.`,
     );
   }
   return failures;
 }
 
-function currentDoc(relPath, cwd) {
-  try { return JSON.parse(fs.readFileSync(path.join(cwd, relPath), 'utf-8')); } catch { return null; }
-}
-
-function currentLog(relPath, cwd) {
-  try {
-    const doc = JSON.parse(fs.readFileSync(path.join(cwd, relPath), 'utf-8'));
-    return Array.isArray(doc?.rebaselines) ? doc.rebaselines : [];
-  } catch { return []; }
-}
-
-/**
- * The GROW-ONLY direction, which is a different check and not the mirror of the above.
- *
- * Caught by injection rather than by reasoning: the gap floor was wired through the SHRINK-only
- * helper, so deleting an id from it was read as legitimate shrinkage and the co-edit attack passed
- * in SILENCE. Per *Verify the State, Not Its Symbol* tooth (E), an injection that produces silence
- * is the signature of an arm that cannot fire — which is exactly what this was until it was tested.
- *
- * A grow-only list may lose an entry ONLY through a recorded retirement; the caller validates the
- * retirement's own fields.
- */
-export function checkGrowOnlyAgainstHistory({ relPath, cwd, field, current, retiredIds = [], label }) {
+/** The GROW-ONLY direction — a different check, not the mirror. */
+export function checkGrowOnlyAgainstHistory({ relPath, cwd, field, current, retiredIds = [], label, envPrefix }) {
   const failures = [];
-  const base = readAtBase(relPath, cwd);
+  const base = readPinnedBase(envPrefix);
+  if (base.kind === 'local-unbound') return failures; // local run: CI owns this guarantee
   if (base.kind === 'unreadable') {
-    failures.push(`${relPath} — ${base.reason}, so the grow-only claim is UNVERIFIABLE and this check refuses to report clean.`);
+    failures.push(`${relPath} — the pinned base copy could not be read (${base.reason}); refusing to report clean.`);
     return failures;
   }
-  if (base.kind === 'absent') return failures; // establishing the list
+  if (base.kind !== 'present') return failures;
   let baseDoc;
   try { baseDoc = JSON.parse(base.text); } catch (err) {
-    failures.push(`${relPath} — the base copy is unparseable (${err.message}); refusing to report clean.`);
+    failures.push(`${relPath} — the pinned base copy is unparseable (${err.message}); refusing to report clean.`);
     return failures;
   }
   const now = new Set(current);
@@ -185,12 +247,21 @@ export function checkGrowOnlyAgainstHistory({ relPath, cwd, field, current, reti
   const dropped = (Array.isArray(baseDoc?.[field]) ? baseDoc[field] : []).filter((id) => !now.has(id) && !retired.has(id));
   if (dropped.length > 0) {
     failures.push(
-      `${label}: ${dropped.length} entr(ies) present in "${field}" at the accepted base are GONE at HEAD — ` +
+      `${label}: ${dropped.length} entr(ies) present in "${field}" at the pinned base are GONE at HEAD — ` +
       `${dropped.slice(0, 4).join(', ')}${dropped.length > 4 ? ', …' : ''}. This list is GROW-ONLY: it exists so a ` +
       `recorded failure cannot be un-recorded, and deleting the id from the floor in the same commit that deletes ` +
-      `the record is precisely the attack it was built to stop. Restore it, or record a retirement with its reason.`,
+      `the record is precisely the attack it was built to stop.`,
     );
+  }
+  // A retirement tombstone must ALSO be append-only, or the exemption evaporates once it is the base.
+  for (const r of Array.isArray(baseDoc?.retired) ? baseDoc.retired : []) {
+    if (r?.id && !retiredIds.includes(r.id)) {
+      failures.push(
+        `${relPath} — the retirement tombstone for "${r.id}" present at the pinned base is GONE at HEAD. A ` +
+        `retirement record is permanent; removing it lets that id be deleted again later with nothing left to ` +
+        `explain why it was ever allowed.`,
+      );
+    }
   }
   return failures;
 }
-

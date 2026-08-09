@@ -461,3 +461,32 @@ exactly this problem does not catch it** — it re-derives counts of things the 
 like how many entries a section has, and a percentage about a different pile of files is not one of those.
 Better to state a guard's real reach in the place someone will read it than to let its existence imply a
 protection it does not give.
+
+## Reading before writing (2026-08-09 morning)
+
+The steer was blunt and correct: three rounds of my 4am fixes had each opened a new hole, so stop
+inventing and go read what this codebase already does well. I did, and three of the four problems already
+had better answers sitting in the repository.
+
+**Where the "official" version of a file comes from.** Our build already pins an exact commit from the
+event, pulls the old copy of a file out of it, and hands the checker that file plus a flag saying whether
+it existed. There is even a validator that reads the build definition and fails if that step is ever
+edited. My version had used a branch name — which on the main branch can point at the very change being
+checked. Replaced with a copy of the real thing.
+
+**Making a log truly append-only.** We already run a hash chain in production for agent conversations:
+each entry's fingerprint includes the previous one, so removing or editing anything earlier breaks the
+chain immediately. Copied. It is better than what I had, because it needs no comparison against anything
+external — the file catches its own tampering.
+
+**What counts as evidence.** Also already solved: a file path plus a hash of that file's contents. My
+version took any text, and would have accepted the literal word "true" as proof. Now it does not.
+
+**One thing I nearly "improved" and deliberately did not.** With no build context, the existing pattern is
+lenient — the strictness lives in the build, not on your laptop. My instinct was to make it strict
+everywhere, which would have broken every local save and ended with someone switching it off for good. A
+rule that looks stricter and decays into a weaker one is worse than the honest one.
+
+Four traps set and sprung to prove each of these actually bites. The fourth problem — where a note can
+appear "resolved" because its number is mentioned in the checker's own comments — is still open, and I
+have said so rather than counting three out of four as done.
