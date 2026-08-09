@@ -1009,3 +1009,34 @@ onto them, all artefacts of paragraph-folding earlier in the window.
 **Its trajectory ruling stands and is fair:** load-bearing defects 4 → 4 → 4 → 4 across passes 4–7. Seven
 external passes, seven rejects. Both family audits remain stale, which is the honest state: no accepting
 review exists to record, and I will not record one that has not happened.
+
+## Increment 28 (window 11) — the empty-payload send, refused at the door
+
+A peer agent's relay accepted a send whose entire body was one **zero-width space** (U+200B), failed
+downstream with a 500 carrying an **empty error body**, burned nine retries across **4h17m**, and emitted a
+user-facing *"I had a reply for you but couldn't deliver it"* notice. There was no reply. Two of that
+agent's four escalations were this exact shape; the other two carried real text and real error bodies.
+
+**Copy-before-invent:** the fix reuses the refusal shape already in that exact route — `400` plus a reason
+string — rather than a new mechanism.
+
+**The guard:** a `text` where nothing survives stripping Unicode whitespace and the zero-width format
+marks (U+200B, U+200C, U+200D, U+2060, U+FEFF) is refused. The incident payload was truthy, non-empty and
+under 4096, so it passed every existing check.
+
+**Why 400 and not 500, verified rather than assumed:** `recovery-policy.ts` classifies
+`400 / 401 / 404 → escalate (terminal client error)`, so a refusal here **cannot enter the retry loop** —
+no nine attempts, no four hours. I read that in the classifier rather than trusting the identical claim in
+the comment on the adjacent negative-topicId guard.
+
+**The reason travels in the body**, closing the second half of the incident: the original 500 carried
+nothing, which is precisely why four hours of retrying produced nothing diagnosable.
+
+**Proven both directions, 11 cases.** Refused: bare ZWSP, whitespace runs, ZWSP+ZWNJ+ZWJ, BOM, word
+joiner, newline+tab. Still sent: `hello`, padded text, text *wrapped* in zero-widths, a bare `.`, an emoji.
+No false positive — a message carrying a zero-width character plus real content is untouched.
+
+**Whole-path, not just source** (the lesson from yesterday's producer defect): `tsc` clean, full build
+clean, guard present in the built `dist/server/routes.js`, and correctly ordered **within the route** —
+after the text-required check, before the 4096 cap. That scoping mattered: a first ordering check compared
+first-occurrences file-wide and returned a false negative.

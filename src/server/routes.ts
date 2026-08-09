@@ -14891,6 +14891,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: '"text" field required' });
       return;
     }
+
+    // ── An INVISIBLE payload is refused at the door (window 11, 2026-08-09) ──
+    // Earned from a real incident on a peer agent the same morning: a send whose
+    // entire body was one ZERO-WIDTH SPACE (U+200B) passed the guard above — it is a
+    // truthy, non-empty, under-4096 string — then failed downstream with a 500
+    // carrying an EMPTY error body, burned nine retries across 4h17m, and emitted a
+    // user-facing "I had a reply for you but couldn't deliver it" notice. There was
+    // no reply. Two of that agent's four escalations were this exact shape.
+    //
+    // Refused with 400 deliberately, not 500: recovery-policy.ts classifies
+    // `400 / 401 / 404 -> escalate (terminal client error)`, so a refusal here CANNOT
+    // enter the retry loop — verified by reading that file, not inferred from the
+    // comment on the negative-topicId guard above. The reason travels in the body,
+    // which is the second half of the incident: the 500 carried nothing, so four
+    // hours of retrying produced nothing anyone could diagnose.
+    //
+    // "Invisible" = nothing survives stripping Unicode whitespace and the zero-width
+    // format marks that render as nothing (U+200B ZWSP, U+200C ZWNJ, U+200D ZWJ,
+    // U+2060 word joiner, U+FEFF BOM). A message a human cannot see is not a message.
+    if (text.replace(/[\s\u200B-\u200D\u2060\uFEFF]/gu, '').length === 0) {
+      res.status(400).json({
+        error: 'refused: "text" contains no visible characters (only whitespace and/or zero-width marks). '
+          + 'An invisible message cannot inform a reader, and delivering it would produce a "reply lost" '
+          + 'escalation for content that never existed.',
+      });
+      return;
+    }
     if (text.length > 4096) {
       res.status(400).json({ error: '"text" must be 4096 characters or fewer' });
       return;
