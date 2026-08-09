@@ -4,6 +4,7 @@
   "measuredAt": "2026-08-08",
   "knownGapIds": [
     "GAP-alive-but-inert",
+    "GAP-fix-restates-the-claim",
     "GAP-no-moment-declared",
     "GAP-planted-premise",
     "GAP-watched-but-unauditable"

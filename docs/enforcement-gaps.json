@@ -460,6 +460,90 @@
       "countdown": "2026-09-07",
       "trackedAs": "STD-SUBCOUNTDOWN-planted-premise-undetectable",
       "residual": "Nothing detects a planted premise. The lint checks protocol presence; only a reviewer reading the underlying code instead of the dispatch's framing catches it \u2014 which is what happened here, and is not a guarantee."
+    },
+    {
+      "id": "GAP-fix-restates-the-claim",
+      "discoveredAt": "2026-08-08",
+      "recordedAt": "2026-08-08",
+      "shape": "fix-restates-the-claim",
+      "shapeDescription": "A correction narrows the defect and then RESTATES the over-claim it was correcting, inside the sentence announcing the fix. The gap shrinks \u2014 often by a large factor \u2014 while the CLAIM stays at 100%, so the artifact that certifies the defect is gone is itself the new instance of it. It survives review because a reader checks whether the fix happened, not whether the fix's own description is now true. A guard or a record has this shape when its correction note asserts full coverage rather than the coverage actually attained.",
+      "evaded": {
+        "standard": "Verify the State, Not Its Symbol",
+        "atMoment": "author-time",
+        "how": "Three instances in one day, in the same file, each while fixing the previous one, and NONE caught by me. (i) The deferral guard matched two numeric id forms in prose while its prose claimed to police tracked deferrals \u2014 47% of the real population; caught by external review pass 1. (ii) The fix took the MARKER but kept the commit-time step's character class, which a SPACE terminates, so 25 live markers with a space, comma or parenthesis stayed invisible \u2014 89% coverage, and the sentence announcing the correction said it saw the subject; caught by an independent lane that re-derived the count and refused to accept mine. (iii) The gap registry's own certification clause listed one limitation when four applied; caught by external review pass 2. The through-line is not carelessness about the mechanism \u2014 each mechanism genuinely improved \u2014 it is that the DESCRIPTION is written in the moment of relief at having fixed the thing, and nobody re-measures a sentence."
+      },
+      "sweep": {
+        "sweptAt": "2026-08-08",
+        "method": "For each fingerprinted standard, read its correction notes and ask: does any of them assert coverage the mechanism does not attain?",
+        "fingerprintPopulation": [
+          {
+            "standard": "Documentation IS Being",
+            "fingerprintDigest": "6cc1a55951c9f480"
+          },
+          {
+            "standard": "Deferral = Deletion",
+            "fingerprintDigest": "2dd034ccfb35af56"
+          },
+          {
+            "standard": "Sovereignty \u2014 \"I own what is mine\"",
+            "fingerprintDigest": "d15a13e71692aea7"
+          },
+          {
+            "standard": "The Right to Stand Ground",
+            "fingerprintDigest": "5a0b28b0eacf1286"
+          },
+          {
+            "standard": "Iterative Audit to Convergence",
+            "fingerprintDigest": "dadee182e3f07439"
+          },
+          {
+            "standard": "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere",
+            "fingerprintDigest": "71fd4a8e40f15c1a"
+          }
+        ],
+        "matched": [],
+        "unmatched": [
+          {
+            "standard": "Documentation IS Being",
+            "atDigest": "6cc1a55951c9f480",
+            "why": "Its correction notes state the coverage attained and name what is NOT reached \u2014 the `none` fingerprints say nothing guards them, and the guarded ones enumerate the moments they miss. Swept after the third instance, when the pattern was known, which is exactly why these read differently from the notes that carried the shape.",
+            "evidence": "read each article's correction and coverage notes against the attained-vs-claimed test"
+          },
+          {
+            "standard": "Deferral = Deletion",
+            "atDigest": "2dd034ccfb35af56",
+            "why": "Its correction notes state the coverage attained and name what is NOT reached \u2014 the `none` fingerprints say nothing guards them, and the guarded ones enumerate the moments they miss. Swept after the third instance, when the pattern was known, which is exactly why these read differently from the notes that carried the shape.",
+            "evidence": "read each article's correction and coverage notes against the attained-vs-claimed test"
+          },
+          {
+            "standard": "Sovereignty \u2014 \"I own what is mine\"",
+            "atDigest": "d15a13e71692aea7",
+            "why": "Its correction notes state the coverage attained and name what is NOT reached \u2014 the `none` fingerprints say nothing guards them, and the guarded ones enumerate the moments they miss. Swept after the third instance, when the pattern was known, which is exactly why these read differently from the notes that carried the shape.",
+            "evidence": "read each article's correction and coverage notes against the attained-vs-claimed test"
+          },
+          {
+            "standard": "The Right to Stand Ground",
+            "atDigest": "5a0b28b0eacf1286",
+            "why": "Its correction notes state the coverage attained and name what is NOT reached \u2014 the `none` fingerprints say nothing guards them, and the guarded ones enumerate the moments they miss. Swept after the third instance, when the pattern was known, which is exactly why these read differently from the notes that carried the shape.",
+            "evidence": "read each article's correction and coverage notes against the attained-vs-claimed test"
+          },
+          {
+            "standard": "Iterative Audit to Convergence",
+            "atDigest": "dadee182e3f07439",
+            "why": "Its correction notes state the coverage attained and name what is NOT reached \u2014 the `none` fingerprints say nothing guards them, and the guarded ones enumerate the moments they miss. Swept after the third instance, when the pattern was known, which is exactly why these read differently from the notes that carried the shape.",
+            "evidence": "read each article's correction and coverage notes against the attained-vs-claimed test"
+          },
+          {
+            "standard": "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere",
+            "atDigest": "71fd4a8e40f15c1a",
+            "why": "Its correction notes state the coverage attained and name what is NOT reached \u2014 the `none` fingerprints say nothing guards them, and the guarded ones enumerate the moments they miss. Swept after the third instance, when the pattern was known, which is exactly why these read differently from the notes that carried the shape.",
+            "evidence": "read each article's correction and coverage notes against the attained-vs-claimed test"
+          }
+        ]
+      },
+      "countdown": "2026-09-07",
+      "trackedAs": "STD-SUBCOUNTDOWN-fix-restates-claim",
+      "residual": "No guard detects this. It is a property of a SENTENCE about a mechanism, and the only demonstrated detector is a second party who re-derives the number instead of reading the claim. Three for three, that party was never me."
     }
   ]
 }

@@ -302,3 +302,24 @@ counted whatever records it was handed, so removing one ended its obligation per
 called that clean. The fix is a separate list of every failure ever recorded, kept outside the file it
 protects — because a lock stored inside the box it locks is not a lock. Retiring a lesson is allowed;
 retiring it by deletion is not.
+
+## The mistake I made three times tonight, each time while fixing it
+
+Worth writing down on its own, because it is the only pattern here I could not see from inside.
+
+Three times today, in the same file, I fixed an over-claim — and the sentence announcing the fix contained
+a fresh one. The check that watched 47% of what it claimed became a check that watched 89% of what it
+claimed. A list of limitations that named one when four applied. Each mechanism genuinely got better. Each
+description stayed at "and now it covers the thing."
+
+**Nobody re-measures a sentence.** A reviewer checks whether the fix happened. The claim about the fix
+rides along untested, and it gets written in the moment of relief at having finally fixed the thing.
+
+All three were caught by someone else — an outside reviewer twice, an independent counter once. Not one by
+me. So it is recorded as its own failure shape, with the honest note that nothing detects it: the only
+demonstrated detector is a second party who goes and re-derives the number instead of reading what I said
+about it.
+
+That is the real case for running a second lane at all. It did not just find bugs I would have found more
+slowly. It found the one kind of mistake my own checking cannot see, because my own checking reads my own
+words.

@@ -630,3 +630,32 @@ when the lane found it. Increment 14's per-verdict `atDigest` closed it as a sid
 changes the name's digest, so every verdict about it goes stale and the build refuses. Verified by
 injection rather than assumed. Recording that it was closed incidentally rather than deliberately, because
 "it happens to be covered" is a weaker guarantee than "it was designed for."
+
+## Increment 16 — recording the night's own failure-shape: `GAP-fix-restates-the-claim`
+
+Three times today, in the same file, I made the same class of error **while fixing the previous instance
+of it**, and not one was caught by me.
+
+| # | The over-claim | Real coverage | Caught by |
+|---|---|---|---|
+| i | the deferral guard matched two numeric id forms in prose while claiming to police tracked deferrals | 47% | external review pass 1 |
+| ii | the fix took the MARKER but kept a character class a SPACE terminates — 25 live markers invisible — and the sentence announcing it said it saw the subject | 89% | the independent lane, by re-deriving the count and refusing mine |
+| iii | the gap registry's certification clause listed one limitation where four applied | 25% | external review pass 2 |
+
+**The shape:** a correction narrows the defect and then restates the over-claim it was correcting, inside
+the sentence announcing the fix. The gap shrinks — often by a large factor — while the CLAIM stays at
+100%, so *the artifact certifying the defect is gone is itself the new instance of it.* It survives review
+because a reader checks whether the fix happened, not whether the fix's own description is now true.
+
+The through-line is not carelessness about mechanisms — each mechanism genuinely improved. It is that the
+description gets written in the moment of relief at having fixed the thing, and **nobody re-measures a
+sentence.**
+
+Recorded as `GAP-fix-restates-the-claim`, floored, swept against all six fingerprints. **Residual stated
+plainly: no guard detects this.** It is a property of a sentence about a mechanism, and the only
+demonstrated detector is a second party who re-derives the number instead of reading the claim. Three for
+three, that party was never me.
+
+That is also the strongest argument tonight produced for the parallel-lane structure. The reviewer and the
+lane did not merely find bugs; they found the one defect class my own checking is structurally blind to,
+because my checking reads what I wrote.
