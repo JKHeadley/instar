@@ -175,3 +175,37 @@ silently skipped.
 **What this increment is evidence for.** These are four instances of the stale-text class I filed as a
 defect earlier today — prose left behind by the change it describes — and every one was found by
 measurement rather than by reading. That is the argument for Codey's guard existing at all.
+
+---
+
+## Increment 5 — the escalation candidate, corrected against what already exists
+
+**Changed:** `docs/STANDARDS-REGISTRY.md` (one amendment corrected). No guard added; enforced ratio
+unchanged at 0.7471.
+
+**I proposed a candidate that already existed, and found out by looking before building.** Increment 2
+placed "an escalation must show its exhausted checklist" as if it were new machinery to design. It is
+not. The outbound tone gate ALREADY hard-blocks the escalation failure modes — unverified wall, false
+blocker, work parked on the user — so an escalation that CLAIMS a blocker is already judged today.
+
+**The real gap is narrower than I wrote:** the message is judged on its CLAIM and is never required to
+SHOW the probes it ran. That distinction matters, and overstating it would have had me build a
+duplicate of a live gate.
+
+**And the fix is already designed** — in a source comment sitting beside those very rules: make the
+override available only by naming a `stop_reason_kind` from the enum the prompt already emits,
+cross-checked against the blocker ledger *instead of free prose*. The comment marks it a real operator
+decision, surfaced rather than assumed. That posture is correct and is why it has not shipped.
+
+**A second finding falls out, and it is about my own increment 1.** That designed-but-deferred
+enforcement lives in a SOURCE COMMENT with no tracking marker at all — and the deferral guard I built
+this morning scans `docs/specs/` only. **A deferral in code is exactly as invisible as the ones the
+guard was built to catch.** My guard's population is narrower than the problem it names, which is the
+same shape as every other under-scoped check found this week — and I found it in my own work within
+hours of shipping it, by reading code rather than by re-reading my guard.
+
+Both are named and dated on the amendment. Widening the guard to source comments is deliberately NOT
+done tonight: the comment corpus is large, the false-positive profile is unmeasured, and the discipline
+this window has repeatedly proved is measure-then-design.
+
+**State:** 87 articles, enforced 0.7471 unchanged, false-claims 0, dangling 0, lint chain green.
