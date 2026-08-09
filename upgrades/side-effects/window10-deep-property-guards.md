@@ -737,3 +737,27 @@ reviewer**; and claims in files other than the registry are out of scope, which 
 instances lived.
 
 It closes the cheapest third of a class it does not close.
+
+## Increment 19 — the seventh hole: a completed sweep could be un-done
+
+The independent lane's item 4 named three holes, not two. The third had not been read carefully enough on
+first collection: **a finished sweep could be reverted to unswept.** Replace it with an honest-looking
+absence plus a far-future countdown and every arm passed, reporting the gap as dated-and-unswept.
+
+**Freshness ran in both directions.** The staleness arm forces re-work when a fingerprint changes; nothing
+stopped work already done from being silently undone. All four declared non-certifications concern
+something else entirely — how well a sweep was done, whether a failure becomes a record, whether a match
+is acted on, whether an unswept gap gets swept.
+
+Closed by extending the external floor with `everSweptGapIds`: a gap that has ever been swept may not
+return to unswept. Retirement stays available and stays deliberate. Arm proven.
+
+**Three holes, one root, and the lane named it:** *the arms guard the sweep's content, not its existence.*
+Deletion (sixth), reversion (seventh), and namesake-laundering (fifth) all attacked whether the obligation
+EXISTS rather than whether it was met — and every declared limitation was about quality. The floor file
+now guards existence from outside; the arms guard content from inside. Recording the root rather than
+three patches, because a list of three plugged holes invites a fourth of the same kind.
+
+**One honest correction to the lane's baseline note:** it observed that the fingerprinted population was
+2 of 88, so "swept against every fingerprint" meant swept against two. It is 6 of 88 now, which is still
+small enough that the phrase deserves its qualifier rather than its confidence.

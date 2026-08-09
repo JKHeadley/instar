@@ -372,3 +372,20 @@ meant a check that blocks builds over a correct value. I removed it and wrote do
 **And what it cannot do**, in its own header: only numbers. "A reader cannot see the tree" and "the gate
 already blocks this" were two of the worst examples tonight and neither has a number in it. It closes the
 cheapest third of the problem, and says so rather than implying it closed the problem.
+
+## And a third way to escape the obligation: undo the work
+
+The independent counter had found three ways past my check, not two. The one I under-read the first time:
+you could take a finished piece of work and mark it *not done yet, deadline next year*. Every arm passed.
+It reported the item as honestly-pending.
+
+So the check could force you to redo work when circumstances changed, but nothing stopped you from
+quietly un-doing work already finished. Now anything ever completed cannot return to pending; retiring it
+stays possible and stays deliberate.
+
+**The three escapes share one root, and the counter named it better than I would have:** every arm guarded
+whether the work was done *well*, and all three attacks went after whether the obligation *existed at all*
+— delete the record, revert it to pending, or slip a new item in under a name already ticked off. My list
+of "things this doesn't promise" was entirely about quality. I have written the root down rather than
+three patches, because a tidy list of three plugged holes is an invitation to find a fourth of the same
+kind.

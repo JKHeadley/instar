@@ -223,6 +223,13 @@ for (const gap of gaps) {
 
   // Leg 3 — the sweep, or an honest, dated absence of one.
   const sweep = gap?.sweep ?? null;
+  if (!sweep && (floor?.everSweptGapIds ?? []).includes(id)) {
+    failures.push(
+      `${id} has been SWEPT before and is now recorded as unswept. Freshness must run one way: a far-future countdown beside ` +
+      `an honest-looking absence passed every arm while silently undoing work already done (found by independent injection). ` +
+      `Restore the sweep, or record a deliberate retirement in ${FLOOR_REL} with a reason.`,
+    );
+  }
   if (!sweep) {
     if (!ISO_DATE.test(String(gap?.countdown ?? ''))) {
       failures.push(`${id} — is UNSWEPT (sweep: null) and its countdown is "${gap?.countdown}", not a YYYY-MM-DD date. An unvalidated countdown lets \`"never"\` sit green forever (review pass 3, finding 6).`);

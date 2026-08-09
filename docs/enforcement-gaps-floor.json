@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "note": "Every ENFORCEMENT GAP id ever recorded. GROW-ONLY. This file exists OUTSIDE docs/enforcement-gaps.json on purpose: an independent reviewer demonstrated that deleting a gap record made the lint report clean with one fewer gap \u2014 the sweep obligation was escapable by removing the thing that creates it, the failure-shape stopped propagating to every future standard permanently, and the build called that clean. A floor kept inside the file it floors is not a floor. Retiring a shape is legitimate; doing it silently is not, so a retirement must be recorded here with a reason rather than by deletion.",
+  "note": "Every ENFORCEMENT GAP id ever recorded. GROW-ONLY. This file exists OUTSIDE docs/enforcement-gaps.json on purpose: an independent reviewer demonstrated that deleting a gap record made the lint report clean with one fewer gap \u2014 the sweep obligation was escapable by removing the thing that creates it, the failure-shape stopped propagating to every future standard permanently, and the build called that clean. A floor kept inside the file it floors is not a floor. Retiring a shape is legitimate; doing it silently is not, so a retirement must be recorded here with a reason rather than by deletion. It also records everSweptGapIds: an independent reviewer showed that replacing a FINISHED sweep with an honest-looking absence plus a far-future countdown kept the build clean and reported the gap as dated-and-unswept \u2014 so work already done could be undone without a failure, and freshness ran in both directions. A gap that has ever been swept may not return to unswept.",
   "measuredAt": "2026-08-08",
   "knownGapIds": [
     "GAP-alive-but-inert",
@@ -9,5 +9,12 @@
     "GAP-planted-premise",
     "GAP-watched-but-unauditable"
   ],
-  "retired": []
+  "retired": [],
+  "everSweptGapIds": [
+    "GAP-alive-but-inert",
+    "GAP-fix-restates-the-claim",
+    "GAP-no-moment-declared",
+    "GAP-planted-premise",
+    "GAP-watched-but-unauditable"
+  ]
 }
