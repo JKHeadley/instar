@@ -528,3 +528,19 @@ seal and change *nothing else*. My first attempt at restoring a lost row rewrote
 restoring it, and the check refused — correctly. The row was recovered word for word from the old copy
 instead, and the story of the restoration now lives outside the sealed rows, where it cannot pretend to be
 part of them.
+
+## "Weaker" is not a measurement
+
+The rule's text admitted its checker was weaker than the ideal. That is true and tells a reader nothing —
+weaker could mean almost-perfect or nearly-useless.
+
+So I counted. Of 168 notes that name something identifier-shaped, **four** hang on a bare number alone — a
+topic number like 13481, which turns up in unrelated places by accident, so those four are "resolved" in
+name only. The other 164 hang on a proper prefixed identifier: better, but still a mention rather than a
+proven link to the work.
+
+Both numbers are in the rule now. An unquantified hedge reads as a small one, which is the same shape of
+over-claim as everything else this week.
+
+I did not tighten the rule further. Rejecting bare numbers would be another invention, and this window's
+plain evidence is that my inventions open holes. Sized, named, left for the reviewer to rule on.

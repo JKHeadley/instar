@@ -964,3 +964,21 @@ correctly, because that is not genesis, it is a rewrite wearing genesis clothing
 `REQUIRED=1`, and all three lints run clean under those bindings — while a local run with no bindings also
 stays clean, which is the faithful copy of the existing pattern rather than a stricter rule that would
 decay into a disabled one.
+
+## Increment 26 — sizing the residual instead of calling it "weaker"
+
+The article said the guard's resolution is "still weaker than the proven path+hash shape". True, and
+useless to a reader: *how much* weaker? Measured rather than asserted:
+
+- **4 of 168** markers carrying an id-shaped token rely ONLY on a **bare number** (a topic id like
+  `13481`). That is the weakest evidence the guard accepts — a four-digit number occurs incidentally, so
+  those four are resolutions the guard cannot really justify.
+- The remaining **164** rest on a prefixed identifier. Stronger, but still a mention rather than a link.
+
+Both numbers are now on the article. Written this way deliberately: the previous sentence let a reader
+imagine the residual was anything from trivial to total, which is the same over-claim shape as the rest of
+this window — an unquantified hedge reads as a small one.
+
+**Not fixed under time pressure.** Tightening the token rule to reject bare numbers is a further
+invention, and this window's evidence is that my inventions open holes. It is sized, named, and left to
+review 7 to rule on rather than patched at speed.
