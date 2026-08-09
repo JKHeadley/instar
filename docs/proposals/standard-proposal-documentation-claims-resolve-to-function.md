@@ -3,9 +3,11 @@
 **Status:** PROPOSAL. Agent proposes; operator ratifies. This document deliberately does **not**
 modify `docs/STANDARDS-REGISTRY.md`.
 **Proposed by:** Codey — in response to the window-10 brief on *Documentation IS Being*.
-**Proposed placement:** amendment to the existing *Documentation IS Being* article, not a new
-constitutional article.
+**Proposed placement:** amendment to the existing *Cross-Store Coherence Is an Invariant* article in
+*Building*, not a new constitutional article. *Documentation IS Being* is the substrate reason and
+declared lineage, not the engineering rule's filing location.
 **Written:** 2026-08-08.
+**Revised after external review:** 2026-08-09.
 **Measured against:** `origin/main` at `1f0a89e69`.
 
 ---
@@ -189,6 +191,72 @@ and bounded. The classification is not a waiver: it prevents a proposed or third
 being compared to the local server while also preventing it from masquerading as a current local
 instruction.
 
+Scope is not an escape hatch. Every enrolled claim has a stable identity independent of its truth
+scope. CI compares the current identity/scope map with the map extracted from the exact protected-base
+commit. A claim that was `live/local` at that base may not become `proposal`, `historical`, `external`,
+or `example` merely because the current tree changes its tag. Such a transition requires a
+content-bound review record naming the claim identity, old scope, new scope, and evidence; the report
+counts and names these transitions separately for each rollout ring. A new transition with no such
+record fails. The guard still does **not** certify that a reviewer chose the semantically correct
+scope; that remains an explicit human judgment boundary.
+
+### The ratchet compares against a protected commit, never its own branch
+
+“May only shrink” means set comparison against a ledger taken from a pinned protected-base commit. It
+does not mean comparing the current corpus with a baseline file from the same candidate tree. The
+latter permits a one-commit bypass: add an unresolved claim and add it to the baseline beside it.
+
+The implementation should copy the repository's existing standards-area ratchet rather than invent a
+second trust pattern:
+
+- use the exact pull-request base SHA, push `before` SHA, or the documented `HEAD^` manual-dispatch
+  fallback—not a mutable branch name;
+- fetch full history, prove that SHA is a commit, and extract the base claim ledger from that commit
+  into runner-temporary storage before invoking the candidate checker;
+- make a missing or malformed required base ledger a failure, including non-canonical records and
+  unknown fields; and
+- make the checker validate its own workflow semantics: supported triggers, full-history checkout,
+  dependency install, protected-base extraction, exact environment handoff, and the checker invocation
+  must remain wired in the required order.
+
+That pattern is already concrete in the standards-coverage CI job and its checker: the workflow
+resolves and extracts the protected-base area ledger, `scripts/standards-coverage.mjs` validates both
+the base ledger and its own Root wiring, and `tests/unit/standards-coverage-ratchet.test.ts` proves that
+missing, malformed, lowered, removed, and redirected cases fail. This proposal reuses that authority
+shape; it does not merely borrow the phrase “protected base.”
+
+The current tree is allowed to supply its candidate ledger. It is never allowed to supply the ledger
+against which its ratchet is judged. Repository code still cannot authenticate its executor or approve
+its own exception; protected review and workflow rules remain the outer authority.
+
+### Discovery and enrollment are one closed population
+
+Enrollment cannot be an optional hand-maintained list beside discovery. That creates the same co-edit
+attack as a candidate-owned baseline: one commit can remove a claim from enrollment and from the debt
+ledger while leaving the documented claim intact.
+
+For each ring, deterministic discovery produces the current candidate population. Every discovered
+identity must appear in exactly one closed partition—resolved `live/local`, contradicted `live/local`,
+unresolved `live/local`, or an explicit non-live scope. An unclassified candidate is a failure. The
+strict reader-surface paths and generator markers are part of the self-wiring invariant, not values a
+candidate can quietly narrow while the check continues to report success.
+
+The protected-base comparison is by identity as well as count:
+
+- current unresolved `live/local` identities must be a subset of the protected-base unresolved set;
+  a new identity fails even when another debt item was removed in the same commit;
+- a protected-base enrolled identity may disappear only when discovery proves the underlying claim was
+  removed from the document, the claim now resolves through production authority, or the separately
+  governed scope-transition rule above admits the move;
+- a claim that remains discoverable but is absent from enrollment fails; editing enrollment and debt
+  metadata together cannot make it disappear; and
+- the report publishes both identities and totals for every partition, plus added, removed, resolved,
+  contradicted, and scope-transition deltas against the protected base.
+
+This closes co-edit bypasses inside the syntactic population the detector claims to discover. It does
+not prove that arbitrary prose cannot be rewritten to evade discovery, so completeness of all
+documentation claims remains outside certification.
+
 ### Debt and rollout
 
 Do not baseline unresolved claims and then call the article enforced. Roll out in two honest rings:
@@ -197,9 +265,10 @@ Do not baseline unresolved claims and then call the article enforced. Roll out i
    contradictions, generate the API inventory/count, and enroll contextual default claims that have
    production resolvers. New unresolved live claims fail immediately.
 2. **Shrink-only extended ring:** inventory the wider `docs/` corpus by stable claim identity and
-   truth scope. A new unresolvable live claim or a larger unresolved population fails; existing debt
-   is visible and may only shrink. This ring is explicitly uncertified until its debt reaches zero or
-   every remainder is truth-scoped outside current local runtime.
+   truth scope. A new unresolvable live identity or an unresolved set that is not a subset of the
+   exact protected-base set fails; existing debt is visible and may only shrink. This ring is
+   explicitly uncertified until its debt reaches zero or every remainder is truth-scoped outside
+   current local runtime.
 
 The guard report must publish the denominator by claim kind and scope: discovered, mechanically
 resolved, explicitly non-live, unresolved, and contradicted. “All checked claims pass” with an empty or
@@ -211,13 +280,16 @@ shrinking discovery population is not success.
 scope and context; the production authority invoked; expected and observed values; generated bytes;
 and unresolved/contradicted debt.
 
-**Certified:** only that every enrolled `live/local` mechanical claim still agrees with its production
-authority under the declared context, and that the enrolled population did not silently shrink or gain
-unresolved claims.
+**Certified:** only that every discovered and enrolled `live/local` mechanical claim still agrees with
+its production authority under the declared context; that no new unresolved identity appeared relative
+to the pinned protected-base ledger; that a still-discoverable claim did not leave enrollment; and that
+any `live/local` scope transition is named for review rather than silently baselined.
 
 **Not certified:** completeness of documentation; clarity; conceptual correctness; causal explanation;
 semantic adequacy; the wisdom of a default; the correctness of proposed or external systems; or the
-truth of an un-enrolled human-judgment sentence.
+truth of an un-enrolled human-judgment sentence. It also does not certify that a non-live scope was
+semantically correct, that protected review approved a sound exception, or that arbitrary prose could
+not be rewritten outside the detector's declared syntactic population.
 
 That boundary means the implementation can give *Documentation IS Being* real teeth without claiming
 that a build has proved the whole document true.
@@ -239,18 +311,58 @@ that a build has proved the whole document true.
 7. **Conceptually wrong but mechanically true:** say “`GET /health` exists, therefore the system is
    healthy.” The route-existence clause may pass, but the causal conclusion must remain outside the
    certified claim. The report must not promote the whole sentence to mechanically true.
-8. **Guard-can-never-fire proof:** inject each of the first six defects and assert the failure reason
-   names the intended claim. A non-zero exit for an unrelated parser error proves nothing.
+8. **Guard-can-never-fire proof:** inject each of the first six defects, first prove that the mutation
+   actually landed, and then assert both a non-zero exit and a diagnostic naming the intended claim and
+   failure reason. A zero exit, silent output, absent intended diagnostic, mutation that did not apply,
+   or non-zero exit caused only by an unrelated parser error is itself a failed negative control. Each
+   injection run must be isolated, the tree restored, and the clean control required to pass afterward.
+9. **Candidate-owned baseline attack:** add a new unresolved claim and add the same identity to the
+   candidate ledger. Comparison with the separately extracted protected-base ledger must still fail the
+   new identity.
+10. **Enrollment co-edit attack:** leave a discoverable claim visible while removing it from both
+    enrollment and current debt metadata. Closed-population validation must fail that exact identity.
+11. **Scope laundering:** change a protected-base `live/local` claim to `example` without a transition
+    record. The guard must fail and report the old and new scopes; a reviewed transition must remain
+    explicitly outside semantic certification.
+12. **Self-wiring removal:** redirect the base to a branch/current file, narrow a strict corpus path, or
+    remove the protected-base handoff. Root self-wiring validation must fail rather than run a weakened
+    checker cleanly.
 
-## Disposition
+## Placement admission test
 
-Amend *Documentation IS Being* rather than create a sibling article. The existing article owns the
-truth that documentation is part of the agent's body; this proposal supplies a checkable sub-obligation
-for the part of that body whose claims have programmatic answers.
+The review asked the proposed amendment text—not merely its intended parent—to pass the Substrate
+family's three admission tests. It does not:
+
+| Substrate admission test | Existing *Documentation IS Being* truth | Proposed mechanical obligation |
+|---|---|---|
+| Fact about the model/training, unchanged if the codebase changes | **Pass.** A file-based model instance loses undocumented experience across an instance boundary regardless of this repository's implementation. | **Fail.** Production probes, generated spans, ledgers, and CI ratchets are software engineering. |
+| Invisible from outside | **Pass.** An instance may behave identically now whether or not an experience will survive into its successor; the erasure appears only across the boundary. | **Fail.** A stale route, key, default, or count is observable by a reader or caller. |
+| A competent engineer could not derive it by reading code | **Pass.** Code can show persistence mechanisms, but not the first-person substrate truth that undocumented presence is erased presence. | **Fail.** An engineer can derive documentation/production drift and the need for a production-authority comparison by reading both surfaces. |
+
+This distinction matters. An engineering guard may enforce or apply a Substrate truth without becoming
+a Substrate article; otherwise every mechanical `Applied through` clause would disqualify its parent.
+But inserting this proposal's opening obligation into the Substrate **Rule** would make that article own
+software discipline it fails the family's admission rule.
+
+## Revised disposition
+
+Amend *Cross-Store Coherence Is an Invariant* in *Building* rather than create a sibling article. A
+closed documentation fact and the production authority that answers it are two durable answer surfaces;
+that article already owns the obligation to declare and mechanically check their agreement. The
+amendment sharpens the documentation case: production owns the answer, generated text consumes it, and
+any remaining duplicate assertion is compared by invoking production authority.
+
+Declare *Documentation IS Being* as the substrate lineage and reason for the work, without moving the
+mechanical obligation into its Rule. *Verify the State, Not Its Symbol* supplies the check-quality
+boundary, *Testing Integrity* supplies the two-sided negative-control discipline, and *Remove What
+Demands Attention* explains why generation beats synchronization; none becomes a second owner of the
+documentation agreement invariant.
 
 Until a production-authority-backed generator/lint exists and its strict ring is clean, the article
-must remain honestly unenforced for this obligation. The proposal names no guard in the registry and
-does not move the Substrate article count or enforcement floor.
+must name this documentation specialization as an unenforced sub-obligation. Existing guards for other
+cross-store invariants must not be presented as certifying it. The proposal names no guard in the
+registry, creates no article, and moves neither the Building nor Substrate article count or enforcement
+floor.
 
 **Earned from:** the window-10 brief, the measured route/config/default populations above, and the
 three reproduced live-document contradictions. The central lesson is the same one exposed by the
