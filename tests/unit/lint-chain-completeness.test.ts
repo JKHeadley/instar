@@ -56,6 +56,10 @@ const REQUIRED_LINTS = [
   // Charter 2026-08-08 — the self-unblock failure was invisible because no record
   // said which moments a standard should act at.
   'lint-enforcement-fingerprint.mjs',
+  // Window 10: the gap-propagation loop. A GAP (a recorded failure-shape) is swept
+  // against every FINGERPRINT, and adding a fingerprint STALES every sweep — so one
+  // failure upgrades every standard sharing the hole-shape.
+  'lint-enforcement-gap-records.mjs',
   'lint-no-duplicate-definitions.mjs',
   'lint-recall-surface-names-match-mechanism.mjs',
   'lint-registry-tree-parentage.mjs',

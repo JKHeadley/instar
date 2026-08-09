@@ -79,3 +79,41 @@ thought, one at a time — the change that introduces a requirement can't also s
 more care. A guard in my own system called that out as the familiar excuse it was. It was right: being
 careful means doing it carefully *now*, not later. The measuring insight was real; it just wasn't a
 reason to stop.
+
+## Making one failure teach every rule (2026-08-08, later the same evening)
+
+The step above forces a new rule to say *when* it is enforced. Justin added the piece that makes that
+worth having, and it is the better half of the idea.
+
+When a rule fails even though something was watching, that failure is not really information about
+*that rule*. It is information about **watching** — about the shape of hole a violation can fit through.
+So we now write the failure down as a *shape*: not "this broke", but "here is how something got past a
+watcher, described well enough that you could recognise the same hole somewhere else". Then we check
+that shape against every rule that has declared where it is watched.
+
+My own week is the argument. The same shape — a guard that is switched on and doing nothing — showed up
+in three separate guards inside two days, and each time I found it fresh, as if it were new. Under this
+loop the first one would have gone looking for the other two.
+
+**The part that keeps it honest is staleness.** A sweep is easy to do once and then quietly stop being
+true: check a shape against the one rule that exists today, and it sits there looking finished while
+new rules arrive unchecked. So every sweep writes down exactly which rules it examined. The moment a new
+rule declares where it is watched, every old sweep goes red — you cannot add one without checking it
+against every failure shape we know about. I proved that by attaching a declaration to a second rule and
+watching all three sweeps fail at once.
+
+**And it caught something the same day it was built.** The shape "switched on and doing nothing" was
+swept against the one rule that has declared its watchers — and matched it, halfway. That rule names two
+places it is enforced, and only one of them has ever been proven to fail on purpose. The other is trusted
+because it has been around a long time, which is precisely the trust the shape exists to puncture. A
+lesson from three unrelated guards found a soft spot in the newest one, on day one.
+
+**What it doesn't do**, said plainly because pretending otherwise would rebuild the problem one floor up:
+it does not check that a sweep was done *thoughtfully*. Someone can wave at every rule and pass. What is
+forced is that each one was actually looked at, in writing, where a reviewer can see it.
+
+**One more thing, and it is a mistake of mine.** Editing a rule changes the fingerprint of the whole
+family it lives in, which invalidates that family's recorded review. The previous step did that and I
+did not notice, because I skipped the check that would have told me — the same check I skipped earlier
+today and promised myself I would always run. Nothing broke publicly, since no pull request was open yet.
+The fix is a real re-review, not an edit to the record.

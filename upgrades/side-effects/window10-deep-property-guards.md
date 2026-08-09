@@ -293,3 +293,91 @@ one passes; a fingerprint naming a made-up moment fails rather than silently exe
 last arm matters because a typo would otherwise be indistinguishable from compliance.
 
 **State:** 87 articles, enforced 0.7471, 1 fingerprinted / 86 grandfathered, lint chain green.
+
+## Increment 8 — the gap-propagation loop (`docs/enforcement-gaps.json`, `scripts/lint-enforcement-gap-records.mjs`)
+
+**Operator additions, 2026-08-08 evening, landed before the schema hardened.** Two things: the
+vocabulary is now FIXED (STANDARD = a rule we enforce; SURFACE = a place enforcement can act; MOMENT =
+when a surface acts; FINGERPRINT = a standard's recorded surface-to-moment mapping plus what its
+violations look like; GAP = a recorded FAILURE-SHAPE, the way a violation slipped past a fingerprint),
+and the GAP-PROPAGATION LOOP is the design's payoff: a standard failing DESPITE a fingerprint is evidence
+about FINGERPRINTS, so the failure is recorded with its NATURE and swept against all of them — one
+failure upgrades every standard sharing the hole-shape.
+
+**What changed**
+
+- **NEW `docs/enforcement-gaps.json`** — three gap records, each with the three legs the operator
+  specified: the SHAPE (the nature of how it got through, stated so it can be matched elsewhere), WHICH
+  fingerprint it evaded and HOW, and the SWEEP with its date and the population it ran against.
+- **NEW `scripts/lint-enforcement-gap-records.mjs`** — four arms, all injection-proven.
+- **`docs/STANDARDS-REGISTRY.md`** — the loop and the fixed vocabulary recorded on tooth (E) of *Verify
+  the State, Not Its Symbol*, with its own non-certification clause.
+- **`docs/specs/enforcement-fingerprint-measurement.md`** — vocabulary table added as §0; the two dated
+  findings now name the gap ids that carry them; status corrected (step 3 built, step 4 built in shape,
+  step 2 NOT done).
+- **`scripts/lint-enforcement-fingerprint.mjs`** — vocabulary block in the header, pointing at the gap
+  registry and naming the coupling: a new fingerprint here stales every sweep there.
+- **`package.json`, `tests/unit/lint-chain-completeness.test.ts`** — wired and registered.
+
+**The mechanism, which is staleness rather than presence.** The failure mode of a registry like this is a
+sweep that was true once: a gap swept against 1 fingerprint is not swept against 87, and nothing about
+the record itself would say so. So a sweep records the exact population it ran against, re-derived from
+the registry at check time. The moment a standard gains a fingerprint, every earlier sweep FAILS — a
+fingerprint cannot be added without being checked against every known failure-shape. That is the loop's
+actual teeth; everything else is bookkeeping.
+
+**Negative controls (four, all run):**
+
+| Arm | Injection | Result |
+|---|---|---|
+| Staleness | attached a fingerprint to a second article | **all three sweeps went red simultaneously**, each naming the unswept standard |
+| Partition | emptied one sweep's `unmatched` | failed: "reaches no verdict on Deferral = Deletion … a skipped standard reads as a clean one" |
+| Unswept | `sweep: null` with an expired countdown | failed by date |
+| Baseline | unmodified | clean — 3 gaps, 3 swept against the live population of 1 |
+
+**The loop found something on day one, which is the part worth reporting.** `GAP-alive-but-inert` — the
+shape behind all three of this week's guard failures — was swept against the one fingerprinted standard
+and MATCHED it partially. *Deferral = Deletion*'s fingerprint cites two surfaces; only the ci-time one has
+a proven negative control. The commit-time arm (the orphan-deferral step in `instar-dev-precommit.js`) is
+cited as enforcement and has never been injection-tested here — believed to work because it has been in
+place a long time, which is exactly the belief that shape defeats. A shape learned from three OTHER guards
+immediately flagged a half-proven claim in the newest one. That is the loop working, and the finding is
+recorded with an action rather than quietly fixed.
+
+**What this does NOT certify, stated because the alternative rebuilds the defect one level up.** That a
+sweep was done WELL. An author can write every standard into `unmatched` with a thin reason and pass. What
+is forced is that the question was asked about each one, in writing, in the diff — the same narrow
+guarantee the fingerprint check makes.
+
+**Audit-chain consequence, found while doing this and not yet resolved at the time of writing.** Editing
+*Verify the State, Not Its Symbol* changes The Substrate family's content hash, which stales that family's
+recorded area audit. Increment 7 had already staled it — I did not re-run `standards-coverage.mjs --check`
+before committing, which is the exact mistake I made earlier today. No PR was open so no CI went red, but
+the branch would have gone red the moment one was. Resolution is a genuine external re-review of the
+delta, not a hand-edit of the ledger.
+
+### The loop's first finding, chased to the bottom (same evening)
+
+The sweep flagged *Deferral = Deletion*'s commit-time arm as having no proven negative control. Rather
+than leave that as a note, I injection-tested it — and it is worse than unproven.
+
+**The orphan-deferral step is unreachable for the entire Tier-1 commit class.** It reads
+`validTrace.trace.specPath` — the converged spec — and lives in Step 7.5, below the Tier-1 branch.
+`enforceTier1()` ends in `process.exit(0)`, so Steps 5–8 never execute for a Tier-1 commit. Every commit
+in this window has been Tier 1. The surface the fingerprint cited as enforcement had not run once on the
+work citing it.
+
+**Proven, not inferred.** A staged Tier-1 change carrying `is deferred to a follow-up; out of scope
+today` — precisely the language that step exists to catch — passed the gate clean:
+`[instar-dev-precommit] OK (Tier 1) — … No converged spec required for Tier 1.`
+
+**Resolution: the claim is withdrawn, not repaired.** The fingerprint now names `ci-time` only. Making
+the orphan-deferral check reachable from the Tier-1 path is real work on the gate and is NOT done here;
+it is recorded as a residual with a date, and the consequence — the Tier-1 class currently has no
+commit-time deferral surface at all — is stated plainly rather than left implied.
+
+**Why this is the argument for the loop.** I wrote that fingerprint myself, this evening, carefully,
+believing it. It was wrong within hours. No existence check would ever have said so: the surface is
+present, enabled, inventoried and green. What found it was a shape learned from three unrelated guards
+being pointed at the newest fingerprint and asked "could you have this hole too?" — which is exactly the
+propagation the operator specified, paying for itself on day one, against its own author.

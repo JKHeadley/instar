@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "note": "The GAP registry. Vocabulary fixed by Justin 2026-08-08: a STANDARD is a rule we enforce; a SURFACE is a place enforcement can act; a MOMENT is when a surface acts; a FINGERPRINT is a standard's recorded mapping of surfaces to moments plus what its violations look like; a GAP is a recorded FAILURE-SHAPE \u2014 the way a violation slipped past a fingerprint. A gap is evidence about fingerprints, not about one standard: it is swept against EVERY fingerprinted standard so one failure upgrades every standard sharing the hole-shape. A sweep records the population it ran against, so adding a fingerprint STALES every sweep and forces the new standard to be checked against every known shape. See scripts/lint-enforcement-gap-records.mjs.",
+  "gaps": [
+    {
+      "id": "GAP-watched-but-unauditable",
+      "discoveredAt": "2026-08-07",
+      "recordedAt": "2026-08-08",
+      "shape": "watched-but-unauditable",
+      "shapeDescription": "The moment IS covered. A live surface sits there, its stated population plausibly covers the violation, and the violation passes anyway \u2014 and the surface records no per-decision verdict, so nobody can distinguish 'the rule fired and was overridden' from 'it never fired' from 'it fired and judged wrongly'. The coverage claim becomes unfalsifiable in exactly the cases that matter, and the failure is invisible rather than merely unprevented. A fingerprint has this shape when it names a surface that leaves no trace of what it decided.",
+      "evaded": {
+        "standard": "Self-Unblock Before Escalating",
+        "atMoment": "outbound-message",
+        "how": "Five tone-gate rules classified `blocking` sit at exactly this moment \u2014 B15_CONTEXT_DEATH_STOP, B16_UNVERIFIED_WALL, B17_FALSE_BLOCKER, B18_AUTONOMY_STOP, B19_PARKED_ON_USER. B16's population ('telling the user a path is blocked without evidence the agent inventoried what it already has') plausibly covers reporting a peer agent's dead channel as an external blocker and waiting. The gate was demonstrably live \u2014 it held one of my own messages the same day for an unrelated leak. The message went out regardless. Nothing on disk records which of the five were evaluated or what each returned: the advisory log captures the DETERMINISTIC preflight layer only (`advisories: []`, `action: \"clean\"`), never the rule-level verdicts."
+      },
+      "sweep": {
+        "sweptAt": "2026-08-08",
+        "method": "Read each fingerprinted standard's declared surfaces and ask: does this surface leave a per-decision record a later reader can audit, or only an outcome?",
+        "fingerprintPopulation": [
+          "Deferral = Deletion"
+        ],
+        "matched": [],
+        "unmatched": [
+          {
+            "standard": "Deferral = Deletion",
+            "why": "Both declared surfaces are build-time checks whose every decision is a visible outcome \u2014 a failing build names the offending id, a passing run prints its counts, and the shrink-only baseline file is a durable per-id record in version control. The residual, named honestly: a PASSING lint records that it passed, not which ids it examined, so a matcher that silently stopped seeing a population would look identical to a clean corpus. That is a weaker form of this shape and it is why the script refuses to report clean when it parses zero ids."
+          }
+        ]
+      },
+      "countdown": "2026-09-07",
+      "trackedAs": "STD-SUBCOUNTDOWN-outbound-verdict-record"
+    },
+    {
+      "id": "GAP-no-moment-declared",
+      "discoveredAt": "2026-08-08",
+      "recordedAt": "2026-08-08",
+      "shape": "no-moment-declared",
+      "shapeDescription": "A standard records WHAT it demands and often WHICH guard enforces it, but never WHICH MOMENT that guard acts at. A hole at the decisive moment is then structurally invisible: no surface, no reviewer and no build can detect it, because the axis on which the hole exists was never written down. The standard passes every existence check while being unguarded where its violations actually occur. This is the shape that made GAP-watched-but-unauditable invisible for a night rather than merely real.",
+      "evaded": {
+        "standard": "*all of them* \u2014 no standard carried a fingerprint",
+        "atMoment": "author-time",
+        "how": "This shape has no single victim: it evaded every fingerprint by ensuring none existed. It is recorded as a gap rather than a missing feature because it is a failure-shape a fingerprint can HAVE \u2014 a fingerprint that names surfaces without moments reproduces it exactly, which is why the lint's moment set is closed and an unrecognised moment fails rather than silently exempting the article."
+      },
+      "sweep": {
+        "sweptAt": "2026-08-08",
+        "method": "Mechanical: an article matches this shape iff it declares no enforcement fingerprint. Derived from scripts/lint-enforcement-fingerprint.mjs --json rather than by hand.",
+        "fingerprintPopulation": [
+          "Deferral = Deletion"
+        ],
+        "matched": [],
+        "unmatched": [
+          {
+            "standard": "Deferral = Deletion",
+            "why": "Declares moments commit-time and ci-time, names the surface acting at each, and states where it does NOT reach (the periodic moment when promised work comes due; deferrals written into source comments rather than specs)."
+          }
+        ],
+        "outsidePopulation": {
+          "count": 86,
+          "why": "The 86 grandfathered articles all carry this shape by construction \u2014 that is what the grandfathered baseline IS. They are not listed here because the baseline file is already their record and duplicating it would create two lists that can disagree. The match set shrinks by one each time a standard is genuinely fingerprinted."
+        }
+      },
+      "countdown": "2026-09-07",
+      "trackedAs": "STD-SUBCOUNTDOWN-fingerprint-field"
+    },
+    {
+      "id": "GAP-alive-but-inert",
+      "discoveredAt": "2026-08-08",
+      "recordedAt": "2026-08-08",
+      "shape": "alive-but-inert",
+      "shapeDescription": "A guard is constructed, enabled, and visible in every inventory while doing nothing \u2014 because its arm is unreachable, because another component releases the precondition it waits on, or because the thing it guards is absent. Existence checks and status surfaces report it identically to a working guard, and an injection test against it produces SILENCE, which reads exactly like a clean pass. A fingerprint has this shape when it cites a surface for which no case is known where that surface FAILS.",
+      "evaded": {
+        "standard": "Verify the State, Not Its Symbol",
+        "atMoment": "ci-time, runtime-floor",
+        "how": "Three independent instances inside 48 hours, which is why it is a shape and not an anecdote: (1) solo-captain-hold was enabled, constructed and visible in config while silent-standby-relinquish released the lease out from under it \u2014 it held nothing and nothing said so; (2) a two-parents diagnostic I wrote COULD NOT FIRE because the extractor feeding it stopped at the first match, so the condition was unreachable before the check ran; (3) 62% of tracked deferral markers referred to nothing, while the guard proving a marker EXISTS worked perfectly. Justin named this shape as the loop's proof case: under the propagation loop the first occurrence would have flagged the other two before they failed."
+      },
+      "sweep": {
+        "sweptAt": "2026-08-08",
+        "method": "For each surface a fingerprint declares, ask whether a case is known in THIS repository where that surface fails \u2014 a proven negative control, not a plausible one.",
+        "fingerprintPopulation": [
+          "Deferral = Deletion"
+        ],
+        "matched": [
+          {
+            "standard": "Deferral = Deletion",
+            "why": "MATCH, CONFIRMED BY INJECTION \u2014 the first thing this loop found, within hours of being built. Deferral = Deletion's fingerprint originally cited two surfaces; only the ci-time one had a proven negative control. The commit-time arm (the orphan-deferral step in scripts/instar-dev-precommit.js) was believed to work because it has been in place a long time, which is exactly the belief this shape defeats. Injection-testing it found worse than unproven: that step reads the trace's converged-spec path, and the Tier-1 path (enforceTier1) exits the gate before Step 5 runs \u2014 so for the ENTIRE Tier-1 commit class the surface is UNREACHABLE. A staged Tier-1 change carrying 'is deferred to a follow-up; out of scope today' passed the gate clean. Every commit in this window was Tier 1, so the cited surface had not run once on the work claiming it.",
+            "action": "DONE 2026-08-08: the commit-time claim was WITHDRAWN from the fingerprint rather than repaired \u2014 an honest fingerprint names what actually fires. Making the orphan-deferral check reachable from the Tier-1 path is a separate change to the gate, recorded below rather than smuggled into this one.",
+            "residual": "The Tier-1 commit class has NO commit-time deferral surface at all. Extending enforceTier1 to run the orphan-deferral check is real work on the gate and is not done here."
+          }
+        ],
+        "unmatched": []
+      },
+      "countdown": "2026-09-07",
+      "trackedAs": "STD-SUBCOUNTDOWN-guard-negative-control",
+      "countdownResidual": "2026-09-07"
+    }
+  ]
+}

@@ -4,9 +4,34 @@
 how do we know that set of enforcement points is complete enough that violations cannot sneak through
 between them?
 
-**Status:** step 1 only (MEASURE FIRST). Steps 2-4 — a fingerprint field on every standard, required at
-birth, with dated findings where the fingerprint is empty at the critical moment — are not built yet
-and are not claimed here.
+**Status, updated 2026-08-08 (evening).** Step 1 (this document) measured the surfaces. **Step 3 is
+built** — `scripts/lint-enforcement-fingerprint.mjs` refuses a NEW standard with no fingerprint. **Step 4
+is built in shape** — the two dated findings below are now gap records in `docs/enforcement-gaps.json`.
+**Step 2 is NOT done**: 86 of 87 standards carry no fingerprint and sit in a shrink-only grandfathered
+baseline. Retrofitting them is real per-standard analysis, not a formatting pass.
+
+## 0. Vocabulary (fixed by the operator, 2026-08-08)
+
+| Term | Meaning |
+|---|---|
+| **STANDARD** | a rule we enforce |
+| **SURFACE** | a place where enforcement can act (§1) |
+| **MOMENT** | when a surface acts (§2) |
+| **FINGERPRINT** | a standard's recorded mapping — which surfaces watch it at which moments, plus what its violations look like |
+| **GAP** | a recorded **failure-shape**: the way a violation slipped past a fingerprint |
+
+**The gap-propagation loop** is the design's payoff, and it is the operator's extension rather than
+mine. When a standard fails *despite* a fingerprint, that failure is evidence about **fingerprints**, not
+about that one standard. So a gap records the **nature** of how it got through — stated so it can be
+matched against others — and is swept against every fingerprint, so one failure upgrades every standard
+sharing the hole-shape. The week that produced this is the proof: `alive-but-inert` appeared in three
+independent guards inside 48 hours, and under this loop the first would have flagged the other two before
+they failed.
+
+The mechanism that keeps a sweep honest is **staleness**: a sweep records the exact population it ran
+against, so the moment a standard gains a fingerprint, every sweep that predates it fails. You cannot add
+a fingerprint without checking it against every known failure-shape. Proven by injection, not asserted:
+attaching a fingerprint to a second article turned all three sweeps red simultaneously.
 
 ---
 
@@ -93,9 +118,18 @@ legs, and today only the first is available for most surfaces:
 
 - The per-outbound-message surface — the one guarding the moment where self-unblock, sovereignty and
   the whole self-stop family manifest — keeps no rule-level verdict record, so its effectiveness is
-  unmeasurable. `2026-09-07`, tracked as `STD-SUBCOUNTDOWN-outbound-verdict-record`.
+  unmeasurable. `2026-09-07`, tracked as `STD-SUBCOUNTDOWN-outbound-verdict-record`. **Now recorded as
+  `GAP-watched-but-unauditable`** in `docs/enforcement-gaps.json`, swept.
 - No standard in the registry carries a fingerprint field, so no standard's moment-coverage can be
-  checked at all. `2026-09-07`, tracked as `STD-SUBCOUNTDOWN-fingerprint-field`.
+  checked at all. `2026-09-07`, tracked as `STD-SUBCOUNTDOWN-fingerprint-field`. **Now recorded as
+  `GAP-no-moment-declared`**, swept.
+
+A third gap was recorded at the same time because it is the loop's proof case rather than a new
+discovery: **`GAP-alive-but-inert`**, the shape behind all three of this week's guard failures. Its sweep
+found something on day one — *Deferral = Deletion*'s fingerprint cites two surfaces, and only ONE of them
+has a proven negative control. The commit-time arm is believed to work because it has been in place a
+long time, which is exactly the belief this shape defeats. That finding is the loop working: a shape
+learned from three OTHER guards immediately flagged a half-proven claim in the newest one.
 
 ## 6. What is NOT claimed here
 

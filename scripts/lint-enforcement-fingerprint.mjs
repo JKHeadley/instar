@@ -20,6 +20,18 @@
  * for every standard added from now on — catching the no-teeth-at-the-decisive-
  * moment class when the standard is WRITTEN rather than after its first failure.
  *
+ * ── Vocabulary (fixed by the operator, 2026-08-08) ─────────────────────────
+ *   STANDARD     a rule we enforce
+ *   SURFACE      a place where enforcement can act
+ *   MOMENT       when a surface acts — the closed set below
+ *   FINGERPRINT  a standard's recorded mapping of surfaces to moments, plus what
+ *                its violations look like — the field this check requires
+ *   GAP          a recorded failure-shape: the way a violation slipped past a
+ *                fingerprint. Gaps live in docs/enforcement-gaps.json and are swept
+ *                against every fingerprint by scripts/lint-enforcement-gap-records.mjs,
+ *                so a NEW fingerprint here stales every sweep there and must be
+ *                checked against every known failure-shape before the build is green.
+ *
  * ── The seven moments ──────────────────────────────────────────────────────
  * Measured from the tree, not invented (counts as of 2026-08-08):
  *
