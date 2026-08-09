@@ -68,7 +68,6 @@
     "Session Input Is a Principal",
     "Side-Effects Review Gate",
     "Signal vs. Authority",
-    "Sovereignty \u2014 \"I own what is mine\"",
     "Stall Coverage Is Enumerated, Not Discovered",
     "Structure Decides Alone Only on an Exact Match",
     "Structure beats Willpower",
@@ -87,6 +86,6 @@
     "Verify the State, Not Its Symbol",
     "Zero-Failure"
   ],
-  "rebaselinedAt": "2026-08-08",
-  "rebaselinedBecause": "EXACT-MEMBERSHIP correction, not a widening. External review pass 2 finding 2: the ratchet compared SIZES, so an article that gained a fingerprint stayed on the exemption list \u2014 the grandfathered count was a false number, and worse, the stale exemption would have silently survived that article LOSING its fingerprint again. The list is now exact membership: an article that leaves the baseline leaves the list. Five articles left it on 2026-08-08 (Deferral = Deletion, Documentation IS Being, The Right to Stand Ground, Iterative Audit to Convergence, One Failure Teaches Every Guard)."
+  "rebaselinedAt": "2026-08-09",
+  "rebaselinedBecause": " Sovereignty left the baseline on 2026-08-09 with a `none` fingerprint established by an INDEPENDENT referral verdict against the author's own stated expectation \u2014 the author believed it was under-claimed and a running guard covered it; the referral returned (b), manufactured enforcement, do not cite."
 }

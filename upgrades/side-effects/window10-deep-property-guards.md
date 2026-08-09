@@ -517,3 +517,46 @@ with an explicit a/b/c; answering it myself is the conflict of interest the refe
 **Fix-verification from pass 2, on my pass-1 claims: two HELD, four PARTIAL.** No claim was NOT-DONE, but
 four were overstated — the precise failure mode this whole window keeps finding, now in my own report of
 having fixed it.
+
+## Increment 13 — the sovereignty referral returned (b), and caught its own convener
+
+The referral I opened rather than deciding myself came back: **(b) — manufactured enforcement, do not
+cite. *Sovereignty* stays a gap.** Three independent reasons, any one sufficient:
+
+1. **The population is a seventeen-phrase substring list, not every message.** The park-your-own-work
+   judgement runs only after a case-insensitive phrase detector fires, so the PRE-FILTER is universal and
+   the JUDGEMENT is not. The reviewer wrote eight plainly Sovereignty-violating sentences and matched them
+   against both lists exactly as the code does: **five of eight tripped neither filter** and would never
+   reach the authority. Citing it would also make a keyword list the population selector, which
+   *Intelligence Infers, Keywords Only Guard* permits as a floor beneath the model, never as the gate on
+   whether the model is consulted.
+2. **The always-on rules test a different property** — the false-blocker rule tests MEANS (was a person
+   claimed necessary for something in the agent's own toolkit); this article tests OWNERSHIP.
+3. The stance itself is reachable by nothing either way.
+
+*Sovereignty* now carries `moments: none` — **the only `none` in the registry established by an
+independent party against the author's own stated expectation.** I went in believing the article was
+under-claimed and was told the opposite.
+
+### And it caught something worse than the answer: `GAP-planted-premise`
+
+My dispatch satisfied the withhold-the-answer protocol on its face — explicit a/b/c, preferred answer
+named as hypothesis rather than conclusion. But it also stated, **as established observation**, that the
+symptom "appears to be evaluated on every outbound message already." That is the single fact the whole
+answer turns on, and **it is false.** A reviewer who took my framing instead of reading the code returns
+(a) and makes exactly the manufactured citation the referral existed to prevent.
+
+That is a violation of *A Dispatch Supplies the Question and Withholds the Answer*, whose own words are
+that an expectation written into the request does not get tested, it gets adopted. **And the lint I
+shipped for that standard cannot see it** — it verifies the protocol is PRESENT in templated dispatches,
+and this dispatch HAD the protocol. Presence of the ritual standing in for the property: the registry's
+signature defect, in a guard I built, found by the referral I convened, about me.
+
+Recorded as `GAP-planted-premise` and swept against all six fingerprints. Residual named honestly: nothing
+detects a planted premise. Only a reviewer who reads the code instead of the framing catches it — which is
+what happened here, and is not a guarantee.
+
+**Two independent parties reached the same place from opposite directions.** External review pass 2's
+finding 7 said *Sovereignty* asserts coverage without evidence the gate can deliver it; the referral said
+the same thing with the eight-sentence test as proof. I had deliberately left finding 7 unfixed pending
+the referral. It is now answered, and both are resolved by the same correction.

@@ -26,6 +26,10 @@
             "fingerprintDigest": "02b3e6d3b539859b"
           },
           {
+            "standard": "Sovereignty \u2014 \"I own what is mine\"",
+            "fingerprintDigest": "3b56e1238561ba56"
+          },
+          {
             "standard": "The Right to Stand Ground",
             "fingerprintDigest": "329ba871aab9d6e1"
           },
@@ -59,6 +63,11 @@
           {
             "standard": "Iterative Audit to Convergence",
             "why": "The strongest unmatch in the registry for this shape. Its surface's decision is not merely logged \u2014 the canonical audit report at docs/audits/<slug>.md IS the per-decision record, versioned, content-addressed, and re-checked against the stamp by both the commit gate and CI. A reader can reconstruct which rounds were run, what each found, and why the stamp was granted or refused. That is the durable verdict trace whose ABSENCE at the outbound surface defines this shape."
+          },
+          {
+            "standard": "Sovereignty \u2014 \"I own what is mine\"",
+            "why": "VACUOUS UNMATCH \u2014 fingerprint `none`, no surface cited, so a shape about how a surface behaves cannot apply. Not reassurance: no surface is a WORSE condition than a surface leaving no trace, and it is recorded on the article itself with a dated countdown.",
+            "evidence": "fingerprint declares no surface"
           }
         ],
         "sweepHistory": [
@@ -87,6 +96,13 @@
             "at": "2026-08-08",
             "trigger": "the content-staleness arm fired on my own edit \u2014 adding a missing certification item and correcting the parent syntax changed the new article's fingerprint region, so every verdict about it was re-confirmed against the new digest",
             "added": []
+          },
+          {
+            "at": "2026-08-09",
+            "trigger": "Sovereignty gained a `none` fingerprint from an independent referral verdict; the staleness arm refused the build until it was swept",
+            "added": [
+              "Sovereignty \u2014 \"I own what is mine\""
+            ]
           }
         ]
       },
@@ -115,6 +131,10 @@
           {
             "standard": "Deferral = Deletion",
             "fingerprintDigest": "02b3e6d3b539859b"
+          },
+          {
+            "standard": "Sovereignty \u2014 \"I own what is mine\"",
+            "fingerprintDigest": "3b56e1238561ba56"
           },
           {
             "standard": "The Right to Stand Ground",
@@ -150,6 +170,11 @@
           {
             "standard": "The Right to Stand Ground",
             "why": "Declares its moments explicitly. Two of the three declare `none` \u2014 which is a DECLARATION, not silence, and is exactly the answer this shape exists to force: an unguarded standard that SAYS it is unguarded converts an invisible hole into a dated finding."
+          },
+          {
+            "standard": "Sovereignty \u2014 \"I own what is mine\"",
+            "why": "Declares moments: none. The only `none` in the registry established by an INDEPENDENT party against the author's own stated expectation \u2014 the author expected this article to be under-claimed and was told otherwise.",
+            "evidence": "the referral verdict (b) recorded on the article"
           }
         ],
         "outsidePopulation": {
@@ -182,6 +207,13 @@
             "at": "2026-08-08",
             "trigger": "the content-staleness arm fired on my own edit \u2014 adding a missing certification item and correcting the parent syntax changed the new article's fingerprint region, so every verdict about it was re-confirmed against the new digest",
             "added": []
+          },
+          {
+            "at": "2026-08-09",
+            "trigger": "Sovereignty gained a `none` fingerprint from an independent referral verdict; the staleness arm refused the build until it was swept",
+            "added": [
+              "Sovereignty \u2014 \"I own what is mine\""
+            ]
           }
         ]
       },
@@ -210,6 +242,10 @@
           {
             "standard": "Deferral = Deletion",
             "fingerprintDigest": "02b3e6d3b539859b"
+          },
+          {
+            "standard": "Sovereignty \u2014 \"I own what is mine\"",
+            "fingerprintDigest": "3b56e1238561ba56"
           },
           {
             "standard": "The Right to Stand Ground",
@@ -247,6 +283,11 @@
             "standard": "Deferral = Deletion",
             "why": "RE-SWEPT at fingerprint 02b3e6d3. The earlier MATCH was against a fingerprint that no longer exists: it cited a commit-time surface which was WITHDRAWN once injection-testing proved it unreachable for the Tier-1 commit class. The current fingerprint cites ONE surface, scripts/lint-deferral-referent-resolves.mjs, whose refusal arm was injection-proven while it was built (a new orphan fails the build by name). The historical match and its correction are preserved in sweepHistory and correctionLog rather than erased \u2014 a shape that WAS present and was fixed is part of the record.",
             "evidence": "the withdrawn-moment note on the article itself; the injection run that made a new orphan fail"
+          },
+          {
+            "standard": "Sovereignty \u2014 \"I own what is mine\"",
+            "why": "UNMATCHED, and this one is the registry's cleanest instance of the shape being AVOIDED rather than merely absent. The author believed a running guard covered this article and referred the citation out instead of making it; the independent verdict was (b) \u2014 manufactured enforcement, do not cite \u2014 after the reviewer matched eight Sovereignty-violating sentences against the guard's actual seventeen-phrase pre-filter and found five would never reach the authority at all. A guard that WOULD have been cited, tested, and refused is the opposite of a guard cited on faith.",
+            "evidence": "the referral verdict recorded on the article; the reviewer's 8-sentence match against both phrase lists (5 of 8 unmatched)"
           }
         ],
         "sweepHistory": [
@@ -275,6 +316,13 @@
             "at": "2026-08-08",
             "trigger": "the content-staleness arm fired on my own edit \u2014 adding a missing certification item and correcting the parent syntax changed the new article's fingerprint region, so every verdict about it was re-confirmed against the new digest",
             "added": []
+          },
+          {
+            "at": "2026-08-09",
+            "trigger": "Sovereignty gained a `none` fingerprint from an independent referral verdict; the staleness arm refused the build until it was swept",
+            "added": [
+              "Sovereignty \u2014 \"I own what is mine\""
+            ]
           }
         ]
       },
@@ -288,6 +336,84 @@
           "why": "The MATCH was asserted from the shape of the citation without checking whether a negative control existed. It did. The sweep check accepted the verdict because a verdict requires a REASON and not EVIDENCE \u2014 a hole in this registry's own machinery, found by making the exact error the registry exists to catch, inside the registry, one hour after building it. Reasons are cheap; the pattern that produced the true finding four hours earlier was INJECTION-TESTING, and I skipped it here because the shape felt familiar. A precise diagnosis suppresses the second opinion, which is why it raises the bar for checking rather than lowering it."
         }
       ]
+    },
+    {
+      "id": "GAP-planted-premise",
+      "discoveredAt": "2026-08-08",
+      "recordedAt": "2026-08-09",
+      "shape": "planted-premise",
+      "shapeDescription": "A dispatch withholds its ANSWER \u2014 satisfying the protocol on its face \u2014 while supplying, as established observation, the one PREMISE the answer turns on. The reviewer then tests everything except the load-bearing claim, because it arrived as context rather than as a question. The output looks like independent judgement and is not. A guard has this shape when it checks that a protocol is PRESENT rather than that the premises were withheld \u2014 presence of the ritual standing in for the property.",
+      "evaded": {
+        "standard": "A Dispatch Supplies the Question and Withholds the Answer",
+        "atMoment": "author-time",
+        "how": "The sovereignty referral was convened precisely because its author benefits from the answer, and it carried the protocol correctly: the question was posed as an explicit a/b/c and the preferred answer was named as a hypothesis rather than a conclusion \u2014 which reads as bias-avoidance. But the dispatch also stated that the symptom \"appears to be evaluated on every outbound message already ... a check on real behaviour rather than on the existence of anything.\" That is the single fact that would make (a) correct, it was supplied as observation, and it is FALSE \u2014 the judgement is gated behind a seventeen-phrase substring pre-filter. A reviewer who accepted the framing instead of reading the code returns (a) and makes exactly the manufactured citation the referral existed to prevent. **The referral caught it and said so, about its own convener.** scripts/lint-dispatch-withholds-answer.mjs cannot see it: it verifies the protocol's presence in templated dispatches, and this dispatch HAD the protocol."
+      },
+      "sweep": {
+        "sweptAt": "2026-08-09",
+        "method": "For each fingerprinted standard, ask: does its cited surface check that a protocol/marker is PRESENT rather than that the property holds?",
+        "fingerprintPopulation": [
+          {
+            "standard": "Documentation IS Being",
+            "fingerprintDigest": "d496c3e3ba230496"
+          },
+          {
+            "standard": "Deferral = Deletion",
+            "fingerprintDigest": "02b3e6d3b539859b"
+          },
+          {
+            "standard": "Sovereignty \u2014 \"I own what is mine\"",
+            "fingerprintDigest": "3b56e1238561ba56"
+          },
+          {
+            "standard": "The Right to Stand Ground",
+            "fingerprintDigest": "329ba871aab9d6e1"
+          },
+          {
+            "standard": "Iterative Audit to Convergence",
+            "fingerprintDigest": "eb3db445ff0b5ba8"
+          },
+          {
+            "standard": "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere",
+            "fingerprintDigest": "71d69714d33c2530"
+          }
+        ],
+        "matched": [],
+        "unmatched": [
+          {
+            "standard": "Documentation IS Being",
+            "why": "Its declared surfaces test a PROPERTY of the content, not the presence of a ritual: whether a marker RESOLVES, whether the recorded rounds EARN the stamp, whether a sweep's population is current. Where a fingerprint is `none` there is no surface to carry the shape, which is recorded on those articles rather than counted as safety here.",
+            "evidence": "read each fingerprint's declared surfaces against the present-vs-property test"
+          },
+          {
+            "standard": "Deferral = Deletion",
+            "why": "Its declared surfaces test a PROPERTY of the content, not the presence of a ritual: whether a marker RESOLVES, whether the recorded rounds EARN the stamp, whether a sweep's population is current. Where a fingerprint is `none` there is no surface to carry the shape, which is recorded on those articles rather than counted as safety here.",
+            "evidence": "read each fingerprint's declared surfaces against the present-vs-property test"
+          },
+          {
+            "standard": "Sovereignty \u2014 \"I own what is mine\"",
+            "why": "Its declared surfaces test a PROPERTY of the content, not the presence of a ritual: whether a marker RESOLVES, whether the recorded rounds EARN the stamp, whether a sweep's population is current. Where a fingerprint is `none` there is no surface to carry the shape, which is recorded on those articles rather than counted as safety here.",
+            "evidence": "read each fingerprint's declared surfaces against the present-vs-property test"
+          },
+          {
+            "standard": "The Right to Stand Ground",
+            "why": "Its declared surfaces test a PROPERTY of the content, not the presence of a ritual: whether a marker RESOLVES, whether the recorded rounds EARN the stamp, whether a sweep's population is current. Where a fingerprint is `none` there is no surface to carry the shape, which is recorded on those articles rather than counted as safety here.",
+            "evidence": "read each fingerprint's declared surfaces against the present-vs-property test"
+          },
+          {
+            "standard": "Iterative Audit to Convergence",
+            "why": "Its declared surfaces test a PROPERTY of the content, not the presence of a ritual: whether a marker RESOLVES, whether the recorded rounds EARN the stamp, whether a sweep's population is current. Where a fingerprint is `none` there is no surface to carry the shape, which is recorded on those articles rather than counted as safety here.",
+            "evidence": "read each fingerprint's declared surfaces against the present-vs-property test"
+          },
+          {
+            "standard": "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere",
+            "why": "Its declared surfaces test a PROPERTY of the content, not the presence of a ritual: whether a marker RESOLVES, whether the recorded rounds EARN the stamp, whether a sweep's population is current. Where a fingerprint is `none` there is no surface to carry the shape, which is recorded on those articles rather than counted as safety here.",
+            "evidence": "read each fingerprint's declared surfaces against the present-vs-property test"
+          }
+        ]
+      },
+      "countdown": "2026-09-07",
+      "trackedAs": "STD-SUBCOUNTDOWN-planted-premise-undetectable",
+      "residual": "Nothing detects a planted premise. The lint checks protocol presence; only a reviewer reading the underlying code instead of the dispatch's framing catches it \u2014 which is what happened here, and is not a guarantee."
     }
   ]
 }
