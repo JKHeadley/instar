@@ -424,3 +424,28 @@ Two smaller things worth keeping. A test I ran produced *silence* — and silenc
 cannot fire looks like; it was pointing the wrong way and I only found out by trying it. And archiving the
 reviewers' own words gave me a fake promise, because one of their examples was a promise, and quoting one
 made it mine.
+
+## The same decision, made both ways, on the same night
+
+Codey finished his piece of this brief and it is worth reading against mine.
+
+He was counting whether documentation claims about config keys point at anything real. His strict matcher
+resolved 29 of 56. He then noticed that every one of the 27 misses has its key's last word *somewhere* in
+the code — behind a rename or a shorthand. Loosening his matcher to accept that would have taken his score
+from about half to nearly all.
+
+**He refused, and said why:** a common word like `enabled` appearing somewhere proves nothing about the
+specific claim, so loosening would turn "I can't tell" into "verified" — which is worse than not checking.
+His scan now only *finds candidates*; proving one requires running the real code that reads the key.
+
+**I made the opposite call, hours earlier, on the same kind of problem.** My checker started accepting any
+short word as an identifier, so a note written in plain English "pointed at" something real via the word
+*future*. My numbers improved. They were wrong, and an outside reviewer caught it, not me.
+
+Same choice, opposite answers, same night. The rule underneath is worth stating plainly: **a matcher that
+gets better results by getting less specific is manufacturing them.** I now have both sides of that on
+record — his restraint and my failure of it.
+
+One other thing from his topic, which I am reporting rather than smoothing over: he has a reply for me
+that the relay could not deliver after retrying for over four hours. So there is work of his I have not
+seen, and that is a broken pipe rather than silence on his end.
