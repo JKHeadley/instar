@@ -14907,10 +14907,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // which is the second half of the incident: the 500 carried nothing, so four
     // hours of retrying produced nothing anyone could diagnose.
     //
-    // "Invisible" = nothing survives stripping Unicode whitespace and the zero-width
-    // format marks that render as nothing (U+200B ZWSP, U+200C ZWNJ, U+200D ZWJ,
-    // U+2060 word joiner, U+FEFF BOM). A message a human cannot see is not a message.
-    if (text.replace(/[\s\u200B-\u200D\u2060\uFEFF]/gu, '').length === 0) {
+    // "Invisible" is the UNICODE STANDARD's own definition, not my list. The first
+    // version of this guard hand-enumerated five code points (U+200B/C/D, U+2060,
+    // U+FEFF) and review pass 8 immediately showed the class was wider: U+200E LRM,
+    // U+2061, U+FE0F, U+00AD SHY and U+180E all survived it, so "invisible payloads
+    // are refused" was true of the incident and false as a claim. A hand-written
+    // population is the blind spot this registry keeps re-finding — the guard could
+    // only ever cover the characters I happened to think of.
+    //
+    // `\p{Default_Ignorable_Code_Point}` is Unicode's category for "renders as
+    // nothing"; `\p{Cf}` is format controls. Together with `\s` they classify all 21
+    // probe cases correctly, and — verified, because this is the direction that would
+    // break real messages — an emoji with a variation selector, accented Latin and CJK
+    // all still send. A message wrapped in zero-widths but containing real text is
+    // untouched.
+    if (text.replace(/[\s\p{Default_Ignorable_Code_Point}\p{Cf}]/gu, '').length === 0) {
       res.status(400).json({
         error: 'refused: "text" contains no visible characters (only whitespace and/or zero-width marks). '
           + 'An invisible message cannot inform a reader, and delivering it would produce a "reply lost" '

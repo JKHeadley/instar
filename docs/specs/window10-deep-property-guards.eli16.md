@@ -586,3 +586,26 @@ Eleven test cases, both directions: six invisible ones refused, five real ones �
 that happens to contain an invisible character — still sent. And I checked the finished build, not just
 the source, because yesterday's two worst bugs were both in the thing that *produces* rather than the thing
 that checks.
+
+## My list versus the standard's list (window 11)
+
+An hour after shipping the invisible-message fix, the eighth reading showed me it only covered the five
+characters I had thought to write down. Five others — including the invisible mark that makes an emoji
+render in colour — sailed straight through. So "invisible messages are refused" was true of the incident
+that prompted it, and false as a general claim.
+
+The fix was to stop writing my own list. Unicode already defines a category for "characters that render as
+nothing", and the check now asks *that* instead of asking me. Twenty-one cases, both directions — and the
+second direction is the one that could quietly break things: an emoji with its colour mark, accented
+letters, Chinese characters, and a normal message that happens to contain an invisible character all still
+send.
+
+It also pointed out I had no committed test for any of it. My eleven checks had been typed into a terminal
+and died with it. They are a real test file now, incident and all.
+
+And three places where the same number had gone stale while the checks reported clean — because the
+freshness check watches the rule's text, not the data the rule cites. A number written down in four places
+will be wrong in three of them.
+
+First time anything has been graded closed, and the first time my summary of the history matched the
+archive with no discrepancy at all.

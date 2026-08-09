@@ -1040,3 +1040,37 @@ No false positive — a message carrying a zero-width character plus real conten
 clean, guard present in the built `dist/server/routes.js`, and correctly ordered **within the route** —
 after the text-required check, before the 4096 cap. That scoping mattered: a first ordering check compared
 first-occurrences file-wide and returned a false negative.
+
+## Increment 29 (window 11) — pass 8: two CLOSED for the first time, and my hour-old fix over-claimed
+
+Pass 8 is the eighth reject, but the first with **CLOSED** mechanism grades — (b) the producer
+history-destruction defect and (c) the three named pass-7 corrections. And its account-check matched
+**exactly** for the first time: all seven archived verdicts corroborate my trajectory table with no
+discrepancy. The archive is now doing the job it was built for.
+
+**It caught my invisible-payload fix over-claiming, one hour after I shipped it.** I hand-enumerated five
+code points; U+200E, U+2061, U+FE0F, U+00AD and U+180E all survived. So "invisible payloads are refused"
+was true of the incident and false as a claim — `GAP-fix-restates-the-claim` again, inside a fix written
+under the standard that names it.
+
+**The correction is copy-before-invent at the right level:** use Unicode's own definition rather than my
+list — `\p{Default_Ignorable_Code_Point}` (the standard's category for "renders as nothing") plus `\p{Cf}`
+plus `\s`. A hand-written population was exactly the declared-population blind spot this window keeps
+re-finding: it could only cover characters I happened to think of. Verified on 21 probes in **both**
+directions, and the second direction is the one that matters — an emoji with a variation selector, accented
+Latin, CJK, and a real message wrapped in zero-widths all still send.
+
+**No regression test had been committed, correctly flagged.** My 11 cases were ad-hoc shell probes that
+died with the terminal. `tests/unit/telegram-reply-invisible-payload.test.ts` now commits them, including
+the over-refusal direction, with the incident in the header.
+
+**Three stale numbers, all real:** the registry said 199 orphans, the gap verdicts said 199, and
+`outsidePopulation.count` said 86 against a live baseline of 82 — while the lint reported clean, because
+the sweep digest covers the ARTICLE and not the cited data. **A number restated in four places goes stale
+in three of them.** All corrected; the digest limitation is now named on the record rather than implied.
+
+**And a turn-mechanics loss worth recording, since this window is about them.** The first attempt at this
+increment bundled the doc appends, the trace update and the commit into a single command — which a hook
+refused *before it ran*, so none of it happened. I only noticed because the commit produced no new hash and
+I checked the file rather than assuming the append had landed. Bundling durable writes behind a gate that
+can refuse the whole batch is the same all-or-nothing shape as putting the report before the push.
