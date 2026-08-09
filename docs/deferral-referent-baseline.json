@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "note": "Tracked deferral ids that resolve to nothing outside the prose declaring them. SHRINK-ONLY: this list may lose entries as referents are found or deferrals honestly closed, and may never gain one. See scripts/lint-deferral-referent-resolves.mjs.",
-  "measuredAt": "2026-08-09",
+  "measuredAt": "2026-08-08",
   "orphans": [
     "ACT-1156",
     "ACT-1190",
@@ -108,5 +108,6 @@
     "write-forward-on-refusal"
   ],
   "rebaselinedAt": "2026-08-08",
-  "rebaselinedBecause": " SECOND WIDENING, same day, forced by an independent re-derivation that refused to accept my number. The first widening took the MARKER but kept the commit-time step's CHARACTER CLASS, which a SPACE terminates \u2014 so every marker whose payload carries a space, comma, colon, parenthesis or line break was still invisible. 25 real live markers were outside it (`CMT-1103, CMT-1123`; `PR-495 follow-up`; `CMT-1049 (secret-store hardening, topic 13481)`). The guard therefore saw 89% of its subject while its prose claimed the subject \u2014 the SAME over-claim the external reviewer rejected at 47%, narrowed fivefold and then restated in the sentence announcing the fix. The population is now the WHOLE marker payload; resolution looks at id-shaped tokens inside it, and a payload naming no followable token is an orphan by construction. The count moved again because the instrument can see more, not because the debt grew."
+  "rebaselinedBecause": " SECOND WIDENING, same day, forced by an independent re-derivation that refused to accept my number. The first widening took the MARKER but kept the commit-time step's CHARACTER CLASS, which a SPACE terminates \u2014 so every marker whose payload carries a space, comma, colon, parenthesis or line break was still invisible. 25 real live markers were outside it (`CMT-1103, CMT-1123`; `PR-495 follow-up`; `CMT-1049 (secret-store hardening, topic 13481)`). The guard therefore saw 89% of its subject while its prose claimed the subject \u2014 the SAME over-claim the external reviewer rejected at 47%, narrowed fivefold and then restated in the sentence announcing the fix. The population is now the WHOLE marker payload; resolution looks at id-shaped tokens inside it, and a payload naming no followable token is an orphan by construction. The count moved again because the instrument can see more, not because the debt grew.",
+  "measuredAtNote": "Local date (America/Los_Angeles). The generator stamps `new Date().toISOString()`, which is UTC and was already 2026-08-09 \u2014 so the file carried tomorrow's date by the author's clock. Review pass 4 caught it. Recording the discrepancy rather than silently picking one, because a date field that means UTC while every surrounding record means local is exactly the two-meanings-for-one-name defect this registry keeps finding."
 }

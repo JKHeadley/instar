@@ -323,3 +323,26 @@ about it.
 That is the real case for running a second lane at all. It did not just find bugs I would have found more
 slowly. It found the one kind of mistake my own checking cannot see, because my own checking reads my own
 words.
+
+## Caught doing it again, inside the note where I named it
+
+One increment ago I wrote down the pattern: I fix an over-claim, and the sentence announcing the fix
+contains a fresh one. Three examples, all found by someone else.
+
+The fourth was in that very commit. I had written that a conclusion "can no longer be re-stamped, only
+re-reached." It cannot. The check makes you *open* a conclusion whose rule has changed; it cannot make you
+*think* about it, and pasting the new stamp passes. So the sentence claiming the hole was closed was itself
+the hole, written while I was describing the hole.
+
+It is now on the list of things the check does not promise, along with a second one worth stating: the
+stamp covers the rule's text, so changing the *code* a conclusion depends on, or the evidence it rests on,
+leaves every conclusion looking current.
+
+Also corrected: a paragraph still announcing that no rule anywhere declares where it is enforced — six do —
+and another still saying five checks "plausibly cover" the failure, when we had established hours earlier
+that the failure walked straight past them. *Plausibly covers* was quietly doing the work of *covers*, and
+that is the whole thing I have been chasing all week.
+
+Four passes, four rejections, and every round found something true. The count of my own claims graded
+"real fix, overstated report" is now consistent across all four. That is not a run of bad luck; it is a
+measurement.

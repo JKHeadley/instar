@@ -70,6 +70,15 @@
  *      remediation to stay green; the match is a finding, not a fix, and the loop
  *      does not close it.
  *   4. That an unswept gap gets swept — only that it is visibly unswept and dated.
+ *   5. **That a re-touched verdict was RE-REACHED rather than RE-STAMPED.** The atDigest arm
+ *      forces an author to open a verdict whose article changed; it cannot force them to
+ *      reconsider it, and pasting the new digest passes. Named because the commit that
+ *      introduced that arm claimed "a verdict must be re-reached rather than re-stamped" —
+ *      which is `GAP-fix-restates-the-claim` committed inside the fix for the previous
+ *      instance of it, caught by review pass 4 within the hour.
+ *   6. That the digest notices everything that could stale a verdict. It covers the ARTICLE.
+ *      A change to the cited guard's implementation, to a gap's own shape or sweep method, or
+ *      to the evidence a verdict rests on, leaves every verdict machine-valid.
  *
  * So the honest name for what this check delivers is **freshness bookkeeping over
  * voluntarily authored records**, not failure capture and not automatic upgrade. The
@@ -237,6 +246,19 @@ for (const gap of gaps) {
   // (2) STALENESS — the propagation loop's actual mechanism.
   const popNames = population.map((e) => (typeof e === 'string' ? e : e?.standard)).filter(Boolean);
   const popSet = new Set(popNames);
+  // (6) SET membership hid duplicates: two entries for one standard, or a verdict recorded twice,
+  // passed every arm while the record silently disagreed with itself about that standard.
+  if (popSet.size !== popNames.length) {
+    const dupes = popNames.filter((n, i) => popNames.indexOf(n) !== i);
+    failures.push(`${id} — fingerprintPopulation names ${[...new Set(dupes)].join(', ')} more than once. Set comparison hid it; the population must be exactly one record per standard, or two entries can disagree and both pass.`);
+  }
+  for (const bucket of ['matched', 'unmatched']) {
+    const names = (Array.isArray(sweep[bucket]) ? sweep[bucket] : []).map((m) => (typeof m === 'string' ? m : m?.standard)).filter(Boolean);
+    if (new Set(names).size !== names.length) {
+      const dupes = names.filter((n, i) => names.indexOf(n) !== i);
+      failures.push(`${id} — ${bucket} records ${[...new Set(dupes)].join(', ')} more than once. Two verdicts on one standard can contradict each other and both pass.`);
+    }
+  }
   const newlyFingerprinted = live.filter((s) => !popSet.has(s));
   const goneFromRegistry = popNames.filter((s) => !liveSet.has(s));
 
@@ -294,7 +316,7 @@ for (const gap of gaps) {
       if (typeof at !== 'string') {
         failures.push(`${id} — ${bucket} verdict on "${name}" records no atDigest. Bumping the POPULATION digest without touching the verdict left a substantively stale conclusion machine-clean (review pass 3, finding 1); a verdict must name the article state it was reached against.`);
       } else if (at !== liveDigest.get(name)) {
-        failures.push(`${id} — ${bucket} verdict on "${name}" was reached at ${at} but the article is now ${liveDigest.get(name)}. Re-reach the verdict, do not re-stamp it.`);
+        failures.push(`${id} — ${bucket} verdict on "${name}" was reached at ${at} but the article is now ${liveDigest.get(name)}. Go and re-reach the verdict; note that this check can only force you to TOUCH it (see the certification list — re-thinking is not mechanically provable).`);
       }
     }
   }

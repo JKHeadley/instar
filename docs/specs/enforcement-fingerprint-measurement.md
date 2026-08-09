@@ -7,8 +7,10 @@ between them?
 **Status, updated 2026-08-08 (evening).** Step 1 (this document) measured the surfaces. **Step 3 is
 built** — `scripts/lint-enforcement-fingerprint.mjs` refuses a NEW standard with no fingerprint. **Step 4
 is built in shape** — the two dated findings below are now gap records in `docs/enforcement-gaps.json`.
-**Step 2 is NOT done**: 86 of 87 standards carry no fingerprint and sit in a shrink-only grandfathered
-baseline. Retrofitting them is real per-standard analysis, not a formatting pass.
+**Step 2 is PARTLY done, and this line went stale the same evening (review pass 4 caught it):** as of the
+end of 2026-08-08, **6 of 88 standards carry a fingerprint and 82 are grandfathered.** The figure here read
+"86 of 87" for hours after it stopped being true. Retrofitting the remainder is real per-standard analysis,
+not a formatting pass. Retrofitting them is real per-standard analysis, not a formatting pass.
 
 ## 0. Vocabulary (fixed by the operator, 2026-08-08)
 
@@ -71,7 +73,10 @@ argument that the moments its violations OCCUR at are inside that subset.
 Justin's framing was that the self-unblock standard "passed every existence check and still failed,
 because nothing enforced it at the one moment violations occur: the sending of an escalation."
 
-**Measured, that framing is too kind to us. Something IS there at that moment.** The tone gate carries
+**Measured, that framing is too kind to us. Something IS there at that moment — but read §4 before treating
+that as coverage: "plausibly covers" was doing the work of "covers", and *Self-Unblock Before Escalating*
+withdrew the coverage assertion on 2026-08-08 on the evidence that its own motivating violation passed the
+live gate. What this section establishes is that the moment is WATCHED, not that it is COVERED.** The tone gate carries
 five rules in exactly this family, all classified `blocking`:
 
 `B15_CONTEXT_DEATH_STOP` · `B16_UNVERIFIED_WALL` · `B17_FALSE_BLOCKER` · `B18_AUTONOMY_STOP` ·
@@ -120,8 +125,8 @@ legs, and today only the first is available for most surfaces:
   the whole self-stop family manifest — keeps no rule-level verdict record, so its effectiveness is
   unmeasurable. `2026-09-07`, tracked as `STD-SUBCOUNTDOWN-outbound-verdict-record`. **Now recorded as
   `GAP-watched-but-unauditable`** in `docs/enforcement-gaps.json`, swept.
-- No standard in the registry carries a fingerprint field, so no standard's moment-coverage can be
-  checked at all. `2026-09-07`, tracked as `STD-SUBCOUNTDOWN-fingerprint-field`. **Now recorded as
+- ~~No standard in the registry carries a fingerprint field~~ — SUPERSEDED 2026-08-08: six do, and the
+  requirement is enforced at birth. The residual is the 82 grandfathered. `2026-09-07`, tracked as `STD-SUBCOUNTDOWN-fingerprint-field`. **Now recorded as
   `GAP-no-moment-declared`**, swept.
 
 A third gap was recorded at the same time because it is the loop's proof case rather than a new

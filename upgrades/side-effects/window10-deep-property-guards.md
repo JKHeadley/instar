@@ -659,3 +659,39 @@ three, that party was never me.
 That is also the strongest argument tonight produced for the parallel-lane structure. The reviewer and the
 lane did not merely find bugs; they found the one defect class my own checking is structurally blind to,
 because my checking reads what I wrote.
+
+## Increment 17 — pass 4: REJECT, and it caught `GAP-fix-restates-the-claim` a fourth time, inside the fix
+
+Fourth reading, fourth rejection, seven findings. Two were already closed by increment 15 (it even noted
+"the live uncommitted widening now reports 217/103"). The rest are real.
+
+**Finding 3 — manufactured enforcement INSIDE the gap registry.** `GAP-watched-but-unauditable` recorded
+that the failure "evaded *Self-Unblock*'s FINGERPRINT." That article had none; **no article anywhere had
+one at the time.** The record asserted a mechanism that did not exist, in the registry built to catch
+exactly that. Rewritten without the invented mechanism: five blocking rules sit at the moment, the gate was
+live, the violation passed, and **whether any rule should have fired is UNKNOWN and unknowable**, because
+nothing captures rule-level verdicts. The shape this gap records is the absence of a verdict record — not
+a claim about what the rules cover.
+
+**Finding 4 — stale self-description, again, within hours.** Tooth (E) still said "no standard carries a
+fingerprint field" (six do, of 88) and the measurement doc still said "86 of 87". Both corrected, both
+annotated with how long they were false. The same paragraph also carried "plausibly cover" doing the work
+of "covers" — retired, because *Self-Unblock* withdrew that coverage assertion the same day on evidence.
+
+**Finding 1 — and here is the fourth instance of the shape I recorded one increment ago.** Increment 14's
+commit said "a verdict can no longer be re-stamped, only re-reached." **That is false and I wrote it while
+fixing the previous instance of the same defect.** The `atDigest` arm forces an author to *touch* a verdict
+whose article changed; it cannot force them to *reconsider* it, and pasting the new digest passes. Added as
+non-certification #5, alongside #6: the digest covers the ARTICLE, so a change to a cited guard's
+implementation, to a gap's own shape or sweep method, or to the evidence a verdict rests on, leaves every
+verdict machine-valid.
+
+`GAP-fix-restates-the-claim` was recorded at 3 instances, and pass 4 found the 4th **inside the commit
+that recorded it**. The residual on that gap — "no guard detects this; the only demonstrated detector is a
+second party" — is now evidenced four times, and remains the honest state.
+
+**Finding 6** — set comparison hid duplicates: two population entries or two verdicts for one standard
+passed while disagreeing with each other. Closed, arm proven. **Finding 7** — "Three teeth" while
+enumerating five. **Finding 5** — a baseline stamped `2026-08-09` because the generator uses UTC while
+every surrounding record means local; recorded as a two-meanings-for-one-name defect rather than silently
+picking one.
