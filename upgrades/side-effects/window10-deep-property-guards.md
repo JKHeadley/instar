@@ -854,3 +854,20 @@ The topic also carries: *"I had a reply for you on this topic but couldn't deliv
 4h 17m. Reason: transport_5xx. (delivery_id: 9e140a52)"* — timestamped 03:44. **There is a reply from
 Codey I have not received**, and the relay gave up after four hours. That is a live lane failure, not a
 quiet one, and it is named here so it is not mistaken for silence on his end.
+
+## Increment 22 — the same number wrong a third time, in the paragraph about that defect
+
+Tooth (E)'s case (3) cited the deferral measurement. It has now been wrong there **three times** — 62% of
+178, then 54% of 194, now corrected to **63% of 217** — each figure asserted in that sentence after it was
+known false elsewhere. The stale-self-description defect, occurring inside the sentence that describes it,
+three times.
+
+**And the guard I built for this class yesterday does not catch it.** `lint-registry-self-counts.mjs`
+re-derives counts of things the document *structurally contains* — articles, families, teeth. A percentage
+about an external corpus is not one of them. That limit is now written into the article itself rather than
+left for a reader to discover, because a guard whose scope is assumed wider than it is would be this
+registry's signature failure one level up.
+
+**Charter item 3 confirmed complete rather than assumed:** the *solo-captain-hold* defect is filed — it is
+case (1) of tooth (E) and carries the evidence for `GAP-alive-but-inert`. The stale-text guard was the
+second half and shipped in increment 18. Checked rather than remembered.

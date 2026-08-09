@@ -449,3 +449,15 @@ record — his restraint and my failure of it.
 One other thing from his topic, which I am reporting rather than smoothing over: he has a reply for me
 that the relay could not deliver after retrying for over four hours. So there is work of his I have not
 seen, and that is a broken pipe rather than silence on his end.
+
+## Wrong three times, in the sentence about being wrong
+
+One paragraph in the constitution cites how many tracked promises point at nothing. That number has now
+been wrong in that sentence three times running — each version written down after I already knew it was
+false somewhere else. The paragraph is *about* documents going stale.
+
+Corrected to the honest figure. And I wrote into the article that **the checker I built yesterday for
+exactly this problem does not catch it** — it re-derives counts of things the document itself contains,
+like how many entries a section has, and a percentage about a different pile of files is not one of those.
+Better to state a guard's real reach in the place someone will read it than to let its existence imply a
+protection it does not give.
