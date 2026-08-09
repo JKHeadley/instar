@@ -148,11 +148,24 @@ if (fs.existsSync(baseAbs)) {
 }
 
 if (UPDATE) {
+  // PRESERVE the append-only rebaseline history. Found 2026-08-09 by running the real CI binding
+  // end-to-end instead of trusting it: --update-baseline rewrote the whole file with a fresh object,
+  // so the hash-chained `rebaselines` array was DESTROYED on every regeneration. A chain cannot
+  // protect a file whose own writer drops the field — the regenerator was the hole in the ratchet.
+  let priorRebaselines = [];
+  let priorMeasuredAt;
+  try {
+    const prior = JSON.parse(fs.readFileSync(baseAbs, 'utf-8'));
+    if (Array.isArray(prior?.rebaselines)) priorRebaselines = prior.rebaselines;
+    priorMeasuredAt = prior?.measuredAt;
+  } catch { /* establishing a new baseline */ }
+  void priorMeasuredAt;
   fs.writeFileSync(baseAbs, `${JSON.stringify({
     schemaVersion: 1,
     note: 'Articles predating the enforcement-fingerprint requirement (charter 2026-08-08). SHRINK-ONLY: an article leaves this list by gaining a fingerprint and may never be added back. A NEW article must carry one. See scripts/lint-enforcement-fingerprint.mjs.',
     measuredAt: new Date().toISOString().slice(0, 10),
     grandfathered: missing,
+    rebaselines: priorRebaselines,
   }, null, 2)}\n`);
   console.log(`[enforcement-fingerprint] baseline written: ${missing.length} grandfathered of ${articles.length} article(s).`);
   process.exit(0);

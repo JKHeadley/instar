@@ -509,3 +509,22 @@ anything keeping them.
 
 Four published numbers, in order: 62%, 54%, 63%, 92%. Every one announced before it was found wrong, every
 one corrected by somebody else.
+
+## Running it for real found the hole I could not have tested for
+
+The instruction was to prove each fix by breaking it on purpose *and* by checking the pattern I copied
+still agrees. So I ran the new build step for real — pulling the old copies of the files out of a pinned
+commit and running the checks exactly as the build will.
+
+It failed, and the reason is the useful part. **The tool that regenerates these files was quietly deleting
+the tamper-proof history I had just added to them.** I built a chain where each row seals the one before
+it, and then left a writer that rewrote the file from scratch without that list. No trap I had set would
+have caught it, because I was testing the *checker* and the bug was in the *producer*. Only running the
+whole path end to end showed it.
+
+Then it caught me a second time. Introducing a seal means stamping the rows that existed before it — which
+looks exactly like tampering unless you say so. I allowed exactly that: an unsealed old row may gain a
+seal and change *nothing else*. My first attempt at restoring a lost row rewrote its wording while
+restoring it, and the check refused — correctly. The row was recovered word for word from the old copy
+instead, and the story of the restoration now lives outside the sealed rows, where it cannot pretend to be
+part of them.

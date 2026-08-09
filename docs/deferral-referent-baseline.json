@@ -206,10 +206,20 @@
   "rebaselines": [
     {
       "at": "2026-08-09",
+      "from": 103,
+      "to": 137,
+      "reason": "THIRD widening in one night, and the one that made the guard honest. Review pass 5 found the resolver accepted every three-character alphanumeric word as an identifier, so a marker whose payload is PROSE resolved through ordinary English — 'a future \"swap-target output sanity\" hardening' resolved via the word 'future'. That did not merely inflate the resolved count; the guard was reporting prose as a followable referent, which is the exact claim it exists to test, and the 114-resolved figure had already been published to the operator. A token must now contain a digit. The orphan count rose 103 to 137 because the instrument stopped counting words as promises, not because the debt grew.",
+      "hash": "695860411a9286d23baf1694f8bca2476cf08e4df634e3b9cd205c56af6a391d"
+    },
+    {
+      "at": "2026-08-09",
       "from": 137,
       "to": 199,
       "reason": "FOURTH and largest correction, and the honest one. Review pass 6 found a CIRCULAR pass: PR-495 follow-up resolved only because PR-495 appears in this guard's own explanatory comments and in the window narrative about it — the guard's prose resolving the markers the guard measures. The repo's proven referent shape is a jailed path plus a content hash (auditRef/auditSha256); that cannot be retrofitted to 217 marker sites, so this adopts its PRINCIPLE: prose and comments do not resolve a referent, only executable or structured evidence does. Every .md is now excluded (not just docs/) and comment bodies are stripped from source before scanning. The orphan count moved 137 to 199 because the instrument stopped counting commentary as follow-through — 92% of tracked deferrals have no executable referent, which is the real debt and was hidden behind prose the whole time.",
-      "hash": "43814461a50330402e13d96734521c3dff5143eeb95e1fc47015182f09b1c744"
+      "hash": "cda6c61a7ee109a65c9eb4ad6bd7fd44992b6384a0b26e6998ea153b06681623"
     }
+  ],
+  "rebaselineNotes": [
+    "2026-08-09 chain-genesis: rows predating the hash chain were stamped with a hash and NOTHING else. Row 0 was briefly lost when --update-baseline rewrote the file without its rebaselines array (the regenerator was the hole in the ratchet, fixed the same day) and was recovered VERBATIM from the pinned base copy rather than re-authored, because genesis may add a hash and nothing else."
   ]
 }

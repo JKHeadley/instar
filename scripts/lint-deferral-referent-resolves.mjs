@@ -214,11 +214,24 @@ if (fs.existsSync(abs)) {
 }
 
 if (UPDATE) {
+  // PRESERVE the append-only rebaseline history. Found 2026-08-09 by running the real CI binding
+  // end-to-end instead of trusting it: --update-baseline rewrote the whole file with a fresh object,
+  // so the hash-chained `rebaselines` array was DESTROYED on every regeneration. A chain cannot
+  // protect a file whose own writer drops the field — the regenerator was the hole in the ratchet.
+  let priorRebaselines = [];
+  let priorMeasuredAt;
+  try {
+    const prior = JSON.parse(fs.readFileSync(abs, 'utf-8'));
+    if (Array.isArray(prior?.rebaselines)) priorRebaselines = prior.rebaselines;
+    priorMeasuredAt = prior?.measuredAt;
+  } catch { /* establishing a new baseline */ }
+  void priorMeasuredAt;
   fs.writeFileSync(abs, `${JSON.stringify({
     schemaVersion: 1,
     note: 'Tracked deferral ids that resolve to nothing outside the prose declaring them. SHRINK-ONLY: this list may lose entries as referents are found or deferrals honestly closed, and may never gain one. See scripts/lint-deferral-referent-resolves.mjs.',
     measuredAt: new Date().toISOString().slice(0, 10),
     orphans,
+    rebaselines: priorRebaselines,
   }, null, 2)}\n`);
   console.log(`[deferral-referent] baseline written: ${orphans.length} orphan(s) of ${declared.size} tracked id(s).`);
   process.exit(0);

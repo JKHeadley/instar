@@ -203,6 +203,20 @@ export function checkShrinkOnlyAgainstHistory({ relPath, cwd, field, current, la
     failures.push(`${relPath} — the rebaselines log SHRANK (${baseRows.length} rows at the pinned base, ${headRows.length} now). It is append-only.`);
   } else {
     for (let i = 0; i < baseRows.length; i += 1) {
+      // CHAIN GENESIS, bounded: a base row carrying NO hash predates the chain, so stamping one is
+      // genesis rather than tampering. Everything else about the row must be unchanged. Found by
+      // running the real CI binding end-to-end: introducing a chain necessarily rewrites the
+      // pre-chain rows once, and a check that cannot tell genesis from tampering would have made
+      // the migration impossible or the rule permanently red.
+      if (typeof baseRows[i]?.hash !== 'string') {
+        const { hash: _h, ...headRest } = headRows[i] ?? {};
+        const { hash: _b, ...baseRest } = baseRows[i] ?? {};
+        if (JSON.stringify(headRest) !== JSON.stringify(baseRest)) {
+          failures.push(`${relPath} — rebaselines[${i}] predates the hash chain, but its CONTENT changed while being stamped. Genesis may add a hash and nothing else.`);
+          break;
+        }
+        continue;
+      }
       if (headRows[i]?.hash !== baseRows[i]?.hash) {
         failures.push(`${relPath} — rebaselines[${i}] was REWRITTEN since the pinned base (hash changed). Earlier history is immutable.`);
         break;

@@ -936,3 +936,31 @@ a proven link to its follow-through. Path+hash remains the real fix, dated on th
 `STD-SUBCOUNTDOWN-deferral-referent-hash`.
 
 All four pass-6 blockers are now closed by copied patterns rather than invention, each injection-proven.
+
+## Increment 25 — running the CI path for real found the hole in my own ratchet
+
+The steer said prove each closed by injection **and** by checking the pattern-source still agrees. So I ran
+the new CI step's shell for real against a pinned SHA — extracting the base copies, exporting the flags,
+and invoking the three lints exactly as the workflow will. It failed, and for a reason worth keeping.
+
+**The regenerator was the hole.** `--update-baseline` rewrites the baseline file as a fresh object, so the
+hash-chained `rebaselines` array was **destroyed on every regeneration**. I had built an append-only chain
+and then wired a writer that silently deleted it. A chain cannot protect a file whose own writer drops the
+field — and no injection I had designed would have caught it, because I was testing the *checker*, not the
+*producer*. Only running the real path end-to-end surfaced it. Both writers now preserve prior history.
+
+**A second thing the real run forced: chain genesis.** Introducing a chain necessarily rewrites the
+pre-chain rows once, and a check that cannot tell genesis from tampering makes the migration either
+impossible or permanently red. Bounded rule: a base row carrying **no hash** predates the chain, so it may
+gain a hash **and nothing else** — every other field must be byte-identical. Arm proven by changing one
+number during genesis and watching it fail.
+
+**And it caught me.** My first restoration re-authored the lost row's reason text. The check refused it —
+correctly, because that is not genesis, it is a rewrite wearing genesis clothing. The row was recovered
+**verbatim** from the pinned base copy instead, and the restoration story now lives in a separate
+`rebaselineNotes` field, outside the immutable rows where it belongs.
+
+**Verified end-to-end:** the workflow shell resolves the base commit, binds all three baselines with
+`REQUIRED=1`, and all three lints run clean under those bindings — while a local run with no bindings also
+stays clean, which is the faithful copy of the existing pattern rather than a stricter rule that would
+decay into a disabled one.
