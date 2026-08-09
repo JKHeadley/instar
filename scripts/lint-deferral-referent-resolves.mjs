@@ -139,7 +139,31 @@ const specFiles = files.filter((f) => f.startsWith('docs/specs/') && f.endsWith(
 // A marker is RESOLVED by a mention outside the spec prose. Docs are excluded from the
 // resolving set on purpose: one document citing another's promise is not follow-through,
 // it is the same claim repeated.
-const resolvingFiles = files.filter((f) => !f.startsWith('docs/') && !f.includes('node_modules/'));
+// PROSE AND COMMENTARY DO NOT RESOLVE A REFERENT — review pass 6, defect (d):
+//   "A concrete circular pass exists now: `PR-495 follow-up` resolves only because `PR-495` is
+//    repeated in this lint's own explanatory comments and the window's side-effects narrative."
+// The repo's proven answer to "does this reference point at something real" is `auditRef` +
+// `auditSha256` in standards-coverage.mjs: a jailed path PLUS a hash of the bytes it names. That
+// shape cannot be retrofitted to 217 marker sites here, so this adopts its PRINCIPLE instead:
+// a referent must occur somewhere EXECUTABLE OR STRUCTURED — code, tests, fixtures, config — and
+// never in prose or in a comment, because prose that merely discusses an id is the same claim
+// repeated. Concretely: every `.md` is excluded (not just `docs/`), and comment bodies are
+// stripped from source files before scanning. **Named limit:** this is weaker than path+hash. A
+// marker still resolves on a bare mention in code rather than on a proven link to its
+// follow-through, so the stronger form remains the real fix and is dated on the article.
+const PROSE_EXT = /\.(md|mdx|txt)$/i;
+const resolvingFiles = files.filter((f) => !f.startsWith('docs/') && !f.includes('node_modules/') && !PROSE_EXT.test(f));
+
+/** Strip comment bodies so a guard's own explanation cannot resolve what it measures. */
+function withoutComments(text, rel) {
+  if (/\.(m?[jt]sx?|c[jt]s)$/i.test(rel)) {
+    return text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+  }
+  if (/\.(ya?ml|sh|bash|zsh|toml|conf)$/i.test(rel) || !rel.includes('.')) {
+    return text.replace(/(^|\s)#[^\n]*/g, '$1 ');
+  }
+  return text;
+}
 
 const declared = new Map(); // id -> Set(spec paths)
 for (const rel of specFiles) {
@@ -174,7 +198,7 @@ const wanted = [...declared.keys()]
   .filter((w) => w.tokens.length > 0);
 for (const rel of resolvingFiles) {
   let text;
-  try { text = fs.readFileSync(path.join(ROOT, rel), 'utf-8'); } catch { continue; }
+  try { text = withoutComments(fs.readFileSync(path.join(ROOT, rel), 'utf-8'), rel); } catch { continue; }
   for (const w of wanted) {
     if (resolved.has(w.id)) continue;
     if (w.tokens.some((re) => re.test(text))) resolved.add(w.id);

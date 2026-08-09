@@ -913,3 +913,26 @@ appears in this lint's own comments and in this very narrative. The repo's prove
 `contentSha256`, which cannot be retrofitted to 217 marker sites today. Next increment adopts its
 principle — prose and comments do not resolve a referent; code, tests, fixtures and config do — rather
 than claiming the stronger form is in place.
+
+## Increment 24 — the fourth blocker, and the number it exposed
+
+Pass 6's defect (d): `PR-495 follow-up` resolved **only** because `PR-495` appears in this guard's own
+explanatory comments and in this very narrative. The guard's prose was resolving the markers the guard
+measures.
+
+The repo's proven referent shape is `auditRef` + `auditSha256` — a jailed path plus a hash of the bytes it
+names. That cannot be retrofitted to 217 marker sites today, so the **principle** was adopted instead:
+**prose and comments do not resolve a referent; only executable or structured evidence does.** Every `.md`
+is excluded (not merely `docs/`), and comment bodies are stripped from source before scanning. Arm proven:
+an id planted in a comment plus a marker in prose fails rather than resolving.
+
+**The number this exposed is the largest correction of the window: 199 of 217 orphaned — 92%.** The four
+published measurements now read 62%, 54%, 63%, 92%. Each was announced before it was found wrong; each was
+corrected by someone other than me. **The honest reading is that this article was roughly 8% enforced
+while reporting far better**, and every prior figure was inflated by counting commentary as follow-through.
+
+**Named as still weaker than the proven shape:** a marker resolves on a bare mention in code rather than on
+a proven link to its follow-through. Path+hash remains the real fix, dated on the article as
+`STD-SUBCOUNTDOWN-deferral-referent-hash`.
+
+All four pass-6 blockers are now closed by copied patterns rather than invention, each injection-proven.

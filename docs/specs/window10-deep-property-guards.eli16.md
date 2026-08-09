@@ -490,3 +490,22 @@ rule that looks stricter and decays into a weaker one is worse than the honest o
 Four traps set and sprung to prove each of these actually bites. The fourth problem — where a note can
 appear "resolved" because its number is mentioned in the checker's own comments — is still open, and I
 have said so rather than counting three out of four as done.
+
+## The checker was quoting itself
+
+The last of the four: a note counted as "points at something real" because its number appeared in the
+checker's own comments — and in the very document I was writing about the checker. It was reading my
+explanation of it as evidence for it.
+
+The repository's real answer to "does this reference point at something" is a file path plus a hash of
+that file's contents. That cannot be retrofitted onto two hundred and seventeen existing notes today, so I
+took the principle instead: **explanations do not count as evidence — only code, tests, fixtures and
+settings do.**
+
+**The number that fell out is the biggest correction of the whole window.** Unresolved notes went from 137
+to 199 out of 217 — ninety-two percent. Which means this rule was about eight percent enforced while I
+reported far better, and every earlier figure was propped up by prose describing the promises rather than
+anything keeping them.
+
+Four published numbers, in order: 62%, 54%, 63%, 92%. Every one announced before it was found wrong, every
+one corrected by somebody else.
