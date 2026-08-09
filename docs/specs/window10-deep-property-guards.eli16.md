@@ -197,3 +197,33 @@ triggers. Declining to accuse still costs only an explanation, which is right: i
 Running total, honestly: one real catch, one false alarm corrected within the hour, and the mechanism
 itself firing three times on its own author. A tool that produced a false positive on its first day and
 said so is worth more than one with a spotless record, and this false positive paid for a real tightening.
+
+## The reviewer said no again — and this time it found the real hole (2026-08-09, after midnight)
+
+Second reading, second rejection, nine findings. One of them matters more than the rest.
+
+**My freshness check only noticed rules being ADDED, not rules being CHANGED.** It remembered which rules
+a sweep had looked at by name. So when I edited a rule's declaration — as I had done hours earlier,
+withdrawing a claim that turned out to be false — every stored conclusion still described the old version,
+and the check happily said everything was current. My headline promise, that you cannot add a rule without
+re-checking it against every known failure, was true only of the word *add*.
+
+It now remembers rules by a fingerprint of their actual text. Change a word in a rule's enforcement
+declaration and every conclusion that examined it goes stale. I proved both directions, and then the new
+arm caught me for real on my very next edit.
+
+The rest were smaller but the same species: an exemption list that compared sizes instead of names, so a
+rule could quietly stay exempt after it no longer needed to be; a stale statistic still asserted in two
+places after I knew it was wrong; a four-item list of limitations that I had only written three of; a
+"reason" field that would have accepted the word `true` as a reason; and a line declaring a rule's parent
+in a syntax the system does not recognise — so it declared nothing at all, while looking exactly like a
+declaration. That last one is the whole theme of this week in miniature.
+
+**One finding I deliberately did not fix.** The reviewer says two rules claim the outbound check covers
+them without evidence it can. That is a sharper version of a question I had already handed to an
+independent machine precisely because I benefit from the answer. Answering it myself now would defeat the
+reason I referred it.
+
+Of my six claimed fixes from the first round, the reviewer marked two as held and four as *partial* — real
+but overstated. Which is the exact failure this whole stretch of work keeps uncovering, this time in my own
+account of having fixed it.

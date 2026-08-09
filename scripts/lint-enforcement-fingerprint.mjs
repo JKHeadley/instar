@@ -24,9 +24,11 @@
  *   STANDARD     a rule we enforce
  *   SURFACE      a place where enforcement can act
  *   MOMENT       when a surface acts — the closed set below
- *   FINGERPRINT  a standard's recorded mapping of surfaces to moments, plus what
+ *   ENFORCEMENT FINGERPRINT
+ *                a standard's recorded mapping of surfaces to moments, plus what
  *                its violations look like — the field this check requires
- *   GAP          a recorded failure-shape: the way a violation slipped past a
+ *   ENFORCEMENT GAP
+ *                a recorded failure-shape: the way a violation slipped past a
  *                fingerprint. Gaps live in docs/enforcement-gaps.json and are swept
  *                against every fingerprint by scripts/lint-enforcement-gap-records.mjs,
  *                so a NEW fingerprint here stales every sweep there and must be
@@ -175,6 +177,18 @@ if (!baseline) {
   if (missing.length > grandfathered.size) {
     failures.push(`articles without a fingerprint rose from ${grandfathered.size} to ${missing.length} — the baseline is shrink-only.`);
   }
+  // EXACT MEMBERSHIP, not a count. External review pass 2 finding 2: comparing sizes let a
+  // fingerprinted article STAY on the grandfathered list, so (a) the "N grandfathered" figure was
+  // false, and (b) an article could silently LOSE its fingerprint and still pass, because the list
+  // still exempted it. A count-based ratchet exempts by arithmetic; membership exempts by name.
+  const staleExemptions = [...grandfathered].filter((name) => fingerprinted.has(name));
+  for (const name of staleExemptions) {
+    failures.push(
+      `${BASELINE_REL} still exempts "${name}", which now CARRIES a fingerprint. Remove it — an article that has ` +
+      `left the baseline must leave the list, or the exemption silently survives a later removal of its fingerprint ` +
+      `and the grandfathered count is a false number.`,
+    );
+  }
 }
 
 for (const bad of badMoments) {
@@ -198,7 +212,7 @@ if (JSON_OUT) {
 } else if (failures.length === 0) {
   console.log(
     `lint-enforcement-fingerprint: clean — ${articles.length} article(s), ${withFingerprint.length} fingerprinted, ` +
-    `${missing.length} grandfathered (shrink-only).`,
+    `${grandfathered.size} grandfathered (shrink-only, exact membership).`,
   );
 }
 

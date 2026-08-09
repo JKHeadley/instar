@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "note": "The GAP registry. Vocabulary fixed by Justin 2026-08-08: a STANDARD is a rule we enforce; a SURFACE is a place enforcement can act; a MOMENT is when a surface acts; a FINGERPRINT is a standard's recorded mapping of surfaces to moments plus what its violations look like; a GAP is a recorded FAILURE-SHAPE \u2014 the way a violation slipped past a fingerprint. A gap is evidence about fingerprints, not about one standard: it is swept against EVERY fingerprinted standard so one failure upgrades every standard sharing the hole-shape. A sweep records the population it ran against, so adding a fingerprint STALES every sweep and forces the new standard to be checked against every known shape. See scripts/lint-enforcement-gap-records.mjs.",
+  "note": "The GAP registry. Vocabulary fixed by Justin 2026-08-08: a STANDARD is a rule we enforce; a SURFACE is a place enforcement can act; a MOMENT is when a surface acts; an ENFORCEMENT FINGERPRINT is a standard's recorded mapping of surfaces to moments plus what its violations look like; a GAP is a recorded FAILURE-SHAPE \u2014 the way a violation slipped past a fingerprint. A gap is evidence about fingerprints, not about one standard: it is swept against EVERY fingerprinted standard so one failure upgrades every standard sharing the hole-shape. A sweep records the population it ran against, so adding a fingerprint STALES every sweep and forces the new standard to be checked against every known shape. See scripts/lint-enforcement-gap-records.mjs. Both terms are namespaced deliberately (external review pass 2, finding 6): bare `gap` already names *Architectural Agency in the Gap* in this constitution and bare `fingerprint` already denotes a routing identity in the system, so the unqualified words carry two meanings each.",
   "gaps": [
     {
       "id": "GAP-watched-but-unauditable",
@@ -17,11 +17,26 @@
         "sweptAt": "2026-08-08",
         "method": "Read each fingerprinted standard's declared surfaces and ask: does this surface leave a per-decision record a later reader can audit, or only an outcome?",
         "fingerprintPopulation": [
-          "Deferral = Deletion",
-          "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere",
-          "Documentation IS Being",
-          "Iterative Audit to Convergence",
-          "The Right to Stand Ground"
+          {
+            "standard": "Documentation IS Being",
+            "fingerprintDigest": "d496c3e3ba230496"
+          },
+          {
+            "standard": "Deferral = Deletion",
+            "fingerprintDigest": "02b3e6d3b539859b"
+          },
+          {
+            "standard": "The Right to Stand Ground",
+            "fingerprintDigest": "329ba871aab9d6e1"
+          },
+          {
+            "standard": "Iterative Audit to Convergence",
+            "fingerprintDigest": "eb3db445ff0b5ba8"
+          },
+          {
+            "standard": "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere",
+            "fingerprintDigest": "71d69714d33c2530"
+          }
         ],
         "matched": [],
         "unmatched": [
@@ -62,6 +77,16 @@
               "Iterative Audit to Convergence",
               "The Right to Stand Ground"
             ]
+          },
+          {
+            "at": "2026-08-08",
+            "trigger": "external review pass 2 finding 1 \u2014 the population was NAME-addressed, so a CHANGED fingerprint staled nothing; population is now content-addressed and every verdict was re-swept against the current digests",
+            "added": []
+          },
+          {
+            "at": "2026-08-08",
+            "trigger": "the content-staleness arm fired on my own edit \u2014 adding a missing certification item and correcting the parent syntax changed the new article's fingerprint region, so every verdict about it was re-confirmed against the new digest",
+            "added": []
           }
         ]
       },
@@ -83,17 +108,32 @@
         "sweptAt": "2026-08-08",
         "method": "Mechanical: an article matches this shape iff it declares no enforcement fingerprint. Derived from scripts/lint-enforcement-fingerprint.mjs --json rather than by hand.",
         "fingerprintPopulation": [
-          "Deferral = Deletion",
-          "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere",
-          "Documentation IS Being",
-          "Iterative Audit to Convergence",
-          "The Right to Stand Ground"
+          {
+            "standard": "Documentation IS Being",
+            "fingerprintDigest": "d496c3e3ba230496"
+          },
+          {
+            "standard": "Deferral = Deletion",
+            "fingerprintDigest": "02b3e6d3b539859b"
+          },
+          {
+            "standard": "The Right to Stand Ground",
+            "fingerprintDigest": "329ba871aab9d6e1"
+          },
+          {
+            "standard": "Iterative Audit to Convergence",
+            "fingerprintDigest": "eb3db445ff0b5ba8"
+          },
+          {
+            "standard": "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere",
+            "fingerprintDigest": "71d69714d33c2530"
+          }
         ],
         "matched": [],
         "unmatched": [
           {
             "standard": "Deferral = Deletion",
-            "why": "Declares moments commit-time and ci-time, names the surface acting at each, and states where it does NOT reach (the periodic moment when promised work comes due; deferrals written into source comments rather than specs)."
+            "why": "Declares moments: ci-time (RE-SWEPT at fingerprint 02b3e6d3 \u2014 the earlier verdict said 'commit-time and ci-time', which described the fingerprint BEFORE the commit-time claim was withdrawn as unreachable). It also states the moments it does NOT cover: the periodic moment when promised work comes due, and deferrals recorded in source comments rather than specs."
           },
           {
             "standard": "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere",
@@ -132,6 +172,16 @@
               "Iterative Audit to Convergence",
               "The Right to Stand Ground"
             ]
+          },
+          {
+            "at": "2026-08-08",
+            "trigger": "external review pass 2 finding 1 \u2014 the population was NAME-addressed, so a CHANGED fingerprint staled nothing; population is now content-addressed and every verdict was re-swept against the current digests",
+            "added": []
+          },
+          {
+            "at": "2026-08-08",
+            "trigger": "the content-staleness arm fired on my own edit \u2014 adding a missing certification item and correcting the parent syntax changed the new article's fingerprint region, so every verdict about it was re-confirmed against the new digest",
+            "added": []
           }
         ]
       },
@@ -153,20 +203,28 @@
         "sweptAt": "2026-08-08",
         "method": "For each surface a fingerprint declares, ask whether a case is known in THIS repository where that surface fails \u2014 a proven negative control, not a plausible one.",
         "fingerprintPopulation": [
-          "Deferral = Deletion",
-          "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere",
-          "Documentation IS Being",
-          "Iterative Audit to Convergence",
-          "The Right to Stand Ground"
-        ],
-        "matched": [
+          {
+            "standard": "Documentation IS Being",
+            "fingerprintDigest": "d496c3e3ba230496"
+          },
           {
             "standard": "Deferral = Deletion",
-            "why": "MATCH, CONFIRMED BY INJECTION \u2014 the first thing this loop found, within hours of being built. Deferral = Deletion's fingerprint originally cited two surfaces; only the ci-time one had a proven negative control. The commit-time arm (the orphan-deferral step in scripts/instar-dev-precommit.js) was believed to work because it has been in place a long time, which is exactly the belief this shape defeats. Injection-testing it found worse than unproven: that step reads the trace's converged-spec path, and the Tier-1 path (enforceTier1) exits the gate before Step 5 runs \u2014 so for the ENTIRE Tier-1 commit class the surface is UNREACHABLE. A staged Tier-1 change carrying 'is deferred to a follow-up; out of scope today' passed the gate clean. Every commit in this window was Tier 1, so the cited surface had not run once on the work claiming it.",
-            "action": "DONE 2026-08-08: the commit-time claim was WITHDRAWN from the fingerprint rather than repaired \u2014 an honest fingerprint names what actually fires. Making the orphan-deferral check reachable from the Tier-1 path is a separate change to the gate, recorded below rather than smuggled into this one.",
-            "residual": "The Tier-1 commit class has NO commit-time deferral surface at all. Extending enforceTier1 to run the orphan-deferral check is real work on the gate and is not done here."
+            "fingerprintDigest": "02b3e6d3b539859b"
+          },
+          {
+            "standard": "The Right to Stand Ground",
+            "fingerprintDigest": "329ba871aab9d6e1"
+          },
+          {
+            "standard": "Iterative Audit to Convergence",
+            "fingerprintDigest": "eb3db445ff0b5ba8"
+          },
+          {
+            "standard": "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere",
+            "fingerprintDigest": "71d69714d33c2530"
           }
         ],
+        "matched": [],
         "unmatched": [
           {
             "standard": "One Failure Teaches Every Guard \u2014 Record the Shape, Sweep It Everywhere",
@@ -184,6 +242,11 @@
             "standard": "Iterative Audit to Convergence",
             "why": "UNMATCHED. **This verdict was recorded as a MATCH first and was WRONG \u2014 corrected within the hour, by checking.** I asserted that scripts/write-audit-convergence.mjs had never been injection-tested. It has: tests/unit/write-audit-convergence.test.ts carries 35 passing tests, 19 of them explicit refusal cases \u2014 REFUSES with only 1 round, REFUSES a non-zero final round, REFUSES a line-vs-rows MISMATCH, REFUSES basename != slug, REFUSES a bad slug charset, REFUSES both standing-guard and exemption, REFUSES a round missing search-angles, plus FAIL-CLOSED cases for unparseable ledger rows and non-integer counts. That is a proven negative control several times over, and stronger than most guards in this repository.",
             "evidence": "tests/unit/write-audit-convergence.test.ts \u2014 35 tests pass, 19 refusal/fail-closed cases (verified by running the suite, not by reading it)"
+          },
+          {
+            "standard": "Deferral = Deletion",
+            "why": "RE-SWEPT at fingerprint 02b3e6d3. The earlier MATCH was against a fingerprint that no longer exists: it cited a commit-time surface which was WITHDRAWN once injection-testing proved it unreachable for the Tier-1 commit class. The current fingerprint cites ONE surface, scripts/lint-deferral-referent-resolves.mjs, whose refusal arm was injection-proven while it was built (a new orphan fails the build by name). The historical match and its correction are preserved in sweepHistory and correctionLog rather than erased \u2014 a shape that WAS present and was fixed is part of the record.",
+            "evidence": "the withdrawn-moment note on the article itself; the injection run that made a new orphan fail"
           }
         ],
         "sweepHistory": [
@@ -202,6 +265,16 @@
               "Iterative Audit to Convergence",
               "The Right to Stand Ground"
             ]
+          },
+          {
+            "at": "2026-08-08",
+            "trigger": "external review pass 2 finding 1 \u2014 the population was NAME-addressed, so a CHANGED fingerprint staled nothing; population is now content-addressed and every verdict was re-swept against the current digests",
+            "added": []
+          },
+          {
+            "at": "2026-08-08",
+            "trigger": "the content-staleness arm fired on my own edit \u2014 adding a missing certification item and correcting the parent syntax changed the new article's fingerprint region, so every verdict about it was re-confirmed against the new digest",
+            "added": []
           }
         ]
       },

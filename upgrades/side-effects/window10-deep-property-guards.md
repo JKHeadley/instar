@@ -480,3 +480,40 @@ carrying `why: "feels unguarded"` and nothing else now fails by name.
 surface, injection-proven), one FALSE catch (this one, corrected within the hour), and one mechanism
 firing three times on its own author. A loop that has produced a false positive on day one is worth more
 honestly reported than a loop with a perfect record, and the false positive bought a real tightening.
+
+## Increment 12 — external review pass 2: REJECT again, and the central defect was real
+
+Pass 2 returned **VERDICT: reject**, nine findings (7 major, 2 minor, no criticals), and its finding 1
+was the one that mattered: **the freshness guarantee was name-addressed, so it was only half true.**
+
+**Finding 1 — the central defect.** `fingerprintPopulation` stored article NAMES. Adding a standard staled
+every sweep; **CHANGING an existing fingerprint staled nothing.** The submitted data proved it: I had
+withdrawn *Deferral = Deletion*'s commit-time moment hours earlier, every sweep record still described it
+as covering commit-time, and the lint said clean. My claim — "a fingerprint cannot be added without being
+checked against every known failure-shape" — was true only for the word *added*. Fixed: the population is
+now **content-addressed**, a 16-hex digest over each fingerprint's declaration through the end of its
+article. Any edit to moments, surfaces, or the coverage argument stales every sweep that examined it. Both
+arms injection-proven, and the change arm then **fired for real on my own next edit** — adding the missing
+certification item changed the new article's digest and the build refused until every verdict was
+re-confirmed.
+
+| # | Finding | Action |
+|---|---|---|
+| 1 | freshness is name-blind — a CHANGED fingerprint stales nothing | **content-addressed digests**; two arms proven; fired for real on the next edit |
+| 2 | the baseline exempted an article that had gained a fingerprint (87 entries, 86 missing) — a size compare, not membership | **exact membership**; baseline regenerated 87 → 83 with reason; arm proven |
+| 3 | the superseded 62%/178/110 measurement still asserted in tooth (E) and the lint header | corrected to 54%/194/104 in both, with the old figure marked SUPERSEDED |
+| 4 | the registry listed 3 non-certifications, the script 4 | the fourth added — a half-made fix, which is what a second pass is for |
+| 5 | `why` was truthiness-checked, so `why: true` passed as a reason | typed: a string of ≥20 chars |
+| 6 | scripts and the data file still canonised bare GAP / FINGERPRINT | namespaced in both |
+| 8 | the new article's `Parent:` line matched neither recognised syntax, so it declared NOTHING | rewritten as a lineage note — *a syntax that looks like a declaration and declares nothing is the same defect as a guard that looks alive and does nothing* |
+| 9 | the diagnostic recommended pointing at "a spec section" while `docs/` is excluded from resolution | diagnostic corrected to name what actually resolves |
+
+**Finding 7 is NOT fixed and is deliberately left for the referral.** The reviewer says *Self-Unblock
+Before Escalating* and *Sovereignty* assert the outbound gate covers their failure modes without evidence
+it can — "declining an `Applied through` citation does not make those coverage assertions true." That is a
+sharper version of my own sovereignty referral, reached independently. The laptop lane holds that question
+with an explicit a/b/c; answering it myself is the conflict of interest the referral exists to avoid.
+
+**Fix-verification from pass 2, on my pass-1 claims: two HELD, four PARTIAL.** No claim was NOT-DONE, but
+four were overstated — the precise failure mode this whole window keeps finding, now in my own report of
+having fixed it.

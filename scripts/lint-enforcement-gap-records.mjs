@@ -10,9 +10,11 @@
  *                docs/specs/enforcement-fingerprint-measurement.md)
  *   MOMENT       when a surface acts (the closed set in
  *                scripts/lint-enforcement-fingerprint.mjs)
- *   FINGERPRINT  a standard's recorded mapping — which surfaces watch it at which
+ *   ENFORCEMENT FINGERPRINT
+ *                a standard's recorded mapping — which surfaces watch it at which
  *                moments, plus what its violations look like
- *   GAP          a recorded FAILURE-SHAPE — the way a violation slipped past a
+ *   ENFORCEMENT GAP
+ *                a recorded FAILURE-SHAPE — the way a violation slipped past a
  *                fingerprint
  *
  * ── Why this exists: the gap-propagation loop ──────────────────────────────
@@ -83,6 +85,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -92,6 +95,22 @@ const GAPS_REL = 'docs/enforcement-gaps.json';
 const REGISTRY_REL = 'docs/STANDARDS-REGISTRY.md';
 
 const FINGERPRINT_RE = /\*\*Enforcement fingerprint\.\*\*/;
+
+/**
+ * A sweep's population is CONTENT-ADDRESSED, not name-addressed. Storing names alone made the
+ * freshness guarantee half-true: adding a standard staled every sweep, but CHANGING an existing
+ * fingerprint's moments or surfaces staled nothing — so a sweep could describe an obsolete
+ * fingerprint and still report clean. Found by external review pass 2 on the submitted data
+ * itself: *Deferral = Deletion* had withdrawn its commit-time moment while every sweep record
+ * still described it as covering commit-time, and this lint said clean. The digest is taken over
+ * the fingerprint declaration through the end of the article, so any edit to the moments, the
+ * surfaces, or the coverage argument stales every sweep that examined it.
+ */
+function fingerprintDigest(bodyText) {
+  const i = bodyText.indexOf('**Enforcement fingerprint.**');
+  const region = i >= 0 ? bodyText.slice(i) : '';
+  return crypto.createHash('sha256').update(region.replace(/\s+/g, ' ').trim()).digest('hex').slice(0, 16);
+}
 
 /** Re-derive the live fingerprinted population from the registry — never trust a cached list. */
 function fingerprintedStandards() {
@@ -113,7 +132,10 @@ function fingerprintedStandards() {
     console.error('[enforcement-gap-records] parsed ZERO articles — the matcher is broken; refusing to report clean.');
     process.exit(1);
   }
-  return out.filter((a) => FINGERPRINT_RE.test(a.body.join('\n'))).map((a) => a.name).sort();
+  return out
+    .filter((a) => FINGERPRINT_RE.test(a.body.join('\n')))
+    .map((a) => ({ name: a.name, digest: fingerprintDigest(a.body.join('\n')) }))
+    .sort((x, y) => (x.name < y.name ? -1 : 1));
 }
 
 const gapsAbs = path.join(ROOT, GAPS_REL);
@@ -134,8 +156,10 @@ if (!gaps) {
   process.exit(1);
 }
 
-const live = fingerprintedStandards();
+const liveEntries = fingerprintedStandards();
+const live = liveEntries.map((e) => e.name);
 const liveSet = new Set(live);
+const liveDigest = new Map(liveEntries.map((e) => [e.name, e.digest]));
 const failures = [];
 const today = new Date().toISOString().slice(0, 10);
 let swept = 0;
@@ -177,9 +201,31 @@ for (const gap of gaps) {
   }
 
   // (2) STALENESS — the propagation loop's actual mechanism.
-  const popSet = new Set(population);
+  const popNames = population.map((e) => (typeof e === 'string' ? e : e?.standard)).filter(Boolean);
+  const popSet = new Set(popNames);
   const newlyFingerprinted = live.filter((s) => !popSet.has(s));
-  const goneFromRegistry = population.filter((s) => !liveSet.has(s));
+  const goneFromRegistry = popNames.filter((s) => !liveSet.has(s));
+
+  // CONTENT staleness — the arm name-only population could not express.
+  const undigested = population.filter((e) => typeof e === 'string' || !e?.fingerprintDigest);
+  if (undigested.length > 0) {
+    failures.push(
+      `${id} — ${undigested.length} population entr(ies) record only a NAME, with no fingerprintDigest. ` +
+      `A name-addressed population cannot notice a fingerprint being CHANGED, so the sweep could describe ` +
+      `an obsolete fingerprint and still pass. Record {"standard": "...", "fingerprintDigest": "..."} using ` +
+      `the current digest.`,
+    );
+  }
+  const changed = population
+    .filter((e) => typeof e === 'object' && e?.standard && e?.fingerprintDigest && liveDigest.has(e.standard))
+    .filter((e) => liveDigest.get(e.standard) !== e.fingerprintDigest);
+  for (const e of changed) {
+    failures.push(
+      `${id} — the sweep examined "${e.standard}" at fingerprint ${e.fingerprintDigest} but its fingerprint is now ` +
+      `${liveDigest.get(e.standard)}. The moments, surfaces or coverage argument CHANGED since this verdict was ` +
+      `reached, so the recorded verdict describes a fingerprint that no longer exists. Re-sweep it and update the digest.`,
+    );
+  }
   if (newlyFingerprinted.length > 0) {
     failures.push(
       `${id} — the sweep of ${sweep.sweptAt ?? '?'} is STALE: ${newlyFingerprinted.length} standard(s) have gained a fingerprint since and were never checked against this failure-shape — ${newlyFingerprinted.join(', ')}. ` +
@@ -198,7 +244,7 @@ for (const gap of gaps) {
   if (both.length > 0) {
     failures.push(`${id} — the sweep reaches CONTRADICTORY verdicts on ${both.join(', ')}: named in both matched and unmatched. A standard cannot both have and not have a failure-shape; the union test alone accepted this, which is the same over-claim this registry records.`);
   }
-  const missing = population.filter((s) => !verdicts.has(s));
+  const missing = popNames.filter((s) => !verdicts.has(s));
   const extra = [...verdicts].filter((s) => !popSet.has(s));
   if (missing.length > 0) {
     failures.push(`${id} — the sweep reaches no verdict on ${missing.join(', ')}: named in fingerprintPopulation but in neither matched nor unmatched. A skipped standard reads as a clean one, which is the same defect this registry records.`);
@@ -218,7 +264,7 @@ for (const gap of gaps) {
   }
   for (const [bucket, entries] of [['matched', sweep.matched], ['unmatched', sweep.unmatched]]) {
     for (const m of Array.isArray(entries) ? entries : []) {
-      if (typeof m === 'string' || !m?.why) {
+      if (typeof m === 'string' || typeof m?.why !== 'string' || m.why.trim().length < 20) {
         failures.push(
           `${id} — ${bucket} standard "${typeof m === 'string' ? m : (m?.standard ?? '?')}" gives no reason. ` +
           `A MATCH is a finding about another standard and is useless unexplained; an UNMATCH is the claim "I looked and this one does not have the shape", ` +

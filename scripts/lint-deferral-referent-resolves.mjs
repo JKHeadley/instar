@@ -13,8 +13,11 @@
  * point into are PER-MACHINE RUNTIME STATE (`.instar/`), not tracked in the
  * repository. A build has no way to resolve `ACT-1153`.
  *
- * Measured on 2026-08-08 across `docs/specs/`: **178 distinct tracked deferral
- * ids, of which 110 (62%) resolve to nothing anywhere in the repository.** For
+ * Measured on 2026-08-08 across `docs/specs/`: **194 distinct tracked deferral
+ * marker ids, of which 104 (54%) resolve to nothing anywhere in the repository.**
+ * (An earlier figure of 178 / 110 / 62% is SUPERSEDED — it was measured over the
+ * narrower prose-id population this guard originally used, before external review
+ * rejected that population as narrower than its name. Do not quote it.) For
  * those, "tracked" is an unfalsifiable claim — the exact shape the standard was
  * written to forbid, wearing a tracking number.
  *
@@ -165,8 +168,9 @@ if (!baseline) {
       `${id} is tracked as a deferral in ${where} but resolves to NOTHING anywhere in the repository. ` +
       `A tracking marker that refers to machine-local state no build and no reviewer can reach is an ` +
       `unfalsifiable promise — the deletion this standard forbids, wearing a tracking number. Point it at ` +
-      `something a reader can follow (a test, a spec section, the code that implements it), or close the ` +
-      `deferral honestly.`,
+      `something OUTSIDE docs/ that a reader can follow — a test, the code that implements it, a fixture, a config ` +
+      `entry. A mention in another document does NOT resolve it: one document citing another's promise is the same ` +
+      `claim repeated, not follow-through. Otherwise, close the deferral honestly.`,
     );
   }
   if (orphans.length > baselineSet.size) {
