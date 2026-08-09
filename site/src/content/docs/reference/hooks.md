@@ -51,7 +51,7 @@ In addition to the behavioral hooks above, instar registers nine **event-reporte
 
 Events covered: `PostToolUse`, `SubagentStart`, `SubagentStop`, `Stop`, `WorktreeCreate`, `WorktreeRemove`, `TaskCompleted`, `SessionEnd`, `PreCompact`.
 
-The observability surface uses these to power session activity tracking, subagent failure detection, and the live dashboard. Inspect via `GET /hooks/events`.
+The observability surface uses these to power session activity tracking, subagent failure detection, and the live dashboard. Inspect via `GET /hooks/events/:sessionId` (and `.../summary`); events are written with `POST /hooks/events`. There is no unparameterized `GET /hooks/events`.
 
 ## How They Work
 

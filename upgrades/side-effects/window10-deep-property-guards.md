@@ -134,3 +134,44 @@ charter said to say so plainly and date it rather than ship a check that counts 
 
 **State:** 87 articles, enforced 0.7471 unchanged, false-claims 0, dangling 0, unrecognized 0,
 lint chain green.
+
+---
+
+## Increment 4 — Codey's documentation-is-being proposal, and the four real defects it found
+
+**Changed:** four reader-facing docs corrected; Codey's proposal committed.
+
+**His lane delivered and his session acted** (confirmed by read-back of his pane, 18m48s of work, commit
+`3c1f8b65a`). He followed the brief's one hard instruction — measure the population before designing —
+and the measurement is what makes the proposal load-bearing: 2,090 documentation files, 1,027 unique
+method/path claims, 468 unique config-path candidates.
+
+**He also refused the obvious shortcut, correctly.** 292 config-path candidates do not match by exact
+property chain, and the tempting fix is to widen the matcher to leaf names. He rejected it: a common
+leaf such as `enabled` appearing somewhere in source proves nothing about the documented path, so
+widening would convert honest under-matching into FALSE RESOLUTION — a guard that reports a doc claim
+verified when it verified nothing. That is the same failure class as citing a guard that does not
+guard, reached independently.
+
+**Four defects he found, each verified against production before I touched anything:**
+
+1. `site/.../features/multi-machine.md` documented `GET /pool/machines/:id`; production registers
+   `router.patch` at that path and no `GET` exists. A reader following the doc gets a 404.
+2. `site/.../reference/hooks.md` said to inspect via `GET /hooks/events`; production has
+   `POST /hooks/events` and `GET /hooks/events/:sessionId`, no unparameterized `GET`.
+3. `site/.../reference/api.md` claimed "460 routes" in the sentence directly above an inventory
+   containing **541** route bullets — a document falsifying itself within one screen.
+4. `docs/THREADLINE.md` documented `GET /threadline/messages/thread/:id`; production has
+   `GET /threadline/threads/:id`, and the source explicitly records the old placeholder as deleted.
+
+All four corrected. The count now reads 541 and the file contains 541 — self-verifiable from the same
+file, which is the shape a future guard can check.
+
+**Deliberately NOT changed:** `docs/specs/THREADLINE-SPEC.md` carries the same stale route. A spec is a
+record of what was designed at a point in time; reader-facing documentation must be true NOW. Editing
+the historical record to match today would be a different kind of dishonesty. Named rather than
+silently skipped.
+
+**What this increment is evidence for.** These are four instances of the stale-text class I filed as a
+defect earlier today — prose left behind by the change it describes — and every one was found by
+measurement rather than by reading. That is the argument for Codey's guard existing at all.

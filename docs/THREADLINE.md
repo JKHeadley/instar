@@ -159,7 +159,7 @@ GET  /threadline/health              — Agent info, capabilities, version
 POST /threadline/handshake/hello     — Initiate trust handshake (unauthenticated)
 POST /threadline/handshake/confirm   — Complete trust handshake (unauthenticated)
 POST /threadline/messages/receive    — Accept inbound message (authenticated)
-GET  /threadline/messages/thread/:id — Thread history (authenticated, paginated)
+GET  /threadline/threads/:id — Thread history (authenticated, seq-cursor paginated)
 GET  /threadline/blobs/:id           — Fetch blob content (authenticated)
 ```
 
