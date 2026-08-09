@@ -92,6 +92,7 @@ const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), '..');
 const JSON_OUT = process.argv.includes('--json');
 const GAPS_REL = 'docs/enforcement-gaps.json';
+const FLOOR_REL = 'docs/enforcement-gaps-floor.json';
 const REGISTRY_REL = 'docs/STANDARDS-REGISTRY.md';
 
 // SAME shape the requirement lint uses (review pass 3, finding 8): the two lints previously
@@ -163,11 +164,37 @@ if (!gaps) {
 }
 
 const liveEntries = fingerprintedStandards();
+// (5) THE GAP SET IS FLOORED, FROM OUTSIDE. Demonstrated by an independent reviewer: deleting a
+// gap record made this lint report clean with one fewer gap, so the sweep obligation was escapable
+// by removing the thing that creates it and the shape stopped propagating forever. A floor kept
+// inside the file it floors is not a floor.
+const floorAbs = path.join(ROOT, FLOOR_REL);
+let floor = null;
+try { floor = JSON.parse(fs.readFileSync(floorAbs, 'utf-8')); } catch { floor = null; }
 const live = liveEntries.map((e) => e.name);
 const liveSet = new Set(live);
 const liveDigest = new Map(liveEntries.map((e) => [e.name, e.digest]));
 const failures = [];
 const today = new Date().toISOString().slice(0, 10);
+if (!floor || !Array.isArray(floor.knownGapIds)) {
+  failures.push(`${FLOOR_REL} is missing or unparseable — refusing to report clean without the grow-only floor that makes a gap record undeletable.`);
+} else {
+  const present = new Set(gaps.map((g) => g?.id));
+  const retired = new Set((floor.retired ?? []).map((r) => r?.id));
+  for (const id of floor.knownGapIds) {
+    if (present.has(id) || retired.has(id)) continue;
+    failures.push(
+      `${id} was recorded as an ENFORCEMENT GAP and is now ABSENT from ${GAPS_REL}. Deleting a gap ends its ` +
+      `sweep obligation permanently and stops the shape propagating to every future standard — silently, with a ` +
+      `green build. Restore it, or record a deliberate retirement in ${FLOOR_REL} with a reason.`,
+    );
+  }
+  for (const g of gaps) {
+    if (g?.id && !floor.knownGapIds.includes(g.id)) {
+      failures.push(`${g.id} is recorded in ${GAPS_REL} but absent from ${FLOOR_REL}'s knownGapIds. Add it — the floor is what makes it undeletable.`);
+    }
+  }
+}
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 let swept = 0;
 

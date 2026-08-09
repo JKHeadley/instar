@@ -587,3 +587,46 @@ failure: real fixes, overstated in the reporting.
 **Also corrected: I dated four records 2026-08-09 while it was still 2026-08-08 local.** A registry about
 not asserting unverified things had me writing tomorrow's date onto today's work because I had lost track
 of the clock and did not check it.
+
+## Increment 15 — the independent lane refused my number, and was right twice
+
+The laptop lane returned its four investigations. Two produced real defects; one settled a disagreement
+by finding the instrument at fault rather than either count.
+
+**It would not accept 194.** It counted the marker population independently and got **217**, reproducible
+on both refs, and told me plainly that the burden sits with the number a second party cannot re-derive. It
+was right. My first widening took the MARKER but kept the commit-time step's **character class**, which a
+SPACE terminates — so every marker whose payload carries a space, comma, colon or parenthesis was still
+invisible: `CMT-1103, CMT-1123`, `PR-495 follow-up`, `CMT-1049 (secret-store hardening, topic 13481)`.
+**Twenty-five real, live deferrals.** The corrected guard saw 89% of its subject while the sentence
+announcing the correction said it saw the subject — **the same over-claim the external reviewer rejected
+at 47%, narrowed fivefold and then restated in the fix itself.**
+
+Population is now the whole marker payload; resolution reads the id-shaped tokens inside it, and a payload
+naming nothing followable is an orphan by construction. **Both instruments now agree on 217.** Honest
+figures: 217 markers, 114 resolve, **103 orphaned (47%)**. Two superseded numbers are recorded on the
+article rather than quietly replaced.
+
+**It also caught a wording defect pointing the other way**: "resolve to nothing anywhere in the
+repository" was false — `docs/` is deliberately excluded, so most of these ids *do* appear somewhere, in
+another document. Corrected to "nothing outside the documentation tree." It flagged this even though the
+error erred toward alarm, on the grounds that a sentence misdescribing its own mechanism is the same
+defect whichever way it leans.
+
+### The sixth hole: a recorded gap could be un-recorded
+
+Delete a gap record and the lint reported clean with one fewer gap. **The sweep obligation was escapable
+by removing the thing that creates it** — the failure-shape stops propagating to every future standard,
+permanently, with a green build. None of the four declared non-certifications covered it.
+
+Closed with `docs/enforcement-gaps-floor.json`: a grow-only list of every gap id ever recorded, kept
+**outside** the file it floors, because a floor stored inside the thing it protects is not a floor.
+Retiring a shape stays legitimate; doing it by deletion does not. Arm proven.
+
+### The fifth hole was already closed, by accident
+
+Name-collision laundering — a new standard with a heading byte-identical to one already swept — was real
+when the lane found it. Increment 14's per-verdict `atDigest` closed it as a side effect: the duplicate
+changes the name's digest, so every verdict about it goes stale and the build refuses. Verified by
+injection rather than assumed. Recording that it was closed incidentally rather than deliberately, because
+"it happens to be covered" is a weaker guarantee than "it was designed for."

@@ -14,7 +14,7 @@
  * repository. A build has no way to resolve `ACT-1153`.
  *
  * Measured on 2026-08-08 across `docs/specs/`: **194 distinct tracked deferral
- * marker ids, of which 104 (54%) resolve to nothing anywhere in the repository.**
+ * marker ids, of which 104 (54%) resolve to nothing OUTSIDE THE DOCUMENTATION TREE.**
  * (An earlier figure of 178 / 110 / 62% is SUPERSEDED — it was measured over the
  * narrower prose-id population this guard originally used, before external review
  * rejected that population as narrower than its name. Do not quote it.) For
@@ -84,8 +84,21 @@ const BASELINE_REL = 'docs/deferral-referent-baseline.json';
  * ids in docs/specs, only 92 were CMT/ACT-numeric — **102 (53%) were invisible to the
  * guard that claimed to police them.** A guard covering 47% of its own subject while
  * claiming the subject is the shape this whole window exists to catch.
+ *
+ * WIDENED AGAIN 2026-08-08, by an independent re-derivation that did not accept my number.
+ * The first widening took the marker but kept the commit-time step's CHARACTER CLASS, which
+ * a SPACE terminates — so every marker whose payload carries a space, comma, colon,
+ * parenthesis or line break still matched nothing. Measured: 25 real, live markers were
+ * invisible (`CMT-1103, CMT-1123`; `PR-495 follow-up`; `CMT-1049 (secret-store hardening,
+ * topic 13481)`). So the corrected guard saw 89% of its subject while its own prose said it
+ * saw the subject — the SAME over-claim the reviewer rejected at 47%, narrowed fivefold and
+ * then restated. The population is now the WHOLE marker payload; resolution looks at the
+ * id-shaped tokens inside it, and a payload naming NO followable token is an orphan by
+ * construction, because it promises nothing a reader can chase.
  */
-const MARKER_RE = /<!--\s*tracked:\s*([A-Za-z0-9._/-]+)\s*-->/g;
+const MARKER_RE = /<!--\s*tracked:\s*([^>]*?)\s*-->/g;
+/** Id-shaped tokens INSIDE a marker payload. A payload naming none is an orphan by construction. */
+const TOKEN_RE = /[A-Za-z0-9][A-Za-z0-9._/-]{2,}/g;
 /** Resolving mentions may appear as bare ids anywhere outside docs/. */
 const idPattern = (id) => new RegExp(`(?:^|[^A-Za-z0-9._/-])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9._/-])`);
 
@@ -114,7 +127,8 @@ for (const rel of specFiles) {
   MARKER_RE.lastIndex = 0;
   let m;
   while ((m = MARKER_RE.exec(text)) !== null) {
-    const id = m[1];
+    const id = m[1].replace(/\s+/g, ' ').trim();
+    if (!id) continue;
     if (!declared.has(id)) declared.set(id, new Set());
     declared.get(id).add(rel);
   }
@@ -127,13 +141,17 @@ if (declared.size === 0) {
 
 // One pass over the resolving corpus rather than one grep per id.
 const resolved = new Set();
-const wanted = [...declared.keys()].map((id) => ({ id, re: idPattern(id) }));
+// A marker resolves when ANY id-shaped token in its payload resolves. A payload with no such
+// token can never resolve — it names nothing followable, which is the condition, not a parser gap.
+const wanted = [...declared.keys()]
+  .map((id) => ({ id, tokens: (id.match(TOKEN_RE) ?? []).map((t) => idPattern(t)) }))
+  .filter((w) => w.tokens.length > 0);
 for (const rel of resolvingFiles) {
   let text;
   try { text = fs.readFileSync(path.join(ROOT, rel), 'utf-8'); } catch { continue; }
   for (const w of wanted) {
     if (resolved.has(w.id)) continue;
-    if (w.re.test(text)) resolved.add(w.id);
+    if (w.tokens.some((re) => re.test(text))) resolved.add(w.id);
   }
 }
 
@@ -166,7 +184,7 @@ if (!baseline) {
   for (const id of added) {
     const where = [...(declared.get(id) ?? [])].join(', ');
     failures.push(
-      `${id} is tracked as a deferral in ${where} but resolves to NOTHING anywhere in the repository. ` +
+      `${id} is tracked as a deferral in ${where} but resolves to NOTHING outside the documentation tree (docs/ is deliberately excluded: one document citing another's promise is the same claim repeated, not follow-through). ` +
       `A tracking marker that refers to machine-local state no build and no reviewer can reach is an ` +
       `unfalsifiable promise — the deletion this standard forbids, wearing a tracking number. Point it at ` +
       `something OUTSIDE docs/ that a reader can follow — a test, the code that implements it, a fixture, a config ` +

@@ -275,3 +275,30 @@ about what watches them, which is: less than they said.
 Small and embarrassing: I stamped four records with tomorrow's date, because I had lost track of the hour
 and wrote it from memory instead of checking. In a body of work about not asserting things you have not
 verified, that is the joke telling itself.
+
+## The second opinion refused my number — and it was right
+
+I asked an independent machine to re-count the thing I had just "fixed". It got **217** where I got 194,
+said it could not reproduce mine under five reasonable readings, and told me the burden sits with the
+number a second party cannot re-derive.
+
+It was right, and the reason is embarrassing in a familiar way. My fix had switched to counting the real
+tracking markers — but kept a pattern that stops at the first **space**. So every marker whose label
+contains a space, comma or bracket was still invisible: twenty-five live, ordinary deferrals. The fixed
+guard saw 89% of what it was meant to watch, while the sentence announcing the fix said it saw all of it.
+That is the exact criticism the reviewer had made about the previous version at 47% — narrowed five times
+over, then repeated word for word in the correction itself.
+
+Both instruments now agree: 217 markers, 114 of them pointing at something real, **103 pointing at
+nothing.**
+
+It also caught me overstating in the *unflattering* direction — I'd written that those markers "resolve to
+nothing anywhere in the repository", when in fact the check deliberately ignores other documents, so most
+of them do appear somewhere. It flagged that anyway, on the grounds that a sentence describing its own
+mechanism wrongly is the same defect whichever way it leans. That is the right instinct.
+
+**And it found a hole I would not have looked for: you could simply delete a recorded failure.** The check
+counted whatever records it was handed, so removing one ended its obligation permanently and the build
+called that clean. The fix is a separate list of every failure ever recorded, kept outside the file it
+protects — because a lock stored inside the box it locks is not a lock. Retiring a lesson is allowed;
+retiring it by deletion is not.
