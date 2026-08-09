@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "note": "Articles predating the enforcement-fingerprint requirement (charter 2026-08-08). SHRINK-ONLY: an article leaves this list by gaining a fingerprint and may never be added back. A NEW article must carry one. See scripts/lint-enforcement-fingerprint.mjs.",
-  "measuredAt": "2026-08-09",
+  "measuredAt": "2026-08-08",
   "grandfathered": [
     "A Dark Feature Guards Nothing",
     "A Decision That Can Block Must Live Where the Checks Can See It",
@@ -86,6 +86,6 @@
     "Verify the State, Not Its Symbol",
     "Zero-Failure"
   ],
-  "rebaselinedAt": "2026-08-09",
-  "rebaselinedBecause": " Sovereignty left the baseline on 2026-08-09 with a `none` fingerprint established by an INDEPENDENT referral verdict against the author's own stated expectation \u2014 the author believed it was under-claimed and a running guard covered it; the referral returned (b), manufactured enforcement, do not cite."
+  "rebaselinedAt": "2026-08-08",
+  "rebaselinedBecause": " Sovereignty left the baseline on 2026-08-08 with a `none` fingerprint established by an INDEPENDENT referral verdict against the author's own stated expectation \u2014 the author believed it was under-claimed and a running guard covered it; the referral returned (b), manufactured enforcement, do not cite."
 }

@@ -198,7 +198,7 @@ Running total, honestly: one real catch, one false alarm corrected within the ho
 itself firing three times on its own author. A tool that produced a false positive on its first day and
 said so is worth more than one with a spotless record, and this false positive paid for a real tightening.
 
-## The reviewer said no again — and this time it found the real hole (2026-08-09, after midnight)
+## The reviewer said no again — and this time it found the real hole (2026-08-08, after midnight)
 
 Second reading, second rejection, nine findings. One of them matters more than the rest.
 
@@ -228,7 +228,7 @@ Of my six claimed fixes from the first round, the reviewer marked two as held an
 but overstated. Which is the exact failure this whole stretch of work keeps uncovering, this time in my own
 account of having fixed it.
 
-## The referee I hired said no, and then caught me rigging the question (2026-08-09)
+## The referee I hired said no, and then caught me rigging the question (2026-08-08)
 
 Earlier I noticed a rule marked "nothing enforces this" that I thought was actually enforced already — an
 unusual direction for us, claiming *less* than the truth. Fixing it would have raised the rule's score
@@ -256,3 +256,22 @@ my question *was* the right shape. The ritual was present; the property was not.
 
 That is the same failure as everything else this week, in the last place I would have looked: the referral
 I set up specifically because I did not trust myself.
+
+## Third reading, third no — and it named the dodge
+
+Eight more findings, all fair, all fixed. Two are worth stating plainly.
+
+**My freshness check could be satisfied by copying a number.** I had made it notice when a rule's text
+changed — but the record of *what I concluded* carried no stamp of its own, so bumping the summary figure
+without revisiting a single conclusion passed clean. Conclusions now carry the version of the rule they
+were reached against. You can re-reach a verdict; you can no longer re-stamp one.
+
+**And it called my abstention an evasion, correctly.** I had sent one contested question to an independent
+party rather than answer it myself — right. But while waiting, I left the flattering sentence standing in
+the article, the one claiming a check covers a rule when nobody had shown it does. Referring the judgement
+does not license keeping the favourable claim in the meantime. Two rules now say what is actually true
+about what watches them, which is: less than they said.
+
+Small and embarrassing: I stamped four records with tomorrow's date, because I had lost track of the hour
+and wrote it from memory instead of checking. In a body of work about not asserting things you have not
+verified, that is the joke telling itself.

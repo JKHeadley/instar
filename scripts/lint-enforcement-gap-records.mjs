@@ -94,7 +94,11 @@ const JSON_OUT = process.argv.includes('--json');
 const GAPS_REL = 'docs/enforcement-gaps.json';
 const REGISTRY_REL = 'docs/STANDARDS-REGISTRY.md';
 
-const FINGERPRINT_RE = /\*\*Enforcement fingerprint\.\*\*/;
+// SAME shape the requirement lint uses (review pass 3, finding 8): the two lints previously
+// disagreed — this one matched the bare phrase, so quoted or malformed prose could enter the sweep
+// population while staying grandfathered by the requirement lint. Two definitions of one thing is
+// the ambiguity this registry exists to remove.
+const FINGERPRINT_RE = /\*\*Enforcement fingerprint\.\*\*\s*moments:\s*([a-z, -]+?)\s*(?:[;.]|\*\*|$)/;
 
 /**
  * A sweep's population is CONTENT-ADDRESSED, not name-addressed. Storing names alone made the
@@ -107,9 +111,11 @@ const FINGERPRINT_RE = /\*\*Enforcement fingerprint\.\*\*/;
  * surfaces, or the coverage argument stales every sweep that examined it.
  */
 function fingerprintDigest(bodyText) {
-  const i = bodyText.indexOf('**Enforcement fingerprint.**');
-  const region = i >= 0 ? bodyText.slice(i) : '';
-  return crypto.createHash('sha256').update(region.replace(/\s+/g, ' ').trim()).digest('hex').slice(0, 16);
+  // WIDENED (review pass 3, finding 1): the digest was taken over the fingerprint declaration
+  // onward, so an edit to the Rule or Applied-through — which can change what a standard demands
+  // and therefore what a verdict about it means — staled nothing. It is now the WHOLE article body.
+  // Over-sensitive on purpose: re-sweeping is cheap, a silently stale verdict is not.
+  return crypto.createHash('sha256').update(bodyText.replace(/\s+/g, ' ').trim()).digest('hex').slice(0, 16);
 }
 
 /** Re-derive the live fingerprinted population from the registry — never trust a cached list. */
@@ -162,6 +168,7 @@ const liveSet = new Set(live);
 const liveDigest = new Map(liveEntries.map((e) => [e.name, e.digest]));
 const failures = [];
 const today = new Date().toISOString().slice(0, 10);
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 let swept = 0;
 
 const nameOf = (entry) => (typeof entry === 'string' ? entry : entry?.standard);
@@ -181,8 +188,8 @@ for (const gap of gaps) {
   // Leg 3 — the sweep, or an honest, dated absence of one.
   const sweep = gap?.sweep ?? null;
   if (!sweep) {
-    if (!gap?.countdown) {
-      failures.push(`${id} — is UNSWEPT (sweep: null) and carries no countdown date. An unswept gap must be visibly unswept with a deadline, never silently assumed to have propagated.`);
+    if (!ISO_DATE.test(String(gap?.countdown ?? ''))) {
+      failures.push(`${id} — is UNSWEPT (sweep: null) and its countdown is "${gap?.countdown}", not a YYYY-MM-DD date. An unvalidated countdown lets \`"never"\` sit green forever (review pass 3, finding 6).`);
     } else if (gap.countdown < today) {
       failures.push(`${id} — is UNSWEPT and its countdown ${gap.countdown} has expired. Sweep it against the ${live.length} fingerprinted standard(s), or close the gap honestly.`);
     }
@@ -190,8 +197,8 @@ for (const gap of gaps) {
   }
 
   swept += 1;
-  if (!sweep.sweptAt) {
-    failures.push(`${id} — the sweep carries no sweptAt date. A sweep without a date cannot be told apart from one that never happened.`);
+  if (!ISO_DATE.test(String(sweep.sweptAt ?? ''))) {
+    failures.push(`${id} — sweptAt is "${sweep.sweptAt}", not a YYYY-MM-DD date. An unvalidated date field is not a date: a sweep without one cannot be told apart from one that never happened.`);
   }
 
   const population = Array.isArray(sweep.fingerprintPopulation) ? sweep.fingerprintPopulation : null;
@@ -252,8 +259,20 @@ for (const gap of gaps) {
   if (extra.length > 0) {
     failures.push(`${id} — the sweep reaches a verdict on ${extra.join(', ')}, which is not in its own fingerprintPopulation. The population must be the exact set swept.`);
   }
+  for (const [bucket, entries] of [['matched', sweep.matched], ['unmatched', sweep.unmatched]]) {
+    for (const m of Array.isArray(entries) ? entries : []) {
+      const name = typeof m === 'string' ? m : m?.standard;
+      if (!name || !liveDigest.has(name)) continue;
+      const at = typeof m === 'object' ? m?.atDigest : undefined;
+      if (typeof at !== 'string') {
+        failures.push(`${id} — ${bucket} verdict on "${name}" records no atDigest. Bumping the POPULATION digest without touching the verdict left a substantively stale conclusion machine-clean (review pass 3, finding 1); a verdict must name the article state it was reached against.`);
+      } else if (at !== liveDigest.get(name)) {
+        failures.push(`${id} — ${bucket} verdict on "${name}" was reached at ${at} but the article is now ${liveDigest.get(name)}. Re-reach the verdict, do not re-stamp it.`);
+      }
+    }
+  }
   for (const m of Array.isArray(sweep.matched) ? sweep.matched : []) {
-    if (typeof m === 'object' && m && !m.evidence && !m.action) {
+    if (typeof m === 'object' && m && typeof m.evidence !== 'string' && typeof m.action !== 'string') {
       failures.push(
         `${id} — matched standard "${m.standard ?? '?'}" carries a reason but no EVIDENCE and no ACTION. ` +
         `A match is an ACCUSATION about another standard, and a reason is cheap: on 2026-08-08 a match here was recorded ` +

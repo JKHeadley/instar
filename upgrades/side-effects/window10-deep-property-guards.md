@@ -16,7 +16,7 @@ whatever shape works becomes the template for the three that resist checking har
 `instar-dev-precommit.js`) proves a spec carrying deferral language carries a TRACKING MARKER, and it
 does that correctly. But the ids point into per-machine commitment and evolution-action registries —
 runtime state, not tracked in the repo — so no build can resolve them. Measured across `docs/specs/`:
-**178 distinct tracked deferral ids, 110 (62%) resolving to nothing anywhere in the repository.** For
+**178 distinct tracked deferral ids, 110 (62%) [SUPERSEDED — narrower population; the honest figure is 194 / 104 / 54%] resolving to nothing anywhere in the repository.** For
 those, "tracked" was unfalsifiable: the deletion the standard forbids, wearing a tracking number.
 
 **Over-block.** A new tracked id must be mentioned somewhere outside `docs/`. That can annoy an author
@@ -72,7 +72,7 @@ necessarily doing its job.** Three independent cases inside 48 hours, which is w
 rather than an anecdote: solo-captain-hold enabled, constructed, visible in config and holding nothing
 while silent-standby-relinquish released the lease; a diagnostic of mine that COULD NOT FIRE because
 the extractor feeding it stopped at the first match, so the injection produced silence — which reads
-exactly like a clean pass; and 62% of tracked deferral markers referring to nothing while the guard
+exactly like a clean pass; and 62% [SUPERSEDED — see increment 9; the honest figure is 54% of 194] of tracked deferral markers referring to nothing while the guard
 proving a marker EXISTS worked perfectly. The operative demand: a guard's proof must include a case
 where it FAILS, because an injection producing silence is the signature of an arm that cannot fire.
 
@@ -560,3 +560,30 @@ what happened here, and is not a guarantee.
 finding 7 said *Sovereignty* asserts coverage without evidence the gate can deliver it; the referral said
 the same thing with the eight-sentence test as proof. I had deliberately left finding 7 unfixed pending
 the referral. It is now answered, and both are resolved by the same correction.
+
+## Increment 14 — pass 3: REJECT, eight findings, and it called my abstention an evasion
+
+Third reading, third rejection. Eight findings (6 major, 2 minor, no criticals). All eight acted on.
+
+| # | Finding | Action |
+|---|---|---|
+| 1 | the digest covered only the fingerprint SUFFIX, and copying the population digest without touching a verdict passed | digest is now the **whole article body**, and **every verdict carries its own `atDigest`** — a stale conclusion cannot be re-stamped, only re-reached. Arm proven |
+| 2 | "exact membership" was one-directional — a DELETED grandfathered article left a phantom exemption a same-named successor would inherit | both directions enforced; arm proven |
+| 3 | the corrected measurement was asserted but not completed — the lint header, the gap file and the narrative records still carried 178/110/62% | all corrected or explicitly marked SUPERSEDED |
+| 4 | *Deferral = Deletion* declared `ci-time` only, then said writing a deferral is "commit-time, covered" | contradiction removed — the moment is now stated as **NOT covered**, with the reason |
+| 5 | the outbound coverage assertions remained unsupported | *Self-Unblock*'s "the gate ALREADY hard-blocks these modes" **withdrawn**; replaced with what the gate actually tests, plus the fact that its own motivating violation passed the live gate |
+| 6 | `countdown` and `sweptAt` were unvalidated, so `countdown: "never"` sat green forever; `evidence: true` passed | both date-typed, evidence string-typed; arms proven |
+| 7 | namespacing was partial — the data file still opened "The GAP registry" and defined "a GAP" | completed |
+| 8 | the two lints disagreed on what a fingerprint IS — one matched the bare phrase, the other the full declaration | unified on the full declaration |
+
+**Finding 7 of pass 2 — the abstention — was graded an EVASION, and that is fair.** The reviewer's words:
+*referral was legitimate, but retaining favorable, unsupported coverage assertions while awaiting it was
+not.* Referring the judgement was right; leaving the flattering sentence in the article while the referral
+ran was not. Both *Sovereignty* and *Self-Unblock* now say what is actually true.
+
+**Pass-3 fix-verification on my pass-2 claims: four HELD, four PARTIAL.** Same ratio as last round, same
+failure: real fixes, overstated in the reporting.
+
+**Also corrected: I dated four records 2026-08-09 while it was still 2026-08-08 local.** A registry about
+not asserting unverified things had me writing tomorrow's date onto today's work because I had lost track
+of the clock and did not check it.

@@ -28,9 +28,10 @@
  * ── What this measures, and what it certifies ──────────────────────────────
  * Declared explicitly, per *Verify the State, Not Its Symbol* tooth (D):
  *
- *   MEASURED  — every `CMT-N` / `ACT-N` id appearing in `docs/specs/`, and
- *               whether that id appears ANYWHERE in the repository outside the
- *               prose that declares it (source, tests, fixtures, config).
+ *   MEASURED  — every id inside a `<!-- tracked: <id> -->` MARKER in `docs/specs/`
+ *               (the population the commit-time step admits, whatever its id form),
+ *               and whether that id appears ANYWHERE in the repository outside
+ *               `docs/` (source, tests, fixtures, config).
  *   CERTIFIED — a NEW tracked deferral points at something the repository can
  *               show a reader, rather than at machine-local state no reviewer
  *               and no build can reach.
@@ -54,7 +55,7 @@
  * I briefly mistook a correct refusal for a broken check.
  *
  * ── Why a baseline ─────────────────────────────────────────────────────────
- * 110 pre-existing orphans cannot be fixed by the change that discovers them —
+ * 104 pre-existing orphans cannot be fixed by the change that discovers them —
  * each needs its referent found or the deferral honestly closed. The baseline is
  * SHRINK-ONLY: the count may never rise, so the debt can only be paid down. A
  * new orphan fails immediately.

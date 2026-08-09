@@ -181,6 +181,14 @@ if (!baseline) {
   // fingerprinted article STAY on the grandfathered list, so (a) the "N grandfathered" figure was
   // false, and (b) an article could silently LOSE its fingerprint and still pass, because the list
   // still exempted it. A count-based ratchet exempts by arithmetic; membership exempts by name.
+  const knownArticles = new Set(articles.map((a) => a.name));
+  for (const name of [...grandfathered].filter((n) => !knownArticles.has(n))) {
+    failures.push(
+      `${BASELINE_REL} exempts "${name}", which is NOT an article in the registry. Deleting or renaming a ` +
+      `grandfathered article left a phantom exemption: the count is false, and a later article taking the same ` +
+      `name would silently INHERIT the old exemption. Membership must be exact in BOTH directions (review pass 3, finding 2).`,
+    );
+  }
   const staleExemptions = [...grandfathered].filter((name) => fingerprinted.has(name));
   for (const name of staleExemptions) {
     failures.push(
