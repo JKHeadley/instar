@@ -165,10 +165,6 @@
             "why": "MATCH, CONFIRMED BY INJECTION \u2014 the first thing this loop found, within hours of being built. Deferral = Deletion's fingerprint originally cited two surfaces; only the ci-time one had a proven negative control. The commit-time arm (the orphan-deferral step in scripts/instar-dev-precommit.js) was believed to work because it has been in place a long time, which is exactly the belief this shape defeats. Injection-testing it found worse than unproven: that step reads the trace's converged-spec path, and the Tier-1 path (enforceTier1) exits the gate before Step 5 runs \u2014 so for the ENTIRE Tier-1 commit class the surface is UNREACHABLE. A staged Tier-1 change carrying 'is deferred to a follow-up; out of scope today' passed the gate clean. Every commit in this window was Tier 1, so the cited surface had not run once on the work claiming it.",
             "action": "DONE 2026-08-08: the commit-time claim was WITHDRAWN from the fingerprint rather than repaired \u2014 an honest fingerprint names what actually fires. Making the orphan-deferral check reachable from the Tier-1 path is a separate change to the gate, recorded below rather than smuggled into this one.",
             "residual": "The Tier-1 commit class has NO commit-time deferral surface at all. Extending enforceTier1 to run the orphan-deferral check is real work on the gate and is not done here."
-          },
-          {
-            "standard": "Iterative Audit to Convergence",
-            "why": "MATCH \u2014 the second one this loop has found, by exactly the same test that caught the first. It cites scripts/write-audit-convergence.mjs as refusing an unearned `converged:` stamp, and that arm has NEVER been injection-tested in this repository. It is believed to work because it has been in place and because its logic reads correctly \u2014 which is precisely the belief this shape defeats, and precisely the belief that was wrong about the orphan-deferral arm hours earlier. Until a case is shown where the stamper REFUSES, the citation rests on reading the code rather than on watching it fail."
           }
         ],
         "unmatched": [
@@ -183,6 +179,11 @@
           {
             "standard": "The Right to Stand Ground",
             "why": "Cites no surface \u2014 and goes further: it explicitly REFUSES to cite the adjacent self-stop gate as enforcement, on the grounds that capitulation and quitting are different failures. A recorded refusal to cite is the structural opposite of this shape."
+          },
+          {
+            "standard": "Iterative Audit to Convergence",
+            "why": "UNMATCHED. **This verdict was recorded as a MATCH first and was WRONG \u2014 corrected within the hour, by checking.** I asserted that scripts/write-audit-convergence.mjs had never been injection-tested. It has: tests/unit/write-audit-convergence.test.ts carries 35 passing tests, 19 of them explicit refusal cases \u2014 REFUSES with only 1 round, REFUSES a non-zero final round, REFUSES a line-vs-rows MISMATCH, REFUSES basename != slug, REFUSES a bad slug charset, REFUSES both standing-guard and exemption, REFUSES a round missing search-angles, plus FAIL-CLOSED cases for unparseable ledger rows and non-integer counts. That is a proven negative control several times over, and stronger than most guards in this repository.",
+            "evidence": "tests/unit/write-audit-convergence.test.ts \u2014 35 tests pass, 19 refusal/fail-closed cases (verified by running the suite, not by reading it)"
           }
         ],
         "sweepHistory": [
@@ -206,7 +207,14 @@
       },
       "countdown": "2026-09-07",
       "trackedAs": "STD-SUBCOUNTDOWN-guard-negative-control",
-      "countdownResidual": "2026-09-07"
+      "countdownResidual": "2026-09-07",
+      "correctionLog": [
+        {
+          "at": "2026-08-08",
+          "what": "GAP-alive-but-inert vs Iterative Audit to Convergence: matched -> unmatched",
+          "why": "The MATCH was asserted from the shape of the citation without checking whether a negative control existed. It did. The sweep check accepted the verdict because a verdict requires a REASON and not EVIDENCE \u2014 a hole in this registry's own machinery, found by making the exact error the registry exists to catch, inside the registry, one hour after building it. Reasons are cheap; the pattern that produced the true finding four hours earlier was INJECTION-TESTING, and I skipped it here because the shape felt familiar. A precise diagnosis suppresses the second opinion, which is why it raises the bar for checking rather than lowering it."
+        }
+      ]
     }
   ]
 }

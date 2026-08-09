@@ -206,6 +206,16 @@ for (const gap of gaps) {
   if (extra.length > 0) {
     failures.push(`${id} — the sweep reaches a verdict on ${extra.join(', ')}, which is not in its own fingerprintPopulation. The population must be the exact set swept.`);
   }
+  for (const m of Array.isArray(sweep.matched) ? sweep.matched : []) {
+    if (typeof m === 'object' && m && !m.evidence && !m.action) {
+      failures.push(
+        `${id} — matched standard "${m.standard ?? '?'}" carries a reason but no EVIDENCE and no ACTION. ` +
+        `A match is an ACCUSATION about another standard, and a reason is cheap: on 2026-08-08 a match here was recorded ` +
+        `against a guard that in fact had 19 proven refusal cases, because the shape FELT familiar and the check asked only ` +
+        `for prose. Name what was actually run or read (a test file, an injection, a line of code), or the action it triggers.`,
+      );
+    }
+  }
   for (const [bucket, entries] of [['matched', sweep.matched], ['unmatched', sweep.unmatched]]) {
     for (const m of Array.isArray(entries) ? entries : []) {
       if (typeof m === 'string' || !m?.why) {

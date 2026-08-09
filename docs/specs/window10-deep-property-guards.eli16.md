@@ -177,3 +177,23 @@ so every sweep went red again — and this time it matched: *Iterative Audit to 
 that has never been made to fail on purpose. It is trusted because the code reads correctly. That is the
 identical mistake I made four hours earlier with a different guard, found by the identical question. Twice
 in one evening, the same shape, the same author.
+
+## I got one wrong, and the check let me (2026-08-08, near midnight)
+
+An hour ago I reported that the loop had caught a second guard making a claim it could not back up. It
+had not. I checked, and that guard has thirty-five tests, nineteen of which deliberately make it fail —
+one of the best-proven checks in the whole repository. My finding was false.
+
+**Why it happened is the useful bit.** Four hours earlier the identical suspicion turned out to be true,
+and what made it true was that I *tested* it. This time the pattern felt familiar, so I skipped the test
+and wrote down the conclusion. Being right once about a shape is exactly what makes you careless about it
+the second time.
+
+**And my own check waved it through**, because it asked me for a *reason* and reasons are free. So a match
+now has to name what I actually ran or read — a test file, an experiment, a line of code — or the action it
+triggers. Declining to accuse still costs only an explanation, which is right: it should be cheap to say
+"I looked and this one is fine" and expensive to say "this one is broken."
+
+Running total, honestly: one real catch, one false alarm corrected within the hour, and the mechanism
+itself firing three times on its own author. A tool that produced a false positive on its first day and
+said so is worth more than one with a spotless record, and this false positive paid for a real tightening.

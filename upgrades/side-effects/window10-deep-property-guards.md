@@ -448,3 +448,35 @@ condition than one whose surface leaves no trace — so each vacuous unmatch say
 letting an empty pass read as a clean one.
 
 Registry: 88 articles, **5 fingerprinted**, 83 grandfathered.
+
+## Increment 11 — I recorded a FALSE match, and the check let me
+
+Increment 10 reported a second catch: `alive-but-inert` matching *Iterative Audit to Convergence*, on the
+grounds that `scripts/write-audit-convergence.mjs` had never been injection-tested. **That was wrong.**
+
+`tests/unit/write-audit-convergence.test.ts` carries **35 passing tests, 19 of them explicit refusal or
+fail-closed cases** — REFUSES with only 1 round, REFUSES a non-zero final round, REFUSES a line-vs-rows
+mismatch, REFUSES basename ≠ slug, REFUSES a bad slug charset, REFUSES standing-guard-and-exemption
+together, REFUSES a round missing search-angles, plus fail-closed arms for unparseable ledger rows and
+non-integer counts. That is a proven negative control several times over, and stronger than most guards
+here. Verified by RUNNING the suite, not by reading it. Verdict corrected to unmatched, with the
+correction and its cause recorded in the gap file rather than quietly edited.
+
+**How I produced a false finding, which is the part worth keeping.** Four hours earlier the same shape
+produced a TRUE finding, and the thing that made it true was injection-testing. Here the shape *felt*
+familiar, so I asserted from the shape of the citation instead of checking. A precise diagnosis suppresses
+the second opinion — which is exactly why it should raise the bar for checking, not lower it.
+
+**And my own check accepted it**, because a sweep verdict required a REASON and reasons are cheap. That is
+a hole the external review's findings 4 and 5 did not name, found by making the registry's own signature
+error inside the registry, one hour after building it.
+
+**Earned fix, injection-proven:** a `matched` verdict now requires **evidence or an action** — name what
+was actually run or read (a test file, an injection, a line of code), or the action the match triggers. An
+`unmatched` still needs only a reason: declining to accuse is cheap and should be. Arm proven — a match
+carrying `why: "feels unguarded"` and nothing else now fails by name.
+
+**Standing count of what the loop has actually found:** one TRUE catch (the unreachable orphan-deferral
+surface, injection-proven), one FALSE catch (this one, corrected within the hour), and one mechanism
+firing three times on its own author. A loop that has produced a false positive on day one is worth more
+honestly reported than a loop with a perfect record, and the false positive bought a real tightening.
