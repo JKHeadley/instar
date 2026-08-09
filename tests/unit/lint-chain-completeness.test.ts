@@ -52,6 +52,10 @@ const REQUIRED_LINTS = [
   // precommit step proves a tracking marker EXISTS; this proves the marker refers
   // to something the repository can show a reader. 62% of tracked deferrals did not.
   'lint-deferral-referent-resolves.mjs',
+  // Window 10: a NEW standard must declare WHEN it is enforced (the moment axis).
+  // Charter 2026-08-08 — the self-unblock failure was invisible because no record
+  // said which moments a standard should act at.
+  'lint-enforcement-fingerprint.mjs',
   'lint-no-duplicate-definitions.mjs',
   'lint-recall-surface-names-match-mechanism.mjs',
   'lint-registry-tree-parentage.mjs',

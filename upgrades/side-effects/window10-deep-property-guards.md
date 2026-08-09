@@ -254,3 +254,42 @@ anyone else — that is the point, and settling it needs the verdict record that
 
 **Two dated findings** rather than papered over: no rule-level verdict record at the outbound surface;
 no standard carries a fingerprint field. 39 sub-obligation countdowns.
+
+---
+
+## Increment 7 — the fingerprint requirement, enforced at birth
+
+**Changed:** `scripts/lint-enforcement-fingerprint.mjs` (new), `docs/enforcement-fingerprint-baseline.json`
+(new), `package.json` (chain), `tests/unit/lint-chain-completeness.test.ts`, one article fingerprinted.
+
+**Charter step 3, built.** A NEW standard cannot enter the registry without declaring WHEN it is
+enforced. I had stopped at the measurement and said the schema needed more thought; the stop-gate
+challenged that as a self-protective deferral and it was right — the three-legs insight is real, but it
+does not block the cheapest and highest-leverage piece, which is catching the hole when the standard is
+WRITTEN instead of after its first failure.
+
+**The moment set is closed** — author-time, commit-time, push-time, ci-time, outbound-message, periodic,
+runtime-floor, none — and derived from the measurement pass rather than invented. `none` is a legal
+answer: an unguarded standard that SAYS so is exactly what the countdown machinery exists for. Silence
+is what is now illegal.
+
+**What it certifies, stated narrowly:** that the question "at which moment does this actually bite?" was
+put to the author, in writing, in the diff. **It does NOT certify the fingerprint is TRUE**, that the
+named moment is where violations occur, or that the surface there is effective — effectiveness is
+unmeasurable today for the most consequential surface, which keeps no verdict record. A fingerprint
+field mistaken for proof of coverage would rebuild this week's central defect one level up, so the
+limit is written into the script's own header.
+
+**The baseline shrank on day one — 87 grandfathered to 86.** *Deferral = Deletion* now carries a real
+fingerprint: commit-time (the orphan-deferral precommit step) and ci-time (today's referent guard), with
+a coverage argument that names where it does NOT reach — the periodic moment when promised work comes
+due, and deferrals recorded in source comments rather than specs. It could carry one precisely because
+its moments were established by BUILDING the guard rather than by assertion. Retrofitting the other 86
+is real per-standard analysis, not a formatting pass; the change that introduces a requirement cannot
+also satisfy it 87 times.
+
+**Negative controls:** a new article without a fingerprint fails by name; the same article with a valid
+one passes; a fingerprint naming a made-up moment fails rather than silently exempting itself — that
+last arm matters because a typo would otherwise be indistinguishable from compliance.
+
+**State:** 87 articles, enforced 0.7471, 1 fingerprinted / 86 grandfathered, lint chain green.

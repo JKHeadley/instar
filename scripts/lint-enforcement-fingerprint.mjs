@@ -1,0 +1,197 @@
+#!/usr/bin/env node
+/**
+ * lint-enforcement-fingerprint.mjs — a NEW standard must say WHEN it is enforced.
+ *
+ * ── Why this exists ────────────────────────────────────────────────────────
+ * Operator charter, 2026-08-08: for each standard, where and when and how is it
+ * enforced — and how do we know that set of points is complete enough that
+ * violations cannot sneak through between them?
+ *
+ * The motivating failure: the self-unblock standard passed every existence check
+ * and still failed. The measurement pass
+ * (`docs/specs/enforcement-fingerprint-measurement.md`) found the situation is
+ * worse than "no guard at that moment" — FIVE blocking rules sit at the
+ * escalation moment, the gate was live, and the violation passed anyway. The
+ * reason nobody noticed is that no record anywhere says which MOMENTS a standard
+ * is supposed to act at, so a hole at the decisive moment is invisible.
+ *
+ * The registry already records WHAT a standard demands and (often) WHICH guard
+ * enforces it. It has never recorded WHEN. This check makes that field required
+ * for every standard added from now on — catching the no-teeth-at-the-decisive-
+ * moment class when the standard is WRITTEN rather than after its first failure.
+ *
+ * ── The seven moments ──────────────────────────────────────────────────────
+ * Measured from the tree, not invented (counts as of 2026-08-08):
+ *
+ *   author-time      session hooks + dispatch table            (12 hook scripts)
+ *   commit-time      pre-commit, the instar-dev gate           (2 git hooks)
+ *   push-time        pre-push                                  (2 git hooks)
+ *   ci-time          25 CI jobs across 12 workflows, 42 lints
+ *   outbound-message 21 tone-gate rules, 11 response reviewers
+ *   periodic         33 shipped scheduled jobs
+ *   runtime-floor    always-on floors (spawn cap, test-runner bound, …)
+ *
+ * A fingerprint names the moments where something acts on THIS standard, and
+ * `none` is a legal and sometimes honest answer — an unguarded standard that
+ * SAYS it is unguarded is exactly what the registry's countdown machinery is for.
+ * What is not legal is silence.
+ *
+ * ── What this measures, and what it certifies ──────────────────────────────
+ * Declared explicitly, per *Verify the State, Not Its Symbol* tooth (D):
+ *
+ *   MEASURED  — every `###` article outside the grandfathered baseline carries an
+ *               `**Enforcement fingerprint.**` declaration naming at least one
+ *               moment from the closed set above.
+ *   CERTIFIED — a standard entering the registry from now on has had the "at
+ *               which moment does this actually bite?" question PUT to its
+ *               author, in writing, in the diff.
+ *
+ * **It does NOT certify that the fingerprint is TRUE**, that the named moment is
+ * the one where violations occur, or that the surface at that moment is
+ * effective — the measurement pass showed effectiveness is unmeasurable today for
+ * the most consequential surface, because it keeps no verdict record. This check
+ * forces the question to be answered, not the answer to be correct. Naming that,
+ * because a fingerprint field mistaken for proof of coverage would rebuild this
+ * week's central defect one level up.
+ *
+ * ── Why a grandfathered baseline ───────────────────────────────────────────
+ * 87 existing articles have no fingerprint. Retrofitting them is real analysis
+ * per standard, not a formatting pass, and the change that INTRODUCES a
+ * requirement cannot also satisfy it 87 times. The baseline is SHRINK-ONLY: an
+ * article may leave it by gaining a fingerprint, and may never be added back.
+ *
+ * Exit codes: 0 — clean; 1 — a new standard with no fingerprint, or a baseline
+ * that grew.
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const ROOT = path.resolve(path.dirname(__filename), '..');
+const JSON_OUT = process.argv.includes('--json');
+const UPDATE = process.argv.includes('--update-baseline');
+const REGISTRY_REL = 'docs/STANDARDS-REGISTRY.md';
+const BASELINE_REL = 'docs/enforcement-fingerprint-baseline.json';
+
+/** The closed set of moments. A fingerprint naming something else is a typo, not a new moment. */
+const MOMENTS = new Set([
+  'author-time', 'commit-time', 'push-time', 'ci-time',
+  'outbound-message', 'periodic', 'runtime-floor', 'none',
+]);
+
+const FINGERPRINT_RE = /\*\*Enforcement fingerprint\.\*\*\s*moments:\s*([a-z, -]+?)\s*(?:[;.]|\*\*|$)/;
+
+const abs = path.join(ROOT, REGISTRY_REL);
+if (!fs.existsSync(abs)) {
+  console.error(`[enforcement-fingerprint] ${REGISTRY_REL} is missing — refusing to report clean.`);
+  process.exit(1);
+}
+
+// Split into articles: heading → body. Same shape as the sibling registry lints.
+const lines = fs.readFileSync(abs, 'utf-8').split('\n');
+const articles = [];
+let current = null;
+let fence = null;
+for (let i = 0; i < lines.length; i++) {
+  const line = lines[i];
+  const t = line.trimStart();
+  const f = t.match(/^(`{3,}|~{3,})/);
+  if (fence === null && f) { fence = f[1]; if (current) current.body.push(line); continue; }
+  if (fence !== null) { if (new RegExp(`^${fence[0]}{${fence.length},}\\s*$`).test(t)) fence = null; if (current) current.body.push(line); continue; }
+  const h = line.match(/^###\s+(.+?)\s*$/);
+  if (h) { current = { name: h[1].trim(), lineNo: i + 1, body: [] }; articles.push(current); continue; }
+  if (current) current.body.push(line);
+}
+
+if (articles.length === 0) {
+  console.error('[enforcement-fingerprint] parsed ZERO articles — the matcher is broken; refusing to report clean.');
+  process.exit(1);
+}
+
+const withFingerprint = [];
+const badMoments = [];
+for (const a of articles) {
+  const m = a.body.join('\n').match(FINGERPRINT_RE);
+  if (!m) continue;
+  withFingerprint.push(a.name);
+  const named = m[1].split(',').map((s) => s.trim()).filter(Boolean);
+  const unknown = named.filter((n) => !MOMENTS.has(n));
+  if (named.length === 0 || unknown.length > 0) {
+    badMoments.push({ name: a.name, lineNo: a.lineNo, unknown });
+  }
+}
+
+const fingerprinted = new Set(withFingerprint);
+const missing = articles.filter((a) => !fingerprinted.has(a.name)).map((a) => a.name).sort();
+
+const baseAbs = path.join(ROOT, BASELINE_REL);
+let baseline = null;
+if (fs.existsSync(baseAbs)) {
+  try { baseline = JSON.parse(fs.readFileSync(baseAbs, 'utf-8')); } catch { baseline = null; }
+}
+
+if (UPDATE) {
+  fs.writeFileSync(baseAbs, `${JSON.stringify({
+    schemaVersion: 1,
+    note: 'Articles predating the enforcement-fingerprint requirement (charter 2026-08-08). SHRINK-ONLY: an article leaves this list by gaining a fingerprint and may never be added back. A NEW article must carry one. See scripts/lint-enforcement-fingerprint.mjs.',
+    measuredAt: new Date().toISOString().slice(0, 10),
+    grandfathered: missing,
+  }, null, 2)}\n`);
+  console.log(`[enforcement-fingerprint] baseline written: ${missing.length} grandfathered of ${articles.length} article(s).`);
+  process.exit(0);
+}
+
+const failures = [];
+const grandfathered = new Set(Array.isArray(baseline?.grandfathered) ? baseline.grandfathered : []);
+
+if (!baseline) {
+  failures.push(`${BASELINE_REL} is missing or unparseable — run with --update-baseline. Refusing to report clean without a baseline to ratchet against.`);
+} else {
+  for (const name of missing) {
+    if (grandfathered.has(name)) continue;
+    const a = articles.find((x) => x.name === name);
+    failures.push(
+      `${REGISTRY_REL}:${a?.lineNo ?? '?'} — "${name}" is a NEW standard with no enforcement fingerprint. ` +
+      `Add: **Enforcement fingerprint.** moments: <one or more of ${[...MOMENTS].join(', ')}>; plus which surface ` +
+      `acts at each and the coverage argument. A standard whose violations occur at a moment nothing watches is a ` +
+      `hole — this field is how that becomes visible when the standard is WRITTEN rather than after its first ` +
+      `failure. \`none\` is a legal answer; silence is not.`,
+    );
+  }
+  if (missing.length > grandfathered.size) {
+    failures.push(`articles without a fingerprint rose from ${grandfathered.size} to ${missing.length} — the baseline is shrink-only.`);
+  }
+}
+
+for (const bad of badMoments) {
+  failures.push(
+    `${REGISTRY_REL}:${bad.lineNo} — "${bad.name}" declares a fingerprint naming ${bad.unknown.length ? `unknown moment(s) ${bad.unknown.join(', ')}` : 'no moment'}. ` +
+    `The moment set is closed: ${[...MOMENTS].join(', ')}. An unrecognised moment is a typo that would silently ` +
+    `exempt the article from the only check on this field.`,
+  );
+}
+
+const report = {
+  articles: articles.length,
+  fingerprinted: withFingerprint.length,
+  missing: missing.length,
+  grandfathered: grandfathered.size,
+  failures,
+};
+
+if (JSON_OUT) {
+  console.log(JSON.stringify(report, null, 2));
+} else if (failures.length === 0) {
+  console.log(
+    `lint-enforcement-fingerprint: clean — ${articles.length} article(s), ${withFingerprint.length} fingerprinted, ` +
+    `${missing.length} grandfathered (shrink-only).`,
+  );
+}
+
+if (failures.length > 0) {
+  console.error('\n❌ lint-enforcement-fingerprint failed:');
+  for (const f of failures) console.error(`  - ${f}`);
+  process.exit(1);
+}
