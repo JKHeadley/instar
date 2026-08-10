@@ -16,8 +16,12 @@ import { describe, it, expect } from 'vitest';
  * expression, and the BOTH-DIRECTIONS cases below are the point. A guard that only proves its
  * refusals can be over-broad and silently eat real messages.
  */
-const isInvisible = (text: string): boolean =>
-  text.replace(/[\s\p{Default_Ignorable_Code_Point}\p{Cf}]/gu, '').length === 0;
+import { hasNoVisibleCharacters } from '../../src/messaging/invisible-payload.js';
+
+// Imported, NOT re-declared. Review pass 9: the first version of this file defined its own copy of
+// the predicate, so deleting the guard from the route would have left this test green — a test that
+// cannot fail when its subject is removed is the alive-but-inert shape in test form.
+const isInvisible = hasNoVisibleCharacters;
 
 describe('POST /telegram/reply/:topicId — invisible payload refusal', () => {
   it('refuses the exact incident payload (a lone U+200B)', () => {

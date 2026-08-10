@@ -145,6 +145,7 @@ import { routeActionClaim, type ClaimClauseArbitration } from '../monitoring/Cla
 import { HumanAsDetectorLog, LEARNING_DETERMINISTIC_THRESHOLD } from '../monitoring/HumanAsDetectorLog.js';
 import { APPRENTICESHIP_CYCLE_CHANNELS } from '../monitoring/ApprenticeshipCycleStore.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
+import { hasNoVisibleCharacters } from '../messaging/invisible-payload.js';
 import { parseVersion, compareVersions } from '../lifeline/versionHandshake.js';
 import { readLatestCodexUsage } from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
 import {
@@ -14921,7 +14922,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // break real messages — an emoji with a variation selector, accented Latin and CJK
     // all still send. A message wrapped in zero-widths but containing real text is
     // untouched.
-    if (text.replace(/[\s\p{Default_Ignorable_Code_Point}\p{Cf}]/gu, '').length === 0) {
+    if (hasNoVisibleCharacters(text)) {
       res.status(400).json({
         error: 'refused: "text" contains no visible characters (only whitespace and/or zero-width marks). '
           + 'An invisible message cannot inform a reader, and delivering it would produce a "reply lost" '

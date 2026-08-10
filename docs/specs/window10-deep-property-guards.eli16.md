@@ -652,3 +652,29 @@ has opened a fresh hole three times this week.
 
 The count moves again: 201 of 217 unresolved. Sixth correction, sixth time upward, and every one of them
 found by somebody other than me.
+
+## A test that could not fail
+
+The ninth reading found the worst kind of test: mine had its own private copy of the rule it was supposed
+to be checking. Delete the protection from the real code and the test stayed green — it would have
+reported success whether or not the thing it guarded still existed. That is exactly the failure this whole
+body of work is named after, showing up inside the proof that the failure was fixed.
+
+There is now one definition of "this message has nothing a human can see", and both the real code and the
+test use it. I proved it by breaking the real code on purpose: the test went red, three of four cases
+failing. Then I put it back. The old version would have passed both times, which is the entire point.
+
+**Second:** my reasoning for not teaching the checker more languages was half right. It was true about the
+notes that exist *today* — I measured that. It was not true about tomorrow's: someone could add a note
+inside a Python comment, or a shell comment tucked after a semicolon, and it would count as kept. So
+instead of guessing at more languages, the checker now only looks in file types whose comments it actually
+understands. Anything else cannot grant credit at all — which errs toward reporting debt rather than
+inventing satisfaction, and the cost of that is written down.
+
+**Third, and this one is mine twice over:** I told the reviewer there were eight past verdicts on file and
+to check me against them. There were seven. I had built that archive precisely *because* I was caught
+being unauditable, added two files when caught again, and then let it fall behind a third time. A record
+that only gets updated when someone catches you is not a record.
+
+And the unresolved-promise figure was stale in two more places. Four values now, each written into three
+or four spots, each going stale in some of them.

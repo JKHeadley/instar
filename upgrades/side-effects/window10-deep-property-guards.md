@@ -1135,3 +1135,37 @@ now sized rather than hedged.
 
 Debt moves 200 → **201 of 217 (93%)**, the sixth honest correction of this number. Each has moved it
 upward, and every one came from someone else's check.
+
+## Increment 32 (window 11) — pass 9: the stream finally moved, and four more repairs
+
+Pass 9 is the ninth reject, and the first where the load-bearing count **fell**: four → **three**, after
+five flat passes. Two more grades CLOSED — the compound-marker fix and the widened binary detection.
+Every finding below was reproduced by probe before being touched.
+
+**A test that could not fail.** `tests/unit/telegram-reply-invisible-payload.test.ts` declared its own copy
+of the predicate, so deleting the guard from the route would have left it green. **That is the
+alive-but-inert shape in test form** — it reports identically whether or not the protection exists, which
+is the defect this registry's tooth (E) is named for, in the artifact meant to prove the fix. Extracted
+`src/messaging/invisible-payload.ts` as the single definition; route and test both import it.
+**Proven by sabotage:** replacing the predicate body with `return false` turns the test red (3 of 4
+failing); restoring it turns it green. That arm is the whole point — the previous version passed either way.
+
+**Comment exclusion was bypassable for future admissions, and my "measured, so declined to widen"
+reasoning was only half right.** It was sound about *today's* resolutions — the measurement holds — but a
+NEW marker introduced with a Python comment, or a shell comment after punctuation (`true;# CMT-999999`),
+would resolve through commentary the scanner cannot strip. Both confirmed by probe. Fixed the honest way:
+**the resolving corpus is now restricted to forms whose comments are actually handled**, so an unhandled
+language cannot grant resolution at all. That is the safe direction — it reports debt rather than
+satisfaction — and the cost is named: a genuine referent living only in a `.py` file reads as an orphan
+until that syntax is handled. The shell rule also now strips comments that begin after punctuation.
+
+**The archive lagged my claim about it for the second time.** I told pass 9 there were eight verdicts and
+to audit me against them; there were seven. I had archived 6 and 7 after being caught, then failed to add
+8 — two passes later, the same failure. Passes 8 and 9 are now filed; the directory holds nine. *The fix
+for unauditability is only as good as the discipline of keeping it current, and that discipline has now
+failed twice.*
+
+**And the deferral figure went stale a fourth time**, in the guard's own header and in tooth (E), while
+the registry article carried the right one. 62% → 54% → 63% → 93%: four values, each written into three or
+four places, each going stale in some of them. The count is synchronised and the four-time history is now
+on the article rather than quietly overwritten.

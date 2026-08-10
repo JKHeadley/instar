@@ -14,7 +14,7 @@
  * repository. A build has no way to resolve `ACT-1153`.
  *
  * Measured 2026-08-09 across `docs/specs/`: **217 distinct tracked deferral marker ids,
- * of which 137 (63%) resolve to nothing OUTSIDE THE DOCUMENTATION TREE.**
+ * of which 201 (93%) resolve to nothing a reader can EXECUTE.**
  * (TWO earlier figures are SUPERSEDED and neither should be quoted: 178/110/62% measured
  * a narrow prose-id population; 194/104/54% measured the marker but through a character
  * class a SPACE terminates AND counted ordinary English words as identifiers. Each was
@@ -57,7 +57,7 @@
  * I briefly mistook a correct refusal for a broken check.
  *
  * ── Why a baseline ─────────────────────────────────────────────────────────
- * 137 pre-existing orphans cannot be fixed by the change that discovers them —
+ * 201 pre-existing orphans cannot be fixed by the change that discovers them —
  * each needs its referent found or the deferral honestly closed. The baseline is
  * SHRINK-ONLY: the count may never rise, so the debt can only be paid down. A
  * new orphan fails immediately.
@@ -152,7 +152,22 @@ const specFiles = files.filter((f) => f.startsWith('docs/specs/') && f.endsWith(
 // marker still resolves on a bare mention in code rather than on a proven link to its
 // follow-through, so the stronger form remains the real fix and is dated on the article.
 const PROSE_EXT = /\.(md|mdx|txt)$/i;
-const resolvingFiles = files.filter((f) => !f.startsWith('docs/') && !f.includes('node_modules/') && !PROSE_EXT.test(f));
+/**
+ * HANDLED FORMS ONLY — review pass 9. Declining to widen comment stripping was defensible for
+ * TODAY's resolutions (measured: .ts 240, .json 16, .sh 3, .js 3, .mjs 2 carry the whole live
+ * surface) but NOT for tomorrow's: a NEW marker introduced with a Python comment, or a shell
+ * comment after punctuation (`true;# CMT-999999`), would resolve through commentary the scanner
+ * cannot strip. Both confirmed by probe before this change.
+ *
+ * So the corpus is now restricted to forms whose comments are actually handled, rather than
+ * "everything except prose". An unhandled language cannot grant resolution at all — which is the
+ * safe direction: it reports debt rather than satisfaction, and it cannot be widened by accident.
+ * The cost is named: a genuine referent living only in, say, a `.py` file will read as an orphan
+ * until that syntax is handled.
+ */
+const HANDLED_EXT = /\.(m?[jt]sx?|c[jt]s|json|jsonl|ya?ml|sh|bash|zsh|toml)$/i;
+const resolvingFiles = files.filter((f) => !f.startsWith('docs/') && !f.includes('node_modules/')
+  && !PROSE_EXT.test(f) && HANDLED_EXT.test(f));
 
 /** Strip comment bodies so a guard's own explanation cannot resolve what it measures. */
 function withoutComments(text, rel) {
@@ -160,7 +175,8 @@ function withoutComments(text, rel) {
     return text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
   }
   if (/\.(ya?ml|sh|bash|zsh|toml|conf)$/i.test(rel) || !rel.includes('.')) {
-    return text.replace(/(^|\s)#[^\n]*/g, '$1 ');
+    // `true;# CMT-999999` was NOT stripped by the old leading-whitespace rule (probe, pass 9).
+    return text.replace(/#[^\n]*/g, ' ');
   }
   return text;
 }
