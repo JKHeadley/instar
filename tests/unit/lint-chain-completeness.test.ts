@@ -63,6 +63,10 @@ const REQUIRED_LINTS = [
   // Window 10: a count the registry states about ITSELF must be true. Stale self-description
   // was the night's most frequent defect ("six properties" against thirty, for two months).
   'lint-registry-self-counts.mjs',
+  // Added by review pass 19's prescription: the two false-closure shapes that recurred often enough to
+  // earn a static guard — a duplicated horizon literal (unclosable behaviourally, since a same-value
+  // copy prints identically) and a superseded figure on a reader-facing surface.
+  'lint-account-matches-tree.mjs',
   'lint-no-duplicate-definitions.mjs',
   'lint-recall-surface-names-match-mechanism.mjs',
   'lint-registry-tree-parentage.mjs',

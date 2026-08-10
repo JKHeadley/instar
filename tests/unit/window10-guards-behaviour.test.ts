@@ -278,7 +278,19 @@ describe('lint-documented-only-countdown — a countdown must be a deadline', ()
     expect(r.out).toContain(`beyond the ${COUNTDOWN_HORIZON_DAYS}-day horizon`);
   });
 
-  // BOTH guards must track the SAME constant. This is the test that would have caught pass 18's finding:
+  // BOTH guards must track the SAME constant.
+  //
+  // SCOPE, corrected by review pass 19, which falsified the sentence that stood here. It claimed this
+  // was "the test that would have caught pass 18's finding". It would NOT have. Pass 18's defect was a
+  // private literal equal to the shared value, and this test compares each guard's PRINTED number — so
+  // a duplicate at the SAME value is invisible. Verified: the whole suite passes 23/23 against the exact
+  // pre-repair code pass 18 rejected. What this test catches is a DIVERGENT literal, which is a real but
+  // narrower thing.
+  //
+  // The same-value case is unclosable behaviourally and is closed statically instead, by
+  // `scripts/lint-account-matches-tree.mjs`, which reads the guards' SOURCE for the shared import and
+  // for numeric horizon literals. Naming the division here because a test whose stated reach exceeds
+  // what it checks is precisely the defect this file exists to prevent — and it was in this file.
   // the gap guard kept a private `const HORIZON_DAYS = 180` while the shared export was wired only into
   // its sibling, and every existing assertion passed because it matched any digits.
   it('both countdown guards report the SAME horizon, so they cannot drift apart', () => {
@@ -329,5 +341,52 @@ describe('lint-documented-only-countdown — a countdown must be a deadline', ()
     const r = run('lint-documented-only-countdown.mjs');
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/declared MORE THAN ONCE/);
+  });
+});
+
+describe('lint-account-matches-tree — the account must match the tree', () => {
+  it('passes on the untouched tree', () => {
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain('share one horizon definition');
+  });
+
+  // THE ARM THE BEHAVIOURAL SUITE STRUCTURALLY CANNOT COVER. Review pass 18's defect was a private
+  // literal EQUAL to the shared value; every behavioural test compares printed output, so it is
+  // invisible there — the 23-test suite passes against the exact pre-repair code. Only source
+  // inspection distinguishes a shared bound from a coincidentally-equal copy.
+  it('refuses a guard that declares its own horizon literal EQUAL to the shared value', () => {
+    const g = path.join(fixture, 'scripts', 'lint-enforcement-gap-records.mjs');
+    fs.writeFileSync(g, fs.readFileSync(g, 'utf8')
+      .replace('const HORIZON_DAYS = COUNTDOWN_HORIZON_DAYS;', 'const HORIZON_DAYS = 180;'));
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('declares a NUMERIC horizon literal');
+  });
+
+  it('refuses a guard that stops importing the shared symbol', () => {
+    const g = path.join(fixture, 'scripts', 'lint-documented-only-countdown.mjs');
+    fs.writeFileSync(g, fs.readFileSync(g, 'utf8').split('COUNTDOWN_HORIZON_DAYS').join('LOCAL_DAYS'));
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('does not reference COUNTDOWN_HORIZON_DAYS');
+  });
+
+  it('refuses an unannotated superseded figure on a reader-facing surface', () => {
+    const e = path.join(fixture, 'docs', 'specs', 'window10-deep-property-guards.eli16.md');
+    fs.mkdirSync(path.dirname(e), { recursive: true });
+    fs.writeFileSync(e, 'Of 178 markers, 110 point at nothing.\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('publishes the SUPERSEDED figure');
+  });
+
+  // The false-positive control: the annotated form is the SANCTIONED way to name a retired figure.
+  it('ACCEPTS a superseded figure carrying an explicit annotation', () => {
+    const e = path.join(fixture, 'docs', 'specs', 'window10-deep-property-guards.eli16.md');
+    fs.mkdirSync(path.dirname(e), { recursive: true });
+    fs.writeFileSync(e, 'Of [SUPERSEDED — retired] 178 markers, 110 pointed at nothing.\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code, r.out).toBe(0);
   });
 });

@@ -23,7 +23,7 @@ than one left open, because nothing will bring it back.)* Which is the exact thi
 
 The build now asks a different question: not "is there a number?" but "does the number refer to
 anything a person could go and look at?" A new deferral whose number points nowhere fails immediately.
-The 110 already there are recorded as a debt that can only shrink — because the change that *discovers*
+The 201 already there are recorded as a debt that can only shrink — because the change that *discovers*
 a debt cannot also pay it off.
 
 ## What it still cannot tell you
@@ -130,8 +130,8 @@ is the system working, so here is what it found, in plain terms.
 
 The biggest one: **my deferral guard was watching less than half of what it claimed to watch.** The
 commit-time marker accepts any label; my check only recognised two specific numbered forms. Of 194 labels
-actually in use, 102 were invisible to it. So the honest headline number moved from "62% of deferrals
-point at nothing" to **54%** — measured over the real population instead of a convenient slice of it. I
+actually in use, 102 were invisible to it. So the honest headline number moved from [SUPERSEDED — both figures below are retired measurements, named here only to show the sequence; the live figure is 201 of 217] "62% of deferrals
+point at nothing" to [SUPERSEDED — retired measurement] **54%** — measured over the real population instead of a convenient slice of it. I
 widened the guard and wrote the reason for the reset into the file, because a ratchet you can quietly
 re-zero is not a ratchet.
 
@@ -512,7 +512,7 @@ to 199 out of 217 — ninety-two percent. Which means this rule was about eight 
 reported far better, and every earlier figure was propped up by prose describing the promises rather than
 anything keeping them.
 
-Four published numbers, in order: 62%, 54%, 63%, 92%. Every one announced before it was found wrong, every
+Four published numbers, in order [SUPERSEDED — all four are retired measurements, listed to show how often this figure was wrong; the live figure is 201 of 217]: 62%, 54%, 63%, 92%. Every one announced before it was found wrong, every
 one corrected by somebody else.
 
 ## Running it for real found the hole I could not have tested for
@@ -930,7 +930,7 @@ a promise is to write a file and say at the top what it is for. My checker canno
 unknown portion of those 201 are promises that were kept.
 
 That number has been corrected **five times**, and every single correction was about the arithmetic —
-62%, 54%, 63%, 92% versus 93%, and finally writing it as a plain fraction. Nobody, including me, ever
+[SUPERSEDED — every value in this list is a retired measurement, named to show how many times it was wrong; the live figure is 201 of 217] 62%, 54%, 63%, 92% versus 93%, and finally writing it as a plain fraction. Nobody, including me, ever
 asked what it was counting. Eleven outside readings argued about the digits.
 
 I have not fixed it, on purpose. Teaching the checker to accept "the description at the top of a file"
@@ -1274,7 +1274,7 @@ experiment that exposed it.
 **The more useful half is that my new tests could not see it.** Both were checking for "beyond the
 *something*-day limit" — which matches any number — so the two checkers could drift apart and every test
 would stay green. Now they check the actual number, and there is a new test whose only job is that both
-checkers report the same limit. I re-introduced the exact drift and it goes red.
+checkers report the same limit. I wrote here that I had re-introduced the exact drift and it went red. **That was wrong, and the twentieth reading caught it:** my test compares the numbers the checkers print, so a private copy that happens to equal the shared one is invisible — the whole suite passes against the exact broken code. What it catches is a copy with a *different* value. The identical-value case cannot be caught by running the checkers at all; it needs something that reads their source, which is what I built instead.
 
 **And the thing that bothers me most has nothing to do with machinery.** A problem found fifteen readings
 ago was recorded as *corrected everywhere*. It was not: the outdated figure was still the headline of the
@@ -1285,3 +1285,30 @@ than one left open, because nothing will ever bring it back.
 
 And on my first attempt at that correction I quoted the forbidden number inside my own explanation of why
 it is forbidden. Third time I have been caught doing that exact thing.
+
+## A test that could not see the thing it was written to see
+
+The nineteenth reading is the first to say plainly that the pile of problems **is** genuinely shrinking —
+and it still said no, for a reason worth more than the verdict: **none of its three findings were faults in
+the machinery. All three were me saying something was finished when it was not.**
+
+The sharpest one: the test I wrote to catch last night's mistake cannot catch it. I checked before
+touching anything — the whole suite passes against the exact broken code. My test compares the numbers the
+two checkers *print*, and last night's bug was a private copy that happened to hold the *same* number. It
+prints identically. Only a copy with a *different* number shows up. Four places in this project said
+otherwise, including this document.
+
+So the fix is a different kind of check: one that reads the checkers' *source* rather than running them.
+Some things cannot be caught by watching behaviour, and pretending otherwise is how I ended up with a test
+that reassured me about a case it never touched.
+
+Its second job is the one the reviewer had to tell me about twice: no retired figure may sit on a page a
+person reads unless it is explicitly marked as retired. **It immediately found five, where the reviewer had
+named one.** That is the first time this week a check has found more than the reading that asked for it.
+
+And it ships with its own tests, including one that makes sure it does not shout at correctly-marked text —
+because shipping a checker with no tests is exactly the mistake two readings ago.
+
+One thing I got right in order for once: the previous reading's verdict was filed **first, in its own
+commit, before any of these repairs**. Four times I wrote that I had restored that discipline. Doing it in
+the right order once is worth more than a fifth promise.

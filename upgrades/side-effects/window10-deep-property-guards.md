@@ -2002,7 +2002,7 @@ Three tests added, 23 total, and all three sabotage-proven:
 | disable the article-level expiry arm | *refuses an ARTICLE countdown that has expired* |
 | **re-introduce pass 18's drift** (gap guard keeps a private 200) | *both countdown guards report the SAME horizon* |
 
-The third is the one that matters: **the suite would now catch the exact defect pass 18 found.** The
+The third is the one that matters — **[SUPERSEDED — false. Review pass 19 ran the 23-test suite against the exact pre-repair code pass 18 rejected: 23/23 green. The test compares PRINTED numbers, so a private literal EQUAL to the shared value is invisible; only a divergent one reds it. The same-value case is unclosable behaviourally and is now closed statically by scripts/lint-account-matches-tree.mjs.]** the suite would now catch the exact defect pass 18 found. The
 horizon assertions now name the constant instead of matching any digits.
 
 **AND THE FINDING THAT WORRIES ME MOST — a defect recorded as CLOSED while live on a shipping surface.**
@@ -2026,3 +2026,50 @@ to the pass-3 repair — an attribution one wider than the evidence.
 **`pass17-verdict.md` filed — the eighth lapse, and the third consecutive.** Each of the last three was
 filed only after the NEXT reviewer pointed at it. Saying "restored" after each catch has not made the
 convention hold, and that is the honest reading rather than another restoration note.
+
+## Increment 50 (window 11) — the class that cannot be scheduled, closed mechanically
+
+Pass 19 is the nineteenth reject, load-bearing 3 — and it is the **first pass to credit the magnitude
+clause of the criterion as SATISFIED**, in its own words: *"I say so plainly because the evidence supports
+it and because a reviewer should not withhold a clause the data earns."* Repair (a) — the horizon sweep —
+became **the first repair in nineteen passes to survive an adversarial reviewer's own reproduction
+unchanged.**
+
+It rejected on the other clause, and its diagnosis is exact: **zero of its three load-bearing findings
+were guard defects. All three were closures claimed and not delivered.**
+
+**THE TEST I WROTE TO CATCH PASS 18's DRIFT DOES NOT CATCH IT.** Verified before touching anything: the
+23-test suite passes **23/23 against the exact pre-repair code pass 18 rejected.** My test compares each
+guard's PRINTED number against the shared constant — so a private literal *equal* to the shared value is
+invisible. Only a *divergent* one reds it. Pass 18's defect was a duplicate at the same value. **Four
+artifacts said otherwise**, including the lay explainer an outside reader meets, and the side-effects
+table was self-refuting in one paragraph: it labelled the sabotage *"re-introduce pass 18's drift"* while
+parenthesising *"(private 200)"* — a different mutation from the one pass 18 found.
+
+**So the fix is static, because the behavioural closure does not exist.** `scripts/lint-account-matches-tree.mjs`
+reads the guards' SOURCE for the shared import and for numeric horizon literals. It catches pass 18's
+exact defect, which no behavioural test structurally can. Its second arm is pass 19's other prescription:
+no superseded figure on a reader-facing surface without an explicit `[SUPERSEDED …]` annotation.
+
+**Both were pass 19's own words, made mechanical because four consecutive passes showed that announcing
+it is not the same as doing it.**
+
+**And arm 2 immediately found more than pass 19 reported.** Pass 19 named one line; the lint found
+**five** — the live claim at eli16:26 (corrected to the true figure) and four historical mentions (now
+annotated, since the sequence is the point of those paragraphs). A guard finding more than the reviewer
+who prescribed it is the first time this window that a guard has outperformed the review that motivated it.
+
+**The new lint ships with five behavioural tests and a false-positive control**, because shipping an
+untested guard is the exact defect pass 17 named. Sabotage-proven both arms: neuter the literal check and
+exactly *"refuses a guard that declares its own horizon literal EQUAL to the shared value"* reds; neuter
+the figure check and exactly its own test reds. 28 tests total, all green restored.
+
+**The archive convention, finally in the right order.** `pass18-verdict.md` was filed **alone and BEFORE
+these repairs** — its own commit, pushed first. That was pass 19's third prescription, and the ninth lapse
+was the fourth consecutive one. Four notes saying "restored" did not make it hold; doing it in the right
+order once is worth more than a fifth.
+
+**Still outstanding from pass 19 and honestly named:** two of three self-count corrections (the pass-1
+severity at `:388` and the over-attribution in three places) are announced-not-applied — the same shape,
+and I am recording that rather than claiming otherwise. Refusal-arm coverage is roughly 40% with nothing
+measuring it.
