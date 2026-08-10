@@ -1403,7 +1403,7 @@ carries a fingerprint leaves the partition identity satisfied, so that case is c
 baseline arm and the sibling duplicate-definitions lint, not by this refusal. The `evidence` field of the
 same gap record had said so all along while the `why` field beside it said the opposite — both written by
 the commit titled "bring every account into agreement with the frozen code".**
-[SUPERSEDED — the sentence that stood here read "It catches exactly what a duplicate-name rule catches."
+[SUPERSEDED — "It catches exactly what a duplicate-name rule catches."] That sentence stood here.
 Review pass 27 finding 2 caught it SURVIVING its own correction: I inserted the corrected paragraph ABOVE
 it instead of replacing it, then wrote in the commit body that all five sites now state the true scope
 without checking the fifth. The registry names that exact failure — "leaving it standing beside its own
@@ -1972,7 +1972,7 @@ guard exports nothing) rather than leaving the weaker option unexplained.
 deletions` on this file — the announcements of three fixes appended eighty-four lines below the text they
 did not fix. All three are now marked inline with the `[SUPERSEDED — …]` convention **this log had already used
 twice**, which is the point: the convention existed and I appended instead of using it.
-[SUPERSEDED — that sentence first read "already used four times"; twice is correct, since two of the four were prose cells describing a fix rather than uses of the marker. A count-about-itself, wrong, in the increment about counts-about-itself being wrong. Review pass 18 found the count; review pass 19 nit 6 found that the correction had been spliced into the middle of the phrase; review pass 20 finding 7 found the splice still there AND the emphasis markers left unbalanced by the half-repair.]
+[SUPERSEDED — "already used four times"] that sentence first read so; twice is correct, since two of the four were prose cells describing a fix rather than uses of the marker. A count-about-itself, wrong, in the increment about counts-about-itself being wrong. Review pass 18 found the count; review pass 19 nit 6 found that the correction had been spliced into the middle of the phrase; review pass 20 finding 7 found the splice still there AND the emphasis markers left unbalanced by the half-repair.]
 The
 third also carried a wrong ordinal (43, where the node-only ordinal is 44) that had never been recorded
 as wrong — corrected on the record rather than silently.
@@ -2550,40 +2550,64 @@ running this measurement rather than by anyone reporting it.
 it in a message, and never landed it — then carried it into review prompts as though the repository
 declared it. Pass 26 cited it as a tree declaration to justify withholding seventeen surviving mutants.
 Pass 27 grepped the tree and found nothing; the only figure the repository actually stated was "roughly 40%
-with nothing measuring it", derived over 57 sites and 23 tests when there are now 90 and 54 — stale on both
+with nothing measuring it", derived over 57 sites and 23 tests when the arm count is now 90 (the test count is
+deliberately not restated — review pass 28 found the number I wrote there was produced by a grep, not a
+run, and differed from the one in my own commit body) — stale on both
 terms. **A measurement that lives only in a message is not a measurement the work has.** That is this
 registry's own untracked-is-abandoned standard, broken with the very number I was pleased about.
 
 Coverage is not correctness. A covered arm is one some test notices when it stops refusing; it is not proof
 the arm refuses the right things.
 
-## MEASURED — refusal-arm coverage, and the number that only existed in a message
 
-**23 of 90 refusal arms are covered by a behavioural test: 26%.** Re-derived by mutation against this tree,
-over BOTH refusal mechanisms (`failures.push` and early `console.error` + `process.exit(1)`), across all
-six guards. Reproducible: `node scripts/measure-refusal-arm-coverage.mjs`, in an isolated `git archive`
-clone — never against a tree a reviewer is reading.
+## Increment 59 (window 11) — the chokepoint, the gate, and the arming step
 
-| guard | covered / arms |
-|---|---|
-| `lint-account-matches-tree.mjs` | **10 / 11** |
-| `lint-documented-only-countdown.mjs` | 5 / 17 |
-| `lint-enforcement-gap-records.mjs` | 4 / 39 |
-| `lint-deferral-referent-resolves.mjs` | 2 / 7 |
-| `lint-enforcement-fingerprint.mjs` | 2 / 12 |
-| `lint-registry-self-counts.mjs` | **0 / 4** |
+Pass 28: **reject, load-bearing 6 — FOUR of them mine, from the commit under review.** Pass 27 split 2
+repair-induced / 5 pre-existing; this one splits 4 / 2, and every one of the four is the same shape: *a
+sentence written about a repair that is wider than the repair.* Three consecutive readings have now
+produced that shape in three different repairs, by three different mechanisms — a regex that shifted, an
+annotation that does not parse, and a count that was grepped instead of run.
 
-Two things in that table are worth naming. The newest guard is the best covered and the largest is the
-worst — coverage tracks how recently a thing was attacked, not how much it matters. And **the guard whose
-entire subject is that a count about itself must be true has zero refusal-arm coverage**, which I found by
-running this measurement rather than by anyone reporting it.
+**A THIRD unguarded door, and the end of guarding doors.** Pass 28 fired one payload at every route that
+reaches the Telegram sink, in a single harness, and found `POST /telegram/topics` accepting an invisible
+`firstMessage` — creating a forum topic to hold it. I had guarded one door and written "at the point of
+sending"; guarded a second and written "both doors". Two enumerations, two over-claims. **The check is now
+at the chokepoint** — inside `sendToTopic`, which every send passes through — proven by input: an invisible
+payload throws there, real text reaches the API. The third route also answers 400 with a reason, because a
+named refusal beats a thrown 500. I deferred this move last increment for a stated reason; two failed
+enumerations retired that reason.
 
-**Why this is a file and not a sentence.** Review pass 27 finding 7: I derived this figure once, reported
-it in a message, and never landed it — then carried it into review prompts as though the repository
-declared it. Review pass 26 cited it as a tree declaration to justify withholding seventeen surviving
-mutants. Review pass 27 grepped the tree and found nothing. **A measurement that lives only in a message is
-not a measurement the work has** — this registry's own untracked-is-abandoned standard, broken with the
-very number I was pleased about.
+**A gate that voided three arms, and nobody had counted.** The sub-obligation countdown arm opened with
+`if (!text.includes(SUB_TRIGGER)) continue;`. The document declares **48** well-formed countdowns; the
+guard collected **47**. The escaping one sat in an article that never writes the literal trigger phrase,
+and it escaped expiry, horizon AND uniqueness — the pass-17 `9999-12-31` exploit worked on it today, under
+a clean line reading "47 … all unexpired". The population is now derived from the DECLARATION; the count
+reads 48, and both exploits are refused on the member that used to escape, verified by injection.
 
-Coverage is not correctness. A covered arm is one some test notices when it stops refusing; it is not proof
-the arm refuses the right things.
+**The arming step is mechanical now, because a format you have to remember is not a guarantee.** Pass 28
+found the `[SUPERSEDED]` annotation I wrote to arm the claim arm was in a form its own parser cannot read —
+eleven words between the em-dash and the quote — so the wording I retired was never enrolled. The new
+ARM 2c refuses exactly that. It immediately found **three** malformed annotations where the reviewer named
+one, and the derived population went from 4 claims / 3 matchers to **7 / 5**.
+
+**And my first version of that arm flagged correct prose.** Written `\s*(?!")`, the star backtracks to
+zero and the lookahead inspects a space rather than the quote, so every CORRECTLY-formed annotation
+matched — three lines pass 28 had already verified as conforming. Caught before shipping only because I
+checked the reviewer's claim instead of trusting my own new guard. The control is now a test.
+
+**The shipping surface is watched at last.** Pass 27 prescribed extending the surface list and I dropped it
+without a trace; pass 28 found that, and resolved "reader-facing" against `package.json` `files` — the
+authority on shipping. It excludes `docs/` and includes `dist`: **the explainer I was watching does not
+ship, and the constitution ships verbatim to every install.** The constitution is now watched. Its four
+figure-hits are annotated — three self-labelled retirements and one unrelated worktree count, released
+honestly rather than by narrowing the guard.
+
+Also corrected: a test count no run produces, in the very file whose subject is that a measurement must be
+re-derived rather than believed; a parser comment claiming the authority "uses both" notations when it uses
+one; and a MEASURED section committed twice.
+
+**Still owed, and named rather than implied:** the parser still cannot read the word-separated raw-fraction
+form the authority says it will adopt next — the gap pass 26 named by that exact language, closed in a
+different shape and labelled as it. Dated **2026-09-07** with the rest.
+
+59 tests, full lint chain green.

@@ -1383,7 +1383,7 @@ verdict before starting the repairs it asked for, and ten times I have either fo
 somebody noticed. It is now machinery: when I write "the twentieth reading found…" on one of the four
 pages this check watches, the build fails until that reading's verdict is on disk. The sentence creates the
 obligation.
-[SUPERSEDED — this paragraph first said "anywhere", and said the phrasing above was what armed it. Both were wrong. The check read only the form "pass 20", not the ordinal form this page uses for every one of its section headings — including the heading two paragraphs up — so the sentence announcing the obligation was written in the one wording that could not trigger it. The twenty-first reading caught that. The ordinal form is parsed now, and the scope is four pages, not anywhere.]
+[SUPERSEDED — "anywhere"] this paragraph first said that, and said the phrasing above was what armed it. Both were wrong. The check read only the form "pass 20", not the ordinal form this page uses for every one of its section headings — including the heading two paragraphs up — so the sentence announcing the obligation was written in the one wording that could not trigger it. The twenty-first reading caught that. The ordinal form is parsed now, and the scope is four pages, not anywhere.]
 No promise left
 in it.
 

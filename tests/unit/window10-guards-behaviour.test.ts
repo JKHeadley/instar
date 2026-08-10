@@ -568,6 +568,25 @@ describe('lint-account-matches-tree — the account must match the tree', () => 
     expect(r.out).toContain('repeats the RETIRED claim');
   });
 
+  // Review pass 28 finding 2 — the ARMING step made mechanical. I wrote an annotation to arm the claim
+  // arm and put eleven words between the em-dash and the quote, so the wording was never enrolled and
+  // could be re-committed silently. The reviewer's words: "a correction which depends on the corrector
+  // remembering a format is a correction that does not hold." So the format is checked.
+  it('refuses an annotation whose quoted wording sits after intervening prose', () => {
+    append(SE(), '\n[SUPERSEDED — the sentence that stood here read "a wholly invented retired wording".]\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('sits AFTER intervening prose');
+  });
+
+  // The false-positive control that my FIRST version of this arm failed: `\s*(?!")` backtracks to zero,
+  // so the lookahead inspects a space and every CORRECTLY-formed annotation matches.
+  it('ACCEPTS an annotation in the enrolling form', () => {
+    append(SE(), '\n[SUPERSEDED — "a wholly invented retired wording"] the corrected version.\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code, r.out).toBe(0);
+  });
+
   // Review pass 22 finding 8 — ARM 3's fail-closed refusal over an empty derived population.
   //
   // I recorded this last cycle as UNTESTABLE, on the reasoning that the state is structurally
@@ -605,6 +624,10 @@ describe('lint-account-matches-tree — the account must match the tree', () => 
       'upgrades/side-effects/window10-deep-property-guards.md',
       'upgrades/next/deferral-tracking-verified-not-assumed.md',
       'docs/specs/window10-deep-property-guards.eli16.md',
+      // The constitution joined the watched surfaces at review pass 28 finding 7 — it SHIPS as the
+      // packaged asset while the explainer above does not — so it is a citing surface too, and this
+      // mutation has to reach it.
+      'docs/STANDARDS-REGISTRY.md',
     ]) {
       const p = path.join(fixture, rel);
       if (!fs.existsSync(p)) continue;

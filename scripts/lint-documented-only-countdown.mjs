@@ -250,7 +250,19 @@ for (const name of REQUIRE_COUNTDOWN) {
 const subCountdowns = [];
 for (const a of articles) {
   const text = a.body.join('\n');
-  if (!text.includes(SUB_TRIGGER)) continue;
+  // POPULATION DERIVED FROM THE DECLARATION, not from a trigger PHRASE.
+  //
+  // This read `if (!text.includes(SUB_TRIGGER)) continue;` — an outer gate with every date check inside
+  // it. Review pass 28 counted the document two ways: 48 well-formed sub-obligation countdowns declared,
+  // 47 collected. The missing one sits in an article that never writes the literal trigger phrase, and it
+  // escaped EXPIRY, HORIZON and UNIQUENESS — three arms defeated by one condition, with the pass-17
+  // `9999-12-31` exploit working on it today, under a clean line reading "47 … all unexpired".
+  //
+  // An article that DECLARES a countdown is in the population because it declared one. The trigger phrase
+  // now only drives the trigger-vs-countdown arity check below, which is what it was ever for.
+  const declares = SUB_COUNTDOWN_RE.test(text);
+  SUB_COUNTDOWN_RE.lastIndex = 0;
+  if (!text.includes(SUB_TRIGGER) && !declares) continue;
   // ALL countdowns and ALL triggers, not the first of each. An article may name more
   // than one unenforced sub-obligation — *Token-Audit Completeness* names two — and a
   // first-match check would validate one date while a second gap sat undated and could

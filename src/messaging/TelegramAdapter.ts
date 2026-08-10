@@ -10,6 +10,7 @@
  */
 
 import fs from 'node:fs';
+import { hasNoVisibleCharacters } from './invisible-payload.js';
 import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -1338,6 +1339,25 @@ export class TelegramAdapter implements MessagingAdapter {
       formatMode?: 'html';
     },
   ): Promise<SendResult> {
+    // THE CHOKEPOINT. Every Telegram send passes through here, and this is where the invisible-payload
+    // refusal belongs — not on the routes.
+    //
+    // I put it on one route at pass 9, wrote that it was fixed "at the point of sending", and review
+    // pass 27 falsified that by probing a SECOND route. I then guarded that route and wrote "both doors";
+    // review pass 28 probed a THIRD — `POST /telegram/topics`, which creates a forum topic and posts an
+    // invisible first message into it. Two enumerations, two over-claims. A per-door check requires every
+    // future door to remember, which is precisely the willpower this registry's own first standard forbids.
+    //
+    // Refusing HERE is also the honest reading of the claim: a caller that swallows the error drops an
+    // invisible message, which is the correct outcome — the incident this guard exists for was a "reply
+    // lost" escalation raised for content that never existed.
+    if (hasNoVisibleCharacters(text)) {
+      throw new Error(
+        'refused: message contains no visible characters (only whitespace and/or zero-width marks). '
+        + 'An invisible message cannot inform a reader, and delivering it would produce a "reply lost" '
+        + 'escalation for content that never existed.',
+      );
+    }
     const params: Record<string, unknown> = {
       chat_id: this.config.chatId,
       text,

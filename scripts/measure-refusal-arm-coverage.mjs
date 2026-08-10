@@ -7,7 +7,10 @@
  * landed it. Then I carried it into review prompts as though the repository declared it. Review pass 26
  * cited it as a tree declaration to justify withholding seventeen surviving mutants; review pass 27
  * grepped the tree for it and found NOTHING — the only figure the repository actually stated was "roughly
- * 40% with nothing measuring it", itself derived over 57 sites and 23 tests when there are now 90 and 54.
+ * 40% with nothing measuring it", itself derived over 57 sites and 23 tests when the arm count is now 90. (The test count is
+ * deliberately NOT written here: review pass 28 found the number I put in this sentence was produced by
+ * a grep, not a run, and differed from the one in my own commit body — in the file whose subject is that
+ * a measurement must be re-derived rather than believed. Run the suite; it prints the count.)
  *
  * A measurement that lives only in a message is not a measurement the work has. That is this registry's
  * own "untracked = abandoned" standard, broken with the very number I was pleased about.

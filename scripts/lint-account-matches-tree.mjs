@@ -107,6 +107,12 @@ const MIN_MATCHER_CHARS = 14;
 const READER_FACING = [
   'upgrades/next/deferral-tracking-verified-not-assumed.md',
   'docs/specs/window10-deep-property-guards.eli16.md',
+  // Review pass 27 prescribed extending this list and I dropped the prescription without a trace; review
+  // pass 28 found that AND resolved "reader-facing" against `package.json` `files`, which is the authority
+  // on shipping. It excludes `docs/` and includes `dist` — so the explainer above is watched and does NOT
+  // ship, while the constitution ships VERBATIM to every install as the packaged asset. That is the exact
+  // surface on which review pass 26 found a superseded figure republished as live fact.
+  'docs/STANDARDS-REGISTRY.md',
 ];
 /** Surfaces for the CLAIM arm — wider, because pass 19's finding-3 sites lived in the log and the test. */
 const CLAIM_SURFACES = [
@@ -194,6 +200,23 @@ const ARCHIVE_DIR = 'docs/specs/reports/window10-external-passes';
 const CITING_SURFACES = [...CLAIM_SURFACES].filter((rel) => !SOURCE_EXCLUDED.has(rel));
 
 let CITED_COUNT = 0;
+/**
+ * A `[SUPERSEDED` mark whose quoted wording the parser cannot reach. Review pass 28 finding 2: I wrote an
+ * annotation to ARM this arm and put eleven words of prose between the em-dash and the quote, so the
+ * wording was never enrolled and could have been re-committed silently. The annotation looked right to a
+ * reader and was invisible to the machine.
+ *
+ * The lesson in the reviewer's words: *"a correction which depends on the corrector remembering a format
+ * is a correction that does not hold."* So the format is checked, not remembered — a mark that carries a
+ * quoted wording NOT in the parseable position is refused, naming the conforming form.
+ */
+// The lookahead must sit AFTER the dash and swallow the whitespace itself. Written as `\s*(?!")` the
+// star backtracks to zero, the lookahead then inspects a SPACE rather than the quote, and every
+// CORRECTLY-formed annotation matches — which is what my first version did, flagging three lines review
+// pass 28 had already verified as conforming. Caught before shipping only because I checked the
+// reviewer's claim instead of trusting my own new guard.
+const MALFORMED_ANNOTATION_RE = /\[SUPERSEDED\s*—(?!\s*")[^\]\n]*"([^"\n]{4,160})"/;
+
 const failures = [];
 
 // ── Derive the FIGURE population from the authority the arm cites ─────────────────────────────────
@@ -212,7 +235,12 @@ function deriveFigures() {
   const whole = fs.readFileSync(abs, 'utf-8');
   const headerEnd = whole.indexOf('*/');
   const header = headerEnd === -1 ? whole : whole.slice(0, headerEnd);
-  // Retired triples are written either `178/110/62%` or as a raw fraction — the header uses both, and
+  // Retired triples in that header are SLASH TRIPLES, and today both carry a percent. Review pass 28
+// finding 4: I wrote that the header "uses both" notations. It does not — its raw fraction is the LIVE
+// figure and is word-separated, which this parser cannot read. So a retirement written in the notation
+// that source says it will adopt NEXT enrols nothing, and the gap review pass 26 named by that exact
+// language has never been closed; a differently-shaped gap was closed and labelled as it. Owed, dated
+// 2026-09-07 in the engineering log. What this parser does cover is
   // "TWO earlier figures are SUPERSEDED and neither should be quoted".
   // The third element's percent sign is OPTIONAL. Review pass 26 finding 1: requiring it meant this
   // derivation could not enrol a triple written in the notation its own authority ADOPTED — that header
@@ -486,6 +514,23 @@ for (const rel of CLAIM_SURFACES) {
       `annotate it if the retired wording is being quoted deliberately.`,
     );
   }
+}
+
+// ── ARM 2c: every annotation that quotes a retired wording must be in the ENROLLING form ──────────
+for (const rel of ANNOTATION_SOURCES) {
+  const abs = path.join(ROOT, rel);
+  if (!fs.existsSync(abs)) continue;
+  fs.readFileSync(abs, 'utf-8').split('\n').forEach((line, i) => {
+    const m = MALFORMED_ANNOTATION_RE.exec(line);
+    if (!m) return;
+    failures.push(
+      `${rel}:${i + 1} carries a ${SUPERSEDED_MARK}…] annotation whose quoted wording "${m[1]}" sits AFTER ` +
+      `intervening prose, so deriveClaims() cannot reach it and the wording is NOT enrolled. Write the ` +
+      `quote immediately after the em-dash — \`${SUPERSEDED_MARK} — "the retired wording"] then the ` +
+      `explanation\` — which is the form used correctly elsewhere in this tree. An annotation that reads ` +
+      `right and arms nothing is the shape a reading found inside the very repair meant to end it.`,
+    );
+  });
 }
 
 // ── ARM 2b: no superseded figure on a reader-facing surface, unannotated ──────────────────────────

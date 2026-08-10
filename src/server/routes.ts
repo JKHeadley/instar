@@ -14739,6 +14739,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: '"firstMessage" must be a string of 4096 characters or fewer' });
       return;
     }
+    // The THIRD door, found by review pass 28 firing one payload at every route that reaches the sink.
+    // The chokepoint in TelegramAdapter now refuses this too — but a 400 naming the reason is a better
+    // answer to a caller than a thrown 500, and this route's outcome was the worst of the three: it
+    // CREATES a forum topic and posts an invisible first message into it.
+    if (typeof firstMessage === 'string' && hasNoVisibleCharacters(firstMessage)) {
+      res.status(400).json({
+        error: 'refused: "firstMessage" contains no visible characters (only whitespace and/or zero-width '
+          + 'marks). An invisible message cannot inform a reader, and this route would create a topic to '
+          + 'hold it.',
+      });
+      return;
+    }
 
     // Color is optional — defaults to green (9367192)
     const iconColor = typeof color === 'number' ? color : 9367192;
