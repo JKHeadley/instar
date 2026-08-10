@@ -1402,8 +1402,15 @@ pass 26 finding 4, not an equal one. It catches STRICTLY LESS: a duplicate headi
 carries a fingerprint leaves the partition identity satisfied, so that case is caught by the shrink-only
 baseline arm and the sibling duplicate-definitions lint, not by this refusal. The `evidence` field of the
 same gap record had said so all along while the `why` field beside it said the opposite — both written by
-the commit titled "bring every account into agreement with the frozen code".** It catches exactly what
-a duplicate-name rule catches; the arithmetic form buys resilience to a refactor and nothing else. Both
+the commit titled "bring every account into agreement with the frozen code".**
+[SUPERSEDED — the sentence that stood here read "It catches exactly what a duplicate-name rule catches."
+Review pass 27 finding 2 caught it SURVIVING its own correction: I inserted the corrected paragraph ABOVE
+it instead of replacing it, then wrote in the commit body that all five sites now state the true scope
+without checking the fifth. The registry names that exact failure — "leaving it standing beside its own
+refutation was worse than either alone." No annotation was added for the retired wording either, so the
+claim arm never enrolled it: the arming step was me remembering, inside the guard whose thesis is
+Structure over Willpower.]
+The arithmetic form buys resilience to a refactor and nothing else. Both
 arms now fire on real INPUTS — attack A on the fingerprinted-duplicate arm, attack B on the partition
 arm (`PARTITION BROKEN: 89 article(s), but 6 + 82 = 88`) — never on source mutation.
 
@@ -2094,8 +2101,8 @@ order once is worth more than a fifth.
 
 **Still outstanding from pass 19 and honestly named:** two of three self-count corrections (the pass-1
 severity at `:388` and the over-attribution in three places) are announced-not-applied — the same shape,
-and I am recording that rather than claiming otherwise. Refusal-arm coverage is roughly 40% with nothing
-measuring it.
+and I am recording that rather than claiming otherwise. Refusal-arm coverage is **23 of 90 arms (26%)**, derived by mutation and reproducible with
+`node scripts/measure-refusal-arm-coverage.mjs` in an isolated clone. (That sentence first read "roughly 40% with nothing measuring it"; review pass 27 finding 7 showed it stale on both its terms and showed that the figure I had been quoting instead lived only in a message.)
 
 ## Increment 51 (window 11) — the tenth archive lapse, inside the commit that recorded the ninth as fixed
 
@@ -2444,6 +2451,19 @@ account behaving well."* Deleting a count rather than restating it is the handli
 
 50 behavioural tests, two new sabotages each isolating one test, full lint chain green.
 
+## OWED — the invisible-payload guard belongs at the chokepoint, not on the doors
+
+Review pass 27 finding 4 proved by probe server that the guard sat on ONE route while the explainer claimed
+it was "at the point of sending". Both routes that accept a message body from an agent now carry it, and
+the claim is corrected to what the code does.
+
+**The structurally right fix is not done and is owed here rather than implied.** `TelegramAdapter.sendToTopic`
+is the single function every send passes through; the check belongs there, so a route added later inherits
+it without anyone remembering — which is this registry's own Structure > Willpower standard applied to its
+own incident. It is not done in this window because it touches a path every internal caller uses, several
+of which swallow errors with a bare `.catch()`, so it needs its own review of failure behaviour rather than
+a same-day edit at the end of a session. Dated with the rest of the countdown work: **2026-09-07**.
+
 ## Increment 57 (window 11) — the pair caught what the streak could not
 
 **Pass 25 ACCEPTED at load-bearing 1 — the first accept in twenty-five readings. Pass 26 read the IDENTICAL
@@ -2504,3 +2524,66 @@ fourteen sweep-verdict digests across seven records went stale and demanded re-r
 honestly — the edit corrected a figure inside *Earned from*, which is narrative provenance, not the
 moments, surfaces or coverage argument a sweep evaluates, so every verdict stands — and updated the digests.
 The guard forced the re-read. It cannot force the re-thinking, and says so.
+
+## MEASURED — refusal-arm coverage, and the number that only existed in a message
+
+**23 of 90 refusal arms are covered by a behavioural test: 26%.** Re-derived by mutation against this tree,
+over BOTH refusal mechanisms (`failures.push` and early `console.error` + `process.exit(1)`), across all
+six guards. Reproducible: `node scripts/measure-refusal-arm-coverage.mjs`, in an isolated `git archive`
+clone — never against a tree a reviewer is reading.
+
+| guard | covered / arms |
+|---|---|
+| `lint-account-matches-tree.mjs` | **10 / 11** |
+| `lint-documented-only-countdown.mjs` | 5 / 17 |
+| `lint-enforcement-gap-records.mjs` | 4 / 39 |
+| `lint-deferral-referent-resolves.mjs` | 2 / 7 |
+| `lint-enforcement-fingerprint.mjs` | 2 / 12 |
+| `lint-registry-self-counts.mjs` | **0 / 4** |
+
+Two things in that table are worth naming. The newest guard is the best covered and the largest is the
+worst — coverage tracks how recently a thing was attacked, not how much it matters. And **the guard whose
+entire subject is that a count about itself must be true has zero refusal-arm coverage**, which I found by
+running this measurement rather than by anyone reporting it.
+
+**Why this is a file and not a sentence.** Review pass 27 finding 7: I derived this figure once, reported
+it in a message, and never landed it — then carried it into review prompts as though the repository
+declared it. Pass 26 cited it as a tree declaration to justify withholding seventeen surviving mutants.
+Pass 27 grepped the tree and found nothing; the only figure the repository actually stated was "roughly 40%
+with nothing measuring it", derived over 57 sites and 23 tests when there are now 90 and 54 — stale on both
+terms. **A measurement that lives only in a message is not a measurement the work has.** That is this
+registry's own untracked-is-abandoned standard, broken with the very number I was pleased about.
+
+Coverage is not correctness. A covered arm is one some test notices when it stops refusing; it is not proof
+the arm refuses the right things.
+
+## MEASURED — refusal-arm coverage, and the number that only existed in a message
+
+**23 of 90 refusal arms are covered by a behavioural test: 26%.** Re-derived by mutation against this tree,
+over BOTH refusal mechanisms (`failures.push` and early `console.error` + `process.exit(1)`), across all
+six guards. Reproducible: `node scripts/measure-refusal-arm-coverage.mjs`, in an isolated `git archive`
+clone — never against a tree a reviewer is reading.
+
+| guard | covered / arms |
+|---|---|
+| `lint-account-matches-tree.mjs` | **10 / 11** |
+| `lint-documented-only-countdown.mjs` | 5 / 17 |
+| `lint-enforcement-gap-records.mjs` | 4 / 39 |
+| `lint-deferral-referent-resolves.mjs` | 2 / 7 |
+| `lint-enforcement-fingerprint.mjs` | 2 / 12 |
+| `lint-registry-self-counts.mjs` | **0 / 4** |
+
+Two things in that table are worth naming. The newest guard is the best covered and the largest is the
+worst — coverage tracks how recently a thing was attacked, not how much it matters. And **the guard whose
+entire subject is that a count about itself must be true has zero refusal-arm coverage**, which I found by
+running this measurement rather than by anyone reporting it.
+
+**Why this is a file and not a sentence.** Review pass 27 finding 7: I derived this figure once, reported
+it in a message, and never landed it — then carried it into review prompts as though the repository
+declared it. Review pass 26 cited it as a tree declaration to justify withholding seventeen surviving
+mutants. Review pass 27 grepped the tree and found nothing. **A measurement that lives only in a message is
+not a measurement the work has** — this registry's own untracked-is-abandoned standard, broken with the
+very number I was pleased about.
+
+Coverage is not correctness. A covered arm is one some test notices when it stops refusing; it is not proof
+the arm refuses the right things.

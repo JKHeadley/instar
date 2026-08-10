@@ -15461,6 +15461,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: '"text" field required' });
       return;
     }
+    // The SECOND door. Review pass 27 finding 4 booted a probe server and fired a zero-width space at
+    // THIS route — it returned 200 and called `sendToTopic`. The guard had exactly one production call
+    // site, on the reply route, while the explainer told a reader the fix was "at the point of sending"
+    // and that an invisible message is "refused outright". Both were true of the incident and false as
+    // claims about the code. This route is MANDATED by the agent template for every ship/restart
+    // narration, so it is the one an agent is most likely to send an empty payload through.
+    if (hasNoVisibleCharacters(text)) {
+      res.status(400).json({
+        error: 'refused: "text" contains no visible characters (only whitespace and/or zero-width marks). '
+          + 'An invisible message cannot inform a reader, and delivering it would produce a "reply lost" '
+          + 'escalation for content that never existed.',
+      });
+      return;
+    }
     if (text.length > 4096) {
       res.status(400).json({ error: '"text" must be 4096 characters or fewer' });
       return;

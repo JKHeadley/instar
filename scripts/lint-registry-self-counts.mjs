@@ -140,8 +140,13 @@ for (const m of raw.matchAll(/\b([A-Z][A-Za-z ]{2,20}?)\s+holds\s+(\d+)\s+articl
 // (3) "N teeth" inside an article that enumerates **(A)**…**(E)** style teeth.
 for (const a of articles) {
   const body = a.body.join('\n');
-  const stated = body.match(/\b(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+teeth\b/i);
-  if (!stated) continue;
+// EVERY occurrence, not the first. This is founding case (2) of *One Failure Teaches Every Guard*
+// — an extractor that stopped at the first match — and review pass 27 found it live in THREE of
+// these guards, un-swept, in the machinery built to sweep a shape everywhere. Proven with a
+// positional control each time: the adversarial value in the SECOND occurrence passed, the same
+// value in the FIRST was refused.
+  const statedAll = [...body.matchAll(/\b(one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+teeth\b/gi)];
+  if (statedAll.length === 0) continue;
   // Both marker forms the registry actually uses, discovered from the text rather than assumed:
   // `**(A) …` and `**TOOTH (E) …`. The first version of this check missed the second and reported a
   // false discrepancy against an article that was correct — recorded because a guard's first run
@@ -149,8 +154,10 @@ for (const a of articles) {
   const letters = new Set([...body.matchAll(/\*\*(?:TOOTH\s+)?\(?([A-J])\)/g)].map((x) => x[1]));
   const enumerated = [...'ABCDEFGHIJ'].filter((L) => letters.has(L)).length;
   if (enumerated === 0) continue;
-  check(`"${a.name}" tooth count`, toNum(stated[1]), enumerated, raw.indexOf(stated[0], raw.indexOf(`### ${a.name}`)),
-    'Teeth are re-derived from the bold (A)…(J) markers the article itself enumerates.');
+  for (const stated of statedAll) {
+    check(`"${a.name}" tooth count`, toNum(stated[1]), enumerated, raw.indexOf(stated[0], raw.indexOf(`### ${a.name}`)),
+      'Teeth are re-derived from the bold (A)…(J) markers the article itself enumerates.');
+  }
 }
 
 // (4) DELIBERATELY NOT CHECKED: "The other N articles declare no parent".

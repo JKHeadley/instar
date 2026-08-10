@@ -212,7 +212,7 @@ function deriveFigures() {
   const whole = fs.readFileSync(abs, 'utf-8');
   const headerEnd = whole.indexOf('*/');
   const header = headerEnd === -1 ? whole : whole.slice(0, headerEnd);
-  // Retired triples are written `178/110/62%` — the exact form the header uses when it says
+  // Retired triples are written either `178/110/62%` or as a raw fraction — the header uses both, and
   // "TWO earlier figures are SUPERSEDED and neither should be quoted".
   // The third element's percent sign is OPTIONAL. Review pass 26 finding 1: requiring it meant this
   // derivation could not enrol a triple written in the notation its own authority ADOPTED — that header
@@ -222,7 +222,13 @@ function deriveFigures() {
   // a percent-free triple added to the authority left the count unmoved; the same triple with a percent
   // sign moved it. The derived-population design was adopted because a hand-transcribed population
   // shipped narrower than its class — and the parse reintroduced exactly that narrowness one layer down.
-  const triples = [...header.matchAll(/\b(\d{2,4})\/(\d{2,4})\/(\d{1,4}%?)\b/g)];
+  // ALTERNATION, not an optional percent. Review pass 27 finding 1: `(\d{1,4}%?)\b` cannot hold the `%`
+  // in ordinary prose — a word boundary after `%` needs a word character next, so the engine backtracks
+  // and drops it. My pass-26 "widening" therefore SHIFTED the population instead: the two notations the
+  // authority actually names went unwatched while two bare two-digit numerals began false-positiving.
+  // Verified in both directions with controls, before and after. The alternation captures the percent
+  // form when present and the bare form otherwise, and needs no boundary after the `%`.
+  const triples = [...header.matchAll(/\b(\d{2,4})\/(\d{2,4})\/(\d{1,4}%|\d{1,4}\b)/g)];
   const figs = [...new Set(triples.flatMap((m) => [m[1], m[2], m[3]]))];
   if (figs.length === 0) {
     failures.push(

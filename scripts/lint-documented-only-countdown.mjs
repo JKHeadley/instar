@@ -180,9 +180,22 @@ const failures = [];
 const countdowns = [];
 
 // Every article that CARRIES a countdown must have a valid, unexpired one.
+// EVERY occurrence, not the first. This is founding case (2) of *One Failure Teaches Every Guard*
+// — an extractor that stopped at the first match — and review pass 27 found it live in THREE of
+// these guards, un-swept, in the machinery built to sweep a shape everywhere. Proven with a
+// positional control each time: the adversarial value in the SECOND occurrence passed, the same
+// value in the FIRST was refused.
 for (const a of articles) {
-  const m = a.body.join('\n').match(COUNTDOWN_RE);
-  if (!m) continue;
+  const all = [...a.body.join('\n').matchAll(new RegExp(COUNTDOWN_RE.source, 'g'))];
+  if (all.length === 0) continue;
+  if (all.length > 1) {
+    failures.push(
+      `${REGISTRY_REL}:${a.lineNo} — "${a.name}" declares ${all.length} documented-only countdowns. One ` +
+      `obligation, one deadline: two definitions of a date are two things that can disagree, and the ` +
+      `second was invisible to this arm until review pass 27 walked past it.`,
+    );
+  }
+  for (const m of all) {
   const [, deadline, trackedAs] = m;
   countdowns.push({ article: a.name, deadline, trackedAs, lineNo: a.lineNo });
 
@@ -210,6 +223,7 @@ for (const a of articles) {
       `classifies it as a gap, so it has GAINED a guard. Remove the countdown — a stale countdown on an enforced article ` +
       `understates the registry's own protection, which is the mirror of the over-claim this machinery was built for.`,
     );
+  }
   }
 }
 
