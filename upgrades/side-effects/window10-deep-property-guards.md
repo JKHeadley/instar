@@ -1725,3 +1725,52 @@ is precisely the forging the file forbids — so it stays undone, but it is now 
 **Pass 14 also verified the measurement in the strongest way it has been checked**: an instrument that
 EXTRACTS the guard's regexes from its source text and evals them, making my diagnosed failure (re-typing a
 rule) textually impossible. All seven published counts reproduced exactly. That number is finally right.
+
+## Increment 44 (window 11) — the purest specimen, recorded and swept
+
+Operator directive: the pre-push line goes into the failure-shape registry, because it is the purest
+specimen of the class this week has been hunting. Recorded as `GAP-skip-announced-and-habituated` and
+swept against all six fingerprints — a real 2-of-6 partition, and the sweep found two relatives I had
+not noticed.
+
+**The shape, stated so it is not confused with its neighbour.** A guard STATES, in its own routine
+output, that it is not doing the thing it exists to do — and the statement is emitted so often, on so
+many *successful* runs, that a reader stops seeing it. **This is not alive-but-inert.** There the signal
+is absent, so nobody could have known. Here the signal is present, correct, honest, printed every single
+time, and read as part of the normal all-clear. The failure is not detectability but **attention**: the
+announcement becomes wallpaper, and its position beside a success line teaches the reader that it *is* a
+success line.
+
+**The originating specimen is my own workflow, and that is worth stating plainly.**
+`scripts/pre-push-smoke.mjs:112` prints *"affected-test listing timed out — skipping local smoke; CI is
+the authority"* on every push. It printed on every push of this branch for days. I read it roughly thirty
+times and never once treated it as a finding, while spending that same week hunting this exact class
+inside the code. The guard did not fail — it told me the truth, in plain English, every time.
+
+**The sweep paid for itself again, twice.**
+
+- ***Deferral = Deletion*** — MATCHED. Its guard's routine pass line is `clean — 217 tracked deferral
+  id(s), 16 resolve, 201 orphaned`. It announces 201 unresolved promises and **prefixes that with the
+  word CLEAN**. The concession is most of the sentence, and it lands at the tail of every successful lint
+  run — which is precisely how a reader learns to read "201 orphaned" as part of an all-clear.
+- ***Iterative Audit to Convergence*** — MATCHED, and I had read past both instances all night. The
+  commit gate ends every Tier-1 commit with *"No converged spec required for Tier 1"*, and additionally
+  prints *"duplicate-build guard not live for this build — advisory only"* — an inactive guard announced
+  in so many words, roughly fifteen times tonight.
+- The remaining four are unmatched for stated reasons: the sweep guard concedes nothing on its pass path
+  (its coverage-reducing conditions FAIL rather than print a note), and three articles declare
+  `surfaces: NONE`, so there is no routine output in which a concession could hide.
+
+**The residual is honest and uncomfortable.** Nothing detects this shape and it is not obvious that
+anything mechanically can, because *the offending text is true* — a guard that flagged every candid
+concession would flag most of the good ones. Both matched instances are recorded as findings rather than
+repaired, because the repair is a judgement about which concessions belong on a pass path at all. Two
+sharper points: the originating specimen sits OUTSIDE the fingerprinted population, so the sweep found
+relatives of a defect it could never have found itself; and the habituation cost was not theoretical —
+it is why a red branch survived fourteen adversarial reviews, thirteen of which never ran the suite.
+
+**On the re-audit sequencing:** the operator's reasoning holds and I checked it rather than accepting it.
+Every registry edit re-stales those records, this increment is another such edit, and the freeze loop is
+still producing them — so running the two family reviews now would burn a genuine review on a state about
+to change. They run immediately after two consecutive clean passes on one frozen tree, or they are named
+**undone** in the close-out and lead the next window. Not blocked. Undone.

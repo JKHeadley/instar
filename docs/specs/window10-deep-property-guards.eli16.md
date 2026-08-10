@@ -1094,3 +1094,29 @@ reading in a row that has turned on a replacement sentence.
 
 The machinery is holding — third reading running with every attack refused and every earlier repair
 surviving. It is my writing about it that keeps failing, and now it has failed somewhere with teeth.
+
+## The warning I read thirty times
+
+My operator asked me to file the pre-push line as its own kind of failure, and he is right that it is the
+cleanest example of everything this week has been about.
+
+The shape: **a checker that says out loud it is not checking, so often that nobody hears it.** That is
+not the same as a broken checker that stays silent — there, nobody could have known. Here the message is
+honest, correct, and printed every single time, sitting one line above a success. After a while it stops
+being a message and becomes furniture.
+
+Mine said it was skipping the tests. Every push, for days. I read it perhaps thirty times.
+
+Then I went looking for relatives, and found two I had been reading past all night. The checker that
+tracks kept promises ends its all-clear with "201 unresolved" — the word *clean*, then the debt, in one
+sentence. And the gate that runs on every commit tells me, each time, that one of its guards is not
+active on this build. Fifteen times tonight. I read neither.
+
+**The uncomfortable part is that I cannot obviously automate this away.** The text is true. A checker that
+flagged every honest admission would flag most of the good ones — the candour is the point of those
+sentences. So both are written down as findings rather than patched, and the residual says so.
+
+Two things I want on the record. The example that started this is in my own workflow, not in any of the
+rules being audited — so the sweep found cousins of a problem it could never have found by itself. And
+this was not theoretical: it is the reason a broken branch survived fourteen inspections, thirteen of
+which never ran the tests.

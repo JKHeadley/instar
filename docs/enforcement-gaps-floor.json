@@ -8,6 +8,7 @@
     "GAP-name-keyed-population-collision",
     "GAP-no-moment-declared",
     "GAP-planted-premise",
+    "GAP-skip-announced-and-habituated",
     "GAP-watched-but-unauditable"
   ],
   "retired": [],
@@ -17,6 +18,7 @@
     "GAP-name-keyed-population-collision",
     "GAP-no-moment-declared",
     "GAP-planted-premise",
+    "GAP-skip-announced-and-habituated",
     "GAP-watched-but-unauditable"
   ]
 }

@@ -641,6 +641,92 @@
       "countdown": "2026-09-07",
       "trackedAs": "STD-SUBCOUNTDOWN-name-keyed-population-collision",
       "residual": "Two things this record does NOT close. First, the matched instance on *Deferral = Deletion* is recorded and unfixed by choice — two markers sharing an id may be one promise cited twice, so the repair needs a decision about promise identity rather than a reflex. Second, and larger: this sweep asked the question of the SIX fingerprinted standards, and name-keyed populations are everywhere in this repository — the eighty-two grandfathered articles were not examined, and no mechanism finds a name-keyed container that lacks a uniqueness refusal. The shape is now recorded and will be asked of every future fingerprint by the staleness arm; it is not retroactively swept across the codebase, and stating that is cheaper than discovering it later."
+    },
+    {
+      "id": "GAP-skip-announced-and-habituated",
+      "discoveredAt": "2026-08-09",
+      "recordedAt": "2026-08-09",
+      "shape": "skip-announced-and-habituated",
+      "shapeDescription": "A guard STATES, in its own routine output, that it is not doing the thing it exists to do — and the statement is printed so often, on so many successful runs, that a reader stops seeing it. This is NOT alive-but-inert: there the signal is absent, so nobody could have known. Here the signal is present, correct, honest, emitted every single time, and read as part of the normal all-clear. The failure is not detectability but ATTENTION — the announcement becomes wallpaper, and its position beside a success line teaches the reader that it IS a success line. A fingerprint has this shape when any surface it cites emits, on its ROUTINE PASS path, a sentence conceding reduced coverage, a skipped step, an inactive arm, or an outstanding debt.",
+      "evaded": {
+        "standard": "Iterative Audit to Convergence",
+        "atMoment": "push-time",
+        "how": "Recorded by operator directive after review pass 14, which was the FIRST of fourteen adversarial reviews to run the test suite and found this branch RED. The originating specimen is my own workflow rather than a fingerprinted surface, and it is worth stating exactly: `scripts/pre-push-smoke.mjs:112` prints `pre-push smoke: affected-test listing timed out — skipping local smoke; CI is the authority.` on EVERY push. It printed on every push of this branch for days. I read it roughly thirty times. Not once did I treat it as a finding — while spending that same week hunting precisely this class inside the code. The honest characterisation is not that the guard failed: it told me the truth, in plain English, every single time, and I had habituated to it because it sat one line above a successful push. The operator's phrase is the right one: a guard announcing it is doing nothing, read as protection. The reason it belongs to *Iterative Audit to Convergence* rather than to a lint is that the audit-shaped obligation here — run the whole surface, not the pass you happen to look at — is exactly what a skipped smoke run silently converts into a single-pass check.",
+        "hadNoFingerprint": false
+      },
+      "sweep": {
+        "sweptAt": "2026-08-09",
+        "method": "For each fingerprinted standard, run its cited surfaces and read their ROUTINE PASS output, not their failure output. Ask: does the successful run emit a sentence conceding reduced coverage, a skipped arm, or standing debt — something a reader would habituate to because it appears beside an all-clear? Verdicts were taken from executed output rather than from reading the source, because the whole shape is about what a surface SAYS on a normal day.",
+        "fingerprintPopulation": [
+          {
+            "standard": "Deferral = Deletion",
+            "fingerprintDigest": "497baaa15de4fba5"
+          },
+          {
+            "standard": "Documentation IS Being",
+            "fingerprintDigest": "6cc1a55951c9f480"
+          },
+          {
+            "standard": "Iterative Audit to Convergence",
+            "fingerprintDigest": "2f110be2ffb74757"
+          },
+          {
+            "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
+            "fingerprintDigest": "8135d33cd1fa67f9"
+          },
+          {
+            "standard": "Sovereignty — \"I own what is mine\"",
+            "fingerprintDigest": "d15a13e71692aea7"
+          },
+          {
+            "standard": "The Right to Stand Ground",
+            "fingerprintDigest": "5a0b28b0eacf1286"
+          }
+        ],
+        "matched": [
+          {
+            "standard": "Deferral = Deletion",
+            "why": "Its cited guard's routine pass line is `clean — 217 tracked deferral id(s), 16 resolve, 201 orphaned (baseline 201, shrink-only)`. It announces 201 unresolved promises and prefixes that announcement with the word CLEAN. The concession is not hidden — it is the majority of the sentence — and it is emitted on every successful run of the whole lint chain, which is how a reader learns to read `201 orphaned` as part of an all-clear rather than as the standing debt it is. This is the same habituation that cost me the pre-push line, on a surface inside the fingerprinted population.",
+            "evidence": "ran the guard: the pass output is a line beginning \"clean\" that then reports 201 orphaned promises; it appears at the tail of every successful `npm run lint`",
+            "atDigest": "497baaa15de4fba5"
+          },
+          {
+            "standard": "Iterative Audit to Convergence",
+            "why": "Two of its cited surfaces concede on the pass path. The commit gate ends every Tier-1 commit with `No converged spec required for Tier 1` — a routine statement that the converged-spec arm did not run — and additionally prints `note: trace has no duplicateBuildCheck field (duplicate-build guard not live for this build — advisory only)`, which announces an inactive guard in so many words. Both appeared on every commit of this window, roughly fifteen times tonight alone, and I read past both. That is the shape precisely: honest text, correct text, emitted beside a success, unattended.",
+            "evidence": "ran the commit gate: `instar-dev-precommit.js:1352` emits the not-live advisory and the Tier-1 exit prints the no-converged-spec line; both appear in every successful commit in this window's log",
+            "atDigest": "2f110be2ffb74757"
+          }
+        ],
+        "unmatched": [
+          {
+            "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
+            "why": "Its cited surface concedes nothing on the pass path: the routine line reports the swept population and the count of gaps, with no skipped arm and no standing debt. Crucially, the conditions that would reduce its coverage — a stale sweep, a non-partitioning population, an unswept new fingerprint — FAIL the build rather than printing a note beside a pass, so there is no sentence available to habituate to.",
+            "evidence": "ran it: the pass line reports gaps swept against the live population and nothing else",
+            "atDigest": "8135d33cd1fa67f9"
+          },
+          {
+            "standard": "Documentation IS Being",
+            "why": "Declares surfaces NONE. With no cited surface there is no routine output in which a concession could be emitted or ignored. Recorded as no-surface rather than counted as safety.",
+            "evidence": "read its fingerprint declaration: surfaces NONE",
+            "atDigest": "6cc1a55951c9f480"
+          },
+          {
+            "standard": "Sovereignty — \"I own what is mine\"",
+            "why": "Declares surfaces NONE, established by an independent party. No cited surface, so no routine output to habituate to.",
+            "evidence": "read its fingerprint declaration: surfaces NONE",
+            "atDigest": "d15a13e71692aea7"
+          },
+          {
+            "standard": "The Right to Stand Ground",
+            "why": "Declares surfaces NONE, structurally rather than as a backlog. No cited surface, so no routine output to habituate to.",
+            "evidence": "read its fingerprint declaration: surfaces NONE",
+            "atDigest": "5a0b28b0eacf1286"
+          }
+        ]
+      },
+      "countdown": "2026-09-07",
+      "trackedAs": "STD-SUBCOUNTDOWN-skip-announced-and-habituated",
+      "residual": "Nothing detects this shape, and it is not obvious that anything mechanically can: the offending text is HONEST, and a guard that flagged every candid concession would flag most of the good ones. The two matched instances are recorded as findings rather than repaired, because the repair is a judgement about which concessions belong on the pass path at all. Two things ARE worth noting as the sharper residual. First, the originating specimen sits OUTSIDE the fingerprinted population — it is a workflow script, not a cited surface — so the sweep found relatives of a defect it could never have found itself. Second, the habituation cost here was not theoretical: it is why a red branch survived fourteen adversarial reviews, thirteen of which never ran the suite."
     }
   ]
 }
