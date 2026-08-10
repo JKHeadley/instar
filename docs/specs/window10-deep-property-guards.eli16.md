@@ -678,3 +678,40 @@ that only gets updated when someone catches you is not a record.
 
 And the unresolved-promise figure was stale in two more places. Four values now, each written into three
 or four spots, each going stale in some of them.
+
+## Two things with the same name, and a filing cabinet with one drawer per name
+
+Someone else went looking for a way past my checks and found one. I rebuilt their break myself before
+believing it, and it works.
+
+The registry is a list of rules. Six of them carry a note saying where and when they are enforced, and a
+second file records the ways rules have failed in the past, checked against each of those six. The
+machinery that keeps all this straight files everything under **the rule's title** — and nothing anywhere
+said two rules cannot share a title.
+
+So: add a brand-new rule with the same title as an existing one. Now the filing cabinet has two rules and
+one drawer. The new rule slides in behind the old one's name and no past-failure check ever looks at it.
+And the old rule loses its own drawer to the newcomer — meaning I could rewrite the old rule to say *this
+is completely unguarded* and not one thing would object. One repeated title, both harms at once.
+
+**The part I want to keep.** The check *told me how to finish the break.* It noticed something had changed
+and advised me to update its records. I followed the advice. That was the step that turned a half-caught
+break into a clean pass. A warning whose recommended fix completes the problem is worse than no warning,
+because it recruits an honest person into it.
+
+**And the number was on the screen the whole time.** The all-clear line said *seven rules checked* while the
+records underneath covered six. Seven and six, printed one above the other, run after run, compared by
+nobody. The evidence of the hole was in the output of the thing with the hole.
+
+**Where I corrected the person who found it.** They concluded this ships green. It does not — a *third*
+check, one they hadn't run, refuses repeated titles and stops the build. I verified that rather than
+assuming it, and told them.
+
+**Why I fixed it anyway.** Being saved by a check that doesn't know it is saving you is luck with a good
+reputation. That third check reads the document slightly differently from these two, so the three agree
+today by accident, and nothing notices if that stops being true. Each check now answers for its own filing
+cabinet. And the fix makes the printed number honest by construction — there is no longer a way for the
+count to be seven while the work covers six.
+
+The new refusal says *give them different titles*, and deliberately does not mention updating records —
+because that was the sentence that opened the door.

@@ -1169,3 +1169,51 @@ failed twice.*
 the registry article carried the right one. 62% → 54% → 63% → 93%: four values, each written into three or
 four places, each going stale in some of them. The count is synchronised and the four-time history is now
 on the article rather than quietly overwritten.
+
+## Increment 33 (window 11) — the duplicate-heading collision, found by the laptop lane
+
+The laptop lane ran an independent adversarial pass and got through. It appended a brand-new standard
+under a heading identical to one of the six already fingerprinted, gave it a fingerprint line, and ran
+the two fingerprint guards. Both printed clean. **I reproduced the whole thing end-to-end in a scratch
+tree before touching a line**, including the second step, which is the part that matters: the sweep
+guard *did* notice something, but only sideways — it complained the digest had changed and told me to
+re-sweep and paste the new digest. I did exactly what it asked. Both guards then reported clean, five
+gaps swept, **against a live population of seven**. Seven articles, six names, five sweeps reaching six.
+
+Then the second direction, which is worse. With the collision in place I rewrote the ORIGINAL article's
+fingerprint to say *moments: none; surfaces: none whatsoever; this article is now completely unguarded* —
+and nothing anywhere went stale. One duplicated heading buys both at once: **a new standard nothing
+sweeps, and an old standard nothing watches.**
+
+**Why all four existing arms miss it.** The staleness arm asks whether a live NAME is absent from the
+swept set — both entries share the name, so neither is new. The partition arm compares the sweep against
+its own recorded population, a set of names, so it partitions perfectly. The content-address arm is the
+one that should catch it and is exactly the one the collision defeats: a Map holds one digest per name.
+The floor arm has no opinion about articles at all.
+
+**And the tell was already on screen.** The clean line published *"the live population of 7 fingerprinted
+standard(s)"* while the sweeps between them named six. The number that exposes this was already computed,
+already displayed, and compared to nothing. The sibling guard did the same thing — *"7 fingerprinted"* over
+six distinct names, because it counts an array and reasons over a Set. That is this registry's tooth (E)
+turned on these two files: a passing condition narrower than the claim its result certifies.
+
+**The correction I owe the reviewer, which I checked rather than assumed.** The exploit does NOT ship green
+through CI. `lint-no-duplicate-definitions.mjs` refuses a repeated article heading and fails the build first;
+the laptop ran the two fingerprint guards, not the full chain. So the finding is real at the guard level and
+overstated at the build level, and I have told them so.
+
+**But the repair is not "we were already covered", because that coverage is borrowed.** That guard parses the
+registry separately and — unlike these two — unwraps blockquotes before matching, so the three populations
+agree today by coincidence, and nothing records or re-checks the coupling. A guard whose certification depends
+on a sibling it never names is precisely the shape this window keeps finding. **Both fingerprint guards now
+answer for their own population**, and after the refusal the printed count and the verified set are the same
+number *by construction* rather than by a comparison someone must remember to keep true.
+
+**The remedy line was designed as carefully as the refusal.** The existing staleness message says *re-sweep it
+and update the digest* — and pasting the digest is literally the step that completed the exploit. The new
+message names renaming as the only repair and never mentions a digest.
+
+Proven on three arms, with the exit code read directly rather than through a pipeline: the attack is refused
+by both guards **for the collision reason specifically**; the untouched registry still passes at 88 articles
+and 6 fingerprinted; and a duplicate heading carrying no fingerprint correctly does *not* fire here, because
+that is the other guard's population, not this one's.

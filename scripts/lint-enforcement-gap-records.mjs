@@ -149,10 +149,62 @@ function fingerprintedStandards() {
     console.error('[enforcement-gap-records] parsed ZERO articles — the matcher is broken; refusing to report clean.');
     process.exit(1);
   }
-  return out
+  const population = out
     .filter((a) => FINGERPRINT_RE.test(a.body.join('\n')))
     .map((a) => ({ name: a.name, digest: fingerprintDigest(a.body.join('\n')) }))
     .sort((x, y) => (x.name < y.name ? -1 : 1));
+
+  // NAME COLLISION — the hole an independent reviewer demonstrated live on 2026-08-09, and which I
+  // then reproduced end-to-end in a scratch tree before touching a line. Everything downstream keys
+  // the population on the article HEADING: `liveSet`, `liveDigest`, and every verdict in a gap
+  // record. A Map holds one entry per key, so two articles under one heading collapse into one slot
+  // and buy BOTH directions at once — a NEW standard enters the enforced population that no
+  // failure-shape has ever been swept against, and the OLDER article under that heading becomes
+  // content-UNWATCHED, because the survivor's digest occupies its slot and its own moments,
+  // surfaces and coverage argument can then be rewritten with nothing going stale.
+  //
+  // All four existing arms miss it, and it is worth naming why, because "we have four checks" was
+  // exactly the reasoning that felt like coverage: the staleness arm asks whether a live NAME is
+  // absent from the swept set, and both entries share the name, so neither is new; the partition arm
+  // compares the sweep against its own recorded population, which is a set of names, so it partitions
+  // perfectly; the content-address arm is the one that should catch it and is precisely the one the
+  // collision defeats, since it can only hold one digest per name; and the floor arm has no opinion
+  // about articles at all.
+  //
+  // Two further things this check is deliberately shaped by:
+  //
+  //   1. THE TELL WAS ALREADY ON SCREEN. The clean line printed "the live population of 7
+  //      fingerprinted standard(s)" while the sweeps between them named six. The number that exposes
+  //      this was already computed, already displayed, and compared to nothing. After this refusal
+  //      the printed count and the verified set are the same number BY CONSTRUCTION rather than by
+  //      a second comparison someone must remember to keep true.
+  //
+  //   2. IT DOES NOT BORROW ITS COVERAGE. `lint-no-duplicate-definitions.mjs` does refuse a repeated
+  //      article heading, and on the real chain it fails the build first — the exploit does NOT ship
+  //      green through CI, and I checked that rather than assuming it. But that guard parses the
+  //      registry SEPARATELY and, unlike this one, unwraps blockquotes before matching, so the two
+  //      populations agree today by coincidence and nothing records or re-checks the coupling. A
+  //      guard whose certification depends on a sibling it never names is the borrowed-coverage
+  //      shape this registry keeps finding. This check answers for its own population.
+  //
+  // The remedy line matters as much as the refusal. The sweep guard's existing staleness message
+  // says "re-sweep it and update the digest" — and pasting the new digest is literally the step that
+  // completed the exploit, so a message shaped like that one would hand the next author the exit.
+  // This one names renaming as the only repair and never mentions a digest.
+  const byName = new Map();
+  for (const e of population) byName.set(e.name, (byName.get(e.name) ?? 0) + 1);
+  const collided = [...byName.entries()].filter(([, n]) => n > 1).map(([n]) => n);
+  if (collided.length > 0) {
+    console.error(
+      `[enforcement-gap-records] ${collided.length} article heading(s) carry a fingerprint MORE THAN ONCE in ` +
+      `${REGISTRY_REL}: ${collided.map((c) => `"${c}"`).join(', ')}. This population is keyed on the heading, so ` +
+      `duplicates collapse into one slot: the later article enters the enforced population unswept, and the ` +
+      `earlier one stops being watched for content changes. Give each article a distinct heading — do NOT ` +
+      `resolve this by re-deriving a digest, which records the collapse rather than repairing it.`,
+    );
+    process.exit(1);
+  }
+  return population;
 }
 
 const gapsAbs = path.join(ROOT, GAPS_REL);

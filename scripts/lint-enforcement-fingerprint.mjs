@@ -139,6 +139,33 @@ for (const a of articles) {
 }
 
 const fingerprinted = new Set(withFingerprint);
+
+// NAME COLLISION — the sibling half of the refusal in lint-enforcement-gap-records.mjs. This lint
+// reported "89 article(s), 7 fingerprinted" over a registry holding six distinct fingerprinted
+// NAMES, because `withFingerprint` is an array and every set-membership question below is asked of
+// `fingerprinted`, which is not. So the count it publishes and the population it actually reasons
+// about were two different things, and the smaller one was the real one.
+//
+// That is this registry's own tooth (E) turned on this file: a check whose passing CONDITION is
+// narrower than the CLAIM its result is read as certifying. "7 fingerprinted" was read as seven
+// standards carrying enforcement declarations; what was verified was six. The gap between those two
+// numbers is exactly where an unswept standard lives, and it was printed on screen every run.
+//
+// Refusing here, rather than only in the sweep guard, because the exact-membership baseline
+// comparison below is also name-keyed: a duplicate cannot change `fingerprinted`, so a new
+// fingerprinted standard sharing an existing heading would pass the membership check that exists to
+// make a new fingerprint impossible to add silently.
+const dupFingerprinted = [...new Set(withFingerprint.filter((n, i) => withFingerprint.indexOf(n) !== i))];
+if (dupFingerprinted.length > 0) {
+  console.error(
+    `[enforcement-fingerprint] ${dupFingerprinted.length} article heading(s) carry an enforcement fingerprint ` +
+    `MORE THAN ONCE: ${dupFingerprinted.map((d) => `"${d}"`).join(', ')}. Every membership question here is asked ` +
+    `by heading, so a duplicate is invisible to the baseline comparison that exists to stop a fingerprint being ` +
+    `added unnoticed. Give each article a distinct heading.`,
+  );
+  process.exit(1);
+}
+
 const missing = articles.filter((a) => !fingerprinted.has(a.name)).map((a) => a.name).sort();
 
 const baseAbs = path.join(ROOT, BASELINE_REL);
