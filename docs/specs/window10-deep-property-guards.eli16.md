@@ -1400,3 +1400,27 @@ was checking almost nothing, because the practice copy it ran against did not co
 things being checked. Filling it in immediately broke three tests that had been quietly passing because
 they touched nothing. A control that passes because it never reaches the thing it guards is worse than no
 control, because it reassures you.
+
+## A rule that stopped at exactly the thing it promised not to stop at
+
+The twenty-second reading found three things that matter, and one of them is almost too neat.
+
+Last time I taught the checker to understand section headings written as words rather than numbers, and I
+wrote down why I was extending it past a certain point: a rule that stops at a round number is the same
+mistake one level up. It then stopped at every round number. "Thirty-first" worked. "Thirtieth" did not —
+because that is not "thirty" plus something, it is its own word, and I had only taught it the parts.
+
+The second: I had fixed phrases broken across an indented line, and left broken across a line starting with
+a comment mark or a quote mark. That matters more than it sounds, because the commit before had just added
+the checker's own file to the pages it watches — and every wrapped sentence in that file starts with a
+comment mark. It was watching a page written entirely in the one shape it could not read.
+
+The third is the one I would most like to have avoided. I copied a count out of a reviewer's report into
+two places, inside the same change that made the count wrong. The fix is not a better number. It is to stop
+writing the number down at all — the checker counts its own population every time it runs, so the count
+belongs in its output, where it cannot go stale.
+
+One small good thing. While removing a word from a list, I moved a technical mark to the wrong side of a
+bracket and quietly broke the only part of that list that was doing any work. The checker caught it within
+the minute, by refusing my own comment about the repair. That is the fourth time this file's own writing
+has set off its own alarm, and the first time doing so caught a real bug rather than sloppy wording.

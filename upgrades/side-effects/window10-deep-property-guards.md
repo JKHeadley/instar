@@ -2178,7 +2178,8 @@ correction quotes the payload. Wordings too short to be evidence are skipped, an
 printed so the exclusion is never silent.
 
 **The sliding window is deleted as well.** The file is normalised once with an offset→line map and matched
-whole, so a claim wrapped across any number of lines is found exactly once, at its start. That removes
+whole, so a claim wrapped across any number of lines — including a continuation beginning with an indent,
+a comment marker or a blockquote marker — is found exactly once, at its start. That removes
 pass 20's finding 4 (one violation reported twice, one copy naming a line that did not contain it) and
 finding 5 (a claim sandwiched between two annotated lines was invisible, because the escape checked
 NEIGHBOURS). The escape is now the matched span's OWN lines.
@@ -2281,6 +2282,59 @@ its own test, because a guard that arms on prose refuses everywhere; neuter the 
 its own test. 41 tests, full lint chain green.
 
 **And one correction to the archive.** Pass 20's verdict says the chain has "all 46 steps"; it has **47**,
-which pass 21 caught and I confirmed independently. Pass 21 also re-derived the "fourteen" figure across
-four commit states — 11 at every one — and recorded that pass 20's *"unverifiable rather than false"* hedge
-was wrong: *"the author is right and pass 20 is wrong."* The self-check caught that before either reviewer.
+which pass 21 caught and I confirmed independently. Pass 21 also re-derived the "fourteen" figure across four commit states — 11 at every one — and recorded
+that pass 20's hedge was wrong.
+[SUPERSEDED — review pass 22 re-derived it AGAIN and the flat verdict does not hold: the count is POPULATION-DEPENDENT. Eleven under the four-figure hand list actually configured; exactly FOURTEEN under the six-figure population the authority declares — the population pass 20 had already ruled the hand list was narrower than. So pass 20 hedge was closer to the truth than pass 21 allowed, and I propagated pass 21 flat version into this log and a commit message before it was checked. My own figure was right for the configuration I ran; my endorsement of the stronger claim was not.]
+
+## Increment 54 (window 11) — pass 22's six prescriptions, and a bug I made and caught inside a minute
+
+Pass 22: **reject, load-bearing 3**. Fourth consecutive pass to credit the magnitude clause as SATISFIED,
+and the **third consecutive pass finding no defect in the four registry guards** — this time under probe
+shapes nobody had tried (closed-ATX duplicate headings, tab indentation, both answered correctly). It
+verified ARM 3 as enforcement rather than resolution in the only way that counts: *"I removed the verdict
+and watched the build refuse rather than reading that it would."*
+
+**Finding 2 is the purest specimen of the streak's shape yet.** The tens table shipped with a written
+rationale — *"a decoder that stops at a round number is the same narrow-population defect one order up"* —
+and it stopped at every round number. "Thirtieth" is not "thirty" plus a unit word; it is its own token,
+and it resolved to nothing. Fixed with a round-ordinal table and a test.
+
+**Finding 1: the prefix class was still open, on the surface I had just added.** `.trim()` closed the
+plain-indent wrap. A continuation beginning with a comment or blockquote marker stayed invisible — and the
+previous commit had added THIS guard to the watched surfaces, whose every wrapped sentence is a block
+comment. The scan now strips a leading marker before joining, with tests for both shapes.
+
+**Finding 3: I transplanted a count from a reviewer's verdict into two artifacts, inside the commit whose
+own edits changed it.** The header said "5 of the 28" while the guard printed 4 and the tree held 33. The
+fix is not a better number — it is to stop publishing one. **A number about this guard's own population
+belongs in its output, not in its prose,** where it is derived on every run and cannot go stale.
+
+**A bug I introduced and caught inside a minute, by the guard refusing my own comment.** Removing the
+preposition from the unit exclusion, I hoisted the word-boundary outside the alternation — which silently
+killed the percent case, the one alternative that is actually load-bearing. The guard immediately refused
+its own comment about the repair. That is the fourth time this file's own prose has armed it, and the first
+time the self-reference caught a real code defect rather than a wording slip.
+
+**Finding 4: the fix for a vacuous control produced a vacuous control.** The repaired test cited a pass the
+untouched fixture already cites, so the derived set was byte-identical and the test could not fail. It now
+cites and archives the next pass after the archive maximum — chosen that way deliberately, since a distant
+number would open a contiguity hole and fail for an unrelated reason.
+
+**Finding 5: two announced capabilities had no test.** The plural and hash citation forms were shipped as
+features nothing could fail on — the precise absence the behavioural suite exists for. Both now have one,
+and both sabotage cleanly.
+
+**Finding 8 is recorded as UNTESTED rather than covered.** ARM 3's fail-closed refusal exists, but the state
+it guards is structurally unreachable here: the guard is a citing surface and its own header cites passes,
+so the citation set is never empty. My first attempt at a test stripped citations from the guard's source
+with a blunt regex and corrupted its message templates — **a test that reds for the wrong reason is worse
+than an absent one.** The arm stays as defence for a future tree; its coverage is honestly zero.
+
+**And I corrected something I had endorsed to the operator.** Pass 21 recorded the "fourteen" figure as
+reproducibly false and I passed that on. Pass 22 re-derived it and the flat verdict does not hold: the
+count is POPULATION-DEPENDENT — eleven under the hand list actually configured, exactly fourteen under the
+six-figure population the authority declares. My own figure was right for the configuration I ran; my
+endorsement of the stronger claim was not, and I had propagated it into this log and a commit message
+before it was checked.
+
+Four sabotages, each isolating exactly the test(s) it should. 46 tests, full lint chain green.

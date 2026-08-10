@@ -508,10 +508,75 @@ describe('lint-account-matches-tree — the account must match the tree', () => 
   });
 
   it('ACCEPTS a cited review pass whose verdict IS archived', () => {
-    append(SE(), '\nAs review pass 7 found, the guard was blind.\n');
+    // Review pass 22 finding 4: this cited pass 7, which the untouched fixture ALREADY cites — so the
+    // appended line changed the derived set not at all, and the test could not fail for any reason the
+    // untouched-tree control does not already catch. Cite a pass nothing else mentions, and archive it.
+    // Use the NEXT pass after the archive max: citing-and-archiving it keeps contiguity, whereas a
+    // distant number would open a hole and fail for an unrelated reason.
+    const next = Math.max(...fs.readdirSync(ARCHIVE()).map((f) => Number(/pass(\d+)-verdict/.exec(f)?.[1] ?? 0))) + 1;
+    append(SE(), `\nAs review pass ${next} found, the guard was blind.\n`);
+    write(path.join(ARCHIVE(), `pass${next}-verdict.md`), 'the verbatim verdict\n');
     const r = run('lint-account-matches-tree.mjs');
     expect(r.code, r.out).toBe(0);
   });
+
+  // Review pass 22 finding 5: the plural and hash forms were announced as capabilities and nothing here
+  // could fail when they broke — the precise absence the behavioural suite exists for.
+  it('arms on the PLURAL citation form the logs already use', () => {
+    append(SE(), '\nPasses 62 and 63 both rejected.\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('pass62-verdict.md is MISSING');
+    expect(r.out).toContain('pass63-verdict.md is MISSING');
+  });
+
+  it('arms on the HASH citation form', () => {
+    append(SE(), '\nPass #64 rejected.\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('pass64-verdict.md is MISSING');
+  });
+
+  // Review pass 22 finding 2: the tens table resolved compound ordinals but no ROUND one, while two
+  // artifacts justified it by the exact property it lacked.
+  it('arms on a ROUND ordinal, which the tens table alone cannot express', () => {
+    append(path.join(fixture, 'docs', 'specs', 'window10-deep-property-guards.eli16.md'),
+      '\n## Seventieth reading: what it found\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('pass70-verdict.md is MISSING');
+  });
+
+  // Review pass 22 finding 1: trimming closed the plain-indent wrap and left the PREFIX class open — on
+  // the very file the previous commit had just added to the watched surfaces, whose every wrapped
+  // sentence is a block comment.
+  it('finds a retired claim wrapped across a COMMENT-prefixed continuation', () => {
+    append(SE(), '\n- [SUPERSEDED — "a wholly invented retired wording"] the corrected version.\n');
+    append(path.join(fixture, 'scripts', 'lint-account-matches-tree.mjs'),
+      '\n/**\n * As established, a wholly invented\n * retired wording is how it works.\n */\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('repeats the RETIRED claim');
+  });
+
+  it('finds a retired claim wrapped across a BLOCKQUOTE continuation', () => {
+    append(SE(), '\n- [SUPERSEDED — "a wholly invented retired wording"] the corrected version.\n');
+    append(path.join(fixture, 'docs', 'specs', 'window10-deep-property-guards.eli16.md'),
+      '\n> As established, a wholly invented\n> retired wording is how it works.\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('repeats the RETIRED claim');
+  });
+
+  // Review pass 22 finding 8 — the ARM 3 fail-closed refusal exists in the guard and is DELIBERATELY
+  // UNTESTED, which is recorded here rather than papered over. The state it guards (zero citations AND an
+  // empty archive) is structurally UNREACHABLE in this repository: the guard file is itself a citing
+  // surface and its own header cites review passes, so the citation set is never empty. My first attempt
+  // at a test stripped citations from the guard source with a blunt regex, which corrupted its message
+  // templates and made it fail for an unrelated reason — a test that reds for the wrong cause is worse
+  // than an absent one. The arm stays as fail-closed defence for a future tree where the guard is not
+  // self-citing; its coverage is honestly zero today.
+
 
   // Review pass 21 finding 2: the arm parsed only "pass N", while the explainer states the obligation —
   // and titles every one of its sections — in the ordinal form. The sentence announcing the obligation

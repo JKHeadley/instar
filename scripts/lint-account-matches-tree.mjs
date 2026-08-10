@@ -25,8 +25,11 @@
  *   third retired triple there now enrolls it here automatically.
  *
  *   CLAIMS are parsed from the `[SUPERSEDED (em-dash) then the retired wording in double quotes]` annotations already present in the tree. The
- *   QUOTED annotations are the registry — and only the quoted form, which is 5 of the 28 `[SUPERSEDED`
- *   annotations in these files. Review pass 21 finding 8 caught the original sentence claiming all of them.
+ *   QUOTED annotations are the registry — and only the quoted form. The exact share is DERIVED and
+ *   printed on every clean run rather than written here: review pass 21 finding 8 caught the sentence
+ *   claiming all annotations, and review pass 22 finding 3 caught its replacement publishing a count
+ *   copied from that reviewer's verdict, which the guard's own output contradicted four lines later.
+ *   A number about this guard's own population belongs in its output, not in its prose.
  *   Correcting a claim once — which requires annotating the place that
  *   quotes it — immunises every tracked surface against that claim thereafter. A population discovered
  *   from the material, not a list someone must remember to extend.
@@ -35,7 +38,8 @@
  * Two changes from the version pass 20 falsified, both deletions of a mechanism rather than additions:
  *
  *   The two-line sliding window is GONE. The file is normalised once with an offset→line map and matched
- *   whole, so a claim wrapped across any number of lines is found exactly once at the line where it
+ *   whole, so a claim wrapped across any number of lines — including a continuation beginning with an
+ *   indent, a comment marker or a blockquote marker — is found exactly once at the line where it
  *   starts. That removes pass 20's finding 4 (a violation on one line reported twice, one copy naming a
  *   line that did not contain it) and finding 5 (a claim sandwiched between two annotated lines was
  *   invisible, because the escape checked NEIGHBOURS). The escape is now the matched span's OWN lines.
@@ -131,19 +135,42 @@ const ANNOTATION_SOURCES = [...CLAIM_SURFACES, ...COUNTDOWN_GUARDS, 'scripts/lin
  */
 const CITATION_NUMERIC_RE = /\b(?:review\s+)?pass\s*#?\s*(\d{1,3})\b/gi;
 /** A following unit disqualifies it: "the tests pass 100% of the time" is English, not a citation. */
-const CITATION_UNIT_RE = /^\s*(?:%|percent|minutes?|seconds?|hours?|days?|checks?|tests?|files?|lines?|times|of\b)/i;
+// Review pass 22 finding 7: this carried an `of` alternative, which is a PREPOSITION, not a unit — so a
+// citation followed by "of this series" armed nothing. Only the percent sign is load-bearing for the
+// current tree; the rest are kept because they are genuine units, and the preposition is removed.
+// The word-boundary applies to the WORD alternatives only. Hoisting it outside the group silently
+// killed the percent case — '%' is not a word character, so there is no boundary between it and the
+// following space, and the one alternative that is actually load-bearing for this tree stopped matching.
+// Caught by the guard refusing its own comment about the previous repair, one minute after making it.
+const CITATION_UNIT_RE = /^\s*(?:%|(?:percent|minutes?|seconds?|hours?|days?|checks?|tests?|files?|lines?|times)\b)/i;
 const ORDINAL_WORDS = [
   'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth',
   'eleventh', 'twelfth', 'thirteenth', 'fourteenth', 'fifteenth', 'sixteenth', 'seventeenth',
   'eighteenth', 'nineteenth', 'twentieth',
 ];
 const ORDINAL_TENS = { twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
+/**
+ * The ROUND ordinals, which the tens table alone cannot express: "thirtieth" is not "thirty" + a unit
+ * word, it is its own token. Review pass 22 finding 2 — the previous version resolved compound ordinals
+ * but no ROUND one, while two committed artifacts justified the tens table by saying "a decoder that stops
+ * at a round number is the same narrow-population defect one order up". It stopped at every round number,
+ * so the natural section heading for the next round reading would have armed nothing. (No example numeral
+ * or ordinal appears in this comment: this file is a citing surface, so an example would arm the arm
+ * against prose ABOUT the arm — the fourth time that has happened here.)
+ */
+const ORDINAL_ROUND = {
+  thirtieth: 30, fortieth: 40, fiftieth: 50, sixtieth: 60,
+  seventieth: 70, eightieth: 80, ninetieth: 90, hundredth: 100,
+};
 const ORDINAL_TENS_RE = Object.keys(ORDINAL_TENS).join('|');
+// Round forms are alternatives in their own right, listed FIRST so the longest match wins.
 const ORDINAL_READING_RE = new RegExp(
-  `\\b((?:${ORDINAL_TENS_RE})[- ])?(${ORDINAL_WORDS.join('|')})\\s+(?:reading|pass|review)\\b`, 'gi',
+  `\\b(?:(${Object.keys(ORDINAL_ROUND).join('|')})|((?:${ORDINAL_TENS_RE})[- ])?(${ORDINAL_WORDS.join('|')}))\\s+(?:reading|pass|review)\\b`,
+  'gi',
 );
 function ordinalToNumber(raw) {
   const s = String(raw).toLowerCase().trim();
+  if (Object.prototype.hasOwnProperty.call(ORDINAL_ROUND, s)) return ORDINAL_ROUND[s];
   const tensKey = Object.keys(ORDINAL_TENS).find((k) => s.startsWith(k));
   const tens = tensKey ? ORDINAL_TENS[tensKey] : 0;
   const unit = tensKey ? s.slice(tensKey.length).replace(/^[- ]/, '') : s;
@@ -157,6 +184,7 @@ const ARCHIVE_DIR = 'docs/specs/reports/window10-external-passes';
 /** Surfaces whose prose cites review passes — sources, so the behavioural test is excluded (see above). */
 const CITING_SURFACES = [...CLAIM_SURFACES].filter((rel) => !SOURCE_EXCLUDED.has(rel));
 
+let CITED_COUNT = 0;
 const failures = [];
 
 // ── Derive the FIGURE population from the authority the arm cites ─────────────────────────────────
@@ -242,7 +270,11 @@ function scan(abs, needles) {
     // continuation — the dominant wrap shape in these documents, and in this very comment — is invisible.
     // Review pass 21 finding 1: the version this rewrite replaced collapsed that indentation and caught
     // the case, so the rewrite was a capability REGRESSION announced as a strengthening.
-    const collapsed = `${line.trim().replace(/\s+/g, ' ')} `;
+    // Strip a leading comment or blockquote marker as well as indentation. Review pass 22 finding 1:
+    // `.trim()` alone closed the plain-indent wrap but not a continuation beginning `*`, `//` or `>` —
+    // and the previous commit had just added THIS file, whose every wrapped sentence is a block comment,
+    // to the watched surfaces. The arm covered that surface only for claims that never wrap.
+    const collapsed = `${line.trim().replace(/^(?:\/\/+|\*+|>+|#+)\s?/, '').replace(/\s+/g, ' ')} `;
     for (let k = 0; k < collapsed.length; k += 1) lineOf.push(i);
     hay += collapsed;
   });
@@ -309,7 +341,8 @@ function scan(abs, needles) {
       // TENS fragment alone, so a compound ordinal enrolled its round tens instead of the real number.
       // Note this comment names no example number: this file is itself a citing surface, so an example
       // written as a numeral would arm the arm against prose ABOUT the arm.
-      const n = ordinalToNumber(`${m[1] ?? ''}${m[2]}`);
+      // Group 1 is a round ordinal on its own; groups 2+3 are (tens?)(unit).
+      const n = m[1] ? ordinalToNumber(m[1]) : ordinalToNumber(`${m[2] ?? ''}${m[3]}`);
       if (n) cited.add(n);
     }
     // The PLURAL form, used five times across the tracked surfaces ("Passes 12 and 13 run against...").
@@ -322,6 +355,18 @@ function scan(abs, needles) {
     (fs.existsSync(dir) ? fs.readdirSync(dir) : [])
       .map((f) => /^pass(\d{1,3})-verdict\.md$/.exec(f)).filter(Boolean).map((m) => Number(m[1])),
   );
+  if (cited.size === 0 && present.size === 0) {
+    // Review pass 22 finding 8: both sibling arms refuse over an empty derived population and this one
+    // printed clean. "One failure teaches every guard" was not swept here in the commit that applied it
+    // to the claim arm. An archive with no verdicts AND a tree that cites none is not a healthy state —
+    // it is a parse that has stopped finding anything.
+    failures.push(
+      `ARM 3 derived NO citations from ${CITING_SURFACES.length} surface(s) AND found no archived verdict. ` +
+      `This arm is watching NOTHING while reporting clean, which is the alive-but-inert shape its two ` +
+      `sibling arms already refuse. Either the citation parse broke or the archive is gone.`,
+    );
+  }
+  CITED_COUNT = cited.size;
   const missing = [...cited].filter((n) => n >= 1 && !present.has(n)).sort((a, b) => a - b);
   for (const n of missing) {
     failures.push(
@@ -416,6 +461,7 @@ for (const rel of READER_FACING) {
 
 const report = {
   countdownGuards: COUNTDOWN_GUARDS.length,
+  citedPasses: CITED_COUNT,
   archivedVerdicts: (fs.existsSync(path.join(ROOT, ARCHIVE_DIR)) ? fs.readdirSync(path.join(ROOT, ARCHIVE_DIR)) : []).filter((f) => /^pass\d+-verdict\.md$/.test(f)).length,
   figuresDerived: figures.length,
   claimsDerived: wordings.length,
@@ -435,8 +481,8 @@ if (JSON_OUT) {
     `figure(s) derived from ${FIGURE_AUTHORITY} absent from ${report.readerFacingSurfaces} reader-facing ` +
     `surface(s); ${report.claimsDerived} retired claim(s) derived from the tree's own annotations ` +
     `(${report.matchersDerived} matcher(s), ${report.matchersSkippedTooShort} skipped as too generic) ` +
-    `absent from ${report.claimSurfaces} tracked surface(s); ${report.archivedVerdicts} cited review ` +
-    `verdict(s) present and contiguous.`,
+    `absent from ${report.claimSurfaces} tracked surface(s); ${report.citedPasses} cited review pass(es), ` +
+    `${report.archivedVerdicts} verdict(s) archived, contiguous.`,
   );
 } else {
   console.error('\n❌ lint-account-matches-tree failed:');
