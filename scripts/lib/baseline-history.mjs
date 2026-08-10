@@ -228,14 +228,25 @@ export function checkShrinkOnlyAgainstHistory({ relPath, cwd, field, current, la
   const added = current.filter((id) => !baseIds.has(id));
   if (added.length === 0) return failures;
 
+  // EXACT admission (review pass 8): the old rule accepted MULTIPLE new rows, an arbitrary
+  // integer `from`, and optional evidence — so a growth could be waved through by any row that
+  // happened to carry the right `to`. One growth, one row, and its `from` must be the count it
+  // actually grew FROM.
   const fresh = headRows.slice(baseRows.length);
-  const covering = fresh.find((r) => canonicalDate(r?.at) && r?.to === current.length && Number.isInteger(r?.from));
+  const baseCount = baseIds.size;
+  if (fresh.length > 1) {
+    failures.push(
+      `${relPath} — ${fresh.length} new rebaselines rows since the pinned base. One growth is one row: ` +
+      `several rows let an unexplained addition ride along behind an explained one.`,
+    );
+  }
+  const covering = fresh.find((r) => canonicalDate(r?.at) && r?.to === current.length && r?.from === baseCount);
   if (!covering) {
     failures.push(
       `${label}: ${added.length} entr(ies) were ADDED to "${field}" since the pinned base — ` +
       `${added.slice(0, 4).join(', ')}${added.length > 4 ? ', …' : ''} — with no new rebaselines row whose \`to\` ` +
-      `equals the resulting count (${current.length}). This list is shrink-only against the ACCEPTED BASE, not ` +
-      `against itself.`,
+      `equals the resulting count (${current.length}) AND whose \`from\` equals the base count (${baseIds.size}). ` +
+      `This list is shrink-only against the ACCEPTED BASE, not against itself.`,
     );
   }
   return failures;

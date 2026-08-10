@@ -1074,3 +1074,33 @@ increment bundled the doc appends, the trace update and the commit into a single
 refused *before it ran*, so none of it happened. I only noticed because the commit produced no new hash and
 I checked the file rather than assuming the append had landed. Bundling durable writes behind a gate that
 can refuse the whole batch is the same all-or-nothing shape as putting the report before the push.
+
+## Increment 30 (window 11) — pass 8's two schema findings, verified before fixed
+
+Both findings were **confirmed by injection before touching anything**, rather than accepted from the
+report. That order matters here: a finding I cannot reproduce is a finding I should not act on.
+
+**Finding 3 — "malformed record" was truthiness, not typing.** Injected `shape: true`,
+`shapeDescription: ['x']`, `evaded.how: 42` — all passed clean. So the article's *malformed gap refusal*
+claim was wider than the condition, which is the tooth-(D) defect stated on the article one screen above.
+The three legs are now type-checked as prose with minimum lengths. Empty-string `evidence` on a matched
+verdict also passed; a match now needs ≥10 characters of evidence **or** action, so `''` no longer counts
+as having named what was run.
+
+**Finding 2 — rebaseline admission was not exact.** The old rule accepted *multiple* new rows, an
+arbitrary integer `from`, and optional evidence — so a growth could be waved through by any row that
+happened to carry the right `to`, with an unexplained addition riding along behind an explained one. Now:
+**one growth is one row**, its `to` must equal the resulting count, and its `from` must equal the count it
+actually grew *from*.
+
+**Three arms, all proven:**
+
+| Arm | Injection | Result |
+|---|---|---|
+| A | `shape: true`, `shapeDescription: ['x']`, `evaded.how: 42` | 2 failures, each naming the missing leg |
+| B | `evidence: '  '` on a matched verdict | fails — "no EVIDENCE and no ACTION" |
+| C | two new rebaseline rows against a pinned base | fails — "One growth is one row" |
+
+Arm C is the one worth noting: it required binding a real pinned base to exercise at all, which is the
+machinery pass 6 forced and pass 8 graded partial. The arm cannot fire in an unbound local run, and that
+is stated rather than glossed.

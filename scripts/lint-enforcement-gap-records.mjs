@@ -263,7 +263,12 @@ for (const gap of gaps) {
   const id = gap?.id ?? '<no id>';
 
   // Leg 1 — the shape, stated as a NATURE that can be matched elsewhere.
-  if (!gap?.shape || !gap?.shapeDescription) {
+  // TYPE-checked, not truthiness-checked (review pass 8): `shape: true`,
+  // `shapeDescription: ['x']` and `evaded.how: 42` all passed the old guard, so the article's
+  // "malformed gap" refusal claim was wider than the condition. Confirmed by injection before
+  // fixing rather than taken from the finding.
+  const prose = (v, min) => typeof v === 'string' && v.trim().length >= min;
+  if (!prose(gap?.shape, 3) || !prose(gap?.shapeDescription, 40)) {
     failures.push(`${id} — a gap must record its SHAPE and a shapeDescription stating the NATURE of how a violation got through, not merely that one did. Without the nature there is nothing to match against other fingerprints, and the record cannot propagate.`);
   }
   // Leg 2 — which fingerprint it evaded, and HOW.
@@ -280,7 +285,7 @@ for (const gap of gaps) {
       `there instead.`,
     );
   }
-  if (!gap?.evaded?.standard || !gap?.evaded?.how) {
+  if (!prose(gap?.evaded?.standard, 3) || !prose(gap?.evaded?.how, 40)) {
     failures.push(`${id} — a gap must name the FINGERPRINT it evaded (evaded.standard) and HOW it got past it (evaded.how). "It failed" is an outcome; this loop runs on the mechanism.`);
   }
 
@@ -391,7 +396,9 @@ for (const gap of gaps) {
     }
   }
   for (const m of Array.isArray(sweep.matched) ? sweep.matched : []) {
-    if (typeof m === 'object' && m && typeof m.evidence !== 'string' && typeof m.action !== 'string') {
+    const hasEv = typeof m?.evidence === 'string' && m.evidence.trim().length >= 10;
+    const hasAct = typeof m?.action === 'string' && m.action.trim().length >= 10;
+    if (typeof m === 'object' && m && !hasEv && !hasAct) {
       failures.push(
         `${id} — matched standard "${m.standard ?? '?'}" carries a reason but no EVIDENCE and no ACTION. ` +
         `A match is an ACCUSATION about another standard, and a reason is cheap: on 2026-08-08 a match here was recorded ` +

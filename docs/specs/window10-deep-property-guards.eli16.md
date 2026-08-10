@@ -609,3 +609,23 @@ will be wrong in three of them.
 
 First time anything has been graded closed, and the first time my summary of the history matched the
 archive with no discrepancy at all.
+
+## "Is there something here?" versus "is it the right kind of thing?"
+
+Two more findings from the eighth reading, and I reproduced both before changing a line — a finding I
+cannot reproduce is one I should not act on.
+
+**The first: my check for a well-formed record only asked whether fields were filled in, not whether they
+were sentences.** I put the value `true` where a description belongs, a list where an explanation belongs,
+and the number 42 where a reason belongs. All three sailed through. So the rule's claim to refuse
+malformed records was broader than what the check actually did — the exact defect the rule one screen
+above warns about. Those fields now have to be real prose of a real length. And an "evidence" field
+containing two spaces no longer counts as having named what you actually ran.
+
+**The second: the rule for growing a debt list was loose enough to hide things.** It allowed several new
+explanation rows at once, and only required that *one* of them mention the right final number. So an
+unexplained increase could ride along behind an explained one. Now one increase means exactly one row, and
+that row has to state both where the count started and where it ended — correctly.
+
+Three traps set and sprung. The third only works when the build supplies the official older copy of the
+file, which means it cannot fire on a laptop — said plainly rather than left for someone to discover.
