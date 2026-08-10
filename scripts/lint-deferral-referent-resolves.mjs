@@ -14,7 +14,10 @@
  * repository. A build has no way to resolve `ACT-1153`.
  *
  * Measured 2026-08-09 across `docs/specs/`: **217 distinct tracked deferral marker ids,
- * of which 201 (93%) resolve to nothing a reader can EXECUTE.**
+ * of which 201 OF 217 resolve to nothing a reader can EXECUTE.** (The percentage is gone on purpose:
+ * this measurement has been restated in four places and gone stale in some of them five times, most
+ * recently by being rounded two different ways two sentences apart. A raw fraction can go stale, but
+ * it cannot disagree with itself.)
  * (TWO earlier figures are SUPERSEDED and neither should be quoted: 178/110/62% measured
  * a narrow prose-id population; 194/104/54% measured the marker but through a character
  * class a SPACE terminates AND counted ordinary English words as identifiers. Each was

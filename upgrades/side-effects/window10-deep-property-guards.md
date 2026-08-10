@@ -1317,3 +1317,56 @@ refused, a genuine `src/*.ts` referent still resolves.
 **FINDING 9** — `withoutComments()` carried `.conf` and extensionless branches that `HANDLED_EXT` excludes
 from the corpus, so they could never run: unreachable code describing coverage that does not exist.
 Removed rather than left to read as protection.
+
+## Increment 36 (window 11) — the route test that could actually fail, and the two carried findings dated
+
+**FINDING 3 — a regression test for a route that never touched the route.** Pass 9 made the predicate
+test import the shared definition, and that repair was real: neutering `hasNoVisibleCharacters` turns
+that file red. Pass 10 then showed it was still not what its header claimed. **Deleting the entire
+guard block from `src/server/routes.ts` left all four tests green.** Sharing the predicate proves the
+two expressions agree; it says nothing about whether the route still calls it. The same defect one
+level along — the repair closed the demonstrated instance (a duplicated predicate) and then certified
+the class (that the route was regression-tested).
+
+**Copied, not invented.** The reviewer pointed at `tests/unit/localhost-link-guard-route.test.ts`: a
+~60-line `createRoutes(ctx)` + express harness already testing a deterministic guard on THIS EXACT
+route. `telegram-reply-invisible-payload-route.test.ts` is that file with the payloads changed. Two
+inherited details are load-bearing and would have cost an hour to rediscover: the stateDir must be a
+fresh `mkdtemp`, because a literal `/tmp` shares `outbound-dedup.db` across runs and a prior run's
+record silently suppresses this run's sends — which surfaces as a 200 with zero calls and reads
+exactly like a pass; and NO tone gate is configured, so the refusal must hold independently of the LLM
+authority rather than borrowing its verdict.
+
+**The negative control is the whole point, and it is unambiguous.** With the route's guard deleted:
+the new route file goes **red (3 of 6 failing)** and the predicate file stays **green (4 passed)** —
+precisely the split pass 10 described. Restored: 6 pass. The predicate file's header no longer calls
+itself a route regression test; the claim was one level wider than the evidence, and the fix is to the
+claim, not to the file, because the two files answer different questions.
+
+**FINDING 5 — the ratchets had never run in CI. Not once.** All three window-10 ratchets are later
+steps of the same job as `standards-coverage.mjs --check`, and that step is red, so the job aborted
+before reaching them every time. **A fingerprint declaring `moments: ci-time` over a surface that does
+not execute is the alive-but-inert shape at the workflow level** — present, configured, doing nothing,
+and reported as wired everywhere. Both steps are now `if: always()`, an idiom copied from the artifact
+uploads three steps above rather than invented. A failing step still fails the job regardless of the
+condition that started it, so this strengthens the gate: it removes only their dependence on an
+unrelated step's verdict.
+
+**FINDINGS 7 AND 8 — the same number in two places, disagreeing.** A gap record's prose said "the 86
+grandfathered articles" while the count field beside it said 82 — *the record documenting a
+stale-count correction had gone stale in the field next to the correction*. And the registry stated
+201-of-217 as **both 92% and 93% in one paragraph** (it is 92.6%, so I rounded one number two ways two
+sentences apart). Fixed by **removing the percentage from all four places rather than reconciling it**:
+a raw fraction can go stale, but it cannot disagree with itself, and a rounded restatement of a number
+held elsewhere is a second copy by another name. **This is the fifth instance of this class and the
+class is NOT claimed closed** — saying otherwise would be the exact move pass 10 just named.
+
+**FINDINGS 4 AND 6 — converted to dated named work, which the acceptance criterion requires and I had
+not done.** Pass 10 was right that "known-open and mentioned in a prompt" is not a conversion. The
+stale *Building* and *The Substrate* area audits are now a dated residual on *Iterative Audit to
+Convergence*, with the reason they cannot simply be re-stamped: an area audit is only honest once a
+genuinely ACCEPTING review exists, and ten passes have rejected, so stamping them now would be the
+machine-unearned convergence claim that article's own guard refuses. The establishing-path baselines
+are a dated residual on tooth (E), as a fourth case of alive-but-inert, with the honest note that it
+**cannot be closed from inside the change that introduces it** — the baselines bind from the first
+merge onward, and until then the ratchets are prospective rather than active.

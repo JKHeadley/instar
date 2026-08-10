@@ -803,3 +803,48 @@ came out identical: the hole closes and costs nothing.
 
 Last, a small one that is the same idea in miniature: part of that function handled file types the
 program never gives it. Code that cannot run, sitting there reading like protection. Deleted.
+
+## A test named after a thing it never touched
+
+Last reading told me my test had its own private copy of the rule it was checking, so removing the real
+rule would not have made the test complain. I fixed that: the test and the live code now share one
+definition, and breaking the definition does turn the test red.
+
+This reading pointed out that I still had not tested the thing the file is named after. **Deleting the
+check from the actual message-sending path left every test green.** Sharing a definition proves two
+pieces of writing agree. It does not prove the message path still bothers to consult it.
+
+Same mistake as before, one step along: I fixed the exact thing I was shown, then described the whole
+job as done.
+
+**This time I copied instead of inventing.** There was already a file in this project doing precisely
+what I needed — starting a small real server, posting a real message to the real address, checking what
+comes back — for a different rule on the *same* address. I took it and changed the messages. Two details
+in it would have cost me an hour to rediscover, and one of them is nasty: if the test reuses a shared
+scratch folder, the system remembers it already sent these exact words and quietly skips sending them
+again, which looks identical to the test passing.
+
+**The proof is the part I care about.** With the real check deleted: the new test fails, and the old
+test still passes. Put it back: everything passes. That is the difference between a test and a
+decoration, and it is now demonstrated rather than asserted.
+
+**Then something worse, which the reviewer found and I had not suspected.** The three new safety checks
+I built this week **have never run in the automated build. Not once.** They sit after another check that
+is currently failing, and when that one fails the whole sequence stops before reaching them. So the
+guards existed, were configured, were referred to everywhere as active — and had never executed. They
+now run regardless of what happens before them, using a pattern already in that file a few lines above.
+
+**And a number that disagreed with itself.** The same measurement appeared as both 92% and 93% two
+sentences apart in one paragraph — it is 92.6%, and I had rounded it two ways. Elsewhere, a note I wrote
+explaining that a count had been corrected from 86 to 82 *still said 86 in the sentence beside the
+correction*. I removed the percentages entirely and left the plain fraction: a plain fraction can go out
+of date, but it cannot contradict itself. **That is the fifth time this class of error has appeared, and
+I am not claiming it is solved** — claiming that is the exact mistake being described above.
+
+**Last, the two problems I cannot fix right now, written down with dates instead of mentioned in
+passing.** Two sections of the rulebook need re-auditing, and I genuinely should not do it: an audit is
+only honest after a review that actually accepts, and ten reviews have rejected. Stamping them now would
+be the very thing the rule forbids. And the new safety measures compare against a record that does not
+exist yet — it starts existing when this work is accepted — so today they are honest promises rather
+than active protection. Both now carry a date and a name, because the reviewer was right that "we know
+about it" is not the same as tracking it.

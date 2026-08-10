@@ -1,7 +1,19 @@
 import { describe, it, expect } from 'vitest';
 
 /**
- * Regression test for the invisible-payload refusal on POST /telegram/reply/:topicId.
+ * PREDICATE tests for the invisible-payload refusal. NOT a route regression test — see below.
+ *
+ * The header of this file used to call itself "Regression test for the invisible-payload refusal on
+ * POST /telegram/reply/:topicId". Review pass 10 falsified that by execution: deleting the entire
+ * guard block from `src/server/routes.ts` left every test here green. Sharing the predicate (pass 9's
+ * fix) proves the two expressions agree; it says nothing about whether the route still calls it. The
+ * route-level proof lives in `telegram-reply-invisible-payload-route.test.ts`, and its negative
+ * control is the one that matters: with the route's guard deleted, that file goes red and this one
+ * stays green.
+ *
+ * Kept, because the two files answer different questions and the class coverage below is genuinely
+ * easier to assert here than through HTTP. What changed is the CLAIM, which was one level wider than
+ * the evidence.
  *
  * Earned from a live incident (2026-08-09): a peer agent's relay accepted a send whose entire
  * body was one ZERO-WIDTH SPACE, failed with a 500 carrying an EMPTY error body, burned nine

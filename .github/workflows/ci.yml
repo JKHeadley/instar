@@ -102,8 +102,20 @@ jobs:
       # branch name is not the accepted change boundary and on a main checkout can denote the commit
       # under test. The proven pattern is a PINNED base SHA from the event, the base copy extracted to
       # RUNNER_TEMP, and the checker handed a file path plus an explicit required flag.
+      # `if: always()` — added after review pass 10, which found these three ratchets had NEVER RUN
+      # in CI on this branch. They are later steps of the same job as `standards-coverage.mjs --check`,
+      # and that step is currently red (stale Building / Substrate area audits), so the job aborted
+      # before reaching them every time. A fingerprint declaring `moments: ci-time` over a surface
+      # that does not execute is the alive-but-inert shape at the workflow level — the guard was
+      # present, configured, and doing nothing, and every surface reported it as wired.
+      #
+      # The idiom is copied, not invented: `if: always()` is already the pattern used by the artifact
+      # upload steps in this same file. A step that FAILS still fails the job regardless of the
+      # condition that started it, so making these unconditional strengthens the gate rather than
+      # weakening it — it removes only their dependence on an unrelated step's verdict.
       - name: Resolve protected-base window-10 baselines
         id: w10-baselines
+        if: always()
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}
         run: |
@@ -121,6 +133,7 @@ jobs:
           bind docs/deferral-referent-baseline.json deferral-base.json deferral
           bind docs/enforcement-gaps-floor.json gapfloor-base.json gapfloor
       - name: Window-10 ratchets against the protected base
+        if: always()
         env:
           ENFORCEMENT_FINGERPRINT_BASE_FILE: ${{ runner.temp }}/fingerprint-base.json
           ENFORCEMENT_FINGERPRINT_BASE_REQUIRED: ${{ steps.w10-baselines.outputs.fingerprint }}
