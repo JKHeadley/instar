@@ -2611,3 +2611,24 @@ form the authority says it will adopt next — the gap pass 26 named by that exa
 different shape and labelled as it. Dated **2026-09-07** with the rest.
 
 59 tests, full lint chain green.
+
+## Recorded — the gate caught me declaring under the risk floor, one commit after a reviewer found four of that class
+
+The precommit gate answered increment 59 with **BELOW RISK FLOOR**: the change edits
+`TelegramAdapter.sendToTopic` — the chokepoint every Telegram send passes through — while the trace
+declared Tier 1, and its `tierReasoning` field described **an entirely different change** (a dev-chokepoint
+lint and its baseline, from an earlier increment).
+
+That is the stale-artifact class this branch exists to close, produced by me in a decision record, in the
+commit immediately after a reviewer found four instances of it. Raised to Tier 2 on the risk signal the
+gate named, with the reasoning rewritten to describe the actual change, its blast radius (a caller sending
+a whitespace/zero-width-only body now gets a throw; a bare `.catch()` drops it, which is the correct
+outcome for the incident the guard exists for) and its rollback.
+
+**Two honest limits.** The trace file is gitignored — it is a local gate artifact, so this correction lands
+where the gate reads it but does not ship; this paragraph is the durable record. And the decision entry the
+gate wrote carries `belowFloor: true` for that commit and is **left as written** — it is a historical record
+of what I declared at the time, and rewriting it would be the opposite of the point.
+
+**The gate did not block it. I hold that authority.** It recorded it, and recording it is what let me find
+it — which is the whole argument for detective controls over blocking ones.
