@@ -1959,7 +1959,7 @@ guard exports nothing) rather than leaving the weaker option unexplained.
 **Three corrections announced here and applied nowhere here.** Pass 17's numbers: `54 insertions, 0
 deletions` on this file — the announcements of three fixes appended eighty-four lines below the text they
 did not fix. All three are now marked inline with the `[SUPERSEDED — …]` convention **this log already
-used four times**, which is the point: the convention existed and I appended instead of using it. The
+used **[SUPERSEDED — twice, not four times; two of the four were prose cells describing a fix rather than uses of the marker. A count-about-itself, wrong, in the increment about counts-about-itself being wrong. Review pass 18.]** four times**, which is the point: the convention existed and I appended instead of using it. The
 third also carried a wrong ordinal (43, where the node-only ordinal is 44) that had never been recorded
 as wrong — corrected on the record rather than silently.
 
@@ -1967,3 +1967,62 @@ as wrong — corrected on the record rather than silently.
 repairs were already in the tree.** So every claim I made about pass 16 was unauditable at the moment I
 made it. It recurred *immediately after* the commit that restored this convention for pass 15, and that
 is the part worth keeping: **restoring a discipline once is not the same as holding it.**
+
+## Increment 49 (window 11) — pass 18: the lowest reading of the series, and the sweep that never happened
+
+Pass 18 is the eighteenth reject, **load-bearing 2 — the lowest of eighteen** — and in its own words *"the
+strongest pass of the eighteen"*. Every refusal arm it probed works. The behavioural suite survived eight
+independent sabotages, each isolating exactly the named test. Magnitude is genuinely declining.
+
+**AND ITS HEADLINE IS THAT MY SWEEP NEVER HAPPENED.** Increment 47 exported one shared horizon and wired
+it into the sibling guard — and left `lint-enforcement-gap-records.mjs` carrying its own
+`const HORIZON_DAYS = 180`, importing nothing. **Six statements asserted the opposite**, including the
+sentence written to repair a *previous* falsified sentence about the same subject. Proven the way pass 18
+proved it and I reproduced: set the shared constant to 5, and only the sibling moves.
+
+So this is the third consecutive appearance of one shape — **fix the instance, skip the pattern** — inside
+the commit whose entire subject was sweeping a pattern. The live hole pass 17 found was genuinely closed;
+what I shipped alongside it was a duplicate bound and six claims that there wasn't one.
+
+**Swept for real now, and proven by the experiment that exposed its absence**: with the shared constant at
+180 the gap guard accepts a 2026-09-07 countdown; at 5 it refuses with *"beyond the 5-day horizon"*. Both
+guards track one definition.
+
+**AND THE SUITE COULD NOT SEE IT — which is the more useful finding.** Both horizon tests asserted
+`/beyond the \d+-day horizon/`, which matches **any** value, so the two guards could drift apart with the
+suite green. That is what had happened. Pass 18 also found two **article-level** arms uncovered: the
+existing test rewrites every date, so the sub-obligation arm alone satisfied the assertion and disabling
+the article arm left 20/20 green.
+
+Three tests added, 23 total, and all three sabotage-proven:
+
+| sabotage | test that reds |
+|---|---|
+| disable the article-level horizon arm | *refuses an ARTICLE countdown beyond the horizon* |
+| disable the article-level expiry arm | *refuses an ARTICLE countdown that has expired* |
+| **re-introduce pass 18's drift** (gap guard keeps a private 200) | *both countdown guards report the SAME horizon* |
+
+The third is the one that matters: **the suite would now catch the exact defect pass 18 found.** The
+horizon assertions now name the constant instead of matching any digits.
+
+**AND THE FINDING THAT WORRIES ME MOST — a defect recorded as CLOSED while live on a shipping surface.**
+A pass-3 correction was logged as *"all corrected or explicitly marked SUPERSEDED"*. It was not: the
+superseded figure was still the **headline of `upgrades/next/deferral-tracking-verified-not-assumed.md`**
+— the release note that ships to a reader — and the opening paragraph of the lay explainer. The guard's
+own header says of that figure, in as many words, *"Do not quote either."* **No review pass in eighteen
+had ever examined `upgrades/next/`.** Both corrected. As pass 18 put it: a finding falsely marked closed
+is worse than an open one, because nothing will resurface it.
+
+And when I first wrote those corrections I **quoted the banned numerals inside my own explanation of the
+ban** — the third time I have been caught doing exactly that. Removed; the notes now describe the figure
+without reproducing it.
+
+**Three bookkeeping corrections**, all counts-about-myself: *"the convention this log already used four
+times"* (twice — two of the four were prose cells describing a fix); pass 1 recorded here as *"six major
+findings"* when the archived verdict says 5 major + 1 minor, corrected twice before by passes 6 and 10 and
+never in this log; and *"two of the eleven streak defects were arms I made unreachable"*, where one dates
+to the pass-3 repair — an attribution one wider than the evidence.
+
+**`pass17-verdict.md` filed — the eighth lapse, and the third consecutive.** Each of the last three was
+filed only after the NEXT reviewer pointed at it. Saying "restored" after each catch has not made the
+convention hold, and that is the honest reading rather than another restoration note.

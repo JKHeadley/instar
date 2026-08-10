@@ -6,7 +6,9 @@ Our rule that a deferral without follow-through is a deletion has been enforced 
 
 But a marker is only worth what it refers to. The ids point into per-machine commitment and evolution-action registries — runtime state that lives on each agent's disk, not in the repository — so **no build has ever been able to resolve one**. It could only see that a number was present.
 
-**Measured before designing anything: of 178 distinct tracked deferral ids across `docs/specs/`, 110 — 62% — resolve to nothing anywhere in the repository.** For those, "tracked" was an unfalsifiable claim: precisely the deletion the rule forbids, wearing a badge that says otherwise.
+**Measured before designing anything: of 217 distinct tracked deferral ids across `docs/specs/`, 201 resolve to nothing anywhere in the repository.**
+
+*(This paragraph published a superseded, smaller id population as a percentage until 2026-08-10, and the numerals are not restated here. That figure was superseded three times over — it measured a narrower id population through a character class a space terminates — and the guard's own header says of it, in as many words, "Do not quote either." This release note went on quoting it as its headline while the correction was recorded as complete, and **no review pass had ever examined `upgrades/next/`** — the one surface here that actually ships to a reader. Found by review pass 18. The percentage is not restated: the raw counts are the published form, for reasons given in the standard.)* For those, "tracked" was an unfalsifiable claim: precisely the deletion the rule forbids, wearing a badge that says otherwise.
 
 A new lint now asks the different question — does this marker refer to something a reader can follow? A new unresolvable marker fails the build. The pre-existing population is recorded as a **shrink-only baseline**, because the change that discovers a debt cannot also pay it down.
 

@@ -130,7 +130,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { checkGrowOnlyAgainstHistory, validateEvidenceRef, canonicalDate, canonicalFutureDate } from './lib/baseline-history.mjs';
+import { checkGrowOnlyAgainstHistory, validateEvidenceRef, canonicalDate, canonicalFutureDate, COUNTDOWN_HORIZON_DAYS, countdownHorizon } from './lib/baseline-history.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), '..');
@@ -272,9 +272,17 @@ const liveSet = new Set(live);
 const liveDigest = new Map(liveEntries.map((e) => [e.name, e.digest]));
 const failures = [];
 const today = new Date().toISOString().slice(0, 10);
-/** Upper bound on an UNSWEPT gap's countdown — see the horizon refusal below for why it exists and why 180. */
-const HORIZON_DAYS = 180;
-const horizon = new Date(Date.now() + HORIZON_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+/**
+ * Upper bound on an UNSWEPT gap's countdown. IMPORTED, not declared — review pass 18 found that the
+ * commit which introduced the shared definition wired only the NEW caller and left this file's own
+ * `const HORIZON_DAYS = 180` in place, while six separate statements asserted 'ONE definition, both
+ * callers'. Proven by setting the shared constant to 5: the sibling moved, this guard did not.
+ *
+ * That is the third consecutive appearance of one shape — fix the instance, skip the pattern — and it
+ * happened inside the commit whose entire subject was sweeping a pattern. The sweep is done here.
+ */
+const HORIZON_DAYS = COUNTDOWN_HORIZON_DAYS;
+const horizon = countdownHorizon();
 const gapIdSeen = new Set();
 for (const g of gaps) {
   if (!g?.id) continue;

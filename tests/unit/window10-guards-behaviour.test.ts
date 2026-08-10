@@ -43,6 +43,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { COUNTDOWN_HORIZON_DAYS } from '../../scripts/lib/baseline-history.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -201,7 +202,9 @@ describe('lint-enforcement-gap-records — leg 4, the unswept-but-dated gap', ()
     addProbeGap({ countdown: '9999-12-31' });
     const r = run('lint-enforcement-gap-records.mjs');
     expect(r.code).toBe(1);
-    expect(r.out).toMatch(/beyond the \d+-day horizon/);
+    // The NUMBER, not `\d+` — review pass 18 found the previous assertion matched any value, so the
+    // two guards could drift apart with the suite green, which is precisely what had happened.
+    expect(r.out).toContain(`beyond the ${COUNTDOWN_HORIZON_DAYS}-day horizon`);
   });
 
   it('refuses an unswept gap whose countdown has expired', () => {
@@ -272,7 +275,20 @@ describe('lint-documented-only-countdown — a countdown must be a deadline', ()
     writeRegistry(readRegistry().replace(/2026-09-07/g, '9999-12-31'));
     const r = run('lint-documented-only-countdown.mjs');
     expect(r.code).toBe(1);
-    expect(r.out).toMatch(/beyond the \d+-day horizon/);
+    expect(r.out).toContain(`beyond the ${COUNTDOWN_HORIZON_DAYS}-day horizon`);
+  });
+
+  // BOTH guards must track the SAME constant. This is the test that would have caught pass 18's finding:
+  // the gap guard kept a private `const HORIZON_DAYS = 180` while the shared export was wired only into
+  // its sibling, and every existing assertion passed because it matched any digits.
+  it('both countdown guards report the SAME horizon, so they cannot drift apart', () => {
+    addProbeGap({ countdown: '9999-12-31' });
+    writeRegistry(readRegistry().replace(/2026-09-07/g, '9999-12-31'));
+    const gap = run('lint-enforcement-gap-records.mjs');
+    const countdown = run('lint-documented-only-countdown.mjs');
+    const phrase = `beyond the ${COUNTDOWN_HORIZON_DAYS}-day horizon`;
+    expect(gap.out, 'gap guard').toContain(phrase);
+    expect(countdown.out, 'countdown guard').toContain(phrase);
   });
 
   it('refuses an expired countdown, for the expiry reason and not the horizon one', () => {
@@ -281,6 +297,27 @@ describe('lint-documented-only-countdown — a countdown must be a deadline', ()
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/EXPIRED on 2020-01-01/);
     expect(r.out).not.toMatch(/beyond the \d+-day horizon/);
+  });
+
+  // The ARTICLE-level arms, which review pass 18 found uncovered: the tests above rewrite EVERY date,
+  // so the sub-obligation arm alone satisfied the assertion and disabling the article arm left the suite
+  // green. These target a single article countdown so the article arm is the only thing that can fire.
+  it('refuses an ARTICLE countdown beyond the horizon', () => {
+    const src = readRegistry();
+    const article = /\*\*Documented-only until\.\*\* `2026-09-07`/;
+    expect(article.test(src), 'fixture must contain an article-level countdown').toBe(true);
+    writeRegistry(src.replace(article, '**Documented-only until.** `9999-12-31`'));
+    const r = run('lint-documented-only-countdown.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('is documented-only and its countdown 9999-12-31');
+  });
+
+  it('refuses an ARTICLE countdown that has expired', () => {
+    const src = readRegistry();
+    writeRegistry(src.replace(/\*\*Documented-only until\.\*\* `2026-09-07`/, '**Documented-only until.** `2020-01-01`'));
+    const r = run('lint-documented-only-countdown.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/is STILL documented-only and its countdown EXPIRED on 2020-01-01/);
   });
 
   // Pass 11: a duplicated tracked id means closing either reads as closing both.
