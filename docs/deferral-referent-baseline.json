@@ -34,6 +34,7 @@
     "CMT-1002",
     "CMT-1038",
     "CMT-1049",
+    "CMT-1049 (secret-store hardening, topic 13481)",
     "CMT-1053",
     "CMT-1103",
     "CMT-1103, CMT-1123",
@@ -225,6 +226,13 @@
       "to": 200,
       "reason": "FIFTH correction. Review pass 7 proved a live FALSE closure: the marker R-8 counted as resolved because that byte sequence occurs by accident inside the binary assets/demo.gif — the resolver read every non-document file as UTF-8, so coincidence looked like follow-through. That is the manufactured-resolution family one layer below prose. Binary files (any NUL byte) can no longer resolve a referent. One orphan more, and the previously reported figure contained at least one resolution that was pure chance.",
       "hash": "756e8e9dcd9f8caffeedaf2cd1e65313ae331cbe14fe4b0a0567f06fa8e56011"
+    },
+    {
+      "at": "2026-08-09",
+      "from": 200,
+      "to": 201,
+      "reason": "SIXTH correction, from review pass 8 finding 4, verified by injection before fixing. A COMPOUND marker naming more than one promise resolved when only ONE of its ids appeared — half a kept promise counted as a whole one. All id-shaped tokens in a payload must now resolve. Binary detection was also a NUL-byte test alone, missing formats with no early NUL; widened to NUL or a high share of non-text bytes in the first 8KB. Measured first rather than blanket-widening comment stripping: the resolving surface is .ts 240, .json 16, .sh 3, .js 3, .mjs 2 — the JS/TS and shell families already cover it, so unhandled languages carry none of the live resolution and widening them would fix nothing measurable.",
+      "hash": "410d31923530b45e802b49f54036a51b32a92fb566f03a080ef7ad80f104b7b2"
     }
   ]
 }

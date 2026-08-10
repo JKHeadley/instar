@@ -1104,3 +1104,34 @@ actually grew *from*.
 Arm C is the one worth noting: it required binding a real pinned base to exercise at all, which is the
 machinery pass 6 forced and pass 8 graded partial. The arm cannot fire in an unbound local run, and that
 is stated rather than glossed.
+
+## Increment 31 (window 11) — pass 8 finding 4, and measuring before widening
+
+All three sub-claims verified before any change: the binary test was NUL-only, comment stripping covered
+only the JS/TS family, and a compound marker resolved if **any** token appeared. All true.
+
+**The one that mattered: partial credit for a kept promise.** `CMT-1103, CMT-1123` names *two* promises
+and resolved when only one of them appeared anywhere. Half a kept promise counted as a whole one — the
+partial credit this article exists to forbid. Now every id-shaped token in a payload must resolve, tracked
+across the whole corpus rather than per-file. Proven both directions: one-of-two stays an orphan, both-of-
+two resolves.
+
+**Binary detection widened.** A NUL-byte test alone misses formats carrying no early NUL — and a
+coincidence inside a compiled asset reading as follow-through is exactly the false closure pass 7 found in
+a GIF. Now NUL *or* a high share of non-text bytes in the first 8KB. Still a heuristic, and labelled one.
+Proven: a NUL-free binary blob is rejected, ordinary source is kept.
+
+**And the part I did NOT do, because I measured first.** The obvious move was to widen comment stripping
+to every language. Instead I measured which file types actually carry a resolving token today:
+
+| ext | .ts | .json | .sh | .js | .mjs | .jsonl | .log |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| markers | 240 | 16 | 3 | 3 | 2 | 1 | 1 |
+
+The JS/TS and shell families already cover essentially the entire live resolving surface; the unhandled
+languages carry **none** of it. Blanket-widening would have been another hand-written population fixing
+nothing measurable — the exact move that has produced a new hole three times this window. The residual is
+now sized rather than hedged.
+
+Debt moves 200 → **201 of 217 (93%)**, the sixth honest correction of this number. Each has moved it
+upward, and every one came from someone else's check.

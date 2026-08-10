@@ -629,3 +629,26 @@ that row has to state both where the count started and where it ended — correc
 
 Three traps set and sprung. The third only works when the build supplies the official older copy of the
 file, which means it cannot fire on a laptop — said plainly rather than left for someone to discover.
+
+## Half a kept promise is not a kept promise
+
+The eighth reading found three things about how notes get marked "resolved". I reproduced all three before
+changing anything.
+
+**The one that mattered:** a note can name two promises at once. If either one turned up anywhere, the
+whole note counted as kept. So half a kept promise scored as a whole one — the partial credit the rule
+exists to forbid. Now every identifier a note names has to turn up, or the note stays unresolved.
+
+**And the check for "is this a picture rather than text" was too thin** — it looked for one particular
+byte that many formats do not have near the start. It now also notices when a file is mostly unreadable
+bytes. Still a rule of thumb, and labelled as one, but a coincidence inside a compiled file no longer
+counts as somebody keeping a promise.
+
+**The third thing I deliberately did not do.** The obvious move was to teach it the comment syntax of
+every programming language. Instead I counted where the real evidence actually lives: TypeScript by a mile,
+then a handful of JSON and shell files. The languages I would have added carry *none* of it. Widening
+would have been another list I wrote from imagination, fixing nothing — which is precisely the move that
+has opened a fresh hole three times this week.
+
+The count moves again: 201 of 217 unresolved. Sixth correction, sixth time upward, and every one of them
+found by somebody other than me.

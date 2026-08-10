@@ -191,11 +191,16 @@ if (declared.size === 0) {
 
 // One pass over the resolving corpus rather than one grep per id.
 const resolved = new Set();
+const seenTokens = new Map(); // marker id -> set of token indices seen anywhere in the corpus
 // A marker resolves when ANY id-shaped token in its payload resolves. A payload with no such
 // token can never resolve — it names nothing followable, which is the condition, not a parser gap.
 const wanted = [...declared.keys()]
   .map((id) => ({ id, tokens: (id.match(TOKEN_RE) ?? []).filter(isIdShaped).map((t) => idPattern(t)) }))
   .filter((w) => w.tokens.length > 0);
+// A COMPOUND marker names more than one promise — `CMT-1103, CMT-1123` is two. Review pass 8:
+// it "resolves if any token appears", so half a kept promise counted as a whole one. ALL of a
+// payload's id-shaped tokens must now resolve, because a marker that names two things and can
+// only show one is precisely the partial-credit this article forbids.
 for (const rel of resolvingFiles) {
   let text;
   let raw;
@@ -204,11 +209,25 @@ for (const rel of resolvingFiles) {
   // `R-8` counted as resolved because that byte sequence occurs by accident inside assets/demo.gif.
   // Reading every non-document file as UTF-8 made coincidence look like follow-through — the same
   // manufactured-resolution family as counting prose, one layer lower.
+  // BINARY detection was a NUL-byte test alone (review pass 8), which misses formats that
+  // carry no early NUL. Widened to the classic heuristic: NUL, or a high share of
+  // non-text bytes in the first 8KB. Still a heuristic, and said so — the point is that a
+  // coincidence inside a compiled asset must not read as follow-through.
   if (raw.includes(0)) continue;
+  {
+    const head = raw.subarray(0, 8192);
+    let odd = 0;
+    for (const b of head) if (b < 0x09 || (b > 0x0d && b < 0x20)) odd += 1;
+    if (head.length > 0 && odd / head.length > 0.05) continue;
+  }
   try { text = withoutComments(raw.toString('utf-8'), rel); } catch { continue; }
   for (const w of wanted) {
     if (resolved.has(w.id)) continue;
-    if (w.tokens.some((re) => re.test(text))) resolved.add(w.id);
+    // every id-shaped token must be seen (across the whole corpus, accumulated below)
+    for (let k = 0; k < w.tokens.length; k += 1) {
+      if (w.tokens[k].test(text)) (seenTokens.get(w.id) ?? seenTokens.set(w.id, new Set()).get(w.id)).add(k);
+    }
+    if ((seenTokens.get(w.id)?.size ?? 0) === w.tokens.length) resolved.add(w.id);
   }
 }
 
