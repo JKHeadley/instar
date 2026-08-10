@@ -2064,7 +2064,10 @@ parenthesising *"(private 200)"* — a different mutation from the one pass 18 f
 **So the fix is static, because the behavioural closure does not exist.** `scripts/lint-account-matches-tree.mjs`
 reads the guards' SOURCE for the shared import and for numeric horizon literals. It catches pass 18's
 exact defect, which no behavioural test structurally can. Its second arm is pass 19's other prescription:
-no superseded figure on a reader-facing surface without an explicit `[SUPERSEDED …]` annotation.
+no superseded figure DERIVED FROM THE DEFERRAL GUARD'S HEADER on a reader-facing surface without an
+explicit `[SUPERSEDED …]` annotation. The wider class — every figure this work has retired anywhere,
+including ones retired only by an annotation in these logs — is NOT what the arm enforces, and review pass
+21 finding 3 caught this sentence claiming it did.
 
 **Both were pass 19's own words, made mechanical because four consecutive passes showed that announcing
 it is not the same as doing it.**
@@ -2213,3 +2216,71 @@ its test; the claim scan → the three claim tests; restore neighbour amnesty �
 the missing-guard arm → exactly its test; the empty-authority guard → exactly its test. Neutering the figure
 DERIVATION reds five, including the clean-case controls — correctly, because an empty population makes the
 fail-closed authority check refuse everywhere. 37 tests, full lint chain green.
+
+## Increment 53 (window 11) — the four small things pass 21 asked for, and the sentence that could not fire
+
+Pass 21: **reject, load-bearing 3** — two new, one carried. Third consecutive pass to credit the magnitude
+clause as SATISFIED, *"on the strongest evidence yet"*, and second consecutive pass finding no defect in
+the four registry guards. Its own summary of the new state: *"both derived populations self-extend by
+input, which I proved by feeding them rather than by editing them."*
+
+**The archive limb worked.** This increment's records cite pass 21, and ARM 3 refused the build until
+`pass21-verdict.md` was on disk. The verdict was filed alone, first, and the eleventh lapse was not
+available. That is the first time in this series that the discipline was enforced by something other than
+my memory.
+
+**Finding 1 was a REGRESSION I introduced while announcing a strengthening.** The offset-map scan built its
+haystack from `line.replace(/\s+/g,' ')`, so a continuation line's indentation collapsed to one space while
+the previous line had already contributed one — a two-space join against single-spaced needles. An indented
+continuation was invisible. **The sliding window I deleted caught that case.** Two artifacts said the
+opposite ("found exactly once at the line where it starts", "across any number of lines"). `.trim()`
+restores it, and there is now a test for the indented shape specifically.
+
+**Finding 2 is the sharpest artifact this work has produced.** The sentence announcing that the archive
+obligation could no longer be broken was written in the one citation form the arm could not parse. The
+explainer titles every one of its sections in the ordinal form — including the heading two paragraphs above
+that sentence — and the arm read only `pass N`. So the claim *"the moment I write 'the twentieth reading
+found…' anywhere, the build fails"* was false in both halves: not that phrasing, and not anywhere. The arm
+now parses the ordinal form (with a tens table that goes past thirty-nine, since a decoder that stops at a
+round number is the same narrow-population defect one order up), the plural form the logs already use, and
+`pass #N`. The reader-facing sentence is corrected to the real scope, with the original error recorded
+rather than quietly replaced.
+
+**Finding 5 — the arm refused correct English.** *"The tests pass 100% of the time"* demanded a verdict
+file. A citation is a noun phrase, so a following unit word or percent sign now disqualifies it. Narrow and
+deterministic; no guess at intent. This matters because the narrowing control exists for exactly this — a
+guard that flags correct prose is one its reader learns to skip.
+
+**Finding 4 — the claim arm now fails closed over an empty population,** which its sibling figure arm
+already did. Pass 21 emptied it by rewriting quoted annotations to the unquoted form — ordinary prose
+editing, since 23 of 28 annotations already use that form — and the arm printed clean over nothing.
+
+**Finding 6 — the clean-case control proved nothing for three of four arms.** The fixture carried no
+`upgrades/`, no `docs/specs/`, no archive, so the untouched-tree assertion exercised ARM 1 and the
+figure-authority check only, while this file claimed every describe block asserts the untouched fixture
+passes. The fixture now carries the real surfaces. Making it real immediately broke three tests whose
+preconditions had assumed an empty world — including one that had been silently destroying the annotation
+source it depended on. **A control that passes because it touches nothing is worse than no control.**
+
+**Also applied:** finding 3 (both general-rule sentences narrowed to the rule the arm implements, and the
+live unannotated retired figure at the explainer's `:844` annotated for consistency with the same class
+elsewhere on that page); finding 8 (*"the annotations ARE the registry"* narrowed to the QUOTED form — 5 of
+28 — and the quoting requirement stated on the reader-facing page where the claim is made); finding 9 (the
+header's own placeholder is no longer parseable as data); finding 10 (the figure derivation was bounded by
+a byte count and is now bounded by the header comment's structure); finding 11 (this lint defined the claim
+registry and was exempt from it — it is now a tracked surface and its own header quotations are annotated).
+
+**Two self-inflicted arming loops, both caught before commit.** Making the lint a citing surface meant its
+own explanatory comments armed it: an example artifact name in one comment, and an example ordinal in
+another. Both reworded rather than narrowing the population back — the population is right, the prose was
+careless. Same lesson as the test fixture, third occurrence: **what you write ABOUT a check is input to it.**
+
+**Four sabotages, all firing:** revert the whitespace join → exactly the indented-wrap test; neuter ordinal
+citations → exactly the ordinal test; neuter the verb exclusion → five, the three clean-case controls plus
+its own test, because a guard that arms on prose refuses everywhere; neuter the claim fail-closed → exactly
+its own test. 41 tests, full lint chain green.
+
+**And one correction to the archive.** Pass 20's verdict says the chain has "all 46 steps"; it has **47**,
+which pass 21 caught and I confirmed independently. Pass 21 also re-derived the "fourteen" figure across
+four commit states — 11 at every one — and recorded that pass 20's *"unverifiable rather than false"* hedge
+was wrong: *"the author is right and pass 20 is wrong."* The self-check caught that before either reviewer.

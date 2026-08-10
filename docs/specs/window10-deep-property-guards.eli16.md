@@ -841,8 +841,8 @@ is currently failing, and when that one fails the whole sequence stops before re
 guards existed, were configured, were referred to everywhere as active — and had never executed. They
 now run regardless of what happens before them, using a pattern already in that file a few lines above.
 
-**And a number that disagreed with itself.** The same measurement appeared as both 92% and 93% two
-sentences apart in one paragraph — it is 92.6%, and I had rounded it two ways. Elsewhere, a note I wrote
+**And a number that disagreed with itself.**
+[SUPERSEDED — both values below are retired measurements; the live figure is 201 of 217] The same measurement appeared as both 92% and 93% two sentences apart in one paragraph — it is 92.6%, and I had rounded it two ways. Elsewhere, a note I wrote
 explaining that a count had been corrected from 86 to 82 *still said 86 in the sentence beside the
 correction*. I removed the percentages entirely and left the plain fraction: a plain fraction can go out
 of date, but it cannot contradict itself. **That is the fifth time this class of error has appeared, and
@@ -1306,9 +1306,11 @@ So the fix is a different kind of check: one that reads the checkers' *source* r
 Some things cannot be caught by watching behaviour, and pretending otherwise is how I ended up with a test
 that reassured me about a case it never touched.
 
-Its second job is the one the reviewer had to tell me about twice: no retired figure may sit on a page a
-person reads unless it is explicitly marked as retired. **It immediately found five, where the reviewer had
-named one.** That is the first time this week a check has found more than the reading that asked for it.
+Its second job is the one the reviewer had to tell me about twice: the six numbers the deferral checker
+itself declares retired may not sit on a page a person reads unless they are explicitly marked as retired.
+**It immediately found five, where the reviewer had named one.** Note the exact scope, because I wrote it
+wider than the truth twice: it covers the six the checker names, not every number I have ever retired
+somewhere in my own notes. Other retired figures exist and this check does not see them. That is the first time this week a check has found more than the reading that asked for it.
 
 And it ships with its own tests, including one that makes sure it does not shout at correctly-marked text —
 because shipping a checker with no tests is exactly the mistake two readings ago.
@@ -1353,7 +1355,9 @@ reached this page at all, and the checker built to catch exactly that said every
 
 So the fix is to stop typing lists. Both are now read from where they already live: the numbers from the
 checker that declared them retired in the first place, and the phrases from the corrections already marked
-in the text. Mark a wrong phrase once and every page is protected from it afterwards. That is the difference
+in the text. Mark a wrong phrase once — in quotes, which is what makes it machine-readable — and every
+page is protected from it afterwards. Marks written without quotes are for a human reader only; the check
+cannot see those, and I claimed otherwise until the twenty-first reading pointed at it. That is the difference
 between a list someone has to remember to extend and one the work extends by itself.
 
 I tried a clever shortcut first and it went wrong in under a minute: I had the computer guess the important
@@ -1364,6 +1368,35 @@ says which, by choosing what to put in quotes.
 
 The third thing is the one I am most relieved about. Ten times now I have promised to file a reviewer's
 verdict before starting the repairs it asked for, and ten times I have either forgotten or done it after
-somebody noticed. It is now impossible: the moment I write "the twentieth reading found…" anywhere, the
-build fails until that reading's verdict is on disk. The sentence creates the obligation. No promise left
+somebody noticed. It is now machinery: when I write "the twentieth reading found…" on one of the four
+pages this check watches, the build fails until that reading's verdict is on disk. The sentence creates the
+obligation.
+[SUPERSEDED — this paragraph first said "anywhere", and said the phrasing above was what armed it. Both were wrong. The check read only the form "pass 20", not the ordinal form this page uses for every one of its section headings — including the heading two paragraphs up — so the sentence announcing the obligation was written in the one wording that could not trigger it. The twenty-first reading caught that. The ordinal form is parsed now, and the scope is four pages, not anywhere.]
+No promise left
 in it.
+
+## The sentence that could not set off the alarm it was announcing
+
+The twenty-first reading found three things. The one worth remembering is this.
+
+Last time I built a check that makes it impossible to write about a reading without filing that reading's
+verdict — and I wrote a triumphant sentence saying so. That sentence was phrased "the moment I write 'the
+twentieth reading found…' anywhere". The check could not read that phrasing. It only understood the other
+way I sometimes write it. So the sentence announcing that the promise was now unbreakable was itself
+written in the one wording that would not have triggered anything — two paragraphs below a heading in that
+same unreadable form.
+
+It reads badly and it is worth reading badly. The check DID work; it just could not see the house style of
+the page explaining it. Both are fixed: the check reads both forms now, and the sentence says what is
+actually true instead of what sounded final.
+
+The second thing was a step backwards I took while claiming a step forward. I replaced a small piece of
+matching with something I described as stronger, and the thing I replaced could find a phrase broken across
+two lines when the second line was indented. Mine could not. Indented lines are how these documents are
+mostly written, so I had removed the common case while writing that the new version handled every case.
+
+The third is smaller but the same shape: the test that checks "everything is fine when nothing is wrong"
+was checking almost nothing, because the practice copy it ran against did not contain three of the four
+things being checked. Filling it in immediately broke three tests that had been quietly passing because
+they touched nothing. A control that passes because it never reaches the thing it guards is worse than no
+control, because it reassures you.

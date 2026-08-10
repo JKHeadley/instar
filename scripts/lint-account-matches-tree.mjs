@@ -10,8 +10,7 @@
  *   - the figure list encoded four of the SIX numerals its own cited authority forbids, and one of the two
  *     it omitted (`194`) was live and unannotated, twice, on the reader-facing explainer this arm exists
  *     to protect — one line above a line the repair DID annotate;
- *   - the claim list contained `already used four times` while the live site read `…convention for
- *     retiring a wrong line, used four times`, eight words apart, so an exact substring never matched.
+ *   - [SUPERSEDED — quoting both retired wordings deliberately] the claim list contained `already used four times` while the live site read `…convention for retiring a wrong line, used four times`, eight words apart, so an exact substring never matched.
  *
  * Pass 20's prescription, quoted because it is the reason this file was rewritten rather than extended:
  *
@@ -25,8 +24,10 @@
  *   cited but never read. Its header names the retired triples and says "Do not quote either." Adding a
  *   third retired triple there now enrolls it here automatically.
  *
- *   CLAIMS are parsed from the `[SUPERSEDED — "<wording>"]` annotations already present in the tree. The
- *   annotations ARE the registry: correcting a claim once — which requires annotating the place that
+ *   CLAIMS are parsed from the `[SUPERSEDED (em-dash) then the retired wording in double quotes]` annotations already present in the tree. The
+ *   QUOTED annotations are the registry — and only the quoted form, which is 5 of the 28 `[SUPERSEDED`
+ *   annotations in these files. Review pass 21 finding 8 caught the original sentence claiming all of them.
+ *   Correcting a claim once — which requires annotating the place that
  *   quotes it — immunises every tracked surface against that claim thereafter. A population discovered
  *   from the material, not a list someone must remember to extend.
  *
@@ -104,6 +105,10 @@ const CLAIM_SURFACES = [
   ...READER_FACING,
   'upgrades/side-effects/window10-deep-property-guards.md',
   'tests/unit/window10-guards-behaviour.test.ts',
+  // Review pass 21 finding 11: this file defined the claim registry and was exempt from it, while its own
+  // header repeated a retired wording twice. A guard that does not hold itself to its rule is the rule's
+  // first counter-example.
+  'scripts/lint-account-matches-tree.mjs',
 ];
 /**
  * A file can be WATCHED without being a SOURCE, and conflating the two is a mistake this guard has now
@@ -118,6 +123,34 @@ const SOURCE_EXCLUDED = new Set(['tests/unit/window10-guards-behaviour.test.ts']
 /** Where annotated wordings are harvested from: a claim retired anywhere real is retired everywhere. */
 const ANNOTATION_SOURCES = [...CLAIM_SURFACES, ...COUNTDOWN_GUARDS, 'scripts/lint-account-matches-tree.mjs']
   .filter((rel) => !SOURCE_EXCLUDED.has(rel));
+
+/**
+ * Citation forms ARM 3 recognises. Review pass 21 finding 2: the first version parsed only `pass N`,
+ * while the reader-facing explainer states the obligation in the ordinal form and uses that form for
+ * every one of its section headings — so the arm could not see the idiom its own claim was written in.
+ */
+const CITATION_NUMERIC_RE = /\b(?:review\s+)?pass\s*#?\s*(\d{1,3})\b/gi;
+/** A following unit disqualifies it: "the tests pass 100% of the time" is English, not a citation. */
+const CITATION_UNIT_RE = /^\s*(?:%|percent|minutes?|seconds?|hours?|days?|checks?|tests?|files?|lines?|times|of\b)/i;
+const ORDINAL_WORDS = [
+  'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth',
+  'eleventh', 'twelfth', 'thirteenth', 'fourteenth', 'fifteenth', 'sixteenth', 'seventeenth',
+  'eighteenth', 'nineteenth', 'twentieth',
+];
+const ORDINAL_TENS = { twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
+const ORDINAL_TENS_RE = Object.keys(ORDINAL_TENS).join('|');
+const ORDINAL_READING_RE = new RegExp(
+  `\\b((?:${ORDINAL_TENS_RE})[- ])?(${ORDINAL_WORDS.join('|')})\\s+(?:reading|pass|review)\\b`, 'gi',
+);
+function ordinalToNumber(raw) {
+  const s = String(raw).toLowerCase().trim();
+  const tensKey = Object.keys(ORDINAL_TENS).find((k) => s.startsWith(k));
+  const tens = tensKey ? ORDINAL_TENS[tensKey] : 0;
+  const unit = tensKey ? s.slice(tensKey.length).replace(/^[- ]/, '') : s;
+  const idx = ORDINAL_WORDS.indexOf(unit);
+  if (idx === -1) return tens || null;
+  return tens > 0 ? tens + (idx + 1) : idx + 1;
+}
 
 /** The review archive. ARM 3's obligation is derived from the tree's own citations of it. */
 const ARCHIVE_DIR = 'docs/specs/reports/window10-external-passes';
@@ -137,7 +170,11 @@ function deriveFigures() {
     );
     return [];
   }
-  const header = fs.readFileSync(abs, 'utf-8').slice(0, 4000);
+  // Review pass 21 finding 10: this was `.slice(0, 4000)`, so a retired triple written past that byte
+  // silently failed to enrol. Bound it by STRUCTURE — the leading block comment — not by a byte count.
+  const whole = fs.readFileSync(abs, 'utf-8');
+  const headerEnd = whole.indexOf('*/');
+  const header = headerEnd === -1 ? whole : whole.slice(0, headerEnd);
   // Retired triples are written `178/110/62%` — the exact form the header uses when it says
   // "TWO earlier figures are SUPERSEDED and neither should be quoted".
   const triples = [...header.matchAll(/\b(\d{2,4})\/(\d{2,4})\/(\d{1,3}%)/g)];
@@ -164,7 +201,7 @@ function deriveClaims() {
   // The quoted wording IS the matcher, verbatim. No heuristic derives one.
   //
   // A tail heuristic was tried first and it manufactured a FALSE POSITIVE within a minute: from
-  // "two of the eleven streak defects were arms I made unreachable" it derived a tail that dropped the
+  // [SUPERSEDED — quoting the retired wording deliberately] "two of the eleven streak defects were arms I made unreachable" — it derived a tail that dropped the
   // opening words, and that tail then fired on the CORRECTED sentence — it had stripped the single word
   // that was wrong. The payload of a retired claim is sometimes at its end and sometimes at its start,
   // and NO automatic rule can tell which. Whoever writes the correction is the only party who knows, so
@@ -172,13 +209,25 @@ function deriveClaims() {
   //
   // Wordings shorter than MIN_MATCHER_CHARS are skipped as too generic to be evidence, and the skipped
   // count is REPORTED on the clean line so the exclusion is never silent.
-  const matchers = new Set();
+  const matcherSet = new Set();
   let skippedShort = 0;
   for (const w of wordings) {
     if (w.length < MIN_MATCHER_CHARS) { skippedShort += 1; continue; }
-    matchers.add(w.replace(/\s+/g, ' ').toLowerCase());
+    matcherSet.add(w.replace(/\s+/g, ' ').toLowerCase());
   }
-  return { wordings: [...wordings], matchers: [...matchers], skippedShort };
+  const matchers = [...matcherSet];
+  if (matchers.length === 0) {
+    // Review pass 21 finding 4: the figure arm refuses over an empty derived population and the claim arm
+    // did not, so rewriting one paragraph of the engineering log would silently empty this arm while it
+    // printed clean — the alive-but-inert shape, in the file whose header names that shape.
+    failures.push(
+      `No retired claim could be derived from any ${SUPERSEDED_MARK}…] annotation in ${ANNOTATION_SOURCES.length} ` +
+      `source file(s). This arm is now watching NOTHING while reporting clean, which is exactly the ` +
+      `alive-but-inert shape. Either a correction removed the last quoted annotation, or the parse broke. ` +
+      `Fix it or retire the arm — do not let it print clean over an empty population.`,
+    );
+  }
+  return { wordings: [...wordings], matchers, skippedShort };
 }
 
 // ── One normalised search over a file, with an exact offset→line map ──────────────────────────────
@@ -188,7 +237,12 @@ function scan(abs, needles) {
   let hay = '';
   const lineOf = [];
   lines.forEach((line, i) => {
-    const collapsed = `${line.replace(/\s+/g, ' ')} `;
+    // `.trim()` first: leading indentation must NOT survive into the haystack. Without it the join
+    // between a line and its continuation is TWO spaces while every needle carries one, so an indented
+    // continuation — the dominant wrap shape in these documents, and in this very comment — is invisible.
+    // Review pass 21 finding 1: the version this rewrite replaced collapsed that indentation and caught
+    // the case, so the rewrite was a capability REGRESSION announced as a strengthening.
+    const collapsed = `${line.trim().replace(/\s+/g, ' ')} `;
     for (let k = 0; k < collapsed.length; k += 1) lineOf.push(i);
     hay += collapsed;
   });
@@ -236,8 +290,32 @@ function scan(abs, needles) {
     const abs = path.join(ROOT, rel);
     if (!fs.existsSync(abs)) continue;
     const text = fs.readFileSync(abs, 'utf-8');
-    for (const m of text.matchAll(/\b(?:review\s+)?pass\s+(\d{1,3})\b/gi)) cited.add(Number(m[1]));
-    for (const m of text.matchAll(/\bpass(\d{1,3})-verdict\b/gi)) cited.add(Number(m[1]));
+    for (const m of text.matchAll(CITATION_NUMERIC_RE)) {
+      // Review pass 21 finding 5: "pass" is also a verb. "The tests pass 100% of the time" is correct
+      // English, and the first version of this arm demanded a verdict file for it. A citation is a NOUN
+      // phrase, so a following unit word
+      // or percent sign disqualifies it. Narrow and deterministic, not a guess at intent.
+      const tail = text.slice(m.index + m[0].length, m.index + m[0].length + 24);
+      if (CITATION_UNIT_RE.test(tail)) continue;
+      cited.add(Number(m[1]));
+    }
+    for (const m of text.matchAll(/\bpass\s*#?\s*(\d{1,3})-?verdict\b/gi)) cited.add(Number(m[1]));
+    // The ORDINAL form is these documents' house convention — the explainer writes "the twentieth
+    // reading" for every one of its sections, including the heading two paragraphs above the sentence
+    // that told the reader this obligation fires "anywhere". Review pass 21 finding 2: the arm could not
+    // parse the form its own reader-facing claim was written in.
+    for (const m of text.matchAll(ORDINAL_READING_RE)) {
+      // Groups are (tens?)(unit) — hand it BOTH. Passing only the first group gave the decoder the
+      // TENS fragment alone, so a compound ordinal enrolled its round tens instead of the real number.
+      // Note this comment names no example number: this file is itself a citing surface, so an example
+      // written as a numeral would arm the arm against prose ABOUT the arm.
+      const n = ordinalToNumber(`${m[1] ?? ''}${m[2]}`);
+      if (n) cited.add(n);
+    }
+    // The PLURAL form, used five times across the tracked surfaces ("Passes 12 and 13 run against...").
+    for (const m of text.matchAll(/\bpasses\s+(\d{1,3})\s+and\s+(\d{1,3})\b/gi)) {
+      cited.add(Number(m[1])); cited.add(Number(m[2]));
+    }
   }
   const dir = path.join(ROOT, ARCHIVE_DIR);
   const present = new Set(

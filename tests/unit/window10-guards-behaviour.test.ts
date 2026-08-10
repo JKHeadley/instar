@@ -62,6 +62,24 @@ function buildFixture(): string {
   // package.json, a src/ file so root resolution lands here, and a node_modules symlink for its parser.
   // Recorded because a thin fixture would otherwise have looked like a guard defect.
   fs.copyFileSync(path.join(REPO, 'package.json'), path.join(dir, 'package.json'));
+  // Review pass 21 finding 6: the fixture carried no `upgrades/`, no `docs/specs/`, no `tests/`, so
+  // `passes on the untouched tree` exercised ARM 1 and the figure-authority check ONLY — a clean-case
+  // control that proved nothing for the other three arms while the file's own header claimed every
+  // describe block asserts the untouched fixture passes. Copy the real surfaces so the control is real.
+  for (const rel of [
+    'upgrades/next/deferral-tracking-verified-not-assumed.md',
+    'upgrades/side-effects/window10-deep-property-guards.md',
+    'docs/specs/window10-deep-property-guards.eli16.md',
+  ]) {
+    const src = path.join(REPO, rel);
+    if (!fs.existsSync(src)) continue;
+    fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
+    fs.copyFileSync(src, path.join(dir, rel));
+  }
+  const arch = path.join(REPO, 'docs', 'specs', 'reports', 'window10-external-passes');
+  if (fs.existsSync(arch)) {
+    fs.cpSync(arch, path.join(dir, 'docs', 'specs', 'reports', 'window10-external-passes'), { recursive: true });
+  }
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'src', 'stub.ts'), 'export const x = 1;\n');
   fs.symlinkSync(path.join(REPO, 'node_modules'), path.join(dir, 'node_modules'));
@@ -350,6 +368,14 @@ describe('lint-account-matches-tree — the account must match the tree', () => 
   const SE = () => path.join(fixture, 'upgrades', 'side-effects', 'window10-deep-property-guards.md');
   const ARCHIVE = () => path.join(fixture, 'docs', 'specs', 'reports', 'window10-external-passes');
   const write = (p: string, s: string) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, s); };
+  const append = (p: string, s: string) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.appendFileSync(p, s); };
+  // The fixture now carries the REAL archive (review pass 21 finding 6), so a test about archive SHAPE
+  // has to establish its own shape rather than assume an empty directory.
+  const clearArchive = () => {
+    const d = ARCHIVE();
+    if (fs.existsSync(d)) for (const f of fs.readdirSync(d)) fs.rmSync(path.join(d, f));
+    fs.mkdirSync(d, { recursive: true });
+  };
 
   it('passes on the untouched tree', () => {
     const r = run('lint-account-matches-tree.mjs');
@@ -457,7 +483,7 @@ describe('lint-account-matches-tree — the account must match the tree', () => 
   // legitimately narrate how the measurement moved; a guard that flags correct prose trains its reader to
   // skip it. The two arms carry different populations, and this asserts that split is real.
   it('does NOT apply the figure arm to the engineering log, which narrates the figure history', () => {
-    write(SE(), 'The measurement went 62% of 178, then 54% of 194, now 201 of 217.\n');
+    append(SE(), '\nThe measurement went 62% of 178, then 54% of 194, now 201 of 217.\n');
     const r = run('lint-account-matches-tree.mjs');
     expect(r.code, r.out).toBe(0);
   });
@@ -471,17 +497,69 @@ describe('lint-account-matches-tree — the account must match the tree', () => 
   });
 
   it('refuses a hole in the middle of an otherwise contiguous archive', () => {
-    write(path.join(ARCHIVE(), 'pass1-verdict.md'), 'x\n');
-    write(path.join(ARCHIVE(), 'pass3-verdict.md'), 'x\n');
+    // Passes 30 and 32 are NOT cited anywhere in the tree, so the gap at 31 can only be found by the
+    // contiguity path — with cited passes the citation arm claims the gap first and this never runs.
+    clearArchive();
+    write(path.join(ARCHIVE(), 'pass30-verdict.md'), 'x\n');
+    write(path.join(ARCHIVE(), 'pass32-verdict.md'), 'x\n');
     const r = run('lint-account-matches-tree.mjs');
     expect(r.code).toBe(1);
-    expect(r.out).toContain('pass2-verdict.md is missing from an otherwise contiguous archive');
+    expect(r.out).toContain('pass31-verdict.md is missing from an otherwise contiguous archive');
   });
 
   it('ACCEPTS a cited review pass whose verdict IS archived', () => {
-    write(SE(), 'As review pass 47 found, the guard was blind.\n');
-    write(path.join(ARCHIVE(), 'pass47-verdict.md'), 'the verbatim verdict\n');
+    append(SE(), '\nAs review pass 7 found, the guard was blind.\n');
     const r = run('lint-account-matches-tree.mjs');
     expect(r.code, r.out).toBe(0);
+  });
+
+  // Review pass 21 finding 2: the arm parsed only "pass N", while the explainer states the obligation —
+  // and titles every one of its sections — in the ordinal form. The sentence announcing the obligation
+  // was written in the one wording that could not trigger it.
+  it('arms on the ORDINAL citation form the documents actually use', () => {
+    append(path.join(fixture, 'docs', 'specs', 'window10-deep-property-guards.eli16.md'),
+      '\n## Forty-seventh reading: what it found\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('pass47-verdict.md is MISSING');
+  });
+
+  // Review pass 21 finding 5: "pass" is also a verb, and the first version demanded a verdict file for
+  // "the tests pass 100% of the time". A guard that refuses correct prose is one its reader learns to skip.
+  it('does NOT arm on "pass" used as a verb', () => {
+    append(SE(), '\nThe tests pass 100% of the time now, and the suite must pass 37 checks before merge.\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code, r.out).toBe(0);
+  });
+
+  // Review pass 21 finding 4: the figure arm refused over an empty derived population and the claim arm
+  // did not, so rewriting one paragraph would silently empty this arm while it printed clean.
+  it('refuses rather than reporting clean when no quoted annotation remains', () => {
+    for (const rel of [
+      'upgrades/side-effects/window10-deep-property-guards.md',
+      'upgrades/next/deferral-tracking-verified-not-assumed.md',
+      'docs/specs/window10-deep-property-guards.eli16.md',
+      'scripts/lint-account-matches-tree.mjs',
+      'scripts/lint-enforcement-gap-records.mjs',
+      'scripts/lint-documented-only-countdown.mjs',
+    ]) {
+      const p = path.join(fixture, rel);
+      if (!fs.existsSync(p)) continue;
+      fs.writeFileSync(p, fs.readFileSync(p, 'utf8').replace(/\[SUPERSEDED\s*—\s*"/g, '[SUPERSEDED — '));
+    }
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('watching NOTHING');
+  });
+
+  // Review pass 21 finding 1: the offset-map rewrite lost a case the deleted window caught — an indented
+  // continuation line. It is the dominant wrap shape in these documents.
+  it('finds a retired claim wrapped onto an INDENTED continuation line', () => {
+    append(SE(), '\n- [SUPERSEDED — "a wholly invented retired wording"] the corrected version.\n');
+    append(path.join(fixture, 'docs', 'specs', 'window10-deep-property-guards.eli16.md'),
+      '\n- As established, a wholly invented\n  retired wording is how it works.\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('repeats the RETIRED claim "a wholly invented retired wording"');
   });
 });
