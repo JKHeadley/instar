@@ -76,8 +76,20 @@ function visibleRegistryLines(markdown) {
  * The fix is a REFUSAL, not a widened matcher, and the choice is deliberate. Teaching nine separate
  * regexes to accept `^ {0,3}###` would mean nine chances to disagree, in a repository whose recurring
  * defect is exactly two definitions of one thing drifting apart. Refusing the ambiguous form keeps a
- * single grammar: a heading either starts at column zero and is seen by everything, or the build
- * fails and says why. This file's own header already calls the dialect "constrained" — this is what
+ * single grammar for the INDENTED form specifically. **Scope corrected by review pass 12, which
+ * falsified the sentence that stood here ("a heading either starts at column zero and is seen by
+ * everything, or the build fails"): that is an invariant this check does not deliver.** A `###`
+ * heading also renders as `<h3>` when it is a LIST ITEM (`- ### X`, `1. ### X`), inside a
+ * BLOCKQUOTE (`> ### X`), or written as raw HTML — and all of those pass every guard here, because
+ * `visibleRegistryLines` drops blockquoted lines outright and no parser looks inside list items.
+ * The blockquote case is worse than invisible: `lint-no-duplicate-definitions` unwraps blockquotes
+ * and counts 89 articles while this lint and standards-coverage count 88, a live population
+ * disagreement between two guards over one document with nothing failing.
+ *
+ * So what this closes is the indented form (1-3 spaces), which is the form that was demonstrated,
+ * and NOT the class of CommonMark-legal headings a parser here cannot see. Stated as the narrower
+ * thing it is, because the previous sentence is exactly the instance-closed/class-certified shape
+ * that has been found in this change six passes running. This file's own header already calls the dialect "constrained" — this is what
  * constrained means, enforced rather than assumed.
  *
  * Scope, stated because pass 11 punished exactly this kind of unstated scope: it inspects lines

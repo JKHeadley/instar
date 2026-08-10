@@ -64,11 +64,22 @@
  *               key, and both guards printed clean over a standard no shape had ever been
  *               swept against. Worse, this file's own staleness message ("re-sweep it and
  *               update the digest") was the instruction that completed the exploit —
- *               a remedy line can be an attack surface. The population is now refused when
- *               two articles share a heading, so the sentence is earned rather than hoped.
- *               Kept in the record rather than quietly corrected, because a certification
- *               that was once false and got fixed is more informative than one that reads
- *               as though it were always true.
+ *               a remedy line can be an attack surface.
+ *
+ *               NARROWED BY REVIEW PASS 12, which tested the sentence that used to end this
+ *               paragraph — "the population is now refused when two articles share a heading,
+ *               so the sentence is earned rather than hoped" — and falsified it against THIS
+ *               file. The refusal here covers only the half where BOTH duplicates carry a
+ *               fingerprint; attack B (shared heading, the new article carrying none) passes
+ *               this lint clean. What actually stops attack B is the sibling requirement lint,
+ *               whose partition arithmetic refuses the population before this file ever runs
+ *               in the chain. So the CERTIFIED line above is earned by the chain, not by this
+ *               guard alone, and saying otherwise was the borrowed-coverage shape recorded in
+ *               GAP-name-keyed-population-collision — written into the very file that records it.
+ *
+ *               Kept in the record rather than quietly corrected, because a certification that
+ *               was once false and got narrowed is more informative than one that reads as
+ *               though it were always true.
  *
  * **What it does NOT certify — the full list, because a short list here is the same
  * over-claim this registry exists to record** (external review, 2026-08-08, which

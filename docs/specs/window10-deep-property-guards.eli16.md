@@ -955,3 +955,40 @@ direction is not restraint; it is just more motion. It stays written down with a
 between them — because the thing I need is two clean readings in a row, and any edit in between starts
 the count over. If they find something cosmetic, it gets written down rather than fixed. The condition I
 have failed five times running cannot be reached by fixing harder. It can only be reached by stopping.
+
+## The machinery was right and the label was out of date
+
+Twelfth reading, and for the first time **nothing was wrong with the machinery.** Every attack bounced.
+Every alarm rang when it should and stayed quiet when it should. Even the fix I was most worried about
+came back with the strongest evidence of the whole run — the reviewer tested it by *deleting* it and
+confirming the attacks then walked through, which is the honest way round and something I had never
+managed before.
+
+All five problems were in the **writing about** the machinery.
+
+Yesterday I removed a redundant check. I did not go back and re-read the four places that describe how
+the thing works — so the constitution still says, in the present tense, that there are two guards, each
+with its own proof, when there is one guard and one of those proofs was something I had already
+publicly disowned. The reviewer put it better than I would: the pattern has changed from *the fix opens
+a hole* to *the fix changes the code, updates the freshness stamp, and never re-reads the description
+the change made false.*
+
+That is a much smaller problem than the previous five readings found, and it is entirely my own doing,
+because I stamped "checked" on records I had not re-read.
+
+So everything here is a correction, not an addition. Nothing new was built.
+
+**One correction stings more than the others.** I wrote a whole entry about how a number had been
+argued over five times without anyone asking what it counted — and then said the size of the error was
+*unknown*, two sentences after writing that unknowns must be sized. It took one short measurement:
+about **one in ten** of the 201 look like promises that were probably kept. Not unknown. And my claim
+that this was "the most ordinary way" a promise gets kept was simply wrong — at least 168 of the 201
+have no such file anywhere.
+
+I also recorded that the reviewer's count and mine came out different — 25 versus 33 — and left both
+rather than picking one. This figure has gone stale five times. A sixth confident-looking number is
+worth less than an honest range.
+
+**And one new thing to fix later, written down with a date:** nothing checks that a description of a
+guard still matches the guard. The freshness stamp watches the *rules*, never the *code*. I proved it
+by emptying out a guard completely and watching everything report green.

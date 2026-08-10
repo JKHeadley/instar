@@ -1523,3 +1523,57 @@ inside the pass-11 repairs, pass 13 runs against the SAME tree without a single 
 because the blocking condition is two consecutive clean readings and any edit resets the clock. Cosmetic
 findings from either become dated work. The condition I keep failing is unreachable by the
 fix-everything reflex; it is reachable only by not touching anything.
+
+## Increment 40 (window 11) — pass 12: zero mechanism defects, five stale accounts
+
+Pass 12 is the twelfth reject and the first with **no defect in the machinery at all.** Every attack
+was refused, every negative control fired the right way, four of five repairs graded mechanically
+CLOSED, and every pass-8/9/10/11 repair still held under re-test. **All five load-bearing findings were
+in the ACCOUNT** — prose and stored verdicts describing machinery that had changed underneath them.
+
+The reviewer named the shift precisely: *the generator is no longer "the fix opens a hole" — it is "the
+fix changes the code, re-stamps the digest, and never re-reads the verdict the code change
+invalidated."* That is a narrower and more tractable failure than any previous pass reported, and it is
+the direct cost of the freeze commit: I deleted the name arm and left three artifacts certifying it in
+the present tense.
+
+**The subtraction discipline held on the mechanism and failed on the record.** The consolidation itself
+graded CLEAN, with the best-evidenced control of the whole run — the reviewer fired it by REMOVING the
+check and watching both attacks report clean, which is the first negative control here obtained without
+mutating a guard. What I did not do was re-read the sentences the removal falsified.
+
+Every repair in this increment is therefore a **correction, not an addition** — no new machinery:
+
+- **The constitution certified two arms with two negative controls.** One arm was deleted; the other
+  control was the source-edit my own commit body had already called *"not a negative control."*
+  Corrected to what the frozen code does, with the negative-control-by-removal recorded.
+- **The gap record's `why` and `evidence`** still said "refused by the name arm" and cited the
+  disowned injection. Re-reached against the frozen code, and this time it states what is NOT covered:
+  a duplicate where NEITHER article carries a fingerprint is caught by the shrink-only arm and the
+  sibling lint, not by this refusal — the credit belongs to the chain.
+- **A false universal in the shared core:** *"a heading either starts at column zero and is seen by
+  everything, or the build fails."* Falsified by `- ### X`, `1. ### X`, `> ### X` and raw HTML, all of
+  which render `<h3>` and pass every guard. The blockquote case is worse than invisible — two guards
+  disagree on the article count (89 vs 88) with nothing failing. Narrowed to what it closes.
+- **The gap-records header** claimed a refusal it does not implement: attack B passes THAT lint clean,
+  and what stops it is the sibling's partition. Borrowed coverage, written into the file that records
+  the borrowed-coverage shape.
+- **A superseded figure quoted in a test**, in a repository whose own guard header says *"Do not quote
+  either."*
+
+**AND THE "UNMEASURED AMOUNT" WAS MEASURED IN ONE PASS**, which is the sharpest of the five, because
+increment 38 was written entirely about a number's meaning and then declined to size it, two sentences
+after saying residuals must be sized. Replaying the guard's own corpus rules with comment-stripping
+off: **33 of 201 (16.4%) appear anywhere; 20 of 201 (10.0%) in `src/` or `tests/`; 48 of 201 carry no
+id-shaped token at all.** The reviewer's independent replay gave 25 / 15 / 49. **That disagreement is
+recorded rather than resolved into one confident figure** — this number has gone stale five times, and
+a sixth precise-looking value is worth less than a stated bound. Both replays agree on what matters:
+the overstatement is about one in ten by the named mechanism, not unknown, and "the most ordinary way a
+promise is kept" was false — at least 168 of 201 have no such file anywhere.
+
+**A new dated residual comes out of it**, and it is the one that would have caught this whole class:
+nothing binds a recorded verdict to the SOURCE of the guard it is about. The freshness digest covers
+the article body only — proven by gutting both refusals in a cited guard while every sweep still
+reported green. Tracked as `STD-SUBCOUNTDOWN-verdict-unbound-to-guard-source`.
+
+**The freeze restarts from this commit.** Pass 13 runs against it.

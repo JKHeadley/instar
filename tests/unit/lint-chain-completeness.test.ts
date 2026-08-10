@@ -50,7 +50,7 @@ const REQUIRED_LINTS = [
   'generate-standards-hierarchy.mjs',
   // Window 10: the FUNCTION-verifying half of *Deferral = Deletion*. The existing
   // precommit step proves a tracking marker EXISTS; this proves the marker refers
-  // to something the repository can show a reader. 62% of tracked deferrals did not.
+  // to something the repository can show a reader. 201 of 217 tracked deferrals did not. (The earlier 62% figure was quoted here until review pass 12; the referent guard's own header forbids quoting it, and this file was quoting it.)
   'lint-deferral-referent-resolves.mjs',
   // Window 10: a NEW standard must declare WHEN it is enforced (the moment axis).
   // Charter 2026-08-08 — the self-unblock failure was invisible because no record
