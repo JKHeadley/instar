@@ -1890,3 +1890,48 @@ do.
 `~8%` sentence, and file pass 15; on this trajectory the next pass has a real chance of being the one."*
 All three are done. It also warned against closing on a trend argument while a commit had made a guard
 weaker than the one before it — that commit is this one, and the weakening is now reversed.
+
+## Increment 47 (window 11) — the thing sixteen passes never looked for
+
+Pass 17 is the seventeenth reject, six load-bearing, and it named the **root cause of the entire
+streak** — something no previous pass had checked:
+
+> none of the four window-10 guards has a single behavioural test … nothing in this repository can fail
+> when a repair breaks one, and each fix's correctness depends entirely on the next external reviewer.
+> **That is why this streak has run eleven passes, and it will not end by finding defects faster.**
+
+Verified: each guard appears in exactly one test file, and every reference there is a **list-membership
+assertion** that the script is in the lint chain. An existence check. **In the branch whose own recorded
+failure-shape is `alive-but-inert`.** Two of the eleven streak defects were arms I made unreachable and
+one was an arm I unbounded; all three would have been caught in seconds by the file this increment adds.
+
+**`tests/unit/window10-guards-behaviour.test.ts` — 20 tests, and they can fail.** Each guard gets a
+fixture repo, an injected violation, and an assertion on the SPECIFIC MESSAGE, never the exit code alone
+— because a broken guard fails identically to a working one, and my own pass-16 probe proved that by
+reporting three arms "passing" that had all tripped the same wrong error. Every describe block also runs
+the clean case, so a refusal proves discrimination rather than noise.
+
+**Proven by sabotage, which is the whole point.** Neutering the gap guard's horizon arm turns exactly one
+test red — *"refuses an unswept gap dated beyond the horizon"*. Neutering the countdown guard's turns
+exactly its own red. Restored: 20/20. The suite discriminates per-arm, not in aggregate.
+
+**And the fixture itself taught me something worth recording.** The first run failed the countdown
+guard's CLEAN case — because that guard shells out to the coverage script and **fails closed** when it
+cannot get a gap set. My fixture was too thin and the guard was right. A thinner reading of that result
+would have logged a guard defect; the fixture now carries what the coverage script needs, and the reason
+is written down so the next person does not mistake a correct refusal for a broken guard.
+
+**THE LIVE HOLE — I closed an instance and did not sweep the shape, in the change that exists to sweep
+shapes.** Pass 16's horizon went into the gap guard only. Its sibling governs **the constitution's own
+fifty countdowns**, and setting every one of them to `9999-12-31` made it print `clean` — defeating the
+operator ruling it was built for (*"the documented-only MUST force a change in the near future"*) and
+falsifying its own header claim to make the silent permanent gap *"impossible"*. Swept now, from **one
+shared definition** rather than a second copy, because the last two defects in that file's history were
+both duplication. Three arms proven, each for its own reason: beyond-horizon refused, expired refused
+*for the expiry reason and not the horizon one*, in-window accepted.
+
+**And a sentence I falsified one commit after writing it.** `baseline-history.mjs` said the two countdown
+callers share *"one date rule"* — true when written, false within a day, because I added a horizon to one
+caller **while citing the other as my precedent**. I read the adjacent guard and updated neither it nor
+my claim about it. Now stated as a fact about the code rather than as a principle, since the principle
+version was true for less than twenty-four hours.

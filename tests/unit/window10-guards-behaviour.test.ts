@@ -1,0 +1,296 @@
+/**
+ * BEHAVIOURAL tests for the four window-10 registry guards.
+ *
+ * ── Why this file exists, and why it did not until pass 17 ─────────────────────────────────────────
+ * Review pass 17 found what sixteen adversarial passes had not looked for: **none of these four guards
+ * had a single behavioural test.** The only references to them anywhere under `tests/` were
+ * list-membership assertions in `lint-chain-completeness.test.ts` — checks that the scripts appear in
+ * the lint chain, which is an EXISTENCE check, not a check that any refusal arm fires.
+ *
+ * That absence is the structural explanation for this branch's defining failure. Eleven consecutive
+ * review passes each found a new defect introduced by the previous pass's repair, and the reason is
+ * mechanical rather than moral: **nothing in this repository could fail when a repair broke a guard**,
+ * so every fix's correctness rested entirely on the next external reviewer noticing. Pass 17 put it
+ * plainly — *"that is why this streak has run eleven passes, and it will not end by finding defects
+ * faster."* Two of those eleven were arms I made unreachable, and one was an arm I unbounded; all three
+ * would have been caught here in seconds.
+ *
+ * It is also, precisely, the registry's own recorded `alive-but-inert` shape — a guard whose working
+ * and broken states are indistinguishable to every surface that watches it — sitting in the test suite
+ * of the change that records that shape.
+ *
+ * ── What these tests do, and the two rules they follow ─────────────────────────────────────────────
+ * Each guard gets a fixture repository, an injected violation, and an assertion. Two disciplines are
+ * load-bearing here, both earned the hard way during this window:
+ *
+ *   1. **ASSERT THE REASON, NEVER THE EXIT CODE ALONE.** A broken guard fails identically to a working
+ *      one. During pass 16's repair my own three-direction probe reported all three arms "failing" —
+ *      all three for the SAME wrong reason (a quoting slip fed a placeholder instead of a date), and
+ *      reading exit codes alone would have recorded three proven arms. Every refusal below is matched
+ *      against its specific message.
+ *   2. **ALWAYS RUN THE CLEAN CASE.** An arm that fires on everything is not a guard. Every describe
+ *      block asserts the untouched fixture passes, so a refusal proves discrimination rather than noise.
+ *
+ * The fixture copies `scripts/` because these guards resolve their root from their own file location,
+ * not from the working directory — so pointing `cwd` at a temp repo is not enough, and discovering that
+ * is why the harness looks like this rather than like `standards-coverage-ratchet.test.ts`'s.
+ */
+
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+
+let fixture: string;
+
+/** Copy the guards plus the registry artifacts they read. */
+function buildFixture(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'w10-guards-'));
+  fs.cpSync(path.join(REPO, 'scripts'), path.join(dir, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'docs'), { recursive: true });
+  // The countdown guard shells out to `standards-coverage.mjs --json` for the gap set and FAILS CLOSED
+  // when it cannot get one — correctly, and it caught this fixture being too thin on first run. So the
+  // fixture carries what that script needs: the area-audit ledger, the audit evidence it references, a
+  // package.json, a src/ file so root resolution lands here, and a node_modules symlink for its parser.
+  // Recorded because a thin fixture would otherwise have looked like a guard defect.
+  fs.copyFileSync(path.join(REPO, 'package.json'), path.join(dir, 'package.json'));
+  fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'src', 'stub.ts'), 'export const x = 1;\n');
+  fs.symlinkSync(path.join(REPO, 'node_modules'), path.join(dir, 'node_modules'));
+  const audits = path.join(REPO, 'docs', 'audits');
+  if (fs.existsSync(audits)) fs.cpSync(audits, path.join(dir, 'docs', 'audits'), { recursive: true });
+  const ledger = path.join(REPO, 'docs', 'standards-registry-area-audits.json');
+  if (fs.existsSync(ledger)) fs.copyFileSync(ledger, path.join(dir, 'docs', 'standards-registry-area-audits.json'));
+  for (const f of [
+    'STANDARDS-REGISTRY.md',
+    'enforcement-gaps.json',
+    'enforcement-gaps-floor.json',
+    'enforcement-fingerprint-baseline.json',
+    'deferral-referent-baseline.json',
+  ]) {
+    const src = path.join(REPO, 'docs', f);
+    if (fs.existsSync(src)) fs.copyFileSync(src, path.join(dir, 'docs', f));
+  }
+  return dir;
+}
+
+function run(script: string): { code: number; out: string } {
+  try {
+    const out = execFileSync('node', [path.join(fixture, 'scripts', script)], {
+      cwd: fixture, encoding: 'utf8',
+    });
+    return { code: 0, out };
+  } catch (e) {
+    const err = e as { status?: number; stderr?: string; stdout?: string };
+    return { code: err.status ?? 1, out: `${err.stderr ?? ''}${err.stdout ?? ''}` };
+  }
+}
+
+const registry = () => path.join(fixture, 'docs', 'STANDARDS-REGISTRY.md');
+const readRegistry = () => fs.readFileSync(registry(), 'utf8');
+const writeRegistry = (s: string) => fs.writeFileSync(registry(), s);
+
+const gapsPath = () => path.join(fixture, 'docs', 'enforcement-gaps.json');
+const readGaps = () => JSON.parse(fs.readFileSync(gapsPath(), 'utf8'));
+function writeGaps(doc: unknown): void {
+  fs.writeFileSync(gapsPath(), `${JSON.stringify(doc, null, 2)}\n`);
+}
+
+/** A syntactically complete probe gap, so a test exercises the arm it names and not a schema arm. */
+function probeGap(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'GAP-behaviour-probe',
+    discoveredAt: '2026-08-09',
+    recordedAt: '2026-08-09',
+    shape: 'behaviour-probe',
+    shapeDescription: 'A probe record used only by the behavioural test suite to exercise one arm at a time.',
+    evaded: {
+      standard: 'Deferral = Deletion',
+      atMoment: 'ci-time',
+      how: 'Probe only — this record exercises a guard arm under test and asserts no real evasion whatsoever.',
+      hadNoFingerprint: false,
+    },
+    sweep: null,
+    countdown: '2026-09-07',
+    trackedAs: 'STD-SUBCOUNTDOWN-behaviour-probe',
+    residual: 'probe',
+    ...over,
+  };
+}
+
+function addProbeGap(over: Record<string, unknown> = {}): void {
+  const doc = readGaps();
+  doc.gaps.push(probeGap(over));
+  writeGaps(doc);
+  const floorPath = path.join(fixture, 'docs', 'enforcement-gaps-floor.json');
+  const floor = JSON.parse(fs.readFileSync(floorPath, 'utf8'));
+  floor.knownGapIds = [...new Set([...(floor.knownGapIds ?? []), 'GAP-behaviour-probe'])].sort();
+  fs.writeFileSync(floorPath, `${JSON.stringify(floor, null, 2)}\n`);
+}
+
+beforeEach(() => { fixture = buildFixture(); });
+afterEach(() => {
+  SafeFsExecutor.safeRmSync(fixture, {
+    recursive: true, force: true, operation: 'tests/unit/window10-guards-behaviour.test.ts',
+  });
+});
+
+describe('lint-enforcement-fingerprint — the article population must partition', () => {
+  it('passes on the untouched registry', () => {
+    const r = run('lint-enforcement-fingerprint.mjs');
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain('fingerprinted');
+  });
+
+  // The pass-12 collision, both halves. The partition arithmetic is the single refusal; the message
+  // names the duplicate headings because today they are always the cause.
+  it('refuses a duplicate heading whose copy ALSO carries a fingerprint', () => {
+    writeRegistry(`${readRegistry()}\n### Deferral = Deletion\n\n**Rule.** dup. **Enforcement fingerprint.** moments: ci-time; surfaces: none.\n`);
+    const r = run('lint-enforcement-fingerprint.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/PARTITION BROKEN/);
+  });
+
+  // Attack B — the half the first repair missed and pass 10 walked through.
+  it('refuses a duplicate heading whose copy carries NO fingerprint', () => {
+    writeRegistry(`${readRegistry()}\n### Deferral = Deletion\n\n**Rule.** dup with no declaration at all.\n`);
+    const r = run('lint-enforcement-fingerprint.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/PARTITION BROKEN/);
+  });
+
+  // The pass-11 dialect evasion: CommonMark allows up to three leading spaces.
+  it.each([1, 2, 3])('refuses a heading indented by %i space(s)', (n) => {
+    writeRegistry(`${readRegistry()}\n${' '.repeat(n)}### Hidden Standard\n\n**Rule.** hidden.\n`);
+    const r = run('lint-enforcement-fingerprint.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/INDENTED heading/);
+  });
+
+  // The false-positive control: a fenced example is not a heading.
+  it('does NOT refuse an indented heading inside a fenced example', () => {
+    writeRegistry(`${readRegistry()}\n\`\`\`\n   ### an indented heading inside a fence\n\`\`\`\n`);
+    const r = run('lint-enforcement-fingerprint.mjs');
+    expect(r.code, r.out).toBe(0);
+  });
+});
+
+describe('lint-enforcement-gap-records — leg 4, the unswept-but-dated gap', () => {
+  it('passes on the untouched records', () => {
+    const r = run('lint-enforcement-gap-records.mjs');
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toMatch(/\d+ gap\(s\), \d+ swept/);
+  });
+
+  // Reachability. Pass 15 found this arm could not fire at all: a history validator guarded a
+  // deadline, so the only admissible countdown was today's date.
+  it('ACCEPTS an unswept gap dated inside the horizon, and says so', () => {
+    addProbeGap();
+    const r = run('lint-enforcement-gap-records.mjs');
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain('1 unswept (dated)');
+  });
+
+  // Boundedness. Pass 16 found the reachability fix had removed the deadline's teeth.
+  it('refuses an unswept gap dated beyond the horizon', () => {
+    addProbeGap({ countdown: '9999-12-31' });
+    const r = run('lint-enforcement-gap-records.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/beyond the \d+-day horizon/);
+  });
+
+  it('refuses an unswept gap whose countdown has expired', () => {
+    addProbeGap({ countdown: '2020-01-01' });
+    const r = run('lint-enforcement-gap-records.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/has expired/);
+  });
+
+  // The pass-11 partition arm: a sweep that silently skips a standard reads as a clean one.
+  it('refuses a sweep that reaches no verdict on part of its population', () => {
+    const doc = readGaps();
+    const swept = doc.gaps.find((g: { sweep?: { unmatched?: unknown[] } }) => g.sweep?.unmatched?.length);
+    swept.sweep.unmatched.pop();
+    writeGaps(doc);
+    const r = run('lint-enforcement-gap-records.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/reaches no verdict/);
+  });
+});
+
+describe('lint-deferral-referent-resolves — a promise must point at executable evidence', () => {
+  function trackMarker(id: string): void {
+    fs.mkdirSync(path.join(fixture, 'docs', 'specs'), { recursive: true });
+    fs.writeFileSync(path.join(fixture, 'docs', 'specs', `probe-${id}.md`), `A promise. <!-- tracked: ${id} -->\n`);
+    fs.writeFileSync(path.join(fixture, 'docs', 'deferral-referent-baseline.json'), '{"orphans":[]}\n');
+    execFileSync('git', ['init', '-q', '.'], { cwd: fixture });
+  }
+  function commitAll(): void {
+    execFileSync('git', ['add', '-A'], { cwd: fixture });
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'fixture'], { cwd: fixture });
+  }
+
+  // Each of these is a hole a review pass walked through, one file type at a time.
+  it.each([
+    ['a TypeScript line comment', 'src/probe.ts', '// ZZZ-90001 lives only in a comment\nexport const x = 1;\n'],
+    ['a JSON comment key', 'src/probe.json', '{\n  "// ZZZ-90001": "lives only in a JSON comment"\n}\n'],
+    ['a shell comment after punctuation', 'src/probe.sh', 'true;# ZZZ-90001\n'],
+  ])('does NOT let %s resolve a marker', (_label, file, body) => {
+    trackMarker('ZZZ-90001');
+    fs.mkdirSync(path.join(fixture, path.dirname(file)), { recursive: true });
+    fs.writeFileSync(path.join(fixture, file), body);
+    commitAll();
+    const r = run('lint-deferral-referent-resolves.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('ZZZ-90001');
+  });
+
+  // The direction that matters most: over-refusal would report kept promises as broken.
+  it('DOES let a genuine code referent resolve a marker', () => {
+    trackMarker('ZZZ-90002');
+    fs.mkdirSync(path.join(fixture, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(fixture, 'src', 'real.ts'), 'export const TICKET = "ZZZ-90002";\n');
+    commitAll();
+    const r = run('lint-deferral-referent-resolves.mjs');
+    expect(r.code, r.out).toBe(0);
+  });
+});
+
+describe('lint-documented-only-countdown — a countdown must be a deadline', () => {
+  it('passes on the untouched registry', () => {
+    const r = run('lint-documented-only-countdown.mjs');
+    expect(r.code, r.out).toBe(0);
+  });
+
+  // Swept here by pass 17, which found the horizon had been added to the sibling guard only.
+  it('refuses a countdown beyond the horizon', () => {
+    writeRegistry(readRegistry().replace(/2026-09-07/g, '9999-12-31'));
+    const r = run('lint-documented-only-countdown.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/beyond the \d+-day horizon/);
+  });
+
+  it('refuses an expired countdown, for the expiry reason and not the horizon one', () => {
+    writeRegistry(readRegistry().replace('2026-09-07', '2020-01-01'));
+    const r = run('lint-documented-only-countdown.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/EXPIRED on 2020-01-01/);
+    expect(r.out).not.toMatch(/beyond the \d+-day horizon/);
+  });
+
+  // Pass 11: a duplicated tracked id means closing either reads as closing both.
+  it('refuses a duplicated tracked countdown id', () => {
+    writeRegistry(readRegistry().replace(
+      'STD-SUBCOUNTDOWN-stale-family-area-audits',
+      'STD-SUBCOUNTDOWN-audit-never-started',
+    ));
+    const r = run('lint-documented-only-countdown.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/declared MORE THAN ONCE/);
+  });
+});

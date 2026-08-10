@@ -60,6 +60,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { COUNTDOWN_HORIZON_DAYS, countdownHorizon } from './lib/baseline-history.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), '..');
@@ -113,6 +114,18 @@ const SUB_COUNTDOWN_RE = /\*\*Sub-obligation countdown\.\*\*\s*`?(\d{4}-\d{2}-\d
 
 /** Today, as a date-only UTC string, so the comparison is timezone-stable. */
 const TODAY = new Date().toISOString().slice(0, 10);
+/**
+ * The far end of the window. Swept here by review pass 17, which found the horizon had been added to
+ * the sibling gap guard and NOT to this one — so setting all fifty of the constitution's countdowns to
+ * `9999-12-31` made this lint print `clean`, defeating the operator ruling it exists to enforce:
+ * "the documented-only MUST force a change in the near future. It can't remain documented only."
+ *
+ * A countdown beyond the horizon satisfies every other check here while creating none of the pressure
+ * the date exists for — which is this file's own thesis ("An honest gap label is an improvement over a
+ * false enforcement claim, but *only* if the label expires") defeated by a date that never arrives.
+ * The bound is imported rather than restated, so the two guards cannot drift apart the way they just did.
+ */
+const HORIZON = countdownHorizon();
 
 const abs = path.join(ROOT, REGISTRY_REL);
 if (!fs.existsSync(abs)) {
@@ -177,7 +190,14 @@ for (const a of articles) {
     failures.push(`${REGISTRY_REL}:${a.lineNo} — "${a.name}" declares an unparseable countdown deadline "${deadline}".`);
     continue;
   }
-  if (deadline < TODAY) {
+  if (deadline > HORIZON) {
+    failures.push(
+      `${REGISTRY_REL}:${a.lineNo} — "${a.name}" is documented-only and its countdown ${deadline} is beyond the ` +
+      `${COUNTDOWN_HORIZON_DAYS}-day horizon (${HORIZON}). A date that far out is a label, not a deadline: it satisfies ` +
+      `every other check here while creating none of the pressure the operator ruling demands. Pick a date you would ` +
+      `actually be held to, or ship the guard.`,
+    );
+  } else if (deadline < TODAY) {
     failures.push(
       `${REGISTRY_REL}:${a.lineNo} — "${a.name}" is STILL documented-only and its countdown EXPIRED on ${deadline} (today ${TODAY}). ` +
       `This is the check doing its job: documented-only is a countdown, not a resting state. Ship the guard named in the ` +
@@ -247,6 +267,11 @@ for (const a of articles) {
     subCountdowns.push({ article: a.name, deadline, trackedAs, lineNo: a.lineNo });
     if (Number.isNaN(Date.parse(deadline))) {
       failures.push(`${REGISTRY_REL}:${a.lineNo} — "${a.name}" declares an unparseable sub-obligation deadline "${deadline}".`);
+    } else if (deadline > HORIZON) {
+      failures.push(
+        `${REGISTRY_REL}:${a.lineNo} — "${a.name}" names an unenforced sub-obligation whose countdown ${deadline} is ` +
+        `beyond the ${COUNTDOWN_HORIZON_DAYS}-day horizon (${HORIZON}). A date that far out is a label, not a deadline.`,
+      );
     } else if (deadline < TODAY) {
       failures.push(
         `${REGISTRY_REL}:${a.lineNo} — "${a.name}" still names an unenforced sub-obligation (\`${trackedAs}\`) whose ` +

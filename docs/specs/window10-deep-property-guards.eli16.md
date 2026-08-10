@@ -1192,3 +1192,36 @@ commit that filed the fifth one and called that lapse "the worst".**
 The limit I chose for the deadline, 180 days, is a decision and I have labelled it one. Nothing in this
 project sets a precedent, so inventing a number and calling it measured would have been the very move
 being punished all week.
+
+## Nobody ever checked whether the alarms actually ring
+
+The seventeenth reading found the thing sixteen readings never looked for, and it explains the whole run:
+
+**None of my four new checkers had a single test.** The only mention of them anywhere in the test suite
+was a list confirming they are *in the list*. That is a check that they exist, not a check that they
+work. So nothing in this project could go red when I broke one — every fix's correctness rested entirely
+on the next outside reader noticing. In the reviewer's words: that is why this has run eleven readings,
+and it will not end by finding mistakes faster.
+
+Two of those eleven were alarms I had accidentally disconnected, and one was an alarm I had left with no
+trigger. All three would have been caught in seconds by the file I added tonight.
+
+**Twenty tests now, and they can fail.** Each one sets up a small fake project, breaks something specific,
+and checks the alarm rings *for the right reason* — never just that something failed, because a broken
+alarm and a working one both "fail". My own test last night reported three cases passing that had all
+tripped the same wrong error. Every group also checks the untouched case still passes, so a refusal proves
+the alarm can tell things apart rather than just shouting at everything.
+
+**And I proved they can fail by breaking the checkers on purpose.** Disable one alarm and exactly one test
+goes red — the one named after it. Put it back and all twenty pass.
+
+**The fixture taught me something too.** My first run failed on a case that should have passed — and the
+checker was right: it refuses to report all-clear when it cannot get the information it needs, and my fake
+project was too small to give it. Read carelessly, that looks like a bug in the checker. It is the checker
+being careful. Written down so nobody mistakes it later.
+
+**And the live hole I had left.** Last night I put a limit on how far in the future a deadline can be — in
+one checker. Its sibling governs the fifty deadlines in the actual rulebook, and setting all fifty to the
+year 9999 made that one print "clean". I fixed the case and skipped the pattern, in the very piece of work
+whose whole purpose is spreading a pattern to everywhere it applies. Fixed now, from one shared definition
+rather than a second copy.

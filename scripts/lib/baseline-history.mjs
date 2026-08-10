@@ -97,12 +97,39 @@ export function canonicalDate(value) {
  * that was already correct. A history validator reused for a deadline, with a diagnostic that named
  * the wrong reason — the arm was unreachable AND it misdirected on the way.
  *
- * The expiry decision stays with the CALLER, which is where the sibling `lint-documented-only-countdown`
- * already puts it: validate the shape here, compare against today there. Same division, one date rule.
+ * The expiry decision stays with the CALLER: validate the shape here, compare against today there.
+ * (This paragraph used to end "Same division, one date rule" — review pass 17 found I had falsified my
+ * own sentence one commit later by adding a horizon to ONE caller and not the other, then citing that
+ * sibling as the precedent for the change. Both callers now share the horizon defined below, so the
+ * division is real again; it is stated as a fact about the code rather than as a principle, because
+ * the principle version was true when written and false within a day.)
  */
 export function canonicalFutureDate(value) {
   return roundTripsAsDate(value) !== false;
 }
+
+/**
+ * The horizon a COUNTDOWN must fall within to be a deadline rather than a label.
+ *
+ * ONE definition, both callers — added by review pass 17, which found that the horizon shipped in the
+ * gap guard had NOT been swept to its sibling. That sibling governs the constitution's own fifty
+ * countdowns, and setting every one of them to `9999-12-31` made it print `clean`: a live hole in CI,
+ * in the exact shape the horizon was written to close, on a branch whose headline mechanism is
+ * *One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere*. I closed the instance and
+ * did not sweep the shape, in the change that exists to sweep shapes.
+ *
+ * It lives HERE rather than in either caller precisely because of that: a bound duplicated into two
+ * guards is two things that can drift, and the last two defects in this file's history were both
+ * duplication. 180 days remains a CHOSEN number — there is no measured precedent, the repository's own
+ * countdowns sit about thirty days out — and it is stated as a judgement in both callers.
+ */
+export const COUNTDOWN_HORIZON_DAYS = 180;
+
+/** The last date a countdown may name, as YYYY-MM-DD. Inclusive. */
+export function countdownHorizon(now = Date.now()) {
+  return new Date(now + COUNTDOWN_HORIZON_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
 
 /**
  * A referent is a JAILED repo-relative path plus the sha256 of its bytes — the shape

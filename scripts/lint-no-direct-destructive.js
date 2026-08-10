@@ -138,6 +138,12 @@ const ALLOWLIST = new Set([
   'tests/unit/audit-convergence-reports.test.ts',
   'tests/unit/audit-convergence-standard-conformance.test.ts',
   'tests/unit/iterative-converging-audit-skill-single-source.test.ts',
+  // window-10 guard behaviour tests: `git init/add/commit` inside a `mkdtemp` fixture the test
+  // itself creates and removes. The mutation is real but its blast radius is that temp directory —
+  // never the repository — and it is UNAVOIDABLE: the deferral guard resolves its corpus with
+  // `git ls-files`, so a fixture that is not a git repo cannot exercise the arm under test at all.
+  // The cleanup goes through SafeFsExecutor like its sibling route tests; only the git calls are here.
+  'tests/unit/window10-guards-behaviour.test.ts',
   // Pre-command shim that wraps git invocations from outside the safe
   // executor — bootstraps the safety check, can't be inside the funnel.
   'scripts/destructive-command-shim.js',
