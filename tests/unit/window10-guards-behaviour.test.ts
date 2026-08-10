@@ -568,14 +568,78 @@ describe('lint-account-matches-tree — the account must match the tree', () => 
     expect(r.out).toContain('repeats the RETIRED claim');
   });
 
-  // Review pass 22 finding 8 — the ARM 3 fail-closed refusal exists in the guard and is DELIBERATELY
-  // UNTESTED, which is recorded here rather than papered over. The state it guards (zero citations AND an
-  // empty archive) is structurally UNREACHABLE in this repository: the guard file is itself a citing
-  // surface and its own header cites review passes, so the citation set is never empty. My first attempt
-  // at a test stripped citations from the guard source with a blunt regex, which corrupted its message
-  // templates and made it fail for an unrelated reason — a test that reds for the wrong cause is worse
-  // than an absent one. The arm stays as fail-closed defence for a future tree where the guard is not
-  // self-citing; its coverage is honestly zero today.
+  // Review pass 22 finding 8 — ARM 3's fail-closed refusal over an empty derived population.
+  //
+  // I recorded this last cycle as UNTESTABLE, on the reasoning that the state is structurally
+  // unreachable because the guard is itself a citing surface whose header cites passes. Review pass 23
+  // falsified that in one mutation: replace the guard's LEADING BLOCK COMMENT — which contains nothing
+  // executable and no message template — with a citation-free one, strip citations from the three doc
+  // surfaces while KEEPING their quoted annotations, and clear the archive. One failure, its own, no
+  // collateral. My obstacle was a blunt tool mistaken for a structural fact: my first attempt regexed
+  // the whole source and corrupted the message templates. Every test here operates on a MUTATED
+  // FIXTURE, never on the real repository, and both sibling fail-closed arms are tested exactly this
+  // way. Written the way its siblings are written, as review pass 23 prescribed.
+  it('refuses rather than reporting clean when ARM 3 derives nothing at all', () => {
+    clearArchive();
+    const g = path.join(fixture, 'scripts', 'lint-account-matches-tree.mjs');
+    const src = fs.readFileSync(g, 'utf8');
+    const close = src.indexOf('*/');
+    // Replace ONLY the leading block comment — keeping the shebang, and resuming AFTER the terminator.
+    // Nothing executable is touched and no message template is altered.
+    const shebang = src.startsWith('#!') ? `${src.slice(0, src.indexOf('\n') + 1)}` : '';
+    // The guard cites passes in its INLINE comments too, below the header. Strip those on COMMENT LINES
+    // ONLY — identified by their leading marker, not by whether they contain a backtick, since comment
+    // prose is full of backticks. No string literal is touched, so no message template can be altered:
+    // that is the whole difference between this mutation and the blunt one that failed last cycle for an
+    // unrelated reason.
+    const body = src.slice(close + 2).split('\n').map((l) => {
+      const lead = l.trimStart();
+      if (!lead.startsWith('//') && !lead.startsWith('*') && !lead.startsWith('/*')) return l;
+      return l.replace(/\bpasses\s+\d{1,3}\s+and\s+\d{1,3}\b/gi, 'SECTIONS')
+        .replace(/\b(?:review\s+)?pass\s*#?\s*\d{1,3}\b/gi, 'SECTION')
+        .replace(/\bpass\d{1,3}-verdict\b/gi, 'VERDICT')
+        .replace(/[\w-]+\s+(?:reading|pass|review)\b/gi, 'SECTION');
+    }).join('\n');
+    fs.writeFileSync(g, `${shebang}/* header replaced by the fixture: no citations */${body}`);
+    for (const rel of [
+      'upgrades/side-effects/window10-deep-property-guards.md',
+      'upgrades/next/deferral-tracking-verified-not-assumed.md',
+      'docs/specs/window10-deep-property-guards.eli16.md',
+    ]) {
+      const p = path.join(fixture, rel);
+      if (!fs.existsSync(p)) continue;
+      fs.writeFileSync(p, fs.readFileSync(p, 'utf8')
+        .replace(/\b(?:review\s+)?pass\s*#?\s*\d{1,3}\b/gi, 'SECTION')
+        .replace(/\bpasses\s+\d{1,3}\s+and\s+\d{1,3}\b/gi, 'SECTIONS')
+        .replace(/\bpass\d{1,3}-verdict\b/gi, 'VERDICT')
+        .replace(/\w+\s+(?:reading|pass|review)\b/gi, 'SECTION'));
+    }
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('ARM 3 derived NO citations');
+  });
+
+  // Review pass 23 finding 1: the strip consumed at most ONE space, so a marker followed by two or more
+  // stayed invisible — and three spaces after a star is the house indentation of the guard's OWN header,
+  // the file the repair existed to cover.
+  it('finds a retired claim wrapped across a comment continuation indented THREE spaces', () => {
+    append(SE(), '\n- [SUPERSEDED — "a wholly invented retired wording"] the corrected version.\n');
+    append(path.join(fixture, 'scripts', 'lint-account-matches-tree.mjs'),
+      '\n/**\n *   As established, a wholly invented\n *   retired wording is how it works.\n */\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('repeats the RETIRED claim');
+  });
+
+  // Review pass 23 finding 4: stripping every marker on every surface joined two SEPARATE markdown
+  // bullets into one sentence. A guard that flags correct prose is one its reader learns to skip.
+  it('does NOT join two separate markdown bullets into one claim', () => {
+    append(SE(), '\n- [SUPERSEDED — "a wholly invented retired wording"] the corrected version.\n');
+    append(path.join(fixture, 'docs', 'specs', 'window10-deep-property-guards.eli16.md'),
+      '\n* As established, a wholly invented\n* retired wording is how it works.\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code, r.out).toBe(0);
+  });
 
 
   // Review pass 21 finding 2: the arm parsed only "pass N", while the explainer states the obligation —

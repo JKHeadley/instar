@@ -38,8 +38,11 @@
  * Two changes from the version pass 20 falsified, both deletions of a mechanism rather than additions:
  *
  *   The two-line sliding window is GONE. The file is normalised once with an offset→line map and matched
- *   whole, so a claim wrapped across any number of lines — including a continuation beginning with an
- *   indent, a comment marker or a blockquote marker — is found exactly once at the line where it
+ *   whole, so a claim wrapped across any number of lines is found exactly once at the line where it
+ *   starts. A continuation may begin with any amount of indentation, and — in a SCRIPT — with a comment
+ *   marker, or — in MARKDOWN — with a blockquote marker. It may NOT begin with a markdown list bullet or
+ *   heading marker: those start a new item rather than continue one, and stripping them joined separate
+ *   bullets into one false claim. That asymmetry is deliberate and is the whole of the rule; it
  *   starts. That removes pass 20's finding 4 (a violation on one line reported twice, one copy naming a
  *   line that did not contain it) and finding 5 (a claim sandwiched between two annotated lines was
  *   invisible, because the escape checked NEIGHBOURS). The escape is now the matched span's OWN lines.
@@ -259,8 +262,26 @@ function deriveClaims() {
 }
 
 // ── One normalised search over a file, with an exact offset→line map ──────────────────────────────
-function scan(abs, needles) {
+/**
+ * Which leading marker begins a CONTINUATION, by language. Review pass 23 finding 4: stripping every
+ * marker on every surface joined two separate markdown bullets into one sentence and reported them as a
+ * wrapped claim, while the identical content written with hyphen bullets was left alone — a guard that
+ * flags correct prose is one its reader learns to skip. In a script a leading `*` or `//` continues a
+ * comment; in markdown it starts a NEW list item or heading, and only `>` continues a blockquote.
+ */
+function continuationMarkerRe(rel) {
+  return /\.(m?[jt]sx?|c[jt]s)$/i.test(rel)
+    // No trailing \s* here: the caller trims after stripping, so whitespace handling lives in ONE place.
+    // Review pass 23 finding 1 was a whitespace boundary; having two mechanisms both fix it meant no
+    // single sabotage could red the test that covers it, which is a covered-looking arm with a masked
+    // control. One mechanism, one sabotage, one red.
+    ? /^(?:\/\/+|\*+)/          // script: comment continuation
+    : /^>+/;                    // markdown: blockquote continuation only
+}
+
+function scan(abs, needles, rel) {
   const lines = fs.readFileSync(abs, 'utf-8').split('\n');
+  const markerRe = continuationMarkerRe(rel ?? abs);
   // Build a whitespace-collapsed haystack and remember which line each character came from.
   let hay = '';
   const lineOf = [];
@@ -274,7 +295,12 @@ function scan(abs, needles) {
     // `.trim()` alone closed the plain-indent wrap but not a continuation beginning `*`, `//` or `>` —
     // and the previous commit had just added THIS file, whose every wrapped sentence is a block comment,
     // to the watched surfaces. The arm covered that surface only for claims that never wrap.
-    const collapsed = `${line.trim().replace(/^(?:\/\/+|\*+|>+|#+)\s?/, '').replace(/\s+/g, ' ')} `;
+    // `\\s*` not `\\s?`: the strip must consume the WHOLE leading run. Review pass 23 finding 1 — with
+    // `\\s?` a marker followed by two or more spaces left one behind, so the join carried two spaces
+    // against single-spaced needles and the continuation stayed invisible. Three spaces after `*` is the
+    // house indentation of this file's own header, so the arm could not read the sentence certifying it
+    // could. `.trim()` afterwards removes any residue the marker pattern did not.
+    const collapsed = `${line.trim().replace(markerRe, '').trim().replace(/\s+/g, ' ')} `;
     for (let k = 0; k < collapsed.length; k += 1) lineOf.push(i);
     hay += collapsed;
   });
@@ -403,7 +429,7 @@ for (const rel of COUNTDOWN_GUARDS) {
     failures.push(
       `${rel} does not reference ${SHARED_SYMBOL}. Both countdown guards must take the horizon from the ` +
       `one shared definition in scripts/lib/baseline-history.mjs. This is the arm that caught review ` +
-      `pass 18's finding, which the behavioural suite structurally cannot: a private literal equal to the ` +
+      `an earlier reading's finding, which the behavioural suite structurally cannot: a private literal equal to the ` +
       `shared value produces identical output.`,
     );
   }
@@ -425,7 +451,7 @@ const { wordings, matchers, skippedShort } = deriveClaims();
 for (const rel of CLAIM_SURFACES) {
   const abs = path.join(ROOT, rel);
   if (!fs.existsSync(abs)) continue;
-  for (const h of scan(abs, matchers)) {
+  for (const h of scan(abs, matchers, rel)) {
     failures.push(
       `${rel}:${h.line} repeats the RETIRED claim "${h.needle}" without a ${SUPERSEDED_MARK}…] annotation ` +
       `— \`${h.text}\`. This population is DERIVED from the ${SUPERSEDED_MARK}…] annotations already in the ` +
@@ -489,7 +515,7 @@ if (JSON_OUT) {
   for (const f of failures) console.error(`  - ${f}`);
   console.error(
     '\nWhy this exists: twenty review passes narrowed to one class — a closure claimed and not delivered. ' +
-    'Both populations are DERIVED from their sources rather than transcribed, because review pass 20 ' +
+    'Both populations are DERIVED from their sources rather than transcribed, because a reading found ' +
     'found that both hand-transcribed lists shipped narrower than the class their prose named.',
   );
 }

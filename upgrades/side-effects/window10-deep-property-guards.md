@@ -2178,8 +2178,10 @@ correction quotes the payload. Wordings too short to be evidence are skipped, an
 printed so the exclusion is never silent.
 
 **The sliding window is deleted as well.** The file is normalised once with an offset→line map and matched
-whole, so a claim wrapped across any number of lines — including a continuation beginning with an indent,
-a comment marker or a blockquote marker — is found exactly once, at its start. That removes
+whole, so a claim wrapped across any number of lines is found exactly once, at its start. A continuation
+may begin with any amount of indentation, and — in a SCRIPT — with a comment marker, or — in MARKDOWN —
+with a blockquote marker. It may NOT begin with a markdown list bullet or heading marker: those start a new
+item rather than continue one, and stripping them joined separate bullets into one false claim. That removes
 pass 20's finding 4 (one violation reported twice, one copy naming a line that did not contain it) and
 finding 5 (a claim sandwiched between two annotated lines was invisible, because the escape checked
 NEIGHBOURS). The escape is now the matched span's OWN lines.
@@ -2254,7 +2256,9 @@ guard that flags correct prose is one its reader learns to skip.
 
 **Finding 4 — the claim arm now fails closed over an empty population,** which its sibling figure arm
 already did. Pass 21 emptied it by rewriting quoted annotations to the unquoted form — ordinary prose
-editing, since 23 of 28 annotations already use that form — and the arm printed clean over nothing.
+editing — most annotations in the tree already use the unquoted form — and the arm printed clean over
+nothing. (The exact share is deliberately not written here: review pass 23 finding 2 caught this sentence
+and its neighbour still publishing counts the guard prints, correctly, on every run.)
 
 **Finding 6 — the clean-case control proved nothing for three of four arms.** The fixture carried no
 `upgrades/`, no `docs/specs/`, no archive, so the untouched-tree assertion exercised ARM 1 and the
@@ -2265,8 +2269,9 @@ source it depended on. **A control that passes because it touches nothing is wor
 
 **Also applied:** finding 3 (both general-rule sentences narrowed to the rule the arm implements, and the
 live unannotated retired figure at the explainer's `:844` annotated for consistency with the same class
-elsewhere on that page); finding 8 (*"the annotations ARE the registry"* narrowed to the QUOTED form — 5 of
-28 — and the quoting requirement stated on the reader-facing page where the claim is made); finding 9 (the
+elsewhere on that page); finding 8 (*"the annotations ARE the registry"* narrowed to the QUOTED form —
+the share is printed by the guard on every run and deliberately not written here, per review pass 23
+finding 2 — and the quoting requirement stated on the reader-facing page where the claim is made); finding 9 (the
 header's own placeholder is no longer parseable as data); finding 10 (the figure derivation was bounded by
 a byte count and is now bounded by the header comment's structure); finding 11 (this lint defined the claim
 registry and was exempt from it — it is now a tracked surface and its own header quotations are annotated).
@@ -2338,3 +2343,48 @@ endorsement of the stronger claim was not, and I had propagated it into this log
 before it was checked.
 
 Four sabotages, each isolating exactly the test(s) it should. 46 tests, full lint chain green.
+
+## Increment 55 (window 11) — the four small things, and a control that could not fail for a new reason
+
+Pass 23: **reject, load-bearing 3**. Fifth consecutive pass to credit the magnitude clause as SATISFIED
+— *"and the evidence is again the strongest in the series"* — and the **fourth consecutive pass finding no
+defect in the four registry guards**, under twelve probe shapes including several never tried. It is also
+the first reading to say the finish line is reachable from here: *"After that the remainder really is dated,
+named work, and the reviewer expects the NEXT reading to be able to say so."*
+
+All three of its load-bearing findings were the same shape at its narrowest: **a fix applied to a proper
+subset of what it certifies.**
+
+**The wrap strip consumed one space where the file it was built for uses three.** The marker pattern took
+the marker and at most ONE whitespace character, so a continuation indented further left a space behind and
+the join carried two against single-spaced needles. Three spaces after a star is the house indentation of
+this guard's own header — so the arm could not read the sentence certifying that it could. Pass 23 proved
+it by retiring a wording that spans that very sentence's line break and watching the guard find nothing.
+
+**And the repair for that introduced a false-positive class**, which pass 23 also caught: stripping every
+marker on every surface joined two SEPARATE markdown bullets into one sentence, while the identical content
+with hyphen bullets was left alone. A continuation marker is language-specific, so it is now decided by file
+type — a comment marker continues a comment in a script; only a blockquote marker continues anything in
+markdown; a list bullet or heading never does.
+
+**The count-deletion swept one artifact of two.** The guard header stopped publishing the population count;
+the engineering log kept publishing it, twice, in the same commit whose record says the fix is to stop
+writing the number down at all. Both are now gone, and the reason is stated where they were.
+
+**The arm I declined to test was declined on a false reason.** I recorded ARM 3's empty-population refusal
+as structurally untestable because the guard is a citing surface whose header cites passes. Pass 23 reached
+that state in one mutation. It is now tested the way its two siblings are — replace the leading block
+comment, strip citations on COMMENT LINES ONLY so no message template is touched, clear the archive. Getting
+there took four wrong attempts and each was instructive: dropping the shebang; slicing before the comment
+terminator; a discriminator keyed on backticks (comment prose is full of them); and a replacement token that
+**was the matched noun in another case**, so "fifth reading" became "fifth READING" and still resolved,
+because the guard matches case-insensitively. Two of the guard's failure messages also cited a pass number
+for no reason; removing that is both what made the state reachable and a plainer message.
+
+**A test that could not fail, for a reason I had not seen before.** Two redundant mechanisms each closed the
+three-space wrap — the marker pattern's own whitespace run AND a trim after it — so **no single sabotage
+could red the test that covers it.** The test looked covered and was masked. I removed the redundancy rather
+than the test: one mechanism, one sabotage, one red. Whitespace handling now lives in exactly one place.
+
+**Three sabotages, all firing, each isolating what it should.** 49 behavioural tests (52 with the chain
+test), full lint chain green.

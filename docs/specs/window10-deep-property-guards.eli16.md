@@ -1424,3 +1424,26 @@ One small good thing. While removing a word from a list, I moved a technical mar
 bracket and quietly broke the only part of that list that was doing any work. The checker caught it within
 the minute, by refusing my own comment about the repair. That is the fourth time this file's own writing
 has set off its own alarm, and the first time doing so caught a real bug rather than sloppy wording.
+
+## Two ways to be wrong that both look like being right
+
+The twenty-third reading was the first to say the end is in sight — after four small fixes, it expects the
+following one to be able to say the rest is just scheduled work. That is the closest this has come.
+
+The three things it found were all one thing: a fix that covers slightly less than the sentence describing
+it. My fix for phrases broken across a comment line handled a marker followed by one space, and the file it
+was written for indents by three — so it still could not read its own explanation. My deletion of a stale
+number removed it from one of the two places it was written. And the one check I said could not be tested,
+it tested in a single step.
+
+Two lessons worth keeping.
+
+The first: a test can be masked. Two different bits of my code each fixed the same case, so breaking either
+one on its own changed nothing — the test stayed green and looked like it was watching. It was not watching;
+it was double-covered. I deleted the duplication rather than the test, so now there is one way it works and
+one way to break it.
+
+The second: when I strip words out of a document to build a test case, the replacement must not be the word
+I am stripping. I replaced "reading" with "READING" — and the checker does not care about capitals, so
+every phrase I thought I had removed was still there. It took me four wrong attempts to get that test right,
+and each wrong attempt failed for a different reason than the one I assumed.
