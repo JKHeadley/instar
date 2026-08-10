@@ -48,9 +48,10 @@ The crystallizing case is the window-11 external review series on branch
 `docs/specs/reports/window10-external-passes/`. Every figure below was re-derived from those files during
 window 12, not carried from the reports that announced them.
 
-**The shape of the series.** Readings 7 through 24 — eighteen consecutive readings — were given the same
-question: *what did the last repair break?* Their load-bearing counts fell, and the fall was read as the
-work converging:
+**The shape of the series.** A run of consecutive readings was given the same question: *what did the last
+repair break?* — carried as a required section of the brief for readings **11 through 25**, which §2(d)
+derives from the verdicts themselves. Their load-bearing counts fell, and the fall was read as the work
+converging:
 
 ```
 pass  17 18 19 20 21 22 23 24 25
@@ -125,17 +126,37 @@ inside the noise the readers themselves had disclosed. Not one of them was hidin
 alternative honestly, in its own file. What nobody did was read the disclosures *together*, because the
 number travelled forward and the disclosures did not.
 
-**(d) The question was never written down.** This is the load-bearing gap, and it is the reason move (A)
-comes first. **Searching the repository finds no archived prompt for any of the 29 readings.** Two of the
-29 verdicts mention their brief in passing; the rest do not. The measurements were archived with care —
-29 files, no gaps — and the question that produced them was archived nowhere.
+**(d) The question was never written down — but its SHAPE survived by accident, and that accident is the
+proof.** No archived prompt exists for any of the 29 readings; searching the repository, its full history
+for deleted files, and the agent's own decision records finds none. What *did* survive is that each verdict
+answers a fixed set of headed sections, and **those section names are the questions.** Recovering them from
+all 29 files dates every change to the brief:
 
-**The honest consequence for this very document:** the claim that readings 7 through 24 all asked the same
-question is the *reviewers' and the author's characterisation*, corroborated by reading 26's analysis and
-by the pattern of the findings. **It cannot be verified from the repository, because the prompts were not
-kept.** The case study for "record the question" cannot fully check its own central claim, for exactly the
-reason it is proposing the rule. That is stated here rather than smoothed over, because smoothing it would
-be the failure the article is about.
+| readings | the brief's required sections | what changed |
+|---|---|---|
+| 1–4 | findings, coherence, verdict | **no metric exists yet** |
+| 5–9 | + magnitude, trajectory, own-account check | the metric is born |
+| 10 | + convergence | |
+| **11–25** | **+ regression-check** | **the repair-chase becomes a required section — 15 consecutive readings** |
+| **26** | **regression-check GONE, fresh-attack-report ADDED** | **the question changes — and the accept is overturned** |
+| 27–29 | both present | the doubled brief |
+
+**This is the case study's central claim, verified from the tree rather than taken on anyone's word** — and
+it corrects the span I was given. The repair-chase question is visible as a mandated section from reading
+**11**, not reading 7: **fifteen readings**, not eighteen. The "passes 7–24" boundary is reading 26's own
+retrospective characterisation and my predecessor's, and it is *not* visible on disk. The boundary that
+**is** visible is eleven.
+
+**The honest limit on this instrument.** A section missing from one reading may be that reviewer omitting
+it rather than the brief changing — reading 17 and reading 25 each drop a section their neighbours carry,
+and those look like omissions. So a single-pass absence is noise. What is not noise is a sustained change
+across many readings, and a brand-new section name appearing for the first time: at reading 26 a section
+vanishes and a *new* one appears in the same reading, which omission does not explain.
+
+**And the accident is the argument.** The question was recoverable only because the brief demanded headed
+sections and the reviewers kept them. Nobody designed that as a record of the question; had the brief asked
+for prose, the change would be unrecoverable and this article would rest on assertion. **Move (A) asks for
+one line so that the next series does not depend on that luck.**
 
 **One figure I derived and then withdrew.** I tried to establish how many of the 29 readings stated their
 own count rather than inheriting one. My first instrument searched for digits and returned 15 of 29; that
