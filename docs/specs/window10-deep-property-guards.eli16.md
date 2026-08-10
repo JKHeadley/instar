@@ -715,3 +715,47 @@ count to be seven while the work covers six.
 
 The new refusal says *give them different titles*, and deliberately does not mention updating records —
 because that was the sentence that opened the door.
+
+## Saying "this is impossible" when you only tested the easy half
+
+Yesterday I wrote a sentence into the rulebook: *a rule cannot be added without being checked against every
+known way things have failed before.* And I attached the words **proven, not asserted** — meaning I had not
+just claimed it, I had tried to break it and failed.
+
+I had tried to break it. I had tried to break the easy half.
+
+The test I ran added a new rule **with a new name**. It got caught, exactly as promised. What I never tried
+was adding a new rule with a name **already in use** — and that walks straight through, because the whole
+filing system is organised by name. So the sentence was false, and the word *proven* made it worse rather
+than better, because it told the next reader not to bother checking.
+
+I fixed it by making the sentence true — closing the hole — rather than by quietly editing the sentence down
+to what I had actually tested. Both the rulebook and the check now carry the record that this was false for a
+day. A guarantee that was once wrong and got fixed tells you more than one written as though it had always
+been right.
+
+**Then the useful part.** The rule about learning from failures says: when something gets through, don't just
+patch that one spot — describe the *shape* of what got through, and go ask every other guard whether the same
+shape works on it. So I did. Six guards, one question: *do you also file things by a name a person picks, and
+do you object if two things pick the same one?*
+
+One of them said yes, and it was not the one I was expecting.
+
+The check that makes sure promises get kept files them by promise number. Two entirely different promises given
+the same number become one promise as far as it is concerned — keep either one and it declares both kept. I did
+not conclude this from reading it. I set it up: two unrelated promises sharing a number, only the first actually
+done, and the check announced everything clear. The number it reports is a count of *promise numbers*, not of
+*promises*.
+
+I have **not** fixed that one, on purpose. Two mentions of the same number are usually the same promise written
+about twice, which is fine and intended. Telling those apart is a real decision about what a promise *is*, and
+making up a rule for it at this hour is exactly the kind of invented machinery this whole exercise exists to stop.
+It is written down, with the evidence, and it stays visible.
+
+Of the rest: one guard already refuses duplicate names outright — safe on purpose, not by luck, and that
+distinction matters. The other three have no automated guard at all, which is recorded honestly as *no guard*
+rather than counted as *safe*.
+
+**What I have not done, said plainly:** I asked this question of six rules. Filing things by name is everywhere
+in this codebase, and the other eighty-two rules were not examined. Nothing yet goes looking for the pattern on
+its own. Better to say that now than to let someone find it later.

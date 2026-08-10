@@ -57,6 +57,19 @@
  *   CERTIFIED — no fingerprinted standard can exist that has not been LOOKED AT
  *               through every recorded failure-shape.
  *
+ *               THIS LINE WAS FALSE FOR ONE DAY (2026-08-09) and is stated again only
+ *               because the hole beneath it is now closed. An independent reviewer added
+ *               a seventh fingerprinted standard under a heading identical to one already
+ *               swept; the population is keyed on that heading, a Map holds one entry per
+ *               key, and both guards printed clean over a standard no shape had ever been
+ *               swept against. Worse, this file's own staleness message ("re-sweep it and
+ *               update the digest") was the instruction that completed the exploit —
+ *               a remedy line can be an attack surface. The population is now refused when
+ *               two articles share a heading, so the sentence is earned rather than hoped.
+ *               Kept in the record rather than quietly corrected, because a certification
+ *               that was once false and got fixed is more informative than one that reads
+ *               as though it were always true.
+ *
  * **What it does NOT certify — the full list, because a short list here is the same
  * over-claim this registry exists to record** (external review, 2026-08-08, which
  * REJECTED an earlier draft of this file for declaring only the first item):

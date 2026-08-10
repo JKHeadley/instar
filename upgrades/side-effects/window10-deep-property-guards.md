@@ -1217,3 +1217,45 @@ Proven on three arms, with the exit code read directly rather than through a pip
 by both guards **for the collision reason specifically**; the untouched registry still passes at 88 articles
 and 6 fingerprinted; and a duplicate heading carrying no fingerprint correctly does *not* fire here, because
 that is the other guard's population, not this one's.
+
+## Increment 34 (window 11) — the over-claim, and the first sweep that paid for itself
+
+**The over-claim, corrected by making it true rather than by narrowing it.** The registry said *a
+fingerprint cannot be added without being checked against every known failure-shape*, followed by
+*proven by injection rather than asserted*. That sentence was **false as written for one day**, and the
+proof marker made it worse rather than better: the injection behind it covered only the case where the
+new standard has a name of its own. It never tested a name it shares. A proof marker on a claim the proof
+does not reach is the exact defect this window exists to catch, and it entered in the same change that
+built the machinery.
+
+Both the article and the guard's own CERTIFIED block now carry the falsification rather than a quiet
+edit. A certification that was once false and got fixed is more informative than one that reads as though
+it were always true — and the guard's block additionally records that **its own remedy line was the attack
+surface**, since "re-sweep it and update the digest" was the instruction that completed the exploit.
+
+**The sweep, and the part that justifies the whole loop.** Recorded as `GAP-name-keyed-population-collision`
+and swept against all six fingerprints — a real 2-of-6 partition, not a formality:
+
+- **One Failure Teaches Every Guard** — MATCHED. Where the shape was found; now refused by both guards.
+- **Deferral = Deletion** — **MATCHED, and this is the loop paying for itself.** One failure in one
+  standard's machinery taught me about a *different* standard's guard. `lint-deferral-referent-resolves.mjs`
+  builds `declared` as a Map from marker id to spec paths and `resolved` as a Set of ids, so two genuinely
+  different promises given the same tracked id collapse into one entry — resolving either clears both.
+  **Earned by execution, not by reading:** two distinct promises both marked `ZZZ-90001`, only the first
+  implemented, produced `clean — 1 tracked deferral id(s), 1 resolve, 0 orphaned` while the backup promise
+  existed nowhere. Its clean line counts IDS, not promises — the same publish-the-key-count defect.
+  **Recorded and deliberately NOT patched:** two markers sharing an id are often one promise cited twice,
+  so the repair needs a decision about promise identity. Inventing a guard for it tonight would be the
+  manufactured enforcement this registry refuses.
+- **Iterative Audit to Convergence** — UNMATCHED, and immune *deliberately* rather than by luck, which is
+  the distinction this sweep exists to draw. `write-audit-convergence.mjs` refuses a duplicate article
+  title and a duplicate Article ID before admitting a single entry.
+- **Documentation IS Being**, **Sovereignty**, **The Right to Stand Ground** — UNMATCHED: all three declare
+  `surfaces: NONE`, so there is no population to key on a name. Recorded as no-surface rather than counted
+  as safety.
+
+**The residual, stated rather than left to be discovered.** This sweep asked the question of six standards.
+Name-keyed populations are everywhere in this repository; the eighty-two grandfathered articles were not
+examined, and no mechanism finds a name-keyed container lacking a uniqueness refusal. The shape will now be
+asked of every future fingerprint by the staleness arm. It has not been retroactively swept across the
+codebase, and saying so is cheaper than someone finding it out later.
