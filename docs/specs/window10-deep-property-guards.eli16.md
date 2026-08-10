@@ -992,3 +992,37 @@ worth less than an honest range.
 **And one new thing to fix later, written down with a date:** nothing checks that a description of a
 guard still matches the guard. The freshness stamp watches the *rules*, never the *code*. I proved it
 by emptying out a guard completely and watching everything report green.
+
+## I retyped a rule that was four lines away
+
+The thirteenth reading caught the entry I wrote **entirely about a number going wrong** getting that
+number wrong. Again. Sixth time.
+
+I checked it myself before believing it, and the reviewer is right. My three figures were all wrong.
+
+**The reason is embarrassing and worth keeping.** To measure something about my own checker, I needed the
+checker's rule for what counts as an identifier. It is four lines long and it sits in the file I was
+measuring. I **retyped it from memory** instead of importing it. My version accepted one-character
+identifiers where the real one needs three — so the bare "4" in a phrase like "section 4" counted as an
+identifier, which is exactly the mistake an earlier reading had already corrected once.
+
+All week the instruction has been: copy the thing that already works. I applied it to test harnesses and
+to code patterns, and not to a four-line rule sitting in front of me.
+
+**And my "honest" move was the dishonest one.** The reviewer's count and mine differed, so I recorded both
+and said a stated range beats a sixth confident number. That sounds like humility. It is not: I never
+stated a range, I stated two precise sets; the answer was findable in seconds; and my own paragraph, a
+hundred words earlier, already contained a figure that settles a third of it. I had written a paragraph
+that disagreed with itself and called the disagreement rigour.
+
+**The other sentence I wrote to fix a false one was also false.** I replaced "comments never satisfy a
+promise" with "the comment half holds" — and a promise mentioned only in a comment inside a settings file
+still counts as kept. Same hole as one found earlier, one file type over.
+
+**Two more things now written down properly instead of buried in a code comment.** There are three
+different ideas of "the list of rules in this document" living in this project, and they agree today
+purely by luck. A heading written as a bullet point, or inside a quote, is invisible to every check. And
+one of the checks quietly ignores any rule that has no "Rule" section. Nothing compares those lists.
+
+The machinery keeps holding. It is the writing about it that keeps failing, and this time the writing
+that failed was the writing whose whole job was to stop that.
