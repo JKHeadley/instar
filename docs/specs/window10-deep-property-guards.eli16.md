@@ -1447,3 +1447,27 @@ The second: when I strip words out of a document to build a test case, the repla
 I am stripping. I replaced "reading" with "READING" — and the checker does not care about capitals, so
 every phrase I thought I had removed was still there. It took me four wrong attempts to get that test right,
 and each wrong attempt failed for a different reason than the one I assumed.
+
+## Fixing something nobody asked me to fix
+
+The twenty-fourth reading found the fewest problems of any so far — two — and said the next one could
+finish this if it finds only small ones.
+
+The problem it did find is worth sitting with, because I caused it by being helpful. The previous reading
+mentioned, as a small aside it explicitly said was not important, that my checker could mistake two
+separate bullet points for one wrapped sentence. It did not ask me to fix that. I fixed it anyway, by
+telling the checker to ignore star characters at the start of a line in prose documents.
+
+There are no bullet points written with stars in these documents. Not one. They use dashes. What stars
+actually do here is start a line of emphasised text in the middle of a wrapped sentence — twenty-two times.
+So I removed a problem that never happens and created one that happens twenty-two times, and I wrote a
+confident sentence explaining why, which is false of every star in the entire document.
+
+The fix is one small rule: a star followed by a space is a bullet and starts something new; a star followed
+by a letter is emphasis and continues the sentence above.
+
+The rest were things I should have caught myself. Three broken sentences from my last edit, two of them in
+messages the checker prints when it refuses — including one that says "found found", which I watched print
+four times during the review without seeing it. A count that said seven files when it meant six, in the
+checker whose entire job is that counts about yourself must be true. And I reworded a quotation from a
+reviewer while leaving the quotation marks around it — the right instinct, done the wrong way.

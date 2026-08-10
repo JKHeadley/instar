@@ -2350,7 +2350,11 @@ Pass 23: **reject, load-bearing 3**. Fifth consecutive pass to credit the magnit
 — *"and the evidence is again the strongest in the series"* — and the **fourth consecutive pass finding no
 defect in the four registry guards**, under twelve probe shapes including several never tried. It is also
 the first reading to say the finish line is reachable from here: *"After that the remainder really is dated,
-named work, and the reviewer expects the NEXT reading to be able to say so."*
+named work, and I would expect the […] reading to be able to say so."* (The elision is deliberate: the
+verdict names an ordinal, and reproducing it here would arm ARM 3 against a verdict that does not exist
+yet. Review pass 24 finding 2 caught the earlier form, which reworded INSIDE the quotation marks — a
+misquotation in the document whose thesis is that the account must match the material. A bracketed elision
+is the honest form; the reword was not.)
 
 All three of its load-bearing findings were the same shape at its narrowest: **a fix applied to a proper
 subset of what it certifies.**
@@ -2388,3 +2392,49 @@ than the test: one mechanism, one sabotage, one red. Whitespace handling now liv
 
 **Three sabotages, all firing, each isolating what it should.** 49 behavioural tests (52 with the chain
 test), full lint chain green.
+
+## Increment 56 (window 11) — the trade I made without being asked
+
+Pass 24: **reject, load-bearing 2 — the series FLOOR**, tying passes 18 and 20. Magnitude clause credited
+for the **sixth consecutive pass**, *"without qualification"*. **Fifth consecutive pass with no defect in
+any refusal arm of the four registry guards.** No critical finding for eight consecutive passes. Its own
+arithmetic on the series: passes 1–8 average 4.13, 9–16 average 4.63, **17–24 average 3.00**.
+
+**It rejected on one substantive finding, and the sharpest thing about it is that nobody asked for the
+change that caused it.** Pass 23 graded the markdown-bullet false-positive **minor, explicitly NOT
+load-bearing**, and did not prescribe fixing it. I fixed it anyway — and traded a false-positive class with
+**zero** instances in this corpus for a false-negative class with **twenty-two**. These documents bullet
+with hyphens; a single star opening a line is emphasis, and it is how they wrap. I re-derived the zero
+myself before acting on pass 24's finding, and it reproduces: there is not one star-bullet in the corpus.
+
+**Proven on a real committed line, not a fixture.** I retired a wording spanning the boundary at
+`upgrades/side-effects/…:352/353` and fed it to both rules: the shipped rule reports clean, the rule it
+replaced refuses at `:352`. The fix is one character class — a marker followed by WHITESPACE is a bullet
+and never continues; a marker followed by NON-space is emphasis and does. Both directions now sabotage to
+exactly one test each.
+
+**And it shipped certified by a sentence the corpus falsifies** — *"those start a new item rather than
+continue one"*, false of every star-leading line in the documents the guard watches. The sentence is
+corrected to the rule, and to the discrimination the rule actually makes.
+
+**The rest were mine to have caught.** Three prose corruptions from the last edit, two of them inside
+emitted failure messages — an orphaned sentence fragment where inserted text displaced a tail; a stray
+"review" left behind when a pass number was removed; and "found found" in the footer printed on **every**
+failing run, which I emitted four times during pass 24's own review without noticing. All three are
+repaired, and the footer no longer publishes a pass count that goes stale every reading.
+
+**A self-count one higher than the truth, in the guard whose subject is that a count about itself must be
+true.** This file reached its own annotation-source list twice — once via the claim surfaces, once appended
+— so the refusal published seven source files for six. A Set had made the BEHAVIOUR correct while the
+printed count stayed wrong, which is exactly the shape that hides.
+
+**And I misquoted a reviewer inside quotation marks.** Rewording pass 23's closing sentence to avoid arming
+ARM 3 against a verdict that does not exist was the right instinct; doing it INSIDE the quote marks was not.
+It is now a bracketed elision, which is the honest form — in the document whose thesis is that the account
+must match the material.
+
+**One thing pass 24 credited that is worth recording**: it re-derived pass 23's "5 quoted openings" and got
+4, and noted the branch had neither corrected the verbatim archive nor propagated the figure — *"that is the
+account behaving well."* Deleting a count rather than restating it is the handling that made that possible.
+
+50 behavioural tests, two new sabotages each isolating one test, full lint chain green.

@@ -41,9 +41,10 @@
  *   whole, so a claim wrapped across any number of lines is found exactly once at the line where it
  *   starts. A continuation may begin with any amount of indentation, and — in a SCRIPT — with a comment
  *   marker, or — in MARKDOWN — with a blockquote marker. It may NOT begin with a markdown list bullet or
- *   heading marker: those start a new item rather than continue one, and stripping them joined separate
- *   bullets into one false claim. That asymmetry is deliberate and is the whole of the rule; it
- *   starts. That removes pass 20's finding 4 (a violation on one line reported twice, one copy naming a
+ *   heading marker followed by whitespace: that opens a new item rather than continuing one, and
+ *   stripping it joined separate bullets into one false claim. A marker followed by NON-space is emphasis
+ *   opening a continuation, and it does continue. That asymmetry is deliberate and is the whole of the
+ *   rule. Matching the file whole also removes pass 20's finding 4 (a violation on one line reported twice, one copy naming a
  *   line that did not contain it) and finding 5 (a claim sandwiched between two annotated lines was
  *   invisible, because the escape checked NEIGHBOURS). The escape is now the matched span's OWN lines.
  *
@@ -128,8 +129,13 @@ const CLAIM_SURFACES = [
  */
 const SOURCE_EXCLUDED = new Set(['tests/unit/window10-guards-behaviour.test.ts']);
 /** Where annotated wordings are harvested from: a claim retired anywhere real is retired everywhere. */
-const ANNOTATION_SOURCES = [...CLAIM_SURFACES, ...COUNTDOWN_GUARDS, 'scripts/lint-account-matches-tree.mjs']
-  .filter((rel) => !SOURCE_EXCLUDED.has(rel));
+// De-duplicated: this file reaches the list twice — once via CLAIM_SURFACES, once appended here — so the
+// refusal published "7 source file(s)" for six distinct files. Review pass 24 finding 4. A Set made the
+// BEHAVIOUR correct while the printed self-count stayed wrong, which is the shape the sibling guard exists
+// to catch, in the guard whose subject is that a count about itself must be true.
+const ANNOTATION_SOURCES = [...new Set(
+  [...CLAIM_SURFACES, ...COUNTDOWN_GUARDS, 'scripts/lint-account-matches-tree.mjs'],
+)].filter((rel) => !SOURCE_EXCLUDED.has(rel));
 
 /**
  * Citation forms ARM 3 recognises. Review pass 21 finding 2: the first version parsed only `pass N`,
@@ -275,8 +281,15 @@ function continuationMarkerRe(rel) {
     // Review pass 23 finding 1 was a whitespace boundary; having two mechanisms both fix it meant no
     // single sabotage could red the test that covers it, which is a covered-looking arm with a masked
     // control. One mechanism, one sabotage, one red.
-    ? /^(?:\/\/+|\*+)/          // script: comment continuation
-    : /^>+/;                    // markdown: blockquote continuation only
+    //
+    // The MARKDOWN branch discriminates on what follows the marker, not on the marker alone. Review pass
+    // 24 finding 1: excluding every non-blockquote opener closed a class with ZERO instances in this
+    // corpus (there are no star-bullet list items — the docs bullet with hyphens) and opened one with
+    // twenty-two (a single star opening a continuation line is emphasis, and it is how these documents
+    // wrap). I re-derived the zero myself before acting on it. A bullet is marker+WHITESPACE and never
+    // continues; an emphasis run is marker+NON-space and does. One character class, both directions.
+    ? /^(?:\/\/+|\*+)/            // script: comment continuation
+    : /^(?:>+|\*+(?!\s))/;        // markdown: blockquote, or emphasis opening a continuation
 }
 
 function scan(abs, needles, rel) {
@@ -428,8 +441,8 @@ for (const rel of COUNTDOWN_GUARDS) {
   if (!src.includes(SHARED_SYMBOL)) {
     failures.push(
       `${rel} does not reference ${SHARED_SYMBOL}. Both countdown guards must take the horizon from the ` +
-      `one shared definition in scripts/lib/baseline-history.mjs. This is the arm that caught review ` +
-      `an earlier reading's finding, which the behavioural suite structurally cannot: a private literal equal to the ` +
+      `one shared definition in scripts/lib/baseline-history.mjs. This is the arm that caught an ` +
+      `earlier reading's finding, which the behavioural suite structurally cannot: a private literal equal to the ` +
       `shared value produces identical output.`,
     );
   }
@@ -514,9 +527,10 @@ if (JSON_OUT) {
   console.error('\n❌ lint-account-matches-tree failed:');
   for (const f of failures) console.error(`  - ${f}`);
   console.error(
-    '\nWhy this exists: twenty review passes narrowed to one class — a closure claimed and not delivered. ' +
+    '\nWhy this exists: a long series of adversarial readings narrowed to one class — a closure claimed and ' +
+    'not delivered. ' +
     'Both populations are DERIVED from their sources rather than transcribed, because a reading found ' +
-    'found that both hand-transcribed lists shipped narrower than the class their prose named.',
+    'that both hand-transcribed lists shipped narrower than the class their prose named.',
   );
 }
 

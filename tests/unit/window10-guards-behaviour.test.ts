@@ -631,6 +631,17 @@ describe('lint-account-matches-tree — the account must match the tree', () => 
     expect(r.out).toContain('repeats the RETIRED claim');
   });
 
+  // Review pass 24 finding 1: excluding every non-blockquote opener in markdown closed a class with ZERO
+  // instances in this corpus and opened one with twenty-two — a single star opening a continuation line
+  // is emphasis, and it is how these documents wrap. Proven on a real committed boundary, not a fixture.
+  it('finds a retired claim wrapped across an EMPHASIS continuation in markdown', () => {
+    append(SE(), '\n- [SUPERSEDED — "a wholly invented retired wording"] the corrected version.\n');
+    append(path.join(fixture, 'docs', 'specs', 'window10-deep-property-guards.eli16.md'),
+      '\nAs established, a wholly invented\n*retired wording* is how it works.\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('repeats the RETIRED claim');
+  });
   // Review pass 23 finding 4: stripping every marker on every surface joined two SEPARATE markdown
   // bullets into one sentence. A guard that flags correct prose is one its reader learns to skip.
   it('does NOT join two separate markdown bullets into one claim', () => {
