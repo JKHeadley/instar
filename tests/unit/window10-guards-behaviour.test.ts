@@ -12,7 +12,9 @@
  * mechanical rather than moral: **nothing in this repository could fail when a repair broke a guard**,
  * so every fix's correctness rested entirely on the next external reviewer noticing. Pass 17 put it
  * plainly — *"that is why this streak has run eleven passes, and it will not end by finding defects
- * faster."* Two of those eleven were arms I made unreachable, and one was an arm I unbounded; all three
+ * faster."* ONE of those eleven was an arm I made unreachable, and one was an arm I unbounded; a third
+ * unreachable arm (the gap guard's leg 4) belongs to the pass-3 repair, not the streak — pass15-verdict.md
+ * finding 5 ends "Introduced at the pass-3 repair; eleven subsequent passes did not reach it". All three
  * would have been caught here in seconds.
  *
  * It is also, precisely, the registry's own recorded `alive-but-inert` shape — a guard whose working
@@ -379,6 +381,49 @@ describe('lint-account-matches-tree — the account must match the tree', () => 
     const r = run('lint-account-matches-tree.mjs');
     expect(r.code).toBe(1);
     expect(r.out).toContain('publishes the SUPERSEDED figure');
+  });
+
+  // ARM 2a — retired CLAIMS-about-this-work. This is the arm covering review pass 19's finding 3: two
+  // self-count corrections announced in the engineering log and applied at neither of their sites.
+  it('refuses a retired claim reproduced on a tracked surface', () => {
+    const s = path.join(fixture, 'upgrades', 'side-effects', 'window10-deep-property-guards.md');
+    fs.mkdirSync(path.dirname(s), { recursive: true });
+    // [SUPERSEDED — fixture input, deliberately reproducing the retired wording so the arm has something to fire on]
+    fs.writeFileSync(s, 'The review returned reject with six major findings and no criticals.\n'); // [SUPERSEDED — fixture]
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('repeats the RETIRED claim');
+  });
+
+  // Prose wraps, and the sentence most likely to reproduce a retired wording is the one describing its
+  // correction — which is exactly where the line break lands. A per-line check would miss it.
+  it('refuses a retired claim split across a line break', () => {
+    const s = path.join(fixture, 'upgrades', 'side-effects', 'window10-deep-property-guards.md');
+    fs.mkdirSync(path.dirname(s), { recursive: true });
+    // [SUPERSEDED — fixture input, deliberately split across a line break to exercise the two-line window]
+    fs.writeFileSync(s, 'pass 1 was recorded here as six major\nfindings, which is wrong.\n'); // [SUPERSEDED — fixture]
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('repeats the RETIRED claim');
+  });
+
+  it('ACCEPTS a retired claim quoted inside its own annotation', () => {
+    const s = path.join(fixture, 'upgrades', 'side-effects', 'window10-deep-property-guards.md');
+    fs.mkdirSync(path.dirname(s), { recursive: true });
+    fs.writeFileSync(s, '- [SUPERSEDED — "six major findings", of pass 1] → 5 major + 1 minor.\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code, r.out).toBe(0);
+  });
+
+  // The narrowing control. Pointing the FIGURE arm at the engineering log flagged fourteen lines that
+  // legitimately narrate how the measurement moved. A guard that flags correct prose trains its reader
+  // to skip it, so the two arms carry different populations — this asserts that split is real.
+  it('does NOT apply the figure arm to the engineering log, which narrates the figure history', () => {
+    const s = path.join(fixture, 'upgrades', 'side-effects', 'window10-deep-property-guards.md');
+    fs.mkdirSync(path.dirname(s), { recursive: true });
+    fs.writeFileSync(s, 'The measurement went 62% of 178, then 54% of 194, now 201 of 217.\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code, r.out).toBe(0);
   });
 
   // The false-positive control: the annotated form is the SANCTIONED way to name a retired figure.

@@ -385,7 +385,7 @@ propagation the operator specified, paying for itself on day one, against its ow
 ## Increment 9 — the external review REJECTED increment 8, and what that cost
 
 `docs/specs/reports/` will carry the pass record; this is the engineering summary. The Substrate delta
-review returned **VERDICT: reject** with six major findings and no criticals. All six were acted on; none
+review returned **VERDICT: reject** with **five major and one minor** finding and no criticals. All six were acted on; none
 were argued away.
 
 | # | Finding | Action |
@@ -1910,7 +1910,7 @@ streak** — something no previous pass had checked:
 
 Verified: each guard appears in exactly one test file, and every reference there is a **list-membership
 assertion** that the script is in the lint chain. An existence check. **In the branch whose own recorded
-failure-shape is `alive-but-inert`.** Two of the eleven streak defects were arms I made unreachable and
+failure-shape is `alive-but-inert`.** One of the eleven streak defects was an arm I made unreachable and
 one was an arm I unbounded; all three would have been caught in seconds by the file this increment adds.
 
 **`tests/unit/window10-guards-behaviour.test.ts` — 20 tests, and they can fail.** Each guard gets a
@@ -1959,7 +1959,11 @@ guard exports nothing) rather than leaving the weaker option unexplained.
 **Three corrections announced here and applied nowhere here.** Pass 17's numbers: `54 insertions, 0
 deletions` on this file — the announcements of three fixes appended eighty-four lines below the text they
 did not fix. All three are now marked inline with the `[SUPERSEDED — …]` convention **this log already
-used **[SUPERSEDED — twice, not four times; two of the four were prose cells describing a fix rather than uses of the marker. A count-about-itself, wrong, in the increment about counts-about-itself being wrong. Review pass 18.]** four times**, which is the point: the convention existed and I appended instead of using it. The
+used **twice**
+[SUPERSEDED — this sentence originally read "already used four times". Twice is correct: two of the four
+were prose cells describing a fix rather than uses of the marker. A count-about-itself, wrong, in the
+increment about counts-about-itself being wrong. Review pass 18; the splice itself was review pass 19 nit 6.]
+, which is the point: the convention existed and I appended instead of using it. The
 third also carried a wrong ordinal (43, where the node-only ordinal is 44) that had never been recorded
 as wrong — corrected on the record rather than silently.
 
@@ -2017,11 +2021,22 @@ And when I first wrote those corrections I **quoted the banned numerals inside m
 ban** — the third time I have been caught doing exactly that. Removed; the notes now describe the figure
 without reproducing it.
 
-**Three bookkeeping corrections**, all counts-about-myself: *"the convention this log already used four
-times"* (twice — two of the four were prose cells describing a fix); pass 1 recorded here as *"six major
-findings"* when the archived verdict says 5 major + 1 minor, corrected twice before by passes 6 and 10 and
-never in this log; and *"two of the eleven streak defects were arms I made unreachable"*, where one dates
-to the pass-3 repair — an attribution one wider than the evidence.
+**Three bookkeeping corrections**, all counts-about-myself.
+[SUPERSEDED — the three quotations in this paragraph are the RETIRED wordings, reproduced deliberately
+because a correction that does not name what it corrects is unauditable. Review pass 19 finding 3 found
+that two of the three were announced HERE and applied NOWHERE, which is the same failure this file
+diagnoses for pass 17 eighty lines above. All three are now corrected at their own sites; this annotation
+is what releases the quotations from the retired-claim guard.]
+
+- [SUPERSEDED — "the convention this log already used four times"] → **twice**; two of the four were prose
+  cells describing a fix rather than uses of the marker.
+- [SUPERSEDED — "six major findings", of pass 1] → **5 major + 1 minor**. Corrected by passes 6 and 10 and,
+  until review pass 19, never in this log. Note that a naive grep of `pass1-verdict.md` for `SEVERITY:`
+  returns 1 critical + 5 major + 1 minor + 1 nit — two of its eight such lines are empty-class declarations
+  ("No critical findings."), so the naive count is the wrong one.
+- [SUPERSEDED — "two of the eleven streak defects were arms I made unreachable"] → **one**. `pass15-verdict.md`
+  finding 5 ends "Introduced at the pass-3 repair; eleven subsequent passes did not reach it", which
+  excludes the gap guard's leg 4 from the streak.
 
 **`pass17-verdict.md` filed — the eighth lapse, and the third consecutive.** Each of the last three was
 filed only after the NEXT reviewer pointed at it. Saying "restored" after each catch has not made the
@@ -2073,3 +2088,50 @@ order once is worth more than a fifth.
 severity at `:388` and the over-attribution in three places) are announced-not-applied — the same shape,
 and I am recording that rather than claiming otherwise. Refusal-arm coverage is roughly 40% with nothing
 measuring it.
+
+## Increment 51 (window 11) — the tenth archive lapse, inside the commit that recorded the ninth as fixed
+
+**Increment 50's commit message said the archive convention was finally observed in the right order. Then
+I committed it without archiving pass 19's own verdict.** That is the tenth lapse, it is pass 19's finding
+3 exactly — a closure claimed and not delivered — and it happened *inside the commit celebrating the fix
+for the ninth instance of it.* Filed as its own commit (`00ce6f926`), unprompted, rather than waiting for
+pass 20 to find the file absent, which is what each of the last four lapses required.
+
+**The two announced-not-applied corrections, applied at their sites.** Both re-derived from the archive
+first, not carried from prose:
+
+- *pass 1's severities* → **5 major + 1 minor**, corrected at `:388` where the claim actually lives. Worth
+  recording how the check went: a naive grep of `pass1-verdict.md` for `SEVERITY:` returns 1 critical + 5
+  major + 1 minor + 1 nit, because two of its eight such lines are **empty-class declarations** ("SEVERITY:
+  critical. No critical findings."). My own instrument would have produced the wrong answer and confirmed
+  the wrong claim. The reviewer's count is the right one.
+- *the over-attribution* → **one**, corrected at all three sites (`:1913`, the test header, the explainer),
+  each now citing the excluding evidence: `pass15-verdict.md` finding 5 ends *"Introduced at the pass-3
+  repair; eleven subsequent passes did not reach it"*, which removes the gap guard's leg 4 from the streak.
+- Nit 6's mid-phrase splice is unspliced; the announcement paragraph is now one annotation per retired
+  claim, the mark on the same line as the wording it releases.
+
+**The class is now mechanical, by widening an existing arm rather than adding a third lint.** `RETIRED_CLAIMS`
+rides the same escape and the same loop shape as the superseded-figure arm: five retired claims-about-this-work,
+checked over a **two-line window** because prose wraps and the sentence most likely to reproduce a retired
+wording is the one describing its correction — which is exactly where the line break lands.
+
+**Two false starts, both instructive, both corrected before commit rather than found later:**
+
+1. I first pointed BOTH arms at the widened surface list. The figure arm then flagged **fourteen** lines in
+   this log that legitimately narrate how the measurement moved across five corrections — each mention is
+   the point of its sentence, not a stale claim. A guard that flags correct prose trains its reader to skip
+   it. The arms now carry **different populations**, and a test asserts that split is real.
+2. The claim arm then flagged its own **test fixture** — the line that deliberately writes the retired
+   wording so the arm has something to fire on. The negative-control rule cuts both ways: an arm must be
+   fired by an input, and an input must not be mistaken for the defect. Annotated rather than dropping the
+   test file from scope, which would have blinded the arm to the very site pass 19 found in it.
+
+**Four new behavioural tests, three new sabotages, each isolating exactly its own test**: neuter the claim
+loop → both claim tests red; collapse the two-line window to one line → only the split-across-lines test
+red; widen the figure arm to the engineering log → only the narrowing control red. 32 tests, green restored.
+
+**Honest remainder:** the mechanical closure covers five NAMED claims on four NAMED surfaces. A retired
+claim nobody adds to the list is uncovered, exactly as the countdown lint declares of `REQUIRE_COUNTDOWN`.
+This is a guard against the recurrence of known false closures, not a general proof that the account matches
+the tree.

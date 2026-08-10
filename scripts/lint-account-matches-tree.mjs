@@ -35,9 +35,10 @@
  * Declared explicitly, per *Verify the State, Not Its Symbol* tooth (D):
  *
  *   MEASURED  — (1) every file in COUNTDOWN_GUARDS imports the shared horizon symbols and declares no
- *               numeric horizon literal of its own; (2) no SUPERSEDED_FIGURE appears on a reader-facing
- *               surface except on a line carrying an explicit `[SUPERSEDED` annotation.
- *   CERTIFIED — two specific false-closure shapes cannot be re-committed silently.
+ *               numeric horizon literal of its own; (2) no SUPERSEDED_FIGURE and no RETIRED_CLAIM appears
+ *               on a tracked surface except within a two-line window carrying an explicit `[SUPERSEDED`
+ *               annotation.
+ *   CERTIFIED — three specific false-closure shapes cannot be re-committed silently.
  *
  * **It does NOT certify that the repository's account is true in general.** It covers two named shapes
  * that recurred often enough to earn a guard, and nothing else — a document can still misdescribe the
@@ -74,10 +75,50 @@ const HORIZON_LITERAL_RE = /\b(?:const|let|var)\s+\w*HORIZON\w*\s*=\s*\d+/i;
  * narrower id population through a character class a space terminates; the live figure is 201 of 217.
  */
 const SUPERSEDED_FIGURES = ['178', '110', '62%', '54%'];
-/** Surfaces an outside reader actually reads. `upgrades/next/` ships. */
+
+/**
+ * Retired CLAIMS-ABOUT-THIS-WORK, in the same arm because they fail the same way and the same annotation
+ * releases them. Each was corrected on the record and then survived at its original site — review pass 19
+ * finding 3 found two of them still live after the commit that announced their correction, which was
+ * itself the verbatim repeat of what that file diagnoses for pass 17 eighty lines earlier.
+ *
+ *   "six major findings"  — pass1-verdict.md is 5 major + 1 minor. Corrected by passes 6, 10 and 18, and
+ *                           applied at the claim for the first time at review pass 19. Note a naive grep
+ *                           for /SEVERITY:/ counts 1 critical + 5 major + 1 minor + 1 nit, because two of
+ *                           the eight lines are EMPTY-CLASS declarations ("No critical findings.").
+ *   "two of the eleven"   — one of the two (the gap guard's leg 4) dates to the pass-3 repair, which
+ *                           pass15-verdict.md finding 5 ends by excluding: "Introduced at the pass-3
+ *                           repair; eleven subsequent passes did not reach it."
+ */
+const RETIRED_CLAIMS = [
+  'six major findings',
+  'two of the eleven streak defects',
+  'two of those eleven were arms',
+  'two of those eleven were alarms',
+  'already used four times',
+];
+
+/**
+ * Surfaces for the FIGURE arm: what an outside reader actually meets. `upgrades/next/` ships.
+ *
+ * Deliberately NOT the engineering log. That file's subject IS the figure's history — it narrates the
+ * value moving across five corrections, and each mention is the point of its sentence, not a stale claim.
+ * Pointing this arm at it produced fourteen findings, none of which any review pass has ever raised, and
+ * a guard that flags correct prose trains its reader to skip it.
+ */
 const READER_FACING = [
   'upgrades/next/deferral-tracking-verified-not-assumed.md',
   'docs/specs/window10-deep-property-guards.eli16.md',
+];
+
+/**
+ * Surfaces for the CLAIM arm, which is wider because every one of review pass 19's finding-3 sites lived
+ * in the engineering log or the test file. Covering only reader-facing surfaces would have caught none.
+ */
+const CLAIM_SURFACES = [
+  ...READER_FACING,
+  'upgrades/side-effects/window10-deep-property-guards.md',
+  'tests/unit/window10-guards-behaviour.test.ts',
 ];
 const SUPERSEDED_MARK = '[SUPERSEDED';
 
@@ -113,11 +154,42 @@ for (const rel of COUNTDOWN_GUARDS) {
   }
 }
 
-// ── ARM 2: no superseded figure on a reader-facing surface, unannotated ───────────────────────────
+// ── ARM 2a: no retired CLAIM-about-this-work on any tracked surface, unannotated ───────────────────
+for (const rel of CLAIM_SURFACES) {
+  const abs = path.join(ROOT, rel);
+  if (!fs.existsSync(abs)) continue;
+  const lines = fs.readFileSync(abs, 'utf-8').split('\n');
+
+  // Retired claims are checked over a TWO-LINE window, because prose wraps: the announcement paragraph
+  // that quotes "six major\nfindings" splits it across a line break, and a per-line check would miss
+  // exactly the sentence most likely to reproduce the retired wording. The escape is the same mark, on
+  // either line of the window — a quotation that is explicitly labelled as the superseded wording is the
+  // sanctioned way to describe a correction.
+  lines.forEach((line, i) => {
+    const next = lines[i + 1] ?? '';
+    if (line.includes(SUPERSEDED_MARK) || next.includes(SUPERSEDED_MARK)) return;
+    const window = `${line} ${next}`.replace(/\s+/g, ' ').toLowerCase();
+    for (const claim of RETIRED_CLAIMS) {
+      if (window.includes(claim.toLowerCase())) {
+        failures.push(
+          `${rel}:${i + 1} repeats the RETIRED claim "${claim}" without a ${SUPERSEDED_MARK}…] annotation ` +
+          `— \`${line.trim().slice(0, 90)}\`. Review pass 19 finding 3 found two retired claims still live at ` +
+          `their original sites in the commit that announced their correction. Correct it AT the claim, or ` +
+          `annotate it if the retired wording is being quoted deliberately.`,
+        );
+        return;
+      }
+    }
+  });
+}
+
+// ── ARM 2b: no superseded figure on a reader-facing surface, unannotated ──────────────────────────
 for (const rel of READER_FACING) {
   const abs = path.join(ROOT, rel);
   if (!fs.existsSync(abs)) continue; // a release note may legitimately be consumed and removed
   const lines = fs.readFileSync(abs, 'utf-8').split('\n');
+
+
   lines.forEach((line, i) => {
     if (line.includes(SUPERSEDED_MARK)) return; // explicitly annotated — that is the sanctioned form
     for (const fig of SUPERSEDED_FIGURES) {
@@ -140,6 +212,7 @@ for (const rel of READER_FACING) {
 const report = {
   countdownGuards: COUNTDOWN_GUARDS.length,
   readerFacingSurfaces: READER_FACING.filter((r) => fs.existsSync(path.join(ROOT, r))).length,
+  claimSurfaces: CLAIM_SURFACES.filter((r) => fs.existsSync(path.join(ROOT, r))).length,
   failures,
 };
 
@@ -148,7 +221,8 @@ if (JSON_OUT) {
 } else if (failures.length === 0) {
   console.log(
     `lint-account-matches-tree: clean — ${report.countdownGuards} countdown guard(s) share one horizon ` +
-    `definition, ${report.readerFacingSurfaces} reader-facing surface(s) free of unannotated superseded figures.`,
+    `definition, ${report.readerFacingSurfaces} reader-facing surface(s) free of ${SUPERSEDED_FIGURES.length} ` +
+    `superseded figure(s), ${report.claimSurfaces} tracked surface(s) free of ${RETIRED_CLAIMS.length} retired claim(s).`,
   );
 } else {
   console.error('\n❌ lint-account-matches-tree failed:');
