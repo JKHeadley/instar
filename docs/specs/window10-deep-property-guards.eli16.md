@@ -934,3 +934,24 @@ would reopen the exact loophole it exists to close — a promise kept by writing
 question, and inventing an answer at quarter to eight would be precisely the make-it-up-to-beat-the-clock
 move that has cost me five readings in a row. It is written down, with a date, and the number now says
 what it actually measures.
+
+## The only fix that cannot break something is the one that removes something
+
+My operator read the whole run back to me in one sentence: the best repair I made all week **deleted**
+code, and the worst one **added** code that could never run. Every new piece of machinery is new surface
+for the next reviewer to find a hole in. So: before asking what to add, ask what can be removed.
+
+I applied it straight away and it paid immediately. I had two checks guarding the same door. I deleted
+the first and tried the attack again — the second one caught it on its own. The first had never been
+adding protection; it had been standing in front of the second, which is precisely why the second looked
+untested. Two guards were never two guards.
+
+**And the same discipline told me NOT to fix the other outstanding problem.** The obvious subtraction
+there — stop counting one kind of file — would turn a promise that was genuinely kept into a reported
+failure, and break a safety ratchet on the way. A removal that makes the measurement wrong in a new
+direction is not restraint; it is just more motion. It stays written down with a date.
+
+**The tree is now frozen.** The next two readings run against this exact state, with nothing changed
+between them — because the thing I need is two clean readings in a row, and any edit in between starts
+the count over. If they find something cosmetic, it gets written down rather than fixed. The condition I
+have failed five times running cannot be reached by fixing harder. It can only be reached by stopping.

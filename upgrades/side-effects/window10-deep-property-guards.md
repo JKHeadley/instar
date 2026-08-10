@@ -1481,3 +1481,45 @@ passes running.
 **What did NOT change: the ratio.** 217 / 16 / 201 stands, and the raw fraction is still the honest
 form. What changed is that the article now states what the fraction certifies, instead of letting a
 reader take it as a count of abandoned promises.
+
+## Increment 39 (window 11) — the freeze commit: repair by subtraction
+
+Operator steer after pass 11, and it reads the run correctly: **the best repair of the whole run was a
+CONSOLIDATION — "the two checks were never two things", code REMOVED — and the worst mistake was an
+ADDITION that could never fire.** Every line of new machinery is new surface for the next reviewer to
+falsify; the only repairs that cannot introduce a defect are the ones that subtract.
+
+Applied immediately, and it found something. **The partition identity ALONE refuses both halves of the
+collision space.** Verified by deleting the fingerprinted-duplicate check and running attack A against
+it: refused, `89 article(s), but 6 fingerprinted + 82 without a fingerprint = 88`. So that check
+contributed **no coverage the partition did not already have** — it only preempted the partition into
+the silence pass 11 caught. Two checks were never two things; the second existed mainly to make the
+first look thorough.
+
+Removed. One refusal survives, its reachability proven on real inputs rather than by editing the guard,
+and the baseline-membership reasoning the deleted check was written for is folded into it — the
+partition refuses a name-collided population before the membership comparison is ever reached.
+
+**All four arms re-proven against the consolidated guard, in freshly built scratch trees** (the previous
+ones had drifted — one was missing the shared core, one had been overwritten by an earlier
+false-positive test, and both produced misleading results until rebuilt, which is its own small lesson
+about trusting a harness you have been mutating):
+
+| arm | input | result |
+|---|---|---|
+| A | duplicate heading, both fingerprinted | refused — partition |
+| B | duplicate heading, new one unfingerprinted | refused — partition |
+| C | heading indented three spaces | refused — dialect |
+| D | untouched registry | clean, 88 / 6 / 82 |
+
+**AND THE PROSE-RESOLUTION HOLE IS DELIBERATELY LEFT ALONE**, which is the same discipline pointing the
+other way. The available subtraction — dropping JSON from the resolving corpus — would convert a
+demonstrably-kept promise into a reported orphan (increment 38: four dedicated test files, all citing
+the id only in stripped header comments) and break a shrink-only ratchet to do it. A subtraction that
+makes the measurement *differently* wrong is not restraint, it is motion. It stays dated named work.
+
+**THE TREE IS NOW FROZEN.** Passes 12 and 13 run against this exact state. If pass 12 finds nothing new
+inside the pass-11 repairs, pass 13 runs against the SAME tree without a single edit between them,
+because the blocking condition is two consecutive clean readings and any edit resets the clock. Cosmetic
+findings from either become dated work. The condition I keep failing is unreachable by the
+fix-everything reflex; it is reachable only by not touching anything.

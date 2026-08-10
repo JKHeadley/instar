@@ -159,37 +159,37 @@ for (const a of articles) {
 
 const fingerprinted = new Set(withFingerprint);
 
-// NAME COLLISION — the sibling half of the refusal in lint-enforcement-gap-records.mjs. This lint
-// reported "89 article(s), 7 fingerprinted" over a registry holding six distinct fingerprinted
-// NAMES, because `withFingerprint` is an array and every set-membership question below is asked of
-// `fingerprinted`, which is not. So the count it publishes and the population it actually reasons
-// about were two different things, and the smaller one was the real one.
+// NAME COLLISION — history kept, because the SHAPE of the repair is the lesson.
 //
-// That is this registry's own tooth (E) turned on this file: a check whose passing CONDITION is
-// narrower than the CLAIM its result is read as certifying. "7 fingerprinted" was read as seven
-// standards carrying enforcement declarations; what was verified was six. The gap between those two
-// numbers is exactly where an unswept standard lives, and it was printed on screen every run.
+// Three versions stood here in three increments. (1) A duplicate-name check covering only the half of
+// the collision space where the duplicate ALSO carries a fingerprint — review pass 10 walked the other
+// half straight through. (2) That check PLUS a partition assertion, with three artifacts certifying the
+// partition as the real, general repair — pass 11 proved the partition UNREACHABLE on every input (9,330
+// modelled populations, zero reaching it) because the name check preempted it, and showed that the
+// "negative control" recorded for it had been obtained by editing THIS FILE rather than by any registry
+// input. (3) This one, which is smaller than either.
 //
-// SCOPE, stated because pass 10 falsified the sentence that used to sit here: this arm covers ONLY the
-// half of the collision space where the duplicate ALSO carries a fingerprint. The other half — a
-// duplicate carrying none — is caught by the partition reconciliation below, which was added after this
-// comment claimed a completeness it did not have.
+// THE CONSOLIDATION: the partition identity ALONE refuses both halves. Verified by running attack A
+// (duplicate heading, both fingerprinted) with the name check deleted — refused, `89 article(s), but 6
+// fingerprinted + 82 without a fingerprint = 88`. So the name check contributed no coverage the partition
+// did not already have; it only preempted it into silence. The two checks were never two things, and the
+// second existed mainly to make the first look thorough.
 //
-// Refusing here, rather than only in the sweep guard, because the exact-membership baseline
-// comparison below is also name-keyed: a duplicate cannot change `fingerprinted`, so a new
-// fingerprinted standard sharing an existing heading would pass the membership check that exists to
-// make a new fingerprint impossible to add silently.
-const dupFingerprinted = [...new Set(withFingerprint.filter((n, i) => withFingerprint.indexOf(n) !== i))];
-if (dupFingerprinted.length > 0) {
-  console.error(
-    `[enforcement-fingerprint] ${dupFingerprinted.length} article heading(s) carry an enforcement fingerprint ` +
-    `MORE THAN ONCE: ${dupFingerprinted.map((d) => `"${d}"`).join(', ')}. Every membership question here is asked ` +
-    `by heading, so a duplicate is invisible to the baseline comparison that exists to stop a fingerprint being ` +
-    `added unnoticed. Give each article a distinct heading.`,
-  );
-  process.exit(1);
-}
-
+// That is the pattern behind five consecutive review passes, named by the operator after pass 11: every
+// line of new machinery is new surface for the next reviewer to falsify, and the only repairs that cannot
+// introduce a defect are the ones that SUBTRACT. The best repair of this run removed code; the worst added
+// an arm that could never fire.
+//
+// What survives is ONE refusal. Its CONDITION is the arithmetic — chosen so that a future change to how
+// the buckets are built cannot silently make it stop covering — and its MESSAGE names the duplicate
+// headings, because today they are always the cause. Stated plainly so nobody reads depth into it: this
+// is NOT a broader net than name-uniqueness. It catches exactly what a duplicate-name rule catches; the
+// arithmetic form buys resilience to a refactor and nothing else.
+//
+// It also covers the baseline-membership angle the deleted check was written for: the exact-membership
+// comparison below is name-keyed, so a duplicate cannot change `fingerprinted`, and a new fingerprinted
+// standard sharing an existing heading would otherwise pass the check that exists to stop a fingerprint
+// being added unnoticed. The partition refuses that population before the comparison is ever reached.
 const missing = articles.filter((a) => !fingerprinted.has(a.name)).map((a) => a.name).sort();
 
 // ── THE RECONCILIATION ────────────────────────────────────────────────────────────────────────────
