@@ -24,7 +24,14 @@ None for the agent surface. This is a build-time guard on the repository's own s
 
 ## Evidence
 
-- The measurement is reproducible from the tree: distinct `CMT-`/`ACT-` ids in `docs/specs/` versus ids appearing anywhere outside `docs/` in tracked files.
+- The measurement is reproducible by RUNNING THE GUARD — `node scripts/lint-deferral-referent-resolves.mjs`
+  prints the population, the resolving count and the orphan count on every run. It is deliberately not
+  restated here as a recipe: the previous wording described the RETIRED prose-id population that paragraph
+  eleven of this same file disowns, and executing it returned 188/105/83 against the 217/16/201 published
+  four lines above. A measurement whose reproduction instructions disagree with it is worse than one with
+  none, and the guard cannot disagree with itself.
 - Negative controls run before trusting it: a new orphan marker fails and names the id; the same marker with a referent in a **tracked** file passes; a deleted baseline refuses to report clean rather than passing vacuously.
 - The resolving corpus is `git ls-files`, so an untracked file cannot resolve a marker — correct, since an uncommitted file is not something a reviewer can follow. Documented in the script after an injection test of mine failed for exactly this reason.
-- Registry enforcement moved 0.7356 → 0.7471 because this rule gained a real guard; verified that the rise corresponds to something built rather than to a citation added.
+- Registry enforcement rose because this rule gained a real guard (the exact ratio is deliberately not
+  quoted: `node scripts/standards-coverage.mjs` prints it, and the figure written here was from the
+  87-article era while the registry is now 88); verified that the rise corresponds to something built rather than to a citation added.

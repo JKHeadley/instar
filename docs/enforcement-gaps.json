@@ -41,7 +41,7 @@
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "8135d33cd1fa67f9"
+            "fingerprintDigest": "816fc020af4ff102"
           }
         ],
         "matched": [],
@@ -54,7 +54,7 @@
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
             "why": "Its single declared surface is a build-time lint whose every decision surfaces as a visible outcome: a failure names the gap, the standard and the rule that refused it, and a pass prints the gap count plus the population size it swept against. The same weaker residual as Deferral = Deletion applies and is not hidden: a PASSING run records that it passed, not the identity of every record it examined — so a matcher that silently stopped seeing gaps would look like a clean registry. That is why the script refuses to report clean when it parses zero articles or finds no gaps array.",
-            "atDigest": "8135d33cd1fa67f9"
+            "atDigest": "816fc020af4ff102"
           },
           {
             "standard": "Documentation IS Being",
@@ -161,7 +161,7 @@
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "8135d33cd1fa67f9"
+            "fingerprintDigest": "816fc020af4ff102"
           }
         ],
         "matched": [],
@@ -174,7 +174,7 @@
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
             "why": "It declares moments: ci-time, names the surface acting there, and states the moment it does NOT cover — the one where a real failure is never written down at all, which no mechanism detects. It is the second article in the registry to leave the grandfathered baseline, and the first born under the requirement rather than retrofitted into it.",
-            "atDigest": "8135d33cd1fa67f9"
+            "atDigest": "816fc020af4ff102"
           },
           {
             "standard": "Documentation IS Being",
@@ -286,7 +286,7 @@
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "8135d33cd1fa67f9"
+            "fingerprintDigest": "816fc020af4ff102"
           }
         ],
         "matched": [],
@@ -294,7 +294,7 @@
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
             "why": "The best-evidenced unmatch in the registry, and the evidence is not a claim: the surface FIRED IN PRODUCTION ON ITS OWN BIRTH. The moment this standard gained a fingerprint, the population grew from 1 to 2 and all three sweeps — including this one — went red, refusing the build until the new standard was checked against every recorded shape. Six arms are injection-proven (staleness, partition, self-contradiction, reasonless verdict, expired unswept gap, and the clean baseline). A guard that has been observed refusing its own author is the opposite of alive-but-inert.",
-            "atDigest": "8135d33cd1fa67f9"
+            "atDigest": "816fc020af4ff102"
           },
           {
             "standard": "Documentation IS Being",
@@ -416,7 +416,7 @@
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "8135d33cd1fa67f9"
+            "fingerprintDigest": "816fc020af4ff102"
           }
         ],
         "matched": [],
@@ -455,7 +455,7 @@
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
             "why": "Its declared surfaces test a PROPERTY of the content, not the presence of a ritual: whether a marker RESOLVES, whether the recorded rounds EARN the stamp, whether a sweep's population is current. Where a fingerprint is `none` there is no surface to carry the shape, which is recorded on those articles rather than counted as safety here.",
             "evidence": "read each fingerprint's declared surfaces against the present-vs-property test",
-            "atDigest": "8135d33cd1fa67f9"
+            "atDigest": "816fc020af4ff102"
           }
         ],
         "sweepHistory": [
@@ -509,7 +509,7 @@
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "8135d33cd1fa67f9"
+            "fingerprintDigest": "816fc020af4ff102"
           }
         ],
         "matched": [],
@@ -546,7 +546,7 @@
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "atDigest": "8135d33cd1fa67f9",
+            "atDigest": "816fc020af4ff102",
             "why": "Its correction notes state the coverage attained and name what is NOT reached — the `none` fingerprints say nothing guards them, and the guarded ones enumerate the moments they miss. Swept after the third instance, when the pattern was known, which is exactly why these read differently from the notes that carried the shape.",
             "evidence": "read each article's correction and coverage notes against the attained-vs-claimed test"
           }
@@ -586,7 +586,7 @@
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "8135d33cd1fa67f9"
+            "fingerprintDigest": "816fc020af4ff102"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
@@ -600,9 +600,9 @@
         "matched": [
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "why": "This is where the shape was found, and the repair for it took THREE attempts, each one an instance of the shape it was fixing. (1) A duplicate-name check covering only the half of the collision space where the duplicate ALSO carries a fingerprint — review pass 10 walked the other half through. (2) That check plus a partition assertion certified as the real general repair — review pass 11 proved the partition UNREACHABLE on every input (9,330 modelled populations, zero reaching it), because the name check preempted it. (3) CONSOLIDATION: the partition alone refuses both halves, so the name check contributed no coverage and only preempted the partition into silence. Two checks were never two things. What stands in the frozen tree is ONE refusal, whose condition is the partition arithmetic and whose message names the duplicate headings. It is NOT a broader net than name-uniqueness — it catches exactly what a duplicate-name rule catches, and the arithmetic form buys resilience to a refactor and nothing else.",
+            "why": "This is where the shape was found, and the repair for it took THREE attempts, each one an instance of the shape it was fixing. (1) A duplicate-name check covering only the half of the collision space where the duplicate ALSO carries a fingerprint — review pass 10 walked the other half through. (2) That check plus a partition assertion certified as the real general repair — review pass 11 proved the partition UNREACHABLE on every input (9,330 modelled populations, zero reaching it), because the name check preempted it. (3) CONSOLIDATION: the partition alone refuses both halves, so the name check contributed no coverage and only preempted the partition into silence. Two checks were never two things. What stands in the frozen tree is ONE refusal, whose condition is the partition arithmetic and whose message names the duplicate headings. It is NOT a broader net than name-uniqueness, and not an equal one: it catches STRICTLY LESS. A duplicate heading where NEITHER article carries a fingerprint leaves the identity satisfied, so the partition never fires; that case is caught by the shrink-only baseline arm and the sibling duplicate-definitions lint. Corrected at review pass 26 finding 4, which proved it by input and noted that the evidence field of this very verdict had stated it all along while this field said the opposite.",
             "evidence": "Re-reached 2026-08-09 after review pass 12 found this field still describing a \"name arm\" that the freeze commit had DELETED, and citing as proof a source-mutation my own commit body had already disowned. The current evidence, all fired by INPUTS rather than by editing the guard: attack A (duplicate heading, both fingerprinted) refused — \"89 article(s), but 6 fingerprinted + 82 without a fingerprint = 88\"; attack B (duplicate heading, the new article carrying no fingerprint) refused identically; a heading indented one to three spaces refused by the dialect check, with fenced and HTML-commented examples correctly NOT refused; the untouched registry clean at 88 / 6 / 82. NEGATIVE CONTROL BY REMOVAL, which is the first honest one this arm has had: delete the surviving refusal and BOTH attacks report clean. KNOWN NOT COVERED, stated rather than left to be found: a duplicate heading where NEITHER article carries a fingerprint is not caught by this refusal — it is caught by the shrink-only baseline arm and by the sibling duplicate-definitions lint, so net coverage is unchanged, but the credit belongs to the chain and not to this guard.",
-            "atDigest": "8135d33cd1fa67f9"
+            "atDigest": "816fc020af4ff102"
           },
           {
             "standard": "Deferral = Deletion",
@@ -673,7 +673,7 @@
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "8135d33cd1fa67f9"
+            "fingerprintDigest": "816fc020af4ff102"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
@@ -701,7 +701,7 @@
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
             "why": "FLIPPED FROM UNMATCHED by review pass 15, and the flip is the more interesting half of this record. My unmatch reason was that this guard's coverage-reducing conditions \"FAIL the build rather than printing a note beside a pass, so there is no sentence available to habituate to\". There is a fourth coverage-reducing condition and it is explicitly LEGAL under this guard's own leg (4): a gap that is unswept but dated. With one such record present the pass line reads `clean — 8 gap(s), 7 swept against the live population of 6 fingerprinted standard(s), 1 unswept (dated)` — standing debt announced beside the word CLEAN, which is bit-for-bit the criterion I used to MATCH *Deferral = Deletion* two entries above. So the sweep guard has the shape too, and the record that says otherwise is this one. Three things worth keeping: the unmatch reason was the evidence, and it was false; I confirmed it with MY OWN probe rather than taking the reviewer's word; and I found it while fixing a different defect in the same leg, which is the only reason the arm could produce that line at all.",
             "evidence": "ran it: injecting one unswept-but-dated gap into a scratch copy produces `clean — 8 gap(s), 7 swept …, 1 unswept (dated)`, exit 0; an expired one still fails with `is UNSWEPT and its countdown 2026-01-01 has expired`",
-            "atDigest": "8135d33cd1fa67f9"
+            "atDigest": "816fc020af4ff102"
           }
         ],
         "unmatched": [

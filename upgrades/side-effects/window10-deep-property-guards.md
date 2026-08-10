@@ -1397,7 +1397,12 @@ how the buckets are built. So there is a single refusal: its CONDITION is the ar
 form, so a future change to bucket construction cannot silently make it stop covering), and its
 MESSAGE names the duplicate headings, because today they are always the cause. If the sum ever breaks
 WITHOUT a duplicate, the message says exactly that instead of blaming a duplicate that isn't there.
-**Stated plainly in the file: this is not a broader net than name-uniqueness.** It catches exactly what
+**Stated plainly in the file: this is not a broader net than name-uniqueness — and, corrected at review
+pass 26 finding 4, not an equal one. It catches STRICTLY LESS: a duplicate heading where neither article
+carries a fingerprint leaves the partition identity satisfied, so that case is caught by the shrink-only
+baseline arm and the sibling duplicate-definitions lint, not by this refusal. The `evidence` field of the
+same gap record had said so all along while the `why` field beside it said the opposite — both written by
+the commit titled "bring every account into agreement with the frozen code".** It catches exactly what
 a duplicate-name rule catches; the arithmetic form buys resilience to a refactor and nothing else. Both
 arms now fire on real INPUTS — attack A on the fingerprinted-duplicate arm, attack B on the partition
 arm (`PARTITION BROKEN: 89 article(s), but 6 + 82 = 88`) — never on source mutation.
@@ -2438,3 +2443,64 @@ must match the material.
 account behaving well."* Deleting a count rather than restating it is the handling that made that possible.
 
 50 behavioural tests, two new sabotages each isolating one test, full lint chain green.
+
+## Increment 57 (window 11) — the pair caught what the streak could not
+
+**Pass 25 ACCEPTED at load-bearing 1 — the first accept in twenty-five readings. Pass 26 read the IDENTICAL
+bytes, with no repair made between, and REJECTED at load-bearing 4.**
+
+The operator's pair protocol is the only reason this branch did not ship wrong. One accept would have
+closed it with a superseded figure on the constitution and a false reproduction recipe in the document
+that ships to users.
+
+**Pass 26's explanation is the most important sentence produced in this series:**
+
+> *"The decline measured the exhaustion of the repair-chase, not the exhaustion of defects."*
+
+Every reading from the seventh on asked the same question — *what did the last repair break?* The falling
+numbers, 6 → 2 → 3 → 2 → 1, recorded that QUESTION being exhausted. Not the tree becoming sound. Asked
+instead whether the tree is sound judged fresh, four load-bearing defects were available; three were one
+command from proof; three sat in the ACCOUNT layer that only two readings out of twenty-six ever probed
+directly — the exact layer `lint-account-matches-tree.mjs` exists to police.
+
+**I reported that declining trajectory all night in good faith and never once asked what it measured.**
+The reviewer asked. That question was worth more than the twenty-five readings before it.
+
+### The four, each verified by me before repair
+
+**The figure parser required a notation its own authority had abandoned.** The derivation demanded a
+percent sign in the third element; the authority's header says, in as many words, *"The percentage is gone
+on purpose… A raw fraction can go stale, but it cannot disagree with itself."* So a retired triple written
+in the style that source now uses enrolled NOTHING. Reproduced with a control: percent-free → 6 figures,
+unchanged; the same triple with a percent sign → 9. **The derived-population design was adopted because a
+hand-transcribed population shipped narrower than its class — and the parse reintroduced exactly that
+narrowness one layer down.** The percent is now optional, and the control enrols.
+
+**The constitution republished a superseded figure as a live fact** — inside the *Earned from* of the
+article about sweeping a discovered shape everywhere, on a surface that ships as a packaged asset, in an
+article THIS BRANCH introduced. The same document narrates the identical incident correctly 391 lines
+earlier and lists that figure among the wrong versions. I checked the other four hits before touching
+anything: three are explicitly self-labelled as superseded, one is an unrelated count. One line was wrong,
+and it is corrected to the live figure.
+
+**The shipping release note's Evidence bullet described the retired measurement its own paragraph eleven
+disowns.** Executing it returns 188/105/83 against a published 217/16/201. It now points at the guard —
+which prints the population on every run and cannot disagree with itself — instead of restating a recipe.
+The stale enforcement ratio beside it is handled the same way.
+
+**And four artifacts certified a coverage equivalence that is false.** The partition arithmetic catches
+STRICTLY LESS than a duplicate-name rule: a duplicate heading where neither article carries a fingerprint
+leaves the identity satisfied, so the partition never fires. The decisive detail is that the `evidence`
+field of the same gap record states this plainly — *"KNOWN NOT COVERED"* — while the `why` field beside it
+claimed the opposite, **both written by the commit titled "bring every account into agreement with the
+frozen code."** All five sites now state the true scope.
+
+### What the machinery did right, and it is worth recording
+
+Pass 26 ran 47 sabotages and found **no defect in any refusal arm it fired with real inputs**. It called
+the tree *"better than its account of it — which is the inversion of this branch's usual failure."* And
+correcting the constitution immediately tripped the gap guard: the article's fingerprint moved, so all
+fourteen sweep-verdict digests across seven records went stale and demanded re-reaching. I re-reached them
+honestly — the edit corrected a figure inside *Earned from*, which is narrative provenance, not the
+moments, surfaces or coverage argument a sweep evaluates, so every verdict stands — and updated the digests.
+The guard forced the re-read. It cannot force the re-thinking, and says so.

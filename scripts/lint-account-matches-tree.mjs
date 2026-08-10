@@ -214,7 +214,15 @@ function deriveFigures() {
   const header = headerEnd === -1 ? whole : whole.slice(0, headerEnd);
   // Retired triples are written `178/110/62%` — the exact form the header uses when it says
   // "TWO earlier figures are SUPERSEDED and neither should be quoted".
-  const triples = [...header.matchAll(/\b(\d{2,4})\/(\d{2,4})\/(\d{1,3}%)/g)];
+  // The third element's percent sign is OPTIONAL. Review pass 26 finding 1: requiring it meant this
+  // derivation could not enrol a triple written in the notation its own authority ADOPTED — that header
+  // says, in as many words, "The percentage is gone on purpose… A raw fraction can go stale, but it
+  // cannot disagree with itself." So the parser sided with the abandoned notation while this file's
+  // header certified that a third retired triple "now enrols here automatically". Proven with a control:
+  // a percent-free triple added to the authority left the count unmoved; the same triple with a percent
+  // sign moved it. The derived-population design was adopted because a hand-transcribed population
+  // shipped narrower than its class — and the parse reintroduced exactly that narrowness one layer down.
+  const triples = [...header.matchAll(/\b(\d{2,4})\/(\d{2,4})\/(\d{1,4}%?)\b/g)];
   const figs = [...new Set(triples.flatMap((m) => [m[1], m[2], m[3]]))];
   if (figs.length === 0) {
     failures.push(

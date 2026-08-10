@@ -183,8 +183,13 @@ const fingerprinted = new Set(withFingerprint);
 // What survives is ONE refusal. Its CONDITION is the arithmetic — chosen so that a future change to how
 // the buckets are built cannot silently make it stop covering — and its MESSAGE names the duplicate
 // headings, because today they are always the cause. Stated plainly so nobody reads depth into it: this
-// is NOT a broader net than name-uniqueness. It catches exactly what a duplicate-name rule catches; the
-// arithmetic form buys resilience to a refactor and nothing else.
+// is NOT a broader net than name-uniqueness. It catches STRICTLY LESS than a duplicate-name rule: a duplicate heading where NEITHER
+// article carries a fingerprint leaves the identity satisfied, so the partition never fires — that case
+// is caught by the shrink-only baseline arm and by the sibling duplicate-definitions lint, and the credit
+// belongs to the chain, not to this refusal. Review pass 26 finding 4 proved it by input (a new article
+// under an existing grandfathered heading), and the `evidence` field of this gap's own verdict had said
+// so all along while the `why` field beside it said the opposite. The arithmetic form buys resilience to a
+// refactor and nothing else.
 //
 // It also covers the baseline-membership angle the deleted check was written for: the exact-membership
 // comparison below is name-keyed, so a duplicate cannot change `fingerprinted`, and a new fingerprinted
@@ -238,8 +243,13 @@ const missing = articles.filter((a) => !fingerprinted.has(a.name)).map((a) => a.
 // are always the cause and a reader needs to know what to rename. If the sum ever breaks WITHOUT a
 // duplicate, the message says so rather than blaming a duplicate that isn't there.
 //
-// What this is NOT: a broader net than name-uniqueness. Today it catches exactly what a duplicate-name
-// rule catches. The arithmetic form buys resilience to a future refactor, and nothing else. Saying so
+// What this is NOT: a broader net than name-uniqueness — and not an equal one either. It catches STRICTLY LESS than a duplicate-name rule: a duplicate heading where NEITHER
+// article carries a fingerprint leaves the identity satisfied, so the partition never fires — that case
+// is caught by the shrink-only baseline arm and by the sibling duplicate-definitions lint, and the credit
+// belongs to the chain, not to this refusal. Review pass 26 finding 4 proved it by input (a new article
+// under an existing grandfathered heading), and the `evidence` field of this gap's own verdict had said
+// so all along while the `why` field beside it said the opposite.
+// The arithmetic form buys resilience to a future refactor, and nothing else. Saying so
 // is the whole point — a second layer that cannot fire is worse than no second layer, because it reads
 // as depth on every surface that lists it.
 const dupHeadings = [...new Set(articles.map((a) => a.name).filter((n, i, all) => all.indexOf(n) !== i))];

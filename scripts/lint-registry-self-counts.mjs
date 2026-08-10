@@ -15,7 +15,8 @@
  *   • a paragraph said "a reader cannot see the tree" hours after the tree was
  *     rendered directly above it;
  *   • the deferral guard's headline carried 178/110/62% after the population had
- *     been re-measured twice, ending at 217/114/103.
+ *     been re-measured twice. (The end value is deliberately not quoted here: this very list is about figures
+ *     that went stale in prose, and review pass 26 found this one had. The guard prints it.)
  *
  * Every one was caught by an external reviewer, never by the author, and every one
  * had been false for hours or months. A number that goes stale silently is the

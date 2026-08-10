@@ -874,7 +874,11 @@ unreachable, saying that code which cannot run should not sit there looking like
 adding exactly that.
 
 **The honest version turned out to be simpler than either.** The two checks were never two things. The
-arithmetic can only fail when two rules share a title, so it *is* the title check, written as a sum.
+arithmetic can only fail when two rules share a title AND one of them already carries a fingerprint. If
+neither does, the sum still balances and this check stays quiet — the case is caught by a different check
+in the same chain, not by this one. I had written that it *is* the title check written as a sum; the
+twenty-sixth reading proved that wrong by feeding it a real example, and pointed out that the evidence
+note attached to my own record had said so all along, in the sentence beside the one claiming otherwise.
 There is one check now. Its condition is the arithmetic, because that survives someone changing how the
 piles are built; its message names the duplicate titles, because that is always the reason today; and if
 the sum ever breaks for some *other* reason, it says so rather than blaming a duplicate that isn't there.
@@ -1471,3 +1475,27 @@ messages the checker prints when it refuses — including one that says "found f
 four times during the review without seeing it. A count that said seven files when it meant six, in the
 checker whose entire job is that counts about yourself must be true. And I reworded a quotation from a
 reviewer while leaving the quotation marks around it — the right instinct, done the wrong way.
+
+## The number that was measuring the wrong thing
+
+The twenty-fifth reading accepted this work. The twenty-sixth read exactly the same files, with nothing
+changed in between, and rejected it — finding four serious problems the first had missed.
+
+Justin's rule is what caught it. He required that a clean reading be followed immediately by a second one
+of the identical files, and called that pair the finish line. I would have stopped at the first.
+
+The second reading explained the gap in one sentence: the falling numbers I had been reporting all night
+were measuring how tired the QUESTION had got, not how sound the work was. Every reading since the seventh
+asked the same thing — what did the last fix break? — and as my fixes got smaller, so did the answers. Ask
+instead whether the whole thing is sound, as a first-time reader would, and four problems were sitting
+there in plain sight. Three took one command to prove.
+
+I reported that falling number to Justin all night, honestly, and never once asked what it was counting.
+The reviewer asked. That one question was worth more than the twenty-five readings before it.
+
+The four: my figure checker demanded a style of writing that the document it reads had deliberately stopped
+using, so a newly-retired number would slip straight past. The constitution itself stated a retired figure
+as current — in the section of the article about spreading a fix everywhere. The release note that goes to
+users told the reader how to reproduce its headline number, and following those instructions gives a
+different answer. And four places claimed one check covers as much as another, when it covers less — with
+the proof sitting in the note attached to my own record, one field away from the claim it contradicts.
