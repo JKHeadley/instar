@@ -4,7 +4,6 @@
       "Bash(tmux:*)",
       "mcp__playwright__*",
       "Edit(.claude/**)",
-      "Write(.claude/**)",
       "Read(~/.dawn-server/**)",
       "Read(/tmp/dawn-telegram/**)",
       "Read(/tmp/dawn-**)"
@@ -47,7 +46,10 @@
   "mcpServers": {
     "playwright": {
       "command": "npx",
-      "args": ["-y", "@playwright/mcp@latest"]
+      "args": [
+        "-y",
+        "@playwright/mcp@latest"
+      ]
     }
   }
 }

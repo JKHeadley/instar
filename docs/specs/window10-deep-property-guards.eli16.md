@@ -1026,3 +1026,34 @@ one of the checks quietly ignores any rule that has no "Rule" section. Nothing c
 
 The machinery keeps holding. It is the writing about it that keeps failing, and this time the writing
 that failed was the writing whose whole job was to stop that.
+
+## A number that keeps getting rounded wrong should stop being rounded
+
+Two real repairs tonight, both by removing something.
+
+**The first.** Settings files could satisfy a promise with a comment. Everywhere else, a promise mentioned
+only in a comment does not count — that is the whole point, otherwise you could keep a promise by writing
+about it. But two file types had been let into the "counts as real work" list without anyone teaching the
+comment-remover about them. So a promise mentioned only in a comment in a settings file counted as kept.
+
+The rule that would have stopped this is written at the top of that very file: a file type we cannot read
+properly must not be allowed to satisfy anything. Those two types were added to the list without checking
+them against it. Third time this same shape has appeared. Fixed, at zero cost — I measured first, and
+nothing that previously counted stopped counting.
+
+**The second is more interesting, and my operator called it.** One number has now been wrong six times in
+six different forms. Five of those six were not measurement errors at all — they were **rounding and
+re-copying** errors. So the fix is not a seventh careful value. It is to stop publishing the rounded form
+completely.
+
+The number is now a small table of plain counts — how many promises are tracked, how many have a usable
+identifier, how many do not, how many resolve, how many do not — plus one honest range for "probably kept
+but reported as broken": somewhere between 15 and 25 of the 201. Anyone who wants a percentage can divide,
+and will then own the rounding instead of inheriting mine.
+
+I removed the rounded version from the historical list too. Quoting the old wrong rounding to explain why
+rounding is banned would have been doing the banned thing to illustrate the ban.
+
+**And one small thing I had half-fixed.** I had removed a forbidden figure from a test file by turning it
+into a sentence explaining that it used to be there — which left the figure in the file. Now it is
+actually gone.

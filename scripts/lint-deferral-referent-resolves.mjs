@@ -201,7 +201,20 @@ const resolvingFiles = files.filter((f) => !f.startsWith('docs/') && !f.includes
  * alive-but-inert shape in miniature. Removed rather than left to read as protection.)
  */
 function withoutComments(text, rel) {
-  if (/\.(m?[jt]sx?|c[jt]s)$/i.test(rel)) {
+  // `json`/`jsonl` join the JS-family branch — review pass 13. They were in HANDLED_EXT (so they could
+  // GRANT resolution) while this function returned them unchanged (so nothing in them was ever
+  // stripped). A marker whose only occurrence was `"// CMT-…"` inside a tracked `.json` therefore
+  // resolved through pure commentary. Same defect as the `a:// …` hole one pass earlier, one file type
+  // over — which makes it the THIRD instance of one shape: a file type admitted to the resolving
+  // corpus whose comment syntax nobody taught the stripper. The rule that would have prevented all
+  // three is already written into this file's header — an unhandled form must not grant resolution —
+  // and json/jsonl were admitted without checking it against them.
+  //
+  // MEASURED before adopting, as with the previous two: the real corpus stays at exactly 217 / 16 /
+  // 201. Closes at zero cost. Over-stripping remains the safe direction here — truncating a `.json`
+  // string value at a `//` can only report MORE debt, and a tracked id inside a URL is a reference to
+  // a promise rather than follow-through on one.
+  if (/\.(m?[jt]sx?|c[jt]s|jsonl?)$/i.test(rel)) {
     return text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
   }
   if (/\.(ya?ml|sh|bash|zsh|toml)$/i.test(rel)) {

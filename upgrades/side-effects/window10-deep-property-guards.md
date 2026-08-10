@@ -1623,3 +1623,43 @@ recorded once against itself.
 mechanically CLOSED" — its table graded three CLOSED, one PARTIAL, one OPEN; "mechanically sound" was its
 prose and I upgraded it to its grading vocabulary. And I wrote that "every pass-8/9/10/11 repair still
 held" where the verdict said 9, 10 and 11. Small, and both in the direction that flatters the work.
+
+## Increment 42 (window 11) — the two substantive repairs, by subtraction
+
+Operator directive after pass 13. Two substantive repairs, the bookkeeping as corrections, the carried
+structural items left dated. Nothing new built.
+
+**THE JSON-COMMENT HOLE — subtraction-shaped, and the third instance of one shape.** `json` and `jsonl`
+were in the resolving corpus (so they could GRANT resolution) while the comment-stripper returned them
+unchanged (so nothing in them was ever stripped). A marker whose only occurrence was `"// CMT-…"` inside a
+tracked `.json` resolved through pure commentary. **The rule that would have prevented all three
+instances is already written in this guard's own header** — an unhandled form must not grant resolution —
+and `json`/`jsonl` were admitted to `HANDLED_EXT` without checking it against them. Folded into the
+JS-family branch. **Measured before adopting**, as with the previous two: the real corpus stays at exactly
+217 / 16 / 201, so it closes at zero cost. Proven three ways in one probe: a marker living only in a JSON
+comment now orphans, while a genuine JSON string VALUE referent and a genuine `.ts` code referent both
+still resolve.
+
+**THE NUMBER, DEMOTED FROM SENTENCE TO TABLE.** Operator ruling: a figure that has failed six audits in
+six forms has earned demotion. **No derived percentage of this measurement now appears anywhere in the
+article** — not in the current claim, not in the bounds, and not in the historical list of superseded
+values, where restating the rounding to illustrate the ban would have reintroduced the banned act. What
+stands is a table of raw counts that two independent replays of the guard's own rules reproduce exactly
+(217 markers / 168 with an id-shaped token / 49 without / 16 resolving / 201 orphaned / 25 appearing
+anywhere with stripping off / 15 of those in `src` or `tests`) plus one honest range: **15 to 25 of 201**
+are probably-kept-but-reported-orphaned. A reader who wants a ratio divides, and then owns the rounding
+instead of inheriting mine.
+
+That is the right shape for this specific number and worth naming: **five of its six failures were
+rounding or restatement, not measurement.** Removing the derived form removes the failure surface rather
+than the sixth wrong value.
+
+**BOOKKEEPING, as corrections.** The two accounts naming different guards for what stops attack B are
+reconciled — both were true, two guards refuse it, and neither account should have implied it was alone;
+the one named here is simply the earliest in the chain. The forbidden figure is now gone from the test
+**entirely, mention and all** — the previous repair removed it as an assertion and left it as an
+explanation, which still put the token in the file the instruction was about.
+
+**Carried structural items stay dated, per the directive**: the stale area audits, the unexercised
+ratchets, and the Rule-less-article population cannot close before acceptance and merge, and pretending
+otherwise would be the machine-unearned convergence claim the audit guard exists to refuse.
