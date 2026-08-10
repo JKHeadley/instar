@@ -151,6 +151,11 @@ const fingerprinted = new Set(withFingerprint);
 // standards carrying enforcement declarations; what was verified was six. The gap between those two
 // numbers is exactly where an unswept standard lives, and it was printed on screen every run.
 //
+// SCOPE, stated because pass 10 falsified the sentence that used to sit here: this arm covers ONLY the
+// half of the collision space where the duplicate ALSO carries a fingerprint. The other half — a
+// duplicate carrying none — is caught by the partition reconciliation below, which was added after this
+// comment claimed a completeness it did not have.
+//
 // Refusing here, rather than only in the sweep guard, because the exact-membership baseline
 // comparison below is also name-keyed: a duplicate cannot change `fingerprinted`, so a new
 // fingerprinted standard sharing an existing heading would pass the membership check that exists to
@@ -167,6 +172,52 @@ if (dupFingerprinted.length > 0) {
 }
 
 const missing = articles.filter((a) => !fingerprinted.has(a.name)).map((a) => a.name).sort();
+
+// ── THE RECONCILIATION ────────────────────────────────────────────────────────────────────────────
+// Added by external review pass 10, which falsified the certification written one increment earlier
+// in this very file. That comment said: "after the refusal the printed count and the verified set are
+// the same number by construction." It is not, and the counter-example is one line long.
+//
+// The refusal above covers only the half of the collision space where the DUPLICATE also carries a
+// fingerprint. Append an article under an already-fingerprinted heading and give it NO fingerprint at
+// all, and this lint prints `89 article(s), 6 fingerprinted, 82 grandfathered` and exits zero. Six
+// plus eighty-two is eighty-eight. The new article is counted in neither bucket: it is absent from
+// `withFingerprint` because it declares nothing, and absent from `missing` because `fingerprinted` is
+// a Set of NAMES and its name is already in there, put there by the article it shadows. So a brand-new
+// standard entered the document, evaded the requirement that every article carry a fingerprint or be
+// grandfathered, and the arithmetic that exposes it was printed on screen — again.
+//
+// That is the SAME defect twice in two increments, and worth stating plainly rather than fixing
+// quietly: the previous repair closed the demonstrated INSTANCE and then certified the CLASS. A claim
+// whose proof covers a narrower case than the claim's words is the exact family this window exists to
+// hunt, and I wrote a fresh one into the comment describing my fix for it.
+//
+// So this check is deliberately NOT another duplicate-name rule. It is the partition identity the lint
+// already depends on and never asserted: every article lands in exactly one bucket. It holds no matter
+// HOW an article goes missing — a duplicate heading, a parser change, a future bucket added without
+// updating the arithmetic — because it compares the population to itself rather than enumerating the
+// ways it can be wrong. The number was always there; nothing compared it.
+const distinctNames = new Set(articles.map((a) => a.name));
+if (distinctNames.size !== articles.length) {
+  const dupAny = [...new Set(articles.map((a) => a.name).filter((n, i, all) => all.indexOf(n) !== i))];
+  console.error(
+    `[enforcement-fingerprint] ${dupAny.length} article heading(s) appear MORE THAN ONCE: ` +
+    `${dupAny.map((d) => `"${d}"`).join(', ')}. Every bucket here is keyed by heading, so a repeat makes an ` +
+    `article invisible to the fingerprint requirement — it is neither counted as fingerprinted nor reported as ` +
+    `missing one. Give each article a distinct heading.`,
+  );
+  process.exit(1);
+}
+if (fingerprinted.size + missing.length !== articles.length) {
+  console.error(
+    `[enforcement-fingerprint] PARTITION BROKEN: ${articles.length} article(s), but ${fingerprinted.size} ` +
+    `fingerprinted + ${missing.length} without a fingerprint = ${fingerprinted.size + missing.length}. ` +
+    `Every article must land in exactly one bucket; the difference is articles this lint is not accounting ` +
+    `for, and an unaccounted article is one the fingerprint requirement never reaches. Refusing to report clean ` +
+    `over a population that does not add up.`,
+  );
+  process.exit(1);
+}
 
 const baseAbs = path.join(ROOT, BASELINE_REL);
 let baseline = null;

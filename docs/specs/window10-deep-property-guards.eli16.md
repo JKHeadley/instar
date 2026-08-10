@@ -759,3 +759,47 @@ rather than counted as *safe*.
 **What I have not done, said plainly:** I asked this question of six rules. Filing things by name is everywhere
 in this codebase, and the other eighty-two rules were not examined. Nothing yet goes looking for the pattern on
 its own. Better to say that now than to let someone find it later.
+
+## Fixing the door I was shown, then announcing the building was secure
+
+The tenth reading came back, and it caught me writing a guarantee that was false at the moment I wrote
+it — in the same file as the fix it was describing.
+
+Yesterday someone showed me a way in: two rules sharing one title. I closed it, and then wrote, in the
+comment explaining the fix, *the printed number and the checked number can no longer disagree.* The
+reviewer added one more line to the document and got straight back in. My fix only covered the case
+where the intruder announces itself; the case where it says nothing walked through, and the all-clear
+line read **89 rules, 6 declared, 82 grandfathered**. Six and eighty-two is eighty-eight. One rule was
+in neither pile and nothing added it up.
+
+**That is the fourth reading in a row to find a new problem inside the previous reading's fix.** The
+reviewer named the pattern better than I would have: *the repair closes the door it was shown, and then
+certifies the building.* I would rather have that sentence than the fix.
+
+So the second repair is not another door. It is the arithmetic: **every rule must land in exactly one
+pile.** That catches any rule going missing for any reason — a repeated title, a change to how the
+document is read, a new pile added later without updating the sum — because it checks the total against
+itself instead of listing the ways it could go wrong. Listing the ways is precisely what produced two
+holes in two days.
+
+**And I had to work to prove the new arithmetic can fail at all.** During every attack it stayed silent,
+because the title check caught things first — and a check I cannot make fail looks exactly like a check
+that works. So I deliberately broke the counting a different way and confirmed it shouts. Silence during
+a test is not evidence of correctness; it is the signature of something that cannot fire.
+
+**Then the same lesson twice in one week, which is the part that stings.** Last reading found a promise
+being satisfied by a *comment* rather than by real work, in shell files. I fixed shell, and wrote that
+comments can no longer satisfy promises. The identical hole was still open in TypeScript — where **240
+of the roughly 250 real cases live**. Not an edge; the main road. The rule had been told to leave `//`
+alone when a colon came just before it, so web addresses would survive — and that exemption let any
+comment written after a colon through.
+
+I made it unconditional. I tried to be clever about telling web addresses apart from comments first, and
+every clever version still let the probe through, because in code a label followed by a colon looks
+identical to a web address. Trying to tell them apart is how the hole got there. Being blunt errs toward
+reporting *more* unfinished work, never less, which is the direction to err. **And I measured before
+changing it** — because changing rules on instinct is what produced the last three of these. The count
+came out identical: the hole closes and costs nothing.
+
+Last, a small one that is the same idea in miniature: part of that function handled file types the
+program never gives it. Code that cannot run, sitting there reading like protection. Deleted.

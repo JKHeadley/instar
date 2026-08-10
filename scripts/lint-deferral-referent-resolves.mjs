@@ -169,12 +169,39 @@ const HANDLED_EXT = /\.(m?[jt]sx?|c[jt]s|json|jsonl|ya?ml|sh|bash|zsh|toml)$/i;
 const resolvingFiles = files.filter((f) => !f.startsWith('docs/') && !f.includes('node_modules/')
   && !PROSE_EXT.test(f) && HANDLED_EXT.test(f));
 
-/** Strip comment bodies so a guard's own explanation cannot resolve what it measures. */
+/**
+ * Strip comment bodies so a guard's own explanation cannot resolve what it measures.
+ *
+ * THE `//` RULE IS UNCONDITIONAL, and pass 10 is why. The previous version refused to strip `//`
+ * when the preceding character was a colon — a guard meant to protect `https://` from being eaten.
+ * It also meant ANY `x://` survived, so `export const o = { a:// CMT-999999` resolved a brand-new
+ * marker through pure commentary. That was the SAME defect pass 9 found in the shell rule
+ * (`true;# CMT-999999`): I fixed the shell instance, wrote that comments no longer resolve
+ * referents, and left the identical instance in the corpus carrying 240 of the ~250 live
+ * resolutions — the largest arm, not a corner.
+ *
+ * Two reasons this is unconditional rather than a cleverer scheme-aware rule. First, every
+ * scheme-aware variant I tried still admits the probe, because an object key `a:` is
+ * indistinguishable from a URL scheme by shape alone — trying to tell them apart is how the hole
+ * got here. Second, over-stripping is the SAFE direction: it can only report MORE debt, never
+ * less, and a tracked id appearing inside a URL is a reference to a promise rather than
+ * follow-through on one, so losing it costs nothing this check is meant to measure.
+ *
+ * MEASURED before adopting, because widening a rule on intuition is what produced the last three
+ * of these: unconditional stripping leaves the real corpus at exactly 217 / 16 / 201, unchanged.
+ * The hole closes at zero cost to the baseline.
+ *
+ * Only the two comment syntaxes below are handled, and `HANDLED_EXT` above restricts the resolving
+ * corpus to exactly those forms — an unhandled language cannot grant resolution at all. (Pass 10
+ * also found this function carrying `.conf` and extensionless branches that `HANDLED_EXT` excludes,
+ * so they could never run: unreachable code describing coverage that does not exist, which is the
+ * alive-but-inert shape in miniature. Removed rather than left to read as protection.)
+ */
 function withoutComments(text, rel) {
   if (/\.(m?[jt]sx?|c[jt]s)$/i.test(rel)) {
-    return text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+    return text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
   }
-  if (/\.(ya?ml|sh|bash|zsh|toml|conf)$/i.test(rel) || !rel.includes('.')) {
+  if (/\.(ya?ml|sh|bash|zsh|toml)$/i.test(rel)) {
     // `true;# CMT-999999` was NOT stripped by the old leading-whitespace rule (probe, pass 9).
     return text.replace(/#[^\n]*/g, ' ');
   }

@@ -1259,3 +1259,61 @@ Name-keyed populations are everywhere in this repository; the eighty-two grandfa
 examined, and no mechanism finds a name-keyed container lacking a uniqueness refusal. The shape will now be
 asked of every future fingerprint by the staleness arm. It has not been retroactively swept across the
 codebase, and saying so is cheaper than someone finding it out later.
+
+## Increment 35 (window 11) — pass 10, and the pattern behind the last four passes
+
+Pass 10 is the tenth reject, and it is the most useful one. It **falsified a certification I had
+written one increment earlier, in the same file as the fix it described**, and then named the pattern
+that has produced the last four passes: *the repair closes the demonstrated INSTANCE and then
+certifies the CLASS.* Pass 7 found the baseline writer erasing the chain it protected; pass 8 found
+the invisible-payload guard covering one code point instead of the class; pass 9 found the regression
+test detached from production; pass 10 finds the collision refusal covering half the collision space
+while certifying the whole. **The repair rate and the defect-introduction rate inside the repairs are
+matched**, which is why the stream is flat at 4 → 4 → 5 → 4 → 4 → 4 → 4 → 4 → 3 → **5**. Pass 9's dip
+did not hold.
+
+The verdict was archived FIRST this time, before any repair — the archive lagging my claim about it
+has been a finding twice.
+
+**ATTACK B, which I wrote the false certification about.** My refusal covered only the half of the
+collision space where the duplicate ALSO carries a fingerprint. Append an article under an
+already-fingerprinted heading and give it *no* fingerprint at all: the lint printed `89 article(s),
+6 fingerprinted, 82 grandfathered` and exited zero. Six plus eighty-two is eighty-eight. The new
+article was in neither bucket — absent from the fingerprinted list because it declares nothing, and
+absent from the *missing* list because that test is keyed on NAME and its name was already there,
+put there by the article it shadows. Reproduced before repairing. So a new standard entered the
+document, evaded the requirement that every article carry a fingerprint or be grandfathered, and
+**the arithmetic that exposes it was printed on screen — inside the very fix whose stated achievement
+was that the printed count and the verified set could no longer disagree.**
+
+**The repair is deliberately not another duplicate-name rule.** It is the partition identity the lint
+always depended on and never asserted: *every article lands in exactly one bucket*. That holds however
+an article goes missing — a duplicate heading, a parser change, a future bucket added without updating
+the arithmetic — because it compares the population against itself instead of enumerating the ways it
+can be wrong. Enumerating the ways is what produced two holes in two increments.
+
+**Both arms carry a negative control, and the second one needed a deliberate effort to fire.** The name
+arm fires on each attack. The partition arm never fired during those tests, because the name check
+preempts it — an arm I cannot make fire is indistinguishable from one that works, which is tooth (E)
+case 2 exactly. Fired it by injecting a silently-dropped bucket entry with no duplicate present:
+`PARTITION BROKEN: 88 article(s), but 6 fingerprinted + 81 without a fingerprint = 87`. Reachable,
+not decoration.
+
+**FINDING 2 — the same defect I had already fixed once, left standing in the largest arm.** Pass 9 found
+`true;# CMT-999999` resolving through a shell comment. I fixed the shell instance and wrote that comments
+no longer resolve referents. The identical instance survived in TypeScript: the `//` rule refused to
+strip when the preceding character was a colon (a guard for `https://`), so `export const o = { a:// CMT-999999`
+resolved a brand-new marker through pure commentary — in the corpus carrying **240 of the ~250 live
+resolutions**. Not a corner; the main arm. Confirmed by probe before changing anything.
+
+The rule is now unconditional, for two reasons. Every scheme-aware variant I tried still admits the
+probe, because an object key `a:` is indistinguishable from a URL scheme by shape — trying to tell them
+apart is how the hole got here. And over-stripping is the safe direction: it can only report MORE debt,
+and a tracked id inside a URL is a reference to a promise rather than follow-through on one. **Measured
+before adopting**, because widening on intuition is what produced the last three of these: the real
+corpus stays at exactly 217 / 16 / 201. The hole closes at zero cost. Proven both ways — the probe is
+refused, a genuine `src/*.ts` referent still resolves.
+
+**FINDING 9** — `withoutComments()` carried `.conf` and extensionless branches that `HANDLED_EXT` excludes
+from the corpus, so they could never run: unreachable code describing coverage that does not exist.
+Removed rather than left to read as protection.

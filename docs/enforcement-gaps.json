@@ -41,7 +41,7 @@
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "81bd652b352117cd"
+            "fingerprintDigest": "adee089cc5cee95c"
           }
         ],
         "matched": [],
@@ -54,7 +54,7 @@
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
             "why": "Its single declared surface is a build-time lint whose every decision surfaces as a visible outcome: a failure names the gap, the standard and the rule that refused it, and a pass prints the gap count plus the population size it swept against. The same weaker residual as Deferral = Deletion applies and is not hidden: a PASSING run records that it passed, not the identity of every record it examined — so a matcher that silently stopped seeing gaps would look like a clean registry. That is why the script refuses to report clean when it parses zero articles or finds no gaps array.",
-            "atDigest": "81bd652b352117cd"
+            "atDigest": "adee089cc5cee95c"
           },
           {
             "standard": "Documentation IS Being",
@@ -161,7 +161,7 @@
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "81bd652b352117cd"
+            "fingerprintDigest": "adee089cc5cee95c"
           }
         ],
         "matched": [],
@@ -174,7 +174,7 @@
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
             "why": "It declares moments: ci-time, names the surface acting there, and states the moment it does NOT cover — the one where a real failure is never written down at all, which no mechanism detects. It is the second article in the registry to leave the grandfathered baseline, and the first born under the requirement rather than retrofitted into it.",
-            "atDigest": "81bd652b352117cd"
+            "atDigest": "adee089cc5cee95c"
           },
           {
             "standard": "Documentation IS Being",
@@ -286,7 +286,7 @@
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "81bd652b352117cd"
+            "fingerprintDigest": "adee089cc5cee95c"
           }
         ],
         "matched": [],
@@ -294,7 +294,7 @@
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
             "why": "The best-evidenced unmatch in the registry, and the evidence is not a claim: the surface FIRED IN PRODUCTION ON ITS OWN BIRTH. The moment this standard gained a fingerprint, the population grew from 1 to 2 and all three sweeps — including this one — went red, refusing the build until the new standard was checked against every recorded shape. Six arms are injection-proven (staleness, partition, self-contradiction, reasonless verdict, expired unswept gap, and the clean baseline). A guard that has been observed refusing its own author is the opposite of alive-but-inert.",
-            "atDigest": "81bd652b352117cd"
+            "atDigest": "adee089cc5cee95c"
           },
           {
             "standard": "Documentation IS Being",
@@ -416,7 +416,7 @@
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "81bd652b352117cd"
+            "fingerprintDigest": "adee089cc5cee95c"
           }
         ],
         "matched": [],
@@ -455,7 +455,7 @@
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
             "why": "Its declared surfaces test a PROPERTY of the content, not the presence of a ritual: whether a marker RESOLVES, whether the recorded rounds EARN the stamp, whether a sweep's population is current. Where a fingerprint is `none` there is no surface to carry the shape, which is recorded on those articles rather than counted as safety here.",
             "evidence": "read each fingerprint's declared surfaces against the present-vs-property test",
-            "atDigest": "81bd652b352117cd"
+            "atDigest": "adee089cc5cee95c"
           }
         ],
         "sweepHistory": [
@@ -509,7 +509,7 @@
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "81bd652b352117cd"
+            "fingerprintDigest": "adee089cc5cee95c"
           }
         ],
         "matched": [],
@@ -546,7 +546,7 @@
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "atDigest": "81bd652b352117cd",
+            "atDigest": "adee089cc5cee95c",
             "why": "Its correction notes state the coverage attained and name what is NOT reached — the `none` fingerprints say nothing guards them, and the guarded ones enumerate the moments they miss. Swept after the third instance, when the pattern was known, which is exactly why these read differently from the notes that carried the shape.",
             "evidence": "read each article's correction and coverage notes against the attained-vs-claimed test"
           }
@@ -586,7 +586,7 @@
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "81bd652b352117cd"
+            "fingerprintDigest": "adee089cc5cee95c"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
@@ -600,9 +600,9 @@
         "matched": [
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "why": "This is where the shape was found. Both cited guards keyed the fingerprinted population on the article heading and both published a count of names as though it were a count of standards. Now refused: each guard rejects a heading carrying a fingerprint more than once, on its own evidence rather than on a sibling's, and after the refusal the printed count and the verified set are the same number by construction. The remedy line was rewritten too — it names renaming as the only repair and no longer offers the digest paste that completed the exploit.",
-            "evidence": "reproduced the full two-step break in a scratch tree, then re-ran all three arms after the fix: attack refused by both guards for the collision reason specifically, untouched registry still clean at 88 articles and 6 fingerprinted, non-fingerprinted duplicate correctly silent here",
-            "atDigest": "81bd652b352117cd"
+            "why": "This is where the shape was found, and the FIRST repair for it was itself an instance of the shape — external review pass 10 falsified the certification written one increment earlier, in the same file. That refusal covered only the half of the collision space where the duplicate ALSO carries a fingerprint; a duplicate carrying NONE entered the document with the requirement lint printing 89 article(s), 6 fingerprinted, 82 grandfathered and exiting zero. Six plus eighty-two is eighty-eight. The second repair is deliberately not another duplicate-name rule but the PARTITION IDENTITY the lint always depended on and never asserted — every article lands in exactly one bucket — which holds however an article goes missing, because it compares the population against itself instead of enumerating the ways it can be wrong. Enumerating the ways is what produced two holes in two increments.",
+            "evidence": "reproduced both attacks in scratch trees and re-ran every arm after the fix: duplicate-with-fingerprint refused by both guards naming the collision, duplicate-without-fingerprint now refused by the name arm, untouched registry still clean at 88/6/82, and the partition arm PROVED REACHABLE by injecting a silently-dropped bucket entry with no duplicate present (PARTITION BROKEN: 88 article(s), but 6 + 81 = 87) because an arm that cannot be made to fire is indistinguishable from one that works",
+            "atDigest": "adee089cc5cee95c"
           },
           {
             "standard": "Deferral = Deletion",
