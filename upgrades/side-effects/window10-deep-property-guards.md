@@ -2632,3 +2632,235 @@ of what I declared at the time, and rewriting it would be the opposite of the po
 
 **The gate did not block it. I hold that authority.** It recorded it, and recording it is what let me find
 it — which is the whole argument for detective controls over blocking ones.
+
+---
+
+## Increment 60 (window 12) — the guard reaches the real funnel, and the enumeration stops being mine to remember
+
+**Change.** Pass 29 finding 1: the invisible-payload refusal sat in `TelegramAdapter.sendToTopic` under a
+comment reading *"THE CHOKEPOINT. Every Telegram send passes through here."* Pass 29 falsified that by
+execution — `send()`, the `MessagingAdapter` INTERFACE method a router calls, reaches
+`apiCall('sendMessage')` without entering `sendToTopic`. The refusal moves to each class's real funnel,
+the duplicate in `sendToTopic` is DELETED, four previously-unguarded body-senders are guarded, and a new
+lint derives the sender population so the fifth enumeration is not left to memory.
+
+**The count, derived before anything was touched** (the window's operating rule). The adapter figure I was
+given reproduces exactly: **14** `apiCall('sendMessage')` sites across **9** methods, of which `sendToTopic`
+accounted for 4. But that population was adapter-only. Deriving by MECHANISM — a file that builds the
+`api.telegram.org` URL and calls `fetch` — gives **six** body-senders:
+
+| sender | sites | state before |
+|---|---|---|
+| `src/messaging/TelegramAdapter.ts` | 14 across 9 methods | 4 guarded (via `sendToTopic`) |
+| `src/lifeline/TelegramLifeline.ts` | 2 | **own private funnel, ZERO guard** |
+| `src/server/routes.ts` (demo sender) | 1 direct fetch | unguarded, ~20k lines from the 3 guarded routes |
+| `src/commands/setup-wizard/codex-driver.ts` | 1 | unguarded |
+| `src/commands/setup-wizard/gemini-driver.ts` | 1 | unguarded |
+| `src/commands/test-as-self.ts` | 1 | unguarded |
+
+The lifeline was missed by all four previous enumerations for one reason: every one of them enumerated the
+adapter. "Both doors" and "the single chokepoint" were never wrong about the adapter — they were wrong about
+the population.
+
+### The eight questions
+
+**1. Over-block — what legitimate input does this reject that it shouldn't?**
+The refusal is scoped to `BODY_CARRYING_TELEGRAM_METHODS` = `{sendMessage, editMessageText}`, derived by
+inspecting every `apiCall('<method>')` in `src/` for a reader-visible `text` param. `answerCallbackQuery`
+also carries `text` and is deliberately EXCLUDED: it renders a transient toast and an empty one legitimately
+dismisses the spinner, so refusing it would be an over-refusal rather than a protection. A pinned test
+asserts the set is exactly those two, so widening it (which would start refusing toasts) reds. A non-string
+or absent `text` is passed through rather than thrown on. **Residual over-block risk:** a caller that
+deliberately sends a whitespace-only `sendMessage` as a spacer now throws. No such caller was found; the
+predicate is unchanged from the one that has been live on `sendToTopic` and three routes for a week.
+
+**2. Under-block — what does it still miss?**
+Three named gaps. (a) The lint proves the guard is CALLED in a sender file; it does not prove the call is on
+the path the send takes — that needs a parser, and a weak positional heuristic that passes for the wrong
+reason is worse than an honest narrower claim (this branch produced three of those). (b) A future sender
+that reaches Telegram through some mechanism other than a direct `fetch` to `api.telegram.org` — an HTTP
+client wrapper, say — falls outside the derived population. (c) Non-Telegram adapters (Slack, WhatsApp,
+iMessage) are entirely out of scope and are NOT claimed. Each is stated in the lint's own header rather than
+left for a reader to discover.
+
+**3. Level-of-abstraction fit.**
+~~This is the correction of an abstraction-level error, not a new one. The refusal was at the route layer
+(3 doors), then one method layer up (`sendToTopic`), and is now at the funnel each class actually reaches
+the network through~~ **— STRUCK. The second-pass reviewer proved there are TWO egress mechanisms in the
+adapter, not one funnel: the tokenless-standby relay never enters `apiCall`. Corrected reading: the refusal
+sits at each EGRESS. See the second-pass section below.** The refusal was at the route layer (3 doors), then
+one method layer up (`sendToTopic`), and is now at every egress each class reaches the outside world through — the lowest layer that still knows the method name and the body. Lower (inside `fetch`)
+would lose the method. The three route-level `hasNoVisibleCharacters` checks in `routes.ts` are LEFT in
+place deliberately: they answer with a 400 and a named reason, which is a better caller experience than a
+throw, and they are not a duplicate of the funnel guard in the masking sense — they short-circuit before
+the adapter is reached at all, and each has its own route test.
+
+**4. Signal vs authority.**
+This is blocking authority and it is deterministic. ~~It is not NEW authority: the same predicate held the
+same authority in `sendToTopic` before this change, and on three routes before that.~~ **STRUCK — false, and
+contradicted by this section's own table: `editMessageText` and BOTH lifeline sends had no guard at all, so
+this change DOES extend blocking authority to paths that had none. The justification is the closed-domain
+nature of the predicate, not an absence of new authority.** It is a
+closed-world content invariant ("does this string contain any character a reader could see") with no
+open-domain judgment about meaning, which is the documented exemption class. It decides nothing about
+whether a visible message is worth sending; a single full stop passes, correctly. The new LINT holds
+blocking authority only at a dev-process chokepoint over a format invariant — the same class as the
+convergence-stamp gate.
+
+**5. Interactions — shadowing, double-firing, races.**
+The important one, and it drove a deletion: **the copy in `sendToTopic` was removed rather than kept — and that was WRONG as first shipped.**
+~~Removing it lost no coverage.~~ **STRUCK: it lost coverage on the tokenless-standby relay branch, which
+never reaches `apiCall`. A guard is now applied at that egress too, and the two are proven to close
+DIFFERENT cases rather than mask each other. See the second-pass section below.**
+Review pass 23 established that two pieces of code closing the same case MASK each other's tests — break
+either alone and nothing reds. Keeping both would have made the funnel guard untestable through
+`sendToTopic`. One way it works, one way to break it, proven: removing the funnel guard reds exactly the
+seven refusal arms including the `sendToTopic` one. The route-level checks do short-circuit before the
+funnel (see Q3) — that is a genuine partial shadow, accepted knowingly, because each route check has its
+own test that fails independently.
+
+**6. External surfaces.**
+A caller passing an invisible body now receives a throw where it previously received a delivered invisible
+message. The lifeline's `sendToTopic` already wraps its sends in try/catch and logs — so an invisible
+lifeline payload is now dropped and logged rather than delivered, which is the correct outcome for the
+incident this exists for (a "reply lost" escalation raised for content that never existed). The two
+setup-wizard greetings and `test-as-self` send fixed literal strings; the guard is unreachable there in
+practice and was added anyway, because "unreachable in practice" is an assertion about a set and this
+branch has four falsified ones.
+
+**7. Multi-machine posture (Cross-Machine Coherence).**
+**Machine-local BY DESIGN, and correctly so.** This is a content predicate evaluated in-process at the
+moment of send: it has no durable state, no cross-machine read, and nothing to replicate. Every machine
+runs the identical code path and reaches the identical verdict on the identical bytes, so there is no
+posture to coordinate. No user-facing notice is emitted (the refusal surfaces to the caller, not the user),
+so no one-voice gating is needed; no URL is generated; nothing strands on a topic transfer.
+
+**8. Rollback cost.**
+Small and mechanical. Remove the two `assertTelegramPayloadVisible(method, params)` lines from the two
+funnels and the four one-line calls in the other senders; the exported helper can stay (it is inert when
+uncalled). Removing the lint from the `lint` chain in `package.json` is a one-token edit. No migration, no
+persisted state, no agent-state repair. The only behavioural revert consideration is that callers would
+resume delivering invisible payloads — the pre-change behaviour.
+
+### The defect I made inside this change, and how it was caught
+
+**My first version of the new lint could not fail.** It tested `text.includes('assertTelegramPayloadVisible')`,
+and my sabotage renamed the call to `assertTelegramPayloadVisible_DISABLED` — which still contains the
+searched string. All six sabotages "passed", exit 0, and had I read the A-case as evidence I would have
+committed a lint that reports clean on a tree with the guard removed from every sender. That is the
+alive-but-inert shape reproduced inside the guard written to prevent it, and it is review pass 24's lesson
+one layer on: *the replacement must not contain the word being stripped.*
+
+It was caught by running the B-case, not by care. The lint now requires a live call — identifier boundary,
+followed by `(`, not commented out, not the import line — and is proven with THREE distinct sabotages per
+sender (delete the call, comment it out, rename to a superstring): **18 of 18 red, each naming its own file,
+clean again after restore.**
+
+**A second one, smaller:** the lint's first population was "any file touching the Telegram API", which
+flagged a file that only calls `getChat`. I narrowed the matcher rather than "fixing" that file — the defect
+was in my instrument, and editing code to satisfy a wrong instrument is how a measurement starts driving the
+work instead of measuring it.
+
+**A third, mechanical:** my import-insertion helper picked "the last line starting with `import`", which in
+one file was the opening line of a MULTI-LINE import, so it inserted the new import inside it and broke the
+build. `tsc` caught it. I then checked all three files patched by that helper rather than assuming the other
+two were fine — two were.
+
+### Evidence
+
+- Full `lint` chain green (exit 0), including the new lint.
+- `tsc --noEmit` clean.
+- New behavioural file: **17 tests**, driving `send()` FIRST — 6 invisible shapes refused with **zero**
+  `fetch` calls, 4 visible payloads delivered with the exact text asserted, the previously-guarded path
+  still refusing, the over-refusal boundary pinned, the population pinned.
+- Sabotage-proven both directions: removing the funnel guard reds exactly the 7 refusal arms while every
+  positive control stays green; narrowing the method set reds exactly 2.
+- **79 tests green** across the new file plus every pre-existing invisible-payload and window-10
+  behavioural test — the `sendToTopic` deletion breaks none of them.
+
+### SECOND-PASS REVIEW — CONCERN RAISED, and it refuted three of the claims above
+
+An independent reviewer audited this artifact against the diff and did NOT concur. It was right on every
+count. The three corrections are made in place rather than appended, because a reader hits the stale text
+first and the correction second.
+
+**REFUTED 1 — "deleting the `sendToTopic` copy loses no coverage" was FALSE, and I had it backwards.**
+It proved by execution what I had established by reading: `sendToTopic` has a branch that never reaches
+`apiCall` at all — the tokenless-standby relay (`!hasUsableBotToken && this.outboundRelay`, bug #7), which
+hands the body to another machine's router. The deleted guard sat ABOVE that branch. At HEAD an invisible
+payload threw; in my working tree **the relay was invoked with the zero-width text and `sendToTopic`
+returned success.** I removed coverage from a live egress inside the change whose subject is coverage.
+
+That makes the relay **the FIFTH falsification of "every send passes through here"** — and I produced it
+in the commit that retired the phrase. Q3 and Q5 above are corrected accordingly: **there are TWO EGRESS
+MECHANISMS in the adapter, not one funnel.** The refusal is now applied per EGRESS. This is not the
+pass-23 masking case (two copies closing the SAME case): they close DIFFERENT cases, and each is proven
+independently — removing only the relay guard reds exactly the 7 relay arms with the funnel arms green,
+and removing only the funnel guard reds exactly the 7 funnel arms with the relay arms green.
+
+Relying on the far end would not have been sufficient either, and the reason is worth recording: the
+receiving route *does* refuse an invisible body — with a **400** — while `isRelayRefusal` recognises only
+**422**, so the refusal would have surfaced as `relay failed … router unreachable`. A CONTENT refusal
+reported as a TRANSPORT failure is the precise conflation `TelegramRelay`'s own header records fixing.
+
+**REFUTED 2 — "18 of 18 sabotages" was a proof over three shapes I chose, not a derived one.**
+The reviewer defeated the lint five ways I had not tried. Three were real escapes: a single-line block
+comment `/* … */` (my stripper handled only `//` and lines starting `*`) reported the file **guarded** with
+the call commented out; a multi-line block comment did the same; and a **decoy local definition** — delete
+the call, drop the import, declare a no-op function of the same name — defeated my own delete-the-call
+sabotage, because the regex matched the *definition*. Worst of the five: **splitting the host literal
+dropped a sender out of the population silently**, and the lint reported *"clean — 5 sender(s)"* — the zero
+tripwire only fires at zero. The file it could no longer see was the lifeline, whose missing guard was this
+increment's headline discovery.
+
+All five are now closed and re-proven, each asserting its **specific failure string** rather than exit
+status: block comments are stripped file-wide, a definition is not a call, the import of the shared module
+is required, and a **shrink-only ratchet** pins the derived population at 6. One of the five —
+a neutered guard BODY — is deliberately closed by the tests, not the lint, and is stated as such.
+
+**A fourth defect, mine, found while fixing those:** my first hardened version used an `x` regex flag that
+does not exist in JavaScript, so the script CRASHED. All five sabotages "went red" — for the wrong reason —
+and only the A-case failing revealed it. That is trap #2 from the window-8 handoff, verbatim: *an injection
+proof can pass for the wrong reason; assert the specific error string, not `$?`, and always run the A-case
+in the same harness.*
+
+**REFUTED 3 — Q4's "not NEW authority" is false, and Q2's gap list was itself an underived set claim.**
+`editMessageText` and both lifeline sends gain blocking authority they never had — the table in this very
+section says the lifeline had ZERO guard, so the sentence contradicts its own evidence. Corrected: this
+change **does** extend blocking authority to paths that had none; the justification is the closed-domain
+nature of the predicate, not an absence of new authority. On the doc: "closed-world content invariant" is
+not one of `signal-vs-authority.md`'s three named exemptions, and the nearest one is scoped to the API
+edge. The citation that actually fits, and which I should have used, is *a deterministic policy evaluator
+for domains so constrained that all inputs can be enumerated*.
+
+And the gap list was incomplete in exactly the way this window keeps convicting: **`createForumTopic`
+carries a reader-visible `name`**, the two creating routes validate `name.trim().length >= 1`, and `trim()`
+does not remove zero-width characters — so two ZERO WIDTH SPACEs measure length 2 and create an
+invisibly-titled topic. Verified by execution. Rather than fix the case, the **pattern is swept**: the
+guard is now keyed by a method→field map (`sendMessage`/`editMessageText` → `text`,
+`createForumTopic`/`editForumTopic` → `name`), the method-name set is derived from that map so the two
+cannot disagree, and the lint reads the map from source rather than keeping a copy.
+
+Two smaller notes accepted without argument: Q6's "fixed literal strings" is wrong — the wizard greetings
+and the probe are template literals interpolating a name or nonce (the conclusion survives, because each
+carries fixed visible prose); and Q1's "reader-visible `text` param" described a param NAME as if it were a
+visibility criterion, which the method→field map now makes explicit.
+
+### Evidence, after the second pass
+
+- Full `lint` chain green (exit 0); `tsc --noEmit` clean.
+- **28 tests** in the new file (was 17), **90 green** across it plus every pre-existing invisible-payload
+  and window-10 behavioural test.
+- Both egress guards independently proven: each sabotage reds only its own 7 arms.
+- All five reviewer escapes closed, each re-proven by its specific failure string.
+
+### What this does NOT close
+
+The `OWED` entry above asked for the guard at the chokepoint. That is done — and the word "chokepoint" is
+retired from the source, because there never was one: there are six senders and two egress mechanisms.
+
+Remaining, stated rather than claimed as covered: the lint proves a guard is CALLED in a sender file, not
+that it sits on the path the send takes — that needs a parser, and the per-path guarantee is carried by
+tests instead. A sender reaching Telegram by some mechanism other than a direct `fetch` to the API host
+falls outside the derived population; the shrink ratchet makes that visible but cannot pre-empt it.
+Non-Telegram adapters are entirely out of scope and are not claimed.
