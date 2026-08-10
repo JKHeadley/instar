@@ -4,7 +4,15 @@
  * "two independent replays", but the instrument was not in the repository — evidence a reader could not
  * follow, which is the exact shape *Deferral = Deletion* forbids, in the article that states it.
  *
- * Second measurement, using the guard's EXACT rules this time — imported verbatim, not re-typed.
+ * Second measurement, using the guard's exact rules this time — COPIED verbatim as literals, not
+ * re-typed from memory, and not imported. The distinction is corrected here by review pass 17, which
+ * found this header still saying "imported" after the registry sentence that cites this file had
+ * already been corrected to say "copies". A withdrawal applied in one place and left standing in the
+ * file the citation points AT is the same defect one layer down.
+ *
+ * Copying is the weaker option and is chosen knowingly: this script must run standalone in the lint
+ * chain with no build step, and the guard exports nothing. The copies are byte-identical today and
+ * carry a line reference — which is a fact about today, and exactly what a copy can stop being.
  * Pass 13 falsified the first attempt: it used a 1-character-minimum token rule (so a bare `4`
  * counted as an identifier) where the guard requires 3, and included `#` while excluding `/`.
  */

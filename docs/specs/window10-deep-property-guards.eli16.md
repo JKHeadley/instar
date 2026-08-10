@@ -1225,3 +1225,27 @@ one checker. Its sibling governs the fifty deadlines in the actual rulebook, and
 year 9999 made that one print "clean". I fixed the case and skipped the pattern, in the very piece of work
 whose whole purpose is spreading a pattern to everywhere it applies. Fixed now, from one shared definition
 rather than a second copy.
+
+## The retraction that survived in the file I pointed at
+
+Before spending another reading, I closed the three things the last one found and I had not fixed —
+because running a review over problems I already know about guarantees they come back, which is the same
+reasoning my operator used for not re-auditing a document that is about to change.
+
+**I corrected a wrong word in one place and left it in the file my correction points AT.** I had written
+that a measuring script *imports* the checker's rules; it copies them. I fixed that sentence in the
+rulebook — and the sentence now names that script by path, so a reader follows the link and lands on the
+script's own header still saying "imported". Fixed in both, and the header now also says why copying was
+the knowing choice rather than leaving the weaker option unexplained.
+
+**And three corrections I announced in a log without applying any of them in that log.** The reviewer
+counted it exactly: fifty-four lines added, zero removed — three announcements of fixes, sitting
+eighty-four lines below the text they did not fix. The log already had a marker convention for retiring a
+wrong line, used four times. I appended instead of using it. All three are now marked properly, and one of
+them turned out to carry a wrong number nobody had ever recorded as wrong.
+
+**Last, the previous reading's verdict was missing again — the seventh time.** This one is the worst kind:
+the verdict was absent while its own repairs were already committed, so everything I said about that
+reading was unauditable at the moment I said it. And it happened immediately after the commit that
+restored this exact discipline for the reading before. Restoring a discipline once is not the same as
+holding it.

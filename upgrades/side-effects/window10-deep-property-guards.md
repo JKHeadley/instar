@@ -1586,7 +1586,9 @@ divergence plus one live guard evasion. It also caught the increment written *en
 numbers* publishing a sixth wrong version of the number it was correcting.
 
 **THE MEASUREMENT WAS WRONG, ALL THREE FIGURES, AND I VERIFIED IT MYSELF BEFORE ACCEPTING IT.** Using the
-guard's rules imported VERBATIM rather than re-typed: **49 / 25 / 15** — precisely the reviewer's numbers,
+guard's rules **[SUPERSEDED — "imported" is wrong; the instrument COPIES them as literals. Corrected by
+review pass 17, which found this line still standing after the registry had been corrected.]** rather than
+re-typed: **49 / 25 / 15** — precisely the reviewer's numbers,
 against my 48 / 33 / 20.
 
 **The cause is the sharpest lesson of the run, and it is not the one I gave.** I blamed "the exact token
@@ -1793,7 +1795,10 @@ without checking it. Pass 15 was right to lead with it.
 **THE GAP RECORD I ADDED AS THE WINDOW'S SHOWPIECE CARRIED TWO DEFECTS.**
 
 - **It claimed an evaded fingerprint that was never evaded.** I set `hadNoFingerprint: false` — only the
-  second of eight records to assert a real guard was got past. The specimen is at PUSH-TIME on a workflow
+  second of **[SUPERSEDED — seven, not eight; the figure was carried out of a probe's own output line into
+  prose. Corrected in the gap record by the same commit and left uncorrected HERE, which review pass 17
+  caught: an announcement appended above the text it did not fix.]** records to assert a real guard was got
+  past. The specimen is at PUSH-TIME on a workflow
   script; the named fingerprint declares `commit-time, ci-time` and cites neither surface — **and its
   coverage argument already says in writing that this case is "NOT covered by anything."** So the failure
   did not evade a guard; it landed in a hole the article had honestly declared, and I took credit for the
@@ -1820,7 +1825,10 @@ twice. Proven both ways: a future-dated unswept gap is accepted and reported; an
 published in the present tense. **Fourth consecutive pass to turn on a replacement sentence**, same common
 factor every time: asserting something about a document I had not grepped. And the guard header's
 "position 36 of 45" is reproducible under no counting convention (46 steps with `tsc`, or 45 node steps at
-ordinals 35 and 43) — the ordinals are dropped rather than restated, because a number nobody can
+ordinals 35 and **[SUPERSEDED — 44, not 43; and the claim that follows is false in this file. Review pass
+17 found both: the wrong ordinal, and a sentence saying the numbers were dropped inside a sentence
+restating two of them. The guard header now states the counting convention explicitly instead.]** 43) —
+the ordinals are dropped rather than restated, because a number nobody can
 re-derive is exactly what this file spent the week objecting to.
 
 **`pass14-verdict.md` was missing from the archive** — the fifth instance, and the worst, because pass
@@ -1935,3 +1943,27 @@ callers share *"one date rule"* — true when written, false within a day, becau
 caller **while citing the other as my precedent**. I read the adjacent guard and updated neither it nor
 my claim about it. Now stated as a fact about the code rather than as a principle, since the principle
 version was true for less than twenty-four hours.
+
+## Increment 48 (window 11) — closing pass 17's remainder before spending a reading on it
+
+Three of pass 17's findings were still unfixed when the operator called for pass 18. Running a reading
+over known-unfixed findings would guarantee they resurface, which is the operator's own reasoning about
+not burning a genuine review on a state about to change — so these close first.
+
+**The withdrawn phrase survived in the file the citation points AT.** I corrected "imported verbatim" to
+"copies" in the registry and left it standing in `measure-orphan-referents.mjs`'s own header — the file
+that same sentence now cites by path — and in this log. Both corrected. The instrument's header also now
+says WHY copying was chosen knowingly (it runs standalone in the lint chain with no build step, and the
+guard exports nothing) rather than leaving the weaker option unexplained.
+
+**Three corrections announced here and applied nowhere here.** Pass 17's numbers: `54 insertions, 0
+deletions` on this file — the announcements of three fixes appended eighty-four lines below the text they
+did not fix. All three are now marked inline with the `[SUPERSEDED — …]` convention **this log already
+used four times**, which is the point: the convention existed and I appended instead of using it. The
+third also carried a wrong ordinal (43, where the node-only ordinal is 44) that had never been recorded
+as wrong — corrected on the record rather than silently.
+
+**`pass16-verdict.md` filed — the seventh lapse, and the first where the verdict was absent while its
+repairs were already in the tree.** So every claim I made about pass 16 was unauditable at the moment I
+made it. It recurred *immediately after* the commit that restored this convention for pass 15, and that
+is the part worth keeping: **restoring a discipline once is not the same as holding it.**
