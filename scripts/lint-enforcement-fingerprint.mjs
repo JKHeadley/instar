@@ -82,6 +82,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkShrinkOnlyAgainstHistory } from './lib/baseline-history.mjs';
+import { findIndentedHeadings } from './standards-registry-article-core.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), '..');
@@ -122,6 +123,24 @@ for (let i = 0; i < lines.length; i++) {
 
 if (articles.length === 0) {
   console.error('[enforcement-fingerprint] parsed ZERO articles — the matcher is broken; refusing to report clean.');
+  process.exit(1);
+}
+
+// DIALECT REFUSAL — an indented heading is a real heading to every renderer and invisible to every
+// parser here (review pass 11 walked a whole new standard past four guards behind three spaces).
+// Enforced from THIS lint because it runs in the `npm run lint` chain that CI executes on every run,
+// and the requirement being evaded — every article declares a fingerprint or is grandfathered — is
+// this lint's own. The rule itself lives in the shared registry core, so there is one definition.
+const indented = findIndentedHeadings(fs.readFileSync(abs, 'utf-8'));
+if (indented.length > 0) {
+  console.error(
+    `[enforcement-fingerprint] ${indented.length} INDENTED heading(s) in ${REGISTRY_REL}: ` +
+    `${indented.map((h) => `line ${h.lineNo} (${h.indent} space(s)) "${h.text}"`).join('; ')}. ` +
+    `CommonMark allows up to three leading spaces, so these RENDER as headings while every parser here ` +
+    `keys on a heading at column zero — an article hidden this way joins no population, evades the ` +
+    `fingerprint requirement, and leaves the partition identity trivially satisfied. Move each heading to ` +
+    `column zero. (Fenced examples are exempt; this only inspects structural lines.)`,
+  );
   process.exit(1);
 }
 
@@ -192,29 +211,50 @@ const missing = articles.filter((a) => !fingerprinted.has(a.name)).map((a) => a.
 // whose proof covers a narrower case than the claim's words is the exact family this window exists to
 // hunt, and I wrote a fresh one into the comment describing my fix for it.
 //
-// So this check is deliberately NOT another duplicate-name rule. It is the partition identity the lint
-// already depends on and never asserted: every article lands in exactly one bucket. It holds no matter
-// HOW an article goes missing — a duplicate heading, a parser change, a future bucket added without
-// updating the arithmetic — because it compares the population to itself rather than enumerating the
-// ways it can be wrong. The number was always there; nothing compared it.
-const distinctNames = new Set(articles.map((a) => a.name));
-if (distinctNames.size !== articles.length) {
-  const dupAny = [...new Set(articles.map((a) => a.name).filter((n, i, all) => all.indexOf(n) !== i))];
-  console.error(
-    `[enforcement-fingerprint] ${dupAny.length} article heading(s) appear MORE THAN ONCE: ` +
-    `${dupAny.map((d) => `"${d}"`).join(', ')}. Every bucket here is keyed by heading, so a repeat makes an ` +
-    `article invisible to the fingerprint requirement — it is neither counted as fingerprinted nor reported as ` +
-    `missing one. Give each article a distinct heading.`,
-  );
-  process.exit(1);
-}
+// ── AND THE PARAGRAPH ABOVE WAS ALSO WRONG, in the way it mattered most (review pass 11). ─────────
+// It said: "this check is deliberately NOT another duplicate-name rule. It is the partition identity
+// … it holds no matter HOW an article goes missing — a duplicate heading, a parser change, a future
+// bucket added." Pass 11 tested that instead of believing it, and the previous version of this file
+// shipped the duplicate-name refusal and the partition assert as TWO checks, in that order. The
+// partition assert was DEAD CODE: unreachable on every possible input. Confirmed two ways —
+// exhaustively (every name-sequence of length ≤5 over a 3-symbol alphabet × every fingerprint subset:
+// 9,330 populations, 9,252 refused by the name rule first, partition-arm reachable in ZERO), and
+// algebraically (once names are distinct, `missing` is exactly the articles whose name is absent from
+// `fingerprinted`, and `withFingerprint` is drawn only from `articles`, so the sum is an identity).
+//
+// Which makes the third increment in a row where the demonstrated instance was closed with an
+// enumerating rule and a broader mechanism was then NARRATED as the real fix — the very shape the
+// paragraph above congratulates itself for avoiding. Worse, the "negative control" I recorded for it
+// was obtained by EDITING THIS FILE to drop a bucket entry. That is not a negative control; it is
+// proving an `if (false)` branch works by changing it to `if (true)`. And the same commit deleted
+// unreachable branches from a sibling lint, calling them "code describing coverage that does not
+// exist" — while adding this one.
+//
+// THE HONEST STRUCTURE, which is one check rather than two. The arithmetic and the name-uniqueness
+// condition are THE SAME CONDITION here, not two layers: given how the buckets are built, the sum can
+// only disagree when two articles share a heading. So there is one refusal. Its CONDITION is the
+// arithmetic — the general form, chosen so that a future change to how buckets are built cannot
+// silently make it stop covering — and its MESSAGE names the duplicate headings, because today they
+// are always the cause and a reader needs to know what to rename. If the sum ever breaks WITHOUT a
+// duplicate, the message says so rather than blaming a duplicate that isn't there.
+//
+// What this is NOT: a broader net than name-uniqueness. Today it catches exactly what a duplicate-name
+// rule catches. The arithmetic form buys resilience to a future refactor, and nothing else. Saying so
+// is the whole point — a second layer that cannot fire is worse than no second layer, because it reads
+// as depth on every surface that lists it.
+const dupHeadings = [...new Set(articles.map((a) => a.name).filter((n, i, all) => all.indexOf(n) !== i))];
 if (fingerprinted.size + missing.length !== articles.length) {
+  const cause = dupHeadings.length > 0
+    ? `${dupHeadings.length} article heading(s) appear MORE THAN ONCE: ${dupHeadings.map((d) => `"${d}"`).join(', ')}. ` +
+      `Every bucket here is keyed by heading, so a repeat makes an article invisible to the fingerprint ` +
+      `requirement — neither counted as fingerprinted nor reported as missing one. Give each article a distinct heading.`
+    : `No duplicate heading is present, so the buckets have stopped partitioning for some OTHER reason — ` +
+      `a parser change, or a bucket added without updating this arithmetic. Find the unaccounted article(s) before ` +
+      `trusting any count this lint prints.`;
   console.error(
     `[enforcement-fingerprint] PARTITION BROKEN: ${articles.length} article(s), but ${fingerprinted.size} ` +
     `fingerprinted + ${missing.length} without a fingerprint = ${fingerprinted.size + missing.length}. ` +
-    `Every article must land in exactly one bucket; the difference is articles this lint is not accounting ` +
-    `for, and an unaccounted article is one the fingerprint requirement never reaches. Refusing to report clean ` +
-    `over a population that does not add up.`,
+    `An unaccounted article is one the fingerprint requirement never reaches. ${cause}`,
   );
   process.exit(1);
 }

@@ -1370,3 +1370,68 @@ machine-unearned convergence claim that article's own guard refuses. The establi
 are a dated residual on tooth (E), as a fourth case of alive-but-inert, with the honest note that it
 **cannot be closed from inside the change that introduces it** — the baselines bind from the first
 merge onward, and until then the ratchets are prospective rather than active.
+
+## Increment 37 (window 11) — pass 11: the fifth consecutive defect inside the previous repair
+
+Pass 11 is the eleventh reject, 5 load-bearing, and it answered the question it was dispatched to
+answer: **for the fifth consecutive pass, the previous pass's repair introduced a new load-bearing
+defect.** That was pass 10's stated blocking condition for convergence, and it is unmet.
+
+**MY PARTITION ASSERTION WAS DEAD CODE, AND I CERTIFIED IT AS THE REPAIR IN THREE ARTIFACTS.** The
+reviewer proved it two ways, and I reproduced the exhaustive model independently: every name-sequence
+of length ≤5 over a 3-symbol alphabet × every fingerprint subset — **9,330 populations, 9,252 refused
+by the duplicate-name rule first, partition arm reachable in ZERO.** Algebraically it is a tautology:
+once names are distinct, `withFingerprint` is drawn only from `articles`, so the sum is an identity.
+
+So the increment that wrote *"this check is deliberately NOT another duplicate-name rule"* shipped a
+duplicate-name rule with an unreachable assertion beside it — the third increment running where the
+demonstrated instance is closed with an enumerating rule and a broader mechanism is then NARRATED as
+the real fix. **And the "negative control" I recorded was obtained by editing the guard's own source
+to drop a bucket entry.** That is not a negative control; it is proving an `if (false)` branch works
+by changing it to `if (true)`. The same commit deleted unreachable branches from a sibling lint,
+calling them *"code describing coverage that does not exist"* — while adding this one.
+
+**The repair is now ONE check, and the honest finding underneath it is that the two conditions were
+always the same condition.** The arithmetic can only disagree when two articles share a heading, given
+how the buckets are built. So there is a single refusal: its CONDITION is the arithmetic (the general
+form, so a future change to bucket construction cannot silently make it stop covering), and its
+MESSAGE names the duplicate headings, because today they are always the cause. If the sum ever breaks
+WITHOUT a duplicate, the message says exactly that instead of blaming a duplicate that isn't there.
+**Stated plainly in the file: this is not a broader net than name-uniqueness.** It catches exactly what
+a duplicate-name rule catches; the arithmetic form buys resilience to a refactor and nothing else. Both
+arms now fire on real INPUTS — attack A on the fingerprinted-duplicate arm, attack B on the partition
+arm (`PARTITION BROKEN: 89 article(s), but 6 + 82 = 88`) — never on source mutation.
+
+**I PUBLISHED A FALSE CLAIM ABOUT MY OWN ENFORCEMENT, AND THE EVIDENCE WAS ON MY SCREEN ALL WEEK.**
+Pass 10 said the three ratchets "have NEVER RUN in CI … not once", and I wrote that into `ci.yml` as
+established fact without checking. It is false: the `lint` job runs `npm run lint`, whose chain ends
+with all three of them, on every run. **Their clean output is at the bottom of every gate run I have
+read this week.** What is true is narrower and duller: the PINNED-BASE-BOUND invocation never ran, so
+the ratchets executed while their historical arm did not. The `if: always()` change stays — it is
+correct for that narrower reason — and the false sentence is replaced by the accurate one. This is my
+own recorded lesson, verbatim: *a precise diagnosis gets acted on unverified; precision suppresses the
+second opinion, so it raises the bar for checking, not lowers it.*
+
+**A NEW STANDARD CAN ENTER THE REGISTRY BEHIND ONE SPACE.** Verified: `   ### Indented New Standard`
+with no fingerprint at all is invisible to the fingerprint requirement, the duplicate-definitions
+check, the gap sweep and the self-counts check, all four reporting clean — and `marked`, this repo's
+own renderer, emits `<h3>`. CommonMark allows up to three leading spaces; every parser here keys on
+`^###`. The article never joins the population, so the partition identity is trivially satisfied: **a
+guard cannot count what it never parsed.** Fixed as a REFUSAL in the shared registry core rather than
+by widening nine separate regexes — nine chances to disagree, in a repository whose recurring defect is
+two definitions of one thing drifting apart. Proven on four arms including a false-positive control:
+three spaces refused, one space refused, a fenced example NOT refused, the real registry still clean.
+
+**A DUPLICATE TRACKED ID, INSIDE THE CHANGE WHOSE RECORDED SHAPE IS NAME-KEYED COLLISION.** One article
+declared `STD-SUBCOUNTDOWN-audit-never-started` twice, so the lint published "45 sub-obligation
+countdowns" while counting 44 distinct obligations — an array length reported as a population size, the
+same publish-the-key-count defect now produced in three separate lints. It sat on a surface no
+fingerprint cites, so the gap sweep could never have reached it. The restatement is removed and the
+countdown lint now refuses a repeated tracked id across BOTH id spaces jointly, proven by injection.
+Two obligations under one id means closing either reads as closing both — the partial-credit defect
+*Deferral = Deletion* forbids, one level up.
+
+**AND "REMOVED FROM ALL FOUR PLACES" WAS ITSELF AN OVER-CLAIM** — two sites pass 10 named explicitly
+were untouched, and still state 92% and 93% for one measurement. They are historical entries in this
+append-only increment log, so they are left as written and corrected here rather than rewritten: the
+claim was wrong, not the history. **Sixth instance of this class; still not claimed closed.**

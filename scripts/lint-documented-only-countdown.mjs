@@ -257,6 +257,36 @@ for (const a of articles) {
   }
 }
 
+// TRACKED IDS MUST BE UNIQUE — added by external review pass 11, which found this branch declaring
+// `STD-SUBCOUNTDOWN-audit-never-started` TWICE in one article. The clean line then published "45
+// sub-obligation countdown(s)" while counting 44 distinct obligations: an array length reported as a
+// population size, which is the same publish-the-key-count defect this window has now produced in
+// three separate lints.
+//
+// Two things make it worth a check rather than a one-line repair. It is the SAME failure family as
+// this change's own recorded shape, `GAP-name-keyed-population-collision` — a name-keyed record
+// silently collapsing — appearing on a surface no fingerprint cites, so the gap sweep could never
+// have reached it. And a duplicated tracked id is not cosmetic: two distinct obligations sharing one
+// id means closing either reads as closing both, which is exactly the partial-credit-for-a-kept-
+// promise defect *Deferral = Deletion* exists to forbid, one level up.
+//
+// Both id spaces are checked, and they are checked jointly: an article countdown and a sub-obligation
+// countdown sharing an id would be just as ambiguous as two of a kind.
+const allTracked = [...countdowns, ...subCountdowns];
+const seenTracked = new Map();
+for (const c of allTracked) {
+  if (seenTracked.has(c.trackedAs)) {
+    failures.push(
+      `${REGISTRY_REL}:${c.lineNo} — tracked id \`${c.trackedAs}\` is declared MORE THAN ONCE (also in ` +
+      `"${seenTracked.get(c.trackedAs)}"). Two obligations under one id means closing either reads as closing both, ` +
+      `and the count published by this lint stops being a count of obligations. Give each its own id, or — if they ` +
+      `are the same obligation stated twice — delete one and point at the other.`,
+    );
+  } else {
+    seenTracked.set(c.trackedAs, c.article);
+  }
+}
+
 if (gaps === null) {
   failures.push(
     'could not obtain the gap set from scripts/standards-coverage.mjs --json, so the "silently gained a guard" arm did ' +

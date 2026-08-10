@@ -848,3 +848,54 @@ be the very thing the rule forbids. And the new safety measures compare against 
 exist yet — it starts existing when this work is accepted — so today they are honest promises rather
 than active protection. Both now carry a date and a name, because the reviewer was right that "we know
 about it" is not the same as tracking it.
+
+## Proving a switch works by taping it in the "on" position
+
+The eleventh reading found five things, and the first one is the worst mistake I have made this week.
+
+Yesterday I added a piece of arithmetic — *every rule must land in exactly one pile* — and wrote that
+it was the real fix, the general one, the thing that catches a rule going missing for any reason. **It
+can never fire.** Not "rarely". Never, on any possible document. The check just above it catches the
+only case that would trigger it, and once that case is gone the sum is true by definition. The reviewer
+proved it; I rebuilt the proof myself and got the same answer: **9,330 possible documents, zero that
+reach it.**
+
+And the "test" I proudly recorded for it? I had **edited the program itself** to break the counting,
+watched the alarm go off, and called that proof the alarm works. That is taping a switch to *on* and
+concluding the wiring is sound. In the very same batch of work I deleted some other code for being
+unreachable, saying that code which cannot run should not sit there looking like protection — while
+adding exactly that.
+
+**The honest version turned out to be simpler than either.** The two checks were never two things. The
+arithmetic can only fail when two rules share a title, so it *is* the title check, written as a sum.
+There is one check now. Its condition is the arithmetic, because that survives someone changing how the
+piles are built; its message names the duplicate titles, because that is always the reason today; and if
+the sum ever breaks for some *other* reason, it says so rather than blaming a duplicate that isn't there.
+Both alarms now go off because of something in the **document**, never because I reached in and broke the
+program.
+
+**The second finding is one I should have caught myself, and the evidence was on my screen every day.**
+The last reading told me my three new safety checks had never run in the automated build — and I wrote
+that into the build file as fact without checking. It is wrong. They run on every single build. Their
+"all clear" lines appear at the bottom of every check I have read this week. What is actually true is
+narrower and much less dramatic: one specific *version* of those checks — the one that compares against
+the officially accepted history — had never run. The fix I made is still right, for that smaller reason.
+The sentence I published was not. A confident, specific-sounding claim made me skip the two minutes of
+checking that a vaguer one would have prompted.
+
+**Third: a whole new rule can slip into the constitution behind a single space.** Indent a heading by one
+to three spaces and it still *looks* like a heading to every reader and every renderer — and becomes
+invisible to all four of my checks at once. My clever arithmetic cannot help here at all: it can only
+count things it noticed, and this was never noticed. Fixed by **refusing** indented headings rather than
+teaching nine different pieces of code to accept them — nine chances to drift apart, in a project whose
+signature failure is two copies of one rule disagreeing. Tested four ways, including making sure an
+indented heading inside a code example is still allowed.
+
+**Fourth, and almost funny: I gave two different obligations the same tracking number** — inside the very
+piece of work whose recorded lesson is *"things filed under the same name collapse into one."* The count
+said 45 when there were 44. Removed, and the check now refuses a repeated number.
+
+**Fifth: I said I had removed a disagreeing figure from all four places. I had removed it from two.** The
+other two are older entries in a running log, so I left them and corrected the claim rather than quietly
+editing the past. That is the sixth time this particular error has appeared. I am not claiming it is
+solved.

@@ -37,7 +37,7 @@
           },
           {
             "standard": "Iterative Audit to Convergence",
-            "fingerprintDigest": "5c9c7717e3fe7ac6"
+            "fingerprintDigest": "2f110be2ffb74757"
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
@@ -69,7 +69,7 @@
           {
             "standard": "Iterative Audit to Convergence",
             "why": "The strongest unmatch in the registry for this shape. Its surface's decision is not merely logged — the canonical audit report at docs/audits/<slug>.md IS the per-decision record, versioned, content-addressed, and re-checked against the stamp by both the commit gate and CI. A reader can reconstruct which rounds were run, what each found, and why the stamp was granted or refused. That is the durable verdict trace whose ABSENCE at the outbound surface defines this shape.",
-            "atDigest": "5c9c7717e3fe7ac6"
+            "atDigest": "2f110be2ffb74757"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
@@ -157,7 +157,7 @@
           },
           {
             "standard": "Iterative Audit to Convergence",
-            "fingerprintDigest": "5c9c7717e3fe7ac6"
+            "fingerprintDigest": "2f110be2ffb74757"
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
@@ -184,7 +184,7 @@
           {
             "standard": "Iterative Audit to Convergence",
             "why": "Declares its moments explicitly. Two of the three declare `none` — which is a DECLARATION, not silence, and is exactly the answer this shape exists to force: an unguarded standard that SAYS it is unguarded converts an invisible hole into a dated finding.",
-            "atDigest": "5c9c7717e3fe7ac6"
+            "atDigest": "2f110be2ffb74757"
           },
           {
             "standard": "The Right to Stand Ground",
@@ -282,7 +282,7 @@
           },
           {
             "standard": "Iterative Audit to Convergence",
-            "fingerprintDigest": "5c9c7717e3fe7ac6"
+            "fingerprintDigest": "2f110be2ffb74757"
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
@@ -310,7 +310,7 @@
             "standard": "Iterative Audit to Convergence",
             "why": "UNMATCHED. **This verdict was recorded as a MATCH first and was WRONG — corrected within the hour, by checking.** I asserted that scripts/write-audit-convergence.mjs had never been injection-tested. It has: tests/unit/write-audit-convergence.test.ts carries 35 passing tests, 19 of them explicit refusal cases — REFUSES with only 1 round, REFUSES a non-zero final round, REFUSES a line-vs-rows MISMATCH, REFUSES basename != slug, REFUSES a bad slug charset, REFUSES both standing-guard and exemption, REFUSES a round missing search-angles, plus FAIL-CLOSED cases for unparseable ledger rows and non-integer counts. That is a proven negative control several times over, and stronger than most guards in this repository.",
             "evidence": "tests/unit/write-audit-convergence.test.ts — 35 tests pass, 19 refusal/fail-closed cases (verified by running the suite, not by reading it)",
-            "atDigest": "5c9c7717e3fe7ac6"
+            "atDigest": "2f110be2ffb74757"
           },
           {
             "standard": "Deferral = Deletion",
@@ -412,7 +412,7 @@
           },
           {
             "standard": "Iterative Audit to Convergence",
-            "fingerprintDigest": "5c9c7717e3fe7ac6"
+            "fingerprintDigest": "2f110be2ffb74757"
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
@@ -449,7 +449,7 @@
             "standard": "Iterative Audit to Convergence",
             "why": "Its declared surfaces test a PROPERTY of the content, not the presence of a ritual: whether a marker RESOLVES, whether the recorded rounds EARN the stamp, whether a sweep's population is current. Where a fingerprint is `none` there is no surface to carry the shape, which is recorded on those articles rather than counted as safety here.",
             "evidence": "read each fingerprint's declared surfaces against the present-vs-property test",
-            "atDigest": "5c9c7717e3fe7ac6"
+            "atDigest": "2f110be2ffb74757"
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
@@ -505,7 +505,7 @@
           },
           {
             "standard": "Iterative Audit to Convergence",
-            "fingerprintDigest": "5c9c7717e3fe7ac6"
+            "fingerprintDigest": "2f110be2ffb74757"
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
@@ -540,7 +540,7 @@
           },
           {
             "standard": "Iterative Audit to Convergence",
-            "atDigest": "5c9c7717e3fe7ac6",
+            "atDigest": "2f110be2ffb74757",
             "why": "Its correction notes state the coverage attained and name what is NOT reached — the `none` fingerprints say nothing guards them, and the guarded ones enumerate the moments they miss. Swept after the third instance, when the pattern was known, which is exactly why these read differently from the notes that carried the shape.",
             "evidence": "read each article's correction and coverage notes against the attained-vs-claimed test"
           },
@@ -582,7 +582,7 @@
           },
           {
             "standard": "Iterative Audit to Convergence",
-            "fingerprintDigest": "5c9c7717e3fe7ac6"
+            "fingerprintDigest": "2f110be2ffb74757"
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
@@ -616,7 +616,7 @@
             "standard": "Iterative Audit to Convergence",
             "why": "Immune deliberately rather than by luck, which is the distinction this sweep exists to draw. Its cited surface `scripts/write-audit-convergence.mjs` builds a registry article index and REFUSES the collision up front: a repeated article title returns `duplicate standards article title ... is ambiguous`, and a repeated Article ID returns a duplicate-owner error, both before the index is built. The audit slug itself cannot collapse either — the slug must equal the file basename, so the filesystem holds one record per slug and a second audit under one slug is a visible overwrite rather than a silent merge.",
             "evidence": "read registryArticleIndex in scripts/write-audit-convergence.mjs: titleOwners and idOwners both refuse a repeat before any entry is admitted",
-            "atDigest": "5c9c7717e3fe7ac6"
+            "atDigest": "2f110be2ffb74757"
           },
           {
             "standard": "Documentation IS Being",

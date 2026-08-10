@@ -102,17 +102,25 @@ jobs:
       # branch name is not the accepted change boundary and on a main checkout can denote the commit
       # under test. The proven pattern is a PINNED base SHA from the event, the base copy extracted to
       # RUNNER_TEMP, and the checker handed a file path plus an explicit required flag.
-      # `if: always()` — added after review pass 10, which found these three ratchets had NEVER RUN
-      # in CI on this branch. They are later steps of the same job as `standards-coverage.mjs --check`,
-      # and that step is currently red (stale Building / Substrate area audits), so the job aborted
-      # before reaching them every time. A fingerprint declaring `moments: ci-time` over a surface
-      # that does not execute is the alive-but-inert shape at the workflow level — the guard was
-      # present, configured, and doing nothing, and every surface reported it as wired.
+      # `if: always()` — so these steps run even when an earlier step in this job fails.
       #
-      # The idiom is copied, not invented: `if: always()` is already the pattern used by the artifact
-      # upload steps in this same file. A step that FAILS still fails the job regardless of the
-      # condition that started it, so making these unconditional strengthens the gate rather than
-      # weakening it — it removes only their dependence on an unrelated step's verdict.
+      # CORRECTED BY REVIEW PASS 11, and the correction matters more than the change. Pass 10 reported
+      # that these three ratchets "have NEVER RUN in CI … not once", and I wrote that into this file as
+      # established fact WITHOUT CHECKING IT. It is false: the `lint` job runs `npm run lint`, whose
+      # chain ends with all three of these lints, and it executes on every run of this branch. Their
+      # clean output has been at the bottom of every local gate run this week — the evidence was in
+      # front of me and I adopted a precise-sounding finding over it.
+      #
+      # What is TRUE, and is the reason this step exists: the PINNED-BASE-BOUND invocation had never
+      # run. The unbound run in the `lint` job cannot do the shrink-only comparison against the
+      # protected base, because that needs the `*_BASE_FILE` / `*_BASE_REQUIRED` binding assembled by
+      # the step above. So the ratchets executed; their HISTORICAL arm did not. That is a narrower and
+      # duller claim than the one I published, and it is the accurate one.
+      #
+      # The idiom is copied, not invented: `if: always()` is already used by the artifact upload steps
+      # in this same file. A step that FAILS still fails the job regardless of the condition that
+      # started it, so making these unconditional strengthens the gate rather than weakening it — it
+      # removes only their dependence on an unrelated step's verdict.
       - name: Resolve protected-base window-10 baselines
         id: w10-baselines
         if: always()
