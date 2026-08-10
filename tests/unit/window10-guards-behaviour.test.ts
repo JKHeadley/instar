@@ -347,16 +347,19 @@ describe('lint-documented-only-countdown — a countdown must be a deadline', ()
 });
 
 describe('lint-account-matches-tree — the account must match the tree', () => {
+  const SE = () => path.join(fixture, 'upgrades', 'side-effects', 'window10-deep-property-guards.md');
+  const ARCHIVE = () => path.join(fixture, 'docs', 'specs', 'reports', 'window10-external-passes');
+  const write = (p: string, s: string) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, s); };
+
   it('passes on the untouched tree', () => {
     const r = run('lint-account-matches-tree.mjs');
     expect(r.code, r.out).toBe(0);
-    expect(r.out).toContain('share one horizon definition');
+    expect(r.out).toContain('declare no horizon-named numeric literal');
   });
 
-  // THE ARM THE BEHAVIOURAL SUITE STRUCTURALLY CANNOT COVER. Review pass 18's defect was a private
-  // literal EQUAL to the shared value; every behavioural test compares printed output, so it is
-  // invisible there — the 23-test suite passes against the exact pre-repair code. Only source
-  // inspection distinguishes a shared bound from a coincidentally-equal copy.
+  // ARM 1 — the arm review pass 18's defect proved a behavioural test structurally cannot cover: a private
+  // literal EQUAL to the shared value prints identically, so only source inspection distinguishes a shared
+  // bound from a coincidentally-equal copy.
   it('refuses a guard that declares its own horizon literal EQUAL to the shared value', () => {
     const g = path.join(fixture, 'scripts', 'lint-enforcement-gap-records.mjs');
     fs.writeFileSync(g, fs.readFileSync(g, 'utf8')
@@ -374,63 +377,110 @@ describe('lint-account-matches-tree — the account must match the tree', () => 
     expect(r.out).toContain('does not reference COUNTDOWN_HORIZON_DAYS');
   });
 
-  it('refuses an unannotated superseded figure on a reader-facing surface', () => {
-    const e = path.join(fixture, 'docs', 'specs', 'window10-deep-property-guards.eli16.md');
-    fs.mkdirSync(path.dirname(e), { recursive: true });
-    fs.writeFileSync(e, 'Of 178 markers, 110 point at nothing.\n');
+  // Review pass 20 finding 10: the fail-closed arm no sabotage reached.
+  it('refuses when a countdown guard file is missing entirely', () => {
+    fs.rmSync(path.join(fixture, 'scripts', 'lint-documented-only-countdown.mjs'));
     const r = run('lint-account-matches-tree.mjs');
     expect(r.code).toBe(1);
-    expect(r.out).toContain('publishes the SUPERSEDED figure');
+    expect(r.out).toContain('refusing to report clean over a guard that is not there');
   });
 
-  // ARM 2a — retired CLAIMS-about-this-work. This is the arm covering review pass 19's finding 3: two
-  // self-count corrections announced in the engineering log and applied at neither of their sites.
-  it('refuses a retired claim reproduced on a tracked surface', () => {
-    const s = path.join(fixture, 'upgrades', 'side-effects', 'window10-deep-property-guards.md');
-    fs.mkdirSync(path.dirname(s), { recursive: true });
-    // [SUPERSEDED — fixture input, deliberately reproducing the retired wording so the arm has something to fire on]
-    fs.writeFileSync(s, 'The review returned reject with six major findings and no criticals.\n'); // [SUPERSEDED — fixture]
+  // ── The populations are DERIVED. These are the tests that make that real rather than asserted. ──
+
+  // Review pass 20 finding 1: the hand-written figure list held four of the six numerals its own cited
+  // authority forbids. Deriving them means adding a triple THERE enrolls it here, with no second edit.
+  it('derives the figure population from the authority, so a new retired triple enrolls itself', () => {
+    const auth = path.join(fixture, 'scripts', 'lint-deferral-referent-resolves.mjs');
+    fs.writeFileSync(auth, fs.readFileSync(auth, 'utf8')
+      .replace('194/104/54%', '194/104/54% and 999/888/77%'));
+    write(path.join(fixture, 'docs', 'specs', 'window10-deep-property-guards.eli16.md'),
+      'The measurement was 999 of something.\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('publishes the SUPERSEDED figure "999"');
+  });
+
+  // The fail-closed direction: if the authority stops stating triples, the arm must SAY it is watching
+  // nothing rather than print clean over an empty population — the alive-but-inert shape.
+  it('refuses rather than reporting clean when the authority states no retired triple', () => {
+    const auth = path.join(fixture, 'scripts', 'lint-deferral-referent-resolves.mjs');
+    fs.writeFileSync(auth, fs.readFileSync(auth, 'utf8').replace(/\b\d{2,4}\/\d{2,4}\/\d{1,3}%/g, 'REDACTED'));
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('watching NOTHING');
+  });
+
+  // Review pass 20 finding 2: the claim population is derived from the tree's own annotations, so
+  // correcting a claim once (which means annotating the place that quotes it) immunises every surface.
+  it('derives the claim population from annotations: an annotated claim repeated elsewhere is refused', () => {
+    write(SE(), '- [SUPERSEDED — "a wholly invented retired wording"] → the corrected version.\n');
+    write(path.join(fixture, 'docs', 'specs', 'window10-deep-property-guards.eli16.md'),
+      'As established, a wholly invented retired wording is how it works.\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('repeats the RETIRED claim "a wholly invented retired wording"');
+  });
+
+  // Prose wraps. The offset-map scan finds a claim broken across lines exactly once, at its start.
+  it('finds a retired claim wrapped across a line break, and reports it once', () => {
+    write(SE(), '- [SUPERSEDED — "a wholly invented retired wording"] → the corrected version.\n');
+    write(path.join(fixture, 'docs', 'specs', 'window10-deep-property-guards.eli16.md'),
+      'filler line\nAs established, a wholly invented\nretired wording is how it works.\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    const hits = r.out.split('\n').filter((l) => l.includes('repeats the RETIRED claim'));
+    expect(hits.length).toBe(1);
+    expect(hits[0]).toContain('eli16.md:2');
+  });
+
+  // Review pass 20 finding 5: an annotation must NOT grant amnesty to its neighbours. The escape is the
+  // matched span's own lines, so a claim sandwiched between two annotated lines is still refused.
+  it('refuses a retired claim sandwiched between two annotated lines', () => {
+    write(SE(), '- [SUPERSEDED — "a wholly invented retired wording"] → the corrected version.\n');
+    write(path.join(fixture, 'docs', 'specs', 'window10-deep-property-guards.eli16.md'),
+      '[SUPERSEDED — an annotation]\na wholly invented retired wording\n[SUPERSEDED — another annotation]\n');
     const r = run('lint-account-matches-tree.mjs');
     expect(r.code).toBe(1);
     expect(r.out).toContain('repeats the RETIRED claim');
   });
 
-  // Prose wraps, and the sentence most likely to reproduce a retired wording is the one describing its
-  // correction — which is exactly where the line break lands. A per-line check would miss it.
-  it('refuses a retired claim split across a line break', () => {
-    const s = path.join(fixture, 'upgrades', 'side-effects', 'window10-deep-property-guards.md');
-    fs.mkdirSync(path.dirname(s), { recursive: true });
-    // [SUPERSEDED — fixture input, deliberately split across a line break to exercise the two-line window]
-    fs.writeFileSync(s, 'pass 1 was recorded here as six major\nfindings, which is wrong.\n'); // [SUPERSEDED — fixture]
-    const r = run('lint-account-matches-tree.mjs');
-    expect(r.code).toBe(1);
-    expect(r.out).toContain('repeats the RETIRED claim');
-  });
-
-  it('ACCEPTS a retired claim quoted inside its own annotation', () => {
-    const s = path.join(fixture, 'upgrades', 'side-effects', 'window10-deep-property-guards.md');
-    fs.mkdirSync(path.dirname(s), { recursive: true });
-    fs.writeFileSync(s, '- [SUPERSEDED — "six major findings", of pass 1] → 5 major + 1 minor.\n');
+  // The false-positive control: the annotated form is the SANCTIONED way to quote a retired wording.
+  it('ACCEPTS a retired claim on a line carrying its own annotation', () => {
+    write(SE(), '- [SUPERSEDED — "a wholly invented retired wording"] → the corrected version.\n');
+    write(path.join(fixture, 'docs', 'specs', 'window10-deep-property-guards.eli16.md'),
+      '[SUPERSEDED — quoted deliberately] a wholly invented retired wording, now corrected.\n');
     const r = run('lint-account-matches-tree.mjs');
     expect(r.code, r.out).toBe(0);
   });
 
-  // The narrowing control. Pointing the FIGURE arm at the engineering log flagged fourteen lines that
-  // legitimately narrate how the measurement moved. A guard that flags correct prose trains its reader
-  // to skip it, so the two arms carry different populations — this asserts that split is real.
+  // The narrowing control. Pointing the FIGURE arm at the engineering log flagged eleven lines that
+  // legitimately narrate how the measurement moved; a guard that flags correct prose trains its reader to
+  // skip it. The two arms carry different populations, and this asserts that split is real.
   it('does NOT apply the figure arm to the engineering log, which narrates the figure history', () => {
-    const s = path.join(fixture, 'upgrades', 'side-effects', 'window10-deep-property-guards.md');
-    fs.mkdirSync(path.dirname(s), { recursive: true });
-    fs.writeFileSync(s, 'The measurement went 62% of 178, then 54% of 194, now 201 of 217.\n');
+    write(SE(), 'The measurement went 62% of 178, then 54% of 194, now 201 of 217.\n');
     const r = run('lint-account-matches-tree.mjs');
     expect(r.code, r.out).toBe(0);
   });
 
-  // The false-positive control: the annotated form is the SANCTIONED way to name a retired figure.
-  it('ACCEPTS a superseded figure carrying an explicit annotation', () => {
-    const e = path.join(fixture, 'docs', 'specs', 'window10-deep-property-guards.eli16.md');
-    fs.mkdirSync(path.dirname(e), { recursive: true });
-    fs.writeFileSync(e, 'Of [SUPERSEDED — retired] 178 markers, 110 pointed at nothing.\n');
+  // ── ARM 3 — the limb that lapsed TEN times as a resolution. A citation is the obligation. ──
+  it('refuses when the tree cites a review pass whose verdict is not archived', () => {
+    write(SE(), 'As review pass 47 found, the guard was blind.\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('pass47-verdict.md is MISSING, and the tree cites review pass 47');
+  });
+
+  it('refuses a hole in the middle of an otherwise contiguous archive', () => {
+    write(path.join(ARCHIVE(), 'pass1-verdict.md'), 'x\n');
+    write(path.join(ARCHIVE(), 'pass3-verdict.md'), 'x\n');
+    const r = run('lint-account-matches-tree.mjs');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('pass2-verdict.md is missing from an otherwise contiguous archive');
+  });
+
+  it('ACCEPTS a cited review pass whose verdict IS archived', () => {
+    write(SE(), 'As review pass 47 found, the guard was blind.\n');
+    write(path.join(ARCHIVE(), 'pass47-verdict.md'), 'the verbatim verdict\n');
     const r = run('lint-account-matches-tree.mjs');
     expect(r.code, r.out).toBe(0);
   });

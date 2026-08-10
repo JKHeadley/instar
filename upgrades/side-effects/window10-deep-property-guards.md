@@ -1958,12 +1958,10 @@ guard exports nothing) rather than leaving the weaker option unexplained.
 
 **Three corrections announced here and applied nowhere here.** Pass 17's numbers: `54 insertions, 0
 deletions` on this file — the announcements of three fixes appended eighty-four lines below the text they
-did not fix. All three are now marked inline with the `[SUPERSEDED — …]` convention **this log already
-used **twice**
-[SUPERSEDED — this sentence originally read "already used four times". Twice is correct: two of the four
-were prose cells describing a fix rather than uses of the marker. A count-about-itself, wrong, in the
-increment about counts-about-itself being wrong. Review pass 18; the splice itself was review pass 19 nit 6.]
-, which is the point: the convention existed and I appended instead of using it. The
+did not fix. All three are now marked inline with the `[SUPERSEDED — …]` convention **this log had already used
+twice**, which is the point: the convention existed and I appended instead of using it.
+[SUPERSEDED — that sentence first read "already used four times"; twice is correct, since two of the four were prose cells describing a fix rather than uses of the marker. A count-about-itself, wrong, in the increment about counts-about-itself being wrong. Review pass 18 found the count; review pass 19 nit 6 found that the correction had been spliced into the middle of the phrase; review pass 20 finding 7 found the splice still there AND the emphasis markers left unbalanced by the half-repair.]
+The
 third also carried a wrong ordinal (43, where the node-only ordinal is 44) that had never been recorded
 as wrong — corrected on the record rather than silently.
 
@@ -2028,8 +2026,10 @@ that two of the three were announced HERE and applied NOWHERE, which is the same
 diagnoses for pass 17 eighty lines above. All three are now corrected at their own sites; this annotation
 is what releases the quotations from the retired-claim guard.]
 
-- [SUPERSEDED — "the convention this log already used four times"] → **twice**; two of the four were prose
-  cells describing a fix rather than uses of the marker.
+- [SUPERSEDED — "used four times"] → **twice**; two of the four were prose cells describing a fix rather
+  than uses of the marker. The quoted payload is deliberately SHORT: review pass 20 found this claim alive
+  on the explainer in a phrasing that put eight words between "already" and the payload, so the longer
+  quotation originally annotated here could never match it. What is quoted is what the guard watches for.
 - [SUPERSEDED — "six major findings", of pass 1] → **5 major + 1 minor**. Corrected by passes 6 and 10 and,
   until review pass 19, never in this log. Note that a naive grep of `pass1-verdict.md` for `SEVERITY:`
   returns 1 critical + 5 major + 1 minor + 1 nit — two of its eight such lines are empty-class declarations
@@ -2118,7 +2118,7 @@ wording is the one describing its correction — which is exactly where the line
 
 **Two false starts, both instructive, both corrected before commit rather than found later:**
 
-1. I first pointed BOTH arms at the widened surface list. The figure arm then flagged **fourteen** lines in
+1. I first pointed BOTH arms at the widened surface list. The figure arm then flagged **eleven** lines in
    this log that legitimately narrate how the measurement moved across five corrections — each mention is
    the point of its sentence, not a stale claim. A guard that flags correct prose trains its reader to skip
    it. The arms now carry **different populations**, and a test asserts that split is real.
@@ -2127,7 +2127,7 @@ wording is the one describing its correction — which is exactly where the line
    fired by an input, and an input must not be mistaken for the defect. Annotated rather than dropping the
    test file from scope, which would have blinded the arm to the very site pass 19 found in it.
 
-**Four new behavioural tests, three new sabotages, each isolating exactly its own test**: neuter the claim
+**Four new behavioural tests, three new sabotages, each isolating exactly the test(s) it should**: neuter the claim
 loop → both claim tests red; collapse the two-line window to one line → only the split-across-lines test
 red; widen the figure arm to the engineering log → only the narrowing control red. 32 tests, green restored.
 
@@ -2135,3 +2135,81 @@ red; widen the figure arm to the engineering log → only the narrowing control 
 claim nobody adds to the list is uncovered, exactly as the countdown lint declares of `REQUIRE_COUNTDOWN`.
 This is a guard against the recurrence of known false closures, not a general proof that the account matches
 the tree.
+
+## Increment 52 (window 11) — both hand-written populations deleted, and the archive limb made mechanical
+
+Pass 20: **reject, load-bearing 2** — the series' joint-lowest — and the second consecutive pass to credit
+the magnitude clause as SATISFIED, *"on stronger evidence than pass 19 had."* It reported two things this
+work has never had: **archive completeness was not a finding, for the first time in five passes**, and —
+new — *"for the first time in twenty readings no trajectory entry is unverifiable"*, both formerly
+self-reported entries now on disk and both reproducing. It also could not find a single defect in the four
+registry guards.
+
+Its two load-bearing findings were both in the lint written **two commits earlier** to close the
+false-closure class — and both were the same defect: **a population narrower than the class its prose
+named.**
+
+- The figure list encoded **four of the six** numerals its own cited authority forbids. One of the two it
+  omitted, `194`, was live and unannotated **twice** on the reader-facing explainer the arm exists to
+  protect — one line above a line the repair *did* annotate.
+- [SUPERSEDED — quoting the retired payload deliberately] The claim list held `already used four times` while the live site read *"…convention for retiring a wrong line, used four times"* — eight words apart, so an exact substring never matched. So pass 18's finding-4
+  correction reached the engineering log and never the explainer, and the guard built to prevent exactly
+  that divergence passed.
+
+**Pass 20's prescription was to stop transcribing, and it is a deletion.** Both hand-maintained lists are
+GONE:
+
+- **Figures are parsed from the authority the arm always cited but never read** — the deferral guard's
+  header. All six now, not four. Adding a retired triple there enrolls it here with no second edit.
+- **Claims are parsed from the `[SUPERSEDED — "…"]` annotations already in the tree.** The annotations ARE
+  the registry: correcting a claim once — which requires annotating the place that quotes it — immunises
+  every tracked surface thereafter. A population discovered from the material rather than one someone must
+  remember to extend. This is the branch's own recorded blind spot, closed at its root.
+
+**A tail heuristic was tried first and it manufactured a false positive within a minute.**
+[SUPERSEDED — quoting the retired wording deliberately] From *"two of the eleven streak defects were arms I made unreachable"* it derived a tail that fired on the **corrected**
+sentence — it had stripped the one word that was wrong. The payload of a retired claim is sometimes at its
+[SUPERSEDED — quoting both retired payloads deliberately] end (`used four times`) and sometimes at its start (`two of the eleven`), and no automatic rule can tell
+which. So the heuristic is deleted too: **the quoted wording IS the matcher**, and whoever writes the
+correction quotes the payload. Wordings too short to be evidence are skipped, and the skipped count is
+printed so the exclusion is never silent.
+
+**The sliding window is deleted as well.** The file is normalised once with an offset→line map and matched
+whole, so a claim wrapped across any number of lines is found exactly once, at its start. That removes
+pass 20's finding 4 (one violation reported twice, one copy naming a line that did not contain it) and
+finding 5 (a claim sandwiched between two annotated lines was invisible, because the escape checked
+NEIGHBOURS). The escape is now the matched span's OWN lines.
+
+**ARM 3 — the limb that lapsed ten times as a resolution.** Pass 20 named it the cheapest closure still
+available and named why it was still open: *"no lint, test, hook or CI step asserts the latest verdict is on
+disk before a repair commit."* It is now derived, like the others: **a citation is the obligation.** The
+moment an artifact writes "review pass N found…", pass N's verdict must be archived. Writing about a reading
+without filing it is a build failure rather than a resolution. Contiguity is bounded by what is actually
+filed — demanding 1..N from a single archived verdict would refuse a legitimately young archive, and a
+guard that refuses correct states is one its reader learns to skip.
+
+**The watched/source distinction, which this guard got wrong twice.** The behavioural test is WATCHED (pass
+19 found a real retired claim in its header prose) but is no longer a SOURCE, because its fixtures
+deliberately contain a fabricated annotation, a fabricated repetition of it, and a citation of a review pass
+that does not exist. Treating those as real enrolled a phantom matcher and demanded a verdict for a reading that has never existed.
+A negative control has to contain the thing it provokes.
+
+**Also applied:** finding 3 (the explainer credited a finding to a reading that had not happened, and
+contradicted itself fourteen lines later — corrected to the nineteenth); finding 7 (nit 6 was half-repaired,
+leaving the emphasis markers unbalanced and the sentence still spliced — unspliced properly this time);
+finding 8 (the 102-vs-104 disagreement on one measurement is now NAMED in the explainer rather than
+smoothed, since I have not resolved it); finding 9 (*"each isolating exactly its own test"* was contradicted
+by its own next clause — corrected); finding 10 (the missing-guard-file arm now has a test); finding 11 (the
+no-op `replace('%','%')` and the mis-described escape are both gone).
+
+**And the correction I caught myself, before pass 20 reported.** The increment-51 record said the over-broad
+figure arm flagged **fourteen** lines. It flagged **eleven** — re-derived by reproducing the wrong
+configuration in a scratch copy. A wrong count-about-myself inside the increment about wrong
+counts-about-myself. Pass 20 recorded it as *unverifiable rather than false*; it was false, and it is now
+corrected in both places.
+
+**Seven sabotages, all firing.** Neuter arm 3's cited-missing check → exactly its test; contiguity → exactly
+its test; the claim scan → the three claim tests; restore neighbour amnesty → exactly the sandwich test;
+the missing-guard arm → exactly its test; the empty-authority guard → exactly its test. Neutering the figure
+DERIVATION reds five, including the clean-case controls — correctly, because an empty population makes the
+fail-closed authority check refuse everywhere. 37 tests, full lint chain green.

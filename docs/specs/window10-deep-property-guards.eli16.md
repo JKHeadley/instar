@@ -129,8 +129,9 @@ I sent the evening's work to an outside reviewer and it came back **reject** —
 is the system working, so here is what it found, in plain terms.
 
 The biggest one: **my deferral guard was watching less than half of what it claimed to watch.** The
-commit-time marker accepts any label; my check only recognised two specific numbered forms. Of 194 labels
-actually in use, 102 were invisible to it. So the honest headline number moved from [SUPERSEDED — both figures below are retired measurements, named here only to show the sequence; the live figure is 201 of 217] "62% of deferrals
+commit-time marker accepts any label; my check only recognised two specific numbered forms.
+[SUPERSEDED — retired measurement, kept because this paragraph is about how the number moved; live is 201 of 217] Of 194 labels actually in use, 102 were invisible to it.
+[SUPERSEDED — and it disagrees with the checker's own header, which records that measurement as 104, not 102 — a two-count difference on one measurement that I have not resolved and am not going to smooth over.] So the honest headline number moved from [SUPERSEDED — both figures below are retired measurements, named here only to show the sequence; the live figure is 201 of 217] "62% of deferrals
 point at nothing" to [SUPERSEDED — retired measurement] **54%** — measured over the real population instead of a convenient slice of it. I
 widened the guard and wrote the reason for the reset into the file, because a ratchet you can quietly
 re-zero is not a ratchet.
@@ -283,7 +284,8 @@ verified, that is the joke telling itself.
 
 ## The second opinion refused my number — and it was right
 
-I asked an independent machine to re-count the thing I had just "fixed". It got **217** where I got 194,
+I asked an independent machine to re-count the thing I had just "fixed".
+[SUPERSEDED — mine is the retired figure here; live is 201 of 217] It got **217** where I got 194,
 said it could not reproduce mine under five reasonable readings, and told me the burden sits with the
 number a second party cannot re-derive.
 
@@ -1248,7 +1250,7 @@ the knowing choice rather than leaving the weaker option unexplained.
 **And three corrections I announced in a log without applying any of them in that log.** The reviewer
 counted it exactly: fifty-four lines added, zero removed — three announcements of fixes, sitting
 eighty-four lines below the text they did not fix. The log already had a marker convention for retiring a
-wrong line, used four times. I appended instead of using it. All three are now marked properly, and one of
+wrong line, used **twice**. I appended instead of using it. All three are now marked properly, and one of
 them turned out to carry a wrong number nobody had ever recorded as wrong.
 
 **Last, the previous reading's verdict was missing again — the seventh time.** This one is the worst kind:
@@ -1276,7 +1278,7 @@ experiment that exposed it.
 **The more useful half is that my new tests could not see it.** Both were checking for "beyond the
 *something*-day limit" — which matches any number — so the two checkers could drift apart and every test
 would stay green. Now they check the actual number, and there is a new test whose only job is that both
-checkers report the same limit. I wrote here that I had re-introduced the exact drift and it went red. **That was wrong, and the twentieth reading caught it:** my test compares the numbers the checkers print, so a private copy that happens to equal the shared one is invisible — the whole suite passes against the exact broken code. What it catches is a copy with a *different* value. The identical-value case cannot be caught by running the checkers at all; it needs something that reads their source, which is what I built instead.
+checkers report the same limit. I wrote here that I had re-introduced the exact drift and it went red. **That was wrong, and the nineteenth reading caught it:** my test compares the numbers the checkers print, so a private copy that happens to equal the shared one is invisible — the whole suite passes against the exact broken code. What it catches is a copy with a *different* value. The identical-value case cannot be caught by running the checkers at all; it needs something that reads their source, which is what I built instead.
 
 **And the thing that bothers me most has nothing to do with machinery.** A problem found fifteen readings
 ago was recorded as *corrected everywhere*. It was not: the outdated figure was still the headline of the
@@ -1331,7 +1333,37 @@ instrument I would have trusted would have confirmed my mistake.
 
 And I made the class mechanical, by widening a check I already had rather than building another one. Two
 wrong turns on the way, both caught before committing: first I pointed it at a page whose whole subject is
-how a number changed over time, and it flagged fourteen sentences that were all correct — a checker that
+how a number changed over time, and it flagged eleven sentences that were all correct — a checker that
 shouts at correct writing teaches you to ignore it. Then it flagged its own test's bait, the line that
 deliberately writes the bad wording so the checker has something to catch. Both are the same lesson from
 opposite sides: what you feed a check is not the same as what you are checking.
+
+## Twentieth reading: I had written the list by hand, twice
+
+The reading found two problems and they were the same problem. Both of the checks I built two days ago work
+from a list I typed out — and both times I typed a list shorter than the rule I had written next to it.
+
+One list was meant to hold six retired numbers. I typed four. One of the two I left out was sitting, right
+then, on this page — twice — which is the page that check exists to protect. It was one line above a line I
+had already fixed.
+
+The other list held a wrong phrase to watch for, but I had written down a longer version of it than the one
+actually in the text, so it never matched. Which meant a correction I made in the engineering log never
+reached this page at all, and the checker built to catch exactly that said everything was fine.
+
+So the fix is to stop typing lists. Both are now read from where they already live: the numbers from the
+checker that declared them retired in the first place, and the phrases from the corrections already marked
+in the text. Mark a wrong phrase once and every page is protected from it afterwards. That is the difference
+between a list someone has to remember to extend and one the work extends by itself.
+
+I tried a clever shortcut first and it went wrong in under a minute: I had the computer guess the important
+part of each phrase by taking its ending, and it immediately complained about a sentence I had *already
+fixed* — because the ending it kept had dropped the one word that was wrong. Sometimes the important part is
+at the end and sometimes at the start, and nothing can guess which. So the person writing the correction
+says which, by choosing what to put in quotes.
+
+The third thing is the one I am most relieved about. Ten times now I have promised to file a reviewer's
+verdict before starting the repairs it asked for, and ten times I have either forgotten or done it after
+somebody noticed. It is now impossible: the moment I write "the twentieth reading found…" anywhere, the
+build fails until that reading's verdict is on disk. The sentence creates the obligation. No promise left
+in it.
