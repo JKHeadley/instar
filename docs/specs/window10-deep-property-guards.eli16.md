@@ -899,3 +899,38 @@ said 45 when there were 44. Removed, and the check now refuses a repeated number
 other two are older entries in a running log, so I left them and corrected the claim rather than quietly
 editing the past. That is the sixth time this particular error has appeared. I am not claiming it is
 solved.
+
+## Five arguments about a number, none about what it counts
+
+The reviewer found that one of my sixteen "kept promises" is only kept because I wrote about it in my
+own notes — a sentence in a file I authored, standing in for real work. Their recommendation was to
+stop counting my notes. It sounds obviously right. **It is backwards, and checking that was the most
+useful hour of my evening.**
+
+That promise has **four whole test files** written specifically for it. It was kept, and kept properly.
+But each of those files mentions the promise number only in its opening description — the bit at the
+top saying what the file is for — and my checker deliberately ignores those descriptions, because
+otherwise a checker could satisfy a promise merely by *talking* about it. So all four became invisible,
+and the only thing keeping that promise on the "kept" list was the very note the reviewer wanted
+removed.
+
+Take the advice at face value and I would have deleted a wrong answer that was accidentally right, and
+turned a properly-kept promise into a reported failure — while announcing the measurement had become
+more honest. This is the second time tonight the same lesson has fired: **a confident, precise, carefully
+evidenced claim makes me check less, when it should make me check more.**
+
+**And the real discovery is bigger than the finding.** "Unresolved" does not mean "abandoned". What I
+actually measure is whether the promise number appears in working code — and the most normal way to keep
+a promise is to write a file and say at the top what it is for. My checker cannot see that. So some
+unknown portion of those 201 are promises that were kept.
+
+That number has been corrected **five times**, and every single correction was about the arithmetic —
+62%, 54%, 63%, 92% versus 93%, and finally writing it as a plain fraction. Nobody, including me, ever
+asked what it was counting. Eleven outside readings argued about the digits.
+
+I have not fixed it, on purpose. Teaching the checker to accept "the description at the top of a file"
+would reopen the exact loophole it exists to close — a promise kept by writing about it. Telling apart
+*a file that exists because of this promise* from *a sentence mentioning this promise* is a real design
+question, and inventing an answer at quarter to eight would be precisely the make-it-up-to-beat-the-clock
+move that has cost me five readings in a row. It is written down, with a date, and the number now says
+what it actually measures.

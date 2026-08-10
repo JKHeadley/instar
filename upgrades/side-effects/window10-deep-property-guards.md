@@ -1435,3 +1435,49 @@ Two obligations under one id means closing either reads as closing both — the 
 were untouched, and still state 92% and 93% for one measurement. They are historical entries in this
 append-only increment log, so they are left as written and corrected here rather than rewritten: the
 claim was wrong, not the history. **Sixth instance of this class; still not claimed closed.**
+
+## Increment 38 (window 11) — the number was interrogated five times and never once read
+
+Pass 11's finding 4 said `CMT-1785` — one of the sixteen live resolutions — is a FALSE POSITIVE: its
+only surviving referent is free prose in a `.causalAutopsy.notes` field of one of my own decision
+records, so a promise is being satisfied by my own narrative. The proposed repair was to exclude that
+corpus. **The mechanism is exactly right and the conclusion is backwards, and finding that out is the
+most valuable thing I did tonight.**
+
+`CMT-1785` has **four dedicated test files** — unit, integration wiring, e2e lifecycle, and a
+settle-gate test. The promise was kept, thoroughly. **Every one of them names the id in its HEADER
+COMMENT**, explaining what the file is for — and comment-stripping (deliberate, so a guard's own
+explanation cannot resolve what it measures) removes all four. Verified by execution: the token
+survives comment-stripping in NONE of its four files.
+
+So excluding the prose would have converted a demonstrably-kept promise into a reported orphan. **The
+prose resolution is a false positive arriving at the right answer, and it was masking a false NEGATIVE
+in the guard's core notion of resolution.** Had I taken the finding at face value — a precise,
+line-cited, executable-probe finding from a reviewer who has been right ten times running — I would
+have shipped a repair that made the measurement worse while reporting it as more honest. That is my
+own recorded lesson firing twice in one evening: *a precise diagnosis gets acted on unverified, so
+precision raises the bar for checking rather than lowering it.*
+
+**And the consequence is bigger than the finding.** *Orphaned* does not mean *abandoned*. What the
+guard measures is "the id does not appear in executable, non-comment content" — and the most ordinary
+way a promise is genuinely kept is to write a file whose header cites the promise it fulfils, which
+this guard structurally cannot see. So an unknown share of the 201 are kept promises whose only trace
+is a header comment.
+
+**This number has been corrected five times for PRECISION while nobody examined its MEANING.** 62% →
+54% → 63% → 92%/93% → 201-of-217: five corrections, each one about the arithmetic, none about what the
+arithmetic counts. It is a sharper version of the same defect the whole registry is built around — an
+interrogated figure sitting on an unexamined claim about what it certifies — and it survived eleven
+external passes because every pass, including me, argued about the digits.
+
+Recorded on the article with its own dated countdown (`STD-SUBCOUNTDOWN-orphan-is-not-abandoned`)
+rather than repaired tonight. The repair is genuinely non-obvious: teaching the guard to accept a
+header-comment citation would re-open the circularity it exists to prevent (a guard's own explanation
+resolving what it measures), so the fix needs a way to tell "a file that EXISTS because of this
+promise" from "a sentence mentioning this promise". That is a design question at 7:45pm, and inventing
+a mechanism for it now is exactly the manufactured enforcement this window has been punished for five
+passes running.
+
+**What did NOT change: the ratio.** 217 / 16 / 201 stands, and the raw fraction is still the honest
+form. What changed is that the article now states what the fraction certifies, instead of letting a
+reader take it as a count of abandoned promises.
