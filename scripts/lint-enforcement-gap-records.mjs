@@ -73,8 +73,12 @@
  *               fingerprint; attack B (shared heading, the new article carrying none) passes
  *               this lint clean. TWO other guards stop it, and review pass 14 established the
  *               ORDER by execution rather than by reading: lint-no-duplicate-definitions refuses it
- *               first (position 36 of 45 in the lint chain), and the sibling requirement lint refuses
- *               it again at position 44, via its partition arithmetic. The text that stood here named
+ *               FIRST, and the sibling requirement lint refuses it again LATER, via its partition
+ *               arithmetic. (The earlier text published "position 36 of 45", which review pass 15 found
+ *               reproducible under no counting convention — the chain is 46 steps including `tsc`, or 45
+ *               node steps at ordinals 35 and 43. The ORDER is the load-bearing claim and it is verified;
+ *               the ordinals are dropped rather than restated, because a number nobody can re-derive is
+ *               exactly what this file spent the week objecting to.) The text that stood here named
  *               only the second and called it "what actually stops attack B" — true of that guard,
  *               misleading about the chain, and the registry had already been corrected to say so
  *               while this file was left carrying the older account. So the CERTIFIED line above is earned by the chain, not by this
@@ -124,7 +128,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { checkGrowOnlyAgainstHistory, validateEvidenceRef, canonicalDate } from './lib/baseline-history.mjs';
+import { checkGrowOnlyAgainstHistory, validateEvidenceRef, canonicalDate, canonicalFutureDate } from './lib/baseline-history.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), '..');
@@ -379,7 +383,10 @@ for (const gap of gaps) {
     );
   }
   if (!sweep) {
-    if (!canonicalDate(gap?.countdown)) {
+    // canonicalFutureDate, NOT canonicalDate — review pass 15 found this arm unreachable because the
+    // history validator refuses any date beyond now+24h, so an unswept gap could only be dated TODAY,
+    // and 2026-09-07 (the date every other countdown here uses) was refused as "not a YYYY-MM-DD date".
+    if (!canonicalFutureDate(gap?.countdown)) {
       failures.push(`${id} — is UNSWEPT (sweep: null) and its countdown is "${gap?.countdown}", not a YYYY-MM-DD date. An unvalidated countdown lets \`"never"\` sit green forever (review pass 3, finding 6).`);
     } else if (gap.countdown < today) {
       failures.push(`${id} — is UNSWEPT and its countdown ${gap.countdown} has expired. Sweep it against the ${live.length} fingerprinted standard(s), or close the gap honestly.`);

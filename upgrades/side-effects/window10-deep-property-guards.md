@@ -1774,3 +1774,65 @@ Every registry edit re-stales those records, this increment is another such edit
 still producing them — so running the two family reviews now would burn a genuine review on a state about
 to change. They run immediately after two consecutive clean passes on one frozen tree, or they are named
 **undone** in the close-out and lead the next window. Not blocked. Undone.
+
+## Increment 45 (window 11) — pass 15, and the culminating artifact was the defective one
+
+Pass 15 is the fifteenth reject, load-bearing 6 → 5 (inside the noise of eleven passes in a 3–6 band).
+**Four of its five load-bearing findings are inside the repairs I made after pass 14**, which makes this
+the ninth consecutive pass where the previous repair generated the next pass's findings. And the sharpest
+of them lands on the artifact I added as the window's culminating specimen.
+
+**I CERTIFIED THE SUITE'S STATE WITHOUT RUNNING THE SUITE — in the repair for the finding that nobody had
+run the suite.** My pass-14 commit wrote *"the branch is still red, honestly, on the audit-currency
+gate."* Running it: 12 tests across 6 files. I then attributed every one rather than accepting the count:
+9 are a stale `dist/` (all 9 go green after `npm run build` — verified), 2 are an absent `GEMINI_API_KEY`,
+and 1 is the deliberate audit-currency red. So the SUBSTANCE was close to right and the CLAIM was
+unearned, which is the whole generator in one line: fix the demonstrated instance, then certify the class
+without checking it. Pass 15 was right to lead with it.
+
+**THE GAP RECORD I ADDED AS THE WINDOW'S SHOWPIECE CARRIED TWO DEFECTS.**
+
+- **It claimed an evaded fingerprint that was never evaded.** I set `hadNoFingerprint: false` — only the
+  second of eight records to assert a real guard was got past. The specimen is at PUSH-TIME on a workflow
+  script; the named fingerprint declares `commit-time, ci-time` and cites neither surface — **and its
+  coverage argument already says in writing that this case is "NOT covered by anything."** So the failure
+  did not evade a guard; it landed in a hole the article had honestly declared, and I took credit for the
+  registry that the registry had explicitly disclaimed. Withdrawn.
+- **Its one substantive unmatch verdict was falsified by the guard it exonerated.** I wrote that the sweep
+  guard's coverage-reducing conditions *"FAIL the build rather than printing a note beside a pass"*. There
+  is a fourth, legal under its own leg (4): an unswept-but-dated gap. With one present the pass line reads
+  `clean — 8 gap(s), 7 swept …, 1 unswept (dated)` — standing debt beside the word CLEAN, **bit-for-bit
+  the criterion I used to MATCH a different article two entries above.** Flipped to matched. I confirmed
+  it with my own probe rather than taking the reviewer's word, and I only *could* because I was fixing a
+  different defect in that same leg.
+
+**AND THAT DEFECT IS A REAL MECHANISM BUG — leg (4) was unreachable.** `gap.countdown` is a DEADLINE and
+was validated by `canonicalDate`, which refuses anything beyond now+24h ("no future-dated history"). So an
+unswept gap could only ever be dated *today*, and `2026-09-07` — the date every other countdown here uses
+— was refused with *"not a YYYY-MM-DD date"*, which it plainly is. **A history validator reused for a
+forward-looking field, with a diagnostic naming the wrong reason: unreachable AND misdirecting.** Fixed by
+splitting one round-trip definition into two policies (`canonicalDate` for history, `canonicalFutureDate`
+for deadlines) rather than copying the parsing — the duplication failure this repository has now paid for
+twice. Proven both ways: a future-dated unswept gap is accepted and reported; an expired one still fails.
+
+**Two more corrections.** The narrower universal I wrote to replace the false wider one was **also false**
+— `~8%` is not "a different measurement entirely", it is the complement of this measurement's own 92%,
+published in the present tense. **Fourth consecutive pass to turn on a replacement sentence**, same common
+factor every time: asserting something about a document I had not grepped. And the guard header's
+"position 36 of 45" is reproducible under no counting convention (46 steps with `tsc`, or 45 node steps at
+ordinals 35 and 43) — the ordinals are dropped rather than restated, because a number nobody can
+re-derive is exactly what this file spent the week objecting to.
+
+**`pass14-verdict.md` was missing from the archive** — the fifth instance, and the worst, because pass
+14's headline was reported to the operator in my own words with no auditable source. Filed, with the
+lateness recorded in its header rather than tidied away.
+
+**And the instrument behind the constitution's table is now committed** (`scripts/measure-orphan-referents.mjs`).
+The registry cited "two independent replays" while the script existed only in a scratch directory —
+evidence a reader could not follow, which is the shape *Deferral = Deletion* forbids, in the article that
+states it.
+
+**Credit where pass 15 gave it, because it is not small:** the monotonicity retraction was verified by
+orphan-SET identity over the live corpus (symmetric difference 0), which the reviewer called the
+best-evidenced repair of the run; and all eleven published counts survived an independent re-derivation
+exactly — the first time this number has survived one intact.

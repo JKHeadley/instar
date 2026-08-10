@@ -166,6 +166,13 @@ const ALLOWLIST = new Set([
   // filesystem walk would silently accept referents that do not exist for anyone
   // else. Never a destructive op.
   'scripts/lint-deferral-referent-resolves.mjs',
+  // The instrument behind the constitution's orphan table (committed 2026-08-09 on review pass 15
+  // finding 12: the registry cited 'two independent replays' while the script existed only in a
+  // scratch directory — evidence a reader could not follow). SAME shape and SAME reason as the lint
+  // above, deliberately: it must replay that guard's corpus rules exactly, so it resolves the corpus
+  // the identical way, with a read-only `ls-files` and nothing else. A filesystem walk here would
+  // measure a DIFFERENT population than the guard it exists to reproduce, which is the whole point.
+  'scripts/measure-orphan-referents.mjs',
   // Window-10 ratchet-history helper (2026-08-09). Same shape and same reason: a standalone
   // .mjs in the lint chain with no build step, so it cannot import the TS SafeGitExecutor
   // funnel. Its ONLY git invocations are `rev-parse --verify` and `show <ref>:<path>` — both

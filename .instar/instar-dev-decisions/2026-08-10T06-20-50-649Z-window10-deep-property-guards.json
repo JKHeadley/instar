@@ -1,0 +1,25 @@
+{
+  "ts": "2026-08-10T06:20:50.649Z",
+  "slug": "window10-deep-property-guards",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 133,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lib/baseline-history.mjs",
+      "scripts/lint-enforcement-gap-records.mjs",
+      "scripts/lint-no-direct-destructive.js",
+      "scripts/measure-orphan-referents.mjs"
+    ],
+    "addedLines": 127,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

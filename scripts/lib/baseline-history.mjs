@@ -63,12 +63,45 @@ const SHA256_RE = /^[0-9a-f]{64}$/;
 const canonicalText = (v) => v.replace(/\r\n?/g, '\n');
 const sha256 = (v) => crypto.createHash('sha256').update(canonicalText(v)).digest('hex');
 
-/** Copied from standards-coverage.mjs: a date that round-trips is a real date. */
-export function canonicalDate(value) {
+/**
+ * Is this a real calendar date? Copied from standards-coverage.mjs: a date that round-trips is real.
+ *
+ * SPLIT INTO TWO POLICIES over ONE definition of "real", after review pass 15 found that the single
+ * combined function was being used for a field it cannot serve. The round-trip test below is the
+ * shared definition; the two exported wrappers apply the opposite time policies, and neither
+ * re-implements the parsing — which is the failure mode this repository has now paid for twice.
+ */
+function roundTripsAsDate(value) {
   if (typeof value !== 'string' || !DATE_RE.test(value)) return false;
   const date = new Date(`${value}T00:00:00.000Z`);
   if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) return false;
+  return date;
+}
+
+/** A date that HAS ALREADY HAPPENED. For recording history — when something was measured or swept. */
+export function canonicalDate(value) {
+  const date = roundTripsAsDate(value);
+  if (!date) return false;
   return date.getTime() <= Date.now() + 24 * 60 * 60 * 1000; // no future-dated history
+}
+
+/**
+ * A real date with NO past-or-future policy. For a FORWARD-LOOKING field — a deadline, a countdown.
+ *
+ * Review pass 15 found `canonicalDate` guarding `gap.countdown`, which is a deadline. Because that
+ * function refuses anything beyond now+24h, an unswept gap could only ever be dated TODAY, so leg (4)
+ * of the sweep guard's contract — "an unswept gap is legal, provided it is visibly unswept and dated"
+ * — described a state that could not persist for more than a day. Worse, the refusal it produced said
+ * the countdown was "not a YYYY-MM-DD date" for `2026-09-07`, which is exactly a YYYY-MM-DD date and
+ * is the very value every other countdown in this repository uses; the author was sent to fix a format
+ * that was already correct. A history validator reused for a deadline, with a diagnostic that named
+ * the wrong reason — the arm was unreachable AND it misdirected on the way.
+ *
+ * The expiry decision stays with the CALLER, which is where the sibling `lint-documented-only-countdown`
+ * already puts it: validate the shape here, compare against today there. Same division, one date rule.
+ */
+export function canonicalFutureDate(value) {
+  return roundTripsAsDate(value) !== false;
 }
 
 /**

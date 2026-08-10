@@ -25,7 +25,7 @@
           },
           {
             "standard": "Deferral = Deletion",
-            "fingerprintDigest": "497baaa15de4fba5"
+            "fingerprintDigest": "9a9e415f9ab8ad3c"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
@@ -49,7 +49,7 @@
           {
             "standard": "Deferral = Deletion",
             "why": "Both declared surfaces are build-time checks whose every decision is a visible outcome — a failing build names the offending id, a passing run prints its counts, and the shrink-only baseline file is a durable per-id record in version control. The residual, named honestly: a PASSING lint records that it passed, not which ids it examined, so a matcher that silently stopped seeing a population would look identical to a clean corpus. That is a weaker form of this shape and it is why the script refuses to report clean when it parses zero ids. [RE-REACHED 2026-08-08: the article's measurement was corrected again (194→217 markers) after an independent re-derivation; the verdict is unchanged and was re-confirmed against the new article state rather than re-stamped.] [RE-REACHED 2026-08-09: the article's measurement was corrected a third time (103→137 orphans of 217) after review pass 5 found the resolver counting English words as identifiers; the verdict is unchanged and was re-confirmed against the new article state.] [RE-REACHED 2026-08-09: the article's measurement was corrected a fourth time (137→200 orphans of 217) after pass 6 found circular resolution; verdict unchanged, re-confirmed against the new article state.] [RE-REACHED 2026-08-09 (compound-marker correction): the article's count moved 200→201 after a compound marker naming two promises stopped resolving on one; the verdict is unchanged and was re-confirmed against the new article state.]",
-            "atDigest": "497baaa15de4fba5"
+            "atDigest": "9a9e415f9ab8ad3c"
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
@@ -145,7 +145,7 @@
           },
           {
             "standard": "Deferral = Deletion",
-            "fingerprintDigest": "497baaa15de4fba5"
+            "fingerprintDigest": "9a9e415f9ab8ad3c"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
@@ -169,7 +169,7 @@
           {
             "standard": "Deferral = Deletion",
             "why": "Declares moments: ci-time (RE-SWEPT at fingerprint 02b3e6d3 — the earlier verdict said 'commit-time and ci-time', which described the fingerprint BEFORE the commit-time claim was withdrawn as unreachable). It also states the moments it does NOT cover: the periodic moment when promised work comes due, and deferrals recorded in source comments rather than specs. [RE-REACHED 2026-08-08: the article's measurement was corrected again (194→217 markers) after an independent re-derivation; the verdict is unchanged and was re-confirmed against the new article state rather than re-stamped.] [RE-REACHED 2026-08-09: the article's measurement was corrected a third time (103→137 orphans of 217) after review pass 5 found the resolver counting English words as identifiers; the verdict is unchanged and was re-confirmed against the new article state.] [RE-REACHED 2026-08-09: the article's measurement was corrected a fourth time (137→200 orphans of 217) after pass 6 found circular resolution; verdict unchanged, re-confirmed against the new article state.] [RE-REACHED 2026-08-09 (compound-marker correction): the article's count moved 200→201 after a compound marker naming two promises stopped resolving on one; the verdict is unchanged and was re-confirmed against the new article state.]",
-            "atDigest": "497baaa15de4fba5"
+            "atDigest": "9a9e415f9ab8ad3c"
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
@@ -270,7 +270,7 @@
           },
           {
             "standard": "Deferral = Deletion",
-            "fingerprintDigest": "497baaa15de4fba5"
+            "fingerprintDigest": "9a9e415f9ab8ad3c"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
@@ -316,7 +316,7 @@
             "standard": "Deferral = Deletion",
             "why": "RE-SWEPT at fingerprint 02b3e6d3. The earlier MATCH was against a fingerprint that no longer exists: it cited a commit-time surface which was WITHDRAWN once injection-testing proved it unreachable for the Tier-1 commit class. The current fingerprint cites ONE surface, scripts/lint-deferral-referent-resolves.mjs, whose refusal arm was injection-proven while it was built (a new orphan fails the build by name). The historical match and its correction are preserved in sweepHistory and correctionLog rather than erased — a shape that WAS present and was fixed is part of the record. [RE-REACHED 2026-08-08: the article's measurement was corrected again (194→217 markers) after an independent re-derivation; the verdict is unchanged and was re-confirmed against the new article state rather than re-stamped.] [RE-REACHED 2026-08-09: the article's measurement was corrected a third time (103→137 orphans of 217) after review pass 5 found the resolver counting English words as identifiers; the verdict is unchanged and was re-confirmed against the new article state.] [RE-REACHED 2026-08-09: the article's measurement was corrected a fourth time (137→200 orphans of 217) after pass 6 found circular resolution; verdict unchanged, re-confirmed against the new article state.] [RE-REACHED 2026-08-09 (compound-marker correction): the article's count moved 200→201 after a compound marker naming two promises stopped resolving on one; the verdict is unchanged and was re-confirmed against the new article state.]",
             "evidence": "the withdrawn-moment note on the article itself; the injection run that made a new orphan fail",
-            "atDigest": "497baaa15de4fba5"
+            "atDigest": "9a9e415f9ab8ad3c"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
@@ -400,7 +400,7 @@
           },
           {
             "standard": "Deferral = Deletion",
-            "fingerprintDigest": "497baaa15de4fba5"
+            "fingerprintDigest": "9a9e415f9ab8ad3c"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
@@ -431,7 +431,7 @@
             "standard": "Deferral = Deletion",
             "why": "Its declared surfaces test a PROPERTY of the content, not the presence of a ritual: whether a marker RESOLVES, whether the recorded rounds EARN the stamp, whether a sweep's population is current. Where a fingerprint is `none` there is no surface to carry the shape, which is recorded on those articles rather than counted as safety here. [RE-REACHED 2026-08-08: the article's measurement was corrected again (194→217 markers) after an independent re-derivation; the verdict is unchanged and was re-confirmed against the new article state rather than re-stamped.] [RE-REACHED 2026-08-09: the article's measurement was corrected a third time (103→137 orphans of 217) after review pass 5 found the resolver counting English words as identifiers; the verdict is unchanged and was re-confirmed against the new article state.] [RE-REACHED 2026-08-09: the article's measurement was corrected a fourth time (137→200 orphans of 217) after pass 6 found circular resolution; verdict unchanged, re-confirmed against the new article state.] [RE-REACHED 2026-08-09 (compound-marker correction): the article's count moved 200→201 after a compound marker naming two promises stopped resolving on one; the verdict is unchanged and was re-confirmed against the new article state.]",
             "evidence": "read each fingerprint's declared surfaces against the present-vs-property test",
-            "atDigest": "497baaa15de4fba5"
+            "atDigest": "9a9e415f9ab8ad3c"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
@@ -493,7 +493,7 @@
           },
           {
             "standard": "Deferral = Deletion",
-            "fingerprintDigest": "497baaa15de4fba5"
+            "fingerprintDigest": "9a9e415f9ab8ad3c"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
@@ -522,7 +522,7 @@
           },
           {
             "standard": "Deferral = Deletion",
-            "atDigest": "497baaa15de4fba5",
+            "atDigest": "9a9e415f9ab8ad3c",
             "why": "Its correction notes state the coverage attained and name what is NOT reached — the `none` fingerprints say nothing guards them, and the guarded ones enumerate the moments they miss. Swept after the third instance, when the pattern was known, which is exactly why these read differently from the notes that carried the shape. [RE-REACHED 2026-08-09: the article's measurement was corrected a third time (103→137 orphans of 217) after review pass 5 found the resolver counting English words as identifiers; the verdict is unchanged and was re-confirmed against the new article state.] [RE-REACHED 2026-08-09: the article's measurement was corrected a fourth time (137→200 orphans of 217) after pass 6 found circular resolution; verdict unchanged, re-confirmed against the new article state.] [RE-REACHED 2026-08-09 (compound-marker correction): the article's count moved 200→201 after a compound marker naming two promises stopped resolving on one; the verdict is unchanged and was re-confirmed against the new article state.]",
             "evidence": "read each article's correction and coverage notes against the attained-vs-claimed test"
           },
@@ -574,7 +574,7 @@
         "fingerprintPopulation": [
           {
             "standard": "Deferral = Deletion",
-            "fingerprintDigest": "497baaa15de4fba5"
+            "fingerprintDigest": "9a9e415f9ab8ad3c"
           },
           {
             "standard": "Documentation IS Being",
@@ -608,7 +608,7 @@
             "standard": "Deferral = Deletion",
             "why": "The shape is PRESENT and this is the loop paying for itself — one failure in one standard's machinery taught me about a different standard's guard. `scripts/lint-deferral-referent-resolves.mjs` builds `declared` as a Map from marker id to a Set of spec paths, and `resolved` as a Set of ids, so two genuinely DIFFERENT promises that are given the same tracked id collapse into one entry: resolving either one clears both. Its clean line then reports a count of IDS, not of promises, which is the same publish-the-key-count defect. Recorded as a match rather than patched, because two markers sharing an id are OFTEN deliberately the same promise cited twice, and that is a design question about promise identity rather than an obvious bug — inventing a guard for it tonight would be the manufactured enforcement this registry refuses.",
             "evidence": "ran it: two distinct promises in docs/specs/alpha.md and docs/specs/beta.md both marked ZZZ-90001, with only the first implemented in src/, produced `clean — 1 tracked deferral id(s), 1 resolve, 0 orphaned` while the backup promise was never implemented anywhere",
-            "atDigest": "497baaa15de4fba5"
+            "atDigest": "9a9e415f9ab8ad3c"
           }
         ],
         "unmatched": [
@@ -651,8 +651,9 @@
       "evaded": {
         "standard": "Iterative Audit to Convergence",
         "atMoment": "push-time",
-        "how": "Recorded by operator directive after review pass 14, which was the FIRST of fourteen adversarial reviews to run the test suite and found this branch RED. The originating specimen is my own workflow rather than a fingerprinted surface, and it is worth stating exactly: `scripts/pre-push-smoke.mjs:112` prints `pre-push smoke: affected-test listing timed out — skipping local smoke; CI is the authority.` on EVERY push. It printed on every push of this branch for days. I read it roughly thirty times. Not once did I treat it as a finding — while spending that same week hunting precisely this class inside the code. The honest characterisation is not that the guard failed: it told me the truth, in plain English, every single time, and I had habituated to it because it sat one line above a successful push. The operator's phrase is the right one: a guard announcing it is doing nothing, read as protection. The reason it belongs to *Iterative Audit to Convergence* rather than to a lint is that the audit-shaped obligation here — run the whole surface, not the pass you happen to look at — is exactly what a skipped smoke run silently converts into a single-pass check.",
-        "hadNoFingerprint": false
+        "how": "CORRECTED by review pass 15, which was right and which I had to check rather than accept. This record originally asserted `hadNoFingerprint: false` — a claim that a real fingerprint was got past — and it is only the second of eight records to claim that. It is not true. The specimen is `scripts/pre-push-smoke.mjs` at PUSH-TIME; the named fingerprint declares `moments: commit-time, ci-time` and cites `scripts/write-audit-convergence.mjs` plus the commit gate and CI. Neither the moment nor the surface matches. Worse, that fingerprint's own coverage argument ALREADY says \"Running a single pass and never opening an audit record at all is NOT covered by anything\" — so the failure did not evade a guard, it landed in a hole the article had already declared honestly. Recording it as an evasion took credit, for the registry, that the registry had explicitly disclaimed. What actually happened: a skipped smoke run silently converted an audit-shaped obligation (run the whole surface) into a single-pass check, at a moment nothing watches. The guard cannot catch this class of error either — `lint-enforcement-gap-records.mjs` validates that `evaded.standard` names a fingerprinted article but never compares `atMoment` against that fingerprint's DECLARED moments, so this passed clean. That gap in the gap-guard is now itself named in the residual.",
+        "hadNoFingerprint": true,
+        "hadNoFingerprintNote": "Set true 2026-08-09 on review pass 15's finding. The article named IS fingerprinted, but its fingerprint does not reach the moment or the surface where this failure occurred, and its coverage argument says so in advance. A record that names a fingerprinted standard is not thereby a record of an evaded fingerprint — that inference is the manufactured-enforcement shape this registry exists to refuse, and I made it in the registry's own newest artifact."
       },
       "sweep": {
         "sweptAt": "2026-08-09",
@@ -660,7 +661,7 @@
         "fingerprintPopulation": [
           {
             "standard": "Deferral = Deletion",
-            "fingerprintDigest": "497baaa15de4fba5"
+            "fingerprintDigest": "9a9e415f9ab8ad3c"
           },
           {
             "standard": "Documentation IS Being",
@@ -688,22 +689,22 @@
             "standard": "Deferral = Deletion",
             "why": "Its cited guard's routine pass line is `clean — 217 tracked deferral id(s), 16 resolve, 201 orphaned (baseline 201, shrink-only)`. It announces 201 unresolved promises and prefixes that announcement with the word CLEAN. The concession is not hidden — it is the majority of the sentence — and it is emitted on every successful run of the whole lint chain, which is how a reader learns to read `201 orphaned` as part of an all-clear rather than as the standing debt it is. This is the same habituation that cost me the pre-push line, on a surface inside the fingerprinted population.",
             "evidence": "ran the guard: the pass output is a line beginning \"clean\" that then reports 201 orphaned promises; it appears at the tail of every successful `npm run lint`",
-            "atDigest": "497baaa15de4fba5"
+            "atDigest": "9a9e415f9ab8ad3c"
           },
           {
             "standard": "Iterative Audit to Convergence",
             "why": "Two of its cited surfaces concede on the pass path. The commit gate ends every Tier-1 commit with `No converged spec required for Tier 1` — a routine statement that the converged-spec arm did not run — and additionally prints `note: trace has no duplicateBuildCheck field (duplicate-build guard not live for this build — advisory only)`, which announces an inactive guard in so many words. Both appeared on every commit of this window, roughly fifteen times tonight alone, and I read past both. That is the shape precisely: honest text, correct text, emitted beside a success, unattended.",
             "evidence": "ran the commit gate: `instar-dev-precommit.js:1352` emits the not-live advisory and the Tier-1 exit prints the no-converged-spec line; both appear in every successful commit in this window's log",
             "atDigest": "2f110be2ffb74757"
+          },
+          {
+            "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
+            "why": "FLIPPED FROM UNMATCHED by review pass 15, and the flip is the more interesting half of this record. My unmatch reason was that this guard's coverage-reducing conditions \"FAIL the build rather than printing a note beside a pass, so there is no sentence available to habituate to\". There is a fourth coverage-reducing condition and it is explicitly LEGAL under this guard's own leg (4): a gap that is unswept but dated. With one such record present the pass line reads `clean — 8 gap(s), 7 swept against the live population of 6 fingerprinted standard(s), 1 unswept (dated)` — standing debt announced beside the word CLEAN, which is bit-for-bit the criterion I used to MATCH *Deferral = Deletion* two entries above. So the sweep guard has the shape too, and the record that says otherwise is this one. Three things worth keeping: the unmatch reason was the evidence, and it was false; I confirmed it with MY OWN probe rather than taking the reviewer's word; and I found it while fixing a different defect in the same leg, which is the only reason the arm could produce that line at all.",
+            "evidence": "ran it: injecting one unswept-but-dated gap into a scratch copy produces `clean — 8 gap(s), 7 swept …, 1 unswept (dated)`, exit 0; an expired one still fails with `is UNSWEPT and its countdown 2026-01-01 has expired`",
+            "atDigest": "8135d33cd1fa67f9"
           }
         ],
         "unmatched": [
-          {
-            "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "why": "Its cited surface concedes nothing on the pass path: the routine line reports the swept population and the count of gaps, with no skipped arm and no standing debt. Crucially, the conditions that would reduce its coverage — a stale sweep, a non-partitioning population, an unswept new fingerprint — FAIL the build rather than printing a note beside a pass, so there is no sentence available to habituate to.",
-            "evidence": "ran it: the pass line reports gaps swept against the live population and nothing else",
-            "atDigest": "8135d33cd1fa67f9"
-          },
           {
             "standard": "Documentation IS Being",
             "why": "Declares surfaces NONE. With no cited surface there is no routine output in which a concession could be emitted or ignored. Recorded as no-surface rather than counted as safety.",
@@ -726,7 +727,7 @@
       },
       "countdown": "2026-09-07",
       "trackedAs": "STD-SUBCOUNTDOWN-skip-announced-and-habituated",
-      "residual": "Nothing detects this shape, and it is not obvious that anything mechanically can: the offending text is HONEST, and a guard that flagged every candid concession would flag most of the good ones. The two matched instances are recorded as findings rather than repaired, because the repair is a judgement about which concessions belong on the pass path at all. Two things ARE worth noting as the sharper residual. First, the originating specimen sits OUTSIDE the fingerprinted population — it is a workflow script, not a cited surface — so the sweep found relatives of a defect it could never have found itself. Second, the habituation cost here was not theoretical: it is why a red branch survived fourteen adversarial reviews, thirteen of which never ran the suite."
+      "residual": "Nothing detects this shape, and it is not obvious that anything mechanically can: the offending text is HONEST, and a guard flagging every candid concession would flag most of the good ones. The three matched instances are recorded as findings rather than repaired, because the repair is a judgement about which concessions belong on a pass path at all. FOUR things this record got wrong and had corrected, kept because the pattern is the finding: (1) it claimed an evaded fingerprint where the fingerprint declares neither the moment nor the surface, and had already disclaimed that coverage in writing; (2) its one substantive unmatch verdict was falsified by the very guard it exonerated, once a legal unswept gap existed to produce the line; (3) `lint-enforcement-gap-records.mjs` validates that `evaded.standard` names a fingerprinted article but NEVER compares `evaded.atMoment` against that article's declared moments, which is how (1) passed clean — an unenforced sub-obligation of the gap guard itself, named here rather than left; (4) the originating specimen sits OUTSIDE the fingerprinted population entirely, so the sweep found relatives of a defect it could never have found itself. The habituation cost was not theoretical: it is why a red branch survived fourteen adversarial reviews, thirteen of which never ran the suite."
     }
   ]
 }
