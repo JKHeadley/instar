@@ -71,9 +71,13 @@
  *               so the sentence is earned rather than hoped" — and falsified it against THIS
  *               file. The refusal here covers only the half where BOTH duplicates carry a
  *               fingerprint; attack B (shared heading, the new article carrying none) passes
- *               this lint clean. What actually stops attack B is the sibling requirement lint,
- *               whose partition arithmetic refuses the population before this file ever runs
- *               in the chain. So the CERTIFIED line above is earned by the chain, not by this
+ *               this lint clean. TWO other guards stop it, and review pass 14 established the
+ *               ORDER by execution rather than by reading: lint-no-duplicate-definitions refuses it
+ *               first (position 36 of 45 in the lint chain), and the sibling requirement lint refuses
+ *               it again at position 44, via its partition arithmetic. The text that stood here named
+ *               only the second and called it "what actually stops attack B" — true of that guard,
+ *               misleading about the chain, and the registry had already been corrected to say so
+ *               while this file was left carrying the older account. So the CERTIFIED line above is earned by the chain, not by this
  *               guard alone, and saying otherwise was the borrowed-coverage shape recorded in
  *               GAP-name-keyed-population-collision — written into the very file that records it.
  *

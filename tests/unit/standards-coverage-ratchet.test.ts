@@ -873,6 +873,16 @@ describe('standards-coverage ratchet script', () => {
     // never executed is indistinguishable from one that passes — which is the
     // registry's own "a dark feature guards nothing", pointed at a test.
     //
+    // 2026-08-09: 87 -> 88 and 0.7356 -> 0.75. THIRD occurrence of the omission the two
+    // notes above describe, by the same author, one day later again — this branch added
+    // *One Failure Teaches Every Guard* and did not update this snapshot in the same change.
+    // Found by external review pass 14, which was the FIRST of fourteen adversarial passes to
+    // run the test suite at all; my own pre-push smoke had been printing "affected-test listing
+    // timed out — skipping local smoke; CI is the authority" on every push, so the branch sat
+    // red for days behind a skipped gate and an accepted red. The note above predicted exactly
+    // this ("a snapshot that must be hand-updated will keep going stale until something computes
+    // it") and was right a third time; it is left standing rather than rewritten.
+    //
     // 2026-08-08: 86 -> 87 and 0.7326 -> 0.7356. Ruling A added ONE article
     // (*Structure Decides Alone Only on an Exact Match*) and I did not update this
     // snapshot in the same change — the identical omission the note above describes,
@@ -887,8 +897,8 @@ describe('standards-coverage ratchet script', () => {
     // legitimate way to clear it is refreshing those records from a family review
     // that genuinely accepts. Editing this expectation to make the suite green would
     // be forging the acceptance the record exists to prove.
-    expect(report.total).toBe(87);
-    expect(report.enforcedRatio).toBe(0.7356);
+    expect(report.total).toBe(88);
+    expect(report.enforcedRatio).toBe(0.75);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',
     ]);

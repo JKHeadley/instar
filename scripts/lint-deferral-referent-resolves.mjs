@@ -211,9 +211,18 @@ function withoutComments(text, rel) {
   // and json/jsonl were admitted without checking it against them.
   //
   // MEASURED before adopting, as with the previous two: the real corpus stays at exactly 217 / 16 /
-  // 201. Closes at zero cost. Over-stripping remains the safe direction here — truncating a `.json`
-  // string value at a `//` can only report MORE debt, and a tracked id inside a URL is a reference to
-  // a promise rather than follow-through on one.
+  // 201 — and pass 14 checked this the strong way rather than the stated way, comparing the ORPHAN
+  // SET rather than the count: 201 vs 201 with an EMPTY symmetric difference, so nothing was silently
+  // traded. That is a better verification than the one I claimed and it is recorded as theirs.
+  //
+  // MONOTONICITY IS NOT CLAIMED, because pass 14 falsified the claim that used to sit here. That text
+  // said over-stripping "can only report MORE debt". It cannot: this branch also applies the BLOCK
+  // comment rule, which substitutes a SPACE, and a space can MANUFACTURE the leading word boundary
+  // `idPattern` requires. Their fixture `{"k":"prefix/*note*/QQQ-90701"}` orphans at the parent commit
+  // and RESOLVES here — a resolution gained, in the guard whose core failure mode is manufacturing a
+  // resolution out of content that is not a referent (and, in JSON, out of `/*…*/` that is not a
+  // comment at all). Live impact today is zero, verified by that same set-identity check; the honest
+  // statement is "no measured change, direction not guaranteed", not "can only report more debt".
   if (/\.(m?[jt]sx?|c[jt]s|jsonl?)$/i.test(rel)) {
     return text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
   }
