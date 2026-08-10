@@ -75,10 +75,12 @@
  *               ORDER by execution rather than by reading: lint-no-duplicate-definitions refuses it
  *               FIRST, and the sibling requirement lint refuses it again LATER, via its partition
  *               arithmetic. (The earlier text published "position 36 of 45", which review pass 15 found
- *               reproducible under no counting convention — the chain is 46 steps including `tsc`, or 45
- *               node steps at ordinals 35 and 43. The ORDER is the load-bearing claim and it is verified;
- *               the ordinals are dropped rather than restated, because a number nobody can re-derive is
- *               exactly what this file spent the week objecting to.) The text that stood here named
+ *               reproducible under no counting convention, because it mixed two: 36 is the all-steps
+ *               ordinal and 45 is the node-only total. The ORDER is the load-bearing claim and it is
+ *               verified by execution. Review pass 16 then caught the replacement sentence claiming "the
+ *               ordinals are dropped rather than restated" while restating two of them — so this text no
+ *               longer claims to have dropped anything; it states the convention explicitly instead,
+ *               which is what the original number failed to do.) The text that stood here named
  *               only the second and called it "what actually stops attack B" — true of that guard,
  *               misleading about the chain, and the registry had already been corrected to say so
  *               while this file was left carrying the older account. So the CERTIFIED line above is earned by the chain, not by this
@@ -270,6 +272,9 @@ const liveSet = new Set(live);
 const liveDigest = new Map(liveEntries.map((e) => [e.name, e.digest]));
 const failures = [];
 const today = new Date().toISOString().slice(0, 10);
+/** Upper bound on an UNSWEPT gap's countdown — see the horizon refusal below for why it exists and why 180. */
+const HORIZON_DAYS = 180;
+const horizon = new Date(Date.now() + HORIZON_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 const gapIdSeen = new Set();
 for (const g of gaps) {
   if (!g?.id) continue;
@@ -390,6 +395,29 @@ for (const gap of gaps) {
       failures.push(`${id} — is UNSWEPT (sweep: null) and its countdown is "${gap?.countdown}", not a YYYY-MM-DD date. An unvalidated countdown lets \`"never"\` sit green forever (review pass 3, finding 6).`);
     } else if (gap.countdown < today) {
       failures.push(`${id} — is UNSWEPT and its countdown ${gap.countdown} has expired. Sweep it against the ${live.length} fingerprinted standard(s), or close the gap honestly.`);
+    } else if (gap.countdown > horizon) {
+      // A HORIZON, added by review pass 16 — which found that the previous increment had traded one
+      // hole for another. Making this arm reachable (pass 15) removed the only thing that made the date
+      // mean anything: with no upper bound, `9999-12-31` passed and printed `clean`. The PARENT commit
+      // refused that exact input and this one accepted it, so the repair was a regression, and it was
+      // certified "proven both ways" on two of the three directions that matter — expired and valid,
+      // never never-expiring. Nine lines above, this same file already records "a far-future countdown
+      // beside an honest-looking absence" as an attack found by injection. I re-opened a hole my own
+      // guard had on file.
+      //
+      // The bound goes HERE rather than in `canonicalFutureDate` deliberately: this block already
+      // compares the date against today, so the horizon is one more comparison in the place that
+      // compares, not a new concept in a shared helper other callers would inherit without asking.
+      //
+      // 180 days is a CHOSEN number, not a discovered one, and there is no precedent to copy — every
+      // live countdown in this repository uses the same date, about a month out. Stated as a judgement
+      // so nobody reads it as measured: two quarters is long enough for real work and short enough that
+      // someone must look again, which is the whole property leg (4) promises with the word "dated".
+      failures.push(
+        `${id} — is UNSWEPT and its countdown ${gap.countdown} is beyond the ${HORIZON_DAYS}-day horizon (${horizon}). ` +
+        `A countdown that far out is a label, not a deadline: it satisfies "visibly unswept AND dated" while creating ` +
+        `none of the pressure the dating exists for. Pick a date you would actually be held to, or sweep it now.`,
+      );
     }
     continue;
   }

@@ -1836,3 +1836,57 @@ states it.
 orphan-SET identity over the live corpus (symmetric difference 0), which the reviewer called the
 best-evidenced repair of the run; and all eleven published counts survived an independent re-derivation
 exactly — the first time this number has survived one intact.
+
+## Increment 46 (window 11) — pass 16: the first pass to say magnitude is declining, and a regression I caused
+
+Pass 16 is the sixteenth reject, **load-bearing 3 — the lowest reading of the series** — and the first
+pass to answer *"is magnitude genuinely declining?"* with **yes**. Two consecutive drops (6 → 5 → 3),
+eight of nine injected attacks refused exactly as documented, the full 46-step lint chain green, and every
+published figure the reviewer re-derived reproduced to the digit. Its own words: *"Pass 14 could not say
+that; pass 13 could not say that."*
+
+**AND I CAUSED A REGRESSION — the first live one in four passes.** My pass-15 repair made leg (4)
+reachable and, in doing so, **removed the only thing that made the date mean anything.** `canonicalFutureDate`
+applies no time policy, so a never-swept gap dated `9999-12-31` passed and printed `clean`. The PARENT
+commit refused that exact input; mine accepted it. And I had certified it *"proven both ways"* on two of
+the three directions that matter — expired and valid, never never-expiring. Nine lines above the line I
+changed, this same guard already records *"a far-future countdown beside an honest-looking absence"* as an
+attack found by injection. **I re-opened a hole my own guard had on file.**
+
+Fixed with a 180-day horizon, placed in the block that ALREADY compares against today rather than in the
+shared helper — one more comparison where comparisons live, not a new concept other callers would inherit.
+**180 is a chosen number and is labelled as one**: there is no precedent to copy (every live countdown in
+this repository uses the same date), so inventing one and calling it measured would have been the exact
+move this window punishes.
+
+**And the probe for it nearly fooled me.** My first three-direction test reported all three arms failing —
+and they failed for the SAME wrong reason: a shell-quoting slip passed the literal `$1` instead of the
+date, so every arm hit "not a YYYY-MM-DD date". Had I read exit codes instead of reasons I would have
+recorded three proven arms. Re-run correctly: `9999-12-31` → *beyond the 180-day horizon*; `2026-01-01` →
+*has expired*; `2026-09-07` → *clean … 1 unswept (dated)*. Each refused or accepted **for its own reason**.
+
+**THE WITHDRAWN FIGURE WAS STILL STANDING FOURTEEN LINES LATER.** I announced its withdrawal at the top of
+the article and never grepped the article, so the repair **raised its publication count from two to
+three.** Fifth consecutive pass to turn on a replacement sentence, by the cause the replacement sentence
+names in its own text — twice. Now deleted, **and its numeral is not reproduced in the withdrawal prose
+either**, because pass 15 had already caught me quoting a banned figure to explain the ban. Census of the
+article: 14 percent tokens, all superseded historical labels, matching the enumeration exactly.
+
+**`pass15-verdict.md` was missing — the SIXTH lapse, inside the commit that filed the fifth.** That commit
+wrote a header calling the previous lapse *"the worst, because pass 14's headline was reported to the
+operator in my own words with no auditable source"* — and did not file its own. Filed alone and before the
+repairs, which is the convention that commit broke.
+
+**Three smaller corrections.** A fresh count-about-itself error ("the second of eight records"; there are
+seven) carried out of a probe's own output into prose — inside the record family whose guard exists for
+exactly that. The `hadNoFingerprint` flag is both mechanically inert here AND false under the schema's own
+definition; left `true` deliberately with the honest statement recorded, because the schema cannot express
+*"fingerprinted, but not at this moment or surface"* and picking whichever boolean reads better would be
+papering over that. And the sentence claiming *"the ordinals are dropped rather than restated"* restated
+two of them — it now states the convention explicitly instead, which is what the original number failed to
+do.
+
+**What pass 16 asked for, in its own closing words:** *"Fix the countdown horizon, delete the surviving
+`~8%` sentence, and file pass 15; on this trajectory the next pass has a real chance of being the one."*
+All three are done. It also warned against closing on a trend argument while a commit had made a guard
+weaker than the one before it — that commit is this one, and the weakening is now reversed.

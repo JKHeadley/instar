@@ -1156,3 +1156,39 @@ what caused the last two of these.
 which is also wrong — the one percentage I waved away as "a different measurement" is the same measurement
 flipped around. Fourth reading in a row that has turned on a sentence I wrote to replace a false sentence.
 Every time, the cause is the same: I asserted something about a document I had not searched.
+
+## I fixed a lock so it would turn, and took the bolt out
+
+The sixteenth reading is the first to say the pile of problems is genuinely shrinking. Lowest count of the
+whole run, two drops in a row, and eight of nine break-in attempts refused exactly as documented. Its words:
+*"Pass 14 could not say that; pass 13 could not say that."*
+
+**And it caught me breaking something.** Last time I fixed a check that could never fire — a deadline field
+was being validated by a rule that rejects any future date, so a deadline could only ever be *today*. I
+fixed that, and in fixing it I removed the only thing that made the deadline mean anything: with no upper
+limit, an item dated **the year 9999** now sailed through and printed *clean*. The previous version
+refused that. Mine accepted it. And I had written "proven both ways" after testing two of the three
+directions that matter — never the one where the date can never arrive.
+
+Nine lines above the line I changed, that same file already lists "a far-future deadline beside an
+honest-looking absence" as a known attack. I re-opened a hole my own guard had written down.
+
+**And the test I wrote to check my fix nearly fooled me.** All three cases came back failing — and all
+three failed for the *same wrong reason*: a quoting slip meant I passed the word "$1" instead of an actual
+date, so every case tripped the "that is not a date" message. If I had looked at pass/fail instead of at
+*why*, I would have recorded three proven cases. Run properly, each one now fails or passes for its own
+reason.
+
+**Then the figure I announced I had withdrawn was still sitting there, fourteen lines further down.** I
+withdrew it at the top of the section and never searched the section. So the repair *increased* how many
+times it appears, from two to three. Fifth reading in a row to turn on a sentence I wrote to replace a
+false sentence — and the sentence itself names that cause, twice, in its own text. It is gone now, and I
+did not quote the number while explaining its removal either, because I had already been caught doing
+exactly that.
+
+**And the previous reading's verdict was missing from the file of verdicts — the sixth time — inside the
+commit that filed the fifth one and called that lapse "the worst".**
+
+The limit I chose for the deadline, 180 days, is a decision and I have labelled it one. Nothing in this
+project sets a precedent, so inventing a number and calling it measured would have been the very move
+being punished all week.
