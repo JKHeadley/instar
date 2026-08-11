@@ -16,16 +16,28 @@
         "hadNoFingerprintNote": "**hadNoFingerprint: true.** Set 2026-08-09 when a new arm found that EVERY gap record here named a standard with no enforcement fingerprint — review pass 4 caught one instance, the mechanism then found all five. No standard carried a fingerprint until this window created the field, so nothing recorded before it can honestly have EVADED one. What these records actually document is a failure that got past whatever was in place, which is a weaker and true claim."
       },
       "sweep": {
-        "sweptAt": "2026-08-09",
+        "sweptAt": "2026-08-11",
         "method": "Read each fingerprinted standard's declared surfaces and ask: does this surface leave a per-decision record a later reader can audit, or only an outcome?",
         "fingerprintPopulation": [
+          {
+            "standard": "A Metric Must Measure the Work, Not the Question",
+            "fingerprintDigest": "cdcfcbc66ef26aae"
+          },
+          {
+            "standard": "Deferral = Deletion",
+            "fingerprintDigest": "5d907146608e0d94"
+          },
           {
             "standard": "Documentation IS Being",
             "fingerprintDigest": "6cc1a55951c9f480"
           },
           {
-            "standard": "Deferral = Deletion",
-            "fingerprintDigest": "5d907146608e0d94"
+            "standard": "Iterative Audit to Convergence",
+            "fingerprintDigest": "73b541397179e21b"
+          },
+          {
+            "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
+            "fingerprintDigest": "816fc020af4ff102"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
@@ -34,14 +46,6 @@
           {
             "standard": "The Right to Stand Ground",
             "fingerprintDigest": "5a0b28b0eacf1286"
-          },
-          {
-            "standard": "Iterative Audit to Convergence",
-            "fingerprintDigest": "2f110be2ffb74757"
-          },
-          {
-            "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "816fc020af4ff102"
           }
         ],
         "matched": [],
@@ -68,14 +72,20 @@
           },
           {
             "standard": "Iterative Audit to Convergence",
-            "why": "The strongest unmatch in the registry for this shape. Its surface's decision is not merely logged — the canonical audit report at docs/audits/<slug>.md IS the per-decision record, versioned, content-addressed, and re-checked against the stamp by both the commit gate and CI. A reader can reconstruct which rounds were run, what each found, and why the stamp was granted or refused. That is the durable verdict trace whose ABSENCE at the outbound surface defines this shape.",
-            "atDigest": "2f110be2ffb74757"
+            "why": "The strongest unmatch in the registry for this shape. Its surface's decision is not merely logged — the canonical audit report at docs/audits/<slug>.md IS the per-decision record, versioned, content-addressed, and re-checked against the stamp by both the commit gate and CI. A reader can reconstruct which rounds were run, what each found, and why the stamp was granted or refused. That is the durable verdict trace whose ABSENCE at the outbound surface defines this shape. **RE-REACHED 2026-08-11.** The digest moved because a tree-node acknowledgement sentence was appended to this article naming its new child (*A Metric Must Measure the Work, Not the Question*). That edit changed narrative structure — parentage — and touched neither the moments, the surfaces, nor the coverage argument a sweep evaluates, so the verdict above is re-reached unchanged rather than re-stamped. The digest is deliberately over-sensitive; that is the check forcing a look, and the look was taken.",
+            "atDigest": "73b541397179e21b"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
             "why": "VACUOUS UNMATCH — fingerprint `none`, no surface cited, so a shape about how a surface behaves cannot apply. Not reassurance: no surface is a WORSE condition than a surface leaving no trace, and it is recorded on the article itself with a dated countdown.",
             "evidence": "fingerprint declares no surface",
             "atDigest": "d15a13e71692aea7"
+          },
+          {
+            "standard": "A Metric Must Measure the Work, Not the Question",
+            "atDigest": "cdcfcbc66ef26aae",
+            "why": "The shape REQUIRES a watched moment — a live surface whose stated population plausibly reaches the violation — that then records no per-decision verdict. This fingerprint declares `moments: none`. No surface exists, so there are no decisions whose auditability could fail. The absence is declared, dated and countdown-tracked rather than left to be discovered.",
+            "evidence": "read the fingerprint's moments field against the shape's precondition: the shape needs a surface to be unauditable, and none is claimed"
           }
         ],
         "sweepHistory": [
@@ -136,16 +146,28 @@
         "hadNoFingerprintNote": "**hadNoFingerprint: true.** Set 2026-08-09 when a new arm found that EVERY gap record here named a standard with no enforcement fingerprint — review pass 4 caught one instance, the mechanism then found all five. No standard carried a fingerprint until this window created the field, so nothing recorded before it can honestly have EVADED one. What these records actually document is a failure that got past whatever was in place, which is a weaker and true claim."
       },
       "sweep": {
-        "sweptAt": "2026-08-09",
+        "sweptAt": "2026-08-11",
         "method": "Mechanical: an article matches this shape iff it declares no enforcement fingerprint. Derived from scripts/lint-enforcement-fingerprint.mjs --json rather than by hand.",
         "fingerprintPopulation": [
+          {
+            "standard": "A Metric Must Measure the Work, Not the Question",
+            "fingerprintDigest": "cdcfcbc66ef26aae"
+          },
+          {
+            "standard": "Deferral = Deletion",
+            "fingerprintDigest": "5d907146608e0d94"
+          },
           {
             "standard": "Documentation IS Being",
             "fingerprintDigest": "6cc1a55951c9f480"
           },
           {
-            "standard": "Deferral = Deletion",
-            "fingerprintDigest": "5d907146608e0d94"
+            "standard": "Iterative Audit to Convergence",
+            "fingerprintDigest": "73b541397179e21b"
+          },
+          {
+            "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
+            "fingerprintDigest": "816fc020af4ff102"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
@@ -154,14 +176,6 @@
           {
             "standard": "The Right to Stand Ground",
             "fingerprintDigest": "5a0b28b0eacf1286"
-          },
-          {
-            "standard": "Iterative Audit to Convergence",
-            "fingerprintDigest": "2f110be2ffb74757"
-          },
-          {
-            "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "816fc020af4ff102"
           }
         ],
         "matched": [],
@@ -183,8 +197,8 @@
           },
           {
             "standard": "Iterative Audit to Convergence",
-            "why": "Declares its moments explicitly. Two of the three declare `none` — which is a DECLARATION, not silence, and is exactly the answer this shape exists to force: an unguarded standard that SAYS it is unguarded converts an invisible hole into a dated finding.",
-            "atDigest": "2f110be2ffb74757"
+            "why": "Declares its moments explicitly. Two of the three declare `none` — which is a DECLARATION, not silence, and is exactly the answer this shape exists to force: an unguarded standard that SAYS it is unguarded converts an invisible hole into a dated finding. **RE-REACHED 2026-08-11.** The digest moved because a tree-node acknowledgement sentence was appended to this article naming its new child (*A Metric Must Measure the Work, Not the Question*). That edit changed narrative structure — parentage — and touched neither the moments, the surfaces, nor the coverage argument a sweep evaluates, so the verdict above is re-reached unchanged rather than re-stamped. The digest is deliberately over-sensitive; that is the check forcing a look, and the look was taken.",
+            "atDigest": "73b541397179e21b"
           },
           {
             "standard": "The Right to Stand Ground",
@@ -196,6 +210,12 @@
             "why": "Declares moments: none. The only `none` in the registry established by an INDEPENDENT party against the author's own stated expectation — the author expected this article to be under-claimed and was told otherwise.",
             "evidence": "the referral verdict (b) recorded on the article",
             "atDigest": "d15a13e71692aea7"
+          },
+          {
+            "standard": "A Metric Must Measure the Work, Not the Question",
+            "atDigest": "cdcfcbc66ef26aae",
+            "why": "THE CLOSEST CALL OF THE SEVEN, and swept carefully because of it. The shape is a standard that records what it demands and which guard enforces it while never writing down WHICH MOMENT that guard acts at — so the hole is structurally invisible, on an axis nobody wrote. This article writes the axis down and names its value explicitly: `none`. That is the maximal opposite of the shape rather than an instance of it — the hole is visible, dated 2026-09-10, tracked as STD-COUNTDOWN-metric-measures-the-question, and its two violation shapes are enumerated in the coverage argument with the more likely one named as reached by nothing.",
+            "evidence": "compared the fingerprint against the shape's discriminator — whether the MOMENT AXIS is written down — not against whether coverage exists"
           }
         ],
         "outsidePopulation": {
@@ -261,16 +281,28 @@
         "hadNoFingerprintNote": "**hadNoFingerprint: true.** Set 2026-08-09 when a new arm found that EVERY gap record here named a standard with no enforcement fingerprint — review pass 4 caught one instance, the mechanism then found all five. No standard carried a fingerprint until this window created the field, so nothing recorded before it can honestly have EVADED one. What these records actually document is a failure that got past whatever was in place, which is a weaker and true claim."
       },
       "sweep": {
-        "sweptAt": "2026-08-09",
+        "sweptAt": "2026-08-11",
         "method": "For each surface a fingerprint declares, ask whether a case is known in THIS repository where that surface fails — a proven negative control, not a plausible one.",
         "fingerprintPopulation": [
+          {
+            "standard": "A Metric Must Measure the Work, Not the Question",
+            "fingerprintDigest": "cdcfcbc66ef26aae"
+          },
+          {
+            "standard": "Deferral = Deletion",
+            "fingerprintDigest": "5d907146608e0d94"
+          },
           {
             "standard": "Documentation IS Being",
             "fingerprintDigest": "6cc1a55951c9f480"
           },
           {
-            "standard": "Deferral = Deletion",
-            "fingerprintDigest": "5d907146608e0d94"
+            "standard": "Iterative Audit to Convergence",
+            "fingerprintDigest": "73b541397179e21b"
+          },
+          {
+            "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
+            "fingerprintDigest": "816fc020af4ff102"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
@@ -279,14 +311,6 @@
           {
             "standard": "The Right to Stand Ground",
             "fingerprintDigest": "5a0b28b0eacf1286"
-          },
-          {
-            "standard": "Iterative Audit to Convergence",
-            "fingerprintDigest": "2f110be2ffb74757"
-          },
-          {
-            "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "816fc020af4ff102"
           }
         ],
         "matched": [],
@@ -308,9 +332,9 @@
           },
           {
             "standard": "Iterative Audit to Convergence",
-            "why": "UNMATCHED. **This verdict was recorded as a MATCH first and was WRONG — corrected within the hour, by checking.** I asserted that scripts/write-audit-convergence.mjs had never been injection-tested. It has: tests/unit/write-audit-convergence.test.ts carries 35 passing tests, 19 of them explicit refusal cases — REFUSES with only 1 round, REFUSES a non-zero final round, REFUSES a line-vs-rows MISMATCH, REFUSES basename != slug, REFUSES a bad slug charset, REFUSES both standing-guard and exemption, REFUSES a round missing search-angles, plus FAIL-CLOSED cases for unparseable ledger rows and non-integer counts. That is a proven negative control several times over, and stronger than most guards in this repository.",
+            "why": "UNMATCHED. **This verdict was recorded as a MATCH first and was WRONG — corrected within the hour, by checking.** I asserted that scripts/write-audit-convergence.mjs had never been injection-tested. It has: tests/unit/write-audit-convergence.test.ts carries 35 passing tests, 19 of them explicit refusal cases — REFUSES with only 1 round, REFUSES a non-zero final round, REFUSES a line-vs-rows MISMATCH, REFUSES basename != slug, REFUSES a bad slug charset, REFUSES both standing-guard and exemption, REFUSES a round missing search-angles, plus FAIL-CLOSED cases for unparseable ledger rows and non-integer counts. That is a proven negative control several times over, and stronger than most guards in this repository. **RE-REACHED 2026-08-11.** The digest moved because a tree-node acknowledgement sentence was appended to this article naming its new child (*A Metric Must Measure the Work, Not the Question*). That edit changed narrative structure — parentage — and touched neither the moments, the surfaces, nor the coverage argument a sweep evaluates, so the verdict above is re-reached unchanged rather than re-stamped. The digest is deliberately over-sensitive; that is the check forcing a look, and the look was taken.",
             "evidence": "tests/unit/write-audit-convergence.test.ts — 35 tests pass, 19 refusal/fail-closed cases (verified by running the suite, not by reading it)",
-            "atDigest": "2f110be2ffb74757"
+            "atDigest": "73b541397179e21b"
           },
           {
             "standard": "Deferral = Deletion",
@@ -323,6 +347,12 @@
             "why": "UNMATCHED, and this one is the registry's cleanest instance of the shape being AVOIDED rather than merely absent. The author believed a running guard covered this article and referred the citation out instead of making it; the independent verdict was (b) — manufactured enforcement, do not cite — after the reviewer matched eight Sovereignty-violating sentences against the guard's actual seventeen-phrase pre-filter and found five would never reach the authority at all. A guard that WOULD have been cited, tested, and refused is the opposite of a guard cited on faith.",
             "evidence": "the referral verdict recorded on the article; the reviewer's 8-sentence match against both phrase lists (5 of 8 unmatched)",
             "atDigest": "d15a13e71692aea7"
+          },
+          {
+            "standard": "A Metric Must Measure the Work, Not the Question",
+            "atDigest": "cdcfcbc66ef26aae",
+            "why": "The shape requires a guard that is constructed, enabled and visible in every inventory while doing nothing, so an injection against it returns SILENCE that reads as a clean pass. No guard exists for this article. Every inventory reports it as unenforced, and there is nothing an injection could be run against that would return a misleading silence.",
+            "evidence": "checked whether any constructed mechanism is claimed; the fingerprint claims none and the enforcement-fingerprint lint classes it accordingly"
           }
         ],
         "sweepHistory": [
@@ -391,16 +421,28 @@
         "hadNoFingerprintNote": "**hadNoFingerprint: true.** Set 2026-08-09 when a new arm found that EVERY gap record here named a standard with no enforcement fingerprint — review pass 4 caught one instance, the mechanism then found all five. No standard carried a fingerprint until this window created the field, so nothing recorded before it can honestly have EVADED one. What these records actually document is a failure that got past whatever was in place, which is a weaker and true claim."
       },
       "sweep": {
-        "sweptAt": "2026-08-09",
+        "sweptAt": "2026-08-11",
         "method": "For each fingerprinted standard, ask: does its cited surface check that a protocol/marker is PRESENT rather than that the property holds?",
         "fingerprintPopulation": [
+          {
+            "standard": "A Metric Must Measure the Work, Not the Question",
+            "fingerprintDigest": "cdcfcbc66ef26aae"
+          },
+          {
+            "standard": "Deferral = Deletion",
+            "fingerprintDigest": "5d907146608e0d94"
+          },
           {
             "standard": "Documentation IS Being",
             "fingerprintDigest": "6cc1a55951c9f480"
           },
           {
-            "standard": "Deferral = Deletion",
-            "fingerprintDigest": "5d907146608e0d94"
+            "standard": "Iterative Audit to Convergence",
+            "fingerprintDigest": "73b541397179e21b"
+          },
+          {
+            "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
+            "fingerprintDigest": "816fc020af4ff102"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
@@ -409,14 +451,6 @@
           {
             "standard": "The Right to Stand Ground",
             "fingerprintDigest": "5a0b28b0eacf1286"
-          },
-          {
-            "standard": "Iterative Audit to Convergence",
-            "fingerprintDigest": "2f110be2ffb74757"
-          },
-          {
-            "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "816fc020af4ff102"
           }
         ],
         "matched": [],
@@ -447,15 +481,21 @@
           },
           {
             "standard": "Iterative Audit to Convergence",
-            "why": "Its declared surfaces test a PROPERTY of the content, not the presence of a ritual: whether a marker RESOLVES, whether the recorded rounds EARN the stamp, whether a sweep's population is current. Where a fingerprint is `none` there is no surface to carry the shape, which is recorded on those articles rather than counted as safety here.",
+            "why": "Its declared surfaces test a PROPERTY of the content, not the presence of a ritual: whether a marker RESOLVES, whether the recorded rounds EARN the stamp, whether a sweep's population is current. Where a fingerprint is `none` there is no surface to carry the shape, which is recorded on those articles rather than counted as safety here. **RE-REACHED 2026-08-11.** The digest moved because a tree-node acknowledgement sentence was appended to this article naming its new child (*A Metric Must Measure the Work, Not the Question*). That edit changed narrative structure — parentage — and touched neither the moments, the surfaces, nor the coverage argument a sweep evaluates, so the verdict above is re-reached unchanged rather than re-stamped. The digest is deliberately over-sensitive; that is the check forcing a look, and the look was taken.",
             "evidence": "read each fingerprint's declared surfaces against the present-vs-property test",
-            "atDigest": "2f110be2ffb74757"
+            "atDigest": "73b541397179e21b"
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
             "why": "Its declared surfaces test a PROPERTY of the content, not the presence of a ritual: whether a marker RESOLVES, whether the recorded rounds EARN the stamp, whether a sweep's population is current. Where a fingerprint is `none` there is no surface to carry the shape, which is recorded on those articles rather than counted as safety here.",
             "evidence": "read each fingerprint's declared surfaces against the present-vs-property test",
             "atDigest": "816fc020af4ff102"
+          },
+          {
+            "standard": "A Metric Must Measure the Work, Not the Question",
+            "atDigest": "cdcfcbc66ef26aae",
+            "why": "As a FINGERPRINT shape this does not apply: there is no dispatch here, and no guard checking that a protocol is present rather than that its premise was withheld. **Kinship recorded rather than counted as a match:** the article's SUBJECT is a relative of this shape one level up — a reading that inherits its predecessor's question receives the load-bearing frame as established context instead of as a question, which is a planted premise at the scale of a review series rather than a single dispatch. Recorded so the relation is on the record without inflating the match.",
+            "evidence": "read the shape against the fingerprint (no dispatch surface), then separately against the article's subject, and reported the kinship without counting it"
           }
         ],
         "sweepHistory": [
@@ -484,16 +524,28 @@
         "hadNoFingerprintNote": "**hadNoFingerprint: true.** Set 2026-08-09 when a new arm found that EVERY gap record here named a standard with no enforcement fingerprint — review pass 4 caught one instance, the mechanism then found all five. No standard carried a fingerprint until this window created the field, so nothing recorded before it can honestly have EVADED one. What these records actually document is a failure that got past whatever was in place, which is a weaker and true claim."
       },
       "sweep": {
-        "sweptAt": "2026-08-09",
+        "sweptAt": "2026-08-11",
         "method": "For each fingerprinted standard, read its correction notes and ask: does any of them assert coverage the mechanism does not attain?",
         "fingerprintPopulation": [
+          {
+            "standard": "A Metric Must Measure the Work, Not the Question",
+            "fingerprintDigest": "cdcfcbc66ef26aae"
+          },
+          {
+            "standard": "Deferral = Deletion",
+            "fingerprintDigest": "5d907146608e0d94"
+          },
           {
             "standard": "Documentation IS Being",
             "fingerprintDigest": "6cc1a55951c9f480"
           },
           {
-            "standard": "Deferral = Deletion",
-            "fingerprintDigest": "5d907146608e0d94"
+            "standard": "Iterative Audit to Convergence",
+            "fingerprintDigest": "73b541397179e21b"
+          },
+          {
+            "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
+            "fingerprintDigest": "816fc020af4ff102"
           },
           {
             "standard": "Sovereignty — \"I own what is mine\"",
@@ -502,14 +554,6 @@
           {
             "standard": "The Right to Stand Ground",
             "fingerprintDigest": "5a0b28b0eacf1286"
-          },
-          {
-            "standard": "Iterative Audit to Convergence",
-            "fingerprintDigest": "2f110be2ffb74757"
-          },
-          {
-            "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
-            "fingerprintDigest": "816fc020af4ff102"
           }
         ],
         "matched": [],
@@ -540,8 +584,8 @@
           },
           {
             "standard": "Iterative Audit to Convergence",
-            "atDigest": "2f110be2ffb74757",
-            "why": "Its correction notes state the coverage attained and name what is NOT reached — the `none` fingerprints say nothing guards them, and the guarded ones enumerate the moments they miss. Swept after the third instance, when the pattern was known, which is exactly why these read differently from the notes that carried the shape.",
+            "atDigest": "73b541397179e21b",
+            "why": "Its correction notes state the coverage attained and name what is NOT reached — the `none` fingerprints say nothing guards them, and the guarded ones enumerate the moments they miss. Swept after the third instance, when the pattern was known, which is exactly why these read differently from the notes that carried the shape. **RE-REACHED 2026-08-11.** The digest moved because a tree-node acknowledgement sentence was appended to this article naming its new child (*A Metric Must Measure the Work, Not the Question*). That edit changed narrative structure — parentage — and touched neither the moments, the surfaces, nor the coverage argument a sweep evaluates, so the verdict above is re-reached unchanged rather than re-stamped. The digest is deliberately over-sensitive; that is the check forcing a look, and the look was taken.",
             "evidence": "read each article's correction and coverage notes against the attained-vs-claimed test"
           },
           {
@@ -549,6 +593,12 @@
             "atDigest": "816fc020af4ff102",
             "why": "Its correction notes state the coverage attained and name what is NOT reached — the `none` fingerprints say nothing guards them, and the guarded ones enumerate the moments they miss. Swept after the third instance, when the pattern was known, which is exactly why these read differently from the notes that carried the shape.",
             "evidence": "read each article's correction and coverage notes against the attained-vs-claimed test"
+          },
+          {
+            "standard": "A Metric Must Measure the Work, Not the Question",
+            "atDigest": "cdcfcbc66ef26aae",
+            "why": "Swept specifically because this shape is about the CERTIFYING SENTENCE becoming the new instance. The article makes no fix-claim to restate: it declares `moments: none`, labels itself DOCUMENTED-ONLY with a countdown, and its coverage argument names BOTH violation shapes as unreached — stating explicitly that the shape which ACTUALLY OCCURRED (a trend quoted in prose, carried into the next prompt as established fact) is reached by nothing at all. The claim is not narrowed while staying at 100%; it is stated at zero.",
+            "evidence": "read the article's own coverage and correction notes against the attained-vs-claimed test"
           }
         ]
       },
@@ -569,9 +619,13 @@
         "hadNoFingerprint": false
       },
       "sweep": {
-        "sweptAt": "2026-08-09",
+        "sweptAt": "2026-08-11",
         "method": "For each fingerprinted standard, read every surface it cites and ask: does that surface build its population in a container keyed on a name a human chooses freely (heading, marker id, slug), and does it refuse a repeat? Where the answer was reachable by execution the verdict was EARNED by execution rather than by reading the code, because this window has repeatedly shown a code-read agreeing with a claim the run then falsifies.",
         "fingerprintPopulation": [
+          {
+            "standard": "A Metric Must Measure the Work, Not the Question",
+            "fingerprintDigest": "cdcfcbc66ef26aae"
+          },
           {
             "standard": "Deferral = Deletion",
             "fingerprintDigest": "5d907146608e0d94"
@@ -582,7 +636,7 @@
           },
           {
             "standard": "Iterative Audit to Convergence",
-            "fingerprintDigest": "2f110be2ffb74757"
+            "fingerprintDigest": "73b541397179e21b"
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
@@ -614,9 +668,9 @@
         "unmatched": [
           {
             "standard": "Iterative Audit to Convergence",
-            "why": "Immune deliberately rather than by luck, which is the distinction this sweep exists to draw. Its cited surface `scripts/write-audit-convergence.mjs` builds a registry article index and REFUSES the collision up front: a repeated article title returns `duplicate standards article title ... is ambiguous`, and a repeated Article ID returns a duplicate-owner error, both before the index is built. The audit slug itself cannot collapse either — the slug must equal the file basename, so the filesystem holds one record per slug and a second audit under one slug is a visible overwrite rather than a silent merge.",
+            "why": "Immune deliberately rather than by luck, which is the distinction this sweep exists to draw. Its cited surface `scripts/write-audit-convergence.mjs` builds a registry article index and REFUSES the collision up front: a repeated article title returns `duplicate standards article title ... is ambiguous`, and a repeated Article ID returns a duplicate-owner error, both before the index is built. The audit slug itself cannot collapse either — the slug must equal the file basename, so the filesystem holds one record per slug and a second audit under one slug is a visible overwrite rather than a silent merge. **RE-REACHED 2026-08-11.** The digest moved because a tree-node acknowledgement sentence was appended to this article naming its new child (*A Metric Must Measure the Work, Not the Question*). That edit changed narrative structure — parentage — and touched neither the moments, the surfaces, nor the coverage argument a sweep evaluates, so the verdict above is re-reached unchanged rather than re-stamped. The digest is deliberately over-sensitive; that is the check forcing a look, and the look was taken.",
             "evidence": "read registryArticleIndex in scripts/write-audit-convergence.mjs: titleOwners and idOwners both refuse a repeat before any entry is admitted",
-            "atDigest": "2f110be2ffb74757"
+            "atDigest": "73b541397179e21b"
           },
           {
             "standard": "Documentation IS Being",
@@ -635,6 +689,12 @@
             "why": "Declares `moments: none; surfaces: NONE`, structurally rather than as a backlog — detecting capitulation requires knowing the critique was wrong, which is the judgment under dispute. No cited surface, so nothing keys a population on a name.",
             "evidence": "read its fingerprint declaration: surfaces NONE",
             "atDigest": "5a0b28b0eacf1286"
+          },
+          {
+            "standard": "A Metric Must Measure the Work, Not the Question",
+            "atDigest": "cdcfcbc66ef26aae",
+            "why": "VERIFIED rather than asserted, because this shape's whole point is a duplicate that both admits an unexamined entry and silently unwatches an earlier one. The article ID `metric-measures-the-work-not-the-question` and the countdown id `STD-COUNTDOWN-metric-measures-the-question` each appear exactly once as declarations, and the countdown lint's own parser — the authority, not a raw text count — reports 4 article countdowns and 48 distinct sub-obligation countdowns with no collision. A raw grep does show the parent's `STD-SUBCOUNTDOWN-audit-never-started` twice; the second is the CORRECTION NOTE describing pass 11's historical duplicate, not a declaration, and the lint's population is unaffected.",
+            "evidence": "counted declarations with the lint's own parser after a raw text count produced a false positive on a narrative mention"
           }
         ]
       },
@@ -656,9 +716,13 @@
         "hadNoFingerprintNote": "CORRECTED AGAIN by review pass 16, which is right on both halves and which I verified before accepting. (i) The flag is MECHANICALLY INERT here: the guard only consults it when `evaded.standard` fails to resolve, and \"Iterative Audit to Convergence\" does resolve, so all four states of this field pass identically. (ii) It is FALSE under the schema's own definition, which is \"the named standard carries no enforcement fingerprint\" — that article IS fingerprinted, as the note beside it already conceded. So withdrawing a manufactured-enforcement claim was recorded as a schema claim that is false under the schema, with zero effect. It is left TRUE deliberately rather than flipped back, because `false` asserts the stronger thing (a real fingerprint was got past) and that is the claim pass 15 refuted; but the honest statement is neither value — the schema has no way to express \"the named standard is fingerprinted, and its fingerprint does not reach this moment or surface\". That missing expressiveness, and the missing `atMoment`-vs-declared-moments check that would catch it, are named in the residual rather than papered over with whichever boolean reads better."
       },
       "sweep": {
-        "sweptAt": "2026-08-09",
+        "sweptAt": "2026-08-11",
         "method": "For each fingerprinted standard, run its cited surfaces and read their ROUTINE PASS output, not their failure output. Ask: does the successful run emit a sentence conceding reduced coverage, a skipped arm, or standing debt — something a reader would habituate to because it appears beside an all-clear? Verdicts were taken from executed output rather than from reading the source, because the whole shape is about what a surface SAYS on a normal day.",
         "fingerprintPopulation": [
+          {
+            "standard": "A Metric Must Measure the Work, Not the Question",
+            "fingerprintDigest": "cdcfcbc66ef26aae"
+          },
           {
             "standard": "Deferral = Deletion",
             "fingerprintDigest": "5d907146608e0d94"
@@ -669,7 +733,7 @@
           },
           {
             "standard": "Iterative Audit to Convergence",
-            "fingerprintDigest": "2f110be2ffb74757"
+            "fingerprintDigest": "73b541397179e21b"
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
@@ -693,9 +757,9 @@
           },
           {
             "standard": "Iterative Audit to Convergence",
-            "why": "Two of its cited surfaces concede on the pass path. The commit gate ends every Tier-1 commit with `No converged spec required for Tier 1` — a routine statement that the converged-spec arm did not run — and additionally prints `note: trace has no duplicateBuildCheck field (duplicate-build guard not live for this build — advisory only)`, which announces an inactive guard in so many words. Both appeared on every commit of this window, roughly fifteen times tonight alone, and I read past both. That is the shape precisely: honest text, correct text, emitted beside a success, unattended.",
+            "why": "Two of its cited surfaces concede on the pass path. The commit gate ends every Tier-1 commit with `No converged spec required for Tier 1` — a routine statement that the converged-spec arm did not run — and additionally prints `note: trace has no duplicateBuildCheck field (duplicate-build guard not live for this build — advisory only)`, which announces an inactive guard in so many words. Both appeared on every commit of this window, roughly fifteen times tonight alone, and I read past both. That is the shape precisely: honest text, correct text, emitted beside a success, unattended. **RE-REACHED 2026-08-11.** The digest moved because a tree-node acknowledgement sentence was appended to this article naming its new child (*A Metric Must Measure the Work, Not the Question*). That edit changed narrative structure — parentage — and touched neither the moments, the surfaces, nor the coverage argument a sweep evaluates, so the verdict above is re-reached unchanged rather than re-stamped. The digest is deliberately over-sensitive; that is the check forcing a look, and the look was taken.",
             "evidence": "ran the commit gate: `instar-dev-precommit.js:1352` emits the not-live advisory and the Tier-1 exit prints the no-converged-spec line; both appear in every successful commit in this window's log",
-            "atDigest": "2f110be2ffb74757"
+            "atDigest": "73b541397179e21b"
           },
           {
             "standard": "One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere",
@@ -722,6 +786,12 @@
             "why": "Declares surfaces NONE, structurally rather than as a backlog. No cited surface, so no routine output to habituate to.",
             "evidence": "read its fingerprint declaration: surfaces NONE",
             "atDigest": "5a0b28b0eacf1286"
+          },
+          {
+            "standard": "A Metric Must Measure the Work, Not the Question",
+            "atDigest": "cdcfcbc66ef26aae",
+            "why": "The shape requires a guard that STATES in its own ROUTINE OUTPUT that it is not doing its job, emitted so often on successful runs that a reader stops seeing it. This article emits nothing — `moments: none` means no run produces any line to become furniture. **Forward note, because this shape is the one it could acquire:** if the DOCUMENTED-ONLY label ever becomes routine output on successful runs, the shape goes live for it. The dated countdown is precisely what stops the label becoming permanent furniture, which is the mechanism this shape says is missing when it bites.",
+            "evidence": "checked whether any routine output exists to habituate to; none does, and the acquisition path is recorded with the control that prevents it"
           }
         ]
       },

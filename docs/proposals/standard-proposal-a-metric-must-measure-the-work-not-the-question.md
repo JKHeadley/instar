@@ -1,6 +1,20 @@
-# PROPOSED STANDARD — not yet ratified
+# RATIFIED STANDARD — now live in the constitution
 
-**Status:** PROPOSAL. Agent proposes, operator ratifies. Deliberately NOT written into the registry.
+> **RATIFIED BY JUSTIN, 2026-08-10** — verbatim: *"approved, for both the spec and the standard"*, relayed
+> through the observer on the operator account. **It is now article `metric-measures-the-work-not-the-question`
+> in `docs/STANDARDS-REGISTRY.md`**, placed as a tree node under *Iterative Audit to Convergence* in
+> **Building**, with the parent acknowledging it back.
+>
+> **This file is KEPT, not deleted** — the convention for a ratified proposal in this repository, verified
+> against the existing ratified proposals rather than assumed. It is the record of what was argued and on
+> what evidence; the registry carries the rule. Where the two differ, **the registry is authoritative.**
+>
+> **What the registry entry added that this draft did not have:** an enforcement fingerprint declaring
+> `moments: none` (honest, and the closest of the seven recorded failure shapes — swept and reasoned rather
+> than waved past), a `Documented-only until 2026-09-10` countdown, and a genuine sweep of the new article
+> against all seven recorded failure shapes, each re-reached rather than re-stamped.
+
+**Status:** RATIFIED 2026-08-10. Originally filed as a proposal; agent proposes, operator ratifies.
 **Proposed by:** Echo — Pathway window 12, 2026-08-10. Discovered by the review series it describes,
 evidenced from that series' own archive, and drafted by the agent whose work the series was measuring.
 **Proposed family:** Building — engineering discipline.
