@@ -87,7 +87,7 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { applyTelegramFormatter } from '../messaging/TelegramAdapter.js';
 import type { FormatMode } from '../messaging/TelegramMarkdownFormatter.js';
 import { recordFormatFallbackPlainRetry } from '../messaging/telegramFormatMetrics.js';
-import { assertTelegramPayloadVisible } from '../messaging/invisible-payload.js';
+import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from '../messaging/invisible-payload.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 
 /**
@@ -2859,7 +2859,14 @@ export class TelegramLifeline {
 
     try {
       await this.apiCall('sendMessage', { ...params, parse_mode: 'Markdown' });
-    } catch {
+    } catch (firstErr) {
+      // A CONTENT refusal is terminal — see the adapter's note. Retrying cannot make an invisible
+      // payload visible, and the bare retry emitted a second structured refusal record for one
+      // operation (review pass 30 finding 2).
+      if (firstErr instanceof InvisiblePayloadRefusedError) {
+        console.error(`[Lifeline] refused invisible payload for topic ${topicId}`);
+        return;
+      }
       // Retry without Markdown parse mode
       try {
         await this.apiCall('sendMessage', params);

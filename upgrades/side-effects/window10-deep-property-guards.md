@@ -3117,3 +3117,30 @@ the old version hollow) also reds. Restored, four green, working tree verified c
 **The honest note.** I sabotage-proved this file earlier the same evening and reported it sound. My proof
 hit a different arm than the hollow one. Proving one arm of four and reporting the file is the
 narrow-population habit turned on my own evidence — and then the first repair repeated it one level down.
+
+---
+
+## Increment 67 (window 12) — pass 30 finding 2: one refusal, two records
+
+**Reproduced before repairing.** One `sendToTopic` call with an invisible payload produced
+**`STRUCTURED_RECORDS=2` with zero network calls**. The cause: both send paths wrap the first attempt in a
+BARE `catch` that treats every failure as a Markdown-parse problem and retries through the guarded funnel —
+so a refusal was logged, caught, re-attempted and logged again.
+
+**The fix is that a CONTENT refusal is terminal.** Retrying without a parse mode cannot make an invisible
+payload visible, so the retry was never going to succeed; it existed only to turn one refused operation into
+two decision records. All three retry sites — two in the adapter, one in the lifeline — now re-throw
+`InvisiblePayloadRefusedError` instead of swallowing it. Only a genuine formatting failure earns a retry.
+
+**Why it matters beyond tidiness:** the structured stream was added in this same window to make over-blocks
+and under-blocks detectable. An instrument that counts ATTEMPTS while claiming to count OPERATIONS would
+have doubled every refusal metric — a measurement that misreports its own subject, which is precisely what
+article 89 was ratified about, appearing in the observability layer built to satisfy article 89's parent doc.
+
+**Sabotage-proven, and one honest distinction.** Restoring the bare retry reds exactly the new
+`ONE record per refused operation` arm. The companion arm on `send()` did NOT red — because `send()`'s retry
+is conditioned on the error text containing `(400)`, so it never retried a refusal and was already
+single-record. That assertion therefore **pins existing-correct behaviour against future regression rather
+than proving a fix**, and is described that way rather than counted as evidence of one.
+
+Full lint chain green; the funnel, route, window-10 and parity suites all green.

@@ -10,7 +10,7 @@
  */
 
 import fs from 'node:fs';
-import { assertTelegramPayloadVisible } from './invisible-payload.js';
+import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
 import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -1403,13 +1403,23 @@ export class TelegramAdapter implements MessagingAdapter {
       // the message still delivers (tags visible — never worse than the bug).
       try {
         result = await this.apiCall('sendMessage', { ...params, parse_mode: 'HTML', _formatMode: 'html' }) as { message_id: number };
-      } catch {
+      } catch (err) {
+        // A CONTENT refusal is terminal — retrying without a parse mode cannot make an invisible
+        // payload visible, and the bare retry logged the refusal TWICE (review pass 30 finding 2:
+        // one refused operation produced two structured decision records, turning the observability
+        // stream into an attempt counter). Only a formatting failure is worth a plain-params retry.
+        if (err instanceof InvisiblePayloadRefusedError) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     } else {
       try {
         result = await this.apiCall('sendMessage', { ...params, parse_mode: 'Markdown' }) as { message_id: number };
-      } catch {
+      } catch (err) {
+        // A CONTENT refusal is terminal — retrying without a parse mode cannot make an invisible
+        // payload visible, and the bare retry logged the refusal TWICE (review pass 30 finding 2:
+        // one refused operation produced two structured decision records, turning the observability
+        // stream into an attempt counter). Only a formatting failure is worth a plain-params retry.
+        if (err instanceof InvisiblePayloadRefusedError) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     }

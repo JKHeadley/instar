@@ -396,6 +396,36 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
       }
     });
 
+    // ONE OPERATION, ONE RECORD — review pass 30 finding 2. The existing arms asserted network
+    // suppression and never asserted the record COUNT, so a refusal that was logged, caught by a
+    // bare retry, re-attempted and logged again read as correct. Two records for one refused
+    // operation turns the observability stream into an attempt counter, which is exactly the kind of
+    // instrument this window keeps convicting.
+    it('emits exactly ONE record per refused operation, not one per attempt', async () => {
+      const seen: unknown[] = [];
+      const prev = setInvisiblePayloadRefusalSink((d) => seen.push(d));
+      try {
+        await expect(adapter.sendToTopic(42, '\u200b')).rejects.toThrow(/no visible characters/i);
+      } finally {
+        setInvisiblePayloadRefusalSink(prev);
+      }
+      expect(seen, 'a refusal was logged, retried and logged again').toHaveLength(1);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('emits exactly ONE record when send() refuses, across its own retry path', async () => {
+      const seen: unknown[] = [];
+      const prev = setInvisiblePayloadRefusalSink((d) => seen.push(d));
+      try {
+        await expect(
+          adapter.send({ content: '\u200b', channel: { identifier: '42' } } as never),
+        ).rejects.toThrow(/no visible characters/i);
+      } finally {
+        setInvisiblePayloadRefusalSink(prev);
+      }
+      expect(seen).toHaveLength(1);
+    });
+
     it('emits nothing when the payload is fine', () => {
       const seen: unknown[] = [];
       const prev = setInvisiblePayloadRefusalSink((d) => seen.push(d));
