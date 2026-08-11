@@ -3411,3 +3411,40 @@ file: red — and that last one is the case the previous presence-based check pa
 **Scope, stated rather than implied.** Non-transforming senders get NO order claim. Their guard and
 their `fetch` are not always in one function, and following that needs call-graph resolution this
 does not do. Four of the six senders are in that position.
+
+### Increment 74 — CMT-1248's premise did not survive derivation (2026-08-11 04:11 PDT)
+
+CMT-1248 asked for path-level behavioural tests driving each of the four DIRECT senders with an invisible
+payload. Deriving before writing showed the premise holds for ONE of the four.
+
+| sender | guarded payload | path test meaningful? |
+|---|---|---|
+| codex-driver | `greeting` template | no — literal prose |
+| gemini-driver | `greeting` template | no — literal prose |
+| test-as-self | `test-as-self ${nonce}` | no — literal prefix |
+| routes.ts demo sender | `text` parameter | YES — caller-supplied |
+
+Three payloads are built from templates whose literal prose (`here — server's up and I'm online.`)
+guarantees a visible character regardless of what the interpolations contain. Their guard CANNOT fire on
+any caller input. A "behavioural test" for them would have to corrupt the template first, which tests the
+sabotage rather than the code. The guard on those paths is defence-in-depth against a refactor that makes
+the payload caller-controlled — legitimate to keep, not legitimate to claim a test for.
+
+So the property worth pinning is PROVENANCE, and that is what landed: an assertion per sender that its
+guarded payload is still template-built (or still caller-supplied). If one of those templates ever becomes
+caller-controlled the assertion fails and names the consequence — write the behavioural test that is not
+writable today.
+
+**The instrument reproduced the defect it was written beside.** The first version resolved the payload's
+binding by searching the whole file for `const <name> = ...`. On routes.ts (35,000 lines) it matched an
+unrelated `text` declaration and classified the caller-supplied parameter as template-built. That is
+review pass 35 finding 6 — relating a name to a declaration it never proved — committed by me one screen
+below where I had just written the finding down. The failing test is the only reason I know. The working
+version walks outward from the call, treats an enclosing PARAMETER as caller-supplied, and lets the first
+enclosing binding win, which is what shadowing means.
+
+Verified by printing rather than by green: template=1/caller=0 for the three wizard senders, template=0/
+caller=1 for routes.ts.
+
+**Remaining and honest:** the routes.ts demo sender's behavioural test is still unwritten — reaching it
+needs a route-context harness. CMT-1248 updated to that single item rather than closed.
