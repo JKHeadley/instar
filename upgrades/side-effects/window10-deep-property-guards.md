@@ -3448,3 +3448,34 @@ caller=1 for routes.ts.
 
 **Remaining and honest:** the routes.ts demo sender's behavioural test is still unwritten — reaching it
 needs a route-context harness. CMT-1248 updated to that single item rather than closed.
+
+### Increment 75 — CMT-1247 located and pinned, not yet fixed (2026-08-11 04:15 PDT)
+
+`relayOutbound` classifies a holder response as a REFUSAL only on 422 (`TelegramRelay.ts:134`); every
+other non-ok status returns `null`, which the standby's send path reports as "router unreachable".
+
+That is the same conflation TelegramRelay's own header records having FIXED — a refusal reported as a
+transport failure is unanswerable, because the agent sees a network error instead of the rule and how to
+proceed. The fix was applied to the 422 case and the CONTRACT was left narrow (`status: 422` is a
+literal type), so any refusal a holder expresses with a different status still conflates. A fix that
+closes one instance without widening the contract leaves the class open; this is that shape.
+
+The invisible-payload guard is one such refusal: `InvisiblePayloadRefusedError` appears in NEITHER
+`routes.ts` nor `server.ts`, so the holder-side route does not classify it and a content refusal
+there cannot emerge as 422.
+
+**Pinned, not fixed, deliberately.** Three tests now hold the boundary: a 422 comes back actionable, a
+refusal expressed with any other status is indistinguishable from a dead router, and a genuine transport
+failure is null too — which is precisely why the middle case is ambiguous. They assert CURRENT behaviour
+so the suite stays green while the defect stays visible and located, and the middle test's message names
+what must change when CMT-1247 lands.
+
+The middle test also asserts the holder was actually CALLED, so its null is proven to come from status
+classification rather than an early return — without that, it would pass for a reason unrelated to the
+defect it claims to pin.
+
+**Why not fixed tonight.** The correct fix is on the holder's route (normalise a content refusal to 422),
+which is narrower than widening this client to accept 400 — a status that legitimately also means
+malformed request. That is a live change to the path carrying a standby's outbound messages, and no
+verification reading can run at 22 percent free RAM with 814 MB of swap headroom. Sequencing it behind
+the ability to verify it, with the defect pinned meanwhile.
