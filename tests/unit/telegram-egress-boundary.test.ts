@@ -302,6 +302,33 @@ describe('telegram egress boundary — the single door', () => {
       expect(f2, 'a legitimate rich-message send must deliver').toHaveBeenCalledTimes(1);
     });
 
+    it('inspects STRUCTURED rich content at its leaves, not as a string', async () => {
+      // Pass 44: rich_message is an InputRichMessage object whose content sits under html, markdown, or
+      // an array of blocks. Pass 43 named the field correctly and then checked it with a string test,
+      // which returns early for an object — so the table listed it and nothing ever looked inside.
+      const f = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { blocks: [{ type: 'paragraph', text: '\u200b' }, { type: 'footer', text: '\u200b' }] },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f, 'every leaf is invisible — the reader receives nothing').not.toHaveBeenCalled();
+
+      // one visible leaf is enough to deliver
+      const f2 = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { blocks: [{ type: 'paragraph', text: '\u200b' }, { type: 'paragraph', text: 'hello' }] },
+      }));
+      expect(f2).toHaveBeenCalledTimes(1);
+
+      // and the html/markdown carriers
+      const f3 = arm();
+      await expect(telegramFetch(api('editMessageText'), post({
+        chat_id: 1, message_id: 9, rich_message: { html: '<b>\u200b</b>' },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f3).not.toHaveBeenCalled();
+    });
+
     it('treats a trailing DNS root dot as the same host', async () => {
       // Pass 39 F2: `new URL()` preserves the terminal dot, so an exact compare rejected an equivalent
       // hostname — the request reached Telegram and the door returned null.

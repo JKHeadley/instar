@@ -3838,3 +3838,22 @@ have broken the first legitimate use.
 The field map could not express any of this: it was method → ONE field. It is now method → one or many,
 with both checkers looping every field and the egress over-refusal guard requiring the query to supply
 ALL of them before treating an unreadable body as harmless.
+
+### Increment 88 — pass 44: right field, wrong shape (2026-08-11 11:54 PDT)
+
+`rich_message` is not a string. Telegram models it as an `InputRichMessage` whose content sits under
+`html`, `markdown`, or an array of `blocks` (paragraphs, headings, footers, preformatted). Pass 43
+mapped the FIELD correctly and then checked it with `typeof value === 'string'`, which returns early for
+an object — so the table named the field and no code ever looked inside it. **The table's presence made
+it look covered**, which is the more dangerous half: a field listed in a closed-world map reads as
+handled.
+
+Structured fields are now walked to their text LEAVES, and each leaf's format comes from its KEY — an
+`html` leaf is HTML whatever the request's `parse_mode` says, because the request-level mode does not
+govern content nested inside a rich structure. One visible leaf delivers; all-invisible leaves refuse; a
+structure yielding no leaves is undecidable and allowed, the same line the empty-extraction case takes.
+Urls, ids and type tags are deliberately NOT gathered — counting them would make an invisible rich
+message look visible, which is the direction that matters.
+
+Verified against the live Bot API documentation for both the field and the object, after pass 43 taught
+me that this codebase's model of Telegram is stale in places I cannot predict.

@@ -364,6 +364,40 @@ export function readerVisibleText(text: string, parseMode?: unknown): string {
  * content stopped being reader-visible when the representation changed — and each is proven to red on
  * its own.
  */
+/**
+ * Collect the reader-visible TEXT LEAVES of a structured field.
+ *
+ * Review pass 44: `rich_message` is not a string. Telegram models it as an `InputRichMessage` whose
+ * content sits under `html`, `markdown`, or an array of `blocks` (paragraphs, headings, footers,
+ * preformatted). Pass 43 mapped the FIELD correctly and then checked it with `typeof value === 'string'`,
+ * which returns early for an object — so the field was named in the table and never inspected. Right
+ * method, wrong shape, and the table's presence made it look covered.
+ *
+ * Gathers `html`, `markdown`, and any nested `text` string at any depth. Deliberately does NOT gather
+ * urls, ids, or type tags: counting those as content would make an invisible rich message look visible,
+ * which is the direction that matters here.
+ */
+function structuredTextLeaves(value: unknown, depth = 0): Array<{ text: string; mode: string }> {
+  if (depth > 8 || value === null || typeof value !== 'object') return [];
+  const out: Array<{ text: string; mode: string }> = [];
+  if (Array.isArray(value)) {
+    for (const v of value) out.push(...structuredTextLeaves(v, depth + 1));
+    return out;
+  }
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v === 'string') {
+      // The KEY names the leaf's format. An `html` leaf is HTML whatever the request's `parse_mode`
+      // says — the request-level mode does not govern content nested inside a rich structure.
+      if (k === 'html') out.push({ text: v, mode: 'HTML' });
+      else if (k === 'markdown') out.push({ text: v, mode: 'Markdown' });
+      else if (k === 'text') out.push({ text: v, mode: '' });
+    } else if (typeof v === 'object' && v !== null) {
+      out.push(...structuredTextLeaves(v, depth + 1));
+    }
+  }
+  return out;
+}
+
 /** Every reader-visible field a method may carry. A method can carry more than one (pass 43). */
 export function readerVisibleFieldsFor(method: string): readonly string[] {
   const f = READER_VISIBLE_TELEGRAM_PARAMS[method];
@@ -378,7 +412,42 @@ export function assertOutgoingPayloadVisible(method: string, params: Record<stri
 }
 
 function assertOneOutgoingField(method: string, params: Record<string, unknown>, field: string): void {
-  const value = params?.[field];
+  const raw = params?.[field];
+
+  // A structured field carries its content in leaves, not in the field itself (pass 44). If ANY leaf is
+  // visible the payload is visible. If the structure yields NO leaves at all, this cannot decide what a
+  // reader receives and allows — the same undecidable line the empty-extraction case takes.
+  if (raw !== null && typeof raw === 'object') {
+    const leaves = structuredTextLeaves(raw);
+    if (leaves.length === 0) return;
+    if (leaves.some((leaf) => !hasNoVisibleCharacters(readerVisibleText(leaf.text, leaf.mode)))) return;
+    emitInvisiblePayloadRefusal({
+      guard: 'invisible-payload',
+      outcome: 'refused',
+      method,
+      field,
+      rule: 'no-content-codepoint-after-format',
+      valueLength: leaves.reduce((n, l) => n + l.text.length, 0),
+      engine: process.version,
+      unicode: process.versions.unicode ?? 'unknown',
+    });
+    throw new InvisiblePayloadRefusedError(
+      `refused: ${method} ${field} carries no reader-visible content AFTER formatting (its structured `
+      + 'content has text leaves and none of them renders as anything a reader can see).',
+      {
+        guard: 'invisible-payload',
+        outcome: 'refused',
+        method,
+        field,
+        rule: 'no-content-codepoint-after-format',
+        valueLength: leaves.reduce((n, l) => n + l.text.length, 0),
+        engine: process.version,
+        unicode: process.versions.unicode ?? 'unknown',
+      },
+    );
+  }
+
+  const value = raw;
   if (typeof value !== 'string') return;
   const visible = readerVisibleText(value, (params as { parse_mode?: unknown })?.parse_mode);
   if (!hasNoVisibleCharacters(visible)) return;
