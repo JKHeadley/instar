@@ -153,6 +153,22 @@ describe('telegram egress boundary — the single door', () => {
       expect(f, 'the value Telegram would send is invisible').not.toHaveBeenCalled();
     });
 
+    it('takes the FIRST value of a repeated key, as Telegram does', async () => {
+      // Found by self-audit against Telegram's documented accessor rather than by a reading. Iterating
+      // URLSearchParams yields every occurrence, so assigning in loop order kept the LAST — and that
+      // was wrong in BOTH directions at once: an invisible-then-visible pair was SENT while Telegram
+      // would send the invisible value, and a visible-then-invisible pair was REFUSED while Telegram
+      // would send the visible one. One bypass and one destroyed message from a single line.
+      const f = arm();
+      await expect(telegramFetch(`${api('sendMessage')}?chat_id=1&text=%E2%80%8B&text=visible`, { method: 'POST' }))
+        .rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f, 'Telegram would send the FIRST value, which is invisible').not.toHaveBeenCalled();
+
+      const f2 = arm();
+      await telegramFetch(`${api('sendMessage')}?chat_id=1&text=visible&text=%E2%80%8B`, { method: 'POST' });
+      expect(f2, 'Telegram would send the FIRST value, which is visible').toHaveBeenCalledTimes(1);
+    });
+
     it('ignores the URL FRAGMENT, which never goes on the wire', async () => {
       // `fetch` strips the fragment. Counting it as payload let visible fragment text mask an
       // invisible query value.

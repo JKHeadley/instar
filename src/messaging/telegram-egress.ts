@@ -116,9 +116,21 @@ function collectParams(url: string, body: RequestInit['body']): {
   }
   const queryParams = new URLSearchParams(search);
 
-  /** Overlay the query LAST: on a conflicting key, the value Telegram sends is the query's. */
+  /**
+   * Overlay the query LAST: on a conflicting key, the value Telegram sends is the query's.
+   *
+   * And take the FIRST occurrence of a repeated key, not the last. Telegram's accessor returns the
+   * first match; iterating `URLSearchParams` yields every occurrence, so assigning in loop order left
+   * the LAST one in the object. Measured before this fix, both directions were wrong:
+   * `?text=<invisible>&text=visible` was SENT while Telegram would have sent the invisible value, and
+   * `?text=visible&text=<invisible>` was REFUSED while Telegram would have sent the visible one. One
+   * bypass and one destroyed message from a single line. `URLSearchParams.get` returns the first.
+   */
   const done = (uncheckable: string | null) => {
-    for (const [k, v] of queryParams) params[k] = v;
+    for (const k of new Set(queryParams.keys())) {
+      const first = queryParams.get(k);
+      if (first !== null) params[k] = first;
+    }
     return { params, uncheckable };
   };
 
@@ -137,7 +149,13 @@ function collectParams(url: string, body: RequestInit['body']): {
       // Form encoding is a supported Bot API encoding, not a mistake. Accept it when it looks like
       // one, and refuse anything else rather than guess.
       if (/^[^=&\s]+=/.test(body)) {
-        for (const [k, v] of new URLSearchParams(body)) params[k] = v;
+        // Same first-match rule as the query above — a repeated key in a form body resolves to its
+        // FIRST value at Telegram, so it must here too.
+        const form = new URLSearchParams(body);
+        for (const k of new Set(form.keys())) {
+          const first = form.get(k);
+          if (first !== null) params[k] = first;
+        }
         return done(null);
       }
       return done('a body that is neither JSON nor form encoding');
@@ -145,7 +163,10 @@ function collectParams(url: string, body: RequestInit['body']): {
   }
 
   if (body instanceof URLSearchParams) {
-    for (const [k, v] of body) params[k] = v;
+    for (const k of new Set(body.keys())) {
+      const first = body.get(k);
+      if (first !== null) params[k] = first;
+    }
     return done(null);
   }
 

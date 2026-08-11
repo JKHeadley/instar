@@ -3671,3 +3671,26 @@ the lint's "confined" was false about the tree it was reading.
   swept by counting the population first — 0 live citations remain.
 
 Verification: tsc clean, full lint chain clean, 162 tests in the affected area, 24 of them on the door.
+
+### Increment 81 — a bypass found by self-audit rather than by a reading (2026-08-11 06:44 PDT)
+
+While holding for memory, I audited the door's model of Telegram against Telegram's DOCUMENTED behaviour
+instead of waiting for pass 38 to do it — because that is precisely what passes 36 and 37 kept catching:
+a model built from how this codebase happens to call the API rather than from what the API accepts.
+
+**Repeated parameter keys resolved to the LAST value; Telegram resolves them to the FIRST.** Iterating
+`URLSearchParams` yields every occurrence, so assigning in loop order kept the last one. Measured, both
+directions were wrong from that single line:
+
+| request | door's verdict | what Telegram would send |
+|---|---|---|
+| `?text=<invisible>&text=visible` | SENT | the INVISIBLE value — a bypass |
+| `?text=visible&text=<invisible>` | REFUSED | the VISIBLE value — a destroyed message |
+
+One hole and one over-refusal at once. Fixed at all three collection sites (query, form-encoded body,
+`URLSearchParams` body) by taking `get(k)`, which returns the first match, and pinned by a test that
+asserts BOTH directions.
+
+Worth recording as a change in how the work is going: the previous six bypasses were found by readings.
+This one was found by asking "what does the API actually do?" ahead of the reading — which is the cheaper
+place to find it, and the habit the last two passes were trying to teach.
