@@ -239,6 +239,69 @@ if (!fs.existsSync(SRC)) {
   process.exit(1);
 }
 
+/**
+ * Prove the ORDER, not just the presence. Review pass 35 finding 5 was right that "a bare call with
+ * the guard's name exists somewhere in the file" establishes nothing about the output path: the call
+ * could sit in dead code, in a different function, or before the transform whose result it claims to
+ * check.
+ *
+ * The funnel is identified by CONSTRUCTION — it is the function that calls the pre-format guard — and
+ * the check then compares SOURCE POSITIONS inside it. The first version of this used statement indices
+ * and silently selected the wrong function: `fetch` appears at statement 0 of a nested arrow, so the
+ * innermost-fetch heuristic won and reported preIdx -1 for every sender. Enforcing that would have
+ * passed vacuously. Positions do not have that failure: a `fetch` nested three closures deep still
+ * sits after the guard that dominates it.
+ *
+ * Returns null when the file has no such function, which the caller treats as "not proven", never as
+ * "clean".
+ */
+function funnelOrder(sf) {
+  const posOf = (node, name) => {
+    let found = -1;
+    const seek = (n) => {
+      if (found < 0 && ts.isCallExpression(n)) {
+        const cn = ts.isIdentifier(n.expression) ? n.expression.text
+                 : ts.isPropertyAccessExpression(n.expression) ? n.expression.name.text : null;
+        if (cn === name) found = n.getStart(sf);
+      }
+      if (found < 0) ts.forEachChild(n, seek);
+    };
+    seek(node);
+    return found;
+  };
+  let result = null;
+  const visit = (node) => {
+    if (node.body && posOf(node.body, GUARD) >= 0) {
+      const pre = posOf(node.body, GUARD);
+      const fmt = posOf(node.body, FORMATTER);
+      const post = posOf(node.body, POST_GUARD);
+      const fetchPos = posOf(node.body, 'fetch');
+      let postConsumesFormatterResult = false;
+      if (fmt >= 0 && post >= 0) {
+        const stmts = Array.isArray(node.body.statements) ? node.body.statements : [];
+        const fmtStmt = stmts.find((st) => st.getStart(sf) <= fmt && st.getEnd() >= fmt);
+        const postStmt = stmts.find((st) => st.getStart(sf) <= post && st.getEnd() >= post);
+        const decl = fmtStmt && fmtStmt.getText(sf).match(/(?:const|let|var)\s+([A-Za-z0-9_$]+)/);
+        if (decl && postStmt) {
+          postConsumesFormatterResult = new RegExp(
+            `(?<![A-Za-z0-9_$])${decl[1]}(?![A-Za-z0-9_$])`,
+          ).test(postStmt.getText(sf));
+        }
+      }
+      // The funnel must contain BOTH the guard and the egress. A function holding only the guard
+      // proves nothing about ordering — the fetch it delegates to lives elsewhere — and picking it
+      // is how the previous two versions of this selection went wrong in opposite directions.
+      if (fetchPos >= 0) {
+        const cand = { pre, fmt, post, fetchPos, postConsumesFormatterResult };
+        if (!result || pre < result.pre) result = cand;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return result;
+}
+
 const senders = [];
 for (const file of walk(SRC)) {
   const text = fs.readFileSync(file, 'utf-8');
@@ -260,6 +323,7 @@ for (const file of walk(SRC)) {
     guarded: hasLiveGuardCall(file, text) && importsSharedGuard(text),
     // A sender that transforms the message must also check what the transform produced.
     postGuarded: !formats || callsIn(sf).some((c) => c.name === POST_GUARD && c.bareIdentifier),
+    order: funnelOrder(sf),
     formats,
     carries,
   });
@@ -337,6 +401,43 @@ if (unclassified.size > 0) {
 }
 
 const missingPostGuard = senders.filter((s) => !s.postGuarded);
+// ORDER ENFORCEMENT — only where the analysis can actually support a claim.
+//
+// For a sender that TRANSFORMS the message, presence of the two guard names is not the property that
+// matters; the ORDER is. Require, inside the one function that holds both the guard and the egress:
+//   pre-format guard  <  formatter  <  post-format guard  <  fetch
+// and require the post-format guard to receive the binding the formatter produced. That is the exact
+// claim review pass 35 finding 5 said was unsupported, now checked rather than asserted.
+//
+// Senders that do NOT format get no order claim from this lint. Their guard and their `fetch` are not
+// always in one function (a guard in a caller, the egress in a helper), and this analysis cannot
+// follow that without call-graph resolution. Saying so is the honest position; claiming an ordering
+// the analysis cannot see is what produced the finding in the first place.
+const misordered = senders.filter((s) => {
+  if (!s.formats) return false;
+  const o = s.order;
+  if (!o) return true;
+  return !(o.pre >= 0 && o.fmt > o.pre && o.post > o.fmt && o.fetchPos > o.post
+           && o.postConsumesFormatterResult);
+});
+if (misordered.length > 0) {
+  console.error(`[telegram-send-funnel] FAIL — transforming sender(s) do not prove guard order:\n`);
+  for (const s of misordered) {
+    const o = s.order;
+    console.error(`  ${path.relative(ROOT, s.file)}`);
+    console.error(o
+      ? `    positions: pre=${o.pre} formatter=${o.fmt} post=${o.post} fetch=${o.fetchPos}`
+        + ` postReceivesFormatterResult=${o.postConsumesFormatterResult}`
+      : `    no single function contains both ${GUARD} and fetch`);
+  }
+  console.error(
+    `\n  Required inside the funnel: ${GUARD} < ${FORMATTER} < ${POST_GUARD} < fetch, with`
+    + `\n  ${POST_GUARD} receiving the formatter's result. A post-format check that runs BEFORE the`
+    + `\n  transform, or on a different value, checks a representation no reader receives.`,
+  );
+  process.exit(1);
+}
+
 if (missingPostGuard.length > 0) {
   console.error(
     `[telegram-send-funnel] FAIL — sender(s) run the formatter but never call ${POST_GUARD}:\n`,
@@ -372,6 +473,7 @@ if (unguarded.length > 0) {
 console.log(
   `lint-telegram-send-funnel-guarded: clean — ${senders.length} Telegram body-sender(s) derived by mechanism `
   + `(builds ${API_HOST} + calls fetch), each containing a bare call named ${GUARD}; `
-  + `${senders.filter((s) => s.formats).length} of them run the formatter and also contain one named ${POST_GUARD}: `
+  + `${senders.filter((s) => s.formats).length} of them run the formatter, and in each the funnel proves `
+  + `${GUARD} < ${FORMATTER} < ${POST_GUARD} < fetch with the post-guard receiving the formatter's result: `
   + senders.map((s) => path.relative(ROOT, s.file)).join(', '),
 );

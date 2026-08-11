@@ -3370,3 +3370,44 @@ on senders that RUN the formatter — and not on the four direct senders that ne
 false failure. Sabotage-proven on the exact case the reading named.
 
 145 tests green across five suites; full lint chain green.
+
+### Increment 73 — charter item 4: the send-site count, re-derived (2026-08-11 04:04 PDT)
+
+The charter said "fourteen call sites across nine methods were counted; re-derive that count first,
+then prove the empty-payload refusal at every site." Re-derived by parsing, not by grep:
+
+| claim | derived | verdict |
+|---|---|---|
+| 14 `apiCall('sendMessage')` sites in TelegramAdapter | 14 | holds |
+| across 9 enclosing methods | 9 | holds |
+| of which `sendToTopic` accounted for 4 | 4 | holds |
+
+All three numbers hold. Worth recording that I nearly reported the opposite: a first derivation returned
+"51 sites across 14 methods" and read as a contradiction. It was not — my population was every Telegram
+method across both files, and "nine methods" means nine ENCLOSING FUNCTIONS, not nine API methods. The
+comment at TelegramAdapter.ts:1346 is correctly scoped and correctly counted; my reading of it was not.
+Counting the right set is half of "count, never assume", and I had the count before I had the set.
+
+**Proving the refusal at every site.** All 16 `sendMessage` sites (14 adapter + 2 lifeline) call
+`this.apiCall`, and in both funnels the guard is statement 0, the formatter statement 1, the
+post-format guard statement 2, and `fetch` statement 9 and 8 respectively. That is a dominance chain,
+so the lint now CHECKS it instead of asserting it — review pass 35 finding 5 said the post-format claim
+was unsupported, and this is the support rather than a softer sentence.
+
+Inside the one function holding both the guard and the egress, the lint requires
+`assertTelegramPayloadVisible < applyTelegramFormatter < assertOutgoingPayloadVisible < fetch`, with
+the post-guard receiving the binding the formatter produced.
+
+**Two wrong versions of the selection, both caught by printing before enforcing.** The first ranked
+functions by earliest `fetch` and selected a nested arrow — every sender reported `preIdx: -1`, so
+enforcement would have passed vacuously. The second used earliest guard and picked, in routes.ts, a
+function whose guard sits 1.2M characters after its fetch. The working version identifies the funnel by
+construction — the function containing BOTH — and compares source positions, which nesting cannot fool.
+
+**Sabotage results (3/3 red).** Post-guard moved before the formatter: red. Post-guard passed the
+pre-transform `params`: red. Post-guard deleted from the funnel with a live call left elsewhere in the
+file: red — and that last one is the case the previous presence-based check passed.
+
+**Scope, stated rather than implied.** Non-transforming senders get NO order claim. Their guard and
+their `fetch` are not always in one function, and following that needs call-graph resolution this
+does not do. Four of the six senders are in that position.
