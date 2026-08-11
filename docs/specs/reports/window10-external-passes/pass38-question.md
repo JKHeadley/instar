@@ -5,7 +5,9 @@ that drifts measures itself.
 
 ## Frozen tree
 
-CODE frozen at `fa8ce60c9` on `echo/window10-deep-property-guards`. This question is archived in the
+CODE frozen at `1630d26fd` (the question was first archived against `fa8ce60c9`; one further
+commit landed before dispatch — a duplicate-key bypass found by self-audit — so the SHA is restated rather
+than left describing a tree that moved) on `echo/window10-deep-property-guards`. This question is archived in the
 commit immediately after it, which adds ONLY this file — so the reading happens at that later HEAD and the
 source under review is byte-identical to the frozen SHA. Clean (dirt 0), `local == remote` verified by
 command, boundary lint clean, no stray measurer process.
@@ -34,6 +36,10 @@ Pass 37 returned UNSOUND at 8 (6 DESIGN, 2 PRECISION). All eight repaired:
    when it is not called there at all; the spec said convergence was still owed directly beneath its own
    convergence tag; the vendored table was assigned to the already-landed CMT-1246 instead of CMT-1261.
    Each swept by counting the population first; zero live citations remain.
+
+9. **Repeated parameter keys** resolved to the LAST value while Telegram resolves them to the FIRST.
+   Found by self-audit before this reading; both a bypass and an over-refusal came from that one line.
+   Fixed at all three collection sites and pinned in both directions.
 
 ## STATED OPEN — attack the openness, do not rediscover it
 
