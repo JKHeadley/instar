@@ -39,11 +39,22 @@
  * including whatever Unicode adds next.
  *
  * `L` letters, `N` numbers, `P` punctuation (so a lone full stop is a legitimate message, as it always
- * was), `S` symbols (so emoji count). Deliberately NOT content on their own: separators (`Z`), all
- * control/format/unassigned/private-use/surrogate categories (`C`), and combining marks (`M`) — a mark
- * attached to a base letter still passes, because the LETTER is content.
+ * was), `S` symbols (so emoji count).
+ *
+ * **`Mc` and `Me` are content too, corrected at review pass 30 after they were wrongly excluded.** The
+ * first version excluded ALL marks (`M`) on the reasoning that a mark is not content on its own. That was
+ * too broad and it over-refused real text: `Mc` SPACING combining marks (e.g. U+0903 DEVANAGARI SIGN
+ * VISARGA) and `Me` ENCLOSING marks (e.g. U+20DD COMBINING ENCLOSING CIRCLE) are graphic and carry advance
+ * width — a reader sees them. Refusing a payload made of them was a defect, not a protection, and it was
+ * proven by execution rather than argued.
+ *
+ * The line that survives is ADVANCE WIDTH, which is the mechanical property that decides whether a reader
+ * is shown anything: `Mn` NONSPACING marks (a lone combining acute) have zero advance width and are still
+ * not content on their own — attached to a base letter they ride along, and the LETTER is what counts.
+ * Deliberately NOT content: separators (`Z`), every control/format/unassigned/private-use/surrogate
+ * category (`C`), and nonspacing marks (`Mn`) alone.
  */
-const CONTENT_RE = /[\p{L}\p{N}\p{P}\p{S}]/u;
+const CONTENT_RE = /[\p{L}\p{N}\p{P}\p{S}\p{Mc}\p{Me}]/u;
 
 /**
  * Code points that are CATEGORY-POSITIVE but render BLANK — the positive predicate's own false positives.

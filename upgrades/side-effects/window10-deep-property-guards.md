@@ -2101,7 +2101,7 @@ order once is worth more than a fifth.
 
 **Still outstanding from pass 19 and honestly named:** two of three self-count corrections (the pass-1
 severity at `:388` and the over-attribution in three places) are announced-not-applied — the same shape,
-and I am recording that rather than claiming otherwise. Refusal-arm coverage is **23 of 90 arms (26%)**, derived by mutation and reproducible with
+and I am recording that rather than claiming otherwise. Refusal-arm coverage is ~~**23 of 90 arms (26%)**~~ **— STRUCK 2026-08-11 (review pass 30 finding 5). The denominator is 91, not 90, so the ratio built on it was wrong too. No corrected figure replaces it: the measurement script prints its own total on every run. AND THE WAY THIS ONE SURVIVED IS THE POINT — I reported a full sweep of this figure hours earlier and this line was live the whole time, because my sweep grepped for four PHRASINGS I invented from memory ('arm count is now 90', '90 refusal arm', '22 of 84', 'roughly 40%') and none of them matches '23 of 90 arms'. A sweep that searches remembered wording is not a sweep; it is a guess with a grep around it. Searching the NUMBER found it in one command.** Originally derived by mutation and reproducible with
 `node scripts/measure-refusal-arm-coverage.mjs` in an isolated clone. (That sentence first read "roughly 40% with nothing measuring it"; review pass 27 finding 7 showed it stale on both its terms and showed that the figure I had been quoting instead lived only in a message.)
 
 ## Increment 51 (window 11) — the tenth archive lapse, inside the commit that recorded the ninth as fixed
@@ -3044,3 +3044,45 @@ survived twenty-nine adversarial readings before pass 29 caught it.
 **91**. Script parses (`node --check`). Full sweep for the stale figure across `scripts/`, `docs/`,
 `upgrades/` and `src/` returns only the two struck mentions plus the archived pass-29 verdict, which quotes
 it verbatim as the finding and is correctly left untouched — an archived verdict is a record, not a claim.
+
+---
+
+## Increment 65 (window 12) — pass 30 rejects, and two of its five are repaired
+
+**Pass 30: REJECT, load-bearing 5, all five declared DESIGN.** The first reading in thirty whose question
+was archived before it ran, and it honoured both requirements the brief added: every finding declares its
+own class, and the magnitude metric states its exclusions beside the number.
+
+**Repaired here (2 of 5):**
+
+**Finding 3 — the positive predicate OVER-REFUSED real text.** Excluding all marks (`M`) was too broad:
+`Mc` spacing marks (U+0903 DEVANAGARI SIGN VISARGA) and `Me` enclosing marks (U+20DD COMBINING ENCLOSING
+CIRCLE) are graphic and carry advance width — a reader sees them — and both were refused. Proven by
+execution. The surviving line is **advance width**, which is the mechanical property that decides whether a
+reader is shown anything: `Mc`/`Me` are content, `Mn` nonspacing marks alone are not. This is the first
+OVER-refusal this branch has introduced, and it is worth naming as such — every previous defect in this
+family was the guard letting something through.
+
+**Finding 5 — the stale denominator was NOT deleted, and the way it survived is the finding.** A live
+sentence still read "23 of 90 arms (26%)". I had reported a complete sweep of that figure hours earlier.
+**My sweep grepped four PHRASINGS I invented from memory** — "arm count is now 90", "90 refusal arm",
+"22 of 84", "roughly 40%" — and not one matches "23 of 90 arms". Searching the NUMBER found it in one
+command. **A sweep that searches remembered wording is not a sweep; it is a guess with a grep around it**,
+and it produced a false completion claim to the operator. Struck, with the cause recorded where it sat.
+
+**NOT repaired, carried honestly (3 of 5):**
+
+- **Finding 1 — the lint accepts three false-clean states.** A guard call inside a string literal
+  (`void 'assertTelegramPayloadVisible(';`) reads as live; a method named only inside a COMMENT in the
+  bodyless set counts as declared; and a sender using `(fetch)(url)` is invisible to discovery, with the
+  shrink ratchet unable to notice because additions cannot shrink a baseline. One root cause: source-text
+  presence used as evidence of live calls, classified methods, and sender membership. The honest repair is
+  lexing, or the shared client (CMT-1246) that makes the population one file.
+- **Finding 2 — one refused operation emits TWO refusal records.** Both `sendToTopic` implementations catch
+  any first-attempt error as a Markdown failure and retry through the guarded funnel, so a refusal is
+  logged, caught, retried and logged again. The observability stream counts attempts, not operations.
+- **Finding 4 — one of the four new parity assertions is tautological.** The archive arm compares the
+  guard's count with a second count of the same directory rather than cited passes against filed verdicts;
+  removing a verdict file in an isolated copy left it green while the underlying lint correctly failed.
+
+All three are real, all three are named rather than deferred quietly, and none is closed by this increment.
