@@ -16,6 +16,7 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
+import { telegramFetch } from '../../messaging/telegram-egress.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -33,7 +34,6 @@ import {
   buildGeminiChildEnv,
   buildGeminiOneShotArgv,
 } from '../../providers/adapters/gemini-cli/transport/geminiSpawn.js';
-import { assertTelegramPayloadVisible } from '../../messaging/invisible-payload.js';
 
 export interface GeminiDriverOptions {
   geminiPath: string;
@@ -517,8 +517,7 @@ export async function runSendLifelineGreeting(
     // wizard-completion greeting, NOT a state-detection probe.
     // Failure is silently swallowed (non-fatal) so there's no
     // detection-result branching to canary against.
-    assertTelegramPayloadVisible('sendMessage', { text: greeting });
-    const res = await fetch(`https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`, {
+    const res = await telegramFetch(`https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -646,7 +645,7 @@ interface TelegramVerifyResult {
 async function telegramGetMe(token: string): Promise<TelegramVerifyResult> {
   try {
     const url = `https://api.telegram.org/bot${encodeURIComponent(token)}/getMe`;
-    const res = await fetch(url);
+    const res = await telegramFetch(url);
     const data = (await res.json()) as { ok: boolean; description?: string; result?: { username?: string } };
     if (!data.ok) return { ok: false, username: '', error: data.description || 'invalid token' };
     return { ok: true, username: data.result?.username || 'unknown', error: '' };
@@ -670,7 +669,7 @@ interface TelegramUpdatesResult {
 async function telegramGetUpdates(token: string): Promise<TelegramUpdatesResult> {
   try {
     const url = `https://api.telegram.org/bot${encodeURIComponent(token)}/getUpdates`;
-    const res = await fetch(url);
+    const res = await telegramFetch(url);
     const data = (await res.json()) as {
       ok: boolean;
       description?: string;

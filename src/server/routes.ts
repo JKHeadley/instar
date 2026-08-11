@@ -6,6 +6,7 @@
  */
 
 import { Router } from 'express';
+import { telegramFetch } from '../messaging/telegram-egress.js';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import { execFileSync } from 'node:child_process';
 import { createHash, timingSafeEqual, randomUUID } from 'node:crypto';
@@ -145,7 +146,7 @@ import { routeActionClaim, type ClaimClauseArbitration } from '../monitoring/Cla
 import { HumanAsDetectorLog, LEARNING_DETERMINISTIC_THRESHOLD } from '../monitoring/HumanAsDetectorLog.js';
 import { APPRENTICESHIP_CYCLE_CHANNELS } from '../monitoring/ApprenticeshipCycleStore.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
-import { hasNoVisibleCharacters, assertTelegramPayloadVisible } from '../messaging/invisible-payload.js';
+import { hasNoVisibleCharacters } from '../messaging/invisible-payload.js';
 import { parseVersion, compareVersions } from '../lifeline/versionHandshake.js';
 import { readLatestCodexUsage } from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
 import {
@@ -35061,8 +35062,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               // surface it loudly so the scenario records a real driver-error FAIL.
               throw new Error('liveTest.demo.telegramChatId is required to post a demo Telegram message');
             }
-            assertTelegramPayloadVisible('sendMessage', { text });
-            const r = await fetch(url, {
+            const r = await telegramFetch(url, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ chat_id: chatId, message_thread_id: topicId, text }),

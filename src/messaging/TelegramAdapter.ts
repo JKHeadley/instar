@@ -10,7 +10,8 @@
  */
 
 import fs from 'node:fs';
-import { assertTelegramPayloadVisible, assertOutgoingPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
+import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
+import { telegramFetch } from './telegram-egress.js';
 import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -5749,7 +5750,6 @@ export class TelegramAdapter implements MessagingAdapter {
     // POST-FORMAT check (review pass 33 finding 1). The pre-format call above refuses a payload that
     // never had content; this refuses one whose content stopped being reader-visible when the
     // formatter changed the representation. Different cases, each independently proven.
-    assertOutgoingPayloadVisible(method, sendParams.outgoingParams as Record<string, unknown>);
 
     const url = `https://api.telegram.org/bot${this.config.token}/${method}`;
     const safeUrl = `https://api.telegram.org/bot[REDACTED]/${method}`;
@@ -5761,7 +5761,9 @@ export class TelegramAdapter implements MessagingAdapter {
 
     let response: Response;
     try {
-      response = await fetch(url, {
+      // EGRESS. Goes through the shared door so the visibility check runs on the SERIALISED body —
+      // the exact bytes Telegram receives, after every transform. See src/messaging/telegram-egress.ts.
+      response = await telegramFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(sendParams.outgoingParams),

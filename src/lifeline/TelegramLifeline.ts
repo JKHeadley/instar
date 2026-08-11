@@ -87,7 +87,8 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { applyTelegramFormatter } from '../messaging/TelegramAdapter.js';
 import type { FormatMode } from '../messaging/TelegramMarkdownFormatter.js';
 import { recordFormatFallbackPlainRetry } from '../messaging/telegramFormatMetrics.js';
-import { assertTelegramPayloadVisible, assertOutgoingPayloadVisible, InvisiblePayloadRefusedError } from '../messaging/invisible-payload.js';
+import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from '../messaging/invisible-payload.js';
+import { telegramFetch } from '../messaging/telegram-egress.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 
 /**
@@ -1305,7 +1306,7 @@ export class TelegramLifeline {
    */
   private async downloadPhoto(fileId: string, messageId: number): Promise<string> {
     // Get file path from Telegram
-    const infoRes = await fetch(
+    const infoRes = await telegramFetch(
       `https://api.telegram.org/bot${this.config.token}/getFile?file_id=${encodeURIComponent(fileId)}`
     );
     if (!infoRes.ok) throw new Error(`getFile failed: ${infoRes.status}`);
@@ -1332,7 +1333,7 @@ export class TelegramLifeline {
    * Preserves the original filename when available.
    */
   private async downloadDocument(fileId: string, messageId: number, originalName?: string): Promise<string> {
-    const infoRes = await fetch(
+    const infoRes = await telegramFetch(
       `https://api.telegram.org/bot${this.config.token}/getFile?file_id=${encodeURIComponent(fileId)}`
     );
     if (!infoRes.ok) throw new Error(`getFile failed: ${infoRes.status}`);
@@ -2911,7 +2912,6 @@ export class TelegramLifeline {
     // TelegramAdapter. Legacy-passthrough (default) preserves caller parse_mode.
     const sendParams = applyTelegramFormatter(method, params, this.currentFormatMode());
     // POST-FORMAT check (review pass 33 finding 1) — same reasoning as the adapter funnel.
-    assertOutgoingPayloadVisible(method, sendParams.outgoingParams as Record<string, unknown>);
     const url = `https://api.telegram.org/bot${this.config.token}/${method}`;
     const timeoutMs = method === 'getUpdates' ? 60_000 : 15_000;
     const controller = new AbortController();
@@ -2919,7 +2919,9 @@ export class TelegramLifeline {
 
     let response: Response;
     try {
-      response = await fetch(url, {
+      // EGRESS. Goes through the shared door so the visibility check runs on the SERIALISED body —
+      // the exact bytes Telegram receives, after every transform. See src/messaging/telegram-egress.ts.
+      response = await telegramFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(sendParams.outgoingParams),

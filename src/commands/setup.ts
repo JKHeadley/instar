@@ -17,6 +17,7 @@
  */
 
 import { execFileSync, execSync, spawn } from 'node:child_process';
+import { telegramFetch } from '../messaging/telegram-egress.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -1977,7 +1978,7 @@ export async function runNonInteractiveSetup(opts: NonInteractiveOptions): Promi
         // Not a runtime state detector; runs exactly once during the
         // non-interactive setup path and the failure mode is "ask the operator
         // to enter the numeric id directly" — no inferred state, no follow-up.
-        const res = await fetch(`https://api.telegram.org/bot${opts.telegramToken}/getChat`, {
+        const res = await telegramFetch(`https://api.telegram.org/bot${opts.telegramToken}/getChat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ chat_id: chatId }),

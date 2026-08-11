@@ -3479,3 +3479,56 @@ which is narrower than widening this client to accept 400 — a status that legi
 malformed request. That is a live change to the path carrying a standby's outbound messages, and no
 verification reading can run at 22 percent free RAM with 814 MB of swap headroom. Sequencing it behind
 the ability to verify it, with the defect pinned meanwhile.
+
+### Increment 76 — CMT-1246: one door, and the class ends (2026-08-11 04:29 PDT)
+
+Six review passes found the same class by six routes: a guard on one send path called the path guarded
+(29), a second egress existed (33), the guard ran before a transform that changed the representation
+(33), and the lint policing it could prove neither that a call resolved to the imported guard (34, 35)
+nor that a method reached its classifier (35). Each repair was a seventh pattern on the same shape.
+
+Those last two gaps are properties of the QUESTION, not defects in the answer. "Is each of six senders
+guarded" requires binding resolution and method inference. "May anyone but the door reach the network"
+requires neither — a decoy import creates no `fetch`, and a method passed through a variable still
+travels in a URL. Moving the boundary made the hard sub-problems disappear instead of solving them.
+
+**`src/messaging/telegram-egress.ts`** is now the only function permitted to `fetch` the Bot API. It
+checks the SERIALIZED body — the exact bytes on the wire, after every transform. Every earlier placement
+checked something a later step could still change; this one has nothing after it, which is the structural
+answer to pass 33 rather than another guard placed hopefully further along.
+
+Migrated: 13 call sites across 7 files (both funnels, four command senders, and 7 bodyless calls the
+6-sender count had never included — `getMe`, `getChat`, `getFile`). Bodyless calls go through the
+door too: the door no-ops on them, and a boundary that must first decide "does this have a body" would
+reintroduce exactly the static question that produced the findings.
+
+Removed: the post-format guard from both funnels (subsumed — the boundary checks a strictly later
+representation), the per-sender guard call from all four command senders, and
+`lint-telegram-send-funnel-guarded.mjs` itself.
+
+**The lint's self-check fired on its first run.** It refused to report clean because it could not
+recognise its own door's URL — correctly, since that URL is a parameter. The fix was not to special-case
+the door but to test the RECOGNISER against five canaries (three positive, two negative) before trusting
+any verdict. A recogniser that silently stops seeing turns a boundary lint into a green light forever,
+and that is the failure this whole window has been about.
+
+**Sabotage, honestly reported: 2 of 3 red, and the third is covered elsewhere.** A sender bypassing the
+door: RED. The door not checking: RED. The door's url-to-method recogniser broken so it silently skips
+every check: **CLEAN** — the boundary is intact, nobody bypasses, the guard still runs; only its ARGUMENT
+changed, which is behaviour, not structure. That case reds 7 tests in
+`telegram-egress-boundary.test.ts`. The division is now stated in the lint's header: the lint answers
+"may anyone reach the network without passing the door", the tests answer "does the door check what
+passes through it", and neither covers the other.
+
+**Deleted rather than re-anchored:** `telegram-direct-sender-payload-provenance.test.ts` (increment 74)
+failed after the migration because the per-sender guard calls it measured no longer exist. Its question —
+"which senders take caller-controlled text, so where is a path test meaningful" — was subsumed: the door
+checks every payload regardless of provenance, so the answer no longer changes any decision. Re-anchoring
+it would have been repairing an instrument to preserve its existence.
+
+**A guard I built caught me.** `lint-account-matches-tree` failed with "pass35-verdict.md is MISSING,
+and the tree cites review pass 35". I had archived it to `docs/reviews/` — a directory I created —
+instead of `docs/specs/reports/window10-external-passes/` where the other 34 live, and my
+`2>/dev/null ||` masked the missing directory. The archive is contiguous again: 35 cited, 35 filed.
+
+Full lint chain green, tsc clean, 150 tests pass in the affected area.
