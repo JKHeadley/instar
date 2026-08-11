@@ -145,7 +145,7 @@ import { routeActionClaim, type ClaimClauseArbitration } from '../monitoring/Cla
 import { HumanAsDetectorLog, LEARNING_DETERMINISTIC_THRESHOLD } from '../monitoring/HumanAsDetectorLog.js';
 import { APPRENTICESHIP_CYCLE_CHANNELS } from '../monitoring/ApprenticeshipCycleStore.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
-import { hasNoVisibleCharacters } from '../messaging/invisible-payload.js';
+import { hasNoVisibleCharacters, assertTelegramPayloadVisible } from '../messaging/invisible-payload.js';
 import { parseVersion, compareVersions } from '../lifeline/versionHandshake.js';
 import { readLatestCodexUsage } from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
 import {
@@ -35061,6 +35061,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               // surface it loudly so the scenario records a real driver-error FAIL.
               throw new Error('liveTest.demo.telegramChatId is required to post a demo Telegram message');
             }
+            assertTelegramPayloadVisible('sendMessage', { text });
             const r = await fetch(url, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },

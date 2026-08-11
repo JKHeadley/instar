@@ -33,6 +33,7 @@ import {
   buildGeminiChildEnv,
   buildGeminiOneShotArgv,
 } from '../../providers/adapters/gemini-cli/transport/geminiSpawn.js';
+import { assertTelegramPayloadVisible } from '../../messaging/invisible-payload.js';
 
 export interface GeminiDriverOptions {
   geminiPath: string;
@@ -516,6 +517,7 @@ export async function runSendLifelineGreeting(
     // wizard-completion greeting, NOT a state-detection probe.
     // Failure is silently swallowed (non-fatal) so there's no
     // detection-result branching to canary against.
+    assertTelegramPayloadVisible('sendMessage', { text: greeting });
     const res = await fetch(`https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

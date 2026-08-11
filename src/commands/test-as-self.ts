@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
 import pc from 'picocolors';
 import { validateTarget, validateBotTokenArg } from './testAsSelfValidation.js';
+import { assertTelegramPayloadVisible } from '../messaging/invisible-payload.js';
 
 export interface TestAsSelfOptions {
   target?: string;
@@ -125,6 +126,7 @@ async function telegramRoundTrip(botToken: string, nonce: string, timeoutMs: num
   const lastUpdateId = updates0.result?.length ? updates0.result[updates0.result.length - 1].update_id : 0;
   // Send the probe.
   const probe = `test-as-self ${nonce}`;
+  assertTelegramPayloadVisible('sendMessage', { text: probe });
   await fetch(api('sendMessage'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

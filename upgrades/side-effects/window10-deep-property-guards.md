@@ -2955,3 +2955,64 @@ smoke run start, which is worse, not better. The honest repair is to give the ch
 that reflects what it is protecting (a branch this far from its base cannot be smoked locally at all), and
 that is a change to a shipped script, which this window's charter has behind the commit gate pending a spec
 approval. Recorded as a measured, dated finding rather than a same-night edit to a gate I have not specced.
+
+---
+
+## Increment 63 (window 12) — the guard lands, after 14 convergence rounds and two live holes
+
+**This is the increment 60 work, landed.** It sat uncommitted through a spec, an operator approval, a
+second-pass concern, and fourteen external convergence rounds — because the commit gate wanted a Tier-2
+spec and I declared Tier 2 honestly instead of declaring Tier 1 to walk through. The two prior source
+commits on this branch declared Tier 1 against this same floor on this same path.
+
+**What the convergence changed that the second-pass review had not.** The reviewer in increment 60 found
+the relay egress. The fourteen rounds then found two things nobody had looked for, both proven by execution:
+
+- **The predicate was SUBTRACTIVE (round 6).** It removed whitespace + `Default_Ignorable` + `Cf` and
+  treated the remainder as visible, so a payload of only a C0 control, an unassigned code point, a
+  private-use code point, a noncharacter, a lone combining mark, or a lone surrogate **passed and would
+  have been delivered.** Eight classes. Every one shows a reader nothing — the original incident on a wider
+  surface, living inside the fix for the original incident. It is POSITIVE now: content is a letter, number,
+  punctuation mark or symbol, which closes the world against categories nobody has thought of yet.
+- **The POSITIVE predicate had its own false positives (round 10).** Hangul fillers are `Lo`; Braille
+  Pattern Blank is `So`; all five render as empty space. Subtracted from inside the positive set, pinned by
+  fixtures, and the residual tail named rather than hidden.
+
+**Three more, each a repeat of a shape this branch already knows.** Method classification was OPEN-WORLD —
+in the map meant guarded, everything else meant silently unguarded, so a future `sendPhoto` with a caption
+would have joined the codebase unclassified with nothing to say so. The guard held blocking authority and
+**logged nothing**, which `signal-vs-authority.md` requires in so many words; that was raised at round 4,
+not acted on, and raised again at round 11 — seeing a finding and not acting on it is worse than not seeing
+it. And the spec cited the WRONG signal-vs-authority exception for four rounds (enumerable-inputs, when the
+right one is hard-invariant validation at the API edge).
+
+**The stamp was refused once, deliberately, and that is the part worth keeping.** Rounds 7, 8 and 9 were
+design-free — the criterion is two consecutive, so it was met at round 9. I ran round 10 anyway and it found
+a live hole. **Stamping at nine would have been correct by the metric and wrong about the work.** That is
+the first live application of *A Metric Must Measure the Work, Not the Question*, ratified the same day: the
+metric said stop, the work said otherwise, and the work was believed. Passing the documented 10-round cap
+was requested from the observer and ruled on, with a ceiling of round 14 — requester and authorizer separate,
+citation in the spec.
+
+**Converged at round 14** on three consecutive design-free rounds (12, 13, 14), every round a real external
+pass through codex-cli gpt-5.5, none degraded, none skipped.
+
+### Evidence
+
+- **126 tests green** across the funnel suite and every pre-existing invisible-payload and window-10 test.
+- Three agent funnels independently sabotage-proven: each reds only its own arms, controls stay green.
+- The lint survives five distinct escapes an independent reviewer used to defeat earlier versions, each
+  re-proven by its specific failure string rather than an exit code.
+- Structured refusal records proven by input, including that a THROWING sink still refuses — a broken audit
+  trail can never become a delivery — and that the payload itself is never logged.
+- Full `lint` chain green; `tsc --noEmit` clean.
+
+### Honest scope, unchanged by landing it
+
+Behavioural refusal is proven by input at the **three agent funnels**. The **four direct command-file
+senders are guard-call-PRESENCE only** (CMT-1248). This is an **interim, non-structural guard**: source-shape
+linting plus per-sender calls, not an architectural boundary. **CMT-1246** — one shared guarded client,
+carrying the vendored codepoint table — is the boundary and is the blocking prerequisite for any stronger
+claim. Both are registered commitments with deadlines, verified by id, after an earlier attempt at
+registering them was silently REJECTED and would otherwise have been reported as tracked while existing
+nowhere.

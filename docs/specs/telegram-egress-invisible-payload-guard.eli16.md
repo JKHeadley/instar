@@ -55,6 +55,28 @@ Now names are checked the same way message bodies are.
 button is allowed to be empty — that's how you dismiss it. Refusing those would be the check overreaching,
 so they're deliberately left alone, and there's a test that fails if someone widens it later.
 
+## Then the check itself turned out to be wrong, twice
+
+An outside reviewer went at this fourteen times, and twice it found that the check was **letting real things
+through** — not a wording problem, an actual hole, each one confirmed by running the code.
+
+**The first: the check was written backwards.** It listed the invisible things and removed them, then treated
+whatever was left as visible. That sounds fine until you ask what "whatever is left" contains. It contained
+control characters, code points nobody has assigned a meaning to yet, private-use characters, half of a
+character pair, and accent marks with no letter to sit on. **All of those passed as "visible" and would have
+been sent.** Every one shows a reader nothing — the same harm as the original incident, hiding inside the fix
+for the original incident.
+
+You can only remove the shapes you thought of. So the check was turned around to name what **counts**
+instead: a letter, a number, a punctuation mark, or a symbol. Anything else is not content — including
+whatever gets invented in a future version of Unicode.
+
+**The second: even that had blind spots.** A Hangul filler is officially a letter. A blank Braille cell is
+officially a symbol. Both render as empty space. Five characters like that sailed through the new check.
+They are now excluded by name, with tests pinning each one — and the remaining risk is stated plainly rather
+than hidden: some future character could be officially a letter and still look like nothing, and that would
+pass until someone adds it.
+
 ## The safeguard against this happening a fifth time
 
 Rather than trusting the next person to remember, there's now an automatic check that **works out the list
@@ -66,6 +88,14 @@ including simply commenting the guard out (the checker still reported everything
 sender from the count (it cheerfully reported "all clear — 5 senders" while quietly no longer looking at
 the sixth). All five holes are closed, and the checker now also refuses to accept the list getting
 *shorter* without someone explicitly saying why.
+
+## One more thing the review insisted on
+
+A check that blocks things is supposed to keep a record of what it blocked and why — otherwise, when it
+refuses something it shouldn't have, nobody can find out. This one kept no record at all. That was pointed
+out, not acted on, and pointed out again nine rounds later. It now writes down which operation, which field,
+which rule, how long the payload was, and which version of the software decided — and never the payload
+itself, because an invisible message is still someone's content.
 
 ## What you'd notice
 
@@ -83,8 +113,14 @@ says *why*, instead of either delivering nothing or telling you your reply got l
   shrink-alarm makes a disappearance loud, but it can't predict a shape nobody has written yet.
 - This is Telegram only. Slack and the others are untouched, and nothing here claims otherwise.
 
-## What you're being asked to decide
+## What was decided, and what is still owed
 
-Whether to approve the spec so this can be committed. The work is built, tested, and independently
-reviewed — but it changes the messaging path, which requires your approval rather than mine. Approving
-means: yes, refuse invisible messages at every exit, and yes, extend that to topic names.
+**Approved on 2026-08-10.** The work is built, tested, independently reviewed, and taken through fourteen
+rounds with an outside reviewer.
+
+**What is honestly still owed**, because it should not be buried: three of the send paths are proven by
+actually pushing an invisible message through them and watching it be refused. **Four smaller ones — two
+setup greetings, a self-test, and a demo tool — are only proven to have the check written into the file**,
+not proven by running it. And the whole design leans on a build-time scan of the source code rather than on
+there being one single place a message can leave from. That single place is the real fix, it is written
+down, it has an owner and a date, and until it exists nobody should describe this as airtight.

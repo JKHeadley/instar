@@ -10,7 +10,7 @@
  */
 
 import fs from 'node:fs';
-import { hasNoVisibleCharacters } from './invisible-payload.js';
+import { assertTelegramPayloadVisible } from './invisible-payload.js';
 import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -1339,25 +1339,24 @@ export class TelegramAdapter implements MessagingAdapter {
       formatMode?: 'html';
     },
   ): Promise<SendResult> {
-    // THE CHOKEPOINT. Every Telegram send passes through here, and this is where the invisible-payload
-    // refusal belongs — not on the routes.
+    // NOT the chokepoint, and this comment is the correction of a claim that stood here.
     //
-    // I put it on one route at pass 9, wrote that it was fixed "at the point of sending", and review
-    // pass 27 falsified that by probing a SECOND route. I then guarded that route and wrote "both doors";
-    // review pass 28 probed a THIRD — `POST /telegram/topics`, which creates a forum topic and posts an
-    // invisible first message into it. Two enumerations, two over-claims. A per-door check requires every
-    // future door to remember, which is precisely the willpower this registry's own first standard forbids.
+    // It read "THE CHOKEPOINT. Every Telegram send passes through here." Review pass 29 falsified
+    // that by execution: `send()` — the MessagingAdapter interface method a router calls — reaches
+    // the API without entering this function. Derived population: 14 `apiCall('sendMessage')` sites
+    // in this class across 9 methods, of which this one accounted for 4.
     //
-    // Refusing HERE is also the honest reading of the claim: a caller that swallows the error drops an
-    // invisible message, which is the correct outcome — the incident this guard exists for was a "reply
-    // lost" escalation raised for content that never existed.
-    if (hasNoVisibleCharacters(text)) {
-      throw new Error(
-        'refused: message contains no visible characters (only whitespace and/or zero-width marks). '
-        + 'An invisible message cannot inform a reader, and delivering it would produce a "reply lost" '
-        + 'escalation for content that never existed.',
-      );
-    }
+    // THERE ARE TWO EGRESS MECHANISMS IN THIS CLASS, not one, and that is the correction that cost
+    // the most to learn. `apiCall` is the only path to `fetch` — but the tokenless-standby branch
+    // below relays the body to another machine's router and never enters `apiCall` at all. Guarding
+    // only the API funnel left that branch uncovered; an independent second-pass reviewer proved it
+    // by execution, which makes the relay the FIFTH falsification of "every send passes through
+    // here" — found inside the change that retired the phrase.
+    //
+    // So the refusal is applied per EGRESS, not per function: `apiCall` covers the API path and the
+    // relay call site covers the relay path. That is not the duplication review pass 23 warns about
+    // (two copies closing the SAME case, masking each other's tests) — these close DIFFERENT cases,
+    // and each has its own test that reds when only its own guard is removed.
     const params: Record<string, unknown> = {
       chat_id: this.config.chatId,
       text,
@@ -1381,6 +1380,14 @@ export class TelegramAdapter implements MessagingAdapter {
       // Tokenless standby (bug #7): relay the send through the Telegram-owning router
       // instead of calling the API with no token. The rest of this method's bookkeeping
       // (log, stall-clear, promise-tracking) then runs identically on the relayed id.
+      //
+      // EGRESS 2 of 2. This never reaches `apiCall`, so the funnel refusal cannot see it. Refusing
+      // here keeps the guarantee whole and — equally important — keeps the failure HONEST: the far
+      // end does refuse an invisible body, but with a 400, and `isRelayRefusal` recognises only 422,
+      // so relying on it would surface a CONTENT refusal as `relay failed … router unreachable`.
+      // That conflation of "refused" with "could not reach" is the exact bug TelegramRelay's own
+      // header records having fixed.
+      assertTelegramPayloadVisible('sendMessage', { text });
       const relayed = await this.outboundRelay(topicId, text, {
         silent: options?.silent,
         kindMetadata: options?.kindMetadata,
@@ -5688,6 +5695,13 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   private async apiCall(method: string, params: Record<string, unknown>, retryCount: number = 0): Promise<unknown> {
+    // THE FUNNEL. Nothing reaches the Telegram API from this class without passing here — that is
+    // provable rather than asserted (`fetch` is called once, below), which is exactly what the four
+    // previous placements of this refusal were not. See `assertTelegramPayloadVisible` for the
+    // history; the short version is that "the point of sending", "both doors" and "the single
+    // chokepoint every send passes through" were each falsified by the next reader.
+    assertTelegramPayloadVisible(method, params);
+
     // PR2: run the formatter on sendMessage / editMessageText when a non-legacy
     // mode is configured. Legacy-passthrough (default) preserves the caller's
     // parse_mode byte-for-byte. See docs/specs/TELEGRAM-MARKDOWN-RENDERER-SPEC.md.

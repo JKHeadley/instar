@@ -87,6 +87,7 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { applyTelegramFormatter } from '../messaging/TelegramAdapter.js';
 import type { FormatMode } from '../messaging/TelegramMarkdownFormatter.js';
 import { recordFormatFallbackPlainRetry } from '../messaging/telegramFormatMetrics.js';
+import { assertTelegramPayloadVisible } from '../messaging/invisible-payload.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 
 /**
@@ -2891,6 +2892,14 @@ export class TelegramLifeline {
   }
 
   private async apiCall(method: string, params: Record<string, unknown>, retryCount = 0): Promise<unknown> {
+    // THE FUNNEL for this class. The lifeline defines its OWN private `sendToTopic` and its own
+    // `apiCall`, so every previous placement of the invisible-payload refusal inside TelegramAdapter
+    // left this sender completely unguarded — two `apiCall('sendMessage')` sites with no check at
+    // all, which four consecutive enumerations of "every send site" all missed because they only
+    // ever enumerated the adapter. `scripts/lint-telegram-send-funnel-guarded.mjs` now refuses any
+    // class that reaches the Telegram API without this call.
+    assertTelegramPayloadVisible(method, params);
+
     // PR2: format sendMessage / editMessageText via the shared helper used by
     // TelegramAdapter. Legacy-passthrough (default) preserves caller parse_mode.
     const sendParams = applyTelegramFormatter(method, params, this.currentFormatMode());

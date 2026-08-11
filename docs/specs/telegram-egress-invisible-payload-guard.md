@@ -1,8 +1,8 @@
 ---
 slug: telegram-egress-invisible-payload-guard
 title: Telegram Egress — Refuse an Invisible Payload at Every Agent Funnel, with a Guard Call Present in Every Derived Sender File
-review-convergence: pending
 approved: true
+parent-principle: "Structure beats Willpower"
 approved-by: justin
 approved-at: 2026-08-10
 approval-channel: telegram/29723
@@ -10,6 +10,15 @@ approval-provenance: >-
   Justin's verbatim decision, 2026-08-10 17:12 PDT — "approved, for both the spec and the standard" —
   relayed through the observer on the operator account. Recorded by the agent as a citation of the
   operator's decision, NEVER as the agent's own authority. The agent did not and cannot self-approve.
+review-convergence: "2026-08-11T01:04:28.873Z"
+review-iterations: 14
+review-completed-at: "2026-08-11T01:04:28.873Z"
+review-report: "docs/specs/reports/telegram-egress-invisible-payload-guard-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 6
+cheap-to-change-tags: 0
+contested-then-cleared: 0
 ---
 
 # Telegram Egress — refuse an invisible payload at every agent funnel, with a guard call present in every derived sender file
@@ -36,7 +45,7 @@ authority to make one. `review-convergence:` remains **pending** and is the agen
 obligation — approval of the CONTENT is the operator's act, convergence is a process step still owed, and
 writing that tag by hand would be a fabricated review inside the constitution.
 
-## Guarantee summary — read this before citing the spec
+## Guarantee summary — an INTERIM, NON-STRUCTURAL guard. Read this before citing the spec
 
 **Behavioural refusal is PROVEN BY INPUT for three funnels:** the adapter's API funnel, the adapter's
 tokenless-standby relay, and the lifeline's own funnel. Each is sabotage-proven to red only its own arms.
@@ -44,6 +53,10 @@ tokenless-standby relay, and the lifeline's own funnel. Each is sabotage-proven 
 **Four direct senders are PRESENCE-ONLY:** two setup-wizard greetings, the self-test probe, and the demo
 harness sender. The lint proves the guard call is in the file; **nothing executes an invisible payload
 through their real send function.** That is CMT-1248.
+
+**This is an interim, non-structural guard — an emergency repair with disclosure, not an architectural
+boundary.** Source-shape linting plus per-sender calls is what it is; CMT-1246 is the boundary, and **no
+future spec should reuse this pattern as a model without landing CMT-1246 first.**
 
 **Do not cite this spec as proof that all Telegram egress is behaviourally guarded.** It is not, and the
 distinction between the two groups is the single most likely thing for a future reader to flatten. Round 8
@@ -165,12 +178,12 @@ splitting the host literal previously dropped a sender out silently and the lint
 - **A single shared, guarded Telegram request helper that every sender must call** (raised by the round-1
   external reviewer, and it is the strongest alternative here). This is the design that would make "every
   egress" **structurally** true instead of derivation-true: one function owns the HTTP call, the guard is
-  inside it, and a new sender cannot exist without going through it. **Not rejected on merit — deferred on
+  inside it, and a new sender cannot exist without going through it. **Not rejected on merit — held back on
   blast radius, and the distinction matters.** It rewrites the call path of six files including the
   lifeline's independent poller and two setup-wizard drivers, none of which currently share a client, and
   it would land the same night a live hole was found. The lint plus per-egress guards close the hole now;
   the boundary is the correct end state. **Tracked, not dropped:** **CMT-1246** — a registered, beacon-enrolled commitment with a deadline, not a marker in a document —
-  a follow-up to introduce the shared client and then DELETE the per-sender guards. **Owner: Echo.
+  a registered commitment to introduce the shared client and then DELETE the per-sender guards. **Owner: Echo.
   Acceptance criteria, so the marker is a commitment rather than a gesture:** (a) exactly one function in
   the codebase issues an HTTP request to the Telegram API host, proven by the derived population collapsing
   to one file; (b) every per-sender `assertTelegramPayloadVisible` call is DELETED, and the behavioural
@@ -180,10 +193,10 @@ splitting the host literal previously dropped a sender out silently and the lint
   runtime Unicode dependency named in the multi-machine table above. Recorded here because a rejected alternative that
   is actually the better design must not disappear into a commit message.
 
-## One term, used consistently: MECHANICALLY-VISIBLE
+## One term, used consistently: MECHANICALLY-VISIBLE (a term LOCAL to this spec)
 
 Round 3 asked for the distinction; round 5 correctly noted the document still slid between the two terms.
-One term now carries the guarantee: **a payload is MECHANICALLY-VISIBLE when its reader-facing field
+**"Mechanically-visible" is this document's own term, not an industry or Unicode concept** — it names a specific implemented predicate and should not be read as a general standard for visibility. One term now carries the guarantee: **a payload is MECHANICALLY-VISIBLE when its reader-facing field
 contains at least one LETTER, NUMBER, PUNCTUATION MARK, or SYMBOL.**
 
 **That definition is POSITIVE, and round 6 is why.** It was subtractive — remove whitespace,
@@ -195,7 +208,16 @@ the incident's exact harm on a wider input surface.
 
 **Subtracting the invisible is the same mistake as enumerating the senders: you can only remove the shapes
 you thought of.** Naming what COUNTS closes the world, including against whatever Unicode adds next. A mark
-attached to a base letter still passes, because the letter is content; a lone mark does not. That, and only that, is what
+attached to a base letter still passes, because the letter is content; a lone mark does not.
+
+**And the positive definition had its OWN false positives, found at round 10 and confirmed by execution:**
+five code points that are letters (`Lo`) or symbols (`So`) by General_Category and render as empty space —
+HANGUL FILLER, the two HANGUL CHOSEONG/JUNGSEONG FILLERS, HALFWIDTH HANGUL FILLER, and BRAILLE PATTERN
+BLANK. Each passed. A message of one HANGUL FILLER is the original incident wearing a letter's category.
+They are now subtracted from inside the positive set and pinned by fixtures. **Honest about what that
+is:** a subtraction has a tail, so a future category-positive blank code point would pass until it is
+added. That residual is accepted deliberately and named rather than papered over; the structural fix is the
+vendored, generated table under **CMT-1246**, which DERIVES blankness instead of listing it. That, and only that, is what
 the code asserts and what every acceptance criterion here means. Throughout this spec, **"reader-visible"
 names the PRODUCT INTENT** — the thing we are trying to protect. **The MECHANICAL GUARANTEE is narrower and
 is the only thing the code actually asserts:** the field contains at least one code point in
@@ -207,26 +229,61 @@ must not be cited as though it were.
 
 ## Signal vs authority
 
-This is deterministic blocking authority, and — correcting an earlier claim of mine — it **is** new
-authority on some paths: `editMessageText`, both lifeline sends, and forum-topic names had no guard before.
-The justification is not "no new authority"; it is that the predicate is a **deterministic policy evaluator whose
-blocked CLASSES are explicitly defined and mechanically testable** (does this string contain any character a
-reader could see), with no open-domain judgment about meaning. A message of a single full stop passes,
+**This is a HARD-INVARIANT VALIDATOR, and by the doc's own words that class is "not a decision point in the
+sense this principle applies to" — so it is exempt from the Signal-vs-Authority authority pattern rather
+than an instance of it.** Round 13 was right that calling it "authority" while claiming the exemption
+strained the vocabulary in both directions. It rejects malformed input at the API edge; it evaluates nothing
+about what a message means. **Structured refusal records are emitted anyway, for auditability rather than
+because the authority pattern compels them** — a validator that refuses silently is still a validator whose
+over-blocks nobody can find.
+
+It does refuse on paths that previously had no check: `editMessageText`, both lifeline sends, and forum-topic names had no guard before.
+The justification is not "no new authority"; it is grounded in the exception the doc actually names for this shape. **Round 12 was right that the fit was
+asserted rather than reconciled**, so it is reconciled here. The doc lists *"a deterministic policy evaluator
+for domains so constrained that all inputs can be enumerated"* — and arbitrary Unicode payloads are NOT
+enumerated, so that is the WRONG citation and this spec used it for four rounds. The correct one is
+**hard-invariant validation**: *"Typing and structural validators at the boundary of the system are not
+decision points in the sense this principle applies to — they don't evaluate messages, they reject malformed
+input. These belong at the API edge and are fine as brittle blockers."* That is exactly what this is — a
+structural validator sitting at the API edge, rejecting a payload that carries no content, evaluating
+nothing about what the message MEANS. A message of a single full stop passes,
 correctly. The lint's authority is a closed-world format invariant at a dev-process chokepoint.
+
+**Structured decision logging — the requirement this section MISSED until round 11.** `signal-vs-authority.md`
+states it plainly: *"Authorities must log their decisions in a structured form: which signals they received,
+what the conversation context was, which rule they applied, and what the outcome was."* This guard is
+blocking authority and logged nothing. The gap was raised at round 4, not acted on, and raised again at
+round 11 — seeing a finding and not acting on it is worse than not seeing it, and it is recorded that way.
+Every refusal now emits `{guard, outcome, method, field, rule, valueLength, engine, unicode}` through an
+injectable sink, the record is written BEFORE the throw so a caller that swallows the error cannot also
+swallow the record, a throwing sink can never convert a refusal into a delivery, and the payload itself is
+NEVER logged — length only, because an invisible payload is still user content. The decision also rides on
+the error, so a catcher can record it too.
+
+**On the doc's "conversation context" field, which this record OMITS — reconciled rather than quietly
+dropped (round 12).** The requirement exists so over-blocks and under-blocks become detectable. For a gate
+that weighs signals against a conversation, context is the evidence you need to judge whether it decided
+well. **This predicate is context-FREE by construction:** its verdict depends on the payload and nothing
+else, so no amount of conversational context could make an all-invisible payload the right thing to send,
+and none could explain a wrong decision. Recording a topic id would make the log look more compliant
+without making a single over-block or under-block more detectable. What DOES make them detectable is
+already there — the exact method, field, rule and payload length. And the sink is **injectable** precisely
+so a host that HAS correlation context can add it at the boundary where that context actually exists,
+rather than plumbing a topic id through six senders and a pure predicate to satisfy a field.
 
 ## Decision points touched
 
 | decision point | classification | justification |
 |---|---|---|
-| **Refuse an outbound Telegram payload whose reader-visible field has no visible characters** | `invariant` | **Restated after round 1, and REPLACED after round 6.** The predicate is NOT "is this visible to a reader" — that depends on Unicode version, grapheme clustering, emoji modifiers and the rendering client, and is not settled. Nor is it the subtractive question it originally asked, which let eight non-printing categories through. What is closed and decidable is the POSITIVE question the code now asks: *does this string contain at least one letter, number, punctuation mark, or symbol* (`\p{L}\p{N}\p{P}\p{S}`, resolved by the host engine's Unicode tables). Deterministic for a given engine, no competing signal, and closed against categories nobody has thought of yet. There is no competing signal, no context that changes the answer, and no open-domain judgment about meaning — a single full stop passes, correctly. This is the *deterministic policy evaluator whose blocked classes are explicitly defined and mechanically testable* case, not a judgment point wearing an `invariant` label. |
+| **Refuse an outbound Telegram payload whose reader-visible field has no visible characters** | `invariant` | **Restated after round 1, and REPLACED after round 6.** The predicate is NOT "is this visible to a reader" — that depends on Unicode version, grapheme clustering, emoji modifiers and the rendering client, and is not settled. Nor is it the subtractive question it originally asked, which let eight non-printing categories through. What is closed and decidable is the POSITIVE question the code now asks: *does this string contain at least one letter, number, punctuation mark, or symbol* (`\p{L}\p{N}\p{P}\p{S}`, resolved by the host engine's Unicode tables). Deterministic for a given engine, no competing signal, and closed against categories nobody has thought of yet. There is no competing signal, no context that changes the answer, and no open-domain judgment about meaning — a single full stop passes, correctly. This is the **hard-invariant validation at the API edge** case (see *Signal vs authority* below, where round 12 corrected an earlier mis-citation of the enumerable-inputs exception), not a judgment point wearing an `invariant` label. |
 | **Which Telegram methods carry a reader-visible field** | `invariant`, as a **VERSIONED POLICY TABLE** | **Reclassified after round 1.** Calling this "a fact about the API" was wrong twice over: the Bot API can add or change methods, and the `answerCallbackQuery` exclusion is a product-behaviour judgment (an empty toast is *useful*), not a mechanical one. It is an invariant at RUNTIME — a closed code-defined map with no per-call judgment — but it is policy that carries a review trigger, not a timeless truth. **Review trigger:** any Bot API version bump, or any new `apiCall` method reaching a reader. The pinning test is what makes a silent drift impossible. |
 | **Whether a source file is a Telegram body-sender (the lint's population)** | `invariant` | Derived mechanically — builds the API host string AND calls `fetch` AND references a body-carrying method. No semantic judgment; a shrink-only ratchet makes a silent population loss loud. |
 
-**Contested in both directions, per the standard.** None of the three is a competing-signals point dressed
-as an invariant: none weighs evidence, none has a "it depends" case, and none can be right or wrong about
-intent — only about characters, a code-defined map, and a mechanical file predicate. Conversely, none is
-misfiled as a judgment-candidate: adding an arbiter to "does this string have a visible character" would be
-an LLM call on a settled question, which *Intelligence Infers* would rightly refuse.
+> **Contested in both directions, per the standard.** None of the three is a competing-signals point dressed
+> as an invariant: none weighs evidence, none has an "it depends" case, and none can be right or wrong about
+> intent — only about characters, a code-defined map, and a mechanical file predicate. Conversely, none is
+> misfiled as a judgment-candidate: adding an arbiter to "does this string contain content" would be an LLM
+> call on a settled question, which *Intelligence Infers* would rightly refuse.
 
 ## Multi-machine posture
 
@@ -249,14 +306,14 @@ is untouched by this change and is not a surface this spec introduces.
 
 Every decision that would otherwise stop the build mid-run, resolved here:
 
-1. **Where the refusal sits** — at every agent funnel and every derived sender, not at a named "chokepoint" function. Resolved: two egress
+1. **Where the refusal sits** — refuse on the path-tested agent funnels; require guard-call PRESENCE in every derived direct-sender file until CMT-1248 makes them path-tested too. Not at a named "chokepoint" function. Resolved: two egress
    mechanisms in the adapter (`apiCall` and the standby relay), one in the lifeline, four direct senders.
 2. **Whether to keep a second copy in `sendToTopic`** — no. Two copies closing the SAME case mask each
    other's tests. The relay guard is not a second copy; it closes a DIFFERENT case, and each is
    independently sabotage-proven.
 3. **Whether `answerCallbackQuery` is in scope** — no, on the over-refusal ground stated above.
-4. **Whether forum-topic names are in scope** — yes. Same class, different field; swept rather than
-   deferred.
+4. **Whether forum-topic names are in scope** — yes. Same class, different field, and swept inside this
+   change rather than left for later.
 5. **Throw vs silent drop** — throw. Both funnels already throw on a non-ok response, so it is the
    established contract; a caller that swallows it drops an invisible message, which is the correct outcome.
 6. **Whether to raise the lint's population baseline automatically** — no. The ratchet is shrink-only and a
@@ -267,9 +324,20 @@ is being made and none needs contesting.
 
 ## Open questions
 
-*(none)* — all resolved into Frontloaded Decisions above.
+*(none)*
 
 ## Known-open, tracked outside this spec
+
+**What a `CMT-` reference guarantees, since the term is local and a reader cannot verify it from this
+document** (round 13): a CMT is a row in the agent's durable commitment registry, created through an
+authenticated API that REFUSES creation without a follow-through choice — either enrolment in the recurring
+beacon with a real deadline, or an explicit written opt-out reason. Each carries an owner, a deadline, and a
+status; the beacon re-surfaces open ones on a cadence, and an overdue one is raised rather than forgotten.
+Failure becomes visible as an overdue open commitment in that registry, not as a silent lapse. The three
+below were created with 2026-08-17 deadlines and their ids were read back from the registry — an earlier
+attempt at the same three was REJECTED for lacking deadlines and would otherwise have been reported as
+tracked while existing nowhere.
+
 
 Two findings from convergence are real, are NOT closed by this change, and are registered as durable
 commitments rather than left as prose:
@@ -282,10 +350,43 @@ commitments rather than left as prose:
 - **CMT-1246 — the centralized client is RISK RETIREMENT, not cleanup**, and round 5 was right to insist on
   the distinction. The interim design is *knowingly non-structural*: it depends on source-shape derivation
   plus a ratchet, and a ratchet catches a population SHRINKING, never a refactor semantically routing
-  around a guard that is still present in the file. **Stated consequence if it slips:** the guarantee in
+  around a guard that is still present in the file. **CMT-1246 is TIME-BOUND: its registered check-in is 2026-08-17, and it is the BLOCKING PREREQUISITE for any claim stronger than the one in the title**, and that is a
+  standing condition rather than an intention. **Stated consequence if it slips:** the guarantee in
   this spec's title cannot be strengthened — "by presence at every derived sender" stays until CMT-1246
   lands, and any future claim of path-complete egress coverage is unearned until it does. It carries the
   vendored codepoint table with it, which also retires the Unicode dependency.
+
+## Maturation plan
+
+This change does **not** ship dark, and the reasoning matters: a dark invisible-payload guard would leave a
+live hole open while the fix sat inert, which is the state the incident already demonstrated is costly.
+Round 6 and round 10 each found a payload class that WAS being delivered — those are open holes today, not
+hypotheticals. It ships live, with the rollback in the section below reachable by deleting a small number of
+call sites and one lint entry.
+
+- **test-agent-live:** deploy to a throwaway agent via `/test-as-self` and drive an invisible payload
+  through the adapter's API funnel, its standby relay, and the lifeline funnel, confirming each refuses with
+  zero network calls AND that a structured refusal record is emitted. Then send ordinary text through the
+  same three and confirm delivery — a guard that refuses everything is not a guard. Verifies the feature is
+  alive before any real operator's traffic touches it.
+- **dev-agent-live:** live on this agent (echo) first, which is also the multi-machine case and therefore
+  the one that exercises the tokenless-standby relay path rather than only the direct-send shortcut. The
+  observable signal over 24h: zero user-visible "reply lost" notices whose body was empty, and any structured
+  refusal records that DO appear name a real method and field. **A zero-everywhere reading is not a pass** —
+  no refusals recorded is equally consistent with the guard never running, so the acceptance signal is the
+  fixtures continuing to red under sabotage, not the absence of production refusals.
+- **fleet:** after the dev-agent 24h window passes clean, in the next ordinary release. No per-agent flag:
+  the guard IS the change, and holding it back per-agent would mean the fleet keeps delivering invisible
+  payloads while the fix exists.
+- **graduation criterion:** one clean 24h window on this agent with no invisible-payload delivery and no
+  over-refusal of legitimate traffic (no report of a real message being rejected), PLUS the sabotage suite
+  still reddening on demand — 121 tests, both funnels and the lifeline path each proven to red only their
+  own arms. The over-refusal half is the one to watch, because this change widened what gets refused twice
+  (non-printing categories at round 6, blank glyphs at round 10).
+- **dark-window:** none for the refusal itself, per the reasoning above. The genuinely new-behaviour piece
+  carrying risk is the **widening** — categories that previously shipped and now do not — and its control is
+  not a dark window but the pinned fixtures plus the structured refusal record, which makes any over-refusal
+  visible and attributable the first time it happens rather than after a user reports a missing message.
 
 ## Rollback
 
@@ -319,7 +420,10 @@ repair. Callers would resume delivering invisible payloads — the pre-change be
 5. The lint fails on a deleted, commented-out, decoyed, or unimported guard, and on a shrunken population —
    each asserting its **specific failure string**, never a bare exit code.
 6. Full `lint` chain green; no pre-existing invisible-payload or window-10 test regresses.
-7. **Boundary code points are pinned by fixtures that run on whatever engine executes them** (added on a
+7. **Every refusal emits a structured decision** — method, field, rule, outcome, payload LENGTH (never the
+   payload), and the deciding engine + Unicode version, since the predicate is engine-resolved. Proven by
+   input, including that a throwing sink still refuses.
+8. **Boundary code points are pinned by fixtures that run on whatever engine executes them** (added on a
    round-5 finding), so a Unicode-table divergence between the supported floor and the CI version reds a
    test instead of being assumed away. The fixtures cover eight zero-width/ignorable boundary points, eight NON-PRINTING code points that the
    old subtractive predicate delivered (C0 controls, unassigned, private-use, noncharacter, lone combining
