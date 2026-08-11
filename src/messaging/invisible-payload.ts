@@ -376,6 +376,17 @@ export function readerVisibleText(text: string, parseMode?: unknown): string {
  * Gathers `html`, `markdown`, and any nested `text` string at any depth. Deliberately does NOT gather
  * urls, ids, or type tags: counting those as content would make an invisible rich message look visible,
  * which is the direction that matters here.
+ *
+ * KNOWN INCOMPLETE, and scoped rather than patched (see `docs/specs/rich-text-grammar-next-window.md`).
+ * This is a KEY-NAME SWEEP, not Telegram's grammar. From the live documentation the block-level carriers
+ * are `text` (a recursive `RichText`), plus `name` on `RichBlockAnchor` and `expression` on
+ * `RichBlockMathematicalExpression`; every inline type wraps a `RichText` recursively. What could not be
+ * retrieved is how a `RichText` holds its literal string and how it represents a sequence of parts.
+ *
+ * Adding `name` and `expression` here would widen the sweep without closing the class — and because a
+ * structure yielding NO recognised leaves is treated as undecidable and ALLOWED, an unrecognised leaf
+ * shape means the guard passes while this code and its tests look like they cover rich content. That is
+ * the same defect review pass 44 found one level up: a field named in the table reads as handled.
  */
 function structuredTextLeaves(value: unknown, depth = 0): Array<{ text: string; mode: string }> {
   if (depth > 8 || value === null || typeof value !== 'object') return [];
