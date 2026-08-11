@@ -1,0 +1,6 @@
+Audit completed: `FINDINGS`, count `2`.
+
+- Contradictory ownership of emergency-stop authority.
+- Deferral enforcement fingerprint overstates repository-wide coverage.
+
+The exact artifact was printed to stdout. I could not create `findings-substrate.md` because the workspace is mounted read-only; the write was rejected by the sandbox.
