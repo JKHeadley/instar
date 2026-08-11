@@ -245,9 +245,15 @@ contains at least one LETTER, NUMBER, PUNCTUATION MARK, SYMBOL, or MARK.**
 **That definition is POSITIVE, and round 6 is why.** It was subtractive — remove whitespace,
 `Default_Ignorable` and `Cf`, and treat whatever remained as visible. An external reviewer named that as an
 open world, and execution confirmed the hole: a payload of only a C0 control (`U+0001`, `U+0007`, `U+001B`),
-an unassigned code point, a private-use code point, a noncharacter, a lone combining mark, or a lone
+an unassigned code point, a private-use code point, a noncharacter, or a lone
 surrogate **ALL PASSED as visible** and would have been delivered. Every one renders as nothing or as tofu —
 the incident's exact harm on a wider input surface.
+>
+> A LONE COMBINING MARK was originally in that list and has been removed from it. Review passes 30-31
+> measured the exclusion as an over-refusal of real text — every mark is graphic and carries advance
+> width — so `\p{M}` was admitted and a lone mark is content under the current predicate, deliberately.
+> Leaving it listed as a harm made this passage contradict the predicate three sections below it, which
+> four consecutive readings flagged before the sweep finally searched the CLAIM rather than its notation.
 
 **Subtracting the invisible is the same mistake as enumerating the senders: you can only remove the shapes
 you thought of.** Naming what COUNTS closes the world, including against whatever Unicode adds next. A mark
