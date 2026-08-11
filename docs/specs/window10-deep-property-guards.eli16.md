@@ -1574,3 +1574,29 @@ directly after a quote mark. It is not a proper code parser and does not pretend
 better; none makes it airtight. The real answer is the single shared sending function that is already
 written down and owned — until that exists, the check promises "none of the senders I can find is missing
 its guard", not "no unguarded send can exist".
+
+## The sixth time the same check was beaten — and the first time a proper parser lost
+
+I rebuilt the build check on the compiler's own parser and said it ended a whole CLASS of tricks rather
+than the four specific ones that had beaten it. Then I did something I had not done before: I told the next
+reading to attack that claim *specifically*, because it was the claim I was most confident about, and a
+wrong "this is closed" is the sentence that stops anyone checking again.
+
+It took minutes. The trick was to define a look-alike function inline and call that instead — a real call,
+so the parser was perfectly happy, to a function that does nothing. The file read as protected while the
+protection was gone.
+
+**The mistake was not "I should have used a parser". It was that I was answering the wrong question.**
+Parsing tells you *is this a call*. What actually matters is *is this a call to the function we imported*.
+Anything can be given the right name; only a plain, unqualified name can refer to the thing we imported —
+and the check already, separately, required that import. The two together are the real test. Neither on its
+own is.
+
+Eight different tricks from four readings now fail, and normal correct code still passes.
+
+**A separate problem worth knowing about:** that reading never finished. The provider cut it off partway,
+flagging it as possible security-attack work — which is fair, because I had literally asked it to write
+working ways around a security check. So it does not count as a reading at all; there is no verdict. The
+defect above came from the fragment it had produced before being stopped, and I re-ran it myself before
+believing it. Future readings will be asked to *describe* where a check could be evaded rather than to
+write the evasions.

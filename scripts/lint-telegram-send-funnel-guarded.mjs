@@ -160,8 +160,11 @@ function callsIn(sourceFile) {
     if (ts.isCallExpression(node)) {
       const name = calleeName(node.expression);
       if (name) {
+        let callee = node.expression;
+        while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
         out.push({
           name,
+          bareIdentifier: ts.isIdentifier(callee),
           stringArgs: node.arguments
             .filter((a) => ts.isStringLiteral(a) || ts.isNoSubstitutionTemplateLiteral(a))
             .map((a) => a.text),
@@ -174,7 +177,20 @@ function callsIn(sourceFile) {
 }
 
 function hasLiveGuardCall(file, text) {
-  return callsIn(parse(file, text)).some((c) => c.name === GUARD);
+  // The callee must be a BARE IDENTIFIER, never a property access.
+  //
+  // Pass 32 defeated the first parser version with an object-literal method shorthand:
+  //     ({ assertTelegramPayloadVisible() {} }).assertTelegramPayloadVisible();
+  // That IS a real call expression, so parsing alone did not save me — `calleeName` returned the
+  // PROPERTY name and the file read as guarded while the real guard was gone. Sixth defeat of this
+  // check across four readings, and the first to beat a parser.
+  //
+  // The lesson is narrower than "use a parser": the question was never "is this a call", it is
+  // "is this a call to THE IMPORTED FUNCTION". A property access can name anything; only a bare
+  // identifier can resolve to the module import, which `importsSharedGuard` separately requires.
+  // Together those two are the actual claim. Property access is still honoured for `apiCall`/`fetch`
+  // discovery, where `this.apiCall(...)` is the legitimate shape.
+  return callsIn(parse(file, text)).some((c) => c.name === GUARD && c.bareIdentifier);
 }
 
 function importsSharedGuard(text) {

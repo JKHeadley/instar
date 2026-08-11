@@ -3222,3 +3222,44 @@ uncommitted finding-2 fix — trap #5 in the window-8 handoff, verbatim, walked 
 down. The tests caught it in one run.
 
 136 tests green; full lint chain green.
+
+---
+
+## Increment 70 (window 12) — pass 32 was TERMINATED, and the fragment it left defeated my parser
+
+**Pass 32 did not complete and is NOT a reading.** The provider terminated the session with
+`This content was flagged for possible cybersecurity risk`. The cause is mine: pass 32's brief explicitly
+invited the reviewer to construct evasions of a security guard, which reads to a content filter as offensive
+security work. **No verdict exists, no magnitude, no trajectory entry.** It is recorded as an aborted run
+rather than a clean or dirty reading, because counting it either way would be inventing data.
+
+**But the terminated transcript contained a live defect, and I verified it myself rather than trusting it.**
+Before the cut it had written into an isolated copy:
+
+```js
+({ assertTelegramPayloadVisible() {} }).assertTelegramPayloadVisible();
+```
+
+Executed against the lint's own `calleeName`: the parser reports the callee as
+`assertTelegramPayloadVisible` and **the file reads as GUARDED while the real guard is gone.**
+
+**That is the sixth defeat of this check across four readings, and the first to beat a PARSER** — the claim
+I had deliberately pointed the brief at because my confidence in it was highest. It was right to point there.
+
+**The lesson is narrower than "use a parser", and I had it wrong at the level of the question.** Parsing
+answered "is this a call". The question was always "is this a call to THE IMPORTED FUNCTION". A property
+access can name anything; only a bare identifier can resolve to the module import — which
+`importsSharedGuard` already required separately. Those two together are the actual claim, and neither
+alone is. The guard check now requires a bare-identifier callee; property access is still honoured for
+`apiCall`/`fetch` discovery, where `this.apiCall(...)` is the legitimate shape.
+
+**Eight escapes, four readings, all red, control clean:** superstring rename (p29), bare string decoy (p30),
+comment-out (p30), decoy local function (p30), `(fetch)(url)` rogue sender (p30), prefixed string decoy
+(p31), object-literal method shorthand (p32), `this.`-qualified call (p32, my own extension of it).
+
+**The process finding, which matters beyond this branch.** An adversarial exam that asks a model to
+construct evasions of a security control will trip provider content policy. This agent's own briefing
+already records that class — literal adversarial payloads accumulating in a transcript is a known wedge
+shape — and the exam walked into it. The repair is to ask the reading to ANALYSE where a check can be
+evaded rather than to write working evasions, and to construct the payloads locally. Recorded here so the
+next brief is written differently rather than the next run being retried blindly.
