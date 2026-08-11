@@ -3086,3 +3086,34 @@ and it produced a false completion claim to the operator. Struck, with the cause
   removing a verdict file in an isolated copy left it green while the underlying lint correctly failed.
 
 All three are real, all three are named rather than deferred quietly, and none is closed by this increment.
+
+---
+
+## Increment 66 (window 12) — pass 30 finding 4: the tautological assertion, and my rewrite that also could not fail
+
+**Finding 4 repaired, and the repair needed two attempts, which is the part worth recording.**
+
+The archive assertion compared the guard's count of a directory against a **second count of the same
+directory**. Both sides moved together, so deleting a verdict left it green while the underlying lint
+correctly failed. Its TITLE always named the right comparison — cited passes against filed verdicts — and
+the assertion never made it.
+
+**My first rewrite also did not fail.** I changed it to compare passes cited in the registry against filed
+verdicts, ran the sabotage pass 30 had used — delete `pass29-verdict.md` — and got four green. Diagnosing
+instead of assuming: **the registry never cites pass 29.** It cites 14 distinct passes; the guard cites 30,
+from a wider surface. My assertion was sound and simply not exercised by that sabotage — but it also meant
+**my population was narrower than the guard's**, which is this branch's signature defect reproduced inside
+the test written to repair an instance of it.
+
+**Rather than keep a second copy of the guard's citation logic — which would drift, and drift is the
+original disease — the guard's own verdict is consumed directly.** The test now asserts three things from
+different sources: every registry-cited pass has a filed verdict, the guard's filed count matches the
+directory, and the guard reports no missing-verdict failure of its own.
+
+**Proven in both directions, which the original could not do at all:** removing a registry-cited verdict
+(pass 15) reds, naming the pass; removing a guard-cited-only verdict (pass 29 — the exact case that proved
+the old version hollow) also reds. Restored, four green, working tree verified clean after each.
+
+**The honest note.** I sabotage-proved this file earlier the same evening and reported it sound. My proof
+hit a different arm than the hollow one. Proving one arm of four and reporting the file is the
+narrow-population habit turned on my own evidence — and then the first repair repeated it one level down.

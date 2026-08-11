@@ -101,10 +101,45 @@ describe('population parity — a narrowed guard population must red a test', ()
   });
 
   it('the archive holds a verdict for every review pass the tree cites', () => {
+    // REWRITTEN after review pass 30 finding 4 proved the first version TAUTOLOGICAL: it compared the
+    // guard's count of this directory against a second count of THE SAME DIRECTORY. Both sides moved
+    // together, so deleting a verdict file left it green while the underlying lint correctly failed —
+    // a parity assertion that added no protection, inside the file whose subject is assertions that
+    // cannot fail. My own sabotage proof this evening hit a DIFFERENT arm of this file and I reported
+    // the file sound; proving one arm of four and reporting the whole is the narrow-population habit
+    // turned on my own evidence.
+    //
+    // The title always named the right comparison — CITED passes against FILED verdicts — and now the
+    // assertion makes it. Both sides are derived from different sources, so they can disagree.
     const json = JSON.parse(run('lint-account-matches-tree.mjs', ['--json']));
     const dir = path.join(ROOT, 'docs', 'specs', 'reports', 'window10-external-passes');
-    const filed = fs.readdirSync(dir).filter((f) => /^pass\d+-verdict\.md$/.test(f)).length;
-    expect(json.archivedVerdicts, 'the guard and the directory disagree about how many verdicts are filed.')
-      .toBe(filed);
+    const filed = new Set(
+      fs.readdirSync(dir)
+        .map((f) => /^pass(\d+)-verdict\.md$/.exec(f))
+        .filter((m): m is RegExpExecArray => m !== null)
+        .map((m) => Number(m[1])),
+    );
+    // The tree's own citations, read from the registry rather than from the guard's summary.
+    const cited = new Set(
+      [...registry().matchAll(/\breview pass (\d+)\b/gi)].map((m) => Number(m[1])),
+    );
+    expect(cited.size, 'the registry cites no review pass — the matcher is broken, not the archive clean')
+      .toBeGreaterThan(0);
+    const missing = [...cited].filter((n) => !filed.has(n)).sort((a, b) => a - b);
+    expect(missing, `the tree cites review pass(es) ${missing.join(', ')} with no filed verdict`)
+      .toEqual([]);
+    // And the guard's own two counts must agree with the sets, so a drift in EITHER is caught.
+    expect(json.archivedVerdicts, 'the guard disagrees with the directory about filed verdicts')
+      .toBe(filed.size);
+
+    // MY population above is NARROWER than the guard's — it reads the registry, the guard reads a wider
+    // surface (30 cited vs the registry's 14). Proven, not assumed: deleting pass29's verdict fails the
+    // GUARD and not my scan, because the registry never cites 29. A test whose population is narrower
+    // than the guard it checks is this branch's signature defect, so rather than keep a second copy of
+    // the guard's citation logic — which would drift — the guard's own verdict is consumed directly.
+    const missingVerdictFailures = (json.failures ?? [])
+      .filter((f: string) => /is MISSING, and the tree cites review pass/.test(String(f)));
+    expect(missingVerdictFailures, 'the guard reports a cited pass with no filed verdict')
+      .toEqual([]);
   });
 });
