@@ -132,3 +132,89 @@ one window holds.
 
 Do not merge this to claim the window. Read `pass38-verdict.md`, then the stated-open list in
 `pass38-question.md`, and continue the pair from there.
+
+
+---
+
+# ADDENDUM — the window did not end here
+
+The close-out above was written at hour fifteen, when work was parked on a memory constraint. **That was
+wrong, and the operator corrected it:** the constraint was real but not binding. A second machine with
+137 GB — eight times the one everything had been running on — was completely idle the entire time. The
+deferral was not "we lack capacity"; it was "we never asked whether the capacity could move."
+
+What that correction bought, all of it after the close-out was written:
+
+## The convergence stopped being blocked
+
+It was never blocked by capability. Five real blockers stood in the way, none of them the memory number:
+
+1. `node` absent from the remote shell's PATH — every credential lookup exited 127, which is the whole
+   reason the other agent's lanes looked "unreachable" for hours.
+2. The laptop's checkout points at a different remote and cannot authenticate non-interactively, so it
+   could not fetch the branch at all. Routed around by shipping the inputs over the existing channel.
+3. **The other agent's session API accepted a prompt, recorded it, and handed the underlying tool an
+   empty one** — three lanes reported `running`, then `completed` in three minutes having written
+   nothing. A lane that reports success while doing nothing is worse than one that fails.
+4. The tool is installed as a version-manager shim, invisible to every non-interactive shell.
+5. It refuses to run outside a repository without a flag, and waits on stdin that never arrives.
+
+## Eight family reviews, four lenses, both families
+
+| lens | Building | The Substrate |
+|---|---|---|
+| internal consistency | 2 | 2 |
+| obligation reachability | 14 | 10 |
+| falsifiability | 23 | 18 |
+| cost of compliance | 11 | 10 |
+
+**64 findings, none touched, all archived for ratification.** Both families peaked on the third lens and
+fell on the fourth — two independent series reversing at the same point, which is the closest thing to a
+convergence signal the window produced. The caveat stays attached: each lens asks a different question, so
+the numbers measure the questions too.
+
+## The standing rule the operator set, and what it caught
+
+*A cross-family or high-confidence finding gets a cross-cutting verification lens BEFORE it is reported
+up.* It caught two overstatements of mine, and in both cases the overstatement was the more quotable
+version:
+
+- Two alleged cross-family contradictions, **refuted** — they were artifacts of reviewers structurally
+  unable to read the other side.
+- "The registry has no precedence mechanism", **refuted** — it has status precedence across every family
+  and a stated cross-family tradeoff, and all four alleged collisions are locally resolvable. The
+  surviving claim is a narrow residual, framed at that width in
+  `docs/proposals/precedence-gap-for-novel-collisions.md`. The originally proposed fix was also unsafe:
+  it would have frozen the live user channel during a gate outage.
+
+## The guard, continued
+
+Passes 39-45 ran on the laptop. Findings closed since the close-out include: a request carrying its METHOD
+in a parameter; a DNS-root-dot host spelling; escaped duplicate JSON keys; a test-environment root; a
+mutable body reference; a **second read** of the body introduced by the very line meant to fix the first;
+and a method carrying reader-visible content in more than one field.
+
+**The near-miss worth keeping:** I judged Telegram's `rich_message` a fabricated field because it postdates
+my knowledge, and was one message from reporting a real bypass as a hallucination. Fetching the live
+documentation showed it real. Acting on a fake field and discarding a real one were one verification
+apart — and the instinct to dismiss it *felt* like rigor.
+
+Then pass 44 showed the repair had the right field and the **wrong shape**: `rich_message` is a structured
+object, my checker tested for a string and returned early, so the closed-world table named a field nothing
+inspected. A field listed in the map READS as handled — an omission announces itself, a wrong-shaped
+handler hides.
+
+## Derived at this close
+
+- **67** commits since the window opened
+- **16** questions archived, **45** verdicts archived, contiguous
+- **18** laptop reviews archived
+- **37** tests on the door; **18** egress call sites behind it; **19** classified methods
+- Full lint chain green, type check green
+
+## Status, unchanged
+
+**Still NOT merged.** No clean pair. Pass 45 returned five new findings — the lowest of the series, and
+the first reading to separate NEW findings from previously-stated-open ones, which is the measure that
+actually shows whether repairs are gaining. The family-audit red still stands, honestly, and the 64
+findings now standing in front of it are the reason refreshing it this morning would have been a forgery.
