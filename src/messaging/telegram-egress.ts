@@ -411,5 +411,10 @@ export async function telegramFetch(
   //
   // So send a request built from the body that was actually inspected. `checkedBody` is read once,
   // above, and reused here; the caller's object can no longer decide what leaves.
-  return fetch(href, { ...init, ...(checkedBody === undefined ? {} : { body: checkedBody }) });
+  // Build the outgoing init EXPLICITLY. Spreading `init` re-reads `body` — a SECOND read (pass 42) — and
+  // when the captured value was `undefined` no override followed, so whatever that second read returned
+  // is what went on the wire. `body` is now always set from the captured value, never re-read.
+  const outgoing: RequestInit = { ...init };
+  outgoing.body = checkedBody ?? null;
+  return fetch(href, outgoing);
 }

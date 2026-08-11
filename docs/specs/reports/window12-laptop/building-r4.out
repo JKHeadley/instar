@@ -1,0 +1,47 @@
+# Building — reviewer 4 (cost of compliance)
+VERDICT: FINDINGS
+COUNT: 11
+## Findings
+1. Framework-Agnostic — and Framework-Optimizing — full four-engine fallback and parity work costs an estimated 0.5–3 engineer-days plus 10–40 minutes of multi-engine execution per feature; justified for session/provider features, but charged to every feature without discriminating provider-touching code from ordinary provider-neutral logic, where the common harm is near zero.
+2. Testing Integrity — unit, integration, E2E lifecycle, dependency-wiring, and both-side boundary tests cost roughly 2–8 hours plus 10–30 minutes of recurring suite latency per significant feature; justified for routes and lifecycle wiring, but excessive for a substantial pure algorithm or internal library change whose failure surface is fully exercised below E2E.
+3. Zero-Failure — whoever encounters any red test can owe 30 minutes to several days of unrelated diagnosis while their own work remains blocked; in the common case of an unrelated flaky integration test, this exceeds the harm of quarantining that test while an urgent independent fix proceeds. The push gate makes bypass visible, but supplies no bounded triage or quarantine path.
+4. LLM-Supervised Execution — validation after every step adds approximately 1–10 seconds and 500–3,000 tokens per step; a 100-step critical but transactionally validated migration can therefore pay 2–15 minutes and 50k–300k tokens. The article lacks discrimination between judgment-bearing steps and mechanical steps already protected by schemas, checksums, or transactions.
+5. Observability — full-loop metrics, schemas, storage, read surfaces, and dashboards cost roughly 1–4 engineering hours per feature plus permanent operational and schema-maintenance load; this is proportionate for durable adaptive pipelines, but not for the common leaf helper, one-shot CLI option, or formatting feature whose effectiveness will never be tuned independently.
+6. Expected Capacity Enforcement Is an Outcome, Not a Degradation — contract registration, typed results, durable outcome metadata, statistics, and restart-spanning tests cost about 2–6 hours per bounded writer; justified for durable user or authority stores, but excessive for a low-stakes in-memory cache where ordinary eviction has no forensic or user-visible harm. The rule lacks durability and consequence discrimination.
+7. Friction Is a Spec — filing every compensated workaround costs about 5–15 minutes and productizing a recurring one commonly costs 2–8 hours; the tooling cost is worthwhile for genuinely recurring friction, but the unconditional file-before-moving duty taxes the common transient provider hiccup or one-use invocation even when its expected recurrence value is below the filing cost.
+8. No Unbounded Loops + Capacity Safety — together they commonly cost 0.5–2 engineer-days per controller: three brakes, persistent or reset-safe state, sustained-pressure tests, registry enrollment, and convergence proofs across multiple horizons and restart points. On an already idempotent, hard-capped three-attempt retry, the pressure × horizon × reconstruction matrix multiplies the proof burden while preventing little additional harm. Enforcement for the first article is still in progress, so a time-pressured skip can remain silent.
+9. Decision Provenance & Outcome Review — full-context scrubbing, locality and retention design, storage, outcome annotation, periodic grading, and battery maintenance cost roughly 1–3 implementation days plus 30–120 minutes of recurring review per judgment point; proportionate for irreversible or high-impact arbiters, but excessive for common high-volume, low-stakes routing or labeling calls. It lacks risk-based logging depth, sampling, and grading cadence.
+10. Testing Integrity + Live-User-Channel Proof Before Done — a small behavior change to an existing dual-channel, read-only status command can require unit/integration/E2E work multiplied by live surfaces and eight scenario categories, commonly costing 4–16 hours and live-environment attention. That exceeds the harm of the common localized presentation or response-shape regression already covered by lower tiers. The completion artifact makes skipping visible, but the cost model lacks change-impact discrimination.
+11. Iterative Audit to Convergence — every audit pays at least two complete passes and a changed-question reading, doubling or tripling time and tokens and potentially continuing without a bound; worthwhile for open-ended safety or semantic audits, but disproportionate for the common deterministic census where one exhaustive machine query already returns a reproducible empty set. A false convergence stamp is visibly refused for canonical reports.
+## Articles judged worth their cost
+- Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions
+- An Instar Agent Is Always a Multi-Machine Entity
+- Cross-Store Coherence Is an Invariant
+- Test Identity Never Enters Production State
+- Scrape/Parser Fixture Realness — feed the parser the REAL bytes
+- Observable Intelligence — No Autonomous LLM Action Is Unauditable
+- A Refusal Stays a Refusal — conservation of negative outcomes
+- Runtime End-to-End Proof — the canary standard
+- Migration Parity
+- Migration-Consumer Completeness
+- Canonical Pipeline Operational Completeness — Accepted Intake Must Drain
+- Compaction Parity
+- Tiered Development
+- Constitutional Traceability — No Unconstitutional Work
+- Notice + Solve Inefficiencies — Efficiency Is a Standing Search
+- Bounded Notification Surface — no feature may flood the user
+- Notices Route to the Alerts Topic, Never a New One
+- Conservative Outbound: Act, Don't Notify
+- Keep the Doorway/Model Map Current
+- Judgment Within Floors
+- Stall Coverage Is Enumerated, Not Discovered
+- Bounded Blast Radius
+- Ownership-Gated Side Effects
+- Autonomous Throughput Floor
+- A Metric Must Measure the Work, Not the Question
+- A Decision That Can Block Must Live Where the Checks Can See It
+- No Silent Degradation to Brittle Fallback
+- An Autonomous Run Must Outlive Its Session
+- One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere
+## Articles reviewed
+41

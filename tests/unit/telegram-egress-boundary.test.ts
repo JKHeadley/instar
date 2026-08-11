@@ -272,6 +272,21 @@ describe('telegram egress boundary — the single door', () => {
       expect(sent.get('text'), 'the wire body must be what was inspected').toBe('visible');
     });
 
+    it('never re-reads the body — a second read cannot reach the wire', async () => {
+      // Pass 42: the outgoing init was built by SPREADING the caller's object, which re-reads `body`.
+      // When the captured value was undefined no override followed, so the second read's value went out.
+      const f = arm();
+      let reads = 0;
+      const init: RequestInit = { method: 'POST' };
+      Object.defineProperty(init, 'body', {
+        configurable: true,
+        get() { reads += 1; return reads === 1 ? undefined : JSON.stringify({ chat_id: 1, text: '\u200b' }); },
+      });
+      await telegramFetch(`${api('sendMessage')}?chat_id=1&text=hello`, init);
+      const sentBody = (f.mock.calls[0][1] as { body: unknown }).body;
+      expect(sentBody, 'a later read must not become the wire body').toBeNull();
+    });
+
     it('treats a trailing DNS root dot as the same host', async () => {
       // Pass 39 F2: `new URL()` preserves the terminal dot, so an exact compare rejected an equivalent
       // hostname — the request reached Telegram and the door returned null.

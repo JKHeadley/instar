@@ -3800,3 +3800,21 @@ Also confirmed by this reading and NOT yet fixed, recorded rather than quietly c
   reader-visible field — an over-refusal.
 - The predicate sweep STILL leaves the spec describing a different predicate in at least one place, which
   is the fourth consecutive pass to say so.
+
+### Increment 86 — pass 42: the freeze had a SECOND READ (2026-08-11 11:15 PDT)
+
+UNSOUND at 7, down from 8. The finding that matters is a third-order version of the same defect:
+
+I froze the body at capture — correctly — and then built the outgoing request by SPREADING the caller's
+object. The spread re-reads `body`. And because the override was conditional (`checkedBody === undefined`
+skipped it), a getter returning `undefined` on the first read and a payload on the second put the SECOND
+read's value on the wire. Fixed once, at one level, then reintroduced by the very line that was supposed
+to carry the fix.
+
+The outgoing init is now built explicitly and `body` is always set from the captured value, never
+re-read. Pinned by a test whose getter returns undefined first and an invisible payload second.
+
+Convergence signal, recorded honestly: this is the first reading where the count FELL while the question
+was held near-identical (eight to seven), and the fourth family lens (cost of compliance, 11 findings)
+returned fewer than the third (falsifiability, 23). Two independent series moving down for the first time
+— which is weak evidence, not convergence, and it is one data point in each.
