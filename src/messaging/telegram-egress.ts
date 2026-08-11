@@ -35,6 +35,7 @@
  */
 import {
   assertOutgoingPayloadVisible,
+  emitInvisiblePayloadRefusal,
   READER_VISIBLE_TELEGRAM_PARAMS,
   NO_READER_VISIBLE_FIELD_TELEGRAM_METHODS,
 } from './invisible-payload.js';
@@ -44,7 +45,8 @@ import {
  * case-insensitive by RFC and Telegram accepts method names in any case. A matcher stricter than the
  * dispatcher it models produces requests Telegram honours and this file never sees.
  */
-const BOT_API_URL = /^https:\/\/api\.telegram\.org\/bot[^/]+\/([A-Za-z]+)/i;
+const BOT_API_HOST = 'api.telegram.org';
+const BOT_PATH = /^\/bot[^/]+\/([A-Za-z]+)/;
 
 /** Lowercased method → canonical spelling, so lookup matches Telegram's case-insensitive dispatch. */
 const CANONICAL_METHOD: ReadonlyMap<string, string> = new Map(
@@ -63,7 +65,20 @@ const CANONICAL_METHOD: ReadonlyMap<string, string> = new Map(
  * case-sensitive field map; returns the raw spelling when unknown, which `telegramFetch` refuses.
  */
 export function methodFromTelegramUrl(url: string): string | null {
-  const m = BOT_API_URL.exec(url);
+  // Parse rather than pattern-match the raw text. Review pass 37 finding 3: a regex anchored to the
+  // literal host missed spellings `fetch` normalises before dispatch — an explicit `:443`, leading
+  // whitespace, a percent-encoded or upper-case host. Telegram received those requests; the door
+  // returned null and skipped every check. Whatever `fetch` will send is what must be inspected, so
+  // the parser `fetch` uses is the one that decides.
+  let parsed: URL;
+  try {
+    parsed = new URL(url.trim());
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+  if (parsed.hostname.toLowerCase() !== BOT_API_HOST) return null;
+  const m = BOT_PATH.exec(parsed.pathname);
   if (!m) return null;
   return CANONICAL_METHOD.get(m[1].toLowerCase()) ?? m[1];
 }
@@ -82,44 +97,72 @@ function collectParams(url: string, body: RequestInit['body']): {
 } {
   const params: Record<string, unknown> = {};
 
-  // The query string is a first-class way to pass Bot API parameters. The previous version of this
-  // door ignored it completely, so `sendMessage?text=<invisible>` was never examined.
-  const q = url.indexOf('?');
-  if (q >= 0) {
-    for (const [k, v] of new URLSearchParams(url.slice(q + 1))) params[k] = v;
+  // The query string is a first-class way to pass Bot API parameters. The first version of this door
+  // ignored it completely, so `sendMessage?text=<invisible>` was never examined.
+  //
+  // Two corrections from review pass 37. The FRAGMENT never goes on the wire — `fetch` strips it — so
+  // reading it as payload let visible fragment text mask an invisible query value (finding 2). And
+  // Telegram appends URL arguments BEFORE body arguments while its accessor returns the FIRST match,
+  // so on a conflict the QUERY value is the one that gets sent; the first version let the body
+  // overwrite it and inspected a value Telegram would never use (finding 1). Query is therefore
+  // collected LAST here, with `queryKeys` marking what must not be overwritten.
+  let search = '';
+  try {
+    search = new URL(url.trim()).search;
+  } catch {
+    const q = url.indexOf('?');
+    const h = url.indexOf('#');
+    if (q >= 0) search = h > q ? url.slice(q, h) : url.slice(q);
   }
+  const queryParams = new URLSearchParams(search);
 
-  if (body === null || body === undefined) return { params, uncheckable: null };
+  /** Overlay the query LAST: on a conflicting key, the value Telegram sends is the query's. */
+  const done = (uncheckable: string | null) => {
+    for (const [k, v] of queryParams) params[k] = v;
+    return { params, uncheckable };
+  };
+
+  if (body === null || body === undefined) return done(null);
 
   if (typeof body === 'string') {
-    if (body.length === 0) return { params, uncheckable: null };
+    if (body.length === 0) return done(null);
     try {
       const parsed: unknown = JSON.parse(body);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         Object.assign(params, parsed as Record<string, unknown>);
-        return { params, uncheckable: null };
+        return done(null);
       }
-      return { params, uncheckable: 'a JSON body that is not an object' };
+      return done('a JSON body that is not an object');
     } catch {
       // Form encoding is a supported Bot API encoding, not a mistake. Accept it when it looks like
       // one, and refuse anything else rather than guess.
       if (/^[^=&\s]+=/.test(body)) {
         for (const [k, v] of new URLSearchParams(body)) params[k] = v;
-        return { params, uncheckable: null };
+        return done(null);
       }
-      return { params, uncheckable: 'a body that is neither JSON nor form encoding' };
+      return done('a body that is neither JSON nor form encoding');
     }
   }
 
   if (body instanceof URLSearchParams) {
     for (const [k, v] of body) params[k] = v;
-    return { params, uncheckable: null };
+    return done(null);
   }
 
-  // FormData, Blob, ArrayBuffer, ReadableStream. Multipart is how Telegram takes file uploads and a
-  // caption travels with them, so this is not a hypothetical shape. It is refused rather than parsed,
-  // because reading a stream here would consume the one the caller is about to send.
-  return { params, uncheckable: `a ${body.constructor?.name ?? 'non-string'} body` };
+  // F5: FormData is ITERABLE without consuming it, so it is read rather than refused. The previous
+  // version grouped it with one-shot streams under "cannot read without consuming", which was false
+  // and rejected legitimate multipart sends carrying visible text.
+  if (typeof FormData !== 'undefined' && body instanceof FormData) {
+    for (const [k, v] of body as unknown as Iterable<[string, unknown]>) {
+      if (typeof v === 'string') params[k] = v;
+    }
+    return done(null);
+  }
+
+  // Blob, ArrayBuffer, TypedArray, ReadableStream. These are not parameter encodings the Bot API
+  // accepts for a reader-visible field, and a stream genuinely is one-shot — reading it here would
+  // consume the one the caller is about to send. Refused, which is the safe direction.
+  return done(`a ${body.constructor?.name ?? 'non-string'} body`);
 }
 
 /**
@@ -138,6 +181,18 @@ export async function telegramFetch(url: string, init: RequestInit = {}): Promis
     // which is right for a method KNOWN to carry no reader-visible field and wrong for one nobody has
     // classified. Only this door can tell those apart, so only this door can refuse.
     if (!CANONICAL_METHOD.has(method.toLowerCase())) {
+      // Recorded before it is thrown (pass 37 finding 6): "I do not understand this request" is the
+      // refusal class most worth seeing in the decision stream, and it was the only one absent from it.
+      emitInvisiblePayloadRefusal({
+        guard: 'invisible-payload',
+        outcome: 'refused',
+        method,
+        field: '(unknown)',
+        rule: 'unclassified-method',
+        valueLength: 0,
+        engine: process.version,
+        unicode: process.versions.unicode ?? 'unknown',
+      });
       throw new TelegramEgressError(
         `telegram egress: "${method}" is not a classified Bot API method, so whether it carries `
         + 'reader-visible content is unknown and this request cannot be checked. Add it to '
@@ -148,6 +203,16 @@ export async function telegramFetch(url: string, init: RequestInit = {}): Promis
 
     const { params, uncheckable } = collectParams(url, init.body);
     if (uncheckable !== null) {
+      emitInvisiblePayloadRefusal({
+        guard: 'invisible-payload',
+        outcome: 'refused',
+        method,
+        field: '(unreadable)',
+        rule: 'unreadable-request',
+        valueLength: 0,
+        engine: process.version,
+        unicode: process.versions.unicode ?? 'unknown',
+      });
       throw new TelegramEgressError(
         `telegram egress: ${method} was given ${uncheckable}, so its payload cannot be checked for `
         + 'reader-visible content. Pass parameters as JSON, form encoding, or query string.',

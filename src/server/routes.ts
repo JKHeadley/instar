@@ -14929,12 +14929,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // population is the blind spot this registry keeps re-finding — the guard could
     // only ever cover the characters I happened to think of.
     //
-    // `\p{Default_Ignorable_Code_Point}` is Unicode's category for "renders as
-    // nothing"; `\p{Cf}` is format controls. Together with `\s` they classify all 21
-    // probe cases correctly, and — verified, because this is the direction that would
-    // break real messages — an emoji with a variation selector, accented Latin and CJK
-    // all still send. A message wrapped in zero-widths but containing real text is
-    // untouched.
+    // WHAT THE PREDICATE ACTUALLY IS NOW. The paragraph above describes the SUBTRACTIVE approach —
+    // remove the invisible classes, keep the rest — which review pass 6 replaced, because you can only
+    // subtract shapes you have thought of and eight non-printing categories walked through it.
+    //
+    // `hasNoVisibleCharacters` asks the POSITIVE question instead: does this string contain at least
+    // one letter, number, punctuation mark, symbol, or mark (`\p{L}\p{N}\p{P}\p{S}\p{M}`), minus
+    // `Default_Ignorable` and a small set of blank glyphs. Marks were admitted at passes 30-31 after
+    // excluding them was measured to over-refuse real text.
+    //
+    // Review pass 37 finding 7 caught this comment still explaining the deleted design — which is what
+    // a maintainer reads instead of the predicate. The verified non-refusal cases below still hold: an
+    // emoji with a variation selector, accented Latin and CJK all send, and a message wrapped in
+    // zero-widths but containing real text is untouched.
     if (hasNoVisibleCharacters(text)) {
       res.status(400).json({
         error: 'refused: "text" contains no visible characters (only whitespace, zero-width or ignorable marks, control/unassigned/private-use code points, or blank glyphs). '

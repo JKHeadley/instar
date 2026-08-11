@@ -5752,9 +5752,13 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   private async apiCall(method: string, params: Record<string, unknown>, retryCount: number = 0): Promise<unknown> {
-    // THE FUNNEL. Nothing reaches the Telegram API from this class without passing here — that is
-    // provable rather than asserted (`fetch` is called once, below), which is exactly what the four
-    // previous placements of this refusal were not. See `assertTelegramPayloadVisible` for the
+    // THE FUNNEL for this class. Nothing reaches the Telegram API from here without passing through
+    // it, and the egress door below is where the content decision is made.
+    //
+    // This used to say the property was provable because "`fetch` is called once, below". That stopped
+    // being true when the door landed — this method calls `telegramFetch`, and `fetch` lives in
+    // `src/messaging/telegram-egress.ts`. Review pass 37 finding 8. The property is still provable,
+    // but by `scripts/lint-telegram-egress-boundary.mjs` confining egress, not by counting calls here. See `assertTelegramPayloadVisible` for the
     // history; the short version is that "the point of sending", "both doors" and "the single
     // chokepoint every send passes through" were each falsified by the next reader.
     // Pre-format guard REMOVED (CMT-1246 criterion b). It closed the same case as the egress

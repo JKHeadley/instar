@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { telegramFetch, methodFromTelegramUrl, TelegramEgressError } from '../../src/messaging/telegram-egress.js';
-import { InvisiblePayloadRefusedError } from '../../src/messaging/invisible-payload.js';
+import { InvisiblePayloadRefusedError, setInvisiblePayloadRefusalSink } from '../../src/messaging/invisible-payload.js';
 
 const TOKEN = '123:AAErandomtokenvalue';
 const api = (m: string) => `https://api.telegram.org/bot${TOKEN}/${m}`;
@@ -89,15 +89,33 @@ describe('telegram egress boundary — the single door', () => {
       expect(f).not.toHaveBeenCalled();
     });
 
-    it('REFUSES a multipart body rather than forwarding it unchecked', async () => {
-      // Reading a FormData/stream here would consume the one the caller is about to send, so it
-      // cannot be checked. Telegram takes captions this way, so this is a real shape, not a
-      // hypothetical — and an unreadable payload is a closed door.
+    it('CHECKS a multipart body — it is iterable without being consumed', async () => {
+      // Review pass 37 finding 5: this was refused wholesale on the premise that reading it would
+      // consume the caller's body. False for FormData, which iterates freely — and refusing it
+      // rejected legitimate multipart sends carrying visible text. Only a one-shot stream is
+      // genuinely unreadable here.
       const f = arm();
       const fd = new FormData();
       fd.append('chat_id', '1');
       fd.append('text', '\u200b');
       await expect(telegramFetch(api('sendMessage'), { method: 'POST', body: fd }))
+        .rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f).not.toHaveBeenCalled();
+    });
+
+    it('DELIVERS a multipart body carrying visible text', async () => {
+      const f = arm();
+      const fd = new FormData();
+      fd.append('chat_id', '1');
+      fd.append('text', 'hello');
+      await telegramFetch(api('sendMessage'), { method: 'POST', body: fd });
+      expect(f, 'a checkable multipart send must not be refused').toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses a body it genuinely cannot read without consuming', async () => {
+      const f = arm();
+      const stream = new ReadableStream({ start(c) { c.enqueue(new Uint8Array([1])); c.close(); } });
+      await expect(telegramFetch(api('sendMessage'), { method: 'POST', body: stream as unknown as BodyInit }))
         .rejects.toThrow(TelegramEgressError);
       expect(f).not.toHaveBeenCalled();
     });
@@ -121,6 +139,51 @@ describe('telegram egress boundary — the single door', () => {
         chat_id: 1, text: 'hello',
       }))).rejects.toThrow(TelegramEgressError);
       expect(f, 'an unclassified method has an unknown content decision').not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the request Telegram will actually dispatch (review pass 37)', () => {
+    it('honours Telegram precedence: on a conflict the QUERY value is the one sent', async () => {
+      // Telegram appends URL arguments before body arguments and its accessor returns the FIRST
+      // match, so the query wins. The first version let the body overwrite the query, which meant it
+      // inspected a visible value Telegram would never send while the invisible one went out.
+      const f = arm();
+      await expect(telegramFetch(`${api('sendMessage')}?text=%E2%80%8B`, post({ chat_id: 1, text: 'visible' })))
+        .rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f, 'the value Telegram would send is invisible').not.toHaveBeenCalled();
+    });
+
+    it('ignores the URL FRAGMENT, which never goes on the wire', async () => {
+      // `fetch` strips the fragment. Counting it as payload let visible fragment text mask an
+      // invisible query value.
+      const f = arm();
+      await expect(telegramFetch(`${api('sendMessage')}?chat_id=1&text=%E2%80%8B#looks-visible`, { method: 'POST' }))
+        .rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f).not.toHaveBeenCalled();
+    });
+
+    it('recognises URL spellings that fetch normalises before dispatch', () => {
+      // A regex anchored to the literal host missed these; Telegram received them and the door
+      // skipped every check.
+      expect(methodFromTelegramUrl(`https://api.telegram.org:443/bot${TOKEN}/sendMessage`)).toBe('sendMessage');
+      expect(methodFromTelegramUrl(`  https://API.Telegram.ORG/bot${TOKEN}/sendMessage  `)).toBe('sendMessage');
+      expect(methodFromTelegramUrl(`https://api.telegram.org/bot${TOKEN}/sendMessage?x=1#f`)).toBe('sendMessage');
+      // and still refuses to claim a method for something else entirely
+      expect(methodFromTelegramUrl('https://api.telegram.org.evil.invalid/bot9/sendMessage')).toBeNull();
+    });
+
+    it('records the door\'s OWN refusals in the decision stream', async () => {
+      // Pass 37 finding 6: "I do not understand this request" was the one refusal class invisible to
+      // the stream, while the tests and spec both claimed every refusal is recorded.
+      arm();
+      const seen: Array<{ rule: string }> = [];
+      const prev = setInvisiblePayloadRefusalSink((d) => seen.push(d as { rule: string }));
+      await expect(telegramFetch(`https://api.telegram.org/bot${TOKEN}/sendBrandNewThing`, post({ text: 'hi' })))
+        .rejects.toThrow(TelegramEgressError);
+      await expect(telegramFetch(api('sendMessage'), { method: 'POST', body: '<<unparseable>>' }))
+        .rejects.toThrow(TelegramEgressError);
+      setInvisiblePayloadRefusalSink(prev);
+      expect(seen.map((d) => d.rule)).toEqual(['unclassified-method', 'unreadable-request']);
     });
   });
 

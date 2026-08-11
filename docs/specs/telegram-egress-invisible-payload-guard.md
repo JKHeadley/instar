@@ -41,9 +41,11 @@ prior source commits on this branch did exactly that (`declaredTier: 1` against 
 
 **`approved:` is TRUE as of 2026-08-10, on Justin's verbatim decision relayed through the observer.** The
 citation in the frontmatter is the signature trail; the agent recorded the operator's decision and has no
-authority to make one. `review-convergence:` remains **pending** and is the agent's own outstanding
-obligation — approval of the CONTENT is the operator's act, convergence is a process step still owed, and
-writing that tag by hand would be a fabricated review inside the constitution.
+authority to make one. `review-convergence:` was **recorded on 2026-08-11 after fourteen rounds** and is in this
+document's frontmatter — approval of the CONTENT is the operator's act, convergence is the agent's process
+step, and writing that tag by hand before the rounds ran would have been a fabricated review inside the
+constitution. This paragraph said the step was still owed until review pass 37 finding 8 caught it
+contradicting the frontmatter directly above it.
 
 ## Guarantee summary — an INTERIM, NON-STRUCTURAL guard. Read this before citing the spec
 
@@ -138,7 +140,7 @@ an empty one legitimately dismisses the spinner. Refusing it would be an over-re
 
 ### 3. Make the enumeration a check, not a memory
 
-`scripts/lint-telegram-send-funnel-guarded.mjs` derives the sender population from the mechanism and reads
+`scripts/lint-telegram-egress-boundary.mjs` (which REPLACED `lint-telegram-send-funnel-guarded.mjs` when the door landed) confines egress rather than deriving the sender population from the mechanism and reads
 the method→field map **from the guard's own source** rather than keeping a second copy. A future sender
 joins the population by existing.
 
@@ -243,11 +245,11 @@ BLANK. Each passed. A message of one HANGUL FILLER is the original incident wear
 They are now subtracted from inside the positive set and pinned by fixtures. **Honest about what that
 is:** a subtraction has a tail, so a future category-positive blank code point would pass until it is
 added. That residual is accepted deliberately and named rather than papered over; the structural fix is the
-vendored, generated table under **CMT-1246**, which DERIVES blankness instead of listing it. That, and only that, is what
+vendored, generated table under **CMT-1261**, which DERIVES blankness instead of listing it. That, and only that, is what
 the code asserts and what every acceptance criterion here means. Throughout this spec, **"reader-visible"
 names the PRODUCT INTENT** — the thing we are trying to protect. **The MECHANICAL GUARANTEE is narrower and
 is the only thing the code actually asserts:** the field contains at least one code point in
-`\p{L}\p{N}\p{P}\p{S}`. Those are not the same claim — an unsupported glyph or a client-specific font can
+`\p{L}\p{N}\p{P}\p{S}\p{M}` (marks included since review passes 30-31). Those are not the same claim — an unsupported glyph or a client-specific font can
 make a code point that PASSES this positive check still render as nothing to a particular reader, which is
 why the guarantee is mechanical rather than perceptual. Where this document says a payload is refused for having "no visible characters", read
 it as shorthand for the mechanical predicate; the guarantee has never been client-rendered visibility and
@@ -319,7 +321,7 @@ rather than plumbing a topic id through six senders and a pure predicate to sati
 FLOOR, not a pin — CI runs Node 20, and this development machine runs Node 24, so a version spread is not
 hypothetical, it is the current state. The residual above is therefore live, bounded as described, and
 un-mitigated by any existing enforcement. Vendoring a generated table removes the dependency entirely and
-is the clean fix; it rides **CMT-1246** and is NOT claimed here. |
+is the clean fix; it rides **CMT-1261** (it was CMT-1246's criterion (d), which shipped without it) and is NOT claimed here. |
 | the method→field map | `unified` | Compile-time constant shipped with the code. |
 | the lint | `unified` | Runs in CI and at commit time against the repository, not against machine state. |
 

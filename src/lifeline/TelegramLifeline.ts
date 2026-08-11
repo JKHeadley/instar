@@ -2904,7 +2904,7 @@ export class TelegramLifeline {
     // `apiCall`, so every previous placement of the invisible-payload refusal inside TelegramAdapter
     // left this sender completely unguarded — two `apiCall('sendMessage')` sites with no check at
     // all, which four consecutive enumerations of "every send site" all missed because they only
-    // ever enumerated the adapter. `scripts/lint-telegram-send-funnel-guarded.mjs` now refuses any
+    // ever enumerated the adapter. `scripts/lint-telegram-egress-boundary.mjs` (which replaced the deleted per-sender lint) now refuses any
     // class that reaches the Telegram API without this call.
     // Pre-format guard REMOVED (CMT-1246 criterion b). It closed the same case as the egress
     // door — proven by execution: with it gone every payload it caught is still refused, and

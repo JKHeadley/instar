@@ -49,6 +49,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = path.join(ROOT, 'src');
 const DOOR = path.join(SRC, 'messaging', 'telegram-egress.ts');
 const HOST_MARK = 'api.telegram.org/bot';
+const hasHostMark = (t) => t.toLowerCase().includes(HOST_MARK);
 const GUARD = 'assertOutgoingPayloadVisible';
 
 function walk(dir) {
@@ -69,7 +70,15 @@ const parse = (f, text) => ts.createSourceFile(f, text, ts.ScriptTarget.Latest, 
  */
 function denotesBotApiUrl(node, sf) {
   if (!node) return false;
-  if (node.getText(sf).includes(HOST_MARK)) return true;
+  if (hasHostMark(node.getText(sf))) return true;
+
+  // Review pass 37 finding 4: a URL built by CONCATENATION — `api('getUpdates') + '?limit=5'` —
+  // is a binary expression, and the live tree already contained two. The lint printed
+  // "confined" while direct Bot API fetches existed in src/. Recurse through `+`.
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    return denotesBotApiUrl(node.left, sf) || denotesBotApiUrl(node.right, sf);
+  }
+  if (ts.isParenthesizedExpression(node)) return denotesBotApiUrl(node.expression, sf);
 
   const nameOf = (n) => (ts.isIdentifier(n) ? n.text
     : ts.isCallExpression(n) && ts.isIdentifier(n.expression) ? n.expression.text
@@ -81,7 +90,7 @@ function denotesBotApiUrl(node, sf) {
   const seek = (n) => {
     if (found) return;
     if (ts.isVariableDeclaration(n) && n.name.getText(sf) === name && n.initializer) {
-      if (n.initializer.getText(sf).includes(HOST_MARK)) found = true;
+      if (hasHostMark(n.initializer.getText(sf))) found = true;
     }
     ts.forEachChild(n, seek);
   };
@@ -178,6 +187,8 @@ if (!fs.existsSync(DOOR)) {
     ['inline template', 'const r = fetch(`https://api.telegram.org/bot${t}/sendMessage`, {});', true],
     ['local variable', 'const u = `https://api.telegram.org/bot${t}/sendMessage`; fetch(u, {});', true],
     ['local helper', "const api = (m) => `https://api.telegram.org/bot${t}/${m}`; fetch(api('sendMessage'), {});", true],
+    ['concatenated helper + query', "const api = (m) => `https://api.telegram.org/bot${t}/${m}`; fetch(api('getUpdates') + '?x=1', {});", true],
+    ['upper-case host', 'fetch(`https://API.TELEGRAM.ORG/bot${t}/sendMessage`, {});', true],
     ['unrelated host', 'fetch(`https://example.invalid/x`, {});', false],
     ['peer mesh call', 'const u = `${peer.url}/sessions`; fetch(u, {});', false],
     ['property-access fetch', 'globalThis.fetch(`https://api.telegram.org/bot${t}/sendMessage`, {});', true],

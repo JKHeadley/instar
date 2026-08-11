@@ -3635,3 +3635,39 @@ boundary, wrote a header explaining why the class was now closed, and shipped th
   Shipping as stale when only Building and The Substrate are. All corrected against derived values.
 
 Verification: tsc clean, full lint chain clean, 188 tests in the affected area.
+
+### Increment 80 — pass 37: three more ways through the door, and a lint that was lying (2026-08-11 06:39 PDT)
+
+UNSOUND at 8 (6 DESIGN, 2 PRECISION), down from 9. The door had three further unchecked-send classes and
+the lint's "confined" was false about the tree it was reading.
+
+- **F1 — parameter PRECEDENCE was backwards.** Telegram appends URL arguments before body arguments and
+  its accessor returns the FIRST match, so on a conflicting key the QUERY value is what gets sent. The
+  door let the body overwrite the query, so it inspected a visible value Telegram would never use while
+  the invisible one went out. Query is now overlaid last, at every return.
+- **F2 — the URL FRAGMENT was read as payload.** `fetch` strips it, so visible fragment text masked an
+  invisible query value. Cut before collection.
+- **F3 — method recognition matched raw text, not the dispatched URL.** A regex anchored to the literal
+  host missed spellings `fetch` normalises: an explicit `:443`, leading whitespace, an upper-case
+  host. Those requests reached Telegram and skipped every check. Now parsed with `new URL()` — the
+  parser `fetch` itself uses.
+- **F4 — the lint's "confined" was FALSE about the live tree.** `denotesBotApiUrl` could not resolve a
+  URL built by concatenation, and `test-as-self.ts` already contained two direct Bot API fetches of
+  exactly that shape. It printed clean over them. Binary expressions are now resolved and the host mark
+  is case-insensitive; the moment that landed the lint named both, and both are migrated.
+- **F5 — multipart was over-refused on a false premise.** "Cannot read without consuming" is untrue of
+  `FormData`, which iterates freely. A legitimate multipart send carrying visible text was being
+  rejected before the network. Now read; only genuine one-shot streams are refused.
+- **F6 — the door's own refusals were invisible to the decision stream.** Unknown method and unreadable
+  body threw bare errors, so the one refusal class meaning "there is something here I do not understand"
+  was the only one unobservable — while the tests and the spec both claimed every refusal is recorded.
+  Two new rules now emit through the sink.
+- **F7, F8 — the sweeps I did not finish last time.** Correcting one occurrence is not correcting the
+  claim: the predicate was still documented as L/N/P/S in two more places and in the route commentary
+  that still explained the DELETED subtractive design; the deleted lint was still cited as the live
+  enforcer in four places; the adapter still claimed `fetch` is called once below it (it is not called
+  there at all); the spec said convergence was still owed directly beneath its own convergence tag; and
+  the vendored table was still assigned to the already-landed CMT-1246 instead of CMT-1261. Each was
+  swept by counting the population first — 0 live citations remain.
+
+Verification: tsc clean, full lint chain clean, 162 tests in the affected area, 24 of them on the door.

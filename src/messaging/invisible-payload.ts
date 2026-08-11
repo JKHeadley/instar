@@ -86,7 +86,7 @@ const IGNORABLE_RE = /\p{Default_Ignorable_Code_Point}/u;
  * this is a small subtraction from inside the positive set, and a subtraction has a tail — a future
  * category-positive blank code point would pass until it is added here. That residual is accepted
  * deliberately and stated in the spec rather than papered over: the structural fix is the vendored,
- * generated table (CMT-1246), which derives blankness rather than listing it. Fixtures pin every member.
+ * generated table (CMT-1261 — it was CMT-1246 criterion (d), which shipped without it), which derives blankness rather than listing it. Fixtures pin every member.
  */
 const BLANK_GLYPHS = new Set([
   'ㅤ',  // HANGUL FILLER (Lo)
@@ -192,7 +192,9 @@ export const NO_READER_VISIBLE_FIELD_TELEGRAM_METHODS: ReadonlySet<string> = new
  * `TelegramAdapter`, whose send never reaches the Telegram host from this process.
  *
  * Historically both senders called this as the FIRST statement of their private `apiCall`, the only place every send
- * provably passes through — enforced by `scripts/lint-telegram-send-funnel-guarded.mjs`.
+ * provably passes through. That lint is DELETED; `scripts/lint-telegram-egress-boundary.mjs` confines
+ * egress to one door instead, and the door itself refuses an unclassified method (pass 37 finding 8:
+ * this still named the deleted lint as its enforcer).
  *
  * ── Why here and nowhere else ──────────────────────────────────────────────────────────────────
  * This guard was placed on one HTTP route at review pass 9 and called "fixed at the point of
@@ -221,7 +223,13 @@ export interface InvisiblePayloadRefusal {
   method: string;
   field: string;
   /** WHY it was refused, in the predicate's own terms — never the payload itself. */
-  rule: 'no-content-codepoint' | 'no-content-codepoint-after-format';
+  rule:
+    | 'no-content-codepoint'
+    | 'no-content-codepoint-after-format'
+    /** The egress door refused a Bot API method nobody has classified (pass 36 finding 3). */
+    | 'unclassified-method'
+    /** The egress door could not read the request's parameters, so it could not decide (pass 36 finding 1). */
+    | 'unreadable-request';
   /** Length only. The payload is invisible, but it is still user content and is never logged. */
   valueLength: number;
   /** The predicate is engine-resolved, so the engine is part of the decision (see multi-machine posture). */
@@ -257,6 +265,16 @@ let refusalSink: (decision: InvisiblePayloadRefusal) => void = (decision) => {
 };
 
 /** Route refusal decisions to a host-provided audit trail. Returns the previous sink. */
+/**
+ * Record a refusal that did NOT come from the predicate — the egress door's own "I cannot decide"
+ * cases. Review pass 37 finding 6: those threw bare errors, so the one refusal class that means
+ * "something is here I do not understand" was the only one invisible to the decision stream, while
+ * tests and the spec both claimed every refusal is recorded.
+ */
+export function emitInvisiblePayloadRefusal(decision: InvisiblePayloadRefusal): void {
+  try { refusalSink(decision); } catch { /* a broken sink never becomes a delivery */ }
+}
+
 export function setInvisiblePayloadRefusalSink(
   sink: (decision: InvisiblePayloadRefusal) => void,
 ): (decision: InvisiblePayloadRefusal) => void {
