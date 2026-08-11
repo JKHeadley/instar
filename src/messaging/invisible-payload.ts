@@ -365,31 +365,39 @@ export function readerVisibleText(text: string, parseMode?: unknown): string {
  * its own.
  */
 /**
- * Collect the reader-visible TEXT LEAVES of a structured field.
+ * Collect the reader-visible TEXT LEAVES of a structured field, per Telegram's actual RichText grammar.
  *
- * Review pass 44: `rich_message` is not a string. Telegram models it as an `InputRichMessage` whose
- * content sits under `html`, `markdown`, or an array of `blocks` (paragraphs, headings, footers,
- * preformatted). Pass 43 mapped the FIELD correctly and then checked it with `typeof value === 'string'`,
- * which returns early for an object — so the field was named in the table and never inspected. Right
- * method, wrong shape, and the table's presence made it look covered.
+ * THE GRAMMAR, derived from the live type definitions rather than inferred from key names. Four readings
+ * repaired this by adding whichever key a reviewer had just named, each time correctly and each time one
+ * level too shallow; the operator's instruction was to stop doing that and read the spec. What the spec
+ * says:
  *
- * Gathers `html`, `markdown`, and any nested `text` string at any depth. Deliberately does NOT gather
- * urls, ids, or type tags: counting those as content would make an invisible rich message look visible,
- * which is the direction that matters here.
+ *   `richTextPlain`  — the LEAF. Its literal lives in `text` (string).
+ *   `richTexts`      — the SEQUENCE. Its parts live in `texts` (array of RichText).
+ *   the wrappers     — `richTextBold`, `Italic`, `Underline`, `Strikethrough`, `Fixed`, `Marked`,
+ *                      `Subscript`, `Superscript`, `Url`, `EmailAddress`, `PhoneNumber`, `Anchor`,
+ *                      `AnchorLink`, `Reference`, `Icon` — each carries its content in `text`, which
+ *                      holds a nested RichText rather than a string.
  *
- * KNOWN INCOMPLETE, and scoped rather than patched (see `docs/specs/rich-text-grammar-next-window.md`).
- * This is a KEY-NAME SWEEP, not Telegram's grammar. From the live documentation the block-level carriers
- * are `text` (a recursive `RichText`), plus `name` on `RichBlockAnchor` and `expression` on
- * `RichBlockMathematicalExpression`; every inline type wraps a `RichText` recursively. What could not be
- * retrieved is how a `RichText` holds its literal string and how it represents a sequence of parts.
+ * So `text` is the single carrier at every level, sometimes a string and sometimes a nested node, and
+ * `texts` is the only branching point. That is why the recursive walk below is the grammar rather than an
+ * approximation of it: descending objects and arrays while collecting `text` strings visits exactly the
+ * literals, at any nesting depth, through any wrapper chain.
  *
- * Adding `name` and `expression` here would widen the sweep without closing the class — and because a
- * structure yielding NO recognised leaves is treated as undecidable and ALLOWED, an unrecognised leaf
- * shape means the guard passes while this code and its tests look like they cover rich content. That is
- * the same defect review pass 44 found one level up: a field named in the table reads as handled.
+ * BLOCK level adds two STRING carriers the inline layer does not have — `name` on a block anchor and
+ * `expression` on a mathematical block — plus `html` and `markdown` on the container itself.
+ *
+ * WHAT IS DELIBERATELY NOT COLLECTED, and why it is not an oversight: `url`, `email_address`,
+ * `phone_number`, `anchor_name`, `document`. A link's DESTINATION is not what a reader sees — its label
+ * is, and the label is the nested `text`. Counting a destination as content is precisely how the original
+ * incident shipped: a payload whose only visible characters lived inside a URL.
+ *
+ * A structure that yields NO leaves is allowed. That is now a derived conclusion rather than an
+ * undecidable shrug: a rich message of media blocks alone — a photo, a collage, a map — legitimately
+ * carries no text, and refusing it would destroy a valid message.
  */
 function structuredTextLeaves(value: unknown, depth = 0): Array<{ text: string; mode: string }> {
-  if (depth > 8 || value === null || typeof value !== 'object') return [];
+  if (depth > 16 || value === null || typeof value !== 'object') return [];
   const out: Array<{ text: string; mode: string }> = [];
   if (Array.isArray(value)) {
     for (const v of value) out.push(...structuredTextLeaves(v, depth + 1));
@@ -401,8 +409,9 @@ function structuredTextLeaves(value: unknown, depth = 0): Array<{ text: string; 
       // says — the request-level mode does not govern content nested inside a rich structure.
       if (k === 'html') out.push({ text: v, mode: 'HTML' });
       else if (k === 'markdown') out.push({ text: v, mode: 'Markdown' });
-      else if (k === 'text') out.push({ text: v, mode: '' });
+      else if (k === 'text' || k === 'name' || k === 'expression') out.push({ text: v, mode: '' });
     } else if (typeof v === 'object' && v !== null) {
+      // `text` holding an object is a wrapper; `texts` is the sequence. Both are descended.
       out.push(...structuredTextLeaves(v, depth + 1));
     }
   }

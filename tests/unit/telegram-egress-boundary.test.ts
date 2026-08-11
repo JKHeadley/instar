@@ -329,6 +329,52 @@ describe('telegram egress boundary — the single door', () => {
       expect(f3).not.toHaveBeenCalled();
     });
 
+    it('walks the REAL RichText grammar — nested wrappers, sequences, block carriers', async () => {
+      // Built from Telegram's live type definitions, not from key names a reviewer happened to name.
+      // richTextPlain holds its literal in `text`; richTexts branches in `texts`; every wrapper nests a
+      // RichText under `text`. So one recursive walk IS the grammar.
+      const f = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: {
+          blocks: [
+            { type: 'paragraph', text: { type: 'richTexts', texts: [
+              { type: 'richTextBold', text: { type: 'richTextItalic', text: { type: 'richTextPlain', text: '\u200b' } } },
+              { type: 'richTextUrl', url: 'https://example.com/VISIBLE-IN-URL-ONLY', text: { type: 'richTextPlain', text: '\u200b' } },
+            ] } },
+            { type: 'anchor', name: '\u200b' },
+          ],
+        },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f, 'a URL destination is not what a reader sees — the label is').not.toHaveBeenCalled();
+
+      // one visible literal three wrappers deep is enough to deliver
+      const f2 = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { blocks: [{ type: 'paragraph', text: { type: 'richTexts', texts: [
+          { type: 'richTextBold', text: { type: 'richTextPlain', text: '\u200b' } },
+          { type: 'richTextItalic', text: { type: 'richTextPlain', text: 'hello' } },
+        ] } }] },
+      }));
+      expect(f2).toHaveBeenCalledTimes(1);
+
+      // a media-only rich message legitimately carries no text and must NOT be refused
+      const f3 = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { blocks: [{ type: 'photo', photo: { file_id: 'abc' } }, { type: 'divider' }] },
+      }));
+      expect(f3, 'a photo-only rich message is valid and text-free').toHaveBeenCalledTimes(1);
+
+      // the block-level string carriers the inline layer does not have
+      const f4 = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1, rich_message: { blocks: [{ type: 'math', expression: '\u200b' }] },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f4).not.toHaveBeenCalled();
+    });
+
     it('treats a trailing DNS root dot as the same host', async () => {
       // Pass 39 F2: `new URL()` preserves the terminal dot, so an exact compare rejected an equivalent
       // hostname — the request reached Telegram and the door returned null.

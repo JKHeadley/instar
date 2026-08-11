@@ -1,4 +1,21 @@
-# Scoped for next window — implement Telegram's real RichText grammar
+# ~~Scoped for next window~~ — **DONE, window 12**
+
+> **The blocking unknown was obtained and the grammar is implemented.** This document is kept as the
+> derivation trail. What follows was written when the type definitions could not be retrieved from the
+> prose page; the operator's instruction to try another source — the type definitions rather than the
+> documentation page — is what unblocked it.
+>
+> **What the spec actually says:** `richTextPlain` holds the literal in `text` (string); `richTexts`
+> holds the sequence in `texts` (array); every wrapper nests a RichText under `text`. So `text` is the
+> single carrier at every level and `texts` is the only branching point — which means a recursive walk
+> IS the grammar, not an approximation of it. Block level adds `name` and `expression` as string
+> carriers, plus `html`/`markdown` on the container.
+>
+> **The undecidable default is now derived rather than shrugged:** a structure yielding no leaves is
+> allowed because a media-only rich message legitimately carries no text.
+
+---
+
 
 **Why this is scoped rather than shipped:** every guard repair in the second half of window 12 was right
 in intent and wrong in shape, one level deeper each time — wrong representation, mutable reference,
