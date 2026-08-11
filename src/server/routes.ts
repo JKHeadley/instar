@@ -14746,7 +14746,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // CREATES a forum topic and posts an invisible first message into it.
     if (typeof firstMessage === 'string' && hasNoVisibleCharacters(firstMessage)) {
       res.status(400).json({
-        error: 'refused: "firstMessage" contains no visible characters (only whitespace and/or zero-width '
+        error: 'refused: "firstMessage" contains no visible characters (only whitespace, zero-width or ignorable marks, control/unassigned/private-use code points, or blank glyphs '
           + 'marks). An invisible message cannot inform a reader, and this route would create a topic to '
           + 'hold it.',
       });
@@ -14937,7 +14937,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // untouched.
     if (hasNoVisibleCharacters(text)) {
       res.status(400).json({
-        error: 'refused: "text" contains no visible characters (only whitespace and/or zero-width marks). '
+        error: 'refused: "text" contains no visible characters (only whitespace, zero-width or ignorable marks, control/unassigned/private-use code points, or blank glyphs). '
           + 'An invisible message cannot inform a reader, and delivering it would produce a "reply lost" '
           + 'escalation for content that never existed.',
       });
@@ -15482,7 +15482,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // narration, so it is the one an agent is most likely to send an empty payload through.
     if (hasNoVisibleCharacters(text)) {
       res.status(400).json({
-        error: 'refused: "text" contains no visible characters (only whitespace and/or zero-width marks). '
+        error: 'refused: "text" contains no visible characters (only whitespace, zero-width or ignorable marks, control/unassigned/private-use code points, or blank glyphs). '
           + 'An invisible message cannot inform a reader, and delivering it would produce a "reply lost" '
           + 'escalation for content that never existed.',
       });

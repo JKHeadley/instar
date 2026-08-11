@@ -301,7 +301,7 @@ rather than plumbing a topic id through six senders and a pure predicate to sati
 
 | decision point | classification | justification |
 |---|---|---|
-| **Refuse an outbound Telegram payload whose reader-visible field has no visible characters** | `invariant` | **Restated after round 1, and REPLACED after round 6.** The predicate is NOT "is this visible to a reader" — that depends on Unicode version, grapheme clustering, emoji modifiers and the rendering client, and is not settled. Nor is it the subtractive question it originally asked, which let eight non-printing categories through. What is closed and decidable is the POSITIVE question the code now asks: *does this string contain at least one letter, number, punctuation mark, or symbol* (`\p{L}\p{N}\p{P}\p{S}`, resolved by the host engine's Unicode tables). Deterministic for a given engine, no competing signal, and closed against categories nobody has thought of yet. There is no competing signal, no context that changes the answer, and no open-domain judgment about meaning — a single full stop passes, correctly. This is the **hard-invariant validation at the API edge** case (see *Signal vs authority* below, where round 12 corrected an earlier mis-citation of the enumerable-inputs exception), not a judgment point wearing an `invariant` label. |
+| **Refuse an outbound Telegram payload whose reader-visible field has no visible characters** | `invariant` | **Restated after round 1, and REPLACED after round 6.** The predicate is NOT "is this visible to a reader" — that depends on Unicode version, grapheme clustering, emoji modifiers and the rendering client, and is not settled. Nor is it the subtractive question it originally asked, which let eight non-printing categories through. What is closed and decidable is the POSITIVE question the code now asks: *does this string contain at least one letter, number, punctuation mark, symbol, or MARK* (`\p{L}\p{N}\p{P}\p{S}\p{M}`, resolved by the host engine's Unicode tables). **`\p{M}` was added at review passes 30-31**: excluding all marks over-refused real text, and the advance-width rationale for splitting Mn from Mc/Me was measured false on the host and withdrawn — a lone combining mark is content. This paragraph said L/N/P/S only until review pass 36 finding 7 caught the spec describing a predicate the code had stopped implementing. Deterministic for a given engine, no competing signal, and closed against categories nobody has thought of yet. There is no competing signal, no context that changes the answer, and no open-domain judgment about meaning — a single full stop passes, correctly. This is the **hard-invariant validation at the API edge** case (see *Signal vs authority* below, where round 12 corrected an earlier mis-citation of the enumerable-inputs exception), not a judgment point wearing an `invariant` label. |
 | **Which Telegram methods carry a reader-visible field** | `invariant`, as a **VERSIONED POLICY TABLE** | **Reclassified after round 1.** Calling this "a fact about the API" was wrong twice over: the Bot API can add or change methods, and the `answerCallbackQuery` exclusion is a product-behaviour judgment (an empty toast is *useful*), not a mechanical one. It is an invariant at RUNTIME — a closed code-defined map with no per-call judgment — but it is policy that carries a review trigger, not a timeless truth. **Review trigger:** any Bot API version bump, or any new `apiCall` method reaching a reader. The pinning test is what makes a silent drift impossible. |
 | **Whether a source file is a Telegram body-sender (the lint's population)** | `invariant` | Derived mechanically — builds the API host string AND calls `fetch` AND references a body-carrying method. No semantic judgment; a shrink-only ratchet makes a silent population loss loud. |
 
@@ -373,7 +373,14 @@ commitments rather than left as prose:
   means an invisible payload no longer travels that path, but ANY other relay-side content refusal still
   surfaces to a caller as "router unreachable". Normalizing the status/schema across that boundary is the
   fix and it is out of scope here.
-- **CMT-1246 — the centralized client is RISK RETIREMENT, not cleanup**, and round 5 was right to insist on
+- **CMT-1246 — LANDED 2026-08-11.** The paragraph below is the pre-ship reasoning, kept because it
+  states why the interim design was knowingly non-structural. Read it as history: the centralized client
+  exists (`src/messaging/telegram-egress.ts`), the derivation-plus-ratchet lint it criticises is deleted,
+  and the ship's true state against the four acceptance criteria is recorded in *CMT-1246 shipped* above —
+  including the one criterion that cannot be met and the one that was not. Review pass 36 finding 6 caught
+  this section still reading as though the work were pending, one screen after another section said it had
+  shipped; a spec that contradicts itself lets a maintainer trust whichever half suits them.
+- **The pre-ship reasoning: the centralized client is RISK RETIREMENT, not cleanup**, and round 5 was right to insist on
   the distinction. The interim design is *knowingly non-structural*: it depends on source-shape derivation
   plus a ratchet, and a ratchet catches a population SHRINKING, never a refactor semantically routing
   around a guard that is still present in the file. **CMT-1246 is TIME-BOUND: its registered check-in is 2026-08-17, and it is the BLOCKING PREREQUISITE for any claim stronger than the one in the title**, and that is a
@@ -451,9 +458,10 @@ repair. Callers would resume delivering invisible payloads — the pre-change be
    input, including that a throwing sink still refuses.
 8. **Boundary code points are pinned by fixtures that run on whatever engine executes them** (added on a
    round-5 finding), so a Unicode-table divergence between the supported floor and the CI version reds a
-   test instead of being assumed away. The fixtures cover eight zero-width/ignorable boundary points, eight NON-PRINTING code points that the
-   old subtractive predicate delivered (C0 controls, unassigned, private-use, noncharacter, lone combining
-   mark, lone surrogate), and five positive controls that must still pass — a full stop, a digit, an emoji,
+   test instead of being assumed away. The fixtures cover eight zero-width/ignorable boundary points, SEVEN
+   NON-PRINTING code points that the old subtractive predicate delivered (C0 controls, unassigned,
+   private-use, noncharacter, lone surrogate), and TEN positive controls that must still pass — a full
+   stop, a digit, an emoji,
    a base letter carrying a combining acute, and a letter beside an ideographic space. "Control" here means
    a TEST control, never a Unicode control character. The run records its engine, so a divergence is
    attributable rather than mysterious.

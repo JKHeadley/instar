@@ -31,8 +31,11 @@
  * CLEAN: the boundary is intact, nobody bypasses the door, and the door still calls the guard before
  * fetching. What changed was the guard's ARGUMENT, which is behaviour, not structure.
  *
- * That case is covered by tests/unit/telegram-egress-boundary.test.ts — the same sabotage reds 7 of
- * them. So: this lint answers "may anyone reach the network without passing the door", the tests
+ * That case is covered by tests/unit/telegram-egress-boundary.test.ts — the same sabotage reds the
+ * method-recovery test and the refusal tests there (measured; an earlier version of this comment
+ * claimed 7, which counted failures across TWO files and was corrected by review pass 36 finding 8 —
+ * a number asserted from a run I had not scoped to the file I was naming). So: this lint answers
+ * "may anyone reach the network without passing the door", the tests
  * answer "does the door actually check what passes through it". Neither covers the other, and a
  * reader who assumed this file alone protected the guarantee would be wrong in a way that only shows
  * up when it matters.
@@ -86,6 +89,24 @@ function denotesBotApiUrl(node, sf) {
   return found;
 }
 
+/**
+ * A call that reaches the network. Review pass 36 finding 4: the first version matched ONLY a bare
+ * identifier `fetch`, so `globalThis.fetch(...)` — an ordinary way to write the same call — was
+ * invisible to a lint whose headline claim is "exactly one file". A property access whose final name
+ * is `fetch` counts too.
+ *
+ * Still NOT covered, said plainly rather than left for the next reading to find: a fetch bound to a
+ * DIFFERENT name (`const send = fetch; send(url)`) or reached through a computed member. Catching
+ * those needs alias resolution this does not do. The claim below is written to match this scope.
+ */
+function isFetchCall(n) {
+  if (!ts.isCallExpression(n)) return false;
+  const e = n.expression;
+  if (ts.isIdentifier(e)) return e.text === 'fetch';
+  if (ts.isPropertyAccessExpression(e)) return e.name.text === 'fetch';
+  return false;
+}
+
 const violations = [];
 let doorSeen = false;
 
@@ -96,7 +117,7 @@ for (const file of walk(SRC)) {
   const isDoor = path.resolve(file) === DOOR;
 
   const visit = (n) => {
-    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'fetch') {
+    if (isFetchCall(n) && ts.isCallExpression(n)) {
       if (denotesBotApiUrl(n.arguments[0], sf)) {
         if (isDoor) doorSeen = true;
         else {
@@ -159,14 +180,13 @@ if (!fs.existsSync(DOOR)) {
     ['local helper', "const api = (m) => `https://api.telegram.org/bot${t}/${m}`; fetch(api('sendMessage'), {});", true],
     ['unrelated host', 'fetch(`https://example.invalid/x`, {});', false],
     ['peer mesh call', 'const u = `${peer.url}/sessions`; fetch(u, {});', false],
+    ['property-access fetch', 'globalThis.fetch(`https://api.telegram.org/bot${t}/sendMessage`, {});', true],
   ];
   for (const [label, code, expected] of canaries) {
     const csf = parse('canary.ts', code);
     let saw = false;
     const seek = (n) => {
-      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === 'fetch') {
-        if (denotesBotApiUrl(n.arguments[0], csf)) saw = true;
-      }
+      if (isFetchCall(n) && denotesBotApiUrl(n.arguments[0], csf)) saw = true;
       ts.forEachChild(n, seek);
     };
     seek(csf);

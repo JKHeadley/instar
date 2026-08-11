@@ -904,8 +904,13 @@ describe('standards-coverage ratchet script', () => {
     // hand-updated will keep going stale until something computes it.
     //
     // The `areaAudit` assertion below is DELIBERATELY not adjusted. It reads
-    // `status: 'current'` and will stay red while the Building / Shipping /
-    // Substrate audit records are stale — which they are, because amending a family
+    // `status: 'current'` and will stay red while the Building and The Substrate
+    // audit records are stale — which they are, because amending a family
+    //
+    // 2026-08-11 (review pass 36 finding 9): this named SHIPPING as stale too. Execution reports only
+    // Building and The Substrate; Shipping's recorded audit is current. The refusal to forge acceptance
+    // was right, but the account of WHY the test is red was wrong — and a red whose stated cause is
+    // wrong is the thing a maintainer reads instead of running it.
     // invalidates its audit. That red is the audit gate working, and the ONLY
     // legitimate way to clear it is refreshing those records from a family review
     // that genuinely accepts. Editing this expectation to make the suite green would

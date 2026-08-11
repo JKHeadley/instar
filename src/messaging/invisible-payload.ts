@@ -154,8 +154,12 @@ export const BODY_CARRYING_TELEGRAM_METHODS: ReadonlySet<string> = new Set(
  * failure.
  *
  * With both lists present the world is CLOSED: every Telegram method a sender calls is either guarded or
- * explicitly declared bodyless, and `scripts/lint-telegram-send-funnel-guarded.mjs` FAILS on anything in
- * neither list — "review required", not "assumed safe".
+ * explicitly declared bodyless. That closure is now enforced by `src/messaging/telegram-egress.ts`,
+ * which REFUSES a method in neither list — "review required", not "assumed safe".
+ *
+ * It used to be enforced by `scripts/lint-telegram-send-funnel-guarded.mjs`, which is deleted. Review
+ * pass 36 finding 3 caught the gap that left: for one commit the lists existed, this comment claimed
+ * they were enforced, and nothing enforced them — an unknown method passed the door undecided.
  *
  * Each entry is a claim that the method shows a reader nothing they could be deprived of:
  *   answerCallbackQuery      a transient toast; an empty one legitimately dismisses the spinner
@@ -182,8 +186,12 @@ export const NO_READER_VISIBLE_FIELD_TELEGRAM_METHODS: ReadonlySet<string> = new
 ]);
 
 /**
- * The refusal, at the funnel. Both Telegram senders (`TelegramAdapter` and `TelegramLifeline`)
- * call this as the FIRST statement of their private `apiCall`, which is the only place every send
+ * The refusal, at the CALLER's representation. This no longer runs in either funnel — the egress door
+ * checks the wire payload instead, and the funnel calls were removed as double-cover (pass 36 finding
+ * 6 caught this description outliving them). Its one live caller is the tokenless-relay branch in
+ * `TelegramAdapter`, whose send never reaches the Telegram host from this process.
+ *
+ * Historically both senders called this as the FIRST statement of their private `apiCall`, the only place every send
  * provably passes through — enforced by `scripts/lint-telegram-send-funnel-guarded.mjs`.
  *
  * ── Why here and nowhere else ──────────────────────────────────────────────────────────────────
@@ -277,10 +285,22 @@ export function setInvisiblePayloadRefusalSink(
  * Markdown, and `zwnj`/`nbsp`/`shy`/`apos` are not entities Telegram's HTML mode resolves, so payloads
  * whose visible content was literal punctuation were being judged empty. An over-refusal destroys a real
  * message. Rather than chase a parser with regexes, this keeps only the two transforms that are true of
- * Telegram's rendering without qualification:
+ * Telegram's rendering when the markup is VALID — and that qualification is load-bearing, because
+ * review pass 36 finding 5 showed the previous sentence ("without qualification") was false:
  *
  *   HTML     — a tag is markup; its attributes are never shown.
  *   Markdown — a link displays its LABEL; the destination is not shown.
+ *
+ * KNOWN OVER-REFUSAL, named rather than discovered (pass 36 finding 5). The HTML branch strips every
+ * TAG-SHAPED substring without establishing that Telegram would accept it as a tag. If a payload
+ * carries malformed or unsupported tag-shaped text — which a reader WOULD see, because Telegram
+ * rejects the parse and falls back to sending the source — plus one invisible text node, the
+ * extraction is non-empty and invisible, so this refuses a message that would have been readable.
+ * The refusal is terminal, so that message is lost rather than downgraded.
+ *
+ * It is not fixed here for the same reason the under-refusals below are not: deciding it requires
+ * Telegram's own parse result, and every regex approximation of that parser has produced errors in
+ * BOTH directions (passes 34, 35, 36). It rides CMT-1260 with them.
  *
  * KNOWN UNDER-REFUSALS, accepted deliberately. A character reference (`&#8203;`) is counted as its
  * SOURCE characters, so a payload made only of encoded invisibles passes. Emphasis delimiters count as
@@ -303,7 +323,13 @@ export function readerVisibleText(text: string, parseMode?: unknown): string {
 /**
  * The post-format check: what is about to go on the wire must still carry content once rendered.
  *
- * This is deliberately a SECOND call rather than a replacement for the pre-format one. They close
+ * NOTE (review pass 36 finding 6): this WAS a second call beside a pre-format one in both funnels.
+ * Those were removed when the egress door landed — execution showed the door refuses every payload
+ * they caught, and two copies of one case mask each other's tests. The paragraph below describes the
+ * historical pairing and is kept for the reasoning, not as a description of the current call graph.
+ * The only surviving pre-format call is the tokenless-relay guard, which the door cannot reach.
+ *
+ * They close
  * different cases — the first refuses a payload that never had content, the second refuses one whose
  * content stopped being reader-visible when the representation changed — and each is proven to red on
  * its own.

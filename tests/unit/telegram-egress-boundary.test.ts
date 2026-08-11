@@ -55,11 +55,72 @@ describe('telegram egress boundary — the single door', () => {
       expect(f).not.toHaveBeenCalled();
     });
 
-    it('refuses a body that is not JSON rather than skipping the check', async () => {
+    it('refuses a body it can neither parse nor recognise', async () => {
       const f = arm();
-      await expect(telegramFetch(api('sendMessage'), { method: 'POST', body: 'chat_id=1&text=hi' }))
+      await expect(telegramFetch(api('sendMessage'), { method: 'POST', body: '<<not a payload>>' }))
         .rejects.toThrow(TelegramEgressError);
       expect(f, 'an uncheckable body is a closed door, not an open one').not.toHaveBeenCalled();
+    });
+
+    // ── Review pass 36 finding 1: the door was ONE ENCODING WIDE ────────────────────────────────
+    // Telegram accepts parameters in the query string, as form encoding, and as multipart. The first
+    // version of this door examined only a non-empty JSON STRING body, so a reader-visible method
+    // sent any other supported way reached the network with no check at all.
+
+    it('checks parameters passed in the QUERY STRING', async () => {
+      const f = arm();
+      await expect(telegramFetch(`${api('sendMessage')}?chat_id=1&text=%E2%80%8B`, { method: 'POST' }))
+        .rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f).not.toHaveBeenCalled();
+    });
+
+    it('checks a FORM-ENCODED body, which the Bot API accepts', async () => {
+      const f = arm();
+      await expect(telegramFetch(api('sendMessage'), { method: 'POST', body: 'chat_id=1&text=%E2%80%8B' }))
+        .rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f).not.toHaveBeenCalled();
+    });
+
+    it('checks a URLSearchParams body', async () => {
+      const f = arm();
+      const body = new URLSearchParams({ chat_id: '1', text: '\u200b' });
+      await expect(telegramFetch(api('sendMessage'), { method: 'POST', body }))
+        .rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f).not.toHaveBeenCalled();
+    });
+
+    it('REFUSES a multipart body rather than forwarding it unchecked', async () => {
+      // Reading a FormData/stream here would consume the one the caller is about to send, so it
+      // cannot be checked. Telegram takes captions this way, so this is a real shape, not a
+      // hypothetical — and an unreadable payload is a closed door.
+      const f = arm();
+      const fd = new FormData();
+      fd.append('chat_id', '1');
+      fd.append('text', '\u200b');
+      await expect(telegramFetch(api('sendMessage'), { method: 'POST', body: fd }))
+        .rejects.toThrow(TelegramEgressError);
+      expect(f).not.toHaveBeenCalled();
+    });
+
+    // ── Review pass 36 findings 2 and 3 ────────────────────────────────────────────────────────
+
+    it('checks a CASE-VARIANT method, which Telegram dispatches and the field map missed', async () => {
+      const f = arm();
+      await expect(telegramFetch(`https://api.telegram.org/bot${TOKEN}/sendmessage`, post({
+        chat_id: 1, text: '\u200b',
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f).not.toHaveBeenCalled();
+    });
+
+    it('REFUSES an unclassified method instead of silently passing it', async () => {
+      // The field map returns undefined for an unknown method and the visibility check returns
+      // silently — which is right for a method KNOWN to carry no reader-visible field and wrong for
+      // one nobody has classified. Only the door can tell those apart.
+      const f = arm();
+      await expect(telegramFetch(`https://api.telegram.org/bot${TOKEN}/sendSomethingNew`, post({
+        chat_id: 1, text: 'hello',
+      }))).rejects.toThrow(TelegramEgressError);
+      expect(f, 'an unclassified method has an unknown content decision').not.toHaveBeenCalled();
     });
   });
 

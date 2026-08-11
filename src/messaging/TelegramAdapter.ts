@@ -1430,8 +1430,13 @@ export class TelegramAdapter implements MessagingAdapter {
         // not set `_isPlainRetry`), so a post-format refusal would be re-derived and re-recorded —
         // review pass 35 finding 1 measured two decision records for one operation, reopening the
         // one-operation-one-record invariant pass 30 closed. Retrying also cannot help: the guard
-        // already ALLOWS every representation it cannot decide, so reaching here means the reader
-        // provably receives nothing.
+        // already allows every representation whose extraction is EMPTY. Reaching here means the
+        // extraction was non-empty and carried nothing visible.
+        //
+        // That is NOT the same as "the reader provably receives nothing", which is what this said
+        // until review pass 36 finding 5: malformed tag-shaped source would be shown to the reader
+        // after Telegram rejects the parse, and this refuses it anyway. The refusal is still right
+        // for the case it was built for and wrong for that one; both ride CMT-1260.
         if (err instanceof InvisiblePayloadRefusedError) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
@@ -1454,8 +1459,13 @@ export class TelegramAdapter implements MessagingAdapter {
         // not set `_isPlainRetry`), so a post-format refusal would be re-derived and re-recorded —
         // review pass 35 finding 1 measured two decision records for one operation, reopening the
         // one-operation-one-record invariant pass 30 closed. Retrying also cannot help: the guard
-        // already ALLOWS every representation it cannot decide, so reaching here means the reader
-        // provably receives nothing.
+        // already allows every representation whose extraction is EMPTY. Reaching here means the
+        // extraction was non-empty and carried nothing visible.
+        //
+        // That is NOT the same as "the reader provably receives nothing", which is what this said
+        // until review pass 36 finding 5: malformed tag-shaped source would be shown to the reader
+        // after Telegram rejects the parse, and this refuses it anyway. The refusal is still right
+        // for the case it was built for and wrong for that one; both ride CMT-1260.
         if (err instanceof InvisiblePayloadRefusedError) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
@@ -5759,9 +5769,13 @@ export class TelegramAdapter implements MessagingAdapter {
       params,
       this.config.getFormatMode?.(),
     );
-    // POST-FORMAT check (review pass 33 finding 1). The pre-format call above refuses a payload that
-    // never had content; this refuses one whose content stopped being reader-visible when the
-    // formatter changed the representation. Different cases, each independently proven.
+    // The formatter's output goes to the egress door below, which runs the content check on the
+    // SERIALISED request (pass 33 finding 1: a formatter can remove the very evidence an earlier check
+    // relied on, so the check belongs after every transform).
+    //
+    // There is no pre-format call above any more. This comment used to say there was — pass 36 finding
+    // 6 — which is worth leaving noted: a comment describing a call that was deleted is what a
+    // maintainer trusts instead of re-reading the code.
 
     const url = `https://api.telegram.org/bot${this.config.token}/${method}`;
     const safeUrl = `https://api.telegram.org/bot[REDACTED]/${method}`;

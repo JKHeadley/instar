@@ -2913,7 +2913,10 @@ export class TelegramLifeline {
     // PR2: format sendMessage / editMessageText via the shared helper used by
     // TelegramAdapter. Legacy-passthrough (default) preserves caller parse_mode.
     const sendParams = applyTelegramFormatter(method, params, this.currentFormatMode());
-    // POST-FORMAT check (review pass 33 finding 1) — same reasoning as the adapter funnel.
+    // The content check runs at the egress door below, on the serialised request — after this
+    // transform, because a formatter can remove the evidence an earlier check relied on (pass 33
+    // finding 1). No pre-format call remains here; the comment that claimed one was corrected by
+    // pass 36 finding 6.
     const url = `https://api.telegram.org/bot${this.config.token}/${method}`;
     const timeoutMs = method === 'getUpdates' ? 60_000 : 15_000;
     const controller = new AbortController();

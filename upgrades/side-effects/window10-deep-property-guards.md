@@ -3600,3 +3600,38 @@ That is a multi-reviewer convergence run — the same LLM capacity the exam read
 The test's own comment says editing this expectation "would be forging the acceptance the record exists
 to prove." So the options are a genuine family convergence or an honest red, and the guard is built to
 make exactly that choice unavoidable. Reporting the red.
+
+### Increment 79 — pass 36: the door I had just called the single check had three bypasses (2026-08-11 06:17 PDT)
+
+UNSOUND at 9 (5 DESIGN, 4 PRECISION), up from 7. **Findings 1-3 are real bypasses in the egress door
+this branch introduced one increment earlier**, which is the part worth sitting with: I moved the
+boundary, wrote a header explaining why the class was now closed, and shipped three ways through it.
+
+- **F1 — the door was ONE ENCODING WIDE.** It checked a non-empty string body only. Telegram accepts
+  parameters in the URL query, as form encoding, and as multipart, so a reader-visible method sent any
+  other supported way reached the network unchecked. Now collects from query AND body, parses JSON and
+  form encoding, and REFUSES what it cannot read (multipart/stream) rather than forwarding it.
+- **F2 — case.** `BOT_API_URL` and the field map were case-SENSITIVE; Telegram's dispatch is not.
+  `sendmessage` dispatched fine and missed the map, which returns silently on an unknown key. The URL
+  regex is now case-insensitive and the method is canonicalised before lookup.
+- **F3 — moving the boundary DELETED the closed-world check.** The old per-sender lint failed on a method
+  in neither list; the new lint checks only network confinement, and `assertOutgoingPayloadVisible`
+  returns silently for an unknown method. So a newly-used reader-visible method passed the approved door
+  undecided while the lint stayed clean. The door now refuses an unclassified method outright. Verified
+  no existing sender breaks: all 17 methods used in `src/` are classified (4 reader-visible, 13 bodyless).
+- **F4 — the lint recognised only a bare identifier `fetch`.** `globalThis.fetch` was invisible to a
+  lint whose headline claim is "exactly one file". Widened to property-access; the residual (a fetch
+  bound to another name) is now stated in the header instead of left to the next reading.
+- **F5 — the retreat did not go far enough.** The HTML branch strips tag-shaped substrings without
+  establishing Telegram would accept them, so malformed tag-shaped text plus one invisible node is
+  refused although a reader would have seen it after the parse fallback. NOT fixed — deciding it needs
+  Telegram's parser. The false claims are corrected instead: "true without qualification" and "the
+  reader provably receives nothing" were both wrong, and the over-refusal now rides CMT-1260.
+- **F6-F9 — four false claims.** Comments describing a pre-format call that was deleted; a comment citing
+  a lint that was deleted as the closed-world enforcer; the spec declaring CMT-1246 shipped in one
+  section and pending in another; the spec's predicate saying L/N/P/S when the code uses \p{M} too; a
+  fixture inventory claiming 8 non-printing and 5 positive controls where the file holds 7 and 10; the
+  route diagnostic naming two of the five refused classes; and the deliberately-red standards test naming
+  Shipping as stale when only Building and The Substrate are. All corrected against derived values.
+
+Verification: tsc clean, full lint chain clean, 188 tests in the affected area.

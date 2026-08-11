@@ -10,34 +10,62 @@
  * patterns, one class: the guarantee was distributed across senders, so proving it meant proving a
  * property of every sender, and every proof was weaker than it read.
  *
- * A boundary does not have that problem. If exactly one function may reach the network with a body,
- * then "is the payload checked" stops being a question about six call sites and becomes a question
- * about one — and the lint's job changes from "find the guard in each sender" (which needs binding
- * resolution it does not do) to "no one else calls fetch on this host with a body" (which needs only
- * a URL and the presence of a body).
+ * A boundary does not have that problem. If exactly one function may reach the network, then "is the
+ * payload checked" stops being a question about six call sites and becomes a question about one.
  *
- * WHAT IT CHECKS, and why here rather than earlier. It reads the SERIALIZED BODY — the exact bytes
- * about to go on the wire. Every earlier placement checked a representation that something later
- * could still change: the caller's text, then the formatter's output, then the object handed to
- * fetch. This is the last one. Nothing transforms it after this line, so a check that passes here
- * cannot be undone by a transform nobody looked at, which is the failure that produced pass 33.
+ * WHAT IT CHECKS, and why here rather than earlier. It reads the request as Telegram will read it —
+ * the query string and the serialised body, the exact bytes about to go on the wire. Every earlier
+ * placement checked a representation that something later could still change: the caller's text, then
+ * the formatter's output, then the object handed to fetch. This is the last one.
+ *
+ * WHAT PASS 36 FOUND, because moving a boundary is not the same as closing a class:
+ *
+ *   1. The door checked ONLY a non-empty string body. Telegram accepts parameters in the URL query,
+ *      as form encoding, and as multipart — so a reader-visible method sent any of those other ways
+ *      reached the network unchecked. The door was one encoding wide.
+ *   2. Method and host recognition were case-SENSITIVE while Telegram's dispatch is not. `sendmessage`
+ *      is dispatched by Telegram and missed the field map, which returns silently on an unknown key.
+ *   3. Moving the boundary DELETED the closed-world method check the previous per-sender lint
+ *      performed. A newly-used reader-visible method passed through the approved door, received no
+ *      decision, and left while the lint stayed clean — a guard that nothing guards, which is the
+ *      exact defect this file's own header claimed to have eliminated.
+ *
+ * All three share one root: the door treated what it could not check as fine. The rule below is the
+ * opposite, and it is the only rule here that matters — AN UNCHECKABLE REQUEST IS A CLOSED DOOR.
  */
-import { assertOutgoingPayloadVisible } from './invisible-payload.js';
+import {
+  assertOutgoingPayloadVisible,
+  READER_VISIBLE_TELEGRAM_PARAMS,
+  NO_READER_VISIBLE_FIELD_TELEGRAM_METHODS,
+} from './invisible-payload.js';
 
-/** Any Bot API URL — `api.telegram.org/bot<token>/<method>`. The file-download host carries no body. */
-const BOT_API_URL = /^https:\/\/api\.telegram\.org\/bot[^/]+\/([A-Za-z]+)/;
+/**
+ * Any Bot API URL — `api.telegram.org/bot<token>/<method>`. Case-INSENSITIVE: a hostname is
+ * case-insensitive by RFC and Telegram accepts method names in any case. A matcher stricter than the
+ * dispatcher it models produces requests Telegram honours and this file never sees.
+ */
+const BOT_API_URL = /^https:\/\/api\.telegram\.org\/bot[^/]+\/([A-Za-z]+)/i;
+
+/** Lowercased method → canonical spelling, so lookup matches Telegram's case-insensitive dispatch. */
+const CANONICAL_METHOD: ReadonlyMap<string, string> = new Map(
+  [...Object.keys(READER_VISIBLE_TELEGRAM_PARAMS), ...NO_READER_VISIBLE_FIELD_TELEGRAM_METHODS]
+    .map((m) => [m.toLowerCase(), m] as const),
+);
 
 /**
  * Recover the API method from the URL rather than trusting a caller-supplied label.
  *
- * A caller that passes the wrong method name would select the wrong reader-visible field and the
- * check would silently examine nothing — the same shape as a guard that runs on the wrong string.
- * The URL is what Telegram itself dispatches on, so it is the only description of the request that
- * cannot disagree with the request.
+ * A caller passing the wrong method name would select the wrong reader-visible field, and the check
+ * would silently examine nothing. The URL is what Telegram dispatches on, so it is the only
+ * description of the request that cannot disagree with the request.
+ *
+ * Returns the CANONICAL spelling when the method is known, so a case variant cannot slip past a
+ * case-sensitive field map; returns the raw spelling when unknown, which `telegramFetch` refuses.
  */
 export function methodFromTelegramUrl(url: string): string | null {
   const m = BOT_API_URL.exec(url);
-  return m ? m[1] : null;
+  if (!m) return null;
+  return CANONICAL_METHOD.get(m[1].toLowerCase()) ?? m[1];
 }
 
 export class TelegramEgressError extends Error {
@@ -47,32 +75,85 @@ export class TelegramEgressError extends Error {
   }
 }
 
+/** Parameters Telegram will read, gathered from BOTH places it accepts them. */
+function collectParams(url: string, body: RequestInit['body']): {
+  params: Record<string, unknown>;
+  uncheckable: string | null;
+} {
+  const params: Record<string, unknown> = {};
+
+  // The query string is a first-class way to pass Bot API parameters. The previous version of this
+  // door ignored it completely, so `sendMessage?text=<invisible>` was never examined.
+  const q = url.indexOf('?');
+  if (q >= 0) {
+    for (const [k, v] of new URLSearchParams(url.slice(q + 1))) params[k] = v;
+  }
+
+  if (body === null || body === undefined) return { params, uncheckable: null };
+
+  if (typeof body === 'string') {
+    if (body.length === 0) return { params, uncheckable: null };
+    try {
+      const parsed: unknown = JSON.parse(body);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        Object.assign(params, parsed as Record<string, unknown>);
+        return { params, uncheckable: null };
+      }
+      return { params, uncheckable: 'a JSON body that is not an object' };
+    } catch {
+      // Form encoding is a supported Bot API encoding, not a mistake. Accept it when it looks like
+      // one, and refuse anything else rather than guess.
+      if (/^[^=&\s]+=/.test(body)) {
+        for (const [k, v] of new URLSearchParams(body)) params[k] = v;
+        return { params, uncheckable: null };
+      }
+      return { params, uncheckable: 'a body that is neither JSON nor form encoding' };
+    }
+  }
+
+  if (body instanceof URLSearchParams) {
+    for (const [k, v] of body) params[k] = v;
+    return { params, uncheckable: null };
+  }
+
+  // FormData, Blob, ArrayBuffer, ReadableStream. Multipart is how Telegram takes file uploads and a
+  // caption travels with them, so this is not a hypothetical shape. It is refused rather than parsed,
+  // because reading a stream here would consume the one the caller is about to send.
+  return { params, uncheckable: `a ${body.constructor?.name ?? 'non-string'} body` };
+}
+
 /**
  * Send to the Telegram Bot API. The ONLY place in this codebase permitted to call `fetch` on the Bot
- * API host with a request body; `scripts/lint-telegram-egress-boundary.mjs` enforces that.
+ * API host; `scripts/lint-telegram-egress-boundary.mjs` enforces that.
  *
- * The visibility check runs on the parsed wire body. A body that is not JSON is refused rather than
- * skipped: the Bot API takes JSON for every body-carrying method, so a non-JSON body here is a
- * programming error, and silently passing it through would create exactly the unchecked door this
- * module exists to close.
+ * Refuses rather than forwards whenever it cannot decide: an unknown method (whether it carries
+ * reader-visible content is unknown, so "no field" cannot be told apart from "not checked"), an
+ * unparseable body, and a body shape that cannot be read without consuming it.
  */
 export async function telegramFetch(url: string, init: RequestInit = {}): Promise<Response> {
   const method = methodFromTelegramUrl(url);
-  const body = init.body;
 
-  if (method !== null && typeof body === 'string' && body.length > 0) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(body);
-    } catch {
+  if (method !== null) {
+    // CLOSED WORLD. `assertOutgoingPayloadVisible` returns silently for a method it has no field for,
+    // which is right for a method KNOWN to carry no reader-visible field and wrong for one nobody has
+    // classified. Only this door can tell those apart, so only this door can refuse.
+    if (!CANONICAL_METHOD.has(method.toLowerCase())) {
       throw new TelegramEgressError(
-        `telegram egress: ${method} was given a non-JSON body, so its payload cannot be checked for `
-        + 'reader-visible content. Send an object serialised with JSON.stringify.',
+        `telegram egress: "${method}" is not a classified Bot API method, so whether it carries `
+        + 'reader-visible content is unknown and this request cannot be checked. Add it to '
+        + 'READER_VISIBLE_TELEGRAM_PARAMS (with its field) or to '
+        + 'NO_READER_VISIBLE_FIELD_TELEGRAM_METHODS (deliberately, having read the Bot API docs).',
       );
     }
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      assertOutgoingPayloadVisible(method, parsed as Record<string, unknown>);
+
+    const { params, uncheckable } = collectParams(url, init.body);
+    if (uncheckable !== null) {
+      throw new TelegramEgressError(
+        `telegram egress: ${method} was given ${uncheckable}, so its payload cannot be checked for `
+        + 'reader-visible content. Pass parameters as JSON, form encoding, or query string.',
+      );
     }
+    assertOutgoingPayloadVisible(method, params);
   }
 
   return fetch(url, init);
