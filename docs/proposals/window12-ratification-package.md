@@ -1,4 +1,10 @@
-# Window 12 — ratification package
+# ~~Window 12 — ratification package~~ — SUPERSEDED
+
+> **Superseded by `docs/proposals/window12-DECISION-PACKAGE.md`.** That document is the one to rule on:
+> it consolidates everything the window produced, corrects two counts this one carried ("127 findings"
+> and "5 enforcement mechanisms" — the derived figures are 153 + 31, and 9), and is organised as
+> decisions rather than findings. This is kept as the earlier snapshot.
+
 
 **For the operator. Nothing here has been applied.** Every finding is archived verbatim and the registry
 is untouched. I find and frame; ratification is yours.
