@@ -135,8 +135,13 @@ export const READER_VISIBLE_TELEGRAM_PARAMS: Readonly<Record<string, string | re
   editMessageText: ['text', 'rich_message'],
   // The dedicated rich-message methods. Absent from this table they were REFUSED as unclassified,
   // which was the safe direction but would have broken a legitimate send the moment one was used.
-  sendRichMessage: ['text', 'rich_message'],
-  sendRichMessageDraft: ['text', 'rich_message'],
+  // `rich_message` ONLY. Mapping `text` here too was a phantom field (pass 47): these methods do not
+  // accept it, and the egress waives its unreadable-body refusal when ANY mapped field arrives in the
+  // query — so `?text=visible` on a method that ignores `text`, plus an unreadable body, waived the
+  // refusal. A field map that is too WIDE is not harmlessly cautious; it hands the waiver a key the
+  // method never reads.
+  sendRichMessage: 'rich_message',
+  sendRichMessageDraft: 'rich_message',
   // Swept in 2026-08-10 after a second-pass reviewer pointed out the same class on a different
   // PARAM. A forum topic's `name` is as reader-visible as a message body, and an invisibly-titled
   // topic is worse than an invisible message — it persists in the topic list, unfindable. The two
@@ -398,13 +403,15 @@ export function readerVisibleText(text: string, parseMode?: unknown): string {
  * is, and the label is the nested `text`. Counting a destination as content is precisely how the original
  * incident shipped: a payload whose only visible characters lived inside a URL.
  *
- * A KNOWN AMBIGUITY the key-based approach cannot resolve, recorded rather than papered over. The field
- * `name` means two different things: on `RichTextAnchor` it is a jump-target identifier and is NOT
- * rendered; on `RichTextReference` it is the reference's displayed label and IS. Same key, opposite
- * answers. This walk excludes `name` entirely, which is the safe-for-delivery direction but under-counts
- * a reference label — so a reference whose label is the ONLY visible content would be refused. Resolving
- * it needs the union's type discriminator, not another key rule. (Review pass 46 raised the anchor half;
- * the reference half surfaced when the input-side type definitions were finally obtained.)
+ * `name` is EXCLUDED, and that is simply correct rather than a tradeoff. I recorded it here as a known
+ * ambiguity — claiming `name` is a displayed label on `RichTextReference` and only an identifier on
+ * `RichTextAnchor`, so excluding it under-counted. Review pass 47 checked the live schema: a reference's
+ * DISPLAYED content is its `text`; its `name` is the identifier, exactly as on an anchor. Same meaning
+ * in both places, and the walk already collects the `text`.
+ *
+ * Worth leaving visible: I invented a tradeoff that did not exist, then wrote it into the source as a
+ * known limitation. A fabricated caveat is not the harmless direction to be wrong in — it tells the next
+ * reader the guard is weaker than it is, and invites a repair for a defect that was never there.
  *
  * A structure that yields NO leaves is allowed. That is now a derived conclusion rather than an
  * undecidable shrug: a rich message of media blocks alone — a photo, a collage, a map — legitimately

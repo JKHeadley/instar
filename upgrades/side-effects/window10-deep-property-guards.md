@@ -3929,3 +3929,25 @@ walk excludes it, which is safe for delivery and under-counts a reference label,
 label is the only visible content would be refused. Resolving it needs the union's type discriminator.
 Pass 46 raised the anchor half; the reference half only surfaced once the input-side definitions were
 obtained.
+
+### Increment 92 — pass 47: a phantom field, and a caveat I invented (2026-08-11 13:42 PDT)
+
+6 findings (3 DESIGN, 3 PRECISION). Two repaired, and both are mine in an instructive way.
+
+**A PHANTOM FIELD opened a real waiver.** I mapped `sendRichMessage` and `sendRichMessageDraft` as
+accepting both `text` and `rich_message`. They accept only `rich_message`. That looked like harmless
+caution — a wider map can only check MORE, surely — except the egress waives its unreadable-body refusal
+when ANY mapped field arrives in the query. So `?text=visible` on a method that ignores `text`, plus
+an unreadable body, waived the refusal. **A field map that is too wide is not cautious; it hands the
+waiver a key the method never reads.**
+
+**I INVENTED A CAVEAT AND WROTE IT INTO THE SOURCE.** I recorded a "known ambiguity": that `name` is a
+displayed label on `RichTextReference` and a mere identifier on `RichTextAnchor`, so excluding it was
+safe-but-under-counting. The live schema says a reference's displayed content is its `text` and its
+`name` is the identifier — same as an anchor. There was no ambiguity and no tradeoff; excluding `name`
+is simply correct, and the walk already collects the `text`.
+
+That is a new failure shape for this window and worth naming: **a fabricated caveat is not the safe
+direction to be wrong in.** It tells the next reader the guard is weaker than it is, and invites a repair
+for a defect that never existed. I have spent all day being caught overstating what the code does; this
+was overstating what it FAILS to do, and it is the same error wearing humility.

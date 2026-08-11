@@ -553,8 +553,11 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
       expect(READER_VISIBLE_TELEGRAM_PARAMS).toEqual({
         sendMessage: 'text',
         editMessageText: ['text', 'rich_message'],
-        sendRichMessage: ['text', 'rich_message'],
-        sendRichMessageDraft: ['text', 'rich_message'],
+        // `rich_message` ONLY — pass 47: mapping `text` here was a PHANTOM field these methods do not
+        // accept, and the egress waives its unreadable-body refusal when any mapped field arrives in
+        // the query, so it handed the waiver a key the method never reads.
+        sendRichMessage: 'rich_message',
+        sendRichMessageDraft: 'rich_message',
         createForumTopic: 'name',
         editForumTopic: 'name',
       });
