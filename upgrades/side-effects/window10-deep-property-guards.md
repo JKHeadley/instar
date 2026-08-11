@@ -3781,3 +3781,22 @@ laptop-results folder instead of the canonical archive, exactly as I misfiled pa
 guard, same defect, same session. It is now 39 cited and 40 archived, contiguous.
 
 Verification: tsc clean, full lint chain clean, 168 tests in the affected area, 33 on the door.
+
+### Increment 85 — pass 41: reading once was not enough (2026-08-11 11:00 PDT)
+
+UNSOUND at 8. The finding that matters: my pass-40 "read the body ONCE" repair captured a mutable
+REFERENCE, not bytes. For a string the value IS the bytes, but `URLSearchParams` and `FormData` are
+objects — so a caller could hand one in, let the door inspect it, then mutate that same object before the
+send. Same defect as the one I had just fixed, one level down.
+
+Frozen at capture now: a mutable body is serialised to a string the moment it is read, so the value
+inspected and the value sent are the same immutable bytes. Pinned by a test that mutates the caller's own
+`URLSearchParams` after the call begins and asserts the wire body is still the inspected one.
+
+Also confirmed by this reading and NOT yet fixed, recorded rather than quietly carried:
+- The door infers encoding from the JavaScript wrapper and the body text rather than consulting
+  `Content-Type`.
+- A duplicated JSON key is refused as ambiguous even when the duplicate is irrelevant to the method's
+  reader-visible field — an over-refusal.
+- The predicate sweep STILL leaves the spec describing a different predicate in at least one place, which
+  is the fourth consecutive pass to say so.

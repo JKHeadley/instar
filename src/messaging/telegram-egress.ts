@@ -310,8 +310,19 @@ export async function telegramFetch(
     );
   }
   const href = typeof url === 'string' ? url : url.href;
-  // Read the body ONCE. Everything below inspects this value and the send uses this value.
-  const checkedBody = init.body;
+  // Read the body ONCE, and FREEZE it. Reading once was not enough (pass 41): for a string the value IS
+  // the bytes, but `URLSearchParams` and `FormData` are captured by REFERENCE, so a caller could mutate
+  // the same object after the check and change what goes on the wire. Serialise those to a string here,
+  // so the value inspected below and the value sent at the end are the same immutable bytes.
+  const rawBody = init.body;
+  const checkedBody: RequestInit['body'] = rawBody instanceof URLSearchParams
+    ? rawBody.toString()
+    : (typeof FormData !== 'undefined' && rawBody instanceof FormData)
+      ? new URLSearchParams(
+        [...(rawBody as unknown as Iterable<[string, unknown]>)]
+          .filter((e): e is [string, string] => typeof e[1] === 'string'),
+      ).toString()
+      : rawBody;
 
   let method = methodFromTelegramUrl(href);
 

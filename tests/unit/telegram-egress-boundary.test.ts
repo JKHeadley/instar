@@ -259,6 +259,19 @@ describe('telegram egress boundary — the single door', () => {
       expect(sent.text, 'the wire body must be the one that was inspected').toBe('visible');
     });
 
+    it('freezes a MUTABLE body at capture, not just reads it once', async () => {
+      // Pass 41: reading once was not enough. A string IS its bytes, but URLSearchParams and FormData are
+      // captured by REFERENCE — so a caller mutating the same object after the check still changed what
+      // went on the wire. The value inspected and the value sent must be the same immutable bytes.
+      const f = arm();
+      const body = new URLSearchParams({ chat_id: '1', text: 'visible' });
+      const p = telegramFetch(api('sendMessage'), { method: 'POST', body });
+      body.set('text', '\u200b');       // mutate the very object the caller handed us
+      await p;
+      const sent = new URLSearchParams((f.mock.calls[0][1] as { body: string }).body);
+      expect(sent.get('text'), 'the wire body must be what was inspected').toBe('visible');
+    });
+
     it('treats a trailing DNS root dot as the same host', async () => {
       // Pass 39 F2: `new URL()` preserves the terminal dot, so an exact compare rejected an equivalent
       // hostname — the request reached Telegram and the door returned null.
