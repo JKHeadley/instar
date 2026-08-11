@@ -2904,3 +2904,54 @@ it is, it is not specific to that one increment.
 entry" (singular) where two exist is accurate as a criticism; the inference that a single commit
 double-emits is not something the records establish, and is recorded here as unresolved rather than
 asserted in either direction.
+
+---
+
+## Increment 62 (window 12) — why the pre-push smoke gate skips itself, measured at last
+
+**Review pass 14's headline finding was that every push for days printed *"affected-test listing timed
+out — skipping local smoke; CI is the authority"*, and that the line had been read perhaps thirty times
+as protection rather than as a finding.** It named the symptom. Nobody measured the cause. It printed
+again on every push tonight, so it is measured here.
+
+**The measurements, all taken in this tree:**
+
+| quantity | value | budget / cap |
+|---|---|---|
+| affected-test listing, wall clock | **285 s** | **120 s** |
+| affected test CASES the listing returns | **12,860** | cap **1,000** |
+| changed files vs the smoke base | **179** | cap **200** |
+| full `tsc --noEmit` (the first suspect) | 19 s | — |
+
+**My first hypothesis was wrong and the measurement killed it.** The push config runs a global setup that
+shells out to `tsc`, so the obvious story was "the listing budget is being spent on a compile." `tsc` takes
+**19 seconds** of the 120. It is not the cause. Publishing that story without timing it would have produced
+a confident, wrong root cause — the exact shape this window keeps convicting.
+
+**The actual cause, and it is structural rather than flaky.** The listing costs 285 s against a 120 s
+budget, so it times out **every time, deterministically**. It is not intermittent and never was.
+
+**And the part that matters: the gate HAS a designed skip for this, and cannot reach it.** The breadth
+evaluator would correctly refuse a smoke run this wide — 12,860 affected cases against a cap of 1,000, 12.9×
+over — and would print a real reason: *"affected test case count exceeds local smoke cap."* But the case
+count is only known **after** the listing, and the listing is what times out. The cheap pre-check that runs
+**before** the listing sees only the changed-file count: **179 against a cap of 200.** It passes, by 21
+files.
+
+So the gate is not broken. **Its affordable check has the wrong threshold, and its accurate check costs more
+than the budget for making it.** The correct outcome — skip, because this is far too broad to smoke
+locally — is reached anyway, but through the timeout path, which prints a line that reads like an incident
+instead of a decision. That is why thirty readings of it produced no action: it does not look like a
+verdict, it looks like weather.
+
+**The class, named:** a guard whose correct decision is unreachable because the measurement required to
+make it exceeds the budget allowed for making it. The guard then degrades into a path that is silent about
+whether it decided or merely gave up. This is the same family as the arming step that depended on the
+corrector remembering a format, and it belongs in the failure-shape registry.
+
+**Not fixed here, and not for lack of an obvious repair.** The listing timeout is already configurable by
+environment variable, so raising it is a one-token change — but raising it would let a **12,860-case** local
+smoke run start, which is worse, not better. The honest repair is to give the cheap pre-check a threshold
+that reflects what it is protecting (a branch this far from its base cannot be smoked locally at all), and
+that is a change to a shipped script, which this window's charter has behind the commit gate pending a spec
+approval. Recorded as a measured, dated finding rather than a same-night edit to a gate I have not specced.
