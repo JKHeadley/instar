@@ -59,7 +59,7 @@ function guardSource() {
 }
 
 function readBodyCarryingMethods() {
-  const block = guardSource().match(/READER_VISIBLE_TELEGRAM_PARAMS[^=]*=\s*\{([\s\S]*?)\n\};/);
+  const block = stripComments(guardSource()).match(/READER_VISIBLE_TELEGRAM_PARAMS[^=]*=\s*\{([\s\S]*?)\n\};/);
   const methods = block
     ? [...block[1].matchAll(/^\s{2}([A-Za-z]+)\s*:\s*'[A-Za-z_]+'/gm)].map((m) => m[1])
     : [];
@@ -75,7 +75,7 @@ function readBodyCarryingMethods() {
 
 /** Read a declared `new Set([...])` of method names from the guard source. Same fail-closed rule. */
 function readDeclaredSet(name) {
-  const block = guardSource().match(new RegExp(`${name}[^=]*=\\s*new Set\\(\\[([\\s\\S]*?)\\]\\)`));
+  const block = stripComments(guardSource()).match(new RegExp(`${name}[^=]*=\\s*new Set\\(\\[([\\s\\S]*?)\\]\\)`));
   const names = block ? [...block[1].matchAll(/'([A-Za-z]+)'/g)].map((m) => m[1]) : [];
   if (names.length === 0) {
     console.error(
@@ -102,16 +102,39 @@ const BODY_METHODS = readBodyCarryingMethods();
  * So three things must hold: the identifier is followed by `(`, it is not part of a longer
  * identifier, and the line is not commented out — a commented-out guard is not a guard.
  */
+/**
+ * Strip block comments, line comments AND string literals.
+ *
+ * Review pass 30 finding 1 defeated the previous version three ways at once, all one root cause:
+ * SOURCE-TEXT PRESENCE was being used as evidence of a live call, a declared method, and sender
+ * membership. `void 'assertTelegramPayloadVisible(';` read as a live guard call because the matcher
+ * stripped comments but never lexed strings. This is not a real lexer — a string containing an
+ * apostrophe will confuse it — but it closes the demonstrated escape, and the honest note is that the
+ * structural answer is the shared client (CMT-1246), which makes the population one file and retires
+ * text-scanning entirely.
+ */
+function stripComments(text) {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+}
+
 function hasLiveGuardCall(text) {
   // Strip BLOCK comments across the whole file before looking at lines. The line-at-a-time version
   // stripped only `//` and skipped lines beginning `*`, which an independent reviewer defeated in
   // two shapes: a single-line `/* assertTelegramPayloadVisible(...); */` and a multi-line block —
   // both reported the file as GUARDED with the call commented out, and the whole test suite stayed
   // green. That is the third time in this increment that a check of mine could not fail.
-  const code = text.replace(/\/\*[\s\S]*?\*\//g, '');
-  const call = new RegExp(String.raw`(?<![A-Za-z0-9_$])${GUARD}\s*\(`);
+  // Review pass 30 finding 1 defeated this with `void 'assertTelegramPayloadVisible(';` — the call read
+  // as live because it sat inside a STRING. The first repair stripped strings globally and mis-lexed a
+  // 35k-line file (apostrophes in prose), FAILING a correctly-guarded sender: a false positive, which is
+  // worse than the escape. So the rule is targeted instead of lexical — the identifier must not be
+  // preceded by a quote character. Not a lexer, and it does not claim to be; the structural answer is
+  // the shared client (CMT-1246), which retires text-scanning for this population entirely.
+  const code = stripComments(text);
+  const call = new RegExp(String.raw`(?<![A-Za-z0-9_$'"\`])${GUARD}\s*\(`);
   return code.split('\n').some((line) => {
-    const bare = line.replace(/\/\/.*$/, '');
+    const bare = line;
     if (!call.test(bare)) return false;
     if (/^\s*import\b/.test(bare)) return false;         // naming it in an import is not calling it
     // A LOCAL DEFINITION is not a call. The reviewer deleted the call, dropped the import, and
@@ -152,8 +175,11 @@ if (!fs.existsSync(SRC)) {
 const senders = [];
 for (const file of walk(SRC)) {
   const text = fs.readFileSync(file, 'utf-8');
-  if (!text.includes(API_HOST)) continue;
-  if (!/\bfetch\s*\(/.test(text)) continue;
+  if (!stripComments(text).includes(API_HOST)) continue;
+  // `fetch(` was defeated by `(fetch)(url)` — semantically identical, textually invisible (pass 30).
+  // Matching the IDENTIFIER rather than one call shape closes that; combined with the API-host and
+  // body-method requirements above, a file matching all three is a sender in every case seen.
+  if (!/\bfetch\b/.test(stripComments(text))) continue;
   // Reaching the API is not enough to be in the population — a file that only calls `getChat` or
   // `getMe` carries no reader-visible body and nothing to refuse. Narrowed 2026-08-10 after the
   // first run of this lint flagged such a file: the over-broad population was the matcher's defect,

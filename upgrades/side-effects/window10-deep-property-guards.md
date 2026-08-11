@@ -3144,3 +3144,36 @@ single-record. That assertion therefore **pins existing-correct behaviour agains
 than proving a fix**, and is described that way rather than counted as evidence of one.
 
 Full lint chain green; the funnel, route, window-10 and parity suites all green.
+
+---
+
+## Increment 68 (window 12) — pass 30 finding 1: three false-clean states, and the repair that failed a correct file
+
+**One root cause, three demonstrations:** source-text PRESENCE was being used as evidence of a live call, a
+declared method, and sender membership. All three reproduced before repair.
+
+| escape | why it worked |
+|---|---|
+| `void 'assertTelegramPayloadVisible(';` | the matcher stripped comments but never strings |
+| `'sendPhoto'` declared only inside a COMMENT in the bodyless set | the set reader took every quoted word, comments included |
+| a sender calling `(fetch)(url)` | discovery required the literal text `fetch(`; the shrink ratchet cannot notice an ADDITION |
+
+**My first repair introduced a worse defect than the one it closed.** I stripped string literals globally
+before matching. On `routes.ts` — 35,000 lines with apostrophes in ordinary prose — the naive stripper
+mis-lexed and the lint FAILED a correctly-guarded sender. **A false positive on a correct file is worse than
+the escape**, because it teaches a reader that the check is unreliable, and the A-case caught it in one run.
+
+**What replaced it is targeted rather than lexical:** comments are stripped, and the guard identifier must
+not be preceded by a quote character. It is not a lexer and does not claim to be. The declared sets are read
+with comments stripped and **strings intact** — they are made of quoted values, so stripping strings there
+destroyed the very data being read, which the A-case also caught immediately. Sender discovery now matches
+the `fetch` IDENTIFIER rather than one call shape.
+
+**Proven independently, four ways:** each of the three escapes reds on its own, and the clean tree stays
+clean — the false-positive control, added because the first repair failed exactly there.
+
+**The honest limit, restated rather than quietly dropped.** This is still text-scanning, and a sufficiently
+creative shape will still evade it. Every repair in this increment makes the scan better; none makes it
+structural. **CMT-1246 — the shared client — is what retires text-scanning for this population**, and until
+it lands the lint's guarantee is "no sender in the derived set lacks a guard call", never "no unguarded
+send can exist".

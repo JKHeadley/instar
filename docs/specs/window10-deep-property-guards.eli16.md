@@ -1553,3 +1553,24 @@ The part worth remembering is where the mistake was sitting. The very next sente
 explained that a *different* count had been deliberately left out, precisely because hardcoded numbers go
 stale. The lesson was written down and applied to one number, while its neighbour — one clause away — sat
 hardcoded. Twenty-nine careful readings walked past it.
+
+## The build check had three blind spots, and my first patch was worse than the problem
+
+An outside reading found three ways to make the automatic sender check report all-clear on a tree that was
+not: writing the guard's name inside a piece of text rather than calling it, listing a message type only in
+a comment so it counted as "declared", and writing the network call with the brackets moved so the scanner
+did not recognise it.
+
+**The first fix I wrote was worse than what it fixed.** I told the scanner to ignore anything inside quotes.
+Our largest file is thirty-five thousand lines and full of ordinary prose containing apostrophes, so the
+scanner lost its place and started reporting that a *correctly* protected file was unprotected. A check that
+cries wolf about correct code is worse than one with a gap, because people stop believing it. Running the
+normal case caught that immediately.
+
+What replaced it is narrower and duller: ignore comments, and require that the guard's name is not sitting
+directly after a quote mark. It is not a proper code parser and does not pretend to be.
+
+**The honest limit:** this is still a text search over source code. Each of these repairs makes the search
+better; none makes it airtight. The real answer is the single shared sending function that is already
+written down and owned — until that exists, the check promises "none of the senders I can find is missing
+its guard", not "no unguarded send can exist".
