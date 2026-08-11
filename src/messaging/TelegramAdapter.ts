@@ -10,7 +10,7 @@
  */
 
 import fs from 'node:fs';
-import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
+import { assertTelegramPayloadVisible, assertOutgoingPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
 import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -5720,6 +5720,11 @@ export class TelegramAdapter implements MessagingAdapter {
       params,
       this.config.getFormatMode?.(),
     );
+    // POST-FORMAT check (review pass 33 finding 1). The pre-format call above refuses a payload that
+    // never had content; this refuses one whose content stopped being reader-visible when the
+    // formatter changed the representation. Different cases, each independently proven.
+    assertOutgoingPayloadVisible(method, sendParams.outgoingParams as Record<string, unknown>);
+
     const url = `https://api.telegram.org/bot${this.config.token}/${method}`;
     const safeUrl = `https://api.telegram.org/bot[REDACTED]/${method}`;
 

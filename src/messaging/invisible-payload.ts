@@ -101,7 +101,10 @@ const BLANK_GLYPHS = new Set([
  * rather than sending it.
  *
  * The name is kept for its callers and its history; the precise claim is the MECHANICALLY-VISIBLE one:
- * the string contains at least one letter, number, punctuation mark, or symbol.
+ * the string contains at least one letter, number, punctuation mark, symbol OR MARK that is not
+ * `Default_Ignorable` and not a known blank glyph. (Corrected at review pass 33 finding 5: this
+ * sentence still listed only L/N/P/S after marks were admitted — the account of a repair going stale
+ * one function below the repair itself.)
  */
 export function hasNoVisibleCharacters(text: string): boolean {
   for (const ch of text) {
@@ -210,7 +213,7 @@ export interface InvisiblePayloadRefusal {
   method: string;
   field: string;
   /** WHY it was refused, in the predicate's own terms — never the payload itself. */
-  rule: 'no-content-codepoint';
+  rule: 'no-content-codepoint' | 'no-content-codepoint-after-format';
   /** Length only. The payload is invisible, but it is still user content and is never logged. */
   valueLength: number;
   /** The predicate is engine-resolved, so the engine is part of the decision (see multi-machine posture). */
@@ -254,6 +257,72 @@ export function setInvisiblePayloadRefusalSink(
   return previous;
 }
 
+/**
+ * What a READER actually receives, given a Telegram parse mode.
+ *
+ * Review pass 33 finding 1, proven by execution before repair: the guard ran on the PRE-FORMAT source
+ * while the formatter then changed the representation. A payload whose only content characters sat in a
+ * link DESTINATION passed — `[<zero-width>](https://example.com/x)` — and went on the wire as
+ * `<a href="https://example.com/x">\u200b</a>` with `parse_mode: HTML`. Tags stripped, the reader
+ * received one zero-width space. The original incident's exact harm, through the one door nobody had
+ * looked at, inside the guard built to close that harm.
+ *
+ * The reasoning that failed is worth naming: "the source contains a visible code point, therefore the
+ * reader receives content" does not survive a representation change. Whatever transforms the message
+ * last is what decides what a reader sees.
+ *
+ * HTML: text nodes only — attributes and tag names are markup, never content. Markdown: the label of a
+ * link is what displays, the destination is not. Neither is a full parser and neither claims to be;
+ * both are deliberately CONSERVATIVE about what counts as visible, because over-counting here is what
+ * lets an invisible message through.
+ */
+export function readerVisibleText(text: string, parseMode?: unknown): string {
+  const mode = typeof parseMode === 'string' ? parseMode.toLowerCase() : '';
+  if (mode === 'html') {
+    return text.replace(/<[^>]*>/g, '');
+  }
+  if (mode === 'markdown' || mode === 'markdownv2') {
+    // A link displays its LABEL; the destination is not shown.
+    return text.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
+  }
+  return text;
+}
+
+/**
+ * The post-format check: what is about to go on the wire must still carry content once rendered.
+ *
+ * This is deliberately a SECOND call rather than a replacement for the pre-format one. They close
+ * different cases — the first refuses a payload that never had content, the second refuses one whose
+ * content stopped being reader-visible when the representation changed — and each is proven to red on
+ * its own.
+ */
+export function assertOutgoingPayloadVisible(method: string, params: Record<string, unknown>): void {
+  const field = READER_VISIBLE_TELEGRAM_PARAMS[method];
+  if (field === undefined) return;
+  const value = params?.[field];
+  if (typeof value !== 'string') return;
+  const visible = readerVisibleText(value, (params as { parse_mode?: unknown })?.parse_mode);
+  if (!hasNoVisibleCharacters(visible)) return;
+
+  const decision: InvisiblePayloadRefusal = {
+    guard: 'invisible-payload',
+    outcome: 'refused',
+    method,
+    field,
+    rule: 'no-content-codepoint-after-format',
+    valueLength: value.length,
+    engine: process.version,
+    unicode: process.versions.unicode ?? 'unknown',
+  };
+  try { refusalSink(decision); } catch { /* a broken sink never becomes a delivery */ }
+  throw new InvisiblePayloadRefusedError(
+    `refused: ${method} ${field} carries no reader-visible content AFTER formatting (its content `
+    + 'characters survive only inside markup such as a link destination or a tag attribute, which a '
+    + 'reader never sees).',
+    decision,
+  );
+}
+
 export function assertTelegramPayloadVisible(method: string, params: Record<string, unknown>): void {
   const field = READER_VISIBLE_TELEGRAM_PARAMS[method];
   if (field === undefined) return;
@@ -279,8 +348,9 @@ export function assertTelegramPayloadVisible(method: string, params: Record<stri
     // A broken sink must never convert a refusal into a delivery.
   }
   throw new InvisiblePayloadRefusedError(
-    `refused: ${method} ${field} contains no visible characters (only whitespace and/or zero-width `
-    + 'marks). An invisible message cannot inform a reader, and delivering it would produce a '
+    `refused: ${method} ${field} contains no visible characters (only whitespace, zero-width or `
+    + 'ignorable marks, control/unassigned/private-use code points, or blank glyphs). An invisible '
+    + 'message cannot inform a reader, and delivering it would produce a '
     + '"reply lost" escalation for content that never existed.',
     decision,
   );

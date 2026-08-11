@@ -34,6 +34,8 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import {
   assertTelegramPayloadVisible,
+  assertOutgoingPayloadVisible,
+  readerVisibleText,
   setInvisiblePayloadRefusalSink,
   InvisiblePayloadRefusedError,
   BODY_CARRYING_TELEGRAM_METHODS,
@@ -72,6 +74,14 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
       { suppressLifelineAutoCreate: true },
     );
   });
+
+  function formatAdapter() {
+    return new TelegramAdapter(
+      { token: 'test-token', chatId: '-1001234567890', getFormatMode: () => 'markdown' } as never,
+      stateDir,
+      { suppressLifelineAutoCreate: true },
+    );
+  }
 
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -438,6 +448,56 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
         setInvisiblePayloadRefusalSink(prev);
       }
       expect(seen).toHaveLength(0);
+    });
+  });
+
+  // ── POST-FORMAT: what the READER receives, not what the caller wrote ─────────────────────────
+  //
+  // Review pass 33 finding 1, proven by execution before repair. The guard ran on the pre-format
+  // source; the formatter then moved content into markup. `[<zero-width>](https://example.com/x)`
+  // was SENT, went on the wire as `<a href="https://example.com/x">\u200b</a>` with parse_mode HTML,
+  // and a reader received one zero-width space. The original incident's harm, through the one door
+  // nobody had looked at — inside the guard built to close that harm.
+  describe('a payload whose content survives only in markup is refused', () => {
+    it('refuses when the only content sits in a link DESTINATION', async () => {
+      await expect(formatAdapter().sendToTopic(42, '[\u200b](https://example.com/x)'))
+        .rejects.toThrow(/no reader-visible content AFTER formatting/i);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the only content is formatting syntax', async () => {
+      await expect(formatAdapter().sendToTopic(42, '*\u200b*'))
+        .rejects.toThrow(/no reader-visible content AFTER formatting/i);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('STILL DELIVERS a real link with a real label', async () => {
+      await formatAdapter().sendToTopic(42, '[click here](https://example.com/x)');
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('STILL DELIVERS ordinary text under the formatter', async () => {
+      await formatAdapter().sendToTopic(42, 'hello there');
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('the reader-visible extraction drops markup, not content', () => {
+      expect(readerVisibleText('<a href="https://x.example">hi</a>', 'HTML')).toBe('hi');
+      expect(readerVisibleText('[label](https://x.example)', 'Markdown')).toBe('label');
+      expect(readerVisibleText('plain', undefined)).toBe('plain');
+    });
+
+    it('is a SEPARATE case from the pre-format check — different rule recorded', () => {
+      const seen: Array<Record<string, unknown>> = [];
+      const prev = setInvisiblePayloadRefusalSink((d) => seen.push(d as never));
+      try {
+        expect(() => assertOutgoingPayloadVisible('sendMessage', {
+          text: '<a href="https://x.example">\u200b</a>', parse_mode: 'HTML',
+        })).toThrow();
+      } finally {
+        setInvisiblePayloadRefusalSink(prev);
+      }
+      expect(seen[0]).toMatchObject({ rule: 'no-content-codepoint-after-format' });
     });
   });
 

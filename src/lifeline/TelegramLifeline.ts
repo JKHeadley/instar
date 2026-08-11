@@ -87,7 +87,7 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { applyTelegramFormatter } from '../messaging/TelegramAdapter.js';
 import type { FormatMode } from '../messaging/TelegramMarkdownFormatter.js';
 import { recordFormatFallbackPlainRetry } from '../messaging/telegramFormatMetrics.js';
-import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from '../messaging/invisible-payload.js';
+import { assertTelegramPayloadVisible, assertOutgoingPayloadVisible, InvisiblePayloadRefusedError } from '../messaging/invisible-payload.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 
 /**
@@ -2910,6 +2910,8 @@ export class TelegramLifeline {
     // PR2: format sendMessage / editMessageText via the shared helper used by
     // TelegramAdapter. Legacy-passthrough (default) preserves caller parse_mode.
     const sendParams = applyTelegramFormatter(method, params, this.currentFormatMode());
+    // POST-FORMAT check (review pass 33 finding 1) — same reasoning as the adapter funnel.
+    assertOutgoingPayloadVisible(method, sendParams.outgoingParams as Record<string, unknown>);
     const url = `https://api.telegram.org/bot${this.config.token}/${method}`;
     const timeoutMs = method === 'getUpdates' ? 60_000 : 15_000;
     const controller = new AbortController();

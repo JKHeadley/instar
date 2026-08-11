@@ -3263,3 +3263,63 @@ already records that class — literal adversarial payloads accumulating in a tr
 shape — and the exam walked into it. The repair is to ask the reading to ANALYSE where a check can be
 evaded rather than to write working evasions, and to construct the payloads locally. Recorded here so the
 next brief is written differently rather than the next run being retried blindly.
+
+---
+
+## Increment 71 (window 12) — pass 33: the guard was checking the wrong text
+
+**Pass 33 COMPLETED** (UNSOUND, 5 load-bearing: 3 DESIGN, 2 PRECISION) — the first completed reading under
+the filter-safe brief, and the first in the series to leave the tree verifiably clean. It declined to run
+the destructive measurer, said so, and stated its exclusions beside its count.
+
+### Finding 1 — the guard evaluated the PRE-FORMAT source. Repaired.
+
+The formatter runs AFTER the refusal and changes the representation: Markdown becomes Telegram HTML, link
+destinations become attributes, delimiters become tags. So a payload whose only content characters live in
+markup passes a check on the source and reaches a reader as nothing.
+
+**Proven by execution before repair.** `[<zero-width>](https://example.com/x)` was **SENT**; on the wire
+`<a href="https://example.com/x">​</a>` with `parse_mode: HTML`; tags stripped, the reader receives one
+zero-width space. That is the original incident's harm, through the one door nobody had looked at, inside
+the guard built to close it.
+
+**The reasoning that failed is the part worth keeping:** *"the source contains a visible code point,
+therefore the reader receives content"* does not survive a representation change. Whatever transforms the
+message LAST decides what a reader sees.
+
+The repair is a SECOND check on the outgoing params, after formatting, over the reader-visible extraction
+(HTML text nodes; Markdown link labels). It is deliberately not a replacement — the two close different
+cases, carry different recorded rules, and each reds on its own. Both funnels wired. Proven four ways: the
+link-destination case refuses, formatting-syntax-only refuses, **a real link with a real label still
+delivers**, and ordinary text still delivers.
+
+### Finding 4 — a failing test, and it was mine. Repaired.
+
+`window10-guards-behaviour` was **1-of-52 red in isolation**. Its contiguity fixture cleared the archive and
+recreated only passes 30 and 32, on the stated assumption that neither was cited. True when written; **my
+own later work citing 30–33 made it false**, so the citation arm fired first and the message the test names
+never appeared. The fixture now DERIVES a number two above the current archive maximum and leaves every
+existing verdict in place — no citation broken, and the hole only the contiguity path can see. 52/52.
+
+### Finding 5 — the marks repair left its own account stale. Repaired.
+
+The function's "precise claim" still listed only L/N/P/S after marks were admitted, and the refusal text
+still called every rejection whitespace-or-zero-width while it also rejects controls, unassigned,
+private-use and blank glyphs. Both corrected — **and the first correction broke 42 tests**, because they
+assert the specific reason string, which is exactly what they should do. Kept the asserted phrase and fixed
+only the inaccurate parenthetical.
+
+### Findings 2 and 3 — accepted, NOT repaired, and stated rather than deferred quietly
+
+- **Finding 2: bare identifier + import text still does not prove the call resolves to the import.** A
+  same-spelled identifier can be locally bound or shadow the import; import-shaped text can exist without a
+  live import; the two booleans are joined but never RELATED. Closing this needs real symbol resolution.
+  **My comment in that file claims more than the code does, and that claim is now false in the tree.**
+- **Finding 3: closed-world classification covers only direct literal shapes.** A method carried through a
+  variable, enum, expression or wrapper is unclassified, and the shrink ratchet catches a disappearance,
+  not an omitted new shape.
+
+Both are real, both are the same root the last four readings have circled, and both are properly answered by
+the shared client (CMT-1246) rather than a seventh cleverer matcher. Recorded here as open.
+
+142 tests green across five suites; full lint chain green.

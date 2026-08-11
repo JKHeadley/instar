@@ -497,14 +497,26 @@ describe('lint-account-matches-tree — the account must match the tree', () => 
   });
 
   it('refuses a hole in the middle of an otherwise contiguous archive', () => {
-    // Passes 30 and 32 are NOT cited anywhere in the tree, so the gap at 31 can only be found by the
-    // contiguity path — with cited passes the citation arm claims the gap first and this never runs.
-    clearArchive();
-    write(path.join(ARCHIVE(), 'pass30-verdict.md'), 'x\n');
-    write(path.join(ARCHIVE(), 'pass32-verdict.md'), 'x\n');
+    // DERIVED, not hardcoded — review pass 33 finding 4. This fixture used to clear the archive and
+    // recreate only passes 30 and 32, on the stated assumption that neither was cited anywhere. That
+    // was true when written and my own later work made it false: once the tree cited 30 and 32, the
+    // CITATION arm fired first about all the verdicts the clear had removed, and the contiguity
+    // message this test names never appeared. It failed 1-of-52 in isolation.
+    //
+    // The defect is the hardcoded pair, which is the same shape this whole file exists to catch. So
+    // the fixture now DERIVES a number that cannot collide: it leaves every existing verdict in place
+    // (so no citation is broken) and writes one two above the current maximum, opening a hole
+    // immediately above it that only the contiguity path can see.
+    const nums = fs.readdirSync(ARCHIVE())
+      .map((f) => /^pass(\d+)-verdict\.md$/.exec(f))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map((m) => Number(m[1]));
+    expect(nums.length, 'the archive fixture holds no verdicts — the matcher is broken').toBeGreaterThan(0);
+    const max = Math.max(...nums);
+    write(path.join(ARCHIVE(), `pass${max + 2}-verdict.md`), 'x\n');
     const r = run('lint-account-matches-tree.mjs');
     expect(r.code).toBe(1);
-    expect(r.out).toContain('pass31-verdict.md is missing from an otherwise contiguous archive');
+    expect(r.out).toContain(`pass${max + 1}-verdict.md is missing from an otherwise contiguous archive`);
   });
 
   it('ACCEPTS a cited review pass whose verdict IS archived', () => {
