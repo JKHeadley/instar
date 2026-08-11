@@ -3903,3 +3903,29 @@ incorrect — which would mean the INPUT types differ from the TDLib receiving t
 plausible and I am not guessing at it; verifying it needs the input-side definitions, and guessing is the
 failure this whole thread exists to end. Cross-field query/body precedence, leaf/no-leaf for invisible
 tables versus visible media, and normalized host spellings in the lint also stand open.
+
+### Increment 91 — the input-side types, and the union arm every version had lost (2026-08-11 13:18 PDT)
+
+Pass 46 said the outgoing grammar was wrong. It was, and the reason is worth stating exactly.
+
+The authoritative type definitions say **`RichText` is a UNION**: a bare `string`, an `array` of
+RichText, or one of 22 wrapper interfaces. There is no separate input text type — the same union serves
+both directions, which answers the input-versus-output question that was left open.
+
+**The bare-string arm is the one a key-based walk structurally cannot see.** In
+`{"text": ["hello", {...}]}` the literal "hello" is an ARRAY ELEMENT, under no key at all. Every version
+of this walker returned early on a non-object, so that string was lost — and a message whose only visible
+content arrived that way read as invisible, or worse, an invisible one read as checkable. Collecting the
+string at the union arm is what makes this a walk of the grammar rather than a sweep of field names, and
+it is the difference the last five repairs were circling.
+
+Also added: `summary` on a details block, a RichText carrier the block table does not share with the
+inline layer.
+
+**A KNOWN AMBIGUITY, recorded rather than papered over.** The key `name` means opposite things in two
+places: on `RichTextAnchor` it is a jump-target identifier and is NOT rendered; on `RichTextReference`
+it is the displayed label and IS. Same key, opposite answers — so no key rule can be right for both. The
+walk excludes it, which is safe for delivery and under-counts a reference label, meaning a reference whose
+label is the only visible content would be refused. Resolving it needs the union's type discriminator.
+Pass 46 raised the anchor half; the reference half only surfaced once the input-side definitions were
+obtained.

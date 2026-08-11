@@ -398,6 +398,14 @@ export function readerVisibleText(text: string, parseMode?: unknown): string {
  * is, and the label is the nested `text`. Counting a destination as content is precisely how the original
  * incident shipped: a payload whose only visible characters lived inside a URL.
  *
+ * A KNOWN AMBIGUITY the key-based approach cannot resolve, recorded rather than papered over. The field
+ * `name` means two different things: on `RichTextAnchor` it is a jump-target identifier and is NOT
+ * rendered; on `RichTextReference` it is the reference's displayed label and IS. Same key, opposite
+ * answers. This walk excludes `name` entirely, which is the safe-for-delivery direction but under-counts
+ * a reference label — so a reference whose label is the ONLY visible content would be refused. Resolving
+ * it needs the union's type discriminator, not another key rule. (Review pass 46 raised the anchor half;
+ * the reference half surfaced when the input-side type definitions were finally obtained.)
+ *
  * A structure that yields NO leaves is allowed. That is now a derived conclusion rather than an
  * undecidable shrug: a rich message of media blocks alone — a photo, a collage, a map — legitimately
  * carries no text, and refusing it would destroy a valid message.
@@ -407,7 +415,15 @@ function structuredTextLeaves(value: unknown, depth = 0): Array<{ text: string; 
   // pass 46 found 16 truncates real documents, since every wrapper adds a level and a list inside a
   // table inside a quotation reaches that quickly. Raised well past any plausible document; a structure
   // deeper than this is not a message.
-  if (depth > 200 || value === null || typeof value !== 'object') return [];
+  if (depth > 200 || value === null) return [];
+
+  // A RichText is a UNION: a bare STRING, an ARRAY of RichText, or one of the wrapper interfaces. The
+  // bare-string arm is the one a key-based walk loses — `{"text": ["hello", {...}]}` puts "hello" in an
+  // array element, under no key at all, and every previous version returned early on it. Collecting the
+  // string HERE is what makes this a walk of the union rather than a sweep of field names.
+  if (typeof value === 'string') return [{ text: value, mode: '' }];
+  if (typeof value !== 'object') return [];
+
   const out: Array<{ text: string; mode: string }> = [];
   if (Array.isArray(value)) {
     for (const v of value) out.push(...structuredTextLeaves(v, depth + 1));
@@ -419,9 +435,10 @@ function structuredTextLeaves(value: unknown, depth = 0): Array<{ text: string; 
       // says — the request-level mode does not govern content nested inside a rich structure.
       if (k === 'html') out.push({ text: v, mode: 'HTML' });
       else if (k === 'markdown') out.push({ text: v, mode: 'Markdown' });
-      else if (k === 'text' || k === 'expression') out.push({ text: v, mode: '' });
+      else if (k === 'text' || k === 'expression' || k === 'summary') out.push({ text: v, mode: '' });
     } else if (typeof v === 'object' && v !== null) {
-      // `text` holding an object is a wrapper; `texts` is the sequence. Both are descended.
+      // `text`/`summary` holding an object or array is a nested RichText; every other object field is
+      // descended too, since captions and container children carry their own text.
       out.push(...structuredTextLeaves(v, depth + 1));
     }
   }

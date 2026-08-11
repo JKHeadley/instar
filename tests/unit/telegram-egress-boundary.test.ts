@@ -375,6 +375,33 @@ describe('telegram egress boundary — the single door', () => {
       expect(f4).not.toHaveBeenCalled();
     });
 
+    it('walks the RichText UNION — a bare string in an array is still content', async () => {
+      // The authoritative type definitions say RichText is a union: a bare STRING, an ARRAY of RichText,
+      // or a wrapper interface. The bare-string arm is what a key-based walk loses — an array element
+      // sits under no key at all, so every earlier version returned early on it.
+      const f = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { blocks: [{ type: 'paragraph', text: ['hello', { type: 'bold', text: '\u200b' }] }] },
+      }));
+      expect(f, 'a bare string in the array IS the content').toHaveBeenCalledTimes(1);
+
+      // and the all-invisible version of the same shape must still refuse
+      const f2 = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { blocks: [{ type: 'paragraph', text: ['\u200b', { type: 'bold', text: '\u200b' }] }] },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f2).not.toHaveBeenCalled();
+
+      // `summary` on a details block is a RichText carrier too
+      const f3 = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1, rich_message: { blocks: [{ type: 'details', summary: '\u200b' }] },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f3).not.toHaveBeenCalled();
+    });
+
     it('treats a trailing DNS root dot as the same host', async () => {
       // Pass 39 F2: `new URL()` preserves the terminal dot, so an exact compare rejected an equivalent
       // hostname — the request reached Telegram and the door returned null.
