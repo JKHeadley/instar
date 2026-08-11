@@ -2588,7 +2588,7 @@ reads 48, and both exploits are refused on the member that used to escape, verif
 found the `[SUPERSEDED]` annotation I wrote to arm the claim arm was in a form its own parser cannot read —
 eleven words between the em-dash and the quote — so the wording I retired was never enrolled. The new
 ARM 2c refuses exactly that. It immediately found **three** malformed annotations where the reviewer named
-one, and the derived population went from 4 claims / 3 matchers to **7 / 5**.
+one, and the derived population grew. ~~from 4 claims / 3 matchers to **7 / 5**~~ **— STRUCK 2026-08-10 (review pass 29 finding 3): no run produces those figures; the guard's own clean line reported 9 claims / 5 matchers at the time, and reports the live figures on every run. The number is DELETED rather than corrected, because a seventh careful transcription of a figure the tooling already prints is the defect, not the digits. Read the guard's output.**
 
 **And my first version of that arm flagged correct prose.** Written `\s*(?!")`, the star backtracks to
 zero and the lookahead inspects a space rather than the quote, so every CORRECTLY-formed annotation
@@ -2610,7 +2610,7 @@ one; and a MEASURED section committed twice.
 form the authority says it will adopt next — the gap pass 26 named by that exact language, closed in a
 different shape and labelled as it. Dated **2026-09-07** with the rest.
 
-59 tests, full lint chain green.
+~~59 tests~~ **— STRUCK 2026-08-10 (review pass 29 finding 5): that figure names no population and no run produces it; reproducible totals for the sets it could have meant are 52 / 55 / 58 / 62 / 65. A test count with no named population is unfalsifiable, which is why it is deleted rather than re-guessed.** Full lint chain green.
 
 ## Recorded — the gate caught me declaring under the risk floor, one commit after a reviewer found four of that class
 
