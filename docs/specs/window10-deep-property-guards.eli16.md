@@ -1535,3 +1535,21 @@ instructions tell me to use for every announcement. Three checkers stop reading 
 which is the founding example in the article I wrote about spreading a fix everywhere. And a corrected
 sentence is sitting directly above the false one it was meant to replace, because I inserted it instead of
 replacing it, then wrote that all five places were fixed without checking the fifth.
+
+## A number that was wrong by one, and why we deleted it instead of fixing it
+
+One of our tools measures how much of the safety machinery is actually tested. Its opening comment said the
+total was 90. Counting it again, by the tool's own rules, gives 91. Off by one — in the file whose entire
+subject is that you must re-count a figure rather than trust it.
+
+It had spread, too. The same wrong total appeared in the engineering log, and a percentage had been worked
+out from it, so a tidy-looking "26%" was a share of a wrong number.
+
+**We deleted the number rather than correcting it to 91.** Writing 91 would be right today and wrong again
+the moment anyone adds one more check. The tool already prints its own total every time it runs, so that is
+where the number belongs — somewhere it cannot disagree with itself.
+
+The part worth remembering is where the mistake was sitting. The very next sentence in that same comment
+explained that a *different* count had been deliberately left out, precisely because hardcoded numbers go
+stale. The lesson was written down and applied to one number, while its neighbour — one clause away — sat
+hardcoded. Twenty-nine careful readings walked past it.

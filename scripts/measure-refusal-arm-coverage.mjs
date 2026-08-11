@@ -7,10 +7,17 @@
  * landed it. Then I carried it into review prompts as though the repository declared it. Review pass 26
  * cited it as a tree declaration to justify withholding seventeen surviving mutants; review pass 27
  * grepped the tree for it and found NOTHING — the only figure the repository actually stated was "roughly
- * 40% with nothing measuring it", itself derived over 57 sites and 23 tests when the arm count is now 90. (The test count is
- * deliberately NOT written here: review pass 28 found the number I put in this sentence was produced by
- * a grep, not a run, and differed from the one in my own commit body — in the file whose subject is that
- * a measurement must be re-derived rather than believed. Run the suite; it prints the count.)
+ * 40% with nothing measuring it", itself derived over a much smaller surface than the current one. (NEITHER
+ * the arm count NOR the test count is written here, and the arm count's absence is a repair: review pass 29
+ * finding 4 found this sentence stating "the arm count is now 90" while re-deriving with this script's own
+ * two rules gave 91 — stale by one, in the file whose entire subject is that a figure must be re-derived
+ * rather than believed. Re-derived again 2026-08-11: still 91.
+ *
+ * The sharp part, recorded because it is this branch's signature and it happened INSIDE the sentence that
+ * teaches against it: the very next clause already said the TEST count was deliberately omitted because a
+ * hardcoded number goes stale — and the arm count sat hardcoded one clause away. The lesson was applied to
+ * one number and not to its sibling. Both are gone now, for the same reason: this script PRINTS `total` on
+ * every run, so the count belongs in its output where it cannot disagree with itself. Run it and read it.)
  *
  * A measurement that lives only in a message is not a measurement the work has. That is this registry's
  * own "untracked = abandoned" standard, broken with the very number I was pleased about.

@@ -2527,7 +2527,7 @@ The guard forced the re-read. It cannot force the re-thinking, and says so.
 
 ## MEASURED — refusal-arm coverage, and the number that only existed in a message
 
-**23 of 90 refusal arms are covered by a behavioural test: 26%.** Re-derived by mutation against this tree,
+~~**23 of 90 refusal arms are covered by a behavioural test: 26%.**~~ **STRUCK 2026-08-11 (review pass 29 finding 4): the DENOMINATOR was stale by one — re-deriving with the measuring script's own two rules gives 91, not 90 — so the ratio built on it was wrong too, and the tidy "26%" was a percentage of a wrong number. No corrected figure replaces it, deliberately: the script PRINTS its own total on every run, and a seventh hand-transcription of a count the tooling already emits is the defect rather than the digits. Re-derived by mutation against this tree,
 over BOTH refusal mechanisms (`failures.push` and early `console.error` + `process.exit(1)`), across all
 six guards. Reproducible: `node scripts/measure-refusal-arm-coverage.mjs`, in an isolated `git archive`
 clone — never against a tree a reviewer is reading.
@@ -2550,7 +2550,7 @@ running this measurement rather than by anyone reporting it.
 it in a message, and never landed it — then carried it into review prompts as though the repository
 declared it. Pass 26 cited it as a tree declaration to justify withholding seventeen surviving mutants.
 Pass 27 grepped the tree and found nothing; the only figure the repository actually stated was "roughly 40%
-with nothing measuring it", derived over 57 sites and 23 tests when the arm count is now 90 (the test count is
+with nothing measuring it", derived over a much smaller surface than the current one ~~when the arm count is now 90~~ **— STRUCK, same finding, same reason: stale by one, and now deleted rather than corrected** (the test count is
 deliberately not restated — review pass 28 found the number I wrote there was produced by a grep, not a
 run, and differed from the one in my own commit body) — stale on both
 terms. **A measurement that lives only in a message is not a measurement the work has.** That is this
@@ -3016,3 +3016,31 @@ carrying the vendored codepoint table — is the boundary and is the blocking pr
 claim. Both are registered commitments with deadlines, verified by id, after an earlier attempt at
 registering them was silently REJECTED and would otherwise have been reported as tracked while existing
 nowhere.
+
+---
+
+## Increment 64 (window 12) — pass 29 finding 4: the stale denominator, deleted rather than corrected
+
+**The finding.** The measurement script's header stated *"the arm count is now 90"*. Re-deriving with the
+script's OWN two rules — the two refusal mechanisms it counts — gives **91**, verified twice on this tree
+(12 + 39 + 17 + 7 + 12 + 4). Stale by one, in the file whose entire subject is that a figure must be
+re-derived rather than believed.
+
+**And it had propagated.** A sweep of every surface, not just the file named in the finding, found the same
+stale denominator in the shipping artifact — including a derived ratio, *"23 of 90 … 26%"*, which was a tidy
+percentage of a wrong number. Both struck where they sit.
+
+**Deleted, not corrected, and that is the whole point.** Writing "91" would be the seventh hand-transcription
+of a count the tooling already emits, and it would be stale again the moment an arm is added. The script
+prints its own `total` on every run; the count belongs there, where it cannot disagree with itself.
+
+**The sharpest part is where the defect was sitting.** The very next clause of that same header sentence
+already said the TEST count was deliberately omitted *because* a hardcoded number goes stale — and the arm
+count sat hardcoded **one clause away**. The lesson was applied to one number and not to its sibling, inside
+the sentence that teaches it. That is this branch's signature failure at its smallest possible scale, and it
+survived twenty-nine adversarial readings before pass 29 caught it.
+
+**Evidence.** Arm count re-derived independently of the script (guard-by-guard, by both refusal mechanisms):
+**91**. Script parses (`node --check`). Full sweep for the stale figure across `scripts/`, `docs/`,
+`upgrades/` and `src/` returns only the two struck mentions plus the archived pass-29 verdict, which quotes
+it verbatim as the finding and is correctly left untouched — an archived verdict is a record, not a claim.
