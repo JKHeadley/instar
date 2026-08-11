@@ -122,9 +122,21 @@ export function hasNoVisibleCharacters(text: string): boolean {
  * EXCLUDED — it renders a transient toast, and an empty one legitimately just dismisses the
  * spinner, so refusing it would be an over-refusal rather than a protection.
  */
-export const READER_VISIBLE_TELEGRAM_PARAMS: Readonly<Record<string, string>> = {
+export const READER_VISIBLE_TELEGRAM_PARAMS: Readonly<Record<string, string | readonly string[]>> = {
   sendMessage: 'text',
-  editMessageText: 'text',
+  // `editMessageText` also accepts `rich_message`, and a method can carry reader-visible content in
+  // MORE THAN ONE field — which this map could not express until review pass 43. Checking only `text`
+  // meant an edit carrying its content as `rich_message` returned silently and was sent unexamined.
+  //
+  // Worth recording how this was nearly missed: I judged `rich_message` a fabricated field because it
+  // is absent from the Bot API I know, and only fetching the live documentation showed it was added
+  // after my knowledge. Dismissing it would have discarded a real bypass on the strength of stale
+  // memory — the same defect as trusting a stale claim, pointed the other way.
+  editMessageText: ['text', 'rich_message'],
+  // The dedicated rich-message methods. Absent from this table they were REFUSED as unclassified,
+  // which was the safe direction but would have broken a legitimate send the moment one was used.
+  sendRichMessage: ['text', 'rich_message'],
+  sendRichMessageDraft: ['text', 'rich_message'],
   // Swept in 2026-08-10 after a second-pass reviewer pointed out the same class on a different
   // PARAM. A forum topic's `name` is as reader-visible as a message body, and an invisibly-titled
   // topic is worse than an invisible message — it persists in the topic list, unfindable. The two
@@ -352,9 +364,20 @@ export function readerVisibleText(text: string, parseMode?: unknown): string {
  * content stopped being reader-visible when the representation changed — and each is proven to red on
  * its own.
  */
+/** Every reader-visible field a method may carry. A method can carry more than one (pass 43). */
+export function readerVisibleFieldsFor(method: string): readonly string[] {
+  const f = READER_VISIBLE_TELEGRAM_PARAMS[method];
+  if (f === undefined) return [];
+  return typeof f === 'string' ? [f] : f;
+}
+
 export function assertOutgoingPayloadVisible(method: string, params: Record<string, unknown>): void {
-  const field = READER_VISIBLE_TELEGRAM_PARAMS[method];
-  if (field === undefined) return;
+  for (const field of readerVisibleFieldsFor(method)) {
+    assertOneOutgoingField(method, params, field);
+  }
+}
+
+function assertOneOutgoingField(method: string, params: Record<string, unknown>, field: string): void {
   const value = params?.[field];
   if (typeof value !== 'string') return;
   const visible = readerVisibleText(value, (params as { parse_mode?: unknown })?.parse_mode);
@@ -398,8 +421,12 @@ export function assertOutgoingPayloadVisible(method: string, params: Record<stri
 }
 
 export function assertTelegramPayloadVisible(method: string, params: Record<string, unknown>): void {
-  const field = READER_VISIBLE_TELEGRAM_PARAMS[method];
-  if (field === undefined) return;
+  for (const field of readerVisibleFieldsFor(method)) {
+    assertOnePreFormatField(method, params, field);
+  }
+}
+
+function assertOnePreFormatField(method: string, params: Record<string, unknown>, field: string): void {
   const value = params?.[field];
   if (typeof value !== 'string') return;
   if (!hasNoVisibleCharacters(value)) return;

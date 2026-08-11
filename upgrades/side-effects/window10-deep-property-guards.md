@@ -3818,3 +3818,23 @@ Convergence signal, recorded honestly: this is the first reading where the count
 was held near-identical (eight to seven), and the fourth family lens (cost of compliance, 11 findings)
 returned fewer than the third (falsifiability, 23). Two independent series moving down for the first time
 — which is weak evidence, not convergence, and it is one data point in each.
+
+### Increment 87 — pass 43: a real field I nearly dismissed as fabricated (2026-08-11 11:31 PDT)
+
+UNSOUND at 9. The principal finding: `editMessageText` accepts reader-visible content in
+`rich_message` as well as `text`. The door checked only `text` and returned SILENTLY when it was
+absent, so an edit carrying its content in the other field went out unexamined.
+
+**I nearly threw this away.** `rich_message` is absent from the Bot API I know, so I judged it a
+fabricated field with a plausible-looking citation and was about to report it as a hallucinated finding.
+Fetching the live documentation showed it is real and was added after my knowledge. Two failures were
+one verification apart: acting on a fabricated field, and discarding a genuine bypass because my memory
+was stale. The same defect as trusting a stale claim, pointed the other way.
+
+The documentation also names two methods this table had never heard of — `sendRichMessage` and
+`sendRichMessageDraft`. Both were being REFUSED as unclassified, which was the safe direction and would
+have broken the first legitimate use.
+
+The field map could not express any of this: it was method → ONE field. It is now method → one or many,
+with both checkers looping every field and the egress over-refusal guard requiring the query to supply
+ALL of them before treating an unreadable body as harmless.

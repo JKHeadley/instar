@@ -542,9 +542,19 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
     it('is exactly the methods carrying a reader-visible field, each with its field named', () => {
       // Pinned, because silently widening it would start refusing toasts and silently narrowing it
       // would re-open the hole. A deliberate change to the map must change this line too.
+      // Review pass 43 widened this. `editMessageText` also accepts `rich_message`, so a method can
+      // carry reader-visible content in MORE THAN ONE field, and the two dedicated rich-message methods
+      // were absent entirely — the door refused them as unclassified, which was safe but would have
+      // broken the first legitimate use.
+      //
+      // Verified against the live Bot API documentation, not from memory: I first judged `rich_message`
+      // a fabricated field because it postdates what I knew, and dismissing it would have thrown away
+      // a real bypass.
       expect(READER_VISIBLE_TELEGRAM_PARAMS).toEqual({
         sendMessage: 'text',
-        editMessageText: 'text',
+        editMessageText: ['text', 'rich_message'],
+        sendRichMessage: ['text', 'rich_message'],
+        sendRichMessageDraft: ['text', 'rich_message'],
         createForumTopic: 'name',
         editForumTopic: 'name',
       });

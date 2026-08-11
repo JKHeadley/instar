@@ -48,6 +48,7 @@ import {
   assertOutgoingPayloadVisible,
   emitInvisiblePayloadRefusal,
   READER_VISIBLE_TELEGRAM_PARAMS,
+  readerVisibleFieldsFor,
   NO_READER_VISIBLE_FIELD_TELEGRAM_METHODS,
 } from './invisible-payload.js';
 
@@ -383,8 +384,11 @@ export async function telegramFetch(
     // F6 (pass 39): an unreadable body is only undecidable if the reader-visible field is not ALREADY
     // supplied by the query — and query values win, so when one is present the body cannot change what
     // Telegram sends. Refusing anyway destroyed a decidable, deliverable message.
-    const field = READER_VISIBLE_TELEGRAM_PARAMS[method];
-    const fieldSuppliedByQuery = field !== undefined && typeof params[field] === 'string';
+    // EVERY reader-visible field, not just the first: a method can carry more than one (pass 43), and
+    // an unreadable body is only harmless if the query already supplies ALL of them.
+    const fields = readerVisibleFieldsFor(method);
+    const fieldSuppliedByQuery = fields.length > 0
+      && fields.every((f) => typeof params[f] === 'string');
     if (uncheckable !== null && !fieldSuppliedByQuery) {
       emitInvisiblePayloadRefusal({
         guard: 'invisible-payload',

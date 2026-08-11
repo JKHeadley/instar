@@ -287,6 +287,21 @@ describe('telegram egress boundary — the single door', () => {
       expect(sentBody, 'a later read must not become the wire body').toBeNull();
     });
 
+    it('checks EVERY reader-visible field, not just the first', async () => {
+      // Pass 43: editMessageText also accepts `rich_message`. Checking only `text` meant an edit whose
+      // content arrived in the other field returned silently and was sent unexamined.
+      const f = arm();
+      await expect(telegramFetch(api('editMessageText'),
+        post({ chat_id: 1, message_id: 9, rich_message: '\u200b' })))
+        .rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f).not.toHaveBeenCalled();
+
+      // and the dedicated rich-message methods are classified, not refused as unknown
+      const f2 = arm();
+      await telegramFetch(api('sendRichMessage'), post({ chat_id: 1, rich_message: 'hello' }));
+      expect(f2, 'a legitimate rich-message send must deliver').toHaveBeenCalledTimes(1);
+    });
+
     it('treats a trailing DNS root dot as the same host', async () => {
       // Pass 39 F2: `new URL()` preserves the terminal dot, so an exact compare rejected an equivalent
       // hostname — the request reached Telegram and the door returned null.
