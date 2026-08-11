@@ -1319,7 +1319,7 @@ export class TelegramLifeline {
     const filename = `photo-${Date.now()}-${messageId}.jpg`;
     const localPath = path.join(photoDir, filename);
 
-    const fileRes = await fetch(
+    const fileRes = await telegramFetch(
       `https://api.telegram.org/file/bot${this.config.token}/${filePath}`
     );
     if (!fileRes.ok) throw new Error(`File download failed: ${fileRes.status}`);
@@ -1350,7 +1350,7 @@ export class TelegramLifeline {
     const filename = `${Date.now()}-${baseName}`;
     const localPath = path.join(docDir, filename);
 
-    const fileRes = await fetch(
+    const fileRes = await telegramFetch(
       `https://api.telegram.org/file/bot${this.config.token}/${filePath}`
     );
     if (!fileRes.ok) throw new Error(`File download failed: ${fileRes.status}`);

@@ -3209,7 +3209,7 @@ export class TelegramAdapter implements MessagingAdapter {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 60_000);
         try {
-          const response = await fetch(fileUrl, { signal: controller.signal });
+          const response = await telegramFetch(fileUrl, { signal: controller.signal });
           if (!response.ok) throw new Error(`Download failed: ${response.status}`);
           const buffer = Buffer.from(await response.arrayBuffer());
           fs.writeFileSync(destPath, buffer);

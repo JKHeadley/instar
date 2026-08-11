@@ -3727,3 +3727,31 @@ place to find it, and the habit the last two passes were trying to teach.
   funnel is narrowed to what the lint actually proves.
 
 Verification: tsc clean, full lint chain clean, 166 tests in the affected area, 28 on the door.
+
+### Increment 83 — pass 39, run on the laptop, and the repairs (2026-08-11 09:59 PDT)
+
+Run on the idle laptop after the machine constraint turned out to be movable. UNSOUND at 9 (7 DESIGN, 2
+PRECISION). Tool version verified identical on both machines before treating the count as comparable.
+
+- **F1 — a Bot API request can carry its METHOD in a parameter.** Telegram falls back to the first
+  `method` argument when the path has none, so a request to the token root carrying
+  `method=sendMessage&text=<invisible>` dispatched normally while the door returned null and skipped
+  every check. The door now recovers the method exactly where Telegram does, and REFUSES a root request
+  whose method is nowhere as undecidable.
+- **F2 — a terminal DNS root dot denotes the same host.** `new URL()` preserves it; an exact compare
+  rejected it, so the request reached Telegram and the door skipped. Normalised.
+- **F3 — the duplicate-key scanner compared RAW source spellings.** `text` and `\u0074ext` are the
+  same key to `JSON.parse` and to Telegram, so an escaped spelling read as distinct and the duplicate
+  went undetected. Keys are now decoded before comparison.
+- **F6 — an unreadable body destroyed a decidable request.** Query values win, so when the query already
+  supplies the reader-visible field the body cannot change what Telegram sends; refusing anyway was an
+  over-refusal of a deliverable message.
+- **F7 — the Request-object refusal produced no record.** It sat upstream of both emit sites, so the one
+  shape that arrives already-opaque was invisible to the decision stream and a catcher could erase it.
+- **F5, F8 — the lint's confinement claim was false in two ways.** Its file loop prefiltered
+  case-SENSITIVELY, so an upper-case host skipped the file entirely and the recogniser's
+  case-insensitivity never ran. And its host marker covered only the method host, so THREE direct
+  file-download fetches in the live tree were invisible while it printed categorical confinement. Marker
+  widened; all three routed through the door. The claim is now true.
+
+Verification: tsc clean, full lint chain clean, 169 tests in the affected area, 31 on the door.

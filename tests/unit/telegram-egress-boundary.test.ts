@@ -218,6 +218,41 @@ describe('telegram egress boundary — the single door', () => {
       expect(f2, 'a URL object is checked, not waved through').not.toHaveBeenCalled();
     });
 
+    it('checks a request whose METHOD lives in a parameter, not the path', async () => {
+      // Pass 39 F1: Telegram falls back to the first `method` argument when the path carries none, so a
+      // request to the token root dispatched normally while the door returned null and skipped everything.
+      const f = arm();
+      await expect(telegramFetch(`https://api.telegram.org/bot${TOKEN}/?method=sendMessage&text=%E2%80%8B`,
+        { method: 'POST' })).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f).not.toHaveBeenCalled();
+
+      // and a root request whose method is nowhere is undecidable, not benign
+      const f2 = arm();
+      await expect(telegramFetch(`https://api.telegram.org/bot${TOKEN}/`, { method: 'POST' }))
+        .rejects.toThrow(TelegramEgressError);
+      expect(f2).not.toHaveBeenCalled();
+    });
+
+    it('treats a trailing DNS root dot as the same host', async () => {
+      // Pass 39 F2: `new URL()` preserves the terminal dot, so an exact compare rejected an equivalent
+      // hostname — the request reached Telegram and the door returned null.
+      expect(methodFromTelegramUrl(`https://api.telegram.org./bot${TOKEN}/sendMessage`)).toBe('sendMessage');
+      const f = arm();
+      await expect(telegramFetch(`https://api.telegram.org./bot${TOKEN}/sendMessage`,
+        post({ chat_id: 1, text: '\u200b' }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f).not.toHaveBeenCalled();
+    });
+
+    it('detects a duplicate key written with an ESCAPED spelling', async () => {
+      // Pass 39 F3: the scanner compared raw source characters, so `text` and `\u0074ext` — the same key
+      // to JSON.parse and to Telegram — read as distinct and the duplicate went undetected.
+      const f = arm();
+      await expect(telegramFetch(api('sendMessage'),
+        { method: 'POST', body: '{"chat_id":1,"text":"\u200b","\\u0074ext":"visible"}' }))
+        .rejects.toThrow(TelegramEgressError);
+      expect(f).not.toHaveBeenCalled();
+    });
+
     it('ignores the URL FRAGMENT, which never goes on the wire', async () => {
       // `fetch` strips the fragment. Counting it as payload let visible fragment text mask an
       // invisible query value.
@@ -247,8 +282,12 @@ describe('telegram egress boundary — the single door', () => {
         .rejects.toThrow(TelegramEgressError);
       await expect(telegramFetch(api('sendMessage'), { method: 'POST', body: '<<unparseable>>' }))
         .rejects.toThrow(TelegramEgressError);
+      // and the Request-object refusal, which sat upstream of both emit sites and produced nothing
+      await expect(telegramFetch(new Request(api('sendMessage')) as unknown as string))
+        .rejects.toThrow(TelegramEgressError);
       setInvisiblePayloadRefusalSink(prev);
-      expect(seen.map((d) => d.rule)).toEqual(['unclassified-method', 'unreadable-request']);
+      expect(seen.map((d) => d.rule))
+        .toEqual(['unclassified-method', 'unreadable-request', 'unreadable-request']);
     });
   });
 

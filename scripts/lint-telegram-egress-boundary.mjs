@@ -48,7 +48,10 @@ import ts from 'typescript';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = path.join(ROOT, 'src');
 const DOOR = path.join(SRC, 'messaging', 'telegram-egress.ts');
-const HOST_MARK = 'api.telegram.org/bot';
+// Both Bot API shapes: the method host and the FILE-download host. The marker covered only the
+// first, so three direct file fetches in the live tree were invisible while the lint printed
+// categorical confinement (pass 39 F8).
+const HOST_MARK = 'api.telegram.org/';
 const hasHostMark = (t) => t.toLowerCase().includes(HOST_MARK);
 const GUARD = 'assertOutgoingPayloadVisible';
 
@@ -121,7 +124,9 @@ let doorSeen = false;
 
 for (const file of walk(SRC)) {
   const text = fs.readFileSync(file, 'utf-8');
-  if (!text.includes('api.telegram.org')) continue;
+  // Case-INSENSITIVE prefilter: it was lowercase-only, so an upper-case host skipped the file
+  // entirely and the recogniser's case-insensitivity never ran (pass 39 F5).
+  if (!text.toLowerCase().includes('api.telegram.org')) continue;
   const sf = parse(file, text);
   const isDoor = path.resolve(file) === DOOR;
 

@@ -95,12 +95,26 @@ export function methodFromTelegramUrl(url: string): string | null {
     return null;
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
-  if (parsed.hostname.toLowerCase() !== BOT_API_HOST) return null;
+  // A terminal dot is the DNS root and denotes the SAME host; `new URL()` preserves it while an exact
+  // string compare rejects it, so the request reached Telegram and the door returned null (pass 39 F2).
+  const host = parsed.hostname.toLowerCase().replace(/\.$/, '');
+  if (host !== BOT_API_HOST) return null;
   let pathname = parsed.pathname;
   try { pathname = decodeURIComponent(pathname); } catch { /* malformed escape: judge the raw form */ }
   const m = BOT_PATH.exec(pathname);
   if (!m) return null;
   return CANONICAL_METHOD.get(m[1].toLowerCase()) ?? m[1];
+}
+
+/** A Bot API URL whose path carries a token but NO method segment — the shape Telegram resolves from a
+ *  `method` argument instead. */
+export function isBotApiRoot(url: string): boolean {
+  let parsed: URL;
+  try { parsed = new URL(url.trim()); } catch { return false; }
+  if (parsed.hostname.toLowerCase().replace(/\.$/, '') !== BOT_API_HOST) return false;
+  let pathname = parsed.pathname;
+  try { pathname = decodeURIComponent(pathname); } catch { /* judge the raw form */ }
+  return /^\/bot[^/]+\/?$/.test(pathname);
 }
 
 export class TelegramEgressError extends Error {
@@ -125,7 +139,15 @@ function duplicateTopLevelJsonKey(body: string): string | null {
   for (let i = 0; i < body.length; i += 1) {
     const c = body[i];
     if (inString) {
-      if (escaped) { escaped = false; buf += c; continue; }
+      // Compare DECODED keys: `text` and `\u0074ext` are the SAME key to `JSON.parse` and to Telegram,
+      // and the first version appended raw source characters, so an escaped spelling read as distinct
+      // and the duplicate went undetected (pass 39 F3).
+      if (escaped) {
+        escaped = false;
+        if (c === 'u') { buf += JSON.parse(`"\\u${body.slice(i + 1, i + 5)}"`); i += 4; continue; }
+        buf += ({ n: '\n', t: '\t', r: '\r', b: '\b', f: '\f' } as Record<string, string>)[c] ?? c;
+        continue;
+      }
       if (c === '\\') { escaped = true; continue; }
       if (c === '"') { inString = false; key = buf; buf = ''; continue; }
       buf += c;
@@ -268,13 +290,53 @@ export async function telegramFetch(
   // body lives on the object rather than in `init`, so no parameter collection is possible and
   // forwarding it would be the unchecked door this module exists to close.
   if (typeof url !== 'string' && !(url instanceof URL)) {
+    // Emitted BEFORE the throw (pass 39 F7): this refusal sat upstream of both emit sites, so the one
+    // shape that arrives already-opaque produced no record at all and a catcher could erase it entirely.
+    emitInvisiblePayloadRefusal({
+      guard: 'invisible-payload',
+      outcome: 'refused',
+      method: '(request-object)',
+      field: '(unreadable)',
+      rule: 'unreadable-request',
+      valueLength: 0,
+      engine: process.version,
+      unicode: process.versions.unicode ?? 'unknown',
+    });
     throw new TelegramEgressError(
       'telegram egress: a Request object carries its own body, which cannot be inspected here. Pass a '
       + 'URL string (or URL) with the parameters in `init`.',
     );
   }
   const href = typeof url === 'string' ? url : url.href;
-  const method = methodFromTelegramUrl(href);
+  let method = methodFromTelegramUrl(href);
+
+  // F1 (pass 39): when the path carries NO method, Telegram falls back to the first `method` ARGUMENT.
+  // The door returned null for those and skipped every check, so a request to the token root carrying
+  // `method=sendMessage&text=<invisible>` dispatched normally and was never inspected. Recover the
+  // method from the parameters in exactly the case Telegram does.
+  if (method === null && isBotApiRoot(href)) {
+    const { params } = collectParams(href, init.body);
+    const fromParams = typeof params.method === 'string' ? params.method : null;
+    if (fromParams !== null) {
+      method = CANONICAL_METHOD.get(fromParams.toLowerCase()) ?? fromParams;
+    } else {
+      // A Bot API root request whose method cannot be determined is undecidable, not benign.
+      emitInvisiblePayloadRefusal({
+        guard: 'invisible-payload',
+        outcome: 'refused',
+        method: '(unresolved)',
+        field: '(unknown)',
+        rule: 'unclassified-method',
+        valueLength: 0,
+        engine: process.version,
+        unicode: process.versions.unicode ?? 'unknown',
+      });
+      throw new TelegramEgressError(
+        'telegram egress: this is a Bot API request whose method is in neither the path nor a `method` '
+        + 'parameter, so what it will do cannot be determined and its payload cannot be checked.',
+      );
+    }
+  }
 
   if (method !== null) {
     // CLOSED WORLD. `assertOutgoingPayloadVisible` returns silently for a method it has no field for,
@@ -302,7 +364,12 @@ export async function telegramFetch(
     }
 
     const { params, uncheckable } = collectParams(href, init.body);
-    if (uncheckable !== null) {
+    // F6 (pass 39): an unreadable body is only undecidable if the reader-visible field is not ALREADY
+    // supplied by the query — and query values win, so when one is present the body cannot change what
+    // Telegram sends. Refusing anyway destroyed a decidable, deliverable message.
+    const field = READER_VISIBLE_TELEGRAM_PARAMS[method];
+    const fieldSuppliedByQuery = field !== undefined && typeof params[field] === 'string';
+    if (uncheckable !== null && !fieldSuppliedByQuery) {
       emitInvisiblePayloadRefusal({
         guard: 'invisible-payload',
         outcome: 'refused',
