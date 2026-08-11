@@ -384,11 +384,17 @@ export function readerVisibleText(text: string, parseMode?: unknown): string {
  * approximation of it: descending objects and arrays while collecting `text` strings visits exactly the
  * literals, at any nesting depth, through any wrapper chain.
  *
- * BLOCK level adds two STRING carriers the inline layer does not have — `name` on a block anchor and
- * `expression` on a mathematical block — plus `html` and `markdown` on the container itself.
+ * BLOCK level adds ONE string carrier the inline layer does not have: `expression` on a mathematical
+ * block, which IS rendered. Plus `html` and `markdown` on the container itself.
+ *
+ * `name` on a block anchor was briefly included and has been REMOVED (review pass 46). An anchor's name
+ * is a jump TARGET, not rendered text — the same category as the destinations excluded below, and
+ * including it contradicted the rule stated one paragraph down. A target counted as content makes an
+ * invisible message look visible, which is the direction that ships the harm.
  *
  * WHAT IS DELIBERATELY NOT COLLECTED, and why it is not an oversight: `url`, `email_address`,
- * `phone_number`, `anchor_name`, `document`. A link's DESTINATION is not what a reader sees — its label
+ * `phone_number`, `anchor_name`, `name` (block anchor), `document`. A link's DESTINATION is not what a
+ * reader sees — its label
  * is, and the label is the nested `text`. Counting a destination as content is precisely how the original
  * incident shipped: a payload whose only visible characters lived inside a URL.
  *
@@ -397,7 +403,11 @@ export function readerVisibleText(text: string, parseMode?: unknown): string {
  * carries no text, and refusing it would destroy a valid message.
  */
 function structuredTextLeaves(value: unknown, depth = 0): Array<{ text: string; mode: string }> {
-  if (depth > 16 || value === null || typeof value !== 'object') return [];
+  // Depth bound guards against a cyclic or adversarial structure, NOT against legitimate nesting —
+  // pass 46 found 16 truncates real documents, since every wrapper adds a level and a list inside a
+  // table inside a quotation reaches that quickly. Raised well past any plausible document; a structure
+  // deeper than this is not a message.
+  if (depth > 200 || value === null || typeof value !== 'object') return [];
   const out: Array<{ text: string; mode: string }> = [];
   if (Array.isArray(value)) {
     for (const v of value) out.push(...structuredTextLeaves(v, depth + 1));
@@ -409,7 +419,7 @@ function structuredTextLeaves(value: unknown, depth = 0): Array<{ text: string; 
       // says — the request-level mode does not govern content nested inside a rich structure.
       if (k === 'html') out.push({ text: v, mode: 'HTML' });
       else if (k === 'markdown') out.push({ text: v, mode: 'Markdown' });
-      else if (k === 'text' || k === 'name' || k === 'expression') out.push({ text: v, mode: '' });
+      else if (k === 'text' || k === 'expression') out.push({ text: v, mode: '' });
     } else if (typeof v === 'object' && v !== null) {
       // `text` holding an object is a wrapper; `texts` is the sequence. Both are descended.
       out.push(...structuredTextLeaves(v, depth + 1));

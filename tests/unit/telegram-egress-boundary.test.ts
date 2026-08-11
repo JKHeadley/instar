@@ -342,7 +342,7 @@ describe('telegram egress boundary — the single door', () => {
               { type: 'richTextBold', text: { type: 'richTextItalic', text: { type: 'richTextPlain', text: '\u200b' } } },
               { type: 'richTextUrl', url: 'https://example.com/VISIBLE-IN-URL-ONLY', text: { type: 'richTextPlain', text: '\u200b' } },
             ] } },
-            { type: 'anchor', name: '\u200b' },
+            // an anchor's name is a jump TARGET, not rendered text (pass 46) — it must NOT count
           ],
         },
       }))).rejects.toThrow(InvisiblePayloadRefusedError);

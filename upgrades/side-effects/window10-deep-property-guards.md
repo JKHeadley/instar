@@ -3881,3 +3881,25 @@ checked.
 
 The depth has changed even where the count has not: findings have moved from "you never checked this" to
 "your model of the format is wrong at the third level". Better class of problem, not a finished one.
+
+### Increment 90 — pass 46: SIX design findings and ZERO precision (2026-08-11 13:14 PDT)
+
+First reading all window with **no PRECISION findings** — no false claim in a comment, spec, lint output
+or test. After a day of being caught on exactly that, the claims are now accurate and only design gaps
+remain. That is the more meaningful signal than the count.
+
+**Repaired — an anchor's name is a TARGET, not content.** I excluded link destinations (,
+`email_address`, `phone_number`, `anchor_name`) on the stated ground that a reader sees the LABEL,
+then added `name` on a block anchor as a carrier one paragraph above that rule. An anchor name is a jump
+target in exactly the same category. Counting it as content makes an invisible message look visible —
+the direction that ships the harm. Removed, and the exclusion list now names it.
+
+**Repaired — the depth bound truncated real documents.** 16 was chosen as a guard against cyclic or
+adversarial input, but every wrapper adds a level, so a list inside a table inside a quotation reaches it
+legitimately. Raised to 200: past any plausible document, still bounded.
+
+**NOT repaired, recorded:** the reading also says the outgoing RichText grammar and fixtures are
+incorrect — which would mean the INPUT types differ from the TDLib receiving types I derived from. That is
+plausible and I am not guessing at it; verifying it needs the input-side definitions, and guessing is the
+failure this whole thread exists to end. Cross-field query/body precedence, leaf/no-leaf for invisible
+tables versus visible media, and normalized host spellings in the lint also stand open.

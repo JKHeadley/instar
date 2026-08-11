@@ -1,0 +1,15 @@
+Verdict: **UNSOUND**  
+Magnitude: **6 load-bearing findings — 6 DESIGN, 0 PRECISION**
+
+The report was printed to stdout. The six findings cover:
+
+- Cross-field query/body precedence bypass.
+- Incorrect outgoing `RichText` grammar and fixtures.
+- Premature depth truncation.
+- Non-rendered anchor/reference names counted as content.
+- Leaf/no-leaf logic failing for invisible tables and visible media.
+- Boundary lint missing normalized Telegram host spellings.
+
+I could not create `PASS46-VERDICT.md`: the workspace is enforced read-only, and `apply_patch` was rejected. The file is confirmed absent.
+
+Targeted tests also could not run because dependencies are not installed and network package retrieval is unavailable.
