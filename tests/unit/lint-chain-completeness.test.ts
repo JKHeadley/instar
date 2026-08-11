@@ -34,6 +34,11 @@ const REQUIRED_LINTS = [
   // could not see it, and why it was unprotected.
   'check-codex-rule1-drift.js',
   'lint-canonical-pipeline-completeness.mjs',
+  // The Telegram egress boundary (2026-08-11). It replaced lint-telegram-send-funnel-guarded.mjs,
+  // which had never been registered here — so the guard on the agent's outbound messaging path was
+  // itself unprotected for as long as it existed, and swapping it for a stronger one would have
+  // carried that gap forward silently. Registered with the replacement rather than after it.
+  'lint-telegram-egress-boundary.mjs',
   // Registry-integrity lints. The first five landed 2026-08-06 with the ratified
   // standards batch and the last two on 2026-08-07 with the operator rulings; NONE
   // were registered here, so this inverse check had been failing since 2026-08-06

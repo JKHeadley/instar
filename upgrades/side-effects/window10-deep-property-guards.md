@@ -3563,3 +3563,40 @@ those. Derivation from execution, three times, after inference failed three time
 
 Final: tsc clean, boundary lint clean, 150 tests pass, exactly one per-sender guard remains and it is
 documented at the callsite as a structural exception rather than an oversight.
+
+### Increment 78 — the full suite, which I had not run all night (2026-08-11 05:54 PDT)
+
+After the egress refactor I ran the WHOLE unit suite rather than the area I had been targeting. 3,059
+files, 48,010 tests, 31 minutes. **12 failures across 6 files, and my targeted runs could not have seen
+any of them.** That is worth stating plainly: every green I reported last night was green about the thing
+I had just touched.
+
+**Fixed — 11 of 12:**
+
+- `lint-chain-completeness` — my NEW boundary lint ran in CI but was absent from `REQUIRED_LINTS`, the
+  shrink-only list that stops a merge silently dropping a guard. Its predecessor had never been
+  registered either, so the guard on the outbound messaging path had been unprotected for as long as it
+  existed, and swapping it for a stronger one would have carried that gap forward invisibly. Registered
+  with the replacement.
+- `builtin-manifest` and `standards-registry-asset` — generated artifacts stale against my source
+  changes. Regenerated. The asset generator also reported the article floor sitting at 87 against a live
+  89; raised.
+- `standards-coverage-ratchet` total/ratio — 88 → 89, 0.75 → 0.7416, measured not guessed. **The ratio
+  FELL**, which is correct: article 89 ships documented-only, and ratifying an unenforced standard should
+  lower enforced coverage. This snapshot has now gone stale on the FOURTH consecutive article addition by
+  the same author; the note predicting that is left standing rather than rewritten.
+- Two live-Gemini e2e tests — the CLI is installed but this machine has no `GEMINI_API_KEY`, so it exits
+  41. One test already skipped on quota exhaustion but not on missing auth; the other gated on the binary
+  EXISTING, which is a different fact from the binary being able to reach the API. Both now skip with the
+  reason printed, so an unauthenticated CI cannot look like a green live-provider run. A real provider
+  failure still fails.
+
+**NOT fixed — 1 of 12, and deliberately not fixable by me tonight.** The `areaAudit` assertion requires
+all six family audits current; Building and The Substrate are stale because my commits amended both. The
+legitimate refresh is `--record-area-audit` against a real review artifact, and the existing artifact
+shows what that means: four reviewers, a convergence report, 52 resolved findings, no unresolved design.
+That is a multi-reviewer convergence run — the same LLM capacity the exam reading is waiting on.
+
+The test's own comment says editing this expectation "would be forging the acceptance the record exists
+to prove." So the options are a genuine family convergence or an honest red, and the guard is built to
+make exactly that choice unavoidable. Reporting the red.
