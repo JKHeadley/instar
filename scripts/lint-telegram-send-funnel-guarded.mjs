@@ -34,6 +34,7 @@
  */
 
 import fs from 'node:fs';
+import ts from 'typescript';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -119,37 +120,63 @@ function stripComments(text) {
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
 }
 
-function hasLiveGuardCall(text) {
-  // Strip BLOCK comments across the whole file before looking at lines. The line-at-a-time version
-  // stripped only `//` and skipped lines beginning `*`, which an independent reviewer defeated in
-  // two shapes: a single-line `/* assertTelegramPayloadVisible(...); */` and a multi-line block —
-  // both reported the file as GUARDED with the call commented out, and the whole test suite stayed
-  // green. That is the third time in this increment that a check of mine could not fail.
-  // Review pass 30 finding 1 defeated this with `void 'assertTelegramPayloadVisible(';` — the call read
-  // as live because it sat inside a STRING. The first repair stripped strings globally and mis-lexed a
-  // 35k-line file (apostrophes in prose), FAILING a correctly-guarded sender: a false positive, which is
-  // worse than the escape. So the rule is targeted instead of lexical — the identifier must not be
-  // preceded by a quote character. Not a lexer, and it does not claim to be; the structural answer is
-  // the shared client (CMT-1246), which retires text-scanning for this population entirely.
-  const code = stripComments(text);
-  const call = new RegExp(String.raw`(?<![A-Za-z0-9_$'"\`])${GUARD}\s*\(`);
-  return code.split('\n').some((line) => {
-    const bare = line;
-    if (!call.test(bare)) return false;
-    if (/^\s*import\b/.test(bare)) return false;         // naming it in an import is not calling it
-    // A LOCAL DEFINITION is not a call. The reviewer deleted the call, dropped the import, and
-    // declared a no-op `function assertTelegramPayloadVisible(){}` in the same file — the regex
-    // matched the definition and the lint passed, defeating its own delete-the-call sabotage.
-    if (/^\s*(export\s+)?(async\s+)?function\s/.test(bare)) return false;
-    if (/^\s*(export\s+)?(const|let|var)\s/.test(bare)) return false;
-    return true;
-  });
+/**
+ * A REAL call to the guard, found by PARSING the file — not by matching its text.
+ *
+ * ── Why this is a parser now ───────────────────────────────────────────────────────────────────
+ * Three consecutive readings defeated three successive text matchers, each time through the same
+ * root cause: source-text grammar presented as evidence of semantics.
+ *
+ *   pass 29 →  a bare `includes()` matched `assertTelegramPayloadVisible_DISABLED`
+ *   pass 30 →  `void 'assertTelegramPayloadVisible(';` — the call sat inside a STRING
+ *   pass 30 →  my repair stripped strings globally, mis-lexed a 35k-line file and FAILED a correct one
+ *   pass 31 →  `void 'decoy assertTelegramPayloadVisible(';` — a prefix defeated the quote-boundary rule
+ *
+ * Each patch was narrower than the last and each was beaten in one command. The honest reading is that
+ * the check was never going to hold: a regex cannot decide whether an identifier is a CALL, because
+ * that is a question about grammar, and the answer requires a grammar. TypeScript's own parser is a
+ * devDependency already in this repo, so the structural answer costs an import.
+ *
+ * This does NOT retire CMT-1246. The shared client makes the POPULATION one file; this makes the
+ * per-file verdict sound. Both are wanted, and neither substitutes for the other.
+ */
+function parse(file, text) {
+  return ts.createSourceFile(file, text, ts.ScriptTarget.Latest, /* setParentNodes */ true);
 }
 
-/**
- * A file that calls the guard must also IMPORT it from the one shared module. Without this, a local
- * re-declaration satisfies the call check — the decoy-definition escape above, closed from both ends.
- */
+/** Callee name for a call expression, seeing through parentheses: `(fetch)(u)` → `fetch`. */
+function calleeName(expr) {
+  let e = expr;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (ts.isIdentifier(e)) return e.text;
+  if (ts.isPropertyAccessExpression(e)) return e.name.text;
+  return null;
+}
+
+/** Every real call in the file, as `{ name, args }` — strings inside literals are never calls. */
+function callsIn(sourceFile) {
+  const out = [];
+  (function walk(node) {
+    if (ts.isCallExpression(node)) {
+      const name = calleeName(node.expression);
+      if (name) {
+        out.push({
+          name,
+          stringArgs: node.arguments
+            .filter((a) => ts.isStringLiteral(a) || ts.isNoSubstitutionTemplateLiteral(a))
+            .map((a) => a.text),
+        });
+      }
+    }
+    ts.forEachChild(node, walk);
+  })(sourceFile);
+  return out;
+}
+
+function hasLiveGuardCall(file, text) {
+  return callsIn(parse(file, text)).some((c) => c.name === GUARD);
+}
+
 function importsSharedGuard(text) {
   const re = new RegExp(
     String.raw`import\s*\{[^}]*(?<![A-Za-z0-9_$])${GUARD}(?![A-Za-z0-9_$])[^}]*\}\s*from\s*['"][^'"]*invisible-payload\.js['"]`,
@@ -176,10 +203,10 @@ const senders = [];
 for (const file of walk(SRC)) {
   const text = fs.readFileSync(file, 'utf-8');
   if (!stripComments(text).includes(API_HOST)) continue;
-  // `fetch(` was defeated by `(fetch)(url)` — semantically identical, textually invisible (pass 30).
-  // Matching the IDENTIFIER rather than one call shape closes that; combined with the API-host and
-  // body-method requirements above, a file matching all three is a sender in every case seen.
-  if (!/\bfetch\b/.test(stripComments(text))) continue;
+  // A real `fetch` CALL, seen through parentheses — `(fetch)(url)` is a call and is found (pass 30).
+  const sf = parse(file, text);
+  const calls = callsIn(sf);
+  if (!calls.some((c) => c.name === 'fetch')) continue;
   // Reaching the API is not enough to be in the population — a file that only calls `getChat` or
   // `getMe` carries no reader-visible body and nothing to refuse. Narrowed 2026-08-10 after the
   // first run of this lint flagged such a file: the over-broad population was the matcher's defect,
@@ -188,7 +215,8 @@ for (const file of walk(SRC)) {
   if (carries.length === 0) continue;
   senders.push({
     file,
-    guarded: hasLiveGuardCall(text) && importsSharedGuard(text),
+    calls,
+    guarded: hasLiveGuardCall(file, text) && importsSharedGuard(text),
     carries,
   });
 }
@@ -231,12 +259,18 @@ if (senders.length < SENDER_BASELINE) {
 // an unclassified member escaping the population, which is this branch's defining failure shape. Every
 // method a sender calls must now be classified one way or the other; anything else is review-required.
 const KNOWN = new Set([...BODY_METHODS, ...readDeclaredSet('NO_READER_VISIBLE_FIELD_TELEGRAM_METHODS')]);
-const METHOD_RE = /(?:apiCall\(|api\()\s*'([a-zA-Z]+)'|api\.telegram\.org\/bot[^'"`\s]*\/([a-zA-Z]+)/g;
+// Method names come from REAL call arguments, so quote style is irrelevant — pass 31 defeated the
+// single-quote-only matcher with `this.apiCall("sendPhoto", …)`. The URL form is still text, because a
+// method spliced into a template URL is a string, not a call argument.
+const URL_METHOD_RE = /api\.telegram\.org\/bot[^'"`\s]*\/([a-zA-Z]+)/g;
 const unclassified = new Map();
 for (const s of senders) {
   const text = fs.readFileSync(s.file, 'utf-8');
-  for (const m of text.matchAll(METHOD_RE)) {
-    const method = m[1] ?? m[2];
+  const fromCalls = s.calls
+    .filter((c) => c.name === 'apiCall' || c.name === 'api')
+    .flatMap((c) => c.stringArgs.slice(0, 1));
+  const fromUrls = [...text.matchAll(URL_METHOD_RE)].map((m) => m[1]);
+  for (const method of [...fromCalls, ...fromUrls]) {
     if (!method || KNOWN.has(method)) continue;
     if (!unclassified.has(method)) unclassified.set(method, new Set());
     unclassified.get(method).add(path.relative(ROOT, s.file));

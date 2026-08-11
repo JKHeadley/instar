@@ -41,20 +41,39 @@
  * `L` letters, `N` numbers, `P` punctuation (so a lone full stop is a legitimate message, as it always
  * was), `S` symbols (so emoji count).
  *
- * **`Mc` and `Me` are content too, corrected at review pass 30 after they were wrongly excluded.** The
- * first version excluded ALL marks (`M`) on the reasoning that a mark is not content on its own. That was
- * too broad and it over-refused real text: `Mc` SPACING combining marks (e.g. U+0903 DEVANAGARI SIGN
- * VISARGA) and `Me` ENCLOSING marks (e.g. U+20DD COMBINING ENCLOSING CIRCLE) are graphic and carry advance
- * width — a reader sees them. Refusing a payload made of them was a defect, not a protection, and it was
- * proven by execution rather than argued.
+ * **ALL marks (`M`) are content, and the road here is worth recording because I was wrong twice.**
+ * The first version excluded every mark. Review pass 30 proved that over-refuses real text and I admitted
+ * `Mc`/`Me`, justifying the split by ADVANCE WIDTH — spacing and enclosing marks occupy width, nonspacing
+ * marks do not.
  *
- * The line that survives is ADVANCE WIDTH, which is the mechanical property that decides whether a reader
- * is shown anything: `Mn` NONSPACING marks (a lone combining acute) have zero advance width and are still
- * not content on their own — attached to a base letter they ride along, and the LETTER is what counts.
- * Deliberately NOT content: separators (`Z`), every control/format/unassigned/private-use/surrogate
- * category (`C`), and nonspacing marks (`Mn`) alone.
+ * **That justification was false, and review pass 31 refuted it by measurement.** I re-measured on this
+ * host rather than concede on assertion: at 40pt, `Mn` U+20D0 COMBINING LEFT HARPOON ABOVE advances
+ * **18.400** and `Mn` U+0301 COMBINING ACUTE advances **15.078**. Nonspacing marks are NOT zero-advance,
+ * so General Category was never an advance-width predicate — it was a plausible story fitted to two
+ * examples. (I do not reproduce the reviewer's `Me` = 0.000 figure; mine measures 42.695. That
+ * discrepancy is beside the point — the half that refutes MY claim reproduces.)
+ *
+ * So the split is gone rather than re-justified. Unicode classes `M` as GRAPHIC; a mark renders, on its
+ * base or on a dotted-circle placeholder. Admitting all of `M` is also the SAFE direction: this guard
+ * exists to stop invisible sends, and every over-refusal it makes destroys a real message.
+ *
+ * `L` letters, `N` numbers, `P` punctuation (so a lone full stop is a legitimate message, as it always
+ * was), `S` symbols (so emoji count), `M` marks. Deliberately NOT content: separators (`Z`) and every
+ * control/format/unassigned/private-use/surrogate category (`C`).
  */
-const CONTENT_RE = /[\p{L}\p{N}\p{P}\p{S}\p{Mc}\p{Me}]/u;
+const CONTENT_RE = /[\p{L}\p{N}\p{P}\p{S}\p{M}]/u;
+/**
+ * ...EXCEPT code points Unicode itself classes as rendering to nothing.
+ *
+ * Admitting all of `M` was caught within one test run by the fixtures already in this file: U+FE0F
+ * VARIATION SELECTOR-16 is `Mn` and renders NOTHING — it modifies a neighbour's presentation. Widening
+ * by category alone would have re-opened the original hole through a side door.
+ *
+ * `Default_Ignorable_Code_Point` is the standard's own answer to "renders as nothing", so the rule is:
+ * a letter, number, punctuation mark, symbol or mark is content UNLESS the standard says it is
+ * ignorable. One principled subtraction from a positive base, not a hand-list of exceptions.
+ */
+const IGNORABLE_RE = /\p{Default_Ignorable_Code_Point}/u;
 
 /**
  * Code points that are CATEGORY-POSITIVE but render BLANK — the positive predicate's own false positives.
@@ -86,7 +105,7 @@ const BLANK_GLYPHS = new Set([
  */
 export function hasNoVisibleCharacters(text: string): boolean {
   for (const ch of text) {
-    if (CONTENT_RE.test(ch) && !BLANK_GLYPHS.has(ch)) return false;
+    if (CONTENT_RE.test(ch) && !IGNORABLE_RE.test(ch) && !BLANK_GLYPHS.has(ch)) return false;
   }
   return true;
 }

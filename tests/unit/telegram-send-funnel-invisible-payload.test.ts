@@ -276,7 +276,6 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
       ['Cn U+0378 unassigned', '\u0378'],
       ['Co U+E000 private use', '\ue000'],
       ['noncharacter U+FFFE', '\ufffe'],
-      ['Mn U+0301 lone combining acute (zero advance width)', '\u0301'],
       ['Cs U+D800 lone surrogate', '\ud800'],
     ];
     const VISIBLE_POINTS: Array<[string, string]> = [
@@ -287,6 +286,10 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
       ['a digit', '7'],
       // Corrected at review pass 30: excluding ALL marks over-refused real text. Mc and Me are graphic
       // and carry advance width — a reader sees them — so a payload made of them is content.
+      // Review pass 31 measured my advance-width rationale false — Mn U+20D0 advances 18.4 on this host,
+      // re-measured independently before conceding. All marks are graphic and are content; the split is gone.
+      ['Mn U+0301 lone combining acute', '\u0301'],
+      ['Mn U+20D0 COMBINING LEFT HARPOON ABOVE', '\u20d0'],
       ['Mc U+0903 DEVANAGARI SIGN VISARGA (spacing mark)', '\u0903'],
       ['Me U+20DD COMBINING ENCLOSING CIRCLE (enclosing mark)', '\u20dd'],
       ['a Devanagari letter carrying its visarga', '\u0915\u0903'],

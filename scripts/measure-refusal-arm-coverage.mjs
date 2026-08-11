@@ -49,13 +49,27 @@ const TEST='tests/unit/window10-guards-behaviour.test.ts';
 const run=()=>{try{execSync(`npx vitest run ${TEST} 2>&1`,{encoding:'utf-8',stdio:'pipe'});return 'green';}
   catch(e){const o=`${e.stdout??''}${e.stderr??''}`;return /Tests\s+\d+\s+failed/.test(o)?'red':'err';}};
 const rows=[];
+// RESTORE IS NOW GUARANTEED. Review pass 29 finding 8 recorded that this script mutates the guards in
+// place with no try/finally and no signal handler, and that a reviewer running it was interrupted and left
+// a neutered guard behind — "Structure > Willpower" inverted inside the branch that states it. Pass 31
+// found the same gap still open at the write site. Every mutation is now paired with a finally, and an
+// interrupt restores every file this process has touched before exiting.
+const DIRTY = new Map();               // path -> original contents
+const restoreAll = () => { for (const [f, o] of DIRTY) { try { fs.writeFileSync(f, o); } catch {} } DIRTY.clear(); };
+for (const sig of ['SIGINT','SIGTERM','SIGHUP']) process.on(sig, () => { restoreAll(); process.exit(130); });
+process.on('uncaughtException', (e) => { restoreAll(); throw e; });
+
 for (const g of GUARDS) {
   const orig=fs.readFileSync(g,'utf-8');
+  DIRTY.set(g, orig);
   const idx=[]; let at=0; for(;;){const i=orig.indexOf('failures.push(',at); if(i<0)break; idx.push(i); at=i+1;}
   for (const i of idx) {
     const line=orig.slice(0,i).split('\n').length;
-    fs.writeFileSync(g, `${orig.slice(0,i)}void 0 && ${orig.slice(i)}`);
-    const v=run(); fs.writeFileSync(g,orig);
+    let v;
+    try {
+      fs.writeFileSync(g, `${orig.slice(0,i)}void 0 && ${orig.slice(i)}`);
+      v = run();
+    } finally { fs.writeFileSync(g, orig); }
     rows.push({g:g.replace('scripts/',''),line,kind:'failures.push',v});
     process.stderr.write(v==='red'?'C':v==='green'?'.':'!');
   }
@@ -65,13 +79,28 @@ for (const g of GUARDS) {
   for (const i of exits) {
     const mut=[...lines]; mut[i]=mut[i].replace('process.exit(1)','process.exit(0)');
     for(let j=i-1;j>=Math.max(0,i-14);j--){ if(/console\.error\(/.test(mut[j])){mut[j]=mut[j].replace('console.error(','void 0 && console.error(');break;} }
-    fs.writeFileSync(g,mut.join('\n')); const v=run(); fs.writeFileSync(g,orig);
+    let v;
+    try { fs.writeFileSync(g, mut.join('\n')); v = run(); } finally { fs.writeFileSync(g, orig); }
     rows.push({g:g.replace('scripts/',''),line:i+1,kind:'early-exit',v});
     process.stderr.write(v==='red'?'C':v==='green'?'.':'!');
   }
+  DIRTY.delete(g);
 }
+restoreAll();
 process.stderr.write('\n');
-const cov=rows.filter(r=>r.v==='red').length;
-console.log(JSON.stringify({total:rows.length,covered:cov,ratio:+(cov/rows.length).toFixed(4),
+// "the tests could not run" is NOT "0% covered". Pass 31 finding 3 executed this with a missing test path
+// and got {"total":4,"covered":0,"ratio":0} and exit 0 — a measuring instrument reporting a confident
+// number without having measured anything, which is the exact class article 89 governs. Errored rows are
+// now EXCLUDED from the denominator, reported separately, and a run that measured nothing exits non-zero.
+const errs=rows.filter(r=>r.v==='err');
+const measured=rows.filter(r=>r.v!=='err');
+const cov=measured.filter(r=>r.v==='red').length;
+if (measured.length===0) {
+  console.error(`[measure] NOTHING WAS MEASURED — all ${rows.length} mutation(s) errored (the test could not run). Refusing to report a ratio.`);
+  process.exit(1);
+}
+console.log(JSON.stringify({total:measured.length,covered:cov,ratio:+(cov/measured.length).toFixed(4),
+  erroredUnmeasured:errs.length,
   perGuard:Object.fromEntries([...new Set(rows.map(r=>r.g))].map(g=>{const s=rows.filter(r=>r.g===g);
-    return [g,{covered:s.filter(r=>r.v==='red').length,total:s.length}];}))},null,2));
+    const m=s.filter(r=>r.v!=='err');
+    return [g,{covered:m.filter(r=>r.v==='red').length,total:m.length,erroredUnmeasured:s.length-m.length}];}))},null,2));

@@ -3177,3 +3177,48 @@ creative shape will still evade it. Every repair in this increment makes the sca
 structural. **CMT-1246 — the shared client — is what retires text-scanning for this population**, and until
 it lands the lint's guarantee is "no sender in the derived set lacks a guard call", never "no unguarded
 send can exist".
+
+---
+
+## Increment 69 (window 12) — pass 31 rejects at 4; the lint gets a real parser and my advance-width story dies
+
+**Pass 31: REJECT, load-bearing 4, all four DESIGN, none counted out.** All four repaired.
+
+**Finding 1 — three readings, three defeated matchers, one root cause. The lint now PARSES.**
+`void 'decoy assertTelegramPayloadVisible(';` beat my quote-boundary rule (a prefix separates the identifier
+from the quote), and `this.apiCall("sendPhoto", …)` beat the single-quote-only method matcher. That is the
+fourth and fifth defeat of the same idea: **source-text grammar presented as evidence of semantics.** A
+regex cannot decide whether an identifier is a CALL, because that is a question about grammar and the answer
+requires a grammar. TypeScript's parser is already a devDependency here, so the structural answer cost an
+import. Guard calls, `fetch` calls (seen through parentheses) and method names now come from real call
+expressions; quote style is irrelevant and strings are never calls. **All seven escapes from passes 29, 30
+and 31 red against it, and the clean tree stays clean.** This does NOT retire CMT-1246 — the shared client
+makes the POPULATION one file, the parser makes the per-file verdict sound, and neither substitutes.
+
+**Finding 2 — my advance-width justification was false, and I measured it myself before conceding.**
+I had admitted `Mc`/`Me` and refused `Mn` on the ground that nonspacing marks carry zero advance. Measured
+on this host at 40pt: `Mn` U+20D0 advances **18.400**, `Mn` U+0301 advances **15.078**. Not zero. General
+Category was never an advance-width predicate — it was a plausible story fitted to two examples. All marks
+are content now. (I do NOT reproduce the reviewer's `Me` = 0.000; mine measures 42.695. The discrepancy is
+beside the point — the half refuting my claim reproduces, and that is the half that matters.)
+**Admitting all of `M` immediately failed three existing fixtures** because U+FE0F VARIATION SELECTOR-16 is
+`Mn` and renders nothing, so the rule is now positive-minus-ignorable: content unless
+`Default_Ignorable_Code_Point`, which is the standard's own answer to "renders as nothing".
+
+**Finding 3 — the coverage instrument reported a number without measuring.** Errored mutations stayed in the
+denominator and counted as uncovered, so "the tests could not run" became "0% covered" with exit 0. Errored
+rows are excluded and reported separately; a run that measured nothing now exits non-zero. The same script's
+missing `finally` — pass 29's finding 8, still open at the write site — is closed: every mutation is paired
+with a restore, and SIGINT/SIGTERM/SIGHUP restore every touched file before exiting.
+
+**Finding 4 — the stale figure survived a THIRD time, and the cause is new.** The first sweep grepped
+phrasings I invented. The second used the right pattern and I piped it through `head -5`, then read those
+five lines as the population. **There were thirty-four hits; this was the thirty-first.** A bounded view
+mistaken for a complete one is the same defect as a guessed pattern, one layer along. The final sweep prints
+the COUNT before the rows.
+
+**And I destroyed my own work mid-repair.** Restoring sabotage with `git checkout -- src/` wiped the
+uncommitted finding-2 fix — trap #5 in the window-8 handoff, verbatim, walked into with the trap written
+down. The tests caught it in one run.
+
+136 tests green; full lint chain green.

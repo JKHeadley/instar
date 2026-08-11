@@ -1527,7 +1527,7 @@ files and found nothing at all.
 
 A measurement that lives only in a message is not a measurement the work has. That is my own rule about
 untracked work, broken with the number I was pleased about. It is now a file anyone can re-run, and the
-true figure is 23 of 90 — a quarter. One of the six checkers has none of its refusals tested at all, and
+~~true figure is 23 of 90~~ **— STRUCK 2026-08-11: the denominator is 91. This sentence survived TWO sweeps. The first grepped phrasings I had invented from memory. The second used the right pattern and I piped it through `head -5`, then read those five lines as the whole set — there were thirty-four hits, and this was the thirty-first. A bounded view mistaken for a complete one is the same defect as a guessed pattern, one layer along.** The figure is deleted rather than corrected, because the measuring tool prints its own total on every run
 it is the one whose whole job is that a count about yourself must be true.
 
 The rest: my invisible-message guard was on one door of two, and the door it was missing is the one my own
