@@ -193,6 +193,32 @@ splitting the host literal previously dropped a sender out silently and the lint
   runtime Unicode dependency named in the multi-machine table above. Recorded here because a rejected alternative that
   is actually the better design must not disappear into a commit message.
 
+## CMT-1246 shipped — what the criteria got right, and the one they could not anticipate
+
+The shared-client alternative above is no longer held back. It shipped on 2026-08-11 as
+`src/messaging/telegram-egress.ts`, and the design this spec's title describes — "a Guard Call Present
+in Every Derived Sender File" — is superseded by it. The title is left as written because it records
+what was approved; this section records what replaced it and why that was already sanctioned here.
+
+Against the four acceptance criteria, derived rather than asserted:
+
+- **(a) exactly one function issues an HTTP request to the Telegram API host** — MET.
+  `scripts/lint-telegram-egress-boundary.mjs` proves it by parse and fails if any other file reaches
+  the Bot API host. It also canary-tests its own URL recogniser before trusting a verdict, because a
+  recogniser that silently stops seeing turns a boundary lint into a permanent green light.
+- **(c) the lint's assertion becomes a boundary check** — MET. The predecessor lint is deleted.
+- **(b) every per-sender guard call is DELETED** — MET SEVEN OF EIGHT, and the eighth cannot be met.
+  The tokenless-standby relay egress hands the message to ANOTHER MACHINE; this process never makes a
+  request to the Telegram host, so the door cannot see it. Deleting that guard would open the hole the
+  spec's own §1 describes. The criterion was authored before that egress's nature was understood, and
+  the honest resolution is to name the exception rather than delete a guard to make a checklist even.
+  Of the seven removed, two were the funnel pre-format guards: execution showed every payload they
+  caught is still refused by the door and only the message changes, which is exactly the double-cover
+  the alternatives list rejects.
+- **(d) the vendored invisible-codepoint table** — NOT MET. Untouched; the predicate still uses runtime
+  `\p{...}` escapes, so it still depends on the host's Unicode version. Tracked as its own commitment
+  rather than folded into a claim of completion.
+
 ## One term, used consistently: MECHANICALLY-VISIBLE (a term LOCAL to this spec)
 
 Round 3 asked for the distinction; round 5 correctly noted the document still slid between the two terms.

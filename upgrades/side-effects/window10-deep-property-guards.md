@@ -3532,3 +3532,34 @@ instead of `docs/specs/reports/window10-external-passes/` where the other 34 liv
 `2>/dev/null ||` masked the missing directory. The archive is contiguous again: 35 cited, 35 filed.
 
 Full lint chain green, tsc clean, 150 tests pass in the affected area.
+
+### Increment 77 — CMT-1246's criteria, checked AFTER I had already claimed them (2026-08-11 04:39 PDT)
+
+I marked CMT-1246 delivered and then read its acceptance criteria while updating the spec. That is the
+wrong order, and it is the window's own subject committed by me: a closure claimed without deriving
+whether it was complete. The criteria had been in a file I had read fourteen times.
+
+Derived state, after doing the work the claim had asserted:
+
+- **(a) exactly one function reaches the Telegram host** — MET, proven by parse.
+- **(c) the lint becomes a boundary check** — MET.
+- **(b) every per-sender guard call DELETED** — SEVEN OF EIGHT. The eighth cannot be deleted: the
+  tokenless-standby relay hands the message to ANOTHER MACHINE, so this process never makes the request
+  and the door cannot see it. The criterion was written before that egress's nature was understood.
+- **(d) vendored codepoint table** — NOT MET, untouched. Filed as CMT-1261 rather than folded into a
+  claim of done.
+
+**I was also wrong about (b) in the other direction, and caught it by reading rather than counting.**
+Removing the two funnel pre-format guards red 10 tests, and I was about to report that the remaining
+guards catch cases the door cannot. The failures said otherwise: every payload is still refused — the
+door catches all of them — and only the message differs. They closed the SAME case, which is precisely
+the double-cover this spec's alternatives list rejects, so they went.
+
+**Then the same mistake a third time, on the test edit.** I mapped failing line numbers to nearby
+assertions by inference and changed eight, six of them wrongly — the tokenless-relay tests legitimately
+still expect the pre-format wording because that path legitimately still has the pre-format guard. The
+working method was to revert everything, run, take the failing lines FROM THE RUN, and change exactly
+those. Derivation from execution, three times, after inference failed three times.
+
+Final: tsc clean, boundary lint clean, 150 tests pass, exactly one per-sender guard remains and it is
+documented at the callsite as a structural exception rather than an oversight.

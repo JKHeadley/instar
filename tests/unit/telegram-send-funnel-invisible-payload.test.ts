@@ -99,7 +99,7 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
       it(`refuses ${JSON.stringify(payload)} and sends nothing`, async () => {
         await expect(
           adapter.send({ content: payload, channel: { identifier: '42' } } as never),
-        ).rejects.toThrow(/no visible characters/i);
+        ).rejects.toThrow(/no reader-visible content AFTER formatting/i);
         expect(fetchSpy).not.toHaveBeenCalled();
       });
     }
@@ -117,7 +117,7 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
   // ── The arm the previous placement covered, which must keep working ──────────────────────────
   describe('sendToTopic() — the previously-guarded path', () => {
     it('refuses a zero-width payload and sends nothing', async () => {
-      await expect(adapter.sendToTopic(42, '​')).rejects.toThrow(/no visible characters/i);
+      await expect(adapter.sendToTopic(42, '​')).rejects.toThrow(/no reader-visible content AFTER formatting/i);
       expect(fetchSpy).not.toHaveBeenCalled();
     });
 
@@ -217,7 +217,7 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
     it('refuses an invisible payload at its funnel and never reaches the network', async () => {
       const ll = await lifeline();
       await expect(ll.apiCall('sendMessage', { chat_id: 1, text: '​' }))
-        .rejects.toThrow(/no visible characters/i);
+        .rejects.toThrow(/no reader-visible content AFTER formatting/i);
       expect(fetchSpy).not.toHaveBeenCalled();
     });
 
@@ -418,7 +418,7 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
       const seen: unknown[] = [];
       const prev = setInvisiblePayloadRefusalSink((d) => seen.push(d));
       try {
-        await expect(adapter.sendToTopic(42, '\u200b')).rejects.toThrow(/no visible characters/i);
+        await expect(adapter.sendToTopic(42, '\u200b')).rejects.toThrow(/no reader-visible content AFTER formatting/i);
       } finally {
         setInvisiblePayloadRefusalSink(prev);
       }
@@ -432,7 +432,7 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
       try {
         await expect(
           adapter.send({ content: '\u200b', channel: { identifier: '42' } } as never),
-        ).rejects.toThrow(/no visible characters/i);
+        ).rejects.toThrow(/no reader-visible content AFTER formatting/i);
       } finally {
         setInvisiblePayloadRefusalSink(prev);
       }

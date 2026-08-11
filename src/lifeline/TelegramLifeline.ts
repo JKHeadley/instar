@@ -2906,7 +2906,9 @@ export class TelegramLifeline {
     // all, which four consecutive enumerations of "every send site" all missed because they only
     // ever enumerated the adapter. `scripts/lint-telegram-send-funnel-guarded.mjs` now refuses any
     // class that reaches the Telegram API without this call.
-    assertTelegramPayloadVisible(method, params);
+    // Pre-format guard REMOVED (CMT-1246 criterion b). It closed the same case as the egress
+    // door — proven by execution: with it gone every payload it caught is still refused, and
+    // only the message changes. Two copies of one case mask each other's tests.
 
     // PR2: format sendMessage / editMessageText via the shared helper used by
     // TelegramAdapter. Legacy-passthrough (default) preserves caller parse_mode.

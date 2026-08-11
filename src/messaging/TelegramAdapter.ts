@@ -1388,6 +1388,16 @@ export class TelegramAdapter implements MessagingAdapter {
       // so relying on it would surface a CONTENT refusal as `relay failed … router unreachable`.
       // That conflation of "refused" with "could not reach" is the exact bug TelegramRelay's own
       // header records having fixed.
+      // THE ONE SURVIVING PER-SENDER GUARD, and the reason CMT-1246's criterion (b) — "every
+      // per-sender call is DELETED" — cannot be met literally without opening a hole.
+      //
+      // The egress door (src/messaging/telegram-egress.ts) owns every other path because every other
+      // path reaches api.telegram.org from THIS process. This one does not: it hands the message to
+      // another machine, which sends it. The door cannot see a request this process never makes.
+      //
+      // Criterion (b) was written before that was understood. It is satisfied everywhere the door can
+      // reach — seven of eight calls deleted — and this one stays, deliberately and named, rather than
+      // deleted to make a checklist come out even.
       assertTelegramPayloadVisible('sendMessage', { text });
       const relayed = await this.outboundRelay(topicId, text, {
         silent: options?.silent,
@@ -5737,7 +5747,9 @@ export class TelegramAdapter implements MessagingAdapter {
     // previous placements of this refusal were not. See `assertTelegramPayloadVisible` for the
     // history; the short version is that "the point of sending", "both doors" and "the single
     // chokepoint every send passes through" were each falsified by the next reader.
-    assertTelegramPayloadVisible(method, params);
+    // Pre-format guard REMOVED (CMT-1246 criterion b). It closed the same case as the egress
+    // door — proven by execution: with it gone every payload it caught is still refused, and
+    // only the message changes. Two copies of one case mask each other's tests.
 
     // PR2: run the formatter on sendMessage / editMessageText when a non-legacy
     // mode is configured. Legacy-passthrough (default) preserves the caller's
