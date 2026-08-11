@@ -2864,3 +2864,43 @@ that it sits on the path the send takes — that needs a parser, and the per-pat
 tests instead. A sender reaching Telegram by some mechanism other than a direct `fetch` to the API host
 falls outside the derived population; the shrink ratchet makes that visible but cannot pre-empt it.
 Non-Telegram adapters are entirely out of scope and are not claimed.
+
+---
+
+## Increment 61 (window 12) — pass 29 finding 11, closed by declaring the tier honestly
+
+**Finding 11 said the tier record understates itself, and that "no entry anywhere records
+`declaredTier: 2`".** Both halves checked against the records rather than reasoned about.
+
+**The second half was true at pass 29 and is now FALSE — closed tonight, and not by editing anything.**
+Exactly one entry on this branch records `declaredTier: 2`: the one written when this window's send-path
+change was declared at its risk floor instead of under it. The finding is closed by the declaration being
+honest, which is the only way it could have been closed.
+
+**What the records actually show, derived:**
+
+| entry | declaredTier | riskFloor | belowFloor |
+|---|---|---|---|
+| 23:49 (window 12, the send-path change) | **2** | 2 | false |
+| 17:20 | 1 | 2 | **true** |
+| 17:19 | 1 | 2 | **true** |
+| 16:34 | 1 | 1 | false |
+| 16:33 | 1 | 1 | false |
+
+**The two below-floor entries are the uncomfortable part and they are left visible.** Both declared the
+lightest tier against a second-tier floor, on the Telegram send path — the decision pass 28 convicted, and
+which the log for that increment describes as having been raised. The record shows the raise happening on
+the NEXT commit, not on those two.
+
+**A correction to the finding's own framing, which I could not have made without checking.** It says "the
+commit emitted **two** byte-identical decision entries". The pair is real — the 17:19 and 17:20 entries
+differ in exactly one field, `ts` — but calling it one commit emitting twice is not established. A benign
+explanation fits the same evidence: two gate INVOCATIONS, a blocked attempt followed by a retry. Tonight's
+run is the corroboration — a block that reached tier classification emitted a record, while an earlier
+block that failed before classification emitted none. The same pairing appears at 16:33/16:34, so whatever
+it is, it is not specific to that one increment.
+
+**So finding 11 resolves as: second half CLOSED, first half NARROWED.** The prose saying "the decision
+entry" (singular) where two exist is accurate as a criticism; the inference that a single commit
+double-emits is not something the records establish, and is recorded here as unresolved rather than
+asserted in either direction.
