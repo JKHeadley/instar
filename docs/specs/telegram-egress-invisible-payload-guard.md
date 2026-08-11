@@ -47,7 +47,19 @@ step, and writing that tag by hand before the rounds ran would have been a fabri
 constitution. This paragraph said the step was still owed until review pass 37 finding 8 caught it
 contradicting the frontmatter directly above it.
 
-## Guarantee summary — an INTERIM, NON-STRUCTURAL guard. Read this before citing the spec
+## Guarantee summary — SUPERSEDED 2026-08-11. Read this before citing the spec
+
+> **The heading below described the INTERIM, presence-based guard. That design is gone.** The guarantee is
+> now structural: `src/messaging/telegram-egress.ts` is the single door, and
+> `scripts/lint-telegram-egress-boundary.mjs` confines every Bot API `fetch` to it. What the lint proves
+> is exactly that confinement — it does NOT read the method map or maintain a sender ratchet, and the
+> sections below that say it does are pre-ship text (review pass 38 finding 6). The closed-world method
+> check now lives in the door itself, which refuses an unclassified method at runtime.
+>
+> Read the section *CMT-1246 shipped* for the current state, including the criterion that cannot be met
+> and the one that was not.
+
+### Historical: the interim, non-structural guard
 
 **Behavioural refusal is PROVEN BY INPUT for three funnels:** the adapter's API funnel, the adapter's
 tokenless-standby relay, and the lifeline's own funnel. Each is sabotage-proven to red only its own arms.
@@ -139,6 +151,9 @@ WIDTH SPACEs measure length 2 and pass. Verified by execution.
 an empty one legitimately dismisses the spinner. Refusing it would be an over-refusal, not a protection.
 
 ### 3. Make the enumeration a check, not a memory
+> **Superseded.** This section describes the deleted per-sender lint, which derived a sender population
+> and ratcheted it. The current lint proves confinement to one door and nothing else; the enumeration it
+> replaced now lives in the door's runtime refusal of an unclassified method (pass 38 finding 6).
 
 `scripts/lint-telegram-egress-boundary.mjs` (which REPLACED `lint-telegram-send-funnel-guarded.mjs` when the door landed) confines egress rather than deriving the sender population from the mechanism and reads
 the method→field map **from the guard's own source** rather than keeping a second copy. A future sender
@@ -225,7 +240,7 @@ Against the four acceptance criteria, derived rather than asserted:
 
 Round 3 asked for the distinction; round 5 correctly noted the document still slid between the two terms.
 **"Mechanically-visible" is this document's own term, not an industry or Unicode concept** — it names a specific implemented predicate and should not be read as a general standard for visibility. One term now carries the guarantee: **a payload is MECHANICALLY-VISIBLE when its reader-facing field
-contains at least one LETTER, NUMBER, PUNCTUATION MARK, or SYMBOL.**
+contains at least one LETTER, NUMBER, PUNCTUATION MARK, SYMBOL, or MARK.**
 
 **That definition is POSITIVE, and round 6 is why.** It was subtractive — remove whitespace,
 `Default_Ignorable` and `Cf`, and treat whatever remained as visible. An external reviewer named that as an
@@ -236,7 +251,11 @@ the incident's exact harm on a wider input surface.
 
 **Subtracting the invisible is the same mistake as enumerating the senders: you can only remove the shapes
 you thought of.** Naming what COUNTS closes the world, including against whatever Unicode adds next. A mark
-attached to a base letter still passes, because the letter is content; a lone mark does not.
+attached to a base letter still passes, because the letter is content. **A LONE MARK ALSO PASSES** —
+review passes 30-31 measured the exclusion as an over-refusal of real text and admitted `\p{M}`. This
+sentence said the opposite until review pass 38 finding 5; it is the third pass to catch this claim in
+a spelling the previous sweep did not search, which is the argument for searching the CLAIM rather than
+one of its notations.
 
 **And the positive definition had its OWN false positives, found at round 10 and confirmed by execution:**
 five code points that are letters (`Lo`) or symbols (`So`) by General_Category and render as empty space —
@@ -303,7 +322,7 @@ rather than plumbing a topic id through six senders and a pure predicate to sati
 
 | decision point | classification | justification |
 |---|---|---|
-| **Refuse an outbound Telegram payload whose reader-visible field has no visible characters** | `invariant` | **Restated after round 1, and REPLACED after round 6.** The predicate is NOT "is this visible to a reader" — that depends on Unicode version, grapheme clustering, emoji modifiers and the rendering client, and is not settled. Nor is it the subtractive question it originally asked, which let eight non-printing categories through. What is closed and decidable is the POSITIVE question the code now asks: *does this string contain at least one letter, number, punctuation mark, symbol, or MARK* (`\p{L}\p{N}\p{P}\p{S}\p{M}`, resolved by the host engine's Unicode tables). **`\p{M}` was added at review passes 30-31**: excluding all marks over-refused real text, and the advance-width rationale for splitting Mn from Mc/Me was measured false on the host and withdrawn — a lone combining mark is content. This paragraph said L/N/P/S only until review pass 36 finding 7 caught the spec describing a predicate the code had stopped implementing. Deterministic for a given engine, no competing signal, and closed against categories nobody has thought of yet. There is no competing signal, no context that changes the answer, and no open-domain judgment about meaning — a single full stop passes, correctly. This is the **hard-invariant validation at the API edge** case (see *Signal vs authority* below, where round 12 corrected an earlier mis-citation of the enumerable-inputs exception), not a judgment point wearing an `invariant` label. |
+| **Refuse an outbound Telegram payload whose reader-visible field has no visible characters** | `invariant` | **Restated after round 1, and REPLACED after round 6.** The predicate is NOT "is this visible to a reader" — that depends on Unicode version, grapheme clustering, emoji modifiers and the rendering client, and is not settled. Nor is it the subtractive question it originally asked, which let eight non-printing categories through. What is closed and decidable is the POSITIVE question the code now asks: *does this string contain at least one letter, number, punctuation mark, symbol, or MARK* (`\p{L}\p{N}\p{P}\p{S}\p{M}`, resolved by the host engine's Unicode tables). **`\p{M}` was added at review passes 30-31**: excluding all marks over-refused real text, and the advance-width rationale for splitting Mn from Mc/Me was measured false on the host and withdrawn — a lone combining mark is content. This paragraph said L/N/P/S/M only until review pass 36 finding 7 caught the spec describing a predicate the code had stopped implementing. Deterministic for a given engine, no competing signal, and closed against categories nobody has thought of yet. There is no competing signal, no context that changes the answer, and no open-domain judgment about meaning — a single full stop passes, correctly. This is the **hard-invariant validation at the API edge** case (see *Signal vs authority* below, where round 12 corrected an earlier mis-citation of the enumerable-inputs exception), not a judgment point wearing an `invariant` label. |
 | **Which Telegram methods carry a reader-visible field** | `invariant`, as a **VERSIONED POLICY TABLE** | **Reclassified after round 1.** Calling this "a fact about the API" was wrong twice over: the Bot API can add or change methods, and the `answerCallbackQuery` exclusion is a product-behaviour judgment (an empty toast is *useful*), not a mechanical one. It is an invariant at RUNTIME — a closed code-defined map with no per-call judgment — but it is policy that carries a review trigger, not a timeless truth. **Review trigger:** any Bot API version bump, or any new `apiCall` method reaching a reader. The pinning test is what makes a silent drift impossible. |
 | **Whether a source file is a Telegram body-sender (the lint's population)** | `invariant` | Derived mechanically — builds the API host string AND calls `fetch` AND references a body-carrying method. No semantic judgment; a shrink-only ratchet makes a silent population loss loud. |
 
@@ -317,7 +336,7 @@ rather than plumbing a topic id through six senders and a pure predicate to sati
 
 | surface | posture | note |
 |---|---|---|
-| the refusal predicate | `unified`, with a NAMED runtime dependency | **Corrected after round 2 — the first version overclaimed.** It is a pure function of the payload, but the predicate resolves through the host engine's Unicode tables, so "identical verdict on identical bytes" holds only while machines share a Unicode data version. **Restated at round 9, which caught this row still describing the SUPERSEDED subtractive design:** the drift that matters is no longer `Default_Ignorable`/`Cf` membership — it is **General_Category membership for `L`/`N`/`P`/`S`**, since those four categories are now what the code asks about. The residual is BOUNDED to code points whose L/N/P/S membership changed between Unicode releases (in practice, newly ASSIGNED code points: an unassigned point is not content on either version until it becomes a letter or symbol). An empty string, whitespace, ordinary text and emoji already assigned are decided identically on every version. **Direction of the residual, stated because it decides whether this is dangerous:** an older table has FEWER assigned letters/symbols, so an older machine REFUSES a payload made only of a newly-assigned character that a newer machine would send. That direction is fail-SAFE — the older machine withholds rather than delivering emptiness — which is why this is a named dependency rather than a blocker. **No runtime pin exists to cite, and I checked rather than assumed:** `engines.node` is `>=20.12.0` — a
+| the refusal predicate | `unified`, with a NAMED runtime dependency | **Corrected after round 2 — the first version overclaimed.** It is a pure function of the payload, but the predicate resolves through the host engine's Unicode tables, so "identical verdict on identical bytes" holds only while machines share a Unicode data version. **Restated at round 9, which caught this row still describing the SUPERSEDED subtractive design:** the drift that matters is no longer `Default_Ignorable`/`Cf` membership — it is **General_Category membership for `L`/`N`/`P`/`S`**, since those four categories are now what the code asks about. The residual is BOUNDED to code points whose L/N/P/S/M membership changed between Unicode releases (in practice, newly ASSIGNED code points: an unassigned point is not content on either version until it becomes a letter or symbol). An empty string, whitespace, ordinary text and emoji already assigned are decided identically on every version. **Direction of the residual, stated because it decides whether this is dangerous:** an older table has FEWER assigned letters/symbols, so an older machine REFUSES a payload made only of a newly-assigned character that a newer machine would send. That direction is fail-SAFE — the older machine withholds rather than delivering emptiness — which is why this is a named dependency rather than a blocker. **No runtime pin exists to cite, and I checked rather than assumed:** `engines.node` is `>=20.12.0` — a
 FLOOR, not a pin — CI runs Node 20, and this development machine runs Node 24, so a version spread is not
 hypothetical, it is the current state. The residual above is therefore live, bounded as described, and
 un-mitigated by any existing enforcement. Vendoring a generated table removes the dependency entirely and

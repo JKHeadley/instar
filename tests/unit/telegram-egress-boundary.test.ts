@@ -169,6 +169,55 @@ describe('telegram egress boundary — the single door', () => {
       expect(f2, 'Telegram would send the FIRST value, which is visible').toHaveBeenCalledTimes(1);
     });
 
+    it('covers EVERY encoding for repeated keys, not just the one the last fix reached', async () => {
+      // Pass 38 finding 1: the first-match repair covered query and form encoding and skipped JSON and
+      // multipart, and the test asserted the general rule while exercising one encoding. Both now.
+      const f = arm();
+      const fd = new FormData();
+      fd.append('chat_id', '1');
+      fd.append('text', '\u200b');
+      fd.append('text', 'visible');
+      await expect(telegramFetch(api('sendMessage'), { method: 'POST', body: fd }))
+        .rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f, 'multipart: Telegram sends the FIRST value, which is invisible').not.toHaveBeenCalled();
+
+      // JSON duplicates are REFUSED rather than resolved: JSON.parse keeps the last, Telegram keeps the
+      // first, and an ambiguous effective value is a closed door.
+      const f2 = arm();
+      await expect(telegramFetch(api('sendMessage'),
+        { method: 'POST', body: '{"chat_id":1,"text":"\u200b","text":"visible"}' }))
+        .rejects.toThrow(TelegramEgressError);
+      expect(f2).not.toHaveBeenCalled();
+
+      // and an ordinary JSON body is untouched by the scanner
+      const f3 = arm();
+      await telegramFetch(api('sendMessage'), post({ chat_id: 1, text: 'hello', parse_mode: 'HTML' }));
+      expect(f3, 'no duplicate keys — must still deliver').toHaveBeenCalledTimes(1);
+    });
+
+    it('classifies the documented TEST-ENVIRONMENT path and a percent-encoded one', () => {
+      // Pass 38 finding 2, wrong in both directions from one regex: a percent-encoded octet made this
+      // return null while Telegram dispatched the decoded method, and Telegram's documented
+      // `/bot<token>/test/<method>` form was classified as the method `test` and refused.
+      expect(methodFromTelegramUrl(`https://api.telegram.org/bot${TOKEN}/test/sendMessage`)).toBe('sendMessage');
+      expect(methodFromTelegramUrl(`https://api.telegram.org/bot${TOKEN}/send%4Dessage`)).toBe('sendMessage');
+    });
+
+    it('refuses a Request object, whose body cannot be inspected here', async () => {
+      // The type said `string`; the runtime accepts more, and JavaScript callers are not bound by the
+      // signature (pass 38 finding 3). A URL object is normalised and checked; a Request is refused.
+      const f = arm();
+      await expect(telegramFetch(
+        new Request(api('sendMessage'), { method: 'POST', body: '{"text":"\u200b"}' }) as unknown as string,
+      )).rejects.toThrow(TelegramEgressError);
+      expect(f).not.toHaveBeenCalled();
+
+      const f2 = arm();
+      await expect(telegramFetch(new URL(api('sendMessage')), post({ chat_id: 1, text: '\u200b' })))
+        .rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f2, 'a URL object is checked, not waved through').not.toHaveBeenCalled();
+    });
+
     it('ignores the URL FRAGMENT, which never goes on the wire', async () => {
       // `fetch` strips the fragment. Counting it as payload let visible fragment text mask an
       // invisible query value.

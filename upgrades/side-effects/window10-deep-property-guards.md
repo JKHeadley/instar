@@ -3694,3 +3694,36 @@ asserts BOTH directions.
 Worth recording as a change in how the work is going: the previous six bypasses were found by readings.
 This one was found by asking "what does the API actually do?" ahead of the reading — which is the cheaper
 place to find it, and the habit the last two passes were trying to teach.
+
+### Increment 82 — pass 38: 6 findings, down from 8, and the sweep finally done properly (2026-08-11 07:02 PDT)
+
+- **F1 — the duplicate-key repair covered two encodings of four.** I fixed query and form encoding and
+  left JSON and multipart resolving a repeated key to its LAST value, and the test I wrote asserted the
+  general rule while exercising only the query. Multipart now takes the first. JSON is REFUSED when a
+  top-level key repeats: `JSON.parse` keeps the last, Telegram keeps the first, and rather than
+  reimplement a parser to recover it, an ambiguous effective value is a closed door.
+  (`JSON.stringify` never emits duplicates, so no ordinary sender is affected.)
+- **F2 — the path grammar was narrower than Telegram's, in both directions.** It matched the raw
+  pathname, so a percent-encoded octet returned null while Telegram dispatched the decoded method; and
+  Telegram's documented test-environment form `/bot<token>/test/<method>` was classified as the method
+  `test` and refused. Now decoded, with the test segment honoured.
+- **F3 — the TYPE said string; the RUNTIME accepts more.** Native `fetch` takes `URL` and `Request`
+  objects and JavaScript callers are not bound by the signature. A `URL` is now normalised and checked;
+  a `Request` is refused, because its body is on the object rather than in `init` and no collection is
+  possible.
+- **F4 — redirects: left open as a stated JUDGMENT, not an oversight.** A non-Bot URL redirecting into a
+  Bot API method is classified once. Manual redirect handling would close it and break the file-download
+  callers that legitimately redirect. It sits outside this guard's purpose — the guarantee is that THIS
+  AGENT does not send an invisible message, and a hostile redirect implies an actor for whom this is not
+  the relevant control. Written into the door's header so the next reader can disagree with the judgment
+  rather than discover the gap.
+- **F5, F6 — the sweep, done by counting the CLAIM rather than one of its spellings.** The predicate
+  claim existed in four spellings: the regex `\p{L}\p{N}\p{P}\p{S}`, the abbreviation `L/N/P/S`,
+  the capitalised prose "LETTER, NUMBER, PUNCTUATION MARK, or SYMBOL", and the sentence "a lone mark does
+  not [pass]". My previous sweep searched the regex only and reported itself complete — which is why this
+  is the THIRD pass to catch the same claim. All four counted before fixing; residual is zero across all
+  four. Two spec sections describing the deleted per-sender lint are now marked superseded AT THEIR
+  HEADINGS rather than corrected in place, and the Lifeline's claim that the lint enforces ITS private
+  funnel is narrowed to what the lint actually proves.
+
+Verification: tsc clean, full lint chain clean, 166 tests in the affected area, 28 on the door.

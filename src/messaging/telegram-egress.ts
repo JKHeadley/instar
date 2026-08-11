@@ -32,6 +32,17 @@
  *
  * All three share one root: the door treated what it could not check as fine. The rule below is the
  * opposite, and it is the only rule here that matters — AN UNCHECKABLE REQUEST IS A CLOSED DOOR.
+ *
+ * WHAT THIS DOOR DOES NOT COVER, decided rather than missed (review pass 38 finding 4). A non-Bot URL
+ * that REDIRECTS into a Bot API method is classified once, on the initial URL, and `fetch` follows the
+ * redirect without a second decision. Manual redirect handling would close it and would also break the
+ * file-download callers that legitimately redirect.
+ *
+ * It is left open because it is outside this guard's purpose: the guarantee is that THIS AGENT does not
+ * send a message a reader receives as nothing. A redirect crossing into the Bot API requires an actor
+ * who already controls a response this agent fetches — at which point the invisible-payload guard is not
+ * the control that matters. Stated so the next reader can disagree with the judgment rather than
+ * discover the gap.
  */
 import {
   assertOutgoingPayloadVisible,
@@ -46,7 +57,14 @@ import {
  * dispatcher it models produces requests Telegram honours and this file never sees.
  */
 const BOT_API_HOST = 'api.telegram.org';
-const BOT_PATH = /^\/bot[^/]+\/([A-Za-z]+)/;
+/**
+ * `/bot<token>/<method>`, and Telegram's documented TEST-ENVIRONMENT form `/bot<token>/test/<method>`.
+ * The path is percent-DECODED first, because Telegram decodes before extracting the method — matching
+ * the raw text meant a percent-encoded octet made this return null while Telegram dispatched the
+ * decoded method, and it also meant a legitimate test-environment call was classified as the method
+ * `test` and refused (review pass 38 finding 2, wrong in both directions from one regex).
+ */
+const BOT_PATH = /^\/bot[^/]+\/(?:test\/)?([A-Za-z]+)/;
 
 /** Lowercased method → canonical spelling, so lookup matches Telegram's case-insensitive dispatch. */
 const CANONICAL_METHOD: ReadonlyMap<string, string> = new Map(
@@ -78,7 +96,9 @@ export function methodFromTelegramUrl(url: string): string | null {
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
   if (parsed.hostname.toLowerCase() !== BOT_API_HOST) return null;
-  const m = BOT_PATH.exec(parsed.pathname);
+  let pathname = parsed.pathname;
+  try { pathname = decodeURIComponent(pathname); } catch { /* malformed escape: judge the raw form */ }
+  const m = BOT_PATH.exec(pathname);
   if (!m) return null;
   return CANONICAL_METHOD.get(m[1].toLowerCase()) ?? m[1];
 }
@@ -88,6 +108,39 @@ export class TelegramEgressError extends Error {
     super(message);
     this.name = 'TelegramEgressError';
   }
+}
+
+/**
+ * Name a duplicated TOP-LEVEL key in a JSON object body, or null. Deliberately a scanner rather than a
+ * parser: it only needs to answer "is the effective value ambiguous here", and a wrong answer in the
+ * ambiguous direction costs a refusal rather than a delivery.
+ */
+function duplicateTopLevelJsonKey(body: string): string | null {
+  const seen = new Set<string>();
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let key: string | null = null;
+  let buf = '';
+  for (let i = 0; i < body.length; i += 1) {
+    const c = body[i];
+    if (inString) {
+      if (escaped) { escaped = false; buf += c; continue; }
+      if (c === '\\') { escaped = true; continue; }
+      if (c === '"') { inString = false; key = buf; buf = ''; continue; }
+      buf += c;
+      continue;
+    }
+    if (c === '"') { inString = true; buf = ''; continue; }
+    if (c === '{' || c === '[') { depth += 1; continue; }
+    if (c === '}' || c === ']') { depth -= 1; continue; }
+    if (c === ':' && depth === 1 && key !== null) {
+      if (seen.has(key)) return key;
+      seen.add(key);
+      key = null;
+    }
+  }
+  return null;
 }
 
 /** Parameters Telegram will read, gathered from BOTH places it accepts them. */
@@ -141,6 +194,15 @@ function collectParams(url: string, body: RequestInit['body']): {
     try {
       const parsed: unknown = JSON.parse(body);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        // `JSON.parse` keeps the LAST of a duplicated key; Telegram's parser preserves order and its
+        // accessor returns the FIRST. Rather than reimplement a JSON parser to recover the first, this
+        // REFUSES a body with duplicate top-level keys — the value Telegram would use cannot be
+        // determined here, and an undecidable request is a closed door (pass 38 finding 1).
+        // `JSON.stringify` never emits duplicates, so no ordinary sender is affected.
+        const dup = duplicateTopLevelJsonKey(body);
+        if (dup !== null) {
+          return done(`a JSON body with a duplicated "${dup}" key, whose effective value is ambiguous`);
+        }
         Object.assign(params, parsed as Record<string, unknown>);
         return done(null);
       }
@@ -174,8 +236,10 @@ function collectParams(url: string, body: RequestInit['body']): {
   // version grouped it with one-shot streams under "cannot read without consuming", which was false
   // and rejected legitimate multipart sends carrying visible text.
   if (typeof FormData !== 'undefined' && body instanceof FormData) {
+    // First occurrence wins here too (pass 38 finding 1: the repair covered query and form encoding
+    // and skipped this one, so multipart still resolved a repeated key to its LAST value).
     for (const [k, v] of body as unknown as Iterable<[string, unknown]>) {
-      if (typeof v === 'string') params[k] = v;
+      if (typeof v === 'string' && !(k in params)) params[k] = v;
     }
     return done(null);
   }
@@ -194,8 +258,23 @@ function collectParams(url: string, body: RequestInit['body']): {
  * reader-visible content is unknown, so "no field" cannot be told apart from "not checked"), an
  * unparseable body, and a body shape that cannot be read without consuming it.
  */
-export async function telegramFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  const method = methodFromTelegramUrl(url);
+export async function telegramFetch(
+  url: string | URL,
+  init: RequestInit = {},
+): Promise<Response> {
+  // The TYPE said `string`; the RUNTIME is what ships. Native `fetch` also accepts `URL` and `Request`
+  // objects, and JavaScript callers are not bound by the signature — review pass 38 finding 3. A `URL`
+  // is normalised to its string form and checked exactly like any other. A `Request` is REFUSED: its
+  // body lives on the object rather than in `init`, so no parameter collection is possible and
+  // forwarding it would be the unchecked door this module exists to close.
+  if (typeof url !== 'string' && !(url instanceof URL)) {
+    throw new TelegramEgressError(
+      'telegram egress: a Request object carries its own body, which cannot be inspected here. Pass a '
+      + 'URL string (or URL) with the parameters in `init`.',
+    );
+  }
+  const href = typeof url === 'string' ? url : url.href;
+  const method = methodFromTelegramUrl(href);
 
   if (method !== null) {
     // CLOSED WORLD. `assertOutgoingPayloadVisible` returns silently for a method it has no field for,
@@ -222,7 +301,7 @@ export async function telegramFetch(url: string, init: RequestInit = {}): Promis
       );
     }
 
-    const { params, uncheckable } = collectParams(url, init.body);
+    const { params, uncheckable } = collectParams(href, init.body);
     if (uncheckable !== null) {
       emitInvisiblePayloadRefusal({
         guard: 'invisible-payload',
@@ -242,5 +321,5 @@ export async function telegramFetch(url: string, init: RequestInit = {}): Promis
     assertOutgoingPayloadVisible(method, params);
   }
 
-  return fetch(url, init);
+  return fetch(href, init);
 }
