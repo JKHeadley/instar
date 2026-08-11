@@ -3857,3 +3857,27 @@ message look visible, which is the direction that matters.
 
 Verified against the live Bot API documentation for both the field and the object, after pass 43 taught
 me that this codebase's model of Telegram is stale in places I cannot predict.
+
+### Increment 89 — pass 45: five new findings, and the count starts separating new from open (2026-08-11 12:10 PDT)
+
+Pass 45 returned **5 NEW** load-bearing findings and refused to recount previously-stated-open ones. That
+is the measure worth having: total findings conflates "this reading found fresh problems" with "the old
+ones are still there", and only the first shows whether repairs are gaining.
+
+**Repaired — alternatives are not simultaneous.** My pass-44 rule required the query to supply EVERY
+reader-visible field before an unreadable body could be treated as harmless. But those fields are
+ALTERNATIVES — a send carries `text` OR the rich structure — so requiring all of them treated an
+either-or as an and. My repair for one over-refusal introduced another, one layer up. One query-supplied
+field is enough: query values win on a conflict, so that field is what Telegram sends and it has just been
+checked.
+
+**NOT repaired, recorded honestly:**
+- Structured content is inspected only in its JSON-body representation; the same content arriving another
+  supported way is unexamined.
+- The walker implements three key names, not Telegram's actual `RichText` grammar. Closing that means
+  reading the grammar properly rather than adding a fourth key.
+- The lint's `fetch.call`/`fetch.apply` recognition examines the receiver incorrectly.
+- The token-root `method` fallback is characterised as an ordinary dispatch rule when it is narrower.
+
+The depth has changed even where the count has not: findings have moved from "you never checked this" to
+"your model of the format is wrong at the third level". Better class of problem, not a finished one.

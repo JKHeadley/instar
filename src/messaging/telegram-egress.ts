@@ -386,9 +386,15 @@ export async function telegramFetch(
     // Telegram sends. Refusing anyway destroyed a decidable, deliverable message.
     // EVERY reader-visible field, not just the first: a method can carry more than one (pass 43), and
     // an unreadable body is only harmless if the query already supplies ALL of them.
+    // The reader-visible fields of a method are ALTERNATIVES, not simultaneous requirements — a send
+    // carries `text` OR the rich structure. Requiring the query to supply ALL of them (pass 44) treated
+    // an either-or as an and, so my repair for one over-refusal introduced another one layer up.
+    //
+    // ONE query-supplied field is enough to make an unreadable body harmless: query values win on a
+    // conflict, so that field is what Telegram sends, and it has just been checked. If it is invisible
+    // the request is refused anyway; if visible, the reader receives something.
     const fields = readerVisibleFieldsFor(method);
-    const fieldSuppliedByQuery = fields.length > 0
-      && fields.every((f) => typeof params[f] === 'string');
+    const fieldSuppliedByQuery = fields.some((f) => typeof params[f] === 'string');
     if (uncheckable !== null && !fieldSuppliedByQuery) {
       emitInvisiblePayloadRefusal({
         guard: 'invisible-payload',
