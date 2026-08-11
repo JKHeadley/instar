@@ -276,14 +276,36 @@ export function setInvisiblePayloadRefusalSink(
  * both are deliberately CONSERVATIVE about what counts as visible, because over-counting here is what
  * lets an invisible message through.
  */
+/** Decode the character references Telegram resolves before rendering. Conservative: named set is the
+ *  common invisibles plus the basics; anything unrecognised is left as source text, which can only make
+ *  the extraction MORE likely to find content, never less — the safe direction for an over-refusal. */
+function decodeCharacterReferences(text: string): string {
+  const named: Record<string, string> = {
+    zwnj: '\u200c', zwj: '\u200d', nbsp: '\u00a0', shy: '\u00ad',
+    amp: '&', lt: '<', gt: '>', quot: '"', apos: "'",
+  };
+  return text
+    .replace(/&#x([0-9a-fA-F]+);/g, (_m, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_m, d) => String.fromCodePoint(parseInt(d, 10)))
+    .replace(/&([a-zA-Z]+);/g, (m, n) => named[n.toLowerCase()] ?? m);
+}
+
 export function readerVisibleText(text: string, parseMode?: unknown): string {
   const mode = typeof parseMode === 'string' ? parseMode.toLowerCase() : '';
   if (mode === 'html') {
-    return text.replace(/<[^>]*>/g, '');
+    // Character references DECODE before a reader sees them (review pass 34 finding 2): `&#8203;` is
+    // punctuation and digits in the source and a ZERO WIDTH SPACE on screen, so counting the source
+    // characters counts markup as content. Decode first, then drop tags.
+    return decodeCharacterReferences(text).replace(/<[^>]*>/g, '');
   }
   if (mode === 'markdown' || mode === 'markdownv2') {
-    // A link displays its LABEL; the destination is not shown.
-    return text.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
+    // A link displays its LABEL; the destination is not shown. Emphasis/code delimiters are consumed
+    // as markup too (pass 34 finding 2 — the first version saw only links), so they are removed before
+    // asking whether anything is left.
+    return text
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/```[a-zA-Z]*/g, '')
+      .replace(/[*_~`]/g, '');
   }
   return text;
 }
@@ -303,6 +325,24 @@ export function assertOutgoingPayloadVisible(method: string, params: Record<stri
   if (typeof value !== 'string') return;
   const visible = readerVisibleText(value, (params as { parse_mode?: unknown })?.parse_mode);
   if (!hasNoVisibleCharacters(visible)) return;
+
+  // THE UNDECIDABLE CASE, and the line that separates it from the decided one (review pass 34 finding 1).
+  //
+  // An extraction that is EMPTY means the payload had no text nodes at all — it is pure markup. Such a
+  // payload has two possible fates and this code cannot tell which: valid markup renders as nothing (a
+  // real invisible send), while MALFORMED markup is rejected by Telegram and falls back to a plain-text
+  // send in which the tags are shown to the reader. Deciding between them needs Telegram's own parser.
+  //
+  // An extraction that is NON-EMPTY but carries no visible character is DECIDED: text nodes exist and
+  // they contain nothing a reader can see. That is the pass-33 case — a link whose label is a zero-width
+  // space — and it stays refused.
+  //
+  // Where it cannot decide, it ALLOWS, because this guard's own policy is that an over-refusal destroys a
+  // real message. Refusing pure markup outright killed a deliverable one: `<b><i>` renders as visible
+  // text after the fallback, and the first version of this check threw before the fallback could run.
+  // The honest cost is stated rather than hidden: a payload of VALID markup with no text nodes is not
+  // refused by this arm.
+  if (visible.length === 0 && value.length > 0) return;
 
   const decision: InvisiblePayloadRefusal = {
     guard: 'invisible-payload',

@@ -1404,22 +1404,36 @@ export class TelegramAdapter implements MessagingAdapter {
       try {
         result = await this.apiCall('sendMessage', { ...params, parse_mode: 'HTML', _formatMode: 'html' }) as { message_id: number };
       } catch (err) {
-        // A CONTENT refusal is terminal — retrying without a parse mode cannot make an invisible
-        // payload visible, and the bare retry logged the refusal TWICE (review pass 30 finding 2:
-        // one refused operation produced two structured decision records, turning the observability
-        // stream into an attempt counter). Only a formatting failure is worth a plain-params retry.
-        if (err instanceof InvisiblePayloadRefusedError) throw err;
+        // A PRE-FORMAT refusal is terminal — the source carried no content, so no retry can help, and
+        // the bare retry logged it TWICE (review pass 30 finding 2). A POST-FORMAT refusal is NOT
+        // terminal here, and that distinction is review pass 34 finding 1: the plain-params retry is a
+        // DIFFERENT REPRESENTATION, and the post-format rule is precisely a claim about representation.
+        // Malformed HTML with no text nodes has no reader-visible content AS HTML and is perfectly
+        // visible as plain text — the retry shows the tags, which this path exists to do. Refusing it
+        // outright destroyed a deliverable message, which the guard's own policy forbids.
+        //
+        // My sentence above ("retrying cannot make an invisible payload visible") was true of the rule
+        // that existed when I wrote it and false of the rule I added an hour later. The two fixes
+        // interacted, and only a reading that asked about the interaction found it.
+        if (err instanceof InvisiblePayloadRefusedError && err.decision.rule === 'no-content-codepoint') throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     } else {
       try {
         result = await this.apiCall('sendMessage', { ...params, parse_mode: 'Markdown' }) as { message_id: number };
       } catch (err) {
-        // A CONTENT refusal is terminal — retrying without a parse mode cannot make an invisible
-        // payload visible, and the bare retry logged the refusal TWICE (review pass 30 finding 2:
-        // one refused operation produced two structured decision records, turning the observability
-        // stream into an attempt counter). Only a formatting failure is worth a plain-params retry.
-        if (err instanceof InvisiblePayloadRefusedError) throw err;
+        // A PRE-FORMAT refusal is terminal — the source carried no content, so no retry can help, and
+        // the bare retry logged it TWICE (review pass 30 finding 2). A POST-FORMAT refusal is NOT
+        // terminal here, and that distinction is review pass 34 finding 1: the plain-params retry is a
+        // DIFFERENT REPRESENTATION, and the post-format rule is precisely a claim about representation.
+        // Malformed HTML with no text nodes has no reader-visible content AS HTML and is perfectly
+        // visible as plain text — the retry shows the tags, which this path exists to do. Refusing it
+        // outright destroyed a deliverable message, which the guard's own policy forbids.
+        //
+        // My sentence above ("retrying cannot make an invisible payload visible") was true of the rule
+        // that existed when I wrote it and false of the rule I added an hour later. The two fixes
+        // interacted, and only a reading that asked about the interaction found it.
+        if (err instanceof InvisiblePayloadRefusedError && err.decision.rule === 'no-content-codepoint') throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     }

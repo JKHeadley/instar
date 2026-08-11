@@ -481,6 +481,35 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
 
+    it('refuses a DECIDED invisible text node, allows UNDECIDABLE pure markup', () => {
+      // Review pass 34 finding 1. An EMPTY extraction means no text nodes at all — pure markup, whose
+      // fate this code cannot decide: valid markup renders nothing, malformed markup is rejected by
+      // Telegram and falls back to a plain send that SHOWS the tags. Where it cannot decide it ALLOWS,
+      // because this guard's own policy is that an over-refusal destroys a real message. A NON-EMPTY
+      // extraction carrying no visible character IS decided and stays refused — the pass-33 case.
+      expect(() => assertOutgoingPayloadVisible('sendMessage', {
+        text: '<a href="https://x.example">\u200b</a>', parse_mode: 'HTML',
+      })).toThrow(/no reader-visible content AFTER formatting/i);
+      expect(() => assertOutgoingPayloadVisible('sendMessage', { text: '<b><i>', parse_mode: 'HTML' }))
+        .not.toThrow();
+    });
+
+    it('decodes character references before judging visibility', () => {
+      // Pass 34 finding 2: `&#8203;` is punctuation and digits in the SOURCE and a ZERO WIDTH SPACE on
+      // screen, so counting source characters counts markup as content.
+      expect(() => assertOutgoingPayloadVisible('sendMessage', { text: '&#8203;', parse_mode: 'HTML' }))
+        .toThrow(/no reader-visible content AFTER formatting/i);
+      expect(() => assertOutgoingPayloadVisible('sendMessage', { text: '&amp;', parse_mode: 'HTML' }))
+        .not.toThrow();
+    });
+
+    it('consumes markdown delimiters, not only links', () => {
+      expect(() => assertOutgoingPayloadVisible('sendMessage', { text: '*\u200b*', parse_mode: 'Markdown' }))
+        .toThrow(/no reader-visible content AFTER formatting/i);
+      expect(() => assertOutgoingPayloadVisible('sendMessage', { text: '*hello*', parse_mode: 'Markdown' }))
+        .not.toThrow();
+    });
+
     it('the reader-visible extraction drops markup, not content', () => {
       expect(readerVisibleText('<a href="https://x.example">hi</a>', 'HTML')).toBe('hi');
       expect(readerVisibleText('[label](https://x.example)', 'Markdown')).toBe('label');

@@ -41,6 +41,20 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = path.join(ROOT, 'src');
 const GUARD = 'assertTelegramPayloadVisible';
+/**
+ * The POST-FORMAT guard, added to this check at review pass 34 finding 3.
+ *
+ * The finding: this lint existed to prove the send paths carry their guard, and it named exactly one
+ * function. When a SECOND load-bearing guard was added an hour earlier, the lint kept passing while
+ * knowing nothing about it — deleting the post-format call from the lifeline would have left this check
+ * satisfied, because the pre-format call remained. A guard-presence check that does not know about half
+ * the guards is the alive-but-inert shape aimed at itself.
+ *
+ * Only senders that RUN THE FORMATTER need it: the four direct command-file senders build their own
+ * request and never format, so requiring it there would be a false failure.
+ */
+const POST_GUARD = 'assertOutgoingPayloadVisible';
+const FORMATTER = 'applyTelegramFormatter';
 /** The mechanism that defines a sender: builds the API URL and calls fetch. */
 const API_HOST = 'api.telegram.org';
 const GUARD_SRC = path.join(SRC, 'messaging', 'invisible-payload.ts');
@@ -229,10 +243,14 @@ for (const file of walk(SRC)) {
   // not the code's, and "fixing" that file would have been a repair aimed at my own instrument.
   const carries = BODY_METHODS.filter((m) => text.includes(m));
   if (carries.length === 0) continue;
+  const formats = text.includes(FORMATTER);
   senders.push({
     file,
     calls,
     guarded: hasLiveGuardCall(file, text) && importsSharedGuard(text),
+    // A sender that transforms the message must also check what the transform produced.
+    postGuarded: !formats || callsIn(sf).some((c) => c.name === POST_GUARD && c.bareIdentifier),
+    formats,
     carries,
   });
 }
@@ -308,6 +326,21 @@ if (unclassified.size > 0) {
   process.exit(1);
 }
 
+const missingPostGuard = senders.filter((s) => !s.postGuarded);
+if (missingPostGuard.length > 0) {
+  console.error(
+    `[telegram-send-funnel] FAIL — sender(s) run the formatter but never call ${POST_GUARD}:\n`,
+  );
+  for (const s of missingPostGuard) console.error(`  ${path.relative(ROOT, s.file)}`);
+  console.error(
+    `\n  A sender that TRANSFORMS the message must check what the transform produced. The pre-format`
+    + `\n  check answers "did the caller write content"; only the post-format check answers "will a reader`
+    + `\n  receive any". Review pass 33 proved the difference by execution: a link whose label was a`
+    + `\n  zero-width space passed the first and reached a reader as nothing.`,
+  );
+  process.exit(1);
+}
+
 const unguarded = senders.filter((s) => !s.guarded);
 if (unguarded.length > 0) {
   console.error('[telegram-send-funnel] FAIL — a class can reach the Telegram API without the invisible-payload refusal:\n');
@@ -325,6 +358,7 @@ if (unguarded.length > 0) {
 
 console.log(
   `lint-telegram-send-funnel-guarded: clean — ${senders.length} Telegram body-sender(s) derived by mechanism `
-  + `(builds ${API_HOST} + calls fetch), all invoking ${GUARD}: `
+  + `(builds ${API_HOST} + calls fetch), all invoking ${GUARD}; `
+  + `${senders.filter((s) => s.formats).length} of them run the formatter and also invoke ${POST_GUARD}: `
   + senders.map((s) => path.relative(ROOT, s.file)).join(', '),
 );

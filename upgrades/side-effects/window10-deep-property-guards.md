@@ -3323,3 +3323,50 @@ Both are real, both are the same root the last four readings have circled, and b
 the shared client (CMT-1246) rather than a seventh cleverer matcher. Recorded here as open.
 
 142 tests green across five suites; full lint chain green.
+
+---
+
+## Increment 72 (window 12) — pass 34: my two repairs interacted, and the line between decided and undecidable
+
+**Pass 34: UNSOUND, 5 load-bearing (4 DESIGN, 1 PRECISION).** Findings 4 and 5 independently confirm the two
+I had already declared open — worth something on its own, since they were not taken on my word. Three are
+new; all three repaired.
+
+### Finding 1 — an over-refusal I introduced, caused by two of my own repairs INTERACTING
+
+Pass 30 finding 2 made a content refusal TERMINAL, with the justification *"retrying without a parse mode
+cannot make an invisible payload visible."* That was true of the rule that existed when I wrote it. An hour
+later I added the post-format rule — which is **precisely a claim about representation** — and the plain-text
+retry IS a different representation. So the terminal-refusal fix blocked the fallback that would have shown
+the reader the tags. **Neither repair was wrong alone.** Only a reading that asked about the interaction
+found it.
+
+**And the fix taught a distinction I did not have.** Making the post-format refusal non-terminal was not
+enough, because under the formatter the retry is HTML too. The real line is in the extraction:
+
+- an **EMPTY** extraction means the payload had **no text nodes at all** — pure markup, whose fate this code
+  cannot decide: valid markup renders nothing, malformed markup is rejected and falls back to a plain send
+  that SHOWS the tags. **Undecidable without Telegram's parser → ALLOW**, because this guard's own stated
+  policy is that an over-refusal destroys a real message.
+- a **NON-EMPTY but invisible** extraction means text nodes exist and carry nothing a reader sees.
+  **Decided → REFUSE.** That is the pass-33 link-label case, and it stays refused.
+
+The honest cost is stated rather than hidden: valid markup with no text nodes is not refused by this arm.
+
+### Finding 2 — the extraction was not decoding what Telegram decodes. Repaired.
+
+`&#8203;` is punctuation and digits in the source and a ZERO WIDTH SPACE on screen, so counting source
+characters counted markup as content. Character references are decoded first now. The Markdown branch saw
+only links; emphasis and code delimiters are consumed too. Proven both ways — `&amp;` and `*hello*` still
+deliver.
+
+### Finding 3 — the lint knew nothing about the new guard. Repaired.
+
+This check exists to prove the send paths carry their guard, and it named exactly ONE function. When a
+second load-bearing guard was added an hour earlier, the lint kept passing while knowing nothing about it:
+**deleting the post-format call from the lifeline would have left it satisfied.** A guard-presence check
+blind to half the guards is the alive-but-inert shape aimed at itself. It now requires the post-format guard
+on senders that RUN the formatter — and not on the four direct senders that never format, which would be a
+false failure. Sabotage-proven on the exact case the reading named.
+
+145 tests green across five suites; full lint chain green.
