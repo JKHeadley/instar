@@ -233,6 +233,32 @@ describe('telegram egress boundary — the single door', () => {
       expect(f2).not.toHaveBeenCalled();
     });
 
+    it('checks a TEST-ENVIRONMENT root whose method is a parameter', async () => {
+      // Pass 40 F1: the tests covered test-paths WITH a method and production roots WITH a parameter
+      // method, never the intersection — which is exactly where the bypass lived. Telegram strips the
+      // test segment and then resolves the method from a parameter as usual.
+      const f = arm();
+      await expect(telegramFetch(`https://api.telegram.org/bot${TOKEN}/test/?method=sendMessage&text=%E2%80%8B`,
+        { method: 'POST' })).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f).not.toHaveBeenCalled();
+    });
+
+    it('sends the bytes it CHECKED, not whatever the caller mutates afterwards', async () => {
+      // Pass 40 F2: the door read init.body, checked that value, then handed the caller's original
+      // mutable object to fetch — so a getter could show visible content to the check and invisible
+      // content to the network, falsifying this file's central claim.
+      const f = arm();
+      let reads = 0;
+      const init: RequestInit = { method: 'POST' };
+      Object.defineProperty(init, 'body', {
+        configurable: true,
+        get() { reads += 1; return reads === 1 ? JSON.stringify({ chat_id: 1, text: 'visible' }) : JSON.stringify({ chat_id: 1, text: '\u200b' }); },
+      });
+      await telegramFetch(api('sendMessage'), init);
+      const sent = JSON.parse((f.mock.calls[0][1] as { body: string }).body);
+      expect(sent.text, 'the wire body must be the one that was inspected').toBe('visible');
+    });
+
     it('treats a trailing DNS root dot as the same host', async () => {
       // Pass 39 F2: `new URL()` preserves the terminal dot, so an exact compare rejected an equivalent
       // hostname — the request reached Telegram and the door returned null.

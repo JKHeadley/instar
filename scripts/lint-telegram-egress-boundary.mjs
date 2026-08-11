@@ -60,7 +60,9 @@ function walk(dir) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name);
     if (e.isDirectory()) out.push(...walk(p));
-    else if (e.isFile() && p.endsWith('.ts')) out.push(p);
+    // `.js` and `.mjs` are executable too, and scanning only `.ts` meant a direct Bot API fetch in
+    // either was invisible while this printed categorical confinement (pass 40 F3).
+    else if (e.isFile() && /\.(ts|js|mjs|cjs)$/.test(p)) out.push(p);
   }
   return out;
 }
@@ -114,6 +116,22 @@ function denotesBotApiUrl(node, sf) {
 function isFetchCall(n) {
   if (!ts.isCallExpression(n)) return false;
   const e = n.expression;
+  if (ts.isIdentifier(e)) return e.text === 'fetch';
+  if (ts.isPropertyAccessExpression(e)) {
+    // `fetch.call(...)` / `fetch.apply(...)` are direct invocations of fetch, and `x['fetch']` is a
+    // property access spelled differently (pass 40 F3).
+    if (e.name.text === 'call' || e.name.text === 'apply') return isFetchTarget(e.expression);
+    return e.name.text === 'fetch';
+  }
+  if (ts.isElementAccessExpression(e)) {
+    const a = e.argumentExpression;
+    return !!a && ts.isStringLiteralLike(a) && a.text === 'fetch';
+  }
+  return false;
+}
+
+/** Is this expression the `fetch` function itself (for `.call`/`.apply` forms)? */
+function isFetchTarget(e) {
   if (ts.isIdentifier(e)) return e.text === 'fetch';
   if (ts.isPropertyAccessExpression(e)) return e.name.text === 'fetch';
   return false;

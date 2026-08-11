@@ -3755,3 +3755,29 @@ PRECISION). Tool version verified identical on both machines before treating the
   widened; all three routed through the door. The claim is now true.
 
 Verification: tsc clean, full lint chain clean, 169 tests in the affected area, 31 on the door.
+
+### Increment 84 — pass 40 repaired (2026-08-11 10:31 PDT)
+
+UNSOUND at 7 (3 DESIGN, 4 PRECISION), down from 9.
+
+- **F1/F4 — the path extraction was a SHAPE MATCH, not Telegram's model.** Telegram strips an optional
+  `test` segment and treats the ENTIRE remaining path as the method. The regex consumed only an
+  alphabetic PREFIX, and its optional group backtracked so `/bot<token>/test/` resolved to the method
+  `test` — refused as unclassified, which HID the root case where the method comes from a parameter.
+  The tests had covered test-paths-with-a-method and production-roots-with-a-parameter and never their
+  intersection, which is exactly where the bypass lived. Now models the extraction instead of matching
+  a shape, and the dead constant is deleted rather than left as a decoy.
+- **F2 — the checked body was not provably the SENT body.** The door read `init.body`, checked that
+  value, then handed the caller's original mutable object to `fetch`. A getter or an intervening
+  mutation could show visible content to the check and invisible content to the network — which
+  falsifies this file's central claim about checking the exact bytes on the wire. The body is now read
+  ONCE and the request is rebuilt from the value that was inspected. Pinned by a test whose `body`
+  getter returns different content on its second read.
+- **F3 — the lint scanned only `.ts`**, although executable `.js`/`.mjs` exist under `src`, and its
+  call matcher missed `fetch.call`, `fetch.apply` and computed access. All now recognised.
+
+**And the archive guard caught me a SECOND time, the same way.** I filed passes 39 and 40 under the
+laptop-results folder instead of the canonical archive, exactly as I misfiled pass 35 this morning. Same
+guard, same defect, same session. It is now 39 cited and 40 archived, contiguous.
+
+Verification: tsc clean, full lint chain clean, 168 tests in the affected area, 33 on the door.

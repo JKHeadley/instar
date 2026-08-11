@@ -57,15 +57,6 @@ import {
  * dispatcher it models produces requests Telegram honours and this file never sees.
  */
 const BOT_API_HOST = 'api.telegram.org';
-/**
- * `/bot<token>/<method>`, and Telegram's documented TEST-ENVIRONMENT form `/bot<token>/test/<method>`.
- * The path is percent-DECODED first, because Telegram decodes before extracting the method — matching
- * the raw text meant a percent-encoded octet made this return null while Telegram dispatched the
- * decoded method, and it also meant a legitimate test-environment call was classified as the method
- * `test` and refused (review pass 38 finding 2, wrong in both directions from one regex).
- */
-const BOT_PATH = /^\/bot[^/]+\/(?:test\/)?([A-Za-z]+)/;
-
 /** Lowercased method → canonical spelling, so lookup matches Telegram's case-insensitive dispatch. */
 const CANONICAL_METHOD: ReadonlyMap<string, string> = new Map(
   [...Object.keys(READER_VISIBLE_TELEGRAM_PARAMS), ...NO_READER_VISIBLE_FIELD_TELEGRAM_METHODS]
@@ -101,9 +92,16 @@ export function methodFromTelegramUrl(url: string): string | null {
   if (host !== BOT_API_HOST) return null;
   let pathname = parsed.pathname;
   try { pathname = decodeURIComponent(pathname); } catch { /* malformed escape: judge the raw form */ }
-  const m = BOT_PATH.exec(pathname);
-  if (!m) return null;
-  return CANONICAL_METHOD.get(m[1].toLowerCase()) ?? m[1];
+
+  // Model Telegram's extraction rather than pattern-matching a shape: it strips an optional `test`
+  // segment and treats the ENTIRE remaining path as the method name (pass 40 F1/F4). The previous regex
+  // consumed only an alphabetic PREFIX, and its optional group backtracked so that `/bot<token>/test/`
+  // resolved to the method `test` — which then refused as unclassified, hiding the root case entirely.
+  const afterToken = /^\/bot[^/]+\/(.*)$/.exec(pathname);
+  if (!afterToken) return null;
+  let rest = afterToken[1].replace(/^test(?:\/|$)/, '').replace(/\/+$/, '');
+  if (rest === '') return null;
+  return CANONICAL_METHOD.get(rest.toLowerCase()) ?? rest;
 }
 
 /** A Bot API URL whose path carries a token but NO method segment — the shape Telegram resolves from a
@@ -114,7 +112,11 @@ export function isBotApiRoot(url: string): boolean {
   if (parsed.hostname.toLowerCase().replace(/\.$/, '') !== BOT_API_HOST) return false;
   let pathname = parsed.pathname;
   try { pathname = decodeURIComponent(pathname); } catch { /* judge the raw form */ }
-  return /^\/bot[^/]+\/?$/.test(pathname);
+  // The test-environment form `/bot<token>/test/` is ALSO a root: Telegram strips the `test` segment
+  // and then resolves the method from a parameter exactly as it does for production (pass 40 F1 — the
+  // tests covered test-paths-with-a-method and production-roots-with-a-parameter, never the
+  // intersection, which is where the bypass lived).
+  return /^\/bot[^/]+\/(?:test\/?)?$/.test(pathname);
 }
 
 export class TelegramEgressError extends Error {
@@ -308,6 +310,9 @@ export async function telegramFetch(
     );
   }
   const href = typeof url === 'string' ? url : url.href;
+  // Read the body ONCE. Everything below inspects this value and the send uses this value.
+  const checkedBody = init.body;
+
   let method = methodFromTelegramUrl(href);
 
   // F1 (pass 39): when the path carries NO method, Telegram falls back to the first `method` ARGUMENT.
@@ -315,7 +320,7 @@ export async function telegramFetch(
   // `method=sendMessage&text=<invisible>` dispatched normally and was never inspected. Recover the
   // method from the parameters in exactly the case Telegram does.
   if (method === null && isBotApiRoot(href)) {
-    const { params } = collectParams(href, init.body);
+    const { params } = collectParams(href, checkedBody);
     const fromParams = typeof params.method === 'string' ? params.method : null;
     if (fromParams !== null) {
       method = CANONICAL_METHOD.get(fromParams.toLowerCase()) ?? fromParams;
@@ -363,7 +368,7 @@ export async function telegramFetch(
       );
     }
 
-    const { params, uncheckable } = collectParams(href, init.body);
+    const { params, uncheckable } = collectParams(href, checkedBody);
     // F6 (pass 39): an unreadable body is only undecidable if the reader-visible field is not ALREADY
     // supplied by the query — and query values win, so when one is present the body cannot change what
     // Telegram sends. Refusing anyway destroyed a decidable, deliverable message.
@@ -388,5 +393,12 @@ export async function telegramFetch(
     assertOutgoingPayloadVisible(method, params);
   }
 
-  return fetch(href, init);
+  // F2 (pass 40): the door read `init.body`, checked THAT value, and then handed the caller's original
+  // mutable object to `fetch`. A getter, or any mutation between the read and the send, could show
+  // visible content to the check and different content to the network — which falsifies the claim this
+  // file makes about checking the exact bytes that go on the wire.
+  //
+  // So send a request built from the body that was actually inspected. `checkedBody` is read once,
+  // above, and reused here; the caller's object can no longer decide what leaves.
+  return fetch(href, { ...init, ...(checkedBody === undefined ? {} : { body: checkedBody }) });
 }
