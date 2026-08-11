@@ -1,0 +1,38 @@
+# The Substrate — reviewer 4 (cost of compliance)
+VERDICT: FINDINGS
+COUNT: 10
+
+## Findings
+
+1. The Body and the Mind — Each consequential decision costs an estimated 1–10 seconds and 500–3,000 model tokens, plus 10–60 seconds to record provenance. This taxes even unambiguous, reversible choices. Common case: selecting an eligible agent-owned machine from a bounded set. The rule lacks ambiguity, reversibility, and blast-radius discrimination; under pressure, unguarded provenance is likely skipped silently.
+2. Documentation IS Being — Full compliance implies 30–120 seconds of summarization per session, plus storage and future-context costs, even when nothing reusable emerged. Common case: routine rapport, acknowledgement, or a no-surprise operation. The rule lacks novelty, materiality, and user-intent discrimination; omission is inherently invisible.
+3. Close the Loop + Observation Needs Structure — Registering a loop costs about 2–10 minutes and each cadence 1–5 minutes; implementing a refused-without-artifact observation duty commonly adds 1–4 engineering hours. They stack multiplicatively: four metrics reviewed weekly for six weeks create 24 mandatory records and roughly 1–3 hours of review overhead. For a low-risk dark feature, one post-ship check often prevents the harm more cheaply. They lack lifetime, risk-tier, materiality, and sampling discrimination; universal skips remain invisible.
+4. Intelligence Infers, Keywords Only Guard — Each positive intent candidate costs an estimated 1–10 seconds and 500–3,000 tokens for an LLM gate, even when obvious. Common case: a reversible read-only request such as “show status” already destined for the main agent. The rule lacks ambiguity and consequence discrimination. Its lint makes keyword shortcuts visible, but the universal runtime tax remains disproportionate.
+5. Recall Over Our Own Material Is by Meaning, Not by Word-Match — Semantic retrieval adds roughly 50–500 ms per query, indexing costs, and noisy-neighbour review. Common case: locating an exact commitment ID, filename, hash, or symbol, where literal lookup is faster and more accurate and an honest `no-literal-match` avoids the claimed harm. The rule lacks an exact-key versus conceptual-search discriminator.
+6. The Stop Reason Is the Work — A judgment or engineering stop can require 30 minutes to multiple days to derive a standard and produce a tested artifact. Common case: a time-boxed exploration reaches a valid but low-priority refactor outside its budget. The rule lacks priority, budget, expected-value, and timebox discrimination. Skipping is visible, but no proportionate low-risk exit exists.
+7. Self-Unblock Before Escalating — Ordered vault, cloud, MCP, browser, and resource probes cost about 5–30 minutes for a routine blocker and potentially hours, before every ordinary escalation. Common case: an operator can identify a non-secret configuration location in ten seconds. “Every path” lacks a timebox, expected-value cutoff, confidence threshold, or parallel ask-and-search option. The checklist ships dark, so expensive search is still silently shortcuttable.
+8. Remove What Demands Attention. Do Not Supply More Attention. — A recurrence categorically triggers structural elimination, commonly costing 2 hours to several days instead of a 5–10 minute repair. Common case: a low-impact label drifts twice across independently deployed surfaces, while centralization would introduce a risky generator or runtime dependency. The rule lacks severity, frequency, remaining-lifetime, and refactor-risk thresholds; choosing the economical repair requires no visible exception.
+9. Verify the State, Not Its Symbol — Applying its full evidence bar to every lint, test assertion, classifier, status, and ratio adds roughly 30–120 minutes of design and negative tests per check, plus possible runtime corroboration. Common case: a syntax or schema lint intentionally certifies only a local symbol and a false green costs minutes. The article lacks assurance tiers based on consequence and proxy reliability, making shortcuts rational under deadlines.
+10. A Dispatch Supplies the Question and Withholds the Answer — Independent grounding adds roughly 2–10 minutes and 500–3,000 tokens to every delegated check. Common case: a mechanical conformance test compares migration output with an approved expected array; withholding that oracle forces duplicate research and can reduce correctness. The rule lacks a discovery-versus-conformance discriminator. Ad-hoc oracle-bearing dispatches remain invisible to its template lint.
+
+## Articles judged worth their cost
+
+- Structure Decides Alone Only on an Exact Match
+- Deferral = Deletion
+- Intelligent Prompts — An LLM Gate Must Not String-Match
+- Quantitative Claims Must Bind a Subject
+- The Operator Channel Is Sacred — Critical-Path Gates Fail Toward Delivery
+- The Agent Is Always Reachable — A Guaranteed Reachability Floor
+- Name the Gravity Wells
+- Architectural Agency in the Gap
+- Sovereignty — “I own what is mine”
+- The Right to Stand Ground
+- A Wall Is a Hypothesis
+- Never a False Blocker
+- Distrust Temporary Success — A Recurrence Is a Root Cause
+- Know Your Principal — An Unverified Identity Is a Guess
+- Session Input Is a Principal
+
+## Articles reviewed
+
+26
