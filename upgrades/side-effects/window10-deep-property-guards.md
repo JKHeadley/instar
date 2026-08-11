@@ -3951,3 +3951,21 @@ That is a new failure shape for this window and worth naming: **a fabricated cav
 direction to be wrong in.** It tells the next reader the guard is weaker than it is, and invites a repair
 for a defect that never existed. I have spent all day being caught overstating what the code does; this
 was overstating what it FAILS to do, and it is the same error wearing humility.
+
+### Increment 93 — a sabotage that stopped sabotaging (2026-08-11 13:45 PDT)
+
+Two guard self-tests failed, and the cause is worth more than the fix. Both sabotaged by citing **review
+pass 47** — a number chosen because it was safely beyond the archive when they were written. This window
+archived up to pass 47. So the sabotage cited an EXISTING verdict, produced no "MISSING" complaint, and
+the arm no longer tested anything.
+
+**A fixture that assumes a fact about the world goes stale the moment the world moves** — and it goes
+stale silently, in the direction of passing. Had the second arm not asserted an exact message, both would
+have gone green while proving nothing.
+
+Both now DERIVE their pass number from the archive (max + 1), and the ordinal-form arm derives its ordinal
+WORD from that number too, since it had hardcoded "Forty-seventh". Neither can go stale again.
+
+This is the same class as everything else the window found, pointed at a test: an artefact that ASSERTS
+coverage rather than exercising it. The guard-population-parity work earlier assumed the same thing about
+guards; this is the version about facts.

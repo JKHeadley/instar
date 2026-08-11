@@ -488,12 +488,50 @@ describe('lint-account-matches-tree — the account must match the tree', () => 
     expect(r.code, r.out).toBe(0);
   });
 
+
+
+/** The ordinal WORD for a pass number, so the ordinal sabotage can track a derived number. */
+function ordinalWord(n: number): string {
+  const ones = ['', 'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth',
+    'tenth', 'eleventh', 'twelfth', 'thirteenth', 'fourteenth', 'fifteenth', 'sixteenth', 'seventeenth',
+    'eighteenth', 'nineteenth'];
+  const tensCard = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+  const tensOrd = ['', '', 'twentieth', 'thirtieth', 'fortieth', 'fiftieth', 'sixtieth', 'seventieth',
+    'eightieth', 'ninetieth'];
+  if (n < 20) return ones[n];
+  const t = Math.floor(n / 10);
+  const o = n % 10;
+  return o === 0 ? tensOrd[t] : `${tensCard[t]}-${ones[o]}`;
+}
+
+/**
+ * A review-pass number that is NOT archived, derived from the archive rather than assumed.
+ *
+ * These sabotages used to hardcode 47 — a number chosen because it was safely beyond the archive when
+ * they were written. Window 12 then archived up to pass 47, and the sabotage silently stopped
+ * sabotaging: citing an ARCHIVED pass produces no "MISSING" complaint, so the arm passed for the wrong
+ * reason and then failed on the wrong message. A fixture that assumes a fact about the world goes stale
+ * the moment the world moves.
+ */
+function unarchivedPassNumber(): number {
+  const dir = path.join(fixture, 'docs', 'specs', 'reports', 'window10-external-passes');
+  let max = 0;
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      const m = /^pass(\d+)-verdict\.md$/.exec(f);
+      if (m) max = Math.max(max, Number(m[1]));
+    }
+  } catch { /* no archive in this fixture: any number is unarchived */ }
+  return max + 1;
+}
+
   // ── ARM 3 — the limb that lapsed TEN times as a resolution. A citation is the obligation. ──
   it('refuses when the tree cites a review pass whose verdict is not archived', () => {
-    write(SE(), 'As review pass 47 found, the guard was blind.\n');
+    const n = unarchivedPassNumber();
+    write(SE(), `As review pass ${n} found, the guard was blind.\n`);
     const r = run('lint-account-matches-tree.mjs');
     expect(r.code).toBe(1);
-    expect(r.out).toContain('pass47-verdict.md is MISSING, and the tree cites review pass 47');
+    expect(r.out).toContain(`pass${n}-verdict.md is MISSING, and the tree cites review pass ${n}`);
   });
 
   it('refuses a hole in the middle of an otherwise contiguous archive', () => {
@@ -692,11 +730,15 @@ describe('lint-account-matches-tree — the account must match the tree', () => 
   // and titles every one of its sections — in the ordinal form. The sentence announcing the obligation
   // was written in the one wording that could not trigger it.
   it('arms on the ORDINAL citation form the documents actually use', () => {
+    // The number is DERIVED, and so is its ordinal word — this sabotage hardcoded "Forty-seventh"
+    // and stopped sabotaging the moment pass 47 was archived.
+    const n = unarchivedPassNumber();
+    const word = ordinalWord(n);
     append(path.join(fixture, 'docs', 'specs', 'window10-deep-property-guards.eli16.md'),
-      '\n## Forty-seventh reading: what it found\n');
+      `\n## ${word.charAt(0).toUpperCase()}${word.slice(1)} reading: what it found\n`);
     const r = run('lint-account-matches-tree.mjs');
     expect(r.code).toBe(1);
-    expect(r.out).toContain('pass47-verdict.md is MISSING');
+    expect(r.out).toContain(`pass${n}-verdict.md is MISSING`);
   });
 
   // Review pass 21 finding 5: "pass" is also a verb, and the first version demanded a verdict file for
