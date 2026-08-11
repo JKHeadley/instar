@@ -201,9 +201,19 @@ function hasLiveGuardCall(file, text) {
   //
   // The lesson is narrower than "use a parser": the question was never "is this a call", it is
   // "is this a call to THE IMPORTED FUNCTION". A property access can name anything; only a bare
-  // identifier can resolve to the module import, which `importsSharedGuard` separately requires.
-  // Together those two are the actual claim. Property access is still honoured for `apiCall`/`fetch`
-  // discovery, where `this.apiCall(...)` is the legitimate shape.
+  // identifier CAN resolve to a module import, so requiring one removes the shorthand defeat.
+  //
+  // What this does NOT establish, stated plainly because an earlier version of this comment claimed
+  // otherwise: that the call resolves to the IMPORT. This predicate and `importsSharedGuard` are
+  // evaluated INDEPENDENTLY and never related. A file holding an unused genuine import, a local
+  // binding of the same name, and a bare call to that local satisfies both and is reported guarded.
+  // No lexical binding resolution happens here (review pass 35 finding 6, and pass 34 before it —
+  // the comment was corrected before the analysis was, which is its own lesson). Closing it means
+  // resolving the identifier to its declaration; the shared-client consolidation (CMT-1246) removes
+  // the need by leaving one send path to check instead of six.
+  //
+  // Property access is still honoured for `apiCall`/`fetch` discovery, where `this.apiCall(...)`
+  // is the legitimate shape.
   return callsIn(parse(file, text)).some((c) => c.name === GUARD && c.bareIdentifier);
 }
 
@@ -336,7 +346,10 @@ if (missingPostGuard.length > 0) {
     `\n  A sender that TRANSFORMS the message must check what the transform produced. The pre-format`
     + `\n  check answers "did the caller write content"; only the post-format check answers "will a reader`
     + `\n  receive any". Review pass 33 proved the difference by execution: a link whose label was a`
-    + `\n  zero-width space passed the first and reached a reader as nothing.`,
+    + `\n  zero-width space passed the first and reached a reader as nothing.`
+    + `\n\n  Scope of this check: it finds a bare call bearing the name somewhere in the file. It does NOT`
+    + `\n  establish that the call is reached after the formatter runs, sits in the fetch funnel, or is`
+    + `\n  passed the formatter's output. A call placed anywhere in the file satisfies it.`,
   );
   process.exit(1);
 }
@@ -358,7 +371,7 @@ if (unguarded.length > 0) {
 
 console.log(
   `lint-telegram-send-funnel-guarded: clean — ${senders.length} Telegram body-sender(s) derived by mechanism `
-  + `(builds ${API_HOST} + calls fetch), all invoking ${GUARD}; `
-  + `${senders.filter((s) => s.formats).length} of them run the formatter and also invoke ${POST_GUARD}: `
+  + `(builds ${API_HOST} + calls fetch), each containing a bare call named ${GUARD}; `
+  + `${senders.filter((s) => s.formats).length} of them run the formatter and also contain one named ${POST_GUARD}: `
   + senders.map((s) => path.relative(ROOT, s.file)).join(', '),
 );

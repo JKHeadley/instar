@@ -494,19 +494,26 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
         .not.toThrow();
     });
 
-    it('decodes character references before judging visibility', () => {
-      // Pass 34 finding 2: `&#8203;` is punctuation and digits in the SOURCE and a ZERO WIDTH SPACE on
-      // screen, so counting source characters counts markup as content.
+    it('ACCEPTS encoded invisibles — a documented under-refusal, not an oversight', () => {
+      // Review pass 35 findings 3 and 4. An earlier version decoded character references and stripped
+      // emphasis delimiters, reaching toward Telegram's parsers. Both approximations OVER-refused:
+      // `~` is not a delimiter in legacy Markdown, and `zwnj`/`nbsp`/`shy`/`apos` are not entities
+      // Telegram's HTML mode resolves, so payloads whose visible content was literal punctuation were
+      // judged empty. An over-refusal destroys a real message; an under-refusal delivers one that
+      // reads as nothing. Between two wrong answers this file takes the recoverable one and SAYS so.
+      // These assertions exist to make the choice visible and deliberate — if a real rendering model
+      // ever arrives (CMT-1260), they are what should change.
       expect(() => assertOutgoingPayloadVisible('sendMessage', { text: '&#8203;', parse_mode: 'HTML' }))
-        .toThrow(/no reader-visible content AFTER formatting/i);
-      expect(() => assertOutgoingPayloadVisible('sendMessage', { text: '&amp;', parse_mode: 'HTML' }))
+        .not.toThrow();
+      expect(() => assertOutgoingPayloadVisible('sendMessage', { text: '*\u200b*', parse_mode: 'Markdown' }))
         .not.toThrow();
     });
 
-    it('consumes markdown delimiters, not only links', () => {
-      expect(() => assertOutgoingPayloadVisible('sendMessage', { text: '*\u200b*', parse_mode: 'Markdown' }))
-        .toThrow(/no reader-visible content AFTER formatting/i);
-      expect(() => assertOutgoingPayloadVisible('sendMessage', { text: '*hello*', parse_mode: 'Markdown' }))
+    it('does not refuse literal punctuation that a reader DOES see', () => {
+      // The over-refusals the narrowing removed, pinned so they cannot return.
+      expect(() => assertOutgoingPayloadVisible('sendMessage', { text: '&lt;b&gt;\u200b', parse_mode: 'HTML' }))
+        .not.toThrow();
+      expect(() => assertOutgoingPayloadVisible('sendMessage', { text: '~\u200b~', parse_mode: 'Markdown' }))
         .not.toThrow();
     });
 

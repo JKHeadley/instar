@@ -1415,7 +1415,13 @@ export class TelegramAdapter implements MessagingAdapter {
         // My sentence above ("retrying cannot make an invisible payload visible") was true of the rule
         // that existed when I wrote it and false of the rule I added an hour later. The two fixes
         // interacted, and only a reading that asked about the interaction found it.
-        if (err instanceof InvisiblePayloadRefusedError && err.decision.rule === 'no-content-codepoint') throw err;
+        // BOTH invisible-payload rules are terminal. The retry below re-enters the formatter (it does
+        // not set `_isPlainRetry`), so a post-format refusal would be re-derived and re-recorded —
+        // review pass 35 finding 1 measured two decision records for one operation, reopening the
+        // one-operation-one-record invariant pass 30 closed. Retrying also cannot help: the guard
+        // already ALLOWS every representation it cannot decide, so reaching here means the reader
+        // provably receives nothing.
+        if (err instanceof InvisiblePayloadRefusedError) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     } else {
@@ -1433,7 +1439,13 @@ export class TelegramAdapter implements MessagingAdapter {
         // My sentence above ("retrying cannot make an invisible payload visible") was true of the rule
         // that existed when I wrote it and false of the rule I added an hour later. The two fixes
         // interacted, and only a reading that asked about the interaction found it.
-        if (err instanceof InvisiblePayloadRefusedError && err.decision.rule === 'no-content-codepoint') throw err;
+        // BOTH invisible-payload rules are terminal. The retry below re-enters the formatter (it does
+        // not set `_isPlainRetry`), so a post-format refusal would be re-derived and re-recorded —
+        // review pass 35 finding 1 measured two decision records for one operation, reopening the
+        // one-operation-one-record invariant pass 30 closed. Retrying also cannot help: the guard
+        // already ALLOWS every representation it cannot decide, so reaching here means the reader
+        // provably receives nothing.
+        if (err instanceof InvisiblePayloadRefusedError) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     }

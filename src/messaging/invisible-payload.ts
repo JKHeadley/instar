@@ -271,41 +271,31 @@ export function setInvisiblePayloadRefusalSink(
  * reader receives content" does not survive a representation change. Whatever transforms the message
  * last is what decides what a reader sees.
  *
- * HTML: text nodes only — attributes and tag names are markup, never content. Markdown: the label of a
- * link is what displays, the destination is not. Neither is a full parser and neither claims to be;
- * both are deliberately CONSERVATIVE about what counts as visible, because over-counting here is what
- * lets an invisible message through.
+ * This extraction is DELIBERATELY SMALLER than a renderer, and review pass 35 is why. An earlier version
+ * grew toward modelling Telegram's two parsers — decoding character references, consuming emphasis
+ * delimiters — and every approximation error became an OVER-refusal: `~` is not a delimiter in legacy
+ * Markdown, and `zwnj`/`nbsp`/`shy`/`apos` are not entities Telegram's HTML mode resolves, so payloads
+ * whose visible content was literal punctuation were being judged empty. An over-refusal destroys a real
+ * message. Rather than chase a parser with regexes, this keeps only the two transforms that are true of
+ * Telegram's rendering without qualification:
+ *
+ *   HTML     — a tag is markup; its attributes are never shown.
+ *   Markdown — a link displays its LABEL; the destination is not shown.
+ *
+ * KNOWN UNDER-REFUSALS, accepted deliberately. A character reference (`&#8203;`) is counted as its
+ * SOURCE characters, so a payload made only of encoded invisibles passes. Emphasis delimiters count as
+ * content, so `*\u200b*` passes. Each is a payload that reaches a reader as nothing — the very harm this
+ * file exists to prevent — and each is allowed anyway, because refusing them requires a rendering model
+ * this code cannot supply, and a wrong model destroys real messages in the other direction. Closing them
+ * needs Telegram's own parse result, not a better regex. Tracked as CMT-1260.
  */
-/** Decode the character references Telegram resolves before rendering. Conservative: named set is the
- *  common invisibles plus the basics; anything unrecognised is left as source text, which can only make
- *  the extraction MORE likely to find content, never less — the safe direction for an over-refusal. */
-function decodeCharacterReferences(text: string): string {
-  const named: Record<string, string> = {
-    zwnj: '\u200c', zwj: '\u200d', nbsp: '\u00a0', shy: '\u00ad',
-    amp: '&', lt: '<', gt: '>', quot: '"', apos: "'",
-  };
-  return text
-    .replace(/&#x([0-9a-fA-F]+);/g, (_m, h) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_m, d) => String.fromCodePoint(parseInt(d, 10)))
-    .replace(/&([a-zA-Z]+);/g, (m, n) => named[n.toLowerCase()] ?? m);
-}
-
 export function readerVisibleText(text: string, parseMode?: unknown): string {
   const mode = typeof parseMode === 'string' ? parseMode.toLowerCase() : '';
   if (mode === 'html') {
-    // Character references DECODE before a reader sees them (review pass 34 finding 2): `&#8203;` is
-    // punctuation and digits in the source and a ZERO WIDTH SPACE on screen, so counting the source
-    // characters counts markup as content. Decode first, then drop tags.
-    return decodeCharacterReferences(text).replace(/<[^>]*>/g, '');
+    return text.replace(/<[^>]*>/g, '');
   }
   if (mode === 'markdown' || mode === 'markdownv2') {
-    // A link displays its LABEL; the destination is not shown. Emphasis/code delimiters are consumed
-    // as markup too (pass 34 finding 2 — the first version saw only links), so they are removed before
-    // asking whether anything is left.
-    return text
-      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-      .replace(/```[a-zA-Z]*/g, '')
-      .replace(/[*_~`]/g, '');
+    return text.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
   }
   return text;
 }
