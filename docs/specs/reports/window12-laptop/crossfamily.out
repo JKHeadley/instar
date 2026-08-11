@@ -1,0 +1,25 @@
+# Cross-family conflicts
+VERDICT: CONFLICTS
+COUNT: 4
+
+## Confirmed / refuted allegations
+A: REFUTED — *Sovereignty* governs whether the agent needs human permission to use its own accounts or infrastructure: “If yes, act; if it’s the human’s, ask.” *Ownership-Gated Side Effects* governs which machine may execute a conversation-scoped action: “a non-owner forwards, queues, or claims deliberately, never acts locally.” The agent can act without asking while the standby forwards to the owning machine. Agent-wide authority and machine-local ownership are different questions.
+
+B: REFUTED — The alleged routine retry is exactly what *Near-Silent Notifications* says should never be generated. *A Refusal Stays a Refusal* concerns terminal negative outcomes affecting the verified operator, narrowed in practice to drops on user-message paths—not suppression of housekeeping. *The Agent Is Always Reachable* concerns a session “denied / held / killed for a RESOURCE reason,” not a notification rejected by its volume budget, and it expressly says the agent frees its own resources first. Normal budget enforcement is therefore neither the resource-held-session case nor a terminal loss of operator input.
+
+## Additional conflicts
+1. *Structure Decides Alone Only on an Exact Match* (The Substrate) vs *Signal vs. Authority* (Interaction) — “structure may decide ALONE when the operator’s message is an EXACT, whole-message match” and “the literal-match floor ALWAYS stops” collide with “Only a higher-level, full-context intelligent gate has blocking authority” and “A fast regex or a cheap classifier may flag, never veto.” Ordinary case: the operator sends exactly `/stop` while the model gate is unavailable. One article requires the deterministic floor to stop by itself; the other forbids deterministic blocking authority. A careful agent would follow *Structure Decides Alone Only on an Exact Match* because it is narrowly written for emergency-stop safety, but that is a specificity judgment: *Signal vs. Authority* contains no cross-family exception or precedence rule.
+
+2. *No Silent Degradation to Brittle Fallback* (Building) vs *The User Experience Is the Product* (Interaction) — “The call must SWAP PROVIDER … or FAIL CLOSED” and must not fall back to a brittle heuristic collide with “check-unavailable [must] fail toward the user, with safety preserved by a cheaper deterministic check”; its applied behavior says deterministic-clean replies send while leaks hold. Ordinary case: an outbound tone-gate model is down, no alternate provider is healthy, and a routine reply passes the deterministic leak floor. Building requires refusal; Interaction requires delivery. A careful agent would follow *The User Experience Is the Product* because it explicitly says “the user wins” in this exact outage, but that priority is asserted inside one article rather than established as registry-wide precedence.
+
+3. *Runtime End-to-End Proof — the canary standard* (Building) vs *Self-Heal Before Notify* (Interaction) — “a missed or contract-violating round-trip alerts” collides with “The operator is notified … ONLY when the self-healing measures THEMSELVES have failed” and “must attempt a bounded, audited self-heal FIRST.” Ordinary case: one delivery canary misses because of a transient tunnel flap, but a bounded retry would succeed. Runtime Proof requires an alert for the miss; Self-Heal forbids that alert after successful recovery. A careful agent would retry first and notify only if recovery fails, because *Self-Heal Before Notify* directly governs escalation order, but the registry never says it overrides Runtime Proof’s unconditional alert requirement.
+
+4. *Never a False Blocker* (The Substrate) vs *Mobile-Complete Operator Actions* (Interaction) — the former includes “a physical action” in the genuinely human-only set; the latter says “Every action that needs the operator … must be completable from a phone, via the dashboard or a link.” Ordinary case: recovery requires the operator to press a hardware reset button or reconnect a cable. The action is genuinely human-only but cannot be completed through a phone surface. A careful agent would ask for the physical action and treat Mobile-Complete as intended for digital authorization surfaces, but that is inferred from its examples and origin story; its universal Rule contains no physical-action exception.
+
+## Families read
+- The Root
+- The Fractal
+- The Substrate
+- Building
+- Shipping
+- Interaction
