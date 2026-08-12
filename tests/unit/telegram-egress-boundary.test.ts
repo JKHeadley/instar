@@ -588,6 +588,43 @@ describe('telegram egress boundary — the single door', () => {
       }));
       expect(f2, 'the photo the source references is the content').toHaveBeenCalledTimes(1);
 
+      // Pass 50: the reference must sit in an EMBEDDING position, not merely appear in the source.
+      //
+      // My first test for this asserted the wrong thing — a bare `tg://photo?id=x` sitting in ordinary
+      // text IS visible, because the URL's own characters render. Probing the matcher directly rather
+      // than trusting my mental model gave the real cases: positions where the id appears and NOTHING
+      // renders. An HTML comment, and an attribute that embeds nothing.
+      const fComment = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: {
+          html: '<!-- tg://photo?id=pic1 --><b>\u200b</b>',
+          media: [{ id: 'pic1', media: { type: 'photo' } }],
+        },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(fComment, 'an id in a comment embeds nothing').not.toHaveBeenCalled();
+
+      const fAttr = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: {
+          html: '<a title="tg://photo?id=pic1">\u200b</a>',
+          media: [{ id: 'pic1', media: { type: 'photo' } }],
+        },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(fAttr, 'only src embeds — a title attribute renders no photo').not.toHaveBeenCalled();
+
+      // ...and the genuinely embedded form still delivers.
+      const fHtml = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: {
+          html: '<img src="tg://photo?id=pic1"/><b>\u200b</b>',
+          media: [{ id: 'pic1', media: { type: 'photo' } }],
+        },
+      }));
+      expect(fHtml, 'an embedded photo renders').toHaveBeenCalledTimes(1);
+
       // A reference to an id that was never declared is not a rendered photo either.
       const f3 = arm();
       await expect(telegramFetch(api('sendRichMessage'), post({

@@ -657,7 +657,31 @@ const HTML_FORMULA = /<tg-math\b[^>]*>([\s\S]*?)<\/tg-math>/gi;
  * A custom emoji is media too — `tg://emoji?id=` in either arm — and needs no declaration.
  */
 const DIRECT_MEDIA_URL = /!\[[^\]]*\]\(\s*https?:\/\/[^)]*\)|<img\b[^>]*\bsrc\s*=\s*["']https?:\/\/[^"']*["']/i;
-const EMOJI_MEDIA = /tg:\/\/emoji\?id=/i;
+const EMOJI_MEDIA = /!\[[^\]]*\]\(\s*tg:\/\/emoji\?id=[^)]*\)|<(?:img|tg-emoji)\b[^>]*tg:\/\/emoji\?id=[^>]*>|<tg-emoji\b[^>]*\bemoji-id\s*=/i;
+
+/**
+ * A media reference must sit in an EMBEDDING POSITION, not merely appear in the source.
+ *
+ * Review pass 50: the first version matched the bare `tg://photo?id=<id>` URL anywhere in the text, so a
+ * mention of that URL — in a paragraph, inside an invisible run, in a code span — counted as rendered
+ * media and waived the refusal for a message that renders nothing.
+ *
+ * Worth recording that I half-saw this. When writing it I judged a plain substring match too weak
+ * BECAUSE an attacker controls the source and could plant the id in invisible text, tightened it to a
+ * bare-URL regex, and stopped one step short of requiring the syntax that actually embeds. Tightening
+ * an insufficient check by one notch reads like addressing the concern and is not the same as closing
+ * it — the attack I had specifically imagined still worked against the tightened version.
+ */
+function mediaEmbedPattern(idPattern: string): RegExp {
+  // Markdown image syntax, or an HTML tag whose attribute carries the reference.
+  return new RegExp(
+    `!\\[[^\\]]*\\]\\(\\s*tg://(?:photo|video|audio)\\?id=${idPattern}[^)]*\\)`
+    // `src` ONLY. An earlier version accepted ANY attribute, so `<a title="tg://photo?id=x">` — which
+    // embeds nothing — counted as a rendered photo. Narrowed after probing the attribute case directly.
+    + `|<[a-z-]+\\b[^>]*\\bsrc\\s*=\\s*["']tg://(?:photo|video|audio)\\?id=${idPattern}[^"']*["']`,
+    'i',
+  );
+}
 
 function sourceRendersMedia(source: string, media: unknown): boolean {
   if (DIRECT_MEDIA_URL.test(source) || EMOJI_MEDIA.test(source)) return true;
@@ -666,8 +690,8 @@ function sourceRendersMedia(source: string, media: unknown): boolean {
     if (entry === null || typeof entry !== 'object') continue;
     const id = (entry as { id?: unknown }).id;
     if (typeof id !== 'string' || id.length === 0) continue;
-    const ref = new RegExp(`tg://(?:photo|video|audio)\\?id=${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`);
-    if (ref.test(source)) return true;
+    const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (mediaEmbedPattern(escaped).test(source)) return true;
   }
   return false;
 }

@@ -4256,3 +4256,32 @@ The new test counts reads rather than contents, and was verified to report 2 aga
 **7.** MACHINE-LOCAL BY DESIGN. **8.** Revert; one loop.
 
 **Proof.** Read-count test RED at 2 before, green at 1 after. 148 tests green across seven suites.
+
+### Window 13, eighth increment — pass 50's single finding
+
+**One new finding, down from three, on the same instrument** — so this decline is a comparable one.
+
+**The finding is one I half-saw and shipped anyway.** The media reference check matched the bare
+`tg://photo?id=<id>` URL ANYWHERE in the source rather than in a position that embeds. When writing it I
+judged a plain substring match too weak BECAUSE an attacker controls the source and could plant the id
+where nothing renders — then tightened it by one notch to a bare-URL regex and stopped. Tightening an
+insufficient check reads like addressing the concern and is not the same as closing it: the attack I had
+specifically imagined still worked against the tightened version.
+
+A reference now counts only inside markdown image syntax or an HTML `src` attribute.
+
+**Two corrections found by probing rather than by reasoning, and both matter.**
+
+My first test for this asserted the wrong thing. I wrote a bare `tg://photo?id=x` in ordinary text and
+expected a refusal — but that URL's own characters render, so the message is genuinely visible and
+allowing it is correct. Probing the matcher directly gave the real cases: an id inside an HTML comment,
+and an id inside an attribute that embeds nothing.
+
+And the first version of the repair accepted ANY attribute, so `<a title="tg://photo?id=x">` — which
+embeds nothing — still counted as a rendered photo. Narrowed to `src` after the probe showed it.
+
+**1. Over-block.** Unchanged: genuinely embedded media still delivers, proven both markdown and html.
+**2. Under-block.** Closed for the non-embedding positions. **3-6.** No other change.
+**7.** MACHINE-LOCAL BY DESIGN. **8.** Revert; one pattern.
+
+**Proof.** Verified RED against the pre-repair code. 148 tests green across seven suites (derived by running them, not recalled — the first draft of this line said 149).
