@@ -355,7 +355,11 @@ export function readerVisibleText(text: string, parseMode?: unknown): string {
     return text.replace(/<[^>]*>/g, '');
   }
   if (mode === 'markdown' || mode === 'markdownv2') {
-    return text.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
+    // The optional `!` is IMAGE syntax, not content. Without it the reduction left a bare bang behind,
+    // and one visible-looking character is all this check needs to be talked out of a refusal — an
+    // image whose destination carried the payload passed on the strength of its own punctuation.
+    // Found by writing the negative control for pass 48 finding 2, not by a reading.
+    return text.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1');
   }
   return text;
 }
@@ -445,13 +449,21 @@ const BLOCK_CAPTION_VARIANTS: ReadonlySet<string> = new Set([
   'collage', 'slideshow', 'map', 'animation', 'audio', 'photo', 'video', 'voice_note',
 ]);
 
-/** Block variants that render something unreadable here — media, a map, a formula. */
+/**
+ * Block variants that render something unreadable here — media, a map, a formula, a rule.
+ *
+ * `divider` is here and NOT below, per review pass 48. The first version of this table called a divider
+ * non-rendering alongside an anchor; the API defines it as a rule corresponding to `<hr/>`, which a
+ * reader sees. The runtime outcome happened to be the same either way, which is exactly why it was worth
+ * fixing: the stated-open work of refusing a structure PROVEN to render nothing depends on this
+ * distinction meaning what it says, and a false member would have made that repair silently wrong.
+ */
 const BLOCK_OPAQUE: ReadonlySet<string> = new Set([
-  'mathematical_expression', 'map', 'animation', 'audio', 'photo', 'video', 'voice_note',
+  'mathematical_expression', 'map', 'animation', 'audio', 'photo', 'video', 'voice_note', 'divider',
 ]);
 
-/** Block variants that render nothing: a rule, and a jump target. */
-const BLOCK_RENDERS_NOTHING: ReadonlySet<string> = new Set(['divider', 'anchor']);
+/** The one block variant that renders nothing: an anchor, which is a jump target. */
+const BLOCK_RENDERS_NOTHING: ReadonlySet<string> = new Set(['anchor']);
 
 // A cyclic or adversarial structure must terminate, but the bound is NOT a content limit — pass 46 found
 // 16 truncates real documents, since every wrapper adds a level and a list inside a table inside a
@@ -578,26 +590,98 @@ function blockScan(value: unknown, depth = 0): StructuredScan {
  * pairing invisible `blocks` with a visible `html` sibling read as visible here and rendered as nothing
  * there. Same shape as the discriminator bug, one layer up.
  *
- * `media` is read only on the markdown and html arms. Media renders, so its presence is OPAQUE rather
- * than ignorable — otherwise an image-only markdown message would be refused as invisible.
+ * `media` is read only on the markdown and html arms — and its PRESENCE proves nothing. The API defines
+ * the array as "media that ARE SPECIFIED IN the markdown or html fields using `tg://photo?id=`,
+ * `tg://video?id=` and `tg://audio?id=` links", so an entry is a declaration the source must reference
+ * by id in order for anything to render. Review pass 48 caught the first version of this treating any
+ * non-empty array as proof — which recreated the discarded-member-vouching defect one layer ABOVE the
+ * discriminator table, in the very increment that closed it below. It is now a reference check.
  */
+
+/**
+ * Formula regions in a rich markdown or html source. Their content is raw LaTeX, so its characters are
+ * not its glyphs — a spacing-only expression is all letters and paints nothing.
+ *
+ * Pass 48 finding 1: the OPAQUE treatment reached only the explicit `mathematical_expression` block, so
+ * the same formula written in the markdown or html arm still had its SOURCE counted as visible content.
+ * One repair, one of three representations — the sweep failure this window has now recorded four times.
+ *
+ * Syntax from the live Bot API reference: markdown carries `$inline$`, `$$block$$` and a ```math fence;
+ * html carries `<tg-math>`.
+ */
+// Each alternative CAPTURES its body, because the delimiters are not the formula. Testing the whole
+// region for content counted `$`, `` ` `` and the tag name itself — so every formula looked renderable
+// and the empty-formula case slipped straight back through. Caught by running the control, not by
+// reading the regex.
+const MARKDOWN_FORMULA = /\$\$([\s\S]*?)\$\$|```math([\s\S]*?)```|\$([^$\n]*)\$/g;
+const HTML_FORMULA = /<tg-math\b[^>]*>([\s\S]*?)<\/tg-math>/gi;
+
+/**
+ * Does the source actually put MEDIA in front of a reader? Two documented ways, and the difference
+ * between them is the whole of pass 48 finding 2.
+ *
+ *   A DIRECT url — `![](https://…/photo.jpg)` in markdown, `<img src="https://…">` in html. The API
+ *   says media blocks support HTTP and HTTPS URLs, so this renders on its own and declares nothing.
+ *
+ *   A DECLARED entry, referenced by id — `tg://photo?id=<id>`, `tg://video?id=<id>`, `tg://audio?id=<id>`.
+ *   Here the `media` array is the declaration and the SOURCE is the reference. An entry nobody
+ *   references renders nothing, and a reference to an id nobody declared renders nothing either. Only
+ *   the pair is content.
+ *
+ * A custom emoji is media too — `tg://emoji?id=` in either arm — and needs no declaration.
+ */
+const DIRECT_MEDIA_URL = /!\[[^\]]*\]\(\s*https?:\/\/[^)]*\)|<img\b[^>]*\bsrc\s*=\s*["']https?:\/\/[^"']*["']/i;
+const EMOJI_MEDIA = /tg:\/\/emoji\?id=/i;
+
+function sourceRendersMedia(source: string, media: unknown): boolean {
+  if (DIRECT_MEDIA_URL.test(source) || EMOJI_MEDIA.test(source)) return true;
+  if (!Array.isArray(media) || media.length === 0) return false;
+  for (const entry of media) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const id = (entry as { id?: unknown }).id;
+    if (typeof id !== 'string' || id.length === 0) continue;
+    const ref = new RegExp(`tg://(?:photo|video|audio)\\?id=${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`);
+    if (ref.test(source)) return true;
+  }
+  return false;
+}
+
+function richSourceScan(source: unknown, mode: 'Markdown' | 'HTML', media: unknown): StructuredScan {
+  if (typeof source !== 'string') return NOTHING;
+  const formula = mode === 'Markdown' ? MARKDOWN_FORMULA : HTML_FORMULA;
+  // A formula's source is removed from the visibility test — its characters are LaTeX instructions, not
+  // glyphs, so they must not vouch for the rest of the message.
+  //
+  // But removal alone would have been a REGRESSION, and the negative control for this repair is what
+  // caught it: an invisible body wrapped in a formula tag was REFUSED before (the tag stripped, the
+  // zero-width body judged and found invisible) and would have been ALLOWED after, because an empty leaf
+  // plus a blanket "a formula is undecidable" waives everything. An invisible payload wrapped in a
+  // formula tag is not an undecidable formula — it is the original incident wearing one.
+  //
+  // So a formula grants the waiver only when its own SOURCE carries content. That is the honest line: a
+  // formula written out of real characters may render anything and cannot be judged here, while one
+  // written out of nothing renders nothing and is decided.
+  let carriesRenderableFormula = false;
+  const withoutFormulas = source.replace(formula, (_region: string, ...groups: unknown[]) => {
+    const body = groups.find((g): g is string => typeof g === 'string') ?? '';
+    if (!hasNoVisibleCharacters(body)) carriesRenderableFormula = true;
+    return '';
+  });
+
+  return {
+    leaves: [{ text: withoutFormulas, mode }],
+    undecidable: carriesRenderableFormula || sourceRendersMedia(source, media),
+  };
+}
+
 function structuredFieldScan(value: unknown): StructuredScan {
   if (value === null || typeof value !== 'object') return NOTHING;
   if (Array.isArray(value)) return blockScan(value, 0);
 
   const obj = value as Record<string, unknown>;
-  const mediaPresent = Array.isArray(obj.media) && obj.media.length > 0;
   if ('blocks' in obj) return blockScan(obj.blocks, 0);
-  if ('markdown' in obj) {
-    const md = obj.markdown;
-    const leaves = typeof md === 'string' ? [{ text: md, mode: 'Markdown' }] : [];
-    return { leaves, undecidable: mediaPresent };
-  }
-  if ('html' in obj) {
-    const html = obj.html;
-    const leaves = typeof html === 'string' ? [{ text: html, mode: 'HTML' }] : [];
-    return { leaves, undecidable: mediaPresent };
-  }
+  if ('markdown' in obj) return richSourceScan(obj.markdown, 'Markdown', obj.media);
+  if ('html' in obj) return richSourceScan(obj.html, 'HTML', obj.media);
   // Telegram answers 400 "Rich message must be non-empty" — a loud failure, and not this guard's case.
   return NOTHING;
 }

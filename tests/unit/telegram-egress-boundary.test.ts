@@ -470,6 +470,79 @@ describe('telegram egress boundary — the single door', () => {
       expect(f3, 'pullquote declares credit — it renders').toHaveBeenCalledTimes(1);
     });
 
+    it('does not let a LaTeX source vouch in the markdown or html arms either', async () => {
+      // Pass 48 finding 1. The OPAQUE treatment for formulas reached only the explicit block variant, so
+      // the SAME formula written in markdown or html still had its raw source counted as visible. One
+      // repair, one of three representations — the sweep failure this window has now recorded four times.
+      // Syntax from the live reference: markdown `$inline$`, `$$block$$`, a ```math fence; html <tg-math>.
+      const f = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1, rich_message: { markdown: '\u200b $\\hspace{1cm}$' },
+      }));
+      expect(f, 'a formula renders — this is not PROVEN invisible').toHaveBeenCalledTimes(1);
+
+      // The direction that matters: strip the formula and the rest must still be judged on its own.
+      const f2 = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1, rich_message: { markdown: '\u200b\u200b' },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f2).not.toHaveBeenCalled();
+
+      // ...and the html arm carries the same grammar under a different tag.
+      const f3 = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1, rich_message: { html: '<b>\u200b</b><tg-math>x^2</tg-math>' },
+      }));
+      expect(f3).toHaveBeenCalledTimes(1);
+
+      // A formula written out of NOTHING is not an undecidable formula — it is the original incident
+      // wearing one. Removing formula regions without this line would have ALLOWED a payload the
+      // previous code refused; the negative control for this repair is what caught it.
+      const f4 = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1, rich_message: { html: '<tg-math>\u200b</tg-math>' },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f4, 'an invisible body inside a formula tag renders nothing').not.toHaveBeenCalled();
+
+      const f5 = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1, rich_message: { markdown: '$\u200b$' },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f5).not.toHaveBeenCalled();
+    });
+
+    it('requires the SOURCE to reference a media entry — a declaration does not vouch', async () => {
+      // Pass 48 finding 2, and it was mine from one increment earlier: treating any non-empty `media`
+      // array as proof recreated the discarded-member-vouching defect one layer ABOVE the discriminator
+      // table, in the very change that closed it below. The API defines the array as media SPECIFIED IN
+      // the source using tg://photo?id= / tg://video?id= / tg://audio?id= links.
+      const f = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { markdown: '\u200b', media: [{ id: 'never-referenced', media: { type: 'photo' } }] },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f, 'an unreferenced declaration renders nothing').not.toHaveBeenCalled();
+
+      // A referenced entry DOES render, and must not be refused.
+      const f2 = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: {
+          markdown: '![](tg://photo?id=pic1)\u200b',
+          media: [{ id: 'pic1', media: { type: 'photo' } }],
+        },
+      }));
+      expect(f2, 'the photo the source references is the content').toHaveBeenCalledTimes(1);
+
+      // A reference to an id that was never declared is not a rendered photo either.
+      const f3 = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { markdown: '![](tg://photo?id=ghost)\u200b', media: [{ id: 'pic1', media: {} }] },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f3).not.toHaveBeenCalled();
+    });
+
     it('takes the container arm Telegram takes — blocks, ELSE markdown, ELSE html', async () => {
       // Found by reading the parser rather than handed over by a reading. The container is a PRIORITY
       // union: if `blocks` is present the other arms are never read. The previous walk collected all
