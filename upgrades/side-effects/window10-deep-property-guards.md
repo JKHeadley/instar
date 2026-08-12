@@ -4410,3 +4410,31 @@ than the reviewer's words. An archive that exists so claims can be CHECKED is wo
 a paraphrase wearing the reviewer's format.
 
 **Proof.** Negative control run: emptied → guard fails naming the file; restored → clean.
+
+### Window 13, fourteenth increment — pass 53, and the reading that was asked to classify
+
+**0 DESIGN, 1 PRECISION — and no fresh runtime bypass at all.** The brief asked this reading to classify
+rather than accumulate: to name another instance of the already-recorded root AS an instance, and to treat
+a finding outside it, a refutation of it, or a design account of the fix as the genuinely new things. It
+did exactly that, and returned none of them. Its first sentence: "No fresh runtime bypass outside the
+already named rich-source reduction/root was found in this pass."
+
+The DESIGN series across the archive now reads 4, 6, 3, 2, 1, 0, 0, 0, 0 — four consecutive readings at
+zero. The raw totals oscillate and hide this; the composition does not.
+
+**The one finding is a false claim in the SPEC that ships with this merge.** Its field table still said
+`editMessageText → text` alone, while the code, the pinned test and the live API all say `rich_message`
+outranks it. Not a bypass — the code is correct. A reader auditing coverage FROM that table would conclude
+one field is enough and could re-open the class two earlier findings closed, while following the
+documented design.
+
+**This one broke the freeze deliberately**, and the reasoning is the window's own subject: merging a
+document I know to be false, to save one CI cycle, is exactly the trade this work argues against. The
+cost is fifteen minutes; the alternative is shipping paperwork that would teach the next maintainer to
+undo a repair.
+
+**1. Over-block / 2. Under-block.** No runtime change. **3-6.** Documentation only.
+**7.** Repository-level. **8.** Revert; one table.
+
+**Proof.** 79 tests green on the pinned field-map suite, which already asserted the correct order — the
+spec was the only surface that disagreed with it. Swept for other spellings of the claim; none remain.
