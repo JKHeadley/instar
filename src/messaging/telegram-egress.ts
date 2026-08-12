@@ -58,6 +58,19 @@ import {
  * dispatcher it models produces requests Telegram honours and this file never sees.
  */
 const BOT_API_HOST = 'api.telegram.org';
+/**
+ * STATED OPEN — a self-hosted Bot API server is invisible to this door.
+ *
+ * Telegram supports replacing the cloud endpoint with a local server, and both this recogniser and
+ * `scripts/lint-telegram-egress-boundary.mjs` hard-code the host above. An agent configured against a
+ * local server would have EVERY send classified as non-Telegram and pass unchecked, and the lint would
+ * print clean over it.
+ *
+ * Confirmed open by review passes 47 and 48. Recorded here rather than only in the review archive
+ * because a reader arriving at this constant is the person who needs to know it, and an open item that
+ * lives only in an archive is one nobody meets. Closing it means taking the host from configuration,
+ * in BOTH the runtime and the lint, so the two cannot drift apart.
+ */
 /** Lowercased method → canonical spelling, so lookup matches Telegram's case-insensitive dispatch. */
 const CANONICAL_METHOD: ReadonlyMap<string, string> = new Map(
   [...Object.keys(READER_VISIBLE_TELEGRAM_PARAMS), ...NO_READER_VISIBLE_FIELD_TELEGRAM_METHODS]
@@ -203,6 +216,18 @@ function collectParams(url: string, body: RequestInit['body']): {
    * `?text=<invisible>&text=visible` was SENT while Telegram would have sent the invisible value, and
    * `?text=visible&text=<invisible>` was REFUSED while Telegram would have sent the visible one. One
    * bypass and one destroyed message from a single line. `URLSearchParams.get` returns the first.
+   */
+  /**
+   * STATED OPEN — the body's encoding is inferred from its JavaScript WRAPPER, never from `Content-Type`.
+   *
+   * Everything below branches on what kind of JS value the body is — a string, `URLSearchParams`,
+   * `FormData`, a stream. Telegram decides from the request's media type. A caller sending a JSON
+   * string under a form content type, or the reverse, is read one way here and another way there, and
+   * the field this door checks is then not the field Telegram reads.
+   *
+   * Confirmed open by review passes 47 and 48, and recorded at the function that carries it rather than
+   * only in the review archive. Closing it means reading the header and letting it govern, with the
+   * wrapper as a fallback — not adding another wrapper case.
    */
   const done = (uncheckable: string | null) => {
     for (const k of new Set(queryParams.keys())) {
