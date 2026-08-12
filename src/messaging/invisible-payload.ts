@@ -355,6 +355,14 @@ export function readerVisibleText(text: string, parseMode?: unknown): string {
     return text.replace(/<[^>]*>/g, '');
   }
   if (mode === 'markdown' || mode === 'markdownv2') {
+    // Rich Markdown may carry ARBITRARY HTML, and Telegram parses those tags as Rich HTML. So a tag
+    // name or an attribute is markup here exactly as it is in the html arm, and counting those bytes as
+    // content let `<b>\u200b</b>` in a markdown source vouch for a message that renders nothing.
+    //
+    // Worth naming: I read that sentence in the live reference EARLIER IN THIS WINDOW, while deriving
+    // the formula syntax from the same page, and did not apply it. Having the fact is not the same as
+    // having used it — which is the window's subject pointed at my own reading rather than my own code.
+    text = text.replace(/<[^>]*>/g, '');
     // The optional `!` is IMAGE syntax, not content. Without it the reduction left a bare bang behind,
     // and one visible-looking character is all this check needs to be talked out of a refusal — an
     // image whose destination carried the payload passed on the strength of its own punctuation.
@@ -675,10 +683,13 @@ const EMOJI_MEDIA = /!\[[^\]]*\]\(\s*tg:\/\/emoji\?id=[^)]*\)|<(?:img|tg-emoji)\
 function mediaEmbedPattern(idPattern: string): RegExp {
   // Markdown image syntax, or an HTML tag whose attribute carries the reference.
   return new RegExp(
-    `!\\[[^\\]]*\\]\\(\\s*tg://(?:photo|video|audio)\\?id=${idPattern}[^)]*\\)`
+    // The id must END where the declared one ends. `id=${idPattern}[^)]*` was a PREFIX match, so a
+    // declared `pic1` vouched for a reference to `pic1EXTRA` — a different, undeclared media that
+    // renders nothing. Terminated by a parameter separator, a quote, a closing paren, or end-of-input.
+    `!\\[[^\\]]*\\]\\(\\s*tg://(?:photo|video|audio)\\?id=${idPattern}(?=[&)\\s"']|$)[^)]*\\)`
     // `src` ONLY. An earlier version accepted ANY attribute, so `<a title="tg://photo?id=x">` — which
     // embeds nothing — counted as a rendered photo. Narrowed after probing the attribute case directly.
-    + `|<[a-z-]+\\b[^>]*\\bsrc\\s*=\\s*["']tg://(?:photo|video|audio)\\?id=${idPattern}[^"']*["']`,
+    + `|<[a-z-]+\\b[^>]*\\bsrc\\s*=\\s*["']tg://(?:photo|video|audio)\\?id=${idPattern}(?=[&"']|$)[^"']*["']`,
     'i',
   );
 }

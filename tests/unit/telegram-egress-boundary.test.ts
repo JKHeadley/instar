@@ -634,6 +634,56 @@ describe('telegram egress boundary — the single door', () => {
       expect(f3).not.toHaveBeenCalled();
     });
 
+    it('strips HTML inside rich MARKDOWN — tag bytes are markup, not content', async () => {
+      // Pass 51 finding 1. Rich Markdown may carry arbitrary HTML and Telegram parses those tags as
+      // Rich HTML, so a tag name or attribute is markup here exactly as in the html arm. Counting those
+      // bytes as content let a markdown source whose only rendered text is invisible pass as visible.
+      const f = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1, rich_message: { markdown: '<b>\u200b</b>' },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f, 'the tag name is markup — the reader sees the label').not.toHaveBeenCalled();
+
+      // ...and an attribute cannot vouch either.
+      const f2 = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1, rich_message: { markdown: '<a href="https://example.com/VISIBLE">\u200b</a>' },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f2).not.toHaveBeenCalled();
+
+      // Real text beside the markup still delivers.
+      const f3 = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1, rich_message: { markdown: '<b>hello</b>' },
+      }));
+      expect(f3).toHaveBeenCalledTimes(1);
+    });
+
+    it('matches a declared media id EXACTLY, not as a prefix', async () => {
+      // Pass 51 finding 2. `id=<declared>[^)]*` is a PREFIX match, so a declared `pic1` vouched for a
+      // reference to `pic1EXTRA` — a different, undeclared media that renders nothing.
+      const f = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: {
+          markdown: '![](tg://photo?id=pic1EXTRA)\u200b',
+          media: [{ id: 'pic1', media: { type: 'photo' } }],
+        },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f, 'a longer id is a different reference').not.toHaveBeenCalled();
+
+      // The exact id still counts, including when other parameters follow it.
+      const f2 = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: {
+          markdown: '![](tg://photo?id=pic1&size=large)\u200b',
+          media: [{ id: 'pic1', media: { type: 'photo' } }],
+        },
+      }));
+      expect(f2, 'an exact id followed by another parameter still renders').toHaveBeenCalledTimes(1);
+    });
+
     it('takes the container arm Telegram takes — blocks, ELSE markdown, ELSE html', async () => {
       // Found by reading the parser rather than handed over by a reading. The container is a PRIORITY
       // union: if `blocks` is present the other arms are never read. The previous walk collected all

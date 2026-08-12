@@ -424,3 +424,28 @@ is load-bearing rather than decorative.
 
 **Proof.** The detector probe returns the stub. 148 tests green across seven suites locally; the real
 verification is CI, which is where the failure lived.
+
+---
+
+### Window 13, tenth increment — pass 51's two findings
+
+**Two new, both PRECISION, no DESIGN.** The series on this instrument now reads 3, 1, 2 — low,
+oscillating, and NOT converging to zero. Stated plainly rather than presented as progress.
+
+**Finding 1 — a fact I already had and did not apply.** Rich Markdown may carry ARBITRARY HTML, and
+Telegram parses those tags as Rich HTML. My Markdown reduction stripped link syntax and not tags, so tag
+names and attributes counted as content and let a markdown source whose only rendered text is invisible
+pass as visible. I read that sentence in the live reference EARLIER IN THIS SAME WINDOW, while deriving
+the formula syntax from the same page. Having the fact is not the same as having used it — the window's
+subject pointed at my reading rather than at my code.
+
+**Finding 2 — a prefix match where an exact one was needed.** The embed pattern was
+`id=<declared>[^)]*`, so a declared `pic1` vouched for a reference to `pic1EXTRA`, which names different,
+undeclared media that renders nothing. The id must now END where the declared one ends — terminated by a
+parameter separator, a quote, a closing paren, or end-of-input — and a following parameter still counts.
+
+**1. Over-block.** Real text beside markup still delivers; an exact id with trailing parameters still
+delivers. Both proven. **2. Under-block.** Both closed. **3-6.** No other change.
+**7.** MACHINE-LOCAL BY DESIGN. **8.** Revert; one replace and two patterns.
+
+**Proof.** Both verified RED against the pre-repair code. 150 tests green across seven suites.
