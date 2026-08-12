@@ -4178,3 +4178,25 @@ surface effect. Comments.
 **8. Rollback.** Revert; comments only.
 
 **Proof.** 142 tests green across the six guard suites, type check clean, boundary lint clean.
+
+### Window 13, fifth increment — three fail-safes explained rather than a ratchet raised
+
+CI refused the proposed branch at 498 designed fail-safes against a shrink-only baseline of 495. All
+three are in the egress door: URL parses and percent-decodes whose catch blocks return a value rather
+than reporting a degradation.
+
+The baseline was NOT raised. Its own history shows five previous raises, each with a paragraph explaining
+why that change was the exception; a sixth for three catches I could instead justify would have been that
+habit rather than an exception to it. Each is now tagged with the reason it is a fail-safe: an unparseable
+URL is not a Bot API URL and never becomes a request, so nothing degraded happens to report; a malformed
+percent-escape is judged in its RAW form because refusing there would skip every check on a request
+Telegram still dispatches — the fallback runs toward MORE checking.
+
+Cost two runs to learn: the exemption marker must sit INSIDE the catch block, because the detector reads
+that block's content. Two of three markers sat directly above the `try`, read perfectly to a human, and
+did nothing.
+
+**1–6.** No behavioural change; comments and one catch reformatted from single-line to braced.
+**7.** MACHINE-LOCAL BY DESIGN, unchanged. **8.** Revert; comments only.
+
+**Proof.** Ratchet reports 495 against 495 on both branches. Guard suites green.

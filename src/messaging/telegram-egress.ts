@@ -97,6 +97,9 @@ export function methodFromTelegramUrl(url: string): string | null {
   try {
     parsed = new URL(url.trim());
   } catch {
+    // @silent-fallback-ok: a string `URL` cannot parse is not a Bot API URL, and `fetch` will reject
+    // it too — so classifying it as "not ours" is the accurate answer, not a swallowed failure. The
+    // request never reaches Telegram either way; there is no degraded delivery to report.
     return null;
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
@@ -105,7 +108,10 @@ export function methodFromTelegramUrl(url: string): string | null {
   const host = parsed.hostname.toLowerCase().replace(/\.$/, '');
   if (host !== BOT_API_HOST) return null;
   let pathname = parsed.pathname;
-  try { pathname = decodeURIComponent(pathname); } catch { /* malformed escape: judge the raw form */ }
+  // @silent-fallback-ok: a malformed percent-escape is judged in its RAW form rather than dropped.
+  // Refusing here would skip every check on a request Telegram still dispatches, which is the exact
+  // bypass shape this door exists to close — so the fallback is toward MORE checking, not less.
+  try { pathname = decodeURIComponent(pathname); } catch { /* judge the raw form */ }
 
   // Model Telegram's extraction rather than pattern-matching a shape: it strips an optional `test`
   // segment and treats the ENTIRE remaining path as the method name (pass 40 F1/F4). The previous regex
@@ -122,10 +128,18 @@ export function methodFromTelegramUrl(url: string): string | null {
  *  `method` argument instead. */
 export function isBotApiRoot(url: string): boolean {
   let parsed: URL;
-  try { parsed = new URL(url.trim()); } catch { return false; }
+  try { parsed = new URL(url.trim()); } catch {
+    // @silent-fallback-ok: same reasoning as the classifier above — an unparseable string is not a Bot
+    // API root, and a degradation report about a request that never happens is noise, not signal.
+    return false;
+  }
   if (parsed.hostname.toLowerCase().replace(/\.$/, '') !== BOT_API_HOST) return false;
   let pathname = parsed.pathname;
-  try { pathname = decodeURIComponent(pathname); } catch { /* judge the raw form */ }
+  try { pathname = decodeURIComponent(pathname); } catch {
+    // @silent-fallback-ok: judged in its RAW form rather than dropped, exactly as in the classifier —
+    // the fallback is toward MORE checking, since refusing here would skip every check on a request
+    // Telegram still dispatches.
+  }
   // The test-environment form `/bot<token>/test/` is ALSO a root: Telegram strips the `test` segment
   // and then resolves the method from a parameter exactly as it does for production (pass 40 F1 — the
   // tests covered test-paths-with-a-method and production-roots-with-a-parameter, never the
