@@ -177,3 +177,76 @@ rebase; the working branch is the one that must absorb it, and it is not propose
 **Verified, not assumed:** main's full lint chain green on the carve (87 articles — main's registry,
 untouched, which is the evidence the constitutional work did not come along), type check clean,
 standards-coverage check PASSED where the full branch FAILED, boundary lint clean, 136 tests green.
+
+
+---
+
+### Window 13, third increment — pass 48's three findings
+
+**What changed.** Three repairs, and one regression caught by my own negative control before it shipped.
+
+**Finding 1 — the formula repair reached one of three representations.** OPAQUE treatment applied only to
+the explicit `mathematical_expression` block, so the same formula written in the `markdown` or `html`
+container arm still had its raw LaTeX SOURCE counted as visible content. Formula regions are now removed
+from the visibility test in both arms, using the syntax the live reference gives (`$inline$`, `$$block$$`,
+a ```math fence, `<tg-math>`). This is the fourth time this window that a repair was applied to one
+spelling of its own class.
+
+**The regression that nearly rode along, and how it was caught.** Removing formula regions and marking any
+formula-bearing source undecidable would have ALLOWED an invisible payload wrapped in a formula tag — a
+case the previous code refused. The blanket waiver was wrong; a formula grants it only when its own source
+carries content. Then the first version of THAT check tested the whole matched region, so the delimiters
+and the tag name supplied the content and every formula looked renderable. Both were caught by running the
+negative control, not by reading the code.
+
+**Finding 2 — a media declaration vouched without being referenced.** Mine, from one increment earlier: any
+non-empty `media` array made the payload undecidable. The API defines that array as media *specified in*
+the source via `tg://photo?id=` / `tg://video?id=` / `tg://audio?id=` links, so an entry nobody references
+renders nothing. It now requires the pair — a declaration AND a reference to its id — or a direct
+HTTP(S) media URL, which the reference says renders on its own. This recreated the discarded-member
+defect one layer ABOVE the discriminator table, in the very increment that closed it below.
+
+**Found while writing that control:** markdown image syntax left a bare `!` behind when the link was
+reduced, and one visible-looking character is all this check needs to be talked out of a refusal. The
+reduction now consumes the image marker.
+
+**Finding 3 — `divider` was classified as rendering nothing.** It renders a rule (`<hr/>`). The runtime
+outcome was the same either way, which is exactly why it mattered: the stated-open work of refusing a
+structure PROVEN to render nothing depends on that distinction meaning what it says.
+
+**1. Over-block.** Reduced twice: a media message whose source genuinely references its declared media is
+no longer at risk from a stricter markdown reduction, and a real formula still delivers.
+
+**2. Under-block.** Two closed (unreferenced media; the bare `!`). The declared residual is unchanged and
+now honest across all three representations: a formula whose LaTeX renders nothing cannot be detected
+here, and saying so in one arm while implying coverage in the others was the false claim.
+
+**3. Level of abstraction.** Unchanged.
+
+**4. Signal vs authority.** Strengthened. Two waivers that rested on unsupported inferences — media
+presence, formula presence — now rest on checks against the documented grammar.
+
+**5. Interactions.** The formula and media checks share one function and one source string; the media
+check reads the ORIGINAL source, not the formula-stripped one, since a reference inside a formula region
+would not be a rendered reference.
+
+**6. External surfaces.** None beyond which payloads are refused.
+
+**7. Multi-machine posture.** MACHINE-LOCAL BY DESIGN, as recorded above.
+
+**8. Rollback.** Revert the commit; one function and two constant tables.
+
+**Proof.** Both new behavioural tests verified RED against the pre-repair code. 142 tests green across the
+six guard suites, type check clean.
+
+
+---
+
+## The lint that nothing was protecting
+
+CI caught it on this branch, and it is this line of work's own systemic finding pointed back at itself: the
+new boundary lint RAN in CI but was absent from the list that stops a merge silently dropping it — exactly
+as its deleted predecessor had been, for that predecessor's entire life. Registered now, with the
+replacement rather than after it.
+
+That is the whole argument for the ratchet. The guard was real, it was running, and nothing guarded it.
