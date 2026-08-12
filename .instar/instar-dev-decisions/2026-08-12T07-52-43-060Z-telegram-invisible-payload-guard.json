@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-12T07:52:43.060Z",
+  "slug": "telegram-invisible-payload-guard",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 51,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/invisible-payload.ts",
+      "src/messaging/telegram-egress.ts"
+    ],
+    "addedLines": 44,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -348,3 +348,79 @@ declared. **3–6.** No abstraction, authority, interaction or external-surface 
 
 **Proof.** The new structured-formula tests verified RED against the pre-repair code. 147 tests green
 across seven suites, type check clean, silent-fallback ratchet at 495 against 495.
+
+---
+
+### Window 13, seventh increment — a claim that had been false for two passes
+
+**Found by reading the code against its own comment**, not by an external reading. The door's header said
+it had stopped spreading `init` because object spread re-reads `body` — a second read of a
+caller-controlled getter. The line below that paragraph still spread `init`.
+
+**Why nothing caught it, which is the interesting part.** The outcome was safe: the spread's value was
+immediately overwritten by the captured body, so the bytes on the wire were always the inspected ones.
+Every test of the SENT payload passes either way. The defect was visible only by counting READS, and
+nothing counted reads — so a false claim sat in the load-bearing paragraph of the load-bearing file for
+two full passes, describing a repair that had not been made.
+
+A second read is not harmless because its value is discarded: a getter with side effects runs twice, and
+the next person to write `outgoing.body = x ?? init.body` inherits a hole the comment promised was shut.
+
+The outgoing init is now built by copying every key EXCEPT `body`, so `init.body` is touched exactly once.
+The new test counts reads rather than contents, and was verified to report 2 against the previous code.
+
+**1. Over-block / 2. Under-block.** No change to any refusal decision.
+**3-6.** No abstraction, authority, interaction or external-surface change.
+**7.** MACHINE-LOCAL BY DESIGN. **8.** Revert; one loop.
+
+**Proof.** Read-count test RED at 2 before, green at 1 after. 148 tests green across seven suites.
+
+### Window 13, eighth increment — pass 50's single finding
+
+**One new finding, down from three, on the same instrument** — so this decline is a comparable one.
+
+**The finding is one I half-saw and shipped anyway.** The media reference check matched the bare
+`tg://photo?id=<id>` URL ANYWHERE in the source rather than in a position that embeds. When writing it I
+judged a plain substring match too weak BECAUSE an attacker controls the source and could plant the id
+where nothing renders — then tightened it by one notch to a bare-URL regex and stopped. Tightening an
+insufficient check reads like addressing the concern and is not the same as closing it: the attack I had
+specifically imagined still worked against the tightened version.
+
+A reference now counts only inside markdown image syntax or an HTML `src` attribute.
+
+**Two corrections found by probing rather than by reasoning, and both matter.**
+
+My first test for this asserted the wrong thing. I wrote a bare `tg://photo?id=x` in ordinary text and
+expected a refusal — but that URL's own characters render, so the message is genuinely visible and
+allowing it is correct. Probing the matcher directly gave the real cases: an id inside an HTML comment,
+and an id inside an attribute that embeds nothing.
+
+And the first version of the repair accepted ANY attribute, so `<a title="tg://photo?id=x">` — which
+embeds nothing — still counted as a rendered photo. Narrowed to `src` after the probe showed it.
+
+**1. Over-block.** Unchanged: genuinely embedded media still delivers, proven both markdown and html.
+**2. Under-block.** Closed for the non-embedding positions. **3-6.** No other change.
+**7.** MACHINE-LOCAL BY DESIGN. **8.** Revert; one pattern.
+
+**Proof.** Verified RED against the pre-repair code. 148 tests green across seven suites (derived by running them, not recalled — the first draft of this line said 149).
+
+### Window 13, ninth increment — a test that only worked on my machine
+
+CI's shard 4 failed with "Claude CLI not found". The lifeline's constructor loads config, and config
+refuses to load without an agent CLI present — so this suite passed on a developer machine and failed on
+a runner. A test whose result depended on who ran it.
+
+**The tempting repair was to skip the suite when no CLI is present.** That is the exact shape this line of
+work exists to stop: a suite that reports green by not running is indistinguishable from one that ran, and
+this suite covers the sender whose complete absence of a guard was the headline discovery of the whole
+increment. Skipping it would have been coverage theatre in the highest-value place.
+
+So the test SUPPLIES the prerequisite instead of dodging it: a stub binary inside a throwaway HOME, with
+the detector's process-wide cache cleared so the stub is actually consulted rather than a stale null from
+an earlier suite. Verified by probing the detector directly — it returns the stub path, so the mechanism
+is load-bearing rather than decorative.
+
+**1-6.** Test-only; no runtime change. **7.** MACHINE-LOCAL BY DESIGN. **8.** Revert; one setup block.
+
+**Proof.** The detector probe returns the stub. 148 tests green across seven suites locally; the real
+verification is CI, which is where the failure lived.
