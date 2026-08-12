@@ -4329,3 +4329,28 @@ delivers. Both proven. **2. Under-block.** Both closed. **3-6.** No other change
 **7.** MACHINE-LOCAL BY DESIGN. **8.** Revert; one replace and two patterns.
 
 **Proof.** Both verified RED against the pre-repair code. 150 tests green across seven suites.
+
+### Window 13, eleventh increment — naming one root instead of patching a fifth instance
+
+Comments only. Passes 48-51 produced six findings and every one was the same shape in a different place:
+the source reduction counted bytes as content that Telegram treats as markup or does not render — a
+formula's LaTeX source, a media id mentioned rather than embedded and then matched as a prefix, an HTML
+tag inside a Markdown source. Each was repaired where it was found, and the next reading found the next.
+
+**The root is that the reduction SUBTRACTS known markup and treats the remainder as visible.** That is an
+open world, and an open world can only ever remove the shapes someone thought of — which is precisely the
+sequence the last four readings recorded.
+
+**This file has already made the opposite move once, and it worked.** `CONTENT_RE` was originally
+subtractive; a reviewer produced six code points it missed on the first attempt; it was inverted to name
+what COUNTS and the class closed. The same inversion is available for the source reduction.
+
+It is NOT done here, and that is a judgement rather than an oversight: inverting it changes refusal
+semantics on a path where a wrong answer DESTROYS a real message, and this guard's own history records
+regex approximations of Telegram's parser erring in BOTH directions at passes 34, 35 and 36. It wants
+doing carefully, not at the end of a long session. Recorded as the structural next item, at the function
+that carries it, with the note that its shape is already proven one screen above.
+
+**1-6.** No behavioural change. **7.** MACHINE-LOCAL BY DESIGN. **8.** Revert; comments only.
+
+**Proof.** 150 tests green; the analysis changes no decision.
