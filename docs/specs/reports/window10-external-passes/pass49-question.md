@@ -113,3 +113,38 @@ Write your report to `~/window13b-exam/PASS49-VERDICT.md` AND print it to stdout
 ## REGRESSION-CHECK  one line per stated-open item.
 
 Analysis only. Do not construct working evasions; describe the class and cite the line.
+
+---
+
+## ADDENDUM — the instrument changed, recorded BEFORE the verdict
+
+The reading was launched on the model this series has been using and died twice, both times with
+`Selected model is at capacity`, after roughly 165,000 and 244,000 tokens of live source lookups. It could
+not be resumed: resuming replays the context that is itself over the ceiling, so the resume attempt hit
+the same wall immediately.
+
+Three things were tried and are recorded because each failed for a different reason, and a reader
+comparing pass 49 to pass 48 needs to know the reading was not simply re-run:
+
+- **Retry on the same model.** The lane now retries a capacity failure with backoff, and it worked as
+  built — it caught the error and re-attempted. It does not help when the ceiling is a function of the
+  reading's own depth, because every attempt reaches the same depth.
+- **Resume the dead session.** Refused for the reason above. A first resume attempt also attached to the
+  WRONG session — `--last` picked up a small capability probe rather than the reading — which was caught
+  only by asking it to state what task it was performing. Had it not been asked, it would have written a
+  verdict from a three-thousand-token probe.
+- **A different reader entirely.** The other CLI on this machine is not logged in under any profile
+  available to the agent, so it was not an option that could be taken without the operator.
+
+**So pass 49 was re-run on `gpt-5.5` instead of the configured `gpt-5.6-sol`.** Same CLI, same account,
+same machine, same tree, same question, same reasoning effort — the MODEL differs, and nothing else.
+
+**What that costs, stated plainly.** The numeric series (9, 7, 8, 7, 9, 5, 6, 3, …) measures the tree
+through one instrument. Pass 49's count is NOT a comparable next point in that series and must not be read
+as one. What it remains is a legitimate independent reading: a different model asking the identical
+question of the identical tree. For the CONVERGENCE question — does a fresh lens find anything new — an
+independent instrument is arguably stronger evidence than another turn of the same one. For the TREND
+question it is not evidence at all.
+
+This addendum is committed before the verdict exists, for the same reason the question is: a caveat
+written after a result is a caveat fitted to it.
