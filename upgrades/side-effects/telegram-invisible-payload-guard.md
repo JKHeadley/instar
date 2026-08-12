@@ -250,3 +250,31 @@ as its deleted predecessor had been, for that predecessor's entire life. Registe
 replacement rather than after it.
 
 That is the whole argument for the ratchet. The guard was real, it was running, and nothing guarded it.
+
+---
+
+### Window 13, fourth increment — two open items that lived only in the archive
+
+**What changed.** Comments only; no behaviour. Two of pass 48's confirmed-open items — the body encoding
+inferred from the JavaScript wrapper rather than `Content-Type`, and a self-hosted Bot API server being
+invisible to both the runtime recogniser and the lint — were recorded nowhere in the source. They existed
+only in review verdicts.
+
+**Why it is worth a commit.** I had already written, in the merge proposal and in the release note, that
+open items are named "in the SOURCE at the function that carries them, where the next reader meets them
+rather than only in a document." That sentence was FALSE for two of ten when I wrote it. I checked the
+claim by grepping the source for each item rather than trusting my own summary, which is the only reason
+it surfaced — the same defect this window is named for, committed in the paragraph describing the fix for it.
+
+Each is now recorded at the construct that carries it: the encoding limit at the collection function that
+does the inferring, the local-server limit at the hard-coded host constant, each naming what closing it
+requires so the next reader does not have to re-derive it.
+
+**1–6.** No behavioural change; no over-block, under-block, abstraction, authority, interaction or external
+surface effect. Comments.
+
+**7. Multi-machine posture.** MACHINE-LOCAL BY DESIGN, unchanged.
+
+**8. Rollback.** Revert; comments only.
+
+**Proof.** 142 tests green across the six guard suites, type check clean, boundary lint clean.
