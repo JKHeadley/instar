@@ -87,6 +87,8 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { applyTelegramFormatter } from '../messaging/TelegramAdapter.js';
 import type { FormatMode } from '../messaging/TelegramMarkdownFormatter.js';
 import { recordFormatFallbackPlainRetry } from '../messaging/telegramFormatMetrics.js';
+import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from '../messaging/invisible-payload.js';
+import { telegramFetch } from '../messaging/telegram-egress.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
 
 /**
@@ -1304,7 +1306,7 @@ export class TelegramLifeline {
    */
   private async downloadPhoto(fileId: string, messageId: number): Promise<string> {
     // Get file path from Telegram
-    const infoRes = await fetch(
+    const infoRes = await telegramFetch(
       `https://api.telegram.org/bot${this.config.token}/getFile?file_id=${encodeURIComponent(fileId)}`
     );
     if (!infoRes.ok) throw new Error(`getFile failed: ${infoRes.status}`);
@@ -1317,7 +1319,7 @@ export class TelegramLifeline {
     const filename = `photo-${Date.now()}-${messageId}.jpg`;
     const localPath = path.join(photoDir, filename);
 
-    const fileRes = await fetch(
+    const fileRes = await telegramFetch(
       `https://api.telegram.org/file/bot${this.config.token}/${filePath}`
     );
     if (!fileRes.ok) throw new Error(`File download failed: ${fileRes.status}`);
@@ -1331,7 +1333,7 @@ export class TelegramLifeline {
    * Preserves the original filename when available.
    */
   private async downloadDocument(fileId: string, messageId: number, originalName?: string): Promise<string> {
-    const infoRes = await fetch(
+    const infoRes = await telegramFetch(
       `https://api.telegram.org/bot${this.config.token}/getFile?file_id=${encodeURIComponent(fileId)}`
     );
     if (!infoRes.ok) throw new Error(`getFile failed: ${infoRes.status}`);
@@ -1348,7 +1350,7 @@ export class TelegramLifeline {
     const filename = `${Date.now()}-${baseName}`;
     const localPath = path.join(docDir, filename);
 
-    const fileRes = await fetch(
+    const fileRes = await telegramFetch(
       `https://api.telegram.org/file/bot${this.config.token}/${filePath}`
     );
     if (!fileRes.ok) throw new Error(`File download failed: ${fileRes.status}`);
@@ -2858,7 +2860,14 @@ export class TelegramLifeline {
 
     try {
       await this.apiCall('sendMessage', { ...params, parse_mode: 'Markdown' });
-    } catch {
+    } catch (firstErr) {
+      // A CONTENT refusal is terminal — see the adapter's note. Retrying cannot make an invisible
+      // payload visible, and the bare retry emitted a second structured refusal record for one
+      // operation (review pass 30 finding 2).
+      if (firstErr instanceof InvisiblePayloadRefusedError) {
+        console.error(`[Lifeline] refused invisible payload for topic ${topicId}`);
+        return;
+      }
       // Retry without Markdown parse mode
       try {
         await this.apiCall('sendMessage', params);
@@ -2891,9 +2900,26 @@ export class TelegramLifeline {
   }
 
   private async apiCall(method: string, params: Record<string, unknown>, retryCount = 0): Promise<unknown> {
+    // THE FUNNEL for this class. The lifeline defines its OWN private `sendToTopic` and its own
+    // `apiCall`, so every previous placement of the invisible-payload refusal inside TelegramAdapter
+    // left this sender completely unguarded — two `apiCall('sendMessage')` sites with no check at
+    // all, which four consecutive enumerations of "every send site" all missed because they only
+    // ever enumerated the adapter. `scripts/lint-telegram-egress-boundary.mjs` (which replaced the deleted per-sender
+    // lint) proves that every Bot API `fetch` is confined to the egress door — NOT that anything
+    // passes through this private `apiCall`. Pass 38 finding 6: this said the lint enforces THIS
+    // funnel, which it has never done and cannot; the enforcement it does provide is one level
+    // out, at the door.
+    // Pre-format guard REMOVED (CMT-1246 criterion b). It closed the same case as the egress
+    // door — proven by execution: with it gone every payload it caught is still refused, and
+    // only the message changes. Two copies of one case mask each other's tests.
+
     // PR2: format sendMessage / editMessageText via the shared helper used by
     // TelegramAdapter. Legacy-passthrough (default) preserves caller parse_mode.
     const sendParams = applyTelegramFormatter(method, params, this.currentFormatMode());
+    // The content check runs at the egress door below, on the serialised request — after this
+    // transform, because a formatter can remove the evidence an earlier check relied on (pass 33
+    // finding 1). No pre-format call remains here; the comment that claimed one was corrected by
+    // pass 36 finding 6.
     const url = `https://api.telegram.org/bot${this.config.token}/${method}`;
     const timeoutMs = method === 'getUpdates' ? 60_000 : 15_000;
     const controller = new AbortController();
@@ -2901,7 +2927,9 @@ export class TelegramLifeline {
 
     let response: Response;
     try {
-      response = await fetch(url, {
+      // EGRESS. Goes through the shared door so the visibility check runs on the SERIALISED body —
+      // the exact bytes Telegram receives, after every transform. See src/messaging/telegram-egress.ts.
+      response = await telegramFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(sendParams.outgoingParams),

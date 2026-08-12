@@ -6,6 +6,7 @@
  */
 
 import { Router } from 'express';
+import { telegramFetch } from '../messaging/telegram-egress.js';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import { execFileSync } from 'node:child_process';
 import { createHash, timingSafeEqual, randomUUID } from 'node:crypto';
@@ -145,6 +146,7 @@ import { routeActionClaim, type ClaimClauseArbitration } from '../monitoring/Cla
 import { HumanAsDetectorLog, LEARNING_DETERMINISTIC_THRESHOLD } from '../monitoring/HumanAsDetectorLog.js';
 import { APPRENTICESHIP_CYCLE_CHANNELS } from '../monitoring/ApprenticeshipCycleStore.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
+import { hasNoVisibleCharacters } from '../messaging/invisible-payload.js';
 import { parseVersion, compareVersions } from '../lifeline/versionHandshake.js';
 import { readLatestCodexUsage } from '../providers/adapters/openai-codex/observability/codexRateLimitReader.js';
 import {
@@ -14738,6 +14740,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: '"firstMessage" must be a string of 4096 characters or fewer' });
       return;
     }
+    // The THIRD door, found by review pass 28 firing one payload at every route that reaches the sink.
+    // The chokepoint in TelegramAdapter now refuses this too — but a 400 naming the reason is a better
+    // answer to a caller than a thrown 500, and this route's outcome was the worst of the three: it
+    // CREATES a forum topic and posts an invisible first message into it.
+    if (typeof firstMessage === 'string' && hasNoVisibleCharacters(firstMessage)) {
+      res.status(400).json({
+        error: 'refused: "firstMessage" contains no visible characters (only whitespace, zero-width or ignorable marks, control/unassigned/private-use code points, or blank glyphs '
+          + 'marks). An invisible message cannot inform a reader, and this route would create a topic to '
+          + 'hold it.',
+      });
+      return;
+    }
 
     // Color is optional — defaults to green (9367192)
     const iconColor = typeof color === 'number' ? color : 9367192;
@@ -14889,6 +14903,51 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const { text, metadata } = req.body;
     if (!text || typeof text !== 'string') {
       res.status(400).json({ error: '"text" field required' });
+      return;
+    }
+
+    // ── An INVISIBLE payload is refused at the door (window 11, 2026-08-09) ──
+    // Earned from a real incident on a peer agent the same morning: a send whose
+    // entire body was one ZERO-WIDTH SPACE (U+200B) passed the guard above — it is a
+    // truthy, non-empty, under-4096 string — then failed downstream with a 500
+    // carrying an EMPTY error body, burned nine retries across 4h17m, and emitted a
+    // user-facing "I had a reply for you but couldn't deliver it" notice. There was
+    // no reply. Two of that agent's four escalations were this exact shape.
+    //
+    // Refused with 400 deliberately, not 500: recovery-policy.ts classifies
+    // `400 / 401 / 404 -> escalate (terminal client error)`, so a refusal here CANNOT
+    // enter the retry loop — verified by reading that file, not inferred from the
+    // comment on the negative-topicId guard above. The reason travels in the body,
+    // which is the second half of the incident: the 500 carried nothing, so four
+    // hours of retrying produced nothing anyone could diagnose.
+    //
+    // "Invisible" is the UNICODE STANDARD's own definition, not my list. The first
+    // version of this guard hand-enumerated five code points (U+200B/C/D, U+2060,
+    // U+FEFF) and review pass 8 immediately showed the class was wider: U+200E LRM,
+    // U+2061, U+FE0F, U+00AD SHY and U+180E all survived it, so "invisible payloads
+    // are refused" was true of the incident and false as a claim. A hand-written
+    // population is the blind spot this registry keeps re-finding — the guard could
+    // only ever cover the characters I happened to think of.
+    //
+    // WHAT THE PREDICATE ACTUALLY IS NOW. The paragraph above describes the SUBTRACTIVE approach —
+    // remove the invisible classes, keep the rest — which review pass 6 replaced, because you can only
+    // subtract shapes you have thought of and eight non-printing categories walked through it.
+    //
+    // `hasNoVisibleCharacters` asks the POSITIVE question instead: does this string contain at least
+    // one letter, number, punctuation mark, symbol, or mark (`\p{L}\p{N}\p{P}\p{S}\p{M}`), minus
+    // `Default_Ignorable` and a small set of blank glyphs. Marks were admitted at passes 30-31 after
+    // excluding them was measured to over-refuse real text.
+    //
+    // Review pass 37 finding 7 caught this comment still explaining the deleted design — which is what
+    // a maintainer reads instead of the predicate. The verified non-refusal cases below still hold: an
+    // emoji with a variation selector, accented Latin and CJK all send, and a message wrapped in
+    // zero-widths but containing real text is untouched.
+    if (hasNoVisibleCharacters(text)) {
+      res.status(400).json({
+        error: 'refused: "text" contains no visible characters (only whitespace, zero-width or ignorable marks, control/unassigned/private-use code points, or blank glyphs). '
+          + 'An invisible message cannot inform a reader, and delivering it would produce a "reply lost" '
+          + 'escalation for content that never existed.',
+      });
       return;
     }
     if (text.length > 4096) {
@@ -15420,6 +15479,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const { text, metadata } = req.body;
     if (!text || typeof text !== 'string') {
       res.status(400).json({ error: '"text" field required' });
+      return;
+    }
+    // The SECOND door. Review pass 27 finding 4 booted a probe server and fired a zero-width space at
+    // THIS route — it returned 200 and called `sendToTopic`. The guard had exactly one production call
+    // site, on the reply route, while the explainer told a reader the fix was "at the point of sending"
+    // and that an invisible message is "refused outright". Both were true of the incident and false as
+    // claims about the code. This route is MANDATED by the agent template for every ship/restart
+    // narration, so it is the one an agent is most likely to send an empty payload through.
+    if (hasNoVisibleCharacters(text)) {
+      res.status(400).json({
+        error: 'refused: "text" contains no visible characters (only whitespace, zero-width or ignorable marks, control/unassigned/private-use code points, or blank glyphs). '
+          + 'An invisible message cannot inform a reader, and delivering it would produce a "reply lost" '
+          + 'escalation for content that never existed.',
+      });
       return;
     }
     if (text.length > 4096) {
@@ -34996,7 +35069,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               // surface it loudly so the scenario records a real driver-error FAIL.
               throw new Error('liveTest.demo.telegramChatId is required to post a demo Telegram message');
             }
-            const r = await fetch(url, {
+            const r = await telegramFetch(url, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ chat_id: chatId, message_thread_id: topicId, text }),

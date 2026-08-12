@@ -10,6 +10,8 @@
  */
 
 import fs from 'node:fs';
+import { assertTelegramPayloadVisible, InvisiblePayloadRefusedError } from './invisible-payload.js';
+import { telegramFetch } from './telegram-egress.js';
 import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -1338,6 +1340,24 @@ export class TelegramAdapter implements MessagingAdapter {
       formatMode?: 'html';
     },
   ): Promise<SendResult> {
+    // NOT the chokepoint, and this comment is the correction of a claim that stood here.
+    //
+    // It read "THE CHOKEPOINT. Every Telegram send passes through here." Review pass 29 falsified
+    // that by execution: `send()` — the MessagingAdapter interface method a router calls — reaches
+    // the API without entering this function. Derived population: 14 `apiCall('sendMessage')` sites
+    // in this class across 9 methods, of which this one accounted for 4.
+    //
+    // THERE ARE TWO EGRESS MECHANISMS IN THIS CLASS, not one, and that is the correction that cost
+    // the most to learn. `apiCall` is the only path to `fetch` — but the tokenless-standby branch
+    // below relays the body to another machine's router and never enters `apiCall` at all. Guarding
+    // only the API funnel left that branch uncovered; an independent second-pass reviewer proved it
+    // by execution, which makes the relay the FIFTH falsification of "every send passes through
+    // here" — found inside the change that retired the phrase.
+    //
+    // So the refusal is applied per EGRESS, not per function: `apiCall` covers the API path and the
+    // relay call site covers the relay path. That is not the duplication review pass 23 warns about
+    // (two copies closing the SAME case, masking each other's tests) — these close DIFFERENT cases,
+    // and each has its own test that reds when only its own guard is removed.
     const params: Record<string, unknown> = {
       chat_id: this.config.chatId,
       text,
@@ -1361,6 +1381,24 @@ export class TelegramAdapter implements MessagingAdapter {
       // Tokenless standby (bug #7): relay the send through the Telegram-owning router
       // instead of calling the API with no token. The rest of this method's bookkeeping
       // (log, stall-clear, promise-tracking) then runs identically on the relayed id.
+      //
+      // EGRESS 2 of 2. This never reaches `apiCall`, so the funnel refusal cannot see it. Refusing
+      // here keeps the guarantee whole and — equally important — keeps the failure HONEST: the far
+      // end does refuse an invisible body, but with a 400, and `isRelayRefusal` recognises only 422,
+      // so relying on it would surface a CONTENT refusal as `relay failed … router unreachable`.
+      // That conflation of "refused" with "could not reach" is the exact bug TelegramRelay's own
+      // header records having fixed.
+      // THE ONE SURVIVING PER-SENDER GUARD, and the reason CMT-1246's criterion (b) — "every
+      // per-sender call is DELETED" — cannot be met literally without opening a hole.
+      //
+      // The egress door (src/messaging/telegram-egress.ts) owns every other path because every other
+      // path reaches api.telegram.org from THIS process. This one does not: it hands the message to
+      // another machine, which sends it. The door cannot see a request this process never makes.
+      //
+      // Criterion (b) was written before that was understood. It is satisfied everywhere the door can
+      // reach — seven of eight calls deleted — and this one stays, deliberately and named, rather than
+      // deleted to make a checklist come out even.
+      assertTelegramPayloadVisible('sendMessage', { text });
       const relayed = await this.outboundRelay(topicId, text, {
         silent: options?.silent,
         kindMetadata: options?.kindMetadata,
@@ -1376,13 +1414,59 @@ export class TelegramAdapter implements MessagingAdapter {
       // the message still delivers (tags visible — never worse than the bug).
       try {
         result = await this.apiCall('sendMessage', { ...params, parse_mode: 'HTML', _formatMode: 'html' }) as { message_id: number };
-      } catch {
+      } catch (err) {
+        // A PRE-FORMAT refusal is terminal — the source carried no content, so no retry can help, and
+        // the bare retry logged it TWICE (review pass 30 finding 2). A POST-FORMAT refusal is NOT
+        // terminal here, and that distinction is review pass 34 finding 1: the plain-params retry is a
+        // DIFFERENT REPRESENTATION, and the post-format rule is precisely a claim about representation.
+        // Malformed HTML with no text nodes has no reader-visible content AS HTML and is perfectly
+        // visible as plain text — the retry shows the tags, which this path exists to do. Refusing it
+        // outright destroyed a deliverable message, which the guard's own policy forbids.
+        //
+        // My sentence above ("retrying cannot make an invisible payload visible") was true of the rule
+        // that existed when I wrote it and false of the rule I added an hour later. The two fixes
+        // interacted, and only a reading that asked about the interaction found it.
+        // BOTH invisible-payload rules are terminal. The retry below re-enters the formatter (it does
+        // not set `_isPlainRetry`), so a post-format refusal would be re-derived and re-recorded —
+        // review pass 35 finding 1 measured two decision records for one operation, reopening the
+        // one-operation-one-record invariant pass 30 closed. Retrying also cannot help: the guard
+        // already allows every representation whose extraction is EMPTY. Reaching here means the
+        // extraction was non-empty and carried nothing visible.
+        //
+        // That is NOT the same as "the reader provably receives nothing", which is what this said
+        // until review pass 36 finding 5: malformed tag-shaped source would be shown to the reader
+        // after Telegram rejects the parse, and this refuses it anyway. The refusal is still right
+        // for the case it was built for and wrong for that one; both ride CMT-1260.
+        if (err instanceof InvisiblePayloadRefusedError) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     } else {
       try {
         result = await this.apiCall('sendMessage', { ...params, parse_mode: 'Markdown' }) as { message_id: number };
-      } catch {
+      } catch (err) {
+        // A PRE-FORMAT refusal is terminal — the source carried no content, so no retry can help, and
+        // the bare retry logged it TWICE (review pass 30 finding 2). A POST-FORMAT refusal is NOT
+        // terminal here, and that distinction is review pass 34 finding 1: the plain-params retry is a
+        // DIFFERENT REPRESENTATION, and the post-format rule is precisely a claim about representation.
+        // Malformed HTML with no text nodes has no reader-visible content AS HTML and is perfectly
+        // visible as plain text — the retry shows the tags, which this path exists to do. Refusing it
+        // outright destroyed a deliverable message, which the guard's own policy forbids.
+        //
+        // My sentence above ("retrying cannot make an invisible payload visible") was true of the rule
+        // that existed when I wrote it and false of the rule I added an hour later. The two fixes
+        // interacted, and only a reading that asked about the interaction found it.
+        // BOTH invisible-payload rules are terminal. The retry below re-enters the formatter (it does
+        // not set `_isPlainRetry`), so a post-format refusal would be re-derived and re-recorded —
+        // review pass 35 finding 1 measured two decision records for one operation, reopening the
+        // one-operation-one-record invariant pass 30 closed. Retrying also cannot help: the guard
+        // already allows every representation whose extraction is EMPTY. Reaching here means the
+        // extraction was non-empty and carried nothing visible.
+        //
+        // That is NOT the same as "the reader provably receives nothing", which is what this said
+        // until review pass 36 finding 5: malformed tag-shaped source would be shown to the reader
+        // after Telegram rejects the parse, and this refuses it anyway. The refusal is still right
+        // for the case it was built for and wrong for that one; both ride CMT-1260.
+        if (err instanceof InvisiblePayloadRefusedError) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     }
@@ -3125,7 +3209,7 @@ export class TelegramAdapter implements MessagingAdapter {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 60_000);
         try {
-          const response = await fetch(fileUrl, { signal: controller.signal });
+          const response = await telegramFetch(fileUrl, { signal: controller.signal });
           if (!response.ok) throw new Error(`Download failed: ${response.status}`);
           const buffer = Buffer.from(await response.arrayBuffer());
           fs.writeFileSync(destPath, buffer);
@@ -5668,6 +5752,19 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   private async apiCall(method: string, params: Record<string, unknown>, retryCount: number = 0): Promise<unknown> {
+    // THE FUNNEL for this class. Nothing reaches the Telegram API from here without passing through
+    // it, and the egress door below is where the content decision is made.
+    //
+    // This used to say the property was provable because "`fetch` is called once, below". That stopped
+    // being true when the door landed — this method calls `telegramFetch`, and `fetch` lives in
+    // `src/messaging/telegram-egress.ts`. Review pass 37 finding 8. The property is still provable,
+    // but by `scripts/lint-telegram-egress-boundary.mjs` confining egress, not by counting calls here. See `assertTelegramPayloadVisible` for the
+    // history; the short version is that "the point of sending", "both doors" and "the single
+    // chokepoint every send passes through" were each falsified by the next reader.
+    // Pre-format guard REMOVED (CMT-1246 criterion b). It closed the same case as the egress
+    // door — proven by execution: with it gone every payload it caught is still refused, and
+    // only the message changes. Two copies of one case mask each other's tests.
+
     // PR2: run the formatter on sendMessage / editMessageText when a non-legacy
     // mode is configured. Legacy-passthrough (default) preserves the caller's
     // parse_mode byte-for-byte. See docs/specs/TELEGRAM-MARKDOWN-RENDERER-SPEC.md.
@@ -5676,6 +5773,14 @@ export class TelegramAdapter implements MessagingAdapter {
       params,
       this.config.getFormatMode?.(),
     );
+    // The formatter's output goes to the egress door below, which runs the content check on the
+    // SERIALISED request (pass 33 finding 1: a formatter can remove the very evidence an earlier check
+    // relied on, so the check belongs after every transform).
+    //
+    // There is no pre-format call above any more. This comment used to say there was — pass 36 finding
+    // 6 — which is worth leaving noted: a comment describing a call that was deleted is what a
+    // maintainer trusts instead of re-reading the code.
+
     const url = `https://api.telegram.org/bot${this.config.token}/${method}`;
     const safeUrl = `https://api.telegram.org/bot[REDACTED]/${method}`;
 
@@ -5686,7 +5791,9 @@ export class TelegramAdapter implements MessagingAdapter {
 
     let response: Response;
     try {
-      response = await fetch(url, {
+      // EGRESS. Goes through the shared door so the visibility check runs on the SERIALISED body —
+      // the exact bytes Telegram receives, after every transform. See src/messaging/telegram-egress.ts.
+      response = await telegramFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(sendParams.outgoingParams),
