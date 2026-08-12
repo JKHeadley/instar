@@ -4200,3 +4200,35 @@ did nothing.
 **7.** MACHINE-LOCAL BY DESIGN, unchanged. **8.** Revert; comments only.
 
 **Proof.** Ratchet reports 495 against 495 on both branches. Guard suites green.
+
+### Window 13, sixth increment — pass 49's three findings
+
+**Finding 2 (the one that mattered).** The body-content test added for formulas in the markdown and html
+arms was never applied to the explicit structured discriminators, which stayed unconditionally opaque. So
+`$​$` written as markdown was refused while the identical formula written as a block or an inline wrapper
+was allowed to vouch. **Fifth instance this window of a repair applied to one representation of its own
+class** — and the repair is now a single `formulaScan` function used by all three, because a shared
+definition is the only version of "swept" that cannot rot back apart.
+
+**Finding 3.** The plain-language companion still described the deleted per-sender architecture as the
+active safeguard, and still listed the single door as owed rather than shipped. Corrected, with what it
+replaced recorded rather than silently overwritten, and the remaining debts restated as the narrow ones
+that are actually true.
+
+**Finding 1 — NOT closed, and the reason is on the record.** A formula whose source has characters but
+renders no glyph still delivers. Deciding it needs a LaTeX renderer. What the repair does close is the
+formula VOUCHING for the message around it, which is separable and now tested both ways.
+
+**A residual I found while pinning finding 2, and pinned honestly rather than papered over.** A structure
+whose ONLY content is an empty-bodied formula still delivers, because it yields no leaves and the no-leaf
+rule allows. The walk cannot yet tell "understood, and renders nothing" from "not understood" — both
+return the same state. My first version of the test asserted the refusal I WANTED; I corrected the test to
+the behaviour that exists, because a red test written to a wish is a test I would later be tempted to
+satisfy by weakening something real.
+
+**1. Over-block.** Unchanged. **2. Under-block.** One closed (the structured formula vouching), two
+declared. **3–6.** No abstraction, authority, interaction or external-surface change.
+**7.** MACHINE-LOCAL BY DESIGN. **8.** Revert; one function and two call sites.
+
+**Proof.** The new structured-formula tests verified RED against the pre-repair code. 147 tests green
+across seven suites, type check clean, silent-fallback ratchet at 495 against 495.

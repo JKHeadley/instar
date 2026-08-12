@@ -504,6 +504,24 @@ const STRUCTURE_DEPTH_BOUND = 200;
  * as visible. That is the honest position: this guard cannot decide a formula, it can only decline to let
  * one vouch for an otherwise-invisible message.
  */
+/**
+ * A formula, judged the one way this guard honestly can.
+ *
+ * ONE definition, used by all three representations — the markdown arm, the html arm, and the explicit
+ * structured discriminator at both inline and block level. It exists as a function rather than three
+ * matching lines because the last five repairs in this file were each applied to one representation of
+ * a class and not its siblings, and a shared definition is the only version of "swept" that cannot
+ * rot back apart.
+ *
+ * A formula body carrying content is UNDECIDABLE: its characters are LaTeX instructions, so this cannot
+ * tell whether they paint a glyph, and refusing would destroy real formula messages. A body carrying no
+ * content renders nothing and is DECIDED — it must not vouch for the message around it.
+ */
+function formulaScan(expression: unknown): StructuredScan {
+  if (typeof expression !== 'string') return NOTHING;
+  return hasNoVisibleCharacters(expression) ? NOTHING : OPAQUE;
+}
+
 function richTextScan(value: unknown, depth = 0): StructuredScan {
   if (depth > STRUCTURE_DEPTH_BOUND || value === null || value === undefined) return NOTHING;
 
@@ -520,6 +538,11 @@ function richTextScan(value: unknown, depth = 0): StructuredScan {
   // be a silent invisible send, and it must not be allowed to vouch for one either.
   if (typeof type !== 'string') return NOTHING;
   if (RICH_TEXT_RENDERS_NOTHING.has(type)) return NOTHING;
+  // A formula is opaque only when its own body carries content — the SAME test the markdown and html
+  // arms apply. Review pass 49 finding 2: that test was added there and not here, so `$\u200b$` written
+  // as markdown was refused while the identical formula written as a structured discriminator was
+  // allowed. Fifth instance this window of a repair applied to one representation of its own class.
+  if (type === 'mathematical_expression') return formulaScan((value as { expression?: unknown }).expression);
   if (RICH_TEXT_OPAQUE.has(type)) return OPAQUE;
   if (RICH_TEXT_NESTED_TEXT.has(type)) {
     return richTextScan((value as { text?: unknown }).text, depth + 1);
@@ -550,7 +573,10 @@ function blockScan(value: unknown, depth = 0): StructuredScan {
   // A media block, a map or a formula RENDERS — the message is not arriving as nothing — but what it
   // renders cannot be inspected here. Its caption is still read, because a caption that is present and
   // invisible is worth knowing about even when the block itself carries the message.
-  if (BLOCK_OPAQUE.has(type)) parts.push(OPAQUE);
+  // Same as the inline layer: a formula vouches only if its own body carries content. Everything else
+  // in BLOCK_OPAQUE renders something whose content genuinely cannot be read from the request.
+  if (type === 'mathematical_expression') parts.push(formulaScan(obj.expression));
+  else if (BLOCK_OPAQUE.has(type)) parts.push(OPAQUE);
   for (const field of BLOCK_RICH_TEXT_FIELDS[type] ?? []) parts.push(richTextScan(obj[field], depth + 1));
   for (const field of BLOCK_CHILD_BLOCK_FIELDS[type] ?? []) parts.push(blockScan(obj[field], depth + 1));
   if (BLOCK_CAPTION_VARIANTS.has(type)) parts.push(captionScan(obj.caption, depth + 1));
@@ -663,8 +689,9 @@ function richSourceScan(source: unknown, mode: 'Markdown' | 'HTML', media: unkno
   // written out of nothing renders nothing and is decided.
   let carriesRenderableFormula = false;
   const withoutFormulas = source.replace(formula, (_region: string, ...groups: unknown[]) => {
-    const body = groups.find((g): g is string => typeof g === 'string') ?? '';
-    if (!hasNoVisibleCharacters(body)) carriesRenderableFormula = true;
+    const body = groups.find((g): g is string => typeof g === 'string');
+    // The SAME judgement the structured discriminators use, through the same function.
+    if (formulaScan(body).undecidable) carriesRenderableFormula = true;
     return '';
   });
 

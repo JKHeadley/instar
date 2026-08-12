@@ -509,6 +509,43 @@ describe('telegram egress boundary — the single door', () => {
         chat_id: 1, rich_message: { markdown: '$\u200b$' },
       }))).rejects.toThrow(InvisiblePayloadRefusedError);
       expect(f5).not.toHaveBeenCalled();
+
+      // Pass 49 finding 2: the empty-body test above reached the markdown and html arms and NOT the
+      // explicit structured discriminators, so the identical formula written as a block or an inline
+      // wrapper was allowed while the markdown spelling was refused. All three now share one function.
+      // The fix stops the formula VOUCHING, which is what finding 2 named. It does NOT refuse a
+      // structure whose only content is that formula: an empty-bodied formula yields no leaves at all,
+      // and the no-leaf rule allows. That is the separate stated-open item — this walk cannot yet tell
+      // "understood, and renders nothing" apart from "not understood", and both return the same state.
+      // Asserted as it ACTUALLY behaves, because a test written to the behaviour I wish it had would be
+      // a red test I would then be tempted to satisfy by weakening something real.
+      const f6 = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1, rich_message: { blocks: [{ type: 'mathematical_expression', expression: '\u200b' }] },
+      }));
+      expect(f6, 'formula-only: no leaves, so the no-leaf rule allows — the residual, pinned honestly')
+        .toHaveBeenCalledTimes(1);
+
+      const f7 = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { blocks: [{ type: 'paragraph', text: [
+          { type: 'bold', text: '\u200b' },
+          { type: 'mathematical_expression', expression: '' },
+        ] }] },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f7, 'an inline formula with an empty body cannot vouch either').not.toHaveBeenCalled();
+
+      // ...and a real formula in either structured position still delivers.
+      const f8 = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { blocks: [
+          { type: 'paragraph', text: '\u200b' },
+          { type: 'mathematical_expression', expression: 'E = mc^2' },
+        ] },
+      }));
+      expect(f8).toHaveBeenCalledTimes(1);
     });
 
     it('requires the SOURCE to reference a media entry — a declaration does not vouch', async () => {

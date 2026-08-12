@@ -79,9 +79,13 @@ pass until someone adds it.
 
 ## The safeguard against this happening a fifth time
 
-Rather than trusting the next person to remember, there's now an automatic check that **works out the list
-of senders for itself** — anything in the code that contacts Telegram and sends words — and fails the build
-if any of them is missing the guard.
+Rather than trusting the next person to remember, there's an automatic check that fails the build if the
+code can reach Telegram from anywhere except one place.
+
+*(Superseded, and worth knowing what it replaced: this check originally worked out the list of senders for
+itself and required each one to carry the guard. That design is gone. Counting senders and checking each is
+a weaker guarantee than having only one door to check — the list can always miss a sender. What the check
+now proves is confinement: Telegram is unreachable except through the single door.)*
 
 An independent reviewer then tried to defeat that automatic check, and **succeeded five different ways**,
 including simply commenting the guard out (the checker still reported everything fine) and hiding one
@@ -118,9 +122,14 @@ says *why*, instead of either delivering nothing or telling you your reply got l
 **Approved on 2026-08-10.** The work is built, tested, independently reviewed, and taken through fourteen
 rounds with an outside reviewer.
 
-**What is honestly still owed**, because it should not be buried: three of the send paths are proven by
-actually pushing an invisible message through them and watching it be refused. **Four smaller ones — two
-setup greetings, a self-test, and a demo tool — are only proven to have the check written into the file**,
-not proven by running it. And the whole design leans on a build-time scan of the source code rather than on
-there being one single place a message can leave from. That single place is the real fix, it is written
-down, it has an owner and a date, and until it exists nobody should describe this as airtight.
+**What is honestly still owed** — updated, because the previous version of this paragraph described a debt
+that has since been paid and would have had a reader believe the weaker design was still current.
+
+The single place a message can leave from **now exists**. Every route to Telegram goes through one door,
+and the build check proves that confinement rather than counting senders one by one.
+
+What remains owed is narrower and is listed at the functions that carry it rather than only here: a
+formula's typesetting source cannot be evaluated, so a formula that renders nothing cannot be detected; a
+message body's encoding is inferred from how it was built rather than from what it declares; and a
+self-hosted server address is invisible to both the door and the build check. None of those is caught by
+what existed before this work either — the comparison is against nothing, not against a stricter guard.
