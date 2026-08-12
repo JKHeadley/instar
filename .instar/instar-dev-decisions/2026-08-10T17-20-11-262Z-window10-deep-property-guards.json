@@ -1,0 +1,28 @@
+{
+  "ts": "2026-08-10T17:20:11.262Z",
+  "slug": "window10-deep-property-guards",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 98,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-account-matches-tree.mjs",
+      "scripts/lint-documented-only-countdown.mjs",
+      "scripts/measure-refusal-arm-coverage.mjs",
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 95,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

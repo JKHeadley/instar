@@ -23,6 +23,7 @@
  */
 
 import fs from 'node:fs';
+import { telegramFetch } from '../messaging/telegram-egress.js';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -116,7 +117,7 @@ async function telegramRoundTrip(botToken: string, nonce: string, timeoutMs: num
   // OR — for a self-test — send to the bot's getMe + use the most recent chat id from getUpdates.
   const api = (m: string) => `https://api.telegram.org/bot${botToken}/${m}`;
   // Find a chat to talk in: the most recent update's chat id.
-  const updates0 = await (await fetch(api('getUpdates') + '?limit=5&timeout=0')).json() as
+  const updates0 = await (await telegramFetch(api('getUpdates') + '?limit=5&timeout=0')).json() as
     { ok: boolean; result: Array<{ update_id: number; message?: { chat?: { id: number } } }> };
   const chatId = updates0.result?.map((u) => u.message?.chat?.id).filter(Boolean).pop();
   if (!chatId) {
@@ -125,7 +126,7 @@ async function telegramRoundTrip(botToken: string, nonce: string, timeoutMs: num
   const lastUpdateId = updates0.result?.length ? updates0.result[updates0.result.length - 1].update_id : 0;
   // Send the probe.
   const probe = `test-as-self ${nonce}`;
-  await fetch(api('sendMessage'), {
+  await telegramFetch(api('sendMessage'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: chatId, text: probe }),
@@ -134,7 +135,7 @@ async function telegramRoundTrip(botToken: string, nonce: string, timeoutMs: num
   const deadline = nowMs() + timeoutMs;
   let offset = lastUpdateId + 1;
   while (nowMs() < deadline) {
-    const resp = await (await fetch(api('getUpdates') + `?offset=${offset}&timeout=10`)).json() as
+    const resp = await (await telegramFetch(api('getUpdates') + `?offset=${offset}&timeout=10`)).json() as
       { ok: boolean; result: Array<{ update_id: number; message?: { text?: string } }> };
     for (const u of resp.result ?? []) {
       offset = u.update_id + 1;

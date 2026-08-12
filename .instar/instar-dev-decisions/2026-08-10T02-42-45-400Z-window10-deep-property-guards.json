@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-10T02:42:45.400Z",
+  "slug": "window10-deep-property-guards",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 56,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-enforcement-fingerprint.mjs"
+    ],
+    "addedLines": 28,
+    "deletedLines": 28
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

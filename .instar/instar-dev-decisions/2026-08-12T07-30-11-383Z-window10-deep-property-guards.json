@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-12T07:30:11.383Z",
+  "slug": "window10-deep-property-guards",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 33,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/invisible-payload.ts"
+    ],
+    "addedLines": 30,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

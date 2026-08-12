@@ -138,6 +138,12 @@ const ALLOWLIST = new Set([
   'tests/unit/audit-convergence-reports.test.ts',
   'tests/unit/audit-convergence-standard-conformance.test.ts',
   'tests/unit/iterative-converging-audit-skill-single-source.test.ts',
+  // window-10 guard behaviour tests: `git init/add/commit` inside a `mkdtemp` fixture the test
+  // itself creates and removes. The mutation is real but its blast radius is that temp directory —
+  // never the repository — and it is UNAVOIDABLE: the deferral guard resolves its corpus with
+  // `git ls-files`, so a fixture that is not a git repo cannot exercise the arm under test at all.
+  // The cleanup goes through SafeFsExecutor like its sibling route tests; only the git calls are here.
+  'tests/unit/window10-guards-behaviour.test.ts',
   // Pre-command shim that wraps git invocations from outside the safe
   // executor — bootstraps the safety check, can't be inside the funnel.
   'scripts/destructive-command-shim.js',
@@ -158,6 +164,28 @@ const ALLOWLIST = new Set([
   // git invocations are READ-ONLY (`rev-parse HEAD^{tree}`, `ls-tree`, `show
   // HEAD:<path>`) to re-derive staleness — never a destructive op.
   'scripts/cartographer-freshness.mjs',
+  // Window-10 FUNCTION guard for *Deferral = Deletion* (2026-08-08). A standalone
+  // .mjs that runs in the lint chain with NO build step, so it cannot import the TS
+  // SafeGitExecutor funnel. Its ONLY git invocation is `ls-files` — read-only, and
+  // load-bearing rather than incidental: the resolving corpus must be TRACKED files,
+  // because an untracked file is not something a reviewer can follow, so a
+  // filesystem walk would silently accept referents that do not exist for anyone
+  // else. Never a destructive op.
+  'scripts/lint-deferral-referent-resolves.mjs',
+  // The instrument behind the constitution's orphan table (committed 2026-08-09 on review pass 15
+  // finding 12: the registry cited 'two independent replays' while the script existed only in a
+  // scratch directory — evidence a reader could not follow). SAME shape and SAME reason as the lint
+  // above, deliberately: it must replay that guard's corpus rules exactly, so it resolves the corpus
+  // the identical way, with a read-only `ls-files` and nothing else. A filesystem walk here would
+  // measure a DIFFERENT population than the guard it exists to reproduce, which is the whole point.
+  'scripts/measure-orphan-referents.mjs',
+  // Window-10 ratchet-history helper (2026-08-09). Same shape and same reason: a standalone
+  // .mjs in the lint chain with no build step, so it cannot import the TS SafeGitExecutor
+  // funnel. Its ONLY git invocations are `rev-parse --verify` and `show <ref>:<path>` — both
+  // read-only, and load-bearing rather than incidental: a shrink-only baseline compared
+  // against its own working copy is not a ratchet at all (review pass 5, 2026-08-09), so the
+  // reference point MUST come from committed history. Never a destructive op.
+  'scripts/lib/baseline-history.mjs',
   // Bootstrap script for the builtin-manifest — runs as part of `npm run
   // build` before tsc emits dist/.
   'scripts/generate-builtin-manifest.cjs',

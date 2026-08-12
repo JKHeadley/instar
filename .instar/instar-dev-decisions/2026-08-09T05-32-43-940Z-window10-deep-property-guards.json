@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-09T05:32:43.940Z",
+  "slug": "window10-deep-property-guards",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 57,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-deferral-referent-resolves.mjs",
+      "scripts/lint-enforcement-gap-records.mjs"
+    ],
+    "addedLines": 51,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,27 @@
+# Axis: cross-family obligation conflict
+COUNT: 2 surviving
+DISCARDED: 12 candidates that an existing mechanism resolved
+
+## Findings
+
+1. **The Agent Is Always Reachable — A Guaranteed Reachability Floor (The Substrate)** vs **Near-Silent Notifications (Interaction)** — “**any session denied / held / killed for a RESOURCE reason emits ONE clear, plain-English user notice**” vs “**Only push events that are action-required or a usable result**” and “if the message has to say ‘no action needed,’ **it must not be sent**.” — Ordinary case: resource pressure temporarily holds a background session; the agent frees a stale session and automatically resumes the held work, so the operator has no action to take and no result yet. The reachability article requires a notice solely because the hold occurred; Near-Silent forbids that notice. — No mechanism resolves this: the reachability clause says “any session,” with no recovered-hold exception; freeing resources “first” orders the operations but does not cancel the mandatory notice. The user-wins tradeoff is inapplicable because another live session remains reachable and the user channel never degrades.
+
+2. **The Agent Is Always Reachable — A Guaranteed Reachability Floor (The Substrate)** vs **Self-Heal Before Notify — The Operator Hears Only When Self-Healing Fails (Interaction)** — “**any session denied / held / killed for a RESOURCE reason emits ONE clear, plain-English user notice**” vs “The operator is notified of an internal issue **ONLY when the self-healing measures THEMSELVES have failed**” and “must attempt a bounded, audited self-heal **FIRST**.” — Ordinary case: a pressure gate denies a session, then the resource reconciler successfully frees capacity and revives it within its bounded retry window. Reachability still mandates a user notice about the denial; Self-Heal forbids one because healing succeeded. — No scope predicate excludes resource gating from “internal issue,” and Reachability contains no exception for successfully healed denials. Its “frees its OWN resources first” clause supplies sequencing, not the failure-only notification predicate required by Self-Heal. Ratification status and the user-wins tradeoff do not resolve it because the operator remained reachable throughout.
+
+## Family pairs examined
+
+- The Root × The Fractal
+- The Root × The Substrate
+- The Root × Building
+- The Root × Shipping
+- The Root × Interaction
+- The Fractal × The Substrate
+- The Fractal × Building
+- The Fractal × Shipping
+- The Fractal × Interaction
+- The Substrate × Building
+- The Substrate × Shipping
+- The Substrate × Interaction
+- Building × Shipping
+- Building × Interaction
+- Shipping × Interaction

@@ -1,0 +1,105 @@
+# Axis: incident still live?
+
+LIVE: 46 / SUPERSEDED: 29 / UNSTATED-INCIDENT: 14
+
+I treated a failure as LIVE when the same failure mode remains possible on an admitted uncovered surface, even if the original code site was repaired. SUPERSEDED requires a named independent mechanism that prevents or promptly exposes the incident.
+
+## Superseded — and what supersedes them
+
+1. **Structure beats Willpower** — `prisma db push --accept-data-loss` destroyed production state — dangerous-command hard blocks without bypass, pre-action review, and mandatory verification now prevent that destructive path — still supplies the registry’s root enforcement principle and coverage ratchet.
+2. **The Body and the Mind** — a tier classifier was going to decide the development tier instead of informing the agent — *Tiered Development* now makes the classifier advisory, records the agent’s declaration, and audits below-floor choices — still defines the broader body/mind authority boundary.
+3. **Structure Decides Alone Only on an Exact Match** — prefix matching consumed scoped or conversational stop/pause phrases and contradicted mind authority — `structure-decides-alone-exact-match-only.test.ts` forbids prefixes/regexes and tests every enumerated entry with appended text — still defines the bounded structural-authority exception and its model union.
+4. **Intelligence Infers, Keywords Only Guard** — a verb list interpreted “keep the work on the laptop” as a transfer command and swallowed it — the keyword-list ratchet, constrained-output design, and *Operator Channel Is Sacred* consumption policy prevent that classifier shape on the original inbound surface — still governs contextual intent inference beyond consuming gates.
+5. **The Operator Channel Is Sacred** — a bare LLM/capacity-shed pause verdict consumed every message and trapped recovery in the same gate — the exact-match-only pause chokepoint, route-through behavior, and durable circuit breaker prevent the lockout — still governs inbound fail-direction and recoverability generally.
+6. **The Agent Is Always Reachable** — reaping plus a false pressure signal held revival indefinitely and silently — the protected lifeline, reserved spawn lane, liveness predicate, and bounded pressure-held notice prevent that silent all-session loss — still defines reachability under wedges, crash loops, and other resource failures.
+7. **A Wall Is a Hypothesis** — “no API” was accepted as proof that `/goal` delegation was infeasible despite available session injection — B16_UNVERIFIED_WALL now blocks that missing-interface conclusion without a capability inventory — still owns the feasibility-claim detection surface.
+8. **Never a False Blocker** — the agent declared a visible trust button human-only despite having computer control — B17_FALSE_BLOCKER and the self-unblock inventory now refuse that escalation unless a genuinely human-only item is named — still defines the closed human-only set.
+9. **The Stop Reason Is the Work** — an autonomous run repeatedly stopped for “judgment” or “real engineering” it could perform — the autonomous-completion evaluator and B18 require a derived standard, built artifact, or genuine operator-only residual — still governs continuation-shaped surrender.
+10. **Know Your Principal** — ambient credentials caused “Caroline” to be silently adopted as the operator — authenticated topic binding, `PrincipalGuard`, registry resolution, and per-agent credential isolation prevent that identity bleed — still governs all outward and internal principal treatment.
+11. **Cross-Machine Coherence** — lease/handoff behavior repeatedly failed under load, sleep/wake, tunnel recovery, and non-LAN conditions — epoch-CAS fenced leases, active pull, internet-first transport, and the dedupe ledger now independently cover those conditions — still governs spatial coherence and feature robustness across machines.
+12. **Expected Capacity Enforcement Is an Outcome, Not a Degradation** — successful 2 KB truncations generated hundreds of failure reports across restarts — typed capacity outcomes, the contract registry, blocking lint, and restart-spanning E2E proof prevent successful enforcement from being reported as degradation — still governs other bounded stores.
+13. **A Refusal Stays a Refusal** — `sender-rejected` was converted into `forwarded/acked`, making terminal message loss look successful — typed rejection propagation, the routing-boundary ratchet, receiver-side receipts, and the delivery canary prevent that mapping — still governs negative outcomes across other adapters.
+14. **Runtime End-to-End Proof** — component monitors stayed green while every operator message died for 19 days — the live per-machine-pair delivery canary now exercises the real path every 30 minutes and alerts on contract failure — still establishes the canary requirement for other critical outcomes.
+15. **Migration Parity** — existing agents retained stale config or broken CJS hooks while new installs were correct — the eight-shape migration guarantee, protected integration test, idempotent migrator, and always-overwritten built-in hooks prevent those old/new divergences — still governs future installed-file migrations.
+16. **Canonical Pipeline Operational Completeness** — the feedback factory accepted about 12,000 reports but produced no owned development work — the closed pipeline manifest, owner/lease/cadence requirements, blocking lint, and production-adapter positive control prevent an admitted canonical pipeline from lacking a drain — still governs other intake pipelines.
+17. **Tiered Development** — trivial work paid full-spec cost while a classifier was also proposed as final tier authority — the tier signal, risk floor, agent declaration, and audit structurally implement proportional process without classifier authority — still governs all change-tier decisions.
+18. **Bounded Notification Surface** — per-item worktree alerts evaded per-source budgets and flooded topics — the auto-by-default topic-creation chokepoint ceiling, funnel lint, aggregation, and 1,000-event burst test make an unbounded topic flood impossible — still governs notification volume beyond the original detector.
+19. **Keep the Doorway/Model Map Current** — stale Gemini pins silently degraded review after newer models shipped — the recurring doorway scan and strict aging/drift lint now make stale pins fail loudly — still governs registry growth, reconciliation, and scan-liveness follow-up.
+20. **Judgment Within Floors** — static reap heuristics made duplicate sessions immortal while a computed ownership verdict was ignored — `SpawnAdmission`, the reconciler floor, and *Ownership-Gated Side Effects* now make the verdict binding at the relevant seams — still governs other non-enumerable decisions within deterministic action bounds.
+21. **Decision Provenance & Outcome Review** — a duplicate-session investigation had to reconstruct decisions manually from scattered logs — `JudgmentProvenanceLog` and the graded-review job now persist the context, decision, and outcome for those judgment points — still extends provenance to future LLM arbiters.
+22. **Stall Coverage Is Enumerated, Not Discovered** — a Codex session remained at an interrupted-conversation prompt for two hours because its stop class was unknown — mandatory framework matrices, the class registry, positive-control evidence, codemod, and CI ratchet prevent an unclassified matrix cell at onboarding — still governs new frameworks and new stall classes.
+23. **Bounded Blast Radius** — uncontrolled LLM subprocess fan-out OOMed a 128 GB host twice — the host-wide semaphore, single-instance lock, construction lint, default-on funnel, and 10,000-attempt invariant test prevent that fork bomb — still governs other physical-resource operations.
+24. **Ownership-Gated Side Effects** — the Mini spawned sessions for Laptop-owned topics after computing the opposite verdict — `SpawnAdmission`, fire-time ownership proof, terminate-time re-probe, and the burst-invariant E2E test make that discarded-verdict spawn impossible — still governs all topic-scoped side effects.
+25. **No Silent Degradation to Brittle Fallback** — a rate-limited refusal judge fell back to keywords and missed paraphrased forbidden actions — the shared gating router now swaps providers then fails closed, and the forward ratchet rejects permissive silent fallbacks — still governs future LLM gates.
+26. **Token-Audit Completeness** — the Codex cartographer route spent tokens while reporting zero cost — attribution lint, usage-contract tests, and explicit token-blind-provider treatment now expose `null`/unsupported coverage instead of reporting zero — still governs attribution and exemption lifecycle.
+27. **Dashboard UX Standard** — dashboard panels collapsed to about 185 px and 17 of 25 tabs were pointer-inaccessible — F1/F2 CI tests and grouped navigation prevent both original regressions — still supplies the remaining dashboard floors and retrofit program.
+28. **The Agent Carries the Loop** — agent-owned dogfooding and observation work was parked on the operator in indefinitely pending commitments — the owner/blocked-on state model, agent-owned follow-through, staleness governor, graveyard reconciler, and B19 detector prevent that commitment shape — still governs legitimate authorization and input waits.
+29. **Truthful Provenance** — a rate-limit recovery nudge impersonated Telegram input and made the agent publicly contradict its sentinel — the user-message injection path was removed and recovery now uses a structurally distinct internal channel — still governs provenance for every infrastructure and peer message.
+
+## Unstated or generic incidents
+
+1. **Self-Hosting** — earned from an observed convergence, explicitly not a failure or incident.
+2. **Documentation IS Being** — cites recurring “doing vs being” drift but no crystallizing instance.
+3. **Deferral = Deletion** — has no `Earned from` field.
+4. **Name the Gravity Wells** — cites recurrence as such, without a named incident.
+5. **Architectural Agency in the Gap** — “UTOR exploration” is named, but no failure is stated.
+6. **Sovereignty — “I own what is mine”** — has no `Earned from` field.
+7. **The Right to Stand Ground** — has no `Earned from` field.
+8. **Zero-Failure** — cites only the generic “classic responsibility gap.”
+9. **LLM-Supervised Execution** — cites generic deterministic pipelines that failed silently.
+10. **Side-Effects Review Gate** — cites unspecified “simple” fixes breaking neighboring behavior.
+11. **Agent Awareness** — cites unspecified capabilities omitted from briefings.
+12. **Never-Waste Feedback** — names a dated “human-as-detector” lesson but not the correction or failure that produced it.
+13. **Signal vs. Authority** — cites generic low-context filters over-blocking legitimate actions.
+14. **Self-Heal Before Notify** — records an operator principle surfaced during design, not an incident.
+
+## Articles reviewed
+
+The following incidents remain LIVE because the registry itself exposes an uncovered path through which the same failure mode can recur:
+
+1. **Close the Loop** — opened commitments, dark features, or gates were silently abandoned — no mechanism enumerates every loop-opening site and proves it acquires a cadence.
+2. **Observation Needs Structure** — observation duties existed only in prose and were silently skipped — several duties have artifacts, but nothing enumerates all observation duties.
+3. **Recall Over Our Own Material Is by Meaning, Not by Word-Match** — a stored lesson was re-derived because keyword search looked like genuine absence — unadvertised recall surfaces remain outside the naming/dispatch lint.
+4. **Intelligent Prompts — An LLM Gate Must Not String-Match** — B15 passed a paraphrased deferral because its prompt required listed phrases — the ratchet catches the known construction, but explicitly cannot exclude arbitrary semantic rewrites.
+5. **Quantitative Claims Must Bind a Subject** — TIME_CLAIM treated test-window duration and latency as session-clock claims — the first verifier is pinned, but no closed registry forces every new quantitative verifier through the paired boundary.
+6. **Self-Unblock Before Escalating** — a solvable DNS/channel problem was escalated and left idle — the checklist ships dark, the outbound gate does not prove probes ran, and the same violation recurred on 2026-08-07.
+7. **Distrust Temporary Success** — an 80-second improvement after restart nearly closed a persistent CPU hot loop — the cache fixes that instance, but no general mechanism prevents another self-healing restart from masking another root cause.
+8. **Remove What Demands Attention** — duplicated facts and counts repeatedly diverged despite maximum review effort — the registry records multiple later recurrences of the same copied-number failure.
+9. **Verify the State, Not Its Symbol** — sentinel text and missing files were mistaken for runtime state — the broad measure-versus-certify ratchet and negative-control requirement remain unbuilt.
+10. **A Dispatch Supplies the Question and Withholds the Answer** — a planted expected result contaminated an otherwise sound delegated check — ad-hoc dispatches, including the crystallizing shell-heredoc path, bypass the template lint.
+11. **Session Input Is a Principal** — an auto-responder typed instructions indistinguishable from the real driver — the token protocol remains playbook practice; structural input attribution is not built.
+12. **Framework-Agnostic — and Framework-Optimizing** — Claude coupling and an incomplete OpenAI briefing made another engine second-class — parity enforcement covers launch/inject/resume only; off-surface features remain unchecked.
+13. **An Instar Agent Is Always a Multi-Machine Entity** — consult memory defaulted machine-local through seven reviews — the marker lint is report-first and semantic correctness remains reviewer judgment.
+14. **Cross-Store Coherence Is an Invariant** — authoritative identity stores contradicted each other for 19 days — the originating fleet has an audit, but no generalized store-list sweep exists.
+15. **Testing Integrity** — green lower-tier tests allowed dead, unwired behavior to ship — “significant feature” remains undefined, allowing work to escape all required tiers by classification or omission.
+16. **Test Identity Never Enters Production State** — live-test identities contaminated production stores and later rejected the operator — current registry guards do not constitute a generalized guard for every future durable state store or fleet.
+17. **Scrape/Parser Fixture Realness** — clean fixtures missed terminal wrapping that truncated an OAuth URL — parser discovery is curated and the register-or-justify check is non-blocking.
+18. **Observability — you can’t tune what you can’t see** — a capture-loop draft metered only capture and omitted surfacing/use — nothing enumerates every feature and requires full-loop metrics.
+19. **Observable Intelligence** — sentinel model, verdict, and cost decisions were unauditable — calls can still bypass the provider funnel and its scanned population.
+20. **Migration-Consumer Completeness** — a canonical producer migrated while authorization still read the retired store — the contract protects declared consumers, but semantic review must still discover the complete consumer population.
+21. **Compaction Parity** — required boot context disappeared after compaction — org-intent and preferences remain on the known-violator allowlist.
+22. **Constitutional Traceability** — a multi-machine spec over-claimed Framework-Agnostic as its parent — the semantic reviewer fails open, so weak fits can still ship unjudged.
+23. **Friction Is a Spec** — useful manual debugging workarounds risked dying in the transcript — only a reviewer reminder exists; no gate detects an unproductized recurring workaround.
+24. **Notice + Solve Inefficiencies** — a 40-minute rebase loop throttled the fleet while individuals routed around it — the standard is explicitly an unenforced instinct.
+25. **Notices Route to the Alerts Topic, Never a New One** — housekeeping repeatedly created one topic per event — the deprecated per-item mode still exists and nothing prevents a new install from selecting it.
+26. **Conservative Outbound: Act, Don’t Notify** — internal work was narrated to the user and a system-origin bypass created a new topic — nothing yet checks that every new emitter is silent by default.
+27. **No Unbounded Loops** — reaper, live-tail, and notification loops amplified sustained failure — universal loop enforcement remains in progress.
+28. **Capacity Safety — No Unbounded Self-Action** — many autonomous control loops oscillated indefinitely under pressure — enforcement remains report-only and the obfuscation-resistant common funnel does not exist.
+29. **Live-User-Channel Proof Before Done** — a topic transfer reported success but failed on the operator’s first live test — undeclared or dynamically mounted user surfaces escape the veto.
+30. **Autonomous Throughput Floor** — a manager held for hours while actionable work existed — the floor observes and exposes the flatline but deliberately does not dispatch or remediate it.
+31. **Iterative Audit to Convergence** — a second sweep found 44 sites after the first found about 20 — a single-pass audit that is never registered remains invisible.
+32. **A Metric Must Measure the Work, Not the Question** — falling review counts measured exhaustion of one question rather than soundness of the work — the article is documented-only and no record yet binds each measurement to its question.
+33. **A Decision That Can Block Must Live Where the Checks Can See It** — 12 shell/JavaScript blockers sat outside TypeScript ratchets — existing declared blockers may still change without inspection, and migration into the watched language is unfinished.
+34. **An Autonomous Run Must Outlive Its Session** — an unregistered run was reaped while its revival queue was silently disabled — registered runs are protected, but the registry names no guard proving every operator-launched run is registered.
+35. **One Failure Teaches Every Guard** — several guards were enabled and inventoried while functionally inert — failures can remain unrecorded, matching gaps need not be remediated, and guard-source changes do not stale recorded verdicts.
+36. **Bug-Fix Evidence Bar** — dead sentinels shipped with a false “wired” claim backed by mocks — no structural pre-ship evidence gate is cited.
+37. **No Deferrals** — a deferred lifeline restart produced a regression two days later — the current check requires a marker, not an owner, deadline, closure, escalation, or resolvable follow-through.
+38. **Maturation Path** — features were shipped dark everywhere with no route to maturity — only the presence and shape of a plan are enforced; registration, graduation evidence, and routing remain unguarded.
+39. **A Dark Feature Guards Nothing** — mesh self-healing existed but remained dark, leaving incident response manual — load-bearing darkness can still be operator-accepted temporarily and does not itself enable the automation.
+40. **User-Facing Fixes Ship Live** — noise fixes were about to ship dark, making them invisible to the reporting user — “fix versus capability” remains an author-controlled classification with no deciding authority.
+41. **The User Experience Is the Product** — inward-facing safety mechanisms composed into a total user-channel outage — only one of seven enumerated structural teeth is recorded as shipped; six remain tracked work.
+42. **No Manual Work** — the agent had the Playbook tool but failed to capture Telegram as the test surface — no universal mechanism detects omitted tool use or manual context capture.
+43. **Mobile-Complete Operator Actions** — an authorization was correct but API-only and required a laptop command — enforcement is a review question, and the general one-time mobile approval mechanism remains open.
+44. **Operator-Surface Quality** — a mobile-reachable authorization form was still unusable — the gate proves that an answer artifact exists, not that its quality assertions are substantively true.
+45. **Agent Proposes, Operator Approves** — the operator had to construct a mandate in raw JSON — the structured server-rendered path covers the first surface, while other authorization surfaces can satisfy only a written review assertion.
+46. **Near-Silent Notifications** — restart and sentinel churn flooded user topics with true but useless status — the original emitters were fixed, but no universal new-emitter disposition guard is active.

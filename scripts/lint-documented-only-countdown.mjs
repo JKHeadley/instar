@@ -60,6 +60,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { COUNTDOWN_HORIZON_DAYS, countdownHorizon } from './lib/baseline-history.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(__filename), '..');
@@ -113,6 +114,18 @@ const SUB_COUNTDOWN_RE = /\*\*Sub-obligation countdown\.\*\*\s*`?(\d{4}-\d{2}-\d
 
 /** Today, as a date-only UTC string, so the comparison is timezone-stable. */
 const TODAY = new Date().toISOString().slice(0, 10);
+/**
+ * The far end of the window. Swept here by review pass 17, which found the horizon had been added to
+ * the sibling gap guard and NOT to this one — so setting all fifty of the constitution's countdowns to
+ * `9999-12-31` made this lint print `clean`, defeating the operator ruling it exists to enforce:
+ * "the documented-only MUST force a change in the near future. It can't remain documented only."
+ *
+ * A countdown beyond the horizon satisfies every other check here while creating none of the pressure
+ * the date exists for — which is this file's own thesis ("An honest gap label is an improvement over a
+ * false enforcement claim, but *only* if the label expires") defeated by a date that never arrives.
+ * The bound is imported rather than restated, so the two guards cannot drift apart the way they just did.
+ */
+const HORIZON = countdownHorizon();
 
 const abs = path.join(ROOT, REGISTRY_REL);
 if (!fs.existsSync(abs)) {
@@ -167,9 +180,22 @@ const failures = [];
 const countdowns = [];
 
 // Every article that CARRIES a countdown must have a valid, unexpired one.
+// EVERY occurrence, not the first. This is founding case (2) of *One Failure Teaches Every Guard*
+// — an extractor that stopped at the first match — and review pass 27 found it live in THREE of
+// these guards, un-swept, in the machinery built to sweep a shape everywhere. Proven with a
+// positional control each time: the adversarial value in the SECOND occurrence passed, the same
+// value in the FIRST was refused.
 for (const a of articles) {
-  const m = a.body.join('\n').match(COUNTDOWN_RE);
-  if (!m) continue;
+  const all = [...a.body.join('\n').matchAll(new RegExp(COUNTDOWN_RE.source, 'g'))];
+  if (all.length === 0) continue;
+  if (all.length > 1) {
+    failures.push(
+      `${REGISTRY_REL}:${a.lineNo} — "${a.name}" declares ${all.length} documented-only countdowns. One ` +
+      `obligation, one deadline: two definitions of a date are two things that can disagree, and the ` +
+      `second was invisible to this arm until review pass 27 walked past it.`,
+    );
+  }
+  for (const m of all) {
   const [, deadline, trackedAs] = m;
   countdowns.push({ article: a.name, deadline, trackedAs, lineNo: a.lineNo });
 
@@ -177,7 +203,14 @@ for (const a of articles) {
     failures.push(`${REGISTRY_REL}:${a.lineNo} — "${a.name}" declares an unparseable countdown deadline "${deadline}".`);
     continue;
   }
-  if (deadline < TODAY) {
+  if (deadline > HORIZON) {
+    failures.push(
+      `${REGISTRY_REL}:${a.lineNo} — "${a.name}" is documented-only and its countdown ${deadline} is beyond the ` +
+      `${COUNTDOWN_HORIZON_DAYS}-day horizon (${HORIZON}). A date that far out is a label, not a deadline: it satisfies ` +
+      `every other check here while creating none of the pressure the operator ruling demands. Pick a date you would ` +
+      `actually be held to, or ship the guard.`,
+    );
+  } else if (deadline < TODAY) {
     failures.push(
       `${REGISTRY_REL}:${a.lineNo} — "${a.name}" is STILL documented-only and its countdown EXPIRED on ${deadline} (today ${TODAY}). ` +
       `This is the check doing its job: documented-only is a countdown, not a resting state. Ship the guard named in the ` +
@@ -190,6 +223,7 @@ for (const a of articles) {
       `classifies it as a gap, so it has GAINED a guard. Remove the countdown — a stale countdown on an enforced article ` +
       `understates the registry's own protection, which is the mirror of the over-claim this machinery was built for.`,
     );
+  }
   }
 }
 
@@ -216,7 +250,19 @@ for (const name of REQUIRE_COUNTDOWN) {
 const subCountdowns = [];
 for (const a of articles) {
   const text = a.body.join('\n');
-  if (!text.includes(SUB_TRIGGER)) continue;
+  // POPULATION DERIVED FROM THE DECLARATION, not from a trigger PHRASE.
+  //
+  // This read `if (!text.includes(SUB_TRIGGER)) continue;` — an outer gate with every date check inside
+  // it. Review pass 28 counted the document two ways: 48 well-formed sub-obligation countdowns declared,
+  // 47 collected. The missing one sits in an article that never writes the literal trigger phrase, and it
+  // escaped EXPIRY, HORIZON and UNIQUENESS — three arms defeated by one condition, with the pass-17
+  // `9999-12-31` exploit working on it today, under a clean line reading "47 … all unexpired".
+  //
+  // An article that DECLARES a countdown is in the population because it declared one. The trigger phrase
+  // now only drives the trigger-vs-countdown arity check below, which is what it was ever for.
+  const declares = SUB_COUNTDOWN_RE.test(text);
+  SUB_COUNTDOWN_RE.lastIndex = 0;
+  if (!text.includes(SUB_TRIGGER) && !declares) continue;
   // ALL countdowns and ALL triggers, not the first of each. An article may name more
   // than one unenforced sub-obligation — *Token-Audit Completeness* names two — and a
   // first-match check would validate one date while a second gap sat undated and could
@@ -247,6 +293,11 @@ for (const a of articles) {
     subCountdowns.push({ article: a.name, deadline, trackedAs, lineNo: a.lineNo });
     if (Number.isNaN(Date.parse(deadline))) {
       failures.push(`${REGISTRY_REL}:${a.lineNo} — "${a.name}" declares an unparseable sub-obligation deadline "${deadline}".`);
+    } else if (deadline > HORIZON) {
+      failures.push(
+        `${REGISTRY_REL}:${a.lineNo} — "${a.name}" names an unenforced sub-obligation whose countdown ${deadline} is ` +
+        `beyond the ${COUNTDOWN_HORIZON_DAYS}-day horizon (${HORIZON}). A date that far out is a label, not a deadline.`,
+      );
     } else if (deadline < TODAY) {
       failures.push(
         `${REGISTRY_REL}:${a.lineNo} — "${a.name}" still names an unenforced sub-obligation (\`${trackedAs}\`) whose ` +
@@ -254,6 +305,36 @@ for (const a of articles) {
         `it — but a named gap inside an enforced article may not simply sit there.`,
       );
     }
+  }
+}
+
+// TRACKED IDS MUST BE UNIQUE — added by external review pass 11, which found this branch declaring
+// `STD-SUBCOUNTDOWN-audit-never-started` TWICE in one article. The clean line then published "45
+// sub-obligation countdown(s)" while counting 44 distinct obligations: an array length reported as a
+// population size, which is the same publish-the-key-count defect this window has now produced in
+// three separate lints.
+//
+// Two things make it worth a check rather than a one-line repair. It is the SAME failure family as
+// this change's own recorded shape, `GAP-name-keyed-population-collision` — a name-keyed record
+// silently collapsing — appearing on a surface no fingerprint cites, so the gap sweep could never
+// have reached it. And a duplicated tracked id is not cosmetic: two distinct obligations sharing one
+// id means closing either reads as closing both, which is exactly the partial-credit-for-a-kept-
+// promise defect *Deferral = Deletion* exists to forbid, one level up.
+//
+// Both id spaces are checked, and they are checked jointly: an article countdown and a sub-obligation
+// countdown sharing an id would be just as ambiguous as two of a kind.
+const allTracked = [...countdowns, ...subCountdowns];
+const seenTracked = new Map();
+for (const c of allTracked) {
+  if (seenTracked.has(c.trackedAs)) {
+    failures.push(
+      `${REGISTRY_REL}:${c.lineNo} — tracked id \`${c.trackedAs}\` is declared MORE THAN ONCE (also in ` +
+      `"${seenTracked.get(c.trackedAs)}"). Two obligations under one id means closing either reads as closing both, ` +
+      `and the count published by this lint stops being a count of obligations. Give each its own id, or — if they ` +
+      `are the same obligation stated twice — delete one and point at the other.`,
+    );
+  } else {
+    seenTracked.set(c.trackedAs, c.article);
   }
 }
 

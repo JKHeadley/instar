@@ -58,6 +58,56 @@ function visibleRegistryLines(markdown) {
   return { rawLines, visible };
 }
 
+/**
+ * Refuse an INDENTED `##`/`###` heading — out of this registry's constrained dialect.
+ *
+ * Found by external review pass 11, which appended `   ### Indented New Standard` (three spaces —
+ * also reproduced with one) and watched a brand-new constitutional standard become invisible to
+ * EVERY guard at once: the fingerprint requirement, the duplicate-definitions check, the gap sweep
+ * and the self-counts check all reported clean, and `standards-coverage --json` still said
+ * `total=88` with `unrecognized-sections=0`. CommonMark allows up to three leading spaces, and
+ * `marked` — this repository's own renderer — emits `<h3>`. So the heading is REAL to every reader
+ * and absent from every parser, because each one keys on `^###`. One space evades the entire change.
+ *
+ * This is the same collision family as `GAP-name-keyed-population-collision`, one level lower: the
+ * article never joins the population at all, so the partition identity is trivially satisfied and
+ * the arithmetic that catches a duplicate cannot see it. A guard cannot count what it never parsed.
+ *
+ * The fix is a REFUSAL, not a widened matcher, and the choice is deliberate. Teaching nine separate
+ * regexes to accept `^ {0,3}###` would mean nine chances to disagree, in a repository whose recurring
+ * defect is exactly two definitions of one thing drifting apart. Refusing the ambiguous form keeps a
+ * single grammar for the INDENTED form specifically. **Scope corrected by review pass 12, which
+ * falsified the sentence that stood here ("a heading either starts at column zero and is seen by
+ * everything, or the build fails"): that is an invariant this check does not deliver.** A `###`
+ * heading also renders as `<h3>` when it is a LIST ITEM (`- ### X`, `1. ### X`), inside a
+ * BLOCKQUOTE (`> ### X`), or written as raw HTML — and all of those pass every guard here, because
+ * `visibleRegistryLines` drops blockquoted lines outright and no parser looks inside list items.
+ * The blockquote case is worse than invisible: `lint-no-duplicate-definitions` unwraps blockquotes
+ * and counts 89 articles while this lint and standards-coverage count 88, a live population
+ * disagreement between two guards over one document with nothing failing.
+ *
+ * So what this closes is the indented form (1-3 spaces), which is the form that was demonstrated,
+ * and NOT the class of CommonMark-legal headings a parser here cannot see. Stated as the narrower
+ * thing it is, because the previous sentence is exactly the instance-closed/class-certified shape
+ * that has been found in this change six passes running. This file's own header already calls the dialect "constrained" — this is what
+ * constrained means, enforced rather than assumed.
+ *
+ * Scope, stated because pass 11 punished exactly this kind of unstated scope: it inspects lines
+ * OUTSIDE fenced blocks only (a fenced example may show anything), and it says nothing about whether
+ * the headings it does admit are correct.
+ */
+export function findIndentedHeadings(markdown) {
+  const { visible } = visibleRegistryLines(markdown);
+  const out = [];
+  for (let i = 0; i < visible.length; i += 1) {
+    const line = visible[i];
+    if (line === null) continue; // inside a fence or an HTML comment — not structural
+    const m = line.match(/^( {1,3})(#{2,3})\s+(.+?)\s*$/);
+    if (m) out.push({ lineNo: i + 1, indent: m[1].length, level: m[2].length, text: m[3].trim() });
+  }
+  return out;
+}
+
 export function parseRegistryStructure(markdown) {
   const { rawLines, visible } = visibleRegistryLines(markdown);
   const sections = [];

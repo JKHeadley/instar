@@ -1,0 +1,31 @@
+{
+  "ts": "2026-08-10T23:49:35.756Z",
+  "slug": "window10-deep-property-guards",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 339,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-telegram-send-funnel-guarded.mjs",
+      "src/commands/setup-wizard/codex-driver.ts",
+      "src/commands/setup-wizard/gemini-driver.ts",
+      "src/commands/test-as-self.ts",
+      "src/lifeline/TelegramLifeline.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/invisible-payload.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 320,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

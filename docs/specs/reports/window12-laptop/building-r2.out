@@ -1,0 +1,20 @@
+# Building — reviewer 2 (obligation reachability)
+VERDICT: FINDINGS
+COUNT: 14
+## Findings
+1. Cross-Store Coherence Is an Invariant — the recurring cadence duty names no owner for already-existing store pairs — “A legacy JSON registry and database answer the same identity question, but nobody is introducing either store now, so nobody owes the invariant or sweep.”
+2. Testing Integrity — “significant feature” has no operative classifier or deciding authority, so the test obligation is undecidable before shipping — “An author labels a medium routing refactor insignificant and skips integration and E2E tests.”
+3. Zero-Failure — literal “green at all times” makes an ordinary red-green-refactor cycle noncompliant — “A developer first writes the failing regression test needed to reproduce a bug.”
+4. LLM-Supervised Execution — “critical pipeline” is author-declared, so nobody can determine whether supervision is owed — “A quota-reconciliation job moves money-equivalent capacity but its author calls it noncritical.”
+5. Observable Intelligence — the article is simultaneously present as a rule and marked “pending operator ratification,” leaving agents unable to decide whether it binds — “A background evaluator is added while its author treats the pending article as advisory.”
+6. A Refusal Stays a Refusal — its rule that every operator-affecting drop is “ALWAYS loud” conflicts with Interaction’s Near-Silent Notifications and Self-Heal Before Notify — “A notification budget drops the 1,001st routine retry message: Building requires a loss alert, while Interaction forbids sending the routine retry and requires self-healing first.”
+7. Runtime End-to-End Proof — “critical user-visible outcome” has no current classifier or authority, so the canary duty is escapable at introduction — “A password-reset confirmation path ships without a canary because its author does not classify it as critical.”
+8. Friction Is a Spec — compliance depends on knowing whether a workaround will recur, knowledge unavailable when the mandated “next move” occurs — “A one-time vendor outage requires an unusual command; literal compliance productizes transient incident trivia.”
+9. Notice + Solve Inefficiencies — “actively LOOK … continuously” has neither an owner nor a stopping boundary — “During a deadline-bound fix, the agent notices a slightly slow local command and must divert into optimizing it despite the fix costing more than the inefficiency.”
+10. Capacity Safety — “any self-triggered action” does not distinguish unstable feedback from intentionally perpetual scheduled work — “An hourly credential refresh necessarily keeps firing for the life of the agent, so its count cannot settle to a horizon-independent bound.”
+11. Live-User-Channel Proof Before Done — “Telegram AND Slack for a channel feature” overreaches the feature’s actual surface, while “required risk categories” lacks a deciding rule — “A Slack-only integration cannot be declared done until it is exercised through Telegram, where it has no entry point.”
+12. Ownership-Gated Side Effects — after requiring proof of ownership, it directs ownership-resolution errors to “fail toward action,” producing the unsafe result in the ordinary uncertainty case — “During a network partition, a machine unable to resolve ownership fires the topic-scoped side effect and duplicates the actual owner’s action.”
+13. Autonomous Throughput Floor — progress is defined only by PR deltas or manager outbound messages, and HOLD requires proving every non-gated lane saturated without naming an inventory or owner — “A continuous research run produces verified analysis but no PR or outbound message and is reported as stalled.”
+14. One Failure Teaches Every Guard — recording and sweeping a discovered enforcement gap has no named owner — “An operator finds a guard bypass spanning the incident responder, guard author, and standard owner; each can reasonably expect another party to file the gap and run the sweep.”
+## Articles reviewed
+41

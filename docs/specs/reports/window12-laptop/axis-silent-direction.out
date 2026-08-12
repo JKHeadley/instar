@@ -1,0 +1,181 @@
+# Axis: proposed failure directions for the silent articles
+
+GROUPS: 7
+
+## Proposed defaults by group
+
+1. **Change and release integrity — FAIL-CLOSED** — when required validation machinery is absent, do not ship, activate, graduate, or claim the change; this protects the installed system from unverified evolution. — Articles: Structure beats Willpower; Self-Hosting; Deferral = Deletion; Recall Over Our Own Material Is by Meaning, Not by Word-Match; Remove What Demands Attention; Scrape/Parser Fixture Realness; Zero-Failure; Migration Parity; Migration-Consumer Completeness; Tiered Development; Stall Coverage Is Enumerated, Not Discovered; Iterative Audit to Convergence; A Decision That Can Block Must Live Where the Checks Can See It; One Failure Teaches Every Guard; Bug-Fix Evidence Bar; No Deferrals; Side-Effects Review Gate; Token-Audit Completeness; Mobile-Complete Operator Actions; Operator-Surface Quality; Dashboard UX Standard; Agent Awareness.
+
+2. **Runtime state, identity, and authority integrity — FAIL-CLOSED** — when authority, ownership, capacity, or state-validity machinery is absent, refuse the mutation while preserving a non-mutating route for communication and recovery. — Articles: Observation Needs Structure; Cross-Machine Coherence; Test Identity Never Enters Production State; Expected Capacity Enforcement Is an Outcome, Not a Degradation; A Refusal Stays a Refusal; Agent Proposes, Operator Approves; Truthful Provenance.
+
+3. **Consequential judgment and autonomous action — FAIL-CLOSED** — do not accept or execute a consequential autonomous decision when the intelligence, context, supervision, or accountability machinery required to make it trustworthy is absent. — Articles: The Body and the Mind; Architectural Agency in the Gap; A Dispatch Supplies the Question and Withholds the Answer; LLM-Supervised Execution; Observable Intelligence; Compaction Parity; Decision Provenance & Outcome Review.
+
+4. **Workflow completion, admission, and graduation — FAIL-CLOSED** — absence of lifecycle machinery blocks declaring closure, admitting more work, stopping, or graduating a feature; it does not require abandoning work already underway. — Articles: Close the Loop; The Stop Reason Is the Work; Distrust Temporary Success; Canonical Pipeline Operational Completeness; Maturation Path; A Dark Feature Guards Nothing.
+
+5. **Reachability and requested communication — FAIL-OPEN** — when a guard whose false positive can suppress a legitimate operator exchange is absent or uncertain, deliver the message and record the degraded check. — Articles: Quantitative Claims Must Bind a Subject; A Wall Is a Hypothesis; Never a False Blocker.
+
+6. **Outbound attention and unsolicited content — FAIL-CLOSED** — absent disposition or routing machinery must suppress proactive sends and new attention surfaces, while preserving direct replies and terminal notices through a bounded alternate path. — Articles: Bounded Notification Surface; Notices Route to the Alerts Topic; Conservative Outbound; Near-Silent Notifications.
+
+7. **Advisory observation, monitoring, and learning — FAIL-OPEN, FAIL-LOUD** — loss of non-authoritative observation should not itself stop service or conversation, but an independent health signal must make the blind spot visible. — Articles: An Instar Agent Is Always a Multi-Machine Entity; Observability; Runtime End-to-End Proof; Friction Is a Spec; Notice + Solve Inefficiencies; Autonomous Throughput Floor; Never-Waste Feedback.
+
+### Article rulings
+
+#### Change and release integrity
+
+- **(1) Structure beats Willpower.** Protects the persistence of learned constraints. **FAIL-CLOSED** at build/release because bypassing the coverage ratchet makes constitutional enforcement optional. **Rejected FAIL-OPEN cost:** a previously learned failure can ship again unnoticed.
+
+- **(2) Self-Hosting.** Protects safe self-evolution and the integrity of changes flowing back to canonical. **FAIL-CLOSED** for canonical changes because no evolution should reach users without the constitutional discipline that makes it safe. **Rejected FAIL-OPEN cost:** an unsafe or incoherent evolution becomes a fleet default.
+
+- **(5) Deferral = Deletion.** Protects durable capture of obligations and lessons. **FAIL-CLOSED** against shipping an unresolved or referent-less deferral because later instances cannot be trusted to reconstruct it. **Rejected FAIL-OPEN cost:** a promised obligation is effectively erased.
+
+- **(9) Recall Over Our Own Material Is by Meaning, Not by Word-Match.** Protects truthful claims about what the agent remembers. **FAIL-CLOSED** against advertising or shipping a semantic-recall surface when mechanism validation is absent. **Rejected FAIL-OPEN cost:** literal misses masquerade as absence, causing repeated work and false novelty.
+
+- **(20) Remove What Demands Attention. Do Not Supply More Attention.** Protects single ownership and structural removal of recurring burdens. **FAIL-CLOSED** at build when duplicate-definition validation is unavailable. **Rejected FAIL-OPEN cost:** conflicting owners or duplicated mechanisms silently reintroduce recurring attention.
+
+- **(30) Scrape/Parser Fixture Realness.** Protects parser correctness against real-world byte structure. **FAIL-CLOSED** on parser shipment without the fixture-realness gate. **Rejected FAIL-OPEN cost:** tidy tests pass while production input breaks the parser.
+
+- **(31) Zero-Failure.** Protects the known-green baseline. **FAIL-CLOSED** on push or release when test-health gates are absent. **Rejected FAIL-OPEN cost:** known or undiscovered regressions enter the shared branch.
+
+- **(38) Migration Parity.** Protects existing agents and durable state across upgrades. **FAIL-CLOSED** on an update lacking migration execution or parity proof. **Rejected FAIL-OPEN cost:** previously valid installations become unreadable or partially migrated.
+
+- **(39) Migration-Consumer Completeness.** Protects agreement among schema producers, consumers, and validators. **FAIL-CLOSED** on a migration whose acknowledgement lint did not run. **Rejected FAIL-OPEN cost:** one component interprets migrated state under an obsolete contract.
+
+- **(42) Tiered Development.** Protects risk-proportional engineering rigor. **FAIL-CLOSED** toward the stricter tier when classification is unavailable. **Rejected FAIL-OPEN cost:** a critical change receives lightweight testing and review.
+
+- **(53) Stall Coverage Is Enumerated, Not Discovered.** Protects complete stall detection for every onboarded surface. **FAIL-CLOSED** on onboarding when the matrix or validator is absent. **Rejected FAIL-OPEN cost:** an unenumerated surface can stall forever without detection.
+
+- **(59) Iterative Audit to Convergence.** Protects the truth of convergence claims. **FAIL-CLOSED** against issuing the convergence stamp without its writer and gates. **Rejected FAIL-OPEN cost:** a partial audit is represented as a completed one.
+
+- **(60) A Decision That Can Block Must Live Where the Checks Can See It.** Protects recoverability from blocking decisions. **FAIL-CLOSED** on introducing a blocker whose population lint did not run. **Rejected FAIL-OPEN cost:** an invisible blocker can lock out the operator without being audited.
+
+- **(63) One Failure Teaches Every Guard.** Protects complete propagation of a learned failure across equivalent surfaces. **FAIL-CLOSED** on malformed or unchecked enforcement-gap records. **Rejected FAIL-OPEN cost:** the repaired case passes while a sibling path repeats the incident.
+
+- **(64) Bug-Fix Evidence Bar.** Protects the truth of “fixed” and “working” claims. **FAIL-CLOSED** against shipping or claiming the fix when original-failure proof cannot be validated. **Rejected FAIL-OPEN cost:** an unverified patch is mistaken for a resolved defect.
+
+- **(65) No Deferrals.** Protects completeness and durable ownership of remaining work. **FAIL-CLOSED** on a commit containing an untracked deferral when the gate is absent. **Rejected FAIL-OPEN cost:** temporary debt becomes an ownerless permanent condition.
+
+- **(68) Side-Effects Review Gate.** Protects adjacent systems from unintended change. **FAIL-CLOSED** on shipment when the review artifact cannot be validated. **Rejected FAIL-OPEN cost:** an apparently local fix causes an unexamined regression elsewhere.
+
+- **(69) Token-Audit Completeness.** Protects cost attribution and budget accountability. **FAIL-CLOSED** on activating an unmetered LLM-calling feature. **Rejected FAIL-OPEN cost:** unbounded or misattributed spend becomes operationally invisible.
+
+- **(72) Mobile-Complete Operator Actions.** Protects the operator’s ability to complete required actions from the actual operating device. **FAIL-CLOSED** on rollout of an operator-required flow when mobile completion cannot be verified. **Rejected FAIL-OPEN cost:** the agent strands the operator behind a laptop-only step.
+
+- **(73) Operator-Surface Quality.** Protects comprehensible and usable authorization surfaces. **FAIL-CLOSED** on an operator-surface change when its assertion or detector is unavailable. **Rejected FAIL-OPEN cost:** a technically reachable but unusable surface obstructs informed action.
+
+- **(74) Dashboard UX Standard.** Protects dashboard reachability, clarity, and responsive behavior. **FAIL-CLOSED** on dashboard changes when the objective floor tests do not run. **Rejected FAIL-OPEN cost:** navigation, interaction, or mobile regressions reach the operator.
+
+- **(77) Agent Awareness.** Protects the agent’s knowledge of its own capabilities. **FAIL-CLOSED** on shipping an undiscoverable feature or route when the index lint is absent. **Rejected FAIL-OPEN cost:** live machinery becomes effectively dark because the agent cannot invoke it.
+
+#### Runtime state, identity, and authority integrity
+
+- **(7) Observation Needs Structure.** Protects the validity of state transitions that depend on an observation. **FAIL-CLOSED** on the governed mutation when its required observation record cannot be produced. **Rejected FAIL-OPEN cost:** state advances on an observation that may never have happened.
+
+- **(25) Cross-Machine Coherence.** Protects single-writer ordering and deduplicated side effects across machines. **FAIL-CLOSED** on mutation when lease authority is unavailable. **Rejected FAIL-OPEN cost:** split-brain execution duplicates or conflicts with side effects.
+
+- **(29) Test Identity Never Enters Production State.** Protects production identity and permission truth. **FAIL-CLOSED** on writes when the identity guard cannot classify the destination or principal. **Rejected FAIL-OPEN cost:** fixtures can overwrite real users or acquire production authority.
+
+- **(34) Expected Capacity Enforcement Is an Outcome, Not a Degradation.** Protects bounded resources and declared write outcomes. **FAIL-CLOSED** at the registered budget when accounting or the capacity contract is absent. **Rejected FAIL-OPEN cost:** an allegedly bounded writer exhausts storage, memory, or another shared resource.
+
+- **(36) A Refusal Stays a Refusal.** Protects truthful delivery and routing outcomes. **FAIL-CLOSED** against mapping a rejection to success even when tracing or notice machinery is unavailable. **Rejected FAIL-OPEN cost:** dropped work is acknowledged as delivered and recovery never begins.
+
+- **(75) Agent Proposes, Operator Approves.** Protects informed operator authorization and agreement between displayed and executed authority. **FAIL-CLOSED** on execution when the trusted request or server-authored approval statement is unavailable. **Rejected FAIL-OPEN cost:** authority is granted without a trustworthy account of what was approved.
+
+- **(82) Truthful Provenance.** Protects principal identity and command authority. **FAIL-CLOSED** against treating unattributed input as the user; retain it only as untrusted/system input. **Rejected FAIL-OPEN cost:** infrastructure or a peer can impersonate the operator.
+
+#### Consequential judgment and autonomous action
+
+- **(3) The Body and the Mind.** Protects contextual intelligent authority and a record of consequential decisions. **FAIL-CLOSED** on consequential action when the mind, tier classification, or required record is absent. **Rejected FAIL-OPEN cost:** brittle structure silently becomes final authority.
+
+- **(14) Architectural Agency in the Gap.** Protects grounded, accountable autonomous agency. **FAIL-CLOSED** on consequential autonomous action when grounding, identity, journal, or audit machinery disappears. **Rejected FAIL-OPEN cost:** the agent acts from an ungrounded or incoherent self-model.
+
+- **(22) A Dispatch Supplies the Question and Withholds the Answer.** Protects independence of delegated review. **FAIL-CLOSED** against accepting a consequential verdict when dispatch-protocol validation is absent. **Rejected FAIL-OPEN cost:** a seeded reviewer merely ratifies the dispatcher’s preferred answer.
+
+- **(32) LLM-Supervised Execution.** Protects critical pipelines from unsupervised contextual mistakes. **FAIL-CLOSED** when the Tier-1 supervisor is unavailable unless a separately ratified deterministic safe rung exists. **Rejected FAIL-OPEN cost:** a critical pipeline executes without its required intelligent check.
+
+- **(35) Observable Intelligence.** Protects accountability for autonomous LLM behavior. **FAIL-CLOSED** on autonomous LLM action when its call cannot be durably recorded. **Rejected FAIL-OPEN cost:** consequential judgments become untraceable and unreviewable.
+
+- **(41) Compaction Parity.** Protects continuity of context across compaction and migration. **FAIL-CLOSED** on consequential action when required recovered context is unavailable. **Rejected FAIL-OPEN cost:** the agent acts from a truncated history and contradicts prior commitments or authority.
+
+- **(52) Decision Provenance & Outcome Review.** Protects explainability and learning from autonomous judgments. **FAIL-CLOSED** on an autonomous judgment that cannot write its provenance. **Rejected FAIL-OPEN cost:** neither the decision nor its later outcome can be attributed or improved.
+
+#### Workflow completion, admission, and graduation
+
+- **(6) Close the Loop.** Protects durable follow-through on commitments and open mechanisms. **FAIL-CLOSED** against declaring closure when cadence or re-surfacing machinery is absent. **Rejected FAIL-OPEN cost:** abandoned work is recorded as deliberately complete.
+
+- **(17) The Stop Reason Is the Work.** Protects completion of the consequence revealed by a stopping condition. **FAIL-CLOSED** against stopping when the completion evaluator is absent. **Rejected FAIL-OPEN cost:** the agent ends after naming the lesson but before building or assigning its remedy.
+
+- **(19) Distrust Temporary Success — A Recurrence Is a Root Cause.** Protects durable resolution rather than symptom resets. **FAIL-CLOSED** against a completion claim when recurrence evaluation is unavailable. **Rejected FAIL-OPEN cost:** temporary recovery is mistaken for elimination of the cause.
+
+- **(40) Canonical Pipeline Operational Completeness.** Protects accepted work from becoming ownerless or undrainable. **FAIL-CLOSED** on new admission when ownership, cadence, or positive-control machinery is absent. **Rejected FAIL-OPEN cost:** work enters a pipeline that cannot process or close it.
+
+- **(66) Maturation Path.** Protects evidence-based feature graduation. **FAIL-CLOSED** against advancing a rung when the convergence chokepoint is absent. **Rejected FAIL-OPEN cost:** unproven behavior reaches development agents or the fleet.
+
+- **(67) A Dark Feature Guards Nothing.** Protects the truth of the system’s actual safety posture. **FAIL-CLOSED** on a load-bearing dependency that is dark unless the operator records a bounded, expiring acceptance. **Rejected FAIL-OPEN cost:** documentation claims protection that runtime does not provide.
+
+#### Reachability and requested communication
+
+- **(11) Quantitative Claims Must Bind a Subject.** Protects correct association between a measurement and its subject. **FAIL-OPEN** to message pass-through when the verifier or clock is unavailable because an unknown verifier result must not interrupt correct communication. **Rejected FAIL-CLOSED cost:** valid messages are blocked by a check unable to establish what they measure.
+
+- **(15) A Wall Is a Hypothesis.** Protects agency from premature declarations of impossibility. **FAIL-OPEN** to delivering the response when the capability-inventory reviewer is unavailable, with the missed review logged. **Rejected FAIL-CLOSED cost:** a non-safety review outage silences the agent.
+
+- **(16) Never a False Blocker.** Protects honest escalation and continued operator communication. **FAIL-OPEN** to communication when the blocker reviewer is unavailable. **Rejected FAIL-CLOSED cost:** the machinery meant to prevent false blockers becomes one itself.
+
+#### Outbound attention and unsolicited content
+
+- **(46) Bounded Notification Surface.** Protects the operator’s finite attention and topic topology. **FAIL-CLOSED** on automatic creation of a new topic when the funnel or budget check is absent. **Rejected FAIL-OPEN cost:** a malfunction can create unbounded notification surfaces.
+
+- **(47) Notices Route to the Alerts Topic.** Protects a single predictable destination for operational attention. **FAIL-CLOSED** against creating a new topic when alert routing is unavailable. **Rejected FAIL-OPEN cost:** notices fragment across arbitrary conversations and become harder to triage.
+
+- **(48) Conservative Outbound.** Protects the user from unsolicited, harmful, or noisy proactive sends. **FAIL-CLOSED** on proactive outbound when emitter classification or disposition review is absent. **Rejected FAIL-OPEN cost:** unreviewed emitters can spam the user or ship harmful content.
+
+- **(80) Near-Silent Notifications.** Protects signal quality in the user’s channel. **FAIL-CLOSED** on routine lifecycle and status notifications when audit/routing machinery is absent. **Rejected FAIL-OPEN cost:** alert fatigue trains the user to ignore the channel.
+
+#### Advisory observation, monitoring, and learning
+
+- **(26) An Instar Agent Is Always a Multi-Machine Entity.** Protects portability and a coherent cross-machine posture. **FAIL-OPEN** for ordinary changes when the report-first semantic reviewer is unavailable, recording the missed review. **Rejected FAIL-CLOSED cost:** an advisory portability check can halt useful machine-local work.
+
+- **(33) Observability.** Protects the ability to diagnose and tune feature behavior. **FAIL-OPEN, FAIL-LOUD** for an already-running ordinary feature when telemetry disappears, because telemetry loss alone should not create a service outage. **Rejected FAIL-CLOSED cost:** a metrics outage becomes a product outage.
+
+- **(37) Runtime End-to-End Proof.** Protects knowledge that the live delivery path still works. **FAIL-OPEN** for actual delivery when the synthetic canary stops, with an independent monitor reporting loss of the canary. **Rejected FAIL-CLOSED cost:** failure of the observer disables the service it was meant to observe.
+
+- **(44) Friction Is a Spec.** Protects conversion of recurring friction into design input. **FAIL-OPEN** when the lessons-aware reviewer is unavailable, recording that the review was skipped. **Rejected FAIL-CLOSED cost:** an improvement-discovery mechanism blocks otherwise valid work.
+
+- **(45) Notice + Solve Inefficiencies.** Protects compounding improvement from noticed inefficiency. **FAIL-OPEN** because its reminder is advisory rather than authoritative. **Rejected FAIL-CLOSED cost:** inability to suggest an optimization prevents useful work from proceeding.
+
+- **(58) Autonomous Throughput Floor.** Protects visibility into autonomous progress without making the observer an actor. **FAIL-OPEN/no-action** when monitoring disappears, with independent observer-health reporting. **Rejected FAIL-CLOSED cost:** a read-only monitor acquires power to stop work, create attention, or remediate state.
+
+- **(78) Never-Waste Feedback.** Protects durable learning from user corrections. **FAIL-OPEN** to the interaction when capture machinery is unavailable, while loudly queueing the capture failure. **Rejected FAIL-CLOSED cost:** a broken learning mechanism blocks the user’s correction from reaching the agent at all.
+
+## Exceptions
+
+1. **Self-Hosting:** canonical or fleet-default evolution fails closed; loss of an advisory dogfood review may fail open with a durable skipped-review record.
+
+2. **Recall Over Our Own Material:** semantic advertising fails closed, but a literal search may remain available if explicitly labeled `no-literal-match`.
+
+3. **The Body and the Mind:** fail-closed applies to consequential action; ordinary conversation remains deliverable through a bounded fail-open path.
+
+4. **Close the Loop / Stop Reason / Distrust Temporary Success:** fail-closed applies to closure or stopping, not to continuing the underlying work.
+
+5. **Cross-Machine Coherence:** mutations fail closed, while inbound messages may enter a durable non-mutating queue.
+
+6. **An Instar Agent Is Always a Multi-Machine Entity:** advisory review defaults open, but a proposed state-fragmenting exception fails closed.
+
+7. **Observability:** an already-running ordinary feature may continue fail-open and loud; activation of a safety-critical feature without required observability fails closed.
+
+8. **Compaction Parity:** consequential action fails closed, but communication remains reachable through a fresh-session fallback.
+
+9. **Bounded Notification Surface / Notices Route / Conservative Outbound:** new topics and proactive sends fail closed; direct requested replies and delivery into an existing conversation remain open.
+
+10. **Near-Silent Notifications:** routine output fails closed, but an exhausted terminal failure affecting the user must use one independent, bounded, loud path.
+
+11. **A Refusal Stays a Refusal:** refusal semantics remain closed, but an alternate path must still tell the user that delivery failed.
+
+12. **A Dark Feature Guards Nothing:** the only temporary alternative to fail-closed dependence is explicit operator acceptance with an owner and expiration; acceptance does not graduate the feature.
+
+## Undecided
+
+- **(79) Signal vs. Authority.** Protected interest: preventing low-context detectors from exercising authority that requires contextual judgment. An article-wide direction is genuinely ambiguous: **FAIL-OPEN** is necessary for inbound and ordinary communication, where closing can silence the operator; **FAIL-CLOSED** is necessary for outbound content or consequential action, where opening can ship harm. The registry must ratify a scope split—`inbound/reachability → fail-open`, `outbound-content/consequential-action → fail-closed`—before this article has one defensible failure direction. Choosing either globally incurs the opposite catastrophic cost.
+
+## Articles covered
+
+56 of the 57 silent articles resolved; 1 placed in UNDECIDED.

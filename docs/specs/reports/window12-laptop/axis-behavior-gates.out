@@ -1,0 +1,75 @@
+# Axis: paperwork-gates → behaviour checks
+
+MECHANISABLE: 15 / NOT-MECHANISABLE: 10
+
+## Proposed checks, grouped
+
+Tier order: T1 existing codebase surface; T2 artefact lint/test; T3 runtime record; T4 periodic audit.
+
+1. **Executable guard-proof matrix** — **T1: extend Standards Enforcement Coverage and enforcement fingerprints**; it reuses the registry’s existing coverage surface but requires executable evidence — **Behaviour:** every article classified as enforced has a negative control that introduces a representative behavioural breach and observes the named guard reject it at the claimed moment — **Breach evidence:** the mutant passes, the guard emits no verdict, the claimed moment is unreachable, or no executable negative control exists — **Articles:** Structure beats Willpower.
+
+2. **Operator-action journey suite** — **T1: extend the operator-surface gate and dashboard test family**; authorization routes should generate real browser journeys at phone and desktop widths — **Behaviour:** every operator-required action is completable with taps and plain-language choices; its primary constructive action is immediately visible; F1–F11 hold; and the approved sentence is rendered by the server from the exact structured payload that executes — **Breach evidence:** an authority-bearing route with no UI journey, horizontal overflow, inaccessible/unlabelled controls, hidden primary action, raw identifiers or JSON, unresolved assets, missing empty/error states, dead-end controls, or a rendered/executed payload mismatch — **Articles:** Mobile-Complete Operator Actions; Operator-Surface Quality; Dashboard UX Standard; Agent Proposes, Operator Approves.
+
+3. **User-outcome contract and canary registry** — **T1: extend `LiveTestGate`, `RealChannelDriver`, and the UX-liveness watchdog**; these already occupy the real user boundary — **Behaviour:** every real user entry point has a traceable outcome contract proving before shipment and on a cadence that desired state converges, runs terminate, inbound messages reach a live session, replies return within the SLO, foreground work preempts background work, degraded guards preserve service, and shared-infrastructure mutations leave reachability intact — **Breach evidence:** missing signed live-test results, an ingress trace without session receipt or reply, latency/SLO violations, desired state remaining unapplied, watchdog overrun, background work winning a contested slot, degraded mode without a fallback response, or a failed post-mutation canary — **Articles:** Live-User-Channel Proof Before Done; The User Experience Is the Product.
+
+4. **Executable canonical-contract graph** — **T1: strengthen the existing migration and canonical-pipeline manifests/lints with mutation and positive-control tests** — **Behaviour:** every canonical migration makes all real consumers read the new authority, and every accepted pipeline item advances through its real production adapter to a terminal or governed-waiting state — **Breach evidence:** a retired-authority read, a consumer whose outcome is unchanged when the canonical source is mutated, divergent authorization results, a synthetic intake that fails to reach the terminal consumer, growing backlog age, missing progress events, or duplicate advancement under replay — **Articles:** Migration-Consumer Completeness; Canonical Pipeline Operational Completeness — Accepted Intake Must Drain.
+
+5. **Two-node state-surface contract** — **T2: integration tests over real artefacts and state adapters**; the current posture marker cannot establish unified behaviour — **Behaviour:** every durable state write, generated URL, and user-facing notice is observed consistently from a second node unless it uses an explicitly restricted hardware/credential-local primitive — **Breach evidence:** divergent node snapshots, remote read-after-write failure, duplicate notices, host-only URLs, or feature code opening an unrestricted local store directly — **Articles:** An Instar Agent Is Always a Multi-Machine Entity.
+
+6. **Deferral and maturation lifecycle reconciler** — **T1: join the existing commitment/action registries, `FeatureRolloutReconciler`, and maturation track**; these already own the lifecycle state — **Behaviour:** every detected scope exclusion immediately becomes an owner-and-deadline record that closes, explicitly re-dates, or escalates before expiry, and every dark feature registers at ship time and advances only on its own logged behaviour before its dark window expires — **Breach evidence:** an overdue non-terminal deferral, silent date change, closure without evidence, an unregistered feature flag, expired dark window, graduation without feature event records, or an arm/graduation decision stored outside the maturation track — **Articles:** No Deferrals; Maturation Path — Test Agent → Development Agent → Fleet.
+
+7. **Escalation causal-chain gate** — **T1: enforce at the existing attention/notification creation chokepoint**; that is where every operator escalation can be refused safely — **Behaviour:** an internal-issue notification is emitted only with a causal chain showing detection, bounded remediation attempts, their outcomes, and actual exhaustion before notification — **Breach evidence:** an operator notice with no remediation-chain ID, notification timestamp preceding remediation, a false exhaustion state, unbounded retry history, or an attempted heal with no durable outcome record — **Articles:** Self-Heal Before Notify.
+
+8. **Blocking-outcome provenance funnel** — **T1: evolve `lint-blocking-decisions-declared.mjs` into a constructor/funnel rule plus boundary tests** — **Behaviour:** every refusal, veto, or block is created through one inspected outcome API that records the deciding source, applicable rule, signals, authority, and verdict — **Breach evidence:** a terminal negative result or process exit without provenance, a raw boolean/exception directly becoming a refusal, an uninspected shell/JavaScript blocker, or changed blocking logic with no negative-control update — **Articles:** A Decision That Can Block Must Live Where the Checks Can See It.
+
+9. **Repeating-work primitive and sustained-pressure harness** — **T1: extend the existing self-action registry and convergence test**; it already executes controllers under persistent failure — **Behaviour:** every retry, poll, monitor, recovery, and sync loop uses a bounded primitive whose action count and per-attempt cost converge to a declared constant across long horizons and reconstruction — **Breach evidence:** action count growing with test duration, retry budget resetting after restart, accumulating payload/log/process cost, repeated escalation, or a repeating callsite bypassing the primitive — **Articles:** No Unbounded Loops.
+
+## Not mechanisable — and why that is the finding
+
+1. **Self-Hosting** — **Behaviour:** every internal development capability becomes a genuinely usable user capability, carries the appropriate engineering discipline, and reaches canonical only after constitutional ratification. **Breach evidence:** private-only tools, install-manifest differences, missing user documentation, or an ungated canonical merge. **Finding:** deciding what constitutes one capability, whether two surfaces are equivalent, and which discipline is appropriate requires architectural judgment. An inventory comparison can check already-classified capabilities, but cannot establish the population without repeating the paperwork gate. Use a periodic architecture review, or reword the obligation around a closed, operator-owned capability inventory.
+
+2. **Conservative Outbound: Act, Don’t Notify** — **Behaviour:** send a proactive message only when the human genuinely must decide, authorize, know, or receive a requested result. **Breach evidence:** the outbound message, surrounding conversation, available tools/actions, and subsequent operator response. **Finding:** “could the agent have acted instead?” and “does the human genuinely need this?” are contextual judgments. A runtime model may signal and record them, but no lint can certify them. Preserve full runtime context for periodic adjudication; do not count the disposition declaration as enforcement.
+
+3. **Constitutional Traceability — No Unconstitutional Work** — **Behaviour:** shipped work substantively serves a standing constitutional standard or follows a ratified amendment. **Breach evidence:** the spec, diff, semantic-review verdict, amendment history, and any reviewer-outage bypass record. **Finding:** substantive or “indisputable” fit is open-domain judgment. Machinery can require a named independent decision and make bypasses visible, but cannot prove the decision correct. Reword the guarantee around a named authority and recorded verdict rather than asserting mechanically indisputable fit.
+
+4. **Side-Effects Review Gate** — **Behaviour:** an independent reviewer genuinely examines the change for over/under-reach, abstraction fit, authority, adjacent interactions, and rollback cost before shipment. **Breach evidence:** reviewer identity, timestamp, transcript, cited hunks, and verdict. **Finding:** a shallow rubber stamp can leave an artefact indistinguishable from a thoughtful review. Tooling can enforce invocation, independence, timing, and citations, but not genuine consideration or correctness. Those mechanical prerequisites should be required without classifying them as behavioural enforcement; review quality needs periodic sampling.
+
+5. **Iterative Audit to Convergence** — **Behaviour:** every audit-shaped undertaking repeats full, meaningfully varied sweeps until an honest zero-new-findings pass. **Breach evidence:** when a record exists, its questions, rounds, findings, and dispositions; when the audit is never opened, potentially no durable trace at all beyond an ephemeral transcript or search history. **Finding:** recognizing that work is audit-shaped and deciding that a sweep is thorough are judgments. Reword to the mechanisable boundary: any claim of exhaustive or converged audit must use the canonical record and satisfy its round protocol.
+
+6. **One Failure Teaches Every Guard** — **Behaviour:** every guard-escaped failure is recognized, recorded by semantic shape, swept against every applicable guard, and remediated where matched. **Breach evidence:** incident logs, regressions, reverted commits, failed tests, gap records, and sweep decisions; an unrecognized failure has no reliable normalized trace. **Finding:** recognizing a guard escape, matching semantic failure shapes, and judging remediation adequacy cannot be linted. The existing freshness machinery can govern registered gaps only. Reword around registered incidents or retain independent periodic governance without calling bookkeeping enforcement.
+
+7. **Observation Needs Structure** — **Behaviour:** every standing duty to observe is actually performed and produces an artefact causally bound to that observation. **Breach evidence:** absence of the required artefact only where the duty was already enumerated; an unenumerated or silently skipped duty leaves no trace anywhere. **Finding:** the universal population of “duties to notice” is not mechanically discoverable. Reword to “every declared observation duty,” then make declaration occur at a concrete watcher/job/transition registration chokepoint.
+
+8. **Deferral = Deletion** — **Behaviour:** an insight worth preserving is captured before the session or relevant context ends. **Breach evidence:** an explicit “later” statement may survive in a transcript, but a silently omitted insight leaves no file, state, log, or other trace anywhere. **Finding:** both the trigger—“worth preserving”—and the omitted content exist inside judgment. This is unenforceable as written. A session-end transcript-to-artefact comparison could provide a useful signal, but the rule must be narrowed to observable triggers before tooling can certify it.
+
+9. **The Body and the Mind** — **Behaviour:** every consequential semantic decision is made by the full-context authority after receiving structural signals, and its reasoning is recorded. **Breach evidence:** a direct structural branch, unprovenanced refusal/action, or missing decision record; an undeclared decision point may leave no distinguishable trace. **Finding:** whether a decision is consequential, semantic, reversible, or an invariant is itself the disputed judgment. Reword to a closed registry of decision points; the blocking-provenance funnel can then enforce authority and recording for that declared population.
+
+10. **A Metric Must Measure the Work, Not the Question** — **Behaviour:** a trend is credited only after genuinely different questions interrogate the work, with exclusions carried wherever the trend is repeated. **Breach evidence:** audit rounds, prompts, reports, messages, and commit text containing repeated questions or context-free numbers. **Finding:** a schema can require question text or IDs, but cannot determine whether two questions differ in subject rather than wording. Prose claims can also bypass canonical records. Require an independent judgment for variation, or narrow the rule to canonical audit reports and describe the check as form enforcement only.
+
+## Articles covered
+
+1. Structure beats Willpower — MECHANISABLE
+2. Operator-Surface Quality — MECHANISABLE
+3. Side-Effects Review Gate — NOT-MECHANISABLE
+4. Dashboard UX Standard — MECHANISABLE
+5. Agent Proposes, Operator Approves — MECHANISABLE
+6. Self-Hosting — NOT-MECHANISABLE
+7. Conservative Outbound: Act, Don’t Notify — NOT-MECHANISABLE
+8. Constitutional Traceability — No Unconstitutional Work — NOT-MECHANISABLE
+9. No Deferrals — MECHANISABLE
+10. Canonical Pipeline Operational Completeness — Accepted Intake Must Drain — MECHANISABLE
+11. Migration-Consumer Completeness — MECHANISABLE
+12. An Instar Agent Is Always a Multi-Machine Entity — MECHANISABLE
+13. Self-Heal Before Notify — MECHANISABLE
+14. Iterative Audit to Convergence — NOT-MECHANISABLE
+15. One Failure Teaches Every Guard — NOT-MECHANISABLE
+16. Maturation Path — Test Agent → Development Agent → Fleet — MECHANISABLE
+17. Observation Needs Structure — NOT-MECHANISABLE
+18. Mobile-Complete Operator Actions — MECHANISABLE
+19. Live-User-Channel Proof Before Done — MECHANISABLE
+20. A Decision That Can Block Must Live Where the Checks Can See It — MECHANISABLE
+21. The User Experience Is the Product — MECHANISABLE
+22. No Unbounded Loops — MECHANISABLE
+23. Deferral = Deletion — NOT-MECHANISABLE
+24. The Body and the Mind — NOT-MECHANISABLE
+25. A Metric Must Measure the Work, Not the Question — NOT-MECHANISABLE

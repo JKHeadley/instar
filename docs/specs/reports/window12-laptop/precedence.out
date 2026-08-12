@@ -1,0 +1,207 @@
+# Precedence mechanism audit
+EXISTS: NO
+
+## What the registry says
+
+There is no registry-wide rule for resolving collisions by specificity, family, recency, safety direction, document order, or a designated tie-break article.
+
+The apparent hierarchy explicitly disclaims that role:
+
+> “Declared hierarchy — mechanical relations only; conceptual placement remains review.”
+
+> “A row here means an article DECLARED a parent… It does **not** mean the placement was reviewed and approved.”
+
+The revision clause also does not make newer articles prevail automatically:
+
+> “Standards can also be *revised* the same way when a sharper understanding supersedes an older framing — with the history preserved, never silently overwritten.”
+
+That describes an explicit revision process, not recency precedence.
+
+The registry contains only local precedence rules:
+
+- Ratification status: a pending article is “**advisory, not binding**” and “may not be cited as the reason another article’s obligation is discharged.”
+- One tradeoff: *The User Experience Is the Product* says user reachability “**outranks internal caution when the two conflict**” and “*the user wins*.”
+- Several pair-specific exceptions, such as “**exactly one exception**” to *The Body and the Mind* and the “**ONE enumerated exception**” to *Maturation Path*.
+
+These resolve only their named relationships. Nothing says they generalize to unrelated cross-family collisions.
+
+The four unresolved collisions demonstrate the gap:
+
+1. *Structure Decides Alone Only on an Exact Match* vs *Signal vs. Authority*:
+
+   > “structure may decide ALONE when the operator’s message is an EXACT, whole-message match”
+
+   versus:
+
+   > “Only a higher-level, full-context intelligent gate has *blocking* authority.”
+
+2. *No Silent Degradation to Brittle Fallback* vs *The User Experience Is the Product*:
+
+   > “The call must SWAP PROVIDER … or FAIL CLOSED”
+
+   versus:
+
+   > “check-unavailable [must] fail toward the user, with safety preserved by a cheaper deterministic check.”
+
+3. *Runtime End-to-End Proof* vs *Self-Heal Before Notify*:
+
+   > “a missed or contract-violating round-trip alerts”
+
+   versus:
+
+   > “The operator is notified … ONLY when the self-healing measures THEMSELVES have failed.”
+
+4. *Never a False Blocker* vs *Mobile-Complete Operator Actions*:
+
+   > “The genuinely human-only set is tiny — … a physical action”
+
+   versus:
+
+   > “Every action that needs the operator … must be completable from a phone.”
+
+## Articles that presuppose precedence
+
+These are the direct operative ownership, exception, or deference declarations. Some settle their immediate pair manually, but the registry gives “owns,” “governs,” “exception,” and parentage no uniform semantics against other articles.
+
+- *The Body and the Mind* / *Structure Decides Alone Only on an Exact Match*:
+
+  > “Tree node beneath it: *Structure Decides Alone Only on an Exact Match*, which states the ONE class of exception…”
+
+- *Intelligence Infers, Keywords Only Guard*:
+
+  > “This article does NOT own emergency-stop decision authority… [it] is owned in one place by *Structure Decides Alone Only on an Exact Match*.”
+
+- *The Operator Channel Is Sacred*:
+
+  > “It does NOT own emergency-stop decision authority, nor the MECHANISM by which structure decides alone: both belong to *Structure Decides Alone Only on an Exact Match*.”
+
+  > “Read here whether a message may be consumed; read there what structure is permitted to decide by itself.”
+
+- *A Wall Is a Hypothesis* and *Never a False Blocker*:
+
+  > “does NOT own the exhaust-before-escalating obligation. That obligation and its rung ladder live in *Self-Unblock Before Escalating*, the single governing article.”
+
+- *Self-Unblock Before Escalating*:
+
+  > “THE SINGLE GOVERNING ARTICLE for exhaust-before-escalating.”
+
+  > “Read the ladder here and nowhere else.”
+
+- *Cross-Machine Coherence*:
+
+  > “this article does NOT own the posture-declaration obligation, which belongs to *An Instar Agent Is Always a Multi-Machine Entity*.”
+
+- *An Instar Agent Is Always a Multi-Machine Entity*:
+
+  > “THE SINGLE GOVERNING ARTICLE for the cross-machine posture declaration.”
+
+- *Bounded Notification Surface*:
+
+  > “THE SINGLE GOVERNING ARTICLE for notification VOLUME.”
+
+  > “*Notices Route to the Alerts Topic, Never a New One* owns WHERE … and defers volume here.”
+
+- *Notices Route to the Alerts Topic, Never a New One*:
+
+  > “This article owns DESTINATION only and does NOT own the aggregation obligation.”
+
+  > “Read WHERE a notice goes here; read HOW MANY may be emitted there.”
+
+- *Conservative Outbound*:
+
+  > “with the single enumerated, deprecated exception carried by *Notices Route to the Alerts Topic, Never a New One*, which is where that carve-out is defined and bounded.”
+
+- *No Unbounded Loops* / *Capacity Safety*:
+
+  > “This article owns the per-loop BRAKES and does NOT own the convergence obligation…”
+
+  > “THE SINGLE GOVERNING ARTICLE for self-action convergence.”
+
+- *Judgment Within Floors*:
+
+  > “floors are the documented exemption class … where deterministic blocking is sanctioned.”
+
+  This presupposes that its exemption defeats the broader *Signal vs. Authority* and *Body and Mind* language.
+
+- *Bug-Fix Evidence Bar* / *Side-Effects Review Gate*:
+
+  > “THE SINGLE GOVERNING ARTICLE for the pre-ship evidence STANDARD.”
+
+  > “This article owns the VALIDATOR, never the EVIDENCE STANDARD.”
+
+- *Maturation Path*:
+
+  > “THE SINGLE GOVERNING ARTICLE for feature graduation. No other article may create an exit from this ladder…”
+
+- *A Dark Feature Guards Nothing*:
+
+  > “This article does NOT own the graduation obligation — *Maturation Path* does.”
+
+- *User-Facing Fixes Ship Live*:
+
+  > “This is the ONE enumerated exception to *Maturation Path*’s ladder.”
+
+- *Self-Heal Before Notify*:
+
+  > “This standard refines *to whom*” *No Silent Degradation* reports failures.
+
+  > “This is also the general rule beneath **Near-Silent Notifications**.”
+
+- *A Metric Must Measure the Work, Not the Question*:
+
+  > “it qualifies the convergence criterion above.”
+
+- *Canonical Pipeline Operational Completeness*:
+
+  > “A pipeline that makes a human its default approver is operationally incomplete unless a constitution-level requirement demands that gate.”
+
+Without a common rule, these declarations are manually interpreted pair by pair; they do not establish what happens when a third article collides with the claimed owner.
+
+## Dimensions a rule must cover
+
+1. **Applicability and specificity.** Define how narrower scope is established: explicit predicates, parent/child relation, named case, or reviewer judgment. Also define what happens when scopes overlap without nesting.
+
+   Specificity alone does not resolve *Runtime End-to-End Proof* vs *Self-Heal Before Notify*: one is specific about delivery-canary misses; the other is specific about notification order. Neither scope contains the other.
+
+2. **Safety direction.** Define the protected interest and failure direction for the actual surface—not merely “fail safe.”
+
+   This alone does not resolve *No Silent Degradation* vs *The User Experience Is the Product*. Fail-closed protects against unsafe outbound content; fail-toward-delivery protects reachability. Both are safety claims with opposite dispositions.
+
+3. **Family seniority.** State whether families have authority ranks and whether a narrower article may defeat a senior family.
+
+   Family rank alone does not resolve same-family collisions such as *The Body and the Mind* vs *Structure Decides Alone Only on an Exact Match*. Both are Substrate articles; only the named exception resolves them. The same is true of *Maturation Path* vs *User-Facing Fixes Ship Live* inside Shipping.
+
+4. **Explicit override markers.** Define direction, target article ID, exact scope, reciprocity, ratification requirements, and validation. The rule must also define what an absent or contradictory marker means.
+
+   Markers alone do not resolve the currently unmarked *Runtime End-to-End Proof* vs *Self-Heal Before Notify* conflict. Unless absence means “unresolved” and triggers a defined workflow, the agent still guesses.
+
+5. **Ratification and recency.** State whether later text wins, whether only an explicit revision supersedes earlier text, and how pending articles participate.
+
+   Recency alone gives the wrong answer for *Never a False Blocker* vs *Mobile-Complete Operator Actions*: the later mobile rule is universal on its face, while the older article explicitly recognizes physical actions.
+
+6. **Tie and disagreement handling.** Specify what happens when specificity, safety direction, family rank, and recency point different ways. The registry needs an “unresolved collision” disposition rather than silently choosing whichever consideration feels strongest.
+
+## Cheapest honest interim
+
+Use the registry’s existing named-exception pattern, not a new implied hierarchy. The registry already explains why:
+
+> “an absolute that a sibling article openly violates is worse than a stated carve-out, because a reader can cite the registry for both.”
+
+And elsewhere:
+
+> “an absolute plus an unnamed escape is worse than a stated carve-out.”
+
+The smallest honest change is:
+
+1. Add one registry-level clause:
+
+   > No precedence is inferred from family, document order, date, parentage, safety language, or apparent specificity. A collision is resolved only by a ratified, scope-bounded, explicitly named override or exception. Without one, the collision is UNRESOLVED and must be submitted for operator ratification.
+
+2. Add four reciprocal, scope-bounded tie-break notes for the known conflicts:
+
+   - Exact whole-message stop authority overrides *Signal vs. Authority* only for the enumerated exact-match mechanism.
+   - *Guards Degrade, Not Outage* overrides fail-closed only when the user-facing check is unavailable and the deterministic safety floor reports clean.
+   - A canary miss is audited immediately, but operator notification waits for bounded self-heal to fail.
+   - *Mobile-Complete Operator Actions* covers digitally completable authorization and input; an intrinsically physical action remains a recognized human-only exception.
+
+A new `overrides:` field would be better only when it has IDs, scope predicates, reciprocal validation, and a failing check. An unvalidated field would repeat the registry’s own “structure, not willpower” failure. A single global “specificity wins” order would be cheaper in lines but dishonest because overlapping scopes and opposing safety directions are not mechanically rankable.

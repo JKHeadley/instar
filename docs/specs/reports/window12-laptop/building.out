@@ -1,0 +1,54 @@
+The audit found 2 load-bearing issues. The exact report was printed to stdout, but `findings-building.md` could not be created because the workspace is read-only and approvals are disabled.
+
+`A Metric Must Measure the Work, Not the Question` passed all five checks, including reciprocal parentage and its future, well-formed countdown.
+
+# Building family audit — findings
+VERDICT: FINDINGS
+COUNT: 2
+## Findings
+1. Constitutional Traceability — No Unconstitutional Work — its semantic LLM ship gate explicitly fails open when the reviewer is degraded or unreachable, while *No Silent Degradation to Brittle Fallback* requires any gating LLM call that suffers provider failure to swap providers or fail closed — a reader cannot determine whether a reviewer outage must halt shipment or permit an unjudged weak fit, because obeying either article violates the other.
+2. Conservative Outbound: Act, Don't Notify — its practice section says nothing checks a new emitter's default at build time, but its Applied-through section simultaneously claims a lint that flags newly enabled proactive emitters lacking a human-needs-it justification — the registry gives opposite accounts of whether this obligation has a build-time enforcement surface, so a reader cannot tell whether silent-by-default is mechanically checked or only review guidance.
+## Articles reviewed
+41, listed by name
+
+- Framework-Agnostic — and Framework-Optimizing
+- Cross-Machine Coherence — One Agent, Robust Under Degraded Conditions
+- An Instar Agent Is Always a Multi-Machine Entity
+- Cross-Store Coherence Is an Invariant
+- Testing Integrity
+- Test Identity Never Enters Production State
+- Scrape/Parser Fixture Realness — feed the parser the REAL bytes
+- Zero-Failure
+- LLM-Supervised Execution
+- Observability — you can't tune what you can't see
+- Expected Capacity Enforcement Is an Outcome, Not a Degradation
+- Observable Intelligence — No Autonomous LLM Action Is Unauditable
+- A Refusal Stays a Refusal — conservation of negative outcomes
+- Runtime End-to-End Proof — the canary standard
+- Migration Parity
+- Migration-Consumer Completeness
+- Canonical Pipeline Operational Completeness — Accepted Intake Must Drain
+- Compaction Parity
+- Tiered Development
+- Constitutional Traceability — No Unconstitutional Work
+- Friction Is a Spec — Productize the Workaround
+- Notice + Solve Inefficiencies — Efficiency Is a Standing Search
+- Bounded Notification Surface — no feature may flood the user
+- Notices Route to the Alerts Topic, Never a New One
+- Conservative Outbound: Act, Don't Notify
+- No Unbounded Loops — Every Repeating Behavior Carries Its Own Brakes
+- Keep the Doorway/Model Map Current
+- Judgment Within Floors
+- Decision Provenance & Outcome Review
+- Stall Coverage Is Enumerated, Not Discovered
+- Bounded Blast Radius
+- Capacity Safety — No Unbounded Self-Action
+- Live-User-Channel Proof Before Done
+- Ownership-Gated Side Effects
+- Autonomous Throughput Floor
+- Iterative Audit to Convergence
+- A Metric Must Measure the Work, Not the Question
+- A Decision That Can Block Must Live Where the Checks Can See It
+- No Silent Degradation to Brittle Fallback
+- An Autonomous Run Must Outlive Its Session
+- One Failure Teaches Every Guard — Record the Shape, Sweep It Everywhere

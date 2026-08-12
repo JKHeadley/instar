@@ -34,6 +34,11 @@ const REQUIRED_LINTS = [
   // could not see it, and why it was unprotected.
   'check-codex-rule1-drift.js',
   'lint-canonical-pipeline-completeness.mjs',
+  // The Telegram egress boundary (2026-08-11). It replaced lint-telegram-send-funnel-guarded.mjs,
+  // which had never been registered here — so the guard on the agent's outbound messaging path was
+  // itself unprotected for as long as it existed, and swapping it for a stronger one would have
+  // carried that gap forward silently. Registered with the replacement rather than after it.
+  'lint-telegram-egress-boundary.mjs',
   // Registry-integrity lints. The first five landed 2026-08-06 with the ratified
   // standards batch and the last two on 2026-08-07 with the operator rulings; NONE
   // were registered here, so this inverse check had been failing since 2026-08-06
@@ -48,6 +53,25 @@ const REQUIRED_LINTS = [
   // is in the chain", and a guard that escapes the ratchet on a naming technicality
   // is exactly the hole the ratchet exists to close (2026-08-08).
   'generate-standards-hierarchy.mjs',
+  // Window 10: the FUNCTION-verifying half of *Deferral = Deletion*. The existing
+  // precommit step proves a tracking marker EXISTS; this proves the marker refers
+  // to something the repository can show a reader. 201 of 217 tracked deferrals did not.
+  'lint-deferral-referent-resolves.mjs',
+  // Window 10: a NEW standard must declare WHEN it is enforced (the moment axis).
+  // Charter 2026-08-08 — the self-unblock failure was invisible because no record
+  // said which moments a standard should act at.
+  'lint-enforcement-fingerprint.mjs',
+  // Window 10: the gap-propagation loop. A GAP (a recorded failure-shape) is swept
+  // against every FINGERPRINT, and adding a fingerprint STALES every sweep — so one
+  // failure upgrades every standard sharing the hole-shape.
+  'lint-enforcement-gap-records.mjs',
+  // Window 10: a count the registry states about ITSELF must be true. Stale self-description
+  // was the night's most frequent defect ("six properties" against thirty, for two months).
+  'lint-registry-self-counts.mjs',
+  // Added by review pass 19's prescription: the two false-closure shapes that recurred often enough to
+  // earn a static guard — a duplicated horizon literal (unclosable behaviourally, since a same-value
+  // copy prints identically) and a superseded figure on a reader-facing surface.
+  'lint-account-matches-tree.mjs',
   'lint-no-duplicate-definitions.mjs',
   'lint-recall-surface-names-match-mechanism.mjs',
   'lint-registry-tree-parentage.mjs',

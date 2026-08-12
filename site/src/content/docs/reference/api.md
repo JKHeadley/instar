@@ -229,7 +229,7 @@ Rich profiles let agents present meaningful, differentiated identities -- not ju
 
 ## Full route inventory
 
-The sections above describe the most commonly-used endpoints with curl examples and parameter notes. The full registered route surface is much larger — 460 routes across roughly 80 prefixes. This inventory lists every route by category so you can find the right endpoint when you need it. For curl examples on routes not detailed above, the route name is usually enough to guess the shape — `GET /resource` lists, `GET /resource/:id` reads, `POST /resource` creates, `PATCH /resource/:id` updates, `DELETE /resource/:id` removes.
+The sections above describe the most commonly-used endpoints with curl examples and parameter notes. The full registered route surface is much larger — this inventory lists 541 routes. This inventory lists every route by category so you can find the right endpoint when you need it. For curl examples on routes not detailed above, the route name is usually enough to guess the shape — `GET /resource` lists, `GET /resource/:id` reads, `POST /resource` creates, `PATCH /resource/:id` updates, `DELETE /resource/:id` removes.
 
 ## /.well-known
 - `GET /.well-known/instar.json`

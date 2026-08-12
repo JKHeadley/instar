@@ -97,6 +97,62 @@ jobs:
         env:
           STANDARDS_AREA_AUDIT_BASE_FILE: ${{ runner.temp }}/standards-area-audits-base.json
           STANDARDS_AREA_AUDIT_BASE_REQUIRED: ${{ steps.area-audit-base.outputs.required }}
+      # Window-10 ratchets (2026-08-09). SAME shape as the area-audit step above, deliberately:
+      # review pass 6 rejected a hand-rolled `git show origin/main:<path>` inside the lint, because a
+      # branch name is not the accepted change boundary and on a main checkout can denote the commit
+      # under test. The proven pattern is a PINNED base SHA from the event, the base copy extracted to
+      # RUNNER_TEMP, and the checker handed a file path plus an explicit required flag.
+      # `if: always()` — so these steps run even when an earlier step in this job fails.
+      #
+      # CORRECTED BY REVIEW PASS 11, and the correction matters more than the change. Pass 10 reported
+      # that these three ratchets "have NEVER RUN in CI … not once", and I wrote that into this file as
+      # established fact WITHOUT CHECKING IT. It is false: the `lint` job runs `npm run lint`, whose
+      # chain ends with all three of these lints, and it executes on every run of this branch. Their
+      # clean output has been at the bottom of every local gate run this week — the evidence was in
+      # front of me and I adopted a precise-sounding finding over it.
+      #
+      # What is TRUE, and is the reason this step exists: the PINNED-BASE-BOUND invocation had never
+      # run. The unbound run in the `lint` job cannot do the shrink-only comparison against the
+      # protected base, because that needs the `*_BASE_FILE` / `*_BASE_REQUIRED` binding assembled by
+      # the step above. So the ratchets executed; their HISTORICAL arm did not. That is a narrower and
+      # duller claim than the one I published, and it is the accurate one.
+      #
+      # The idiom is copied, not invented: `if: always()` is already used by the artifact upload steps
+      # in this same file. A step that FAILS still fails the job regardless of the condition that
+      # started it, so making these unconditional strengthens the gate rather than weakening it — it
+      # removes only their dependence on an unrelated step's verdict.
+      - name: Resolve protected-base window-10 baselines
+        id: w10-baselines
+        if: always()
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}
+        run: |
+          git cat-file -e "$BASE_SHA^{commit}"
+          bind() {
+            local path="$1" out="$2" key="$3"
+            if git cat-file -e "$BASE_SHA:$path"; then
+              git show "$BASE_SHA:$path" > "$RUNNER_TEMP/$out"
+              echo "$key=1" >> "$GITHUB_OUTPUT"
+            else
+              echo "$key=0" >> "$GITHUB_OUTPUT"
+            fi
+          }
+          bind docs/enforcement-fingerprint-baseline.json fingerprint-base.json fingerprint
+          bind docs/deferral-referent-baseline.json deferral-base.json deferral
+          bind docs/enforcement-gaps-floor.json gapfloor-base.json gapfloor
+      - name: Window-10 ratchets against the protected base
+        if: always()
+        env:
+          ENFORCEMENT_FINGERPRINT_BASE_FILE: ${{ runner.temp }}/fingerprint-base.json
+          ENFORCEMENT_FINGERPRINT_BASE_REQUIRED: ${{ steps.w10-baselines.outputs.fingerprint }}
+          DEFERRAL_REFERENT_BASE_FILE: ${{ runner.temp }}/deferral-base.json
+          DEFERRAL_REFERENT_BASE_REQUIRED: ${{ steps.w10-baselines.outputs.deferral }}
+          ENFORCEMENT_GAP_FLOOR_BASE_FILE: ${{ runner.temp }}/gapfloor-base.json
+          ENFORCEMENT_GAP_FLOOR_BASE_REQUIRED: ${{ steps.w10-baselines.outputs.gapfloor }}
+        run: |
+          node scripts/lint-enforcement-fingerprint.mjs
+          node scripts/lint-deferral-referent-resolves.mjs
+          node scripts/lint-enforcement-gap-records.mjs
       - name: Migration consumer lockstep
         run: node scripts/lint-migration-consumer-completeness.js --diff-base "${{ github.event.pull_request.base.sha || github.event.before }}"
       - name: Upload coverage report

@@ -1,0 +1,79 @@
+# Precedence claim — verification
+VERDICT: REFUTED
+
+## What I looked for and did not find
+
+I found no complete ordering that says family A outranks family B, later text wins, document order controls, or apparent specificity always wins. The hierarchy expressly limits itself to “mechanical relations only” and says placement may still be conceptually wrong.
+
+Thus a narrower criticism survives: the registry has no universal fallback for a novel collision between two ratified, applicable articles after all explicit scopes, exceptions, and governing declarations have been exhausted.
+
+## Strongest counter-evidence found
+
+The claim that there is no registry-wide precedence rule at all is false.
+
+The governance section establishes status precedence for every family:
+
+> “An article marked pending operator ratification is advisory, not binding…”
+
+and:
+
+> “it may not be cited as the reason another article’s obligation is discharged.”
+
+The registry also contains a broad cross-family safety tradeoff:
+
+> “The user’s ability to reach a live agent… outranks internal caution when the two conflict.”
+
+> “when internal safety and the user’s reach conflict, the user wins.”
+
+The four alleged collisions are locally resolvable:
+
+1. **Exact stop vs Signal vs Authority — resolved.**  
+   *Structure Decides Alone Only on an Exact Match* declares:
+
+   > “There is exactly one exception, and this article is its whole extent”
+
+   and:
+
+   > “THIS ARTICLE OWNS EMERGENCY-STOP DECISION AUTHORITY.”
+
+   *Signal vs. Authority* derives from *The Body and the Mind*, whose own text acknowledges this exact-match exception. *Judgment Within Floors* further states that enumerable invariants and irreversible-action safety guards are the documented exception class where deterministic blocking is permitted. Exact `/stop` therefore stops without model approval.
+
+2. **Fail-closed outbound gate vs user delivery — resolved.**  
+   *The User Experience Is the Product* expressly distinguishes `content-unsafe` from `check-unavailable`: unsafe content holds, but unavailable checking fails toward delivery through a cheaper deterministic safety mechanism. It calls this the:
+
+   > “direct extension of … *No Silent Degradation to Brittle Fallback*”
+
+   and its implementation says deterministic-clean replies send while leak-positive replies hold. This is the registry’s stated “user wins” tradeoff applied to the exact tone-gate outage alleged.
+
+3. **Canary alert vs self-heal first — composable.**  
+   *Self-Heal Before Notify* supplies the missing scope predicate:
+
+   > “Every watcher/monitor that can raise an operator-facing notice”  
+   > must place the notice “DOWNSTREAM of a failed heal.”
+
+   A canary is such a monitor. Its miss is recorded and routed into recovery immediately; the operator-facing alert occurs only if bounded recovery fails. *Runtime End-to-End Proof* requires that the miss alert, but does not say the operator must be notified before recovery is attempted.
+
+4. **Physical action vs mobile completeness — different scopes.**  
+   *Never a False Blocker* identifies an intrinsically physical act as something the agent cannot perform. *Mobile-Complete* repeatedly scopes itself to an “operator-facing route,” approval surface, grant, credential submission, decision, or PIN-gated authority—software interactions introduced or touched by the feature. A hardware reset is not an API-only operator route that could have been given a phone UI. The agent may ask the operator to press the button; any digital approval or supporting interface must remain phone-completable.
+
+The earlier cross-family review had already refuted two other supposed collisions—*Sovereignty* versus machine-local ownership, and expected notification-budget enforcement versus terminal operator-message loss—using the same scope-based method. That further weakens the premise that ordinary conflicts require a general total order.
+
+## The surviving claim, stated precisely
+
+The registry lacks a single, uniform, machine-checkable fallback for a genuinely novel collision between two binding articles when:
+
+- both scope predicates apply;
+- neither is pending;
+- neither names the other;
+- no governing-article, exception, composition, or tradeoff clause settles the case; and
+- their obligations cannot be jointly satisfied.
+
+That is substantially narrower than saying the registry has no precedence mechanism or cannot resolve the four alleged cases.
+
+## Is the proposed interim safe?
+
+No. Declaring every non-reciprocally-named collision `UNRESOLVED` would discard working scope and composition clauses.
+
+The clearest routine freeze is an outbound tone-gate provider outage. The registry currently permits a clean ordinary reply through the deterministic leak floor while holding leak-positive content. Under the proposed interim, the agent could be forced to obtain operator ratification before either sending or holding that reply—blocking the live user channel during the very outage the existing “user wins” rule was written to handle.
+
+A safe interim would preserve ratification status, express governing declarations, scope predicates, named exceptions, and explicit composition clauses, escalating only after those mechanisms genuinely fail to decide the case.

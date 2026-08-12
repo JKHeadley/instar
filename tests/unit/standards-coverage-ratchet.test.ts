@@ -873,6 +873,29 @@ describe('standards-coverage ratchet script', () => {
     // never executed is indistinguishable from one that passes — which is the
     // registry's own "a dark feature guards nothing", pointed at a test.
     //
+    // 2026-08-11: 88 -> 89 and 0.75 -> 0.7416. FOURTH occurrence, by the same author again —
+    // this branch ratified *A Metric Must Measure the Work, Not the Question* and did not update
+    // this snapshot in the same change. Found only because a full-suite run was made after a
+    // messaging refactor; the targeted runs I had been doing all night never touch this file, so
+    // the branch sat red for hours behind a green that was measuring something else. The ratio
+    // FELL because the new article ships documented-only (fingerprint `none`), which is the honest
+    // direction: ratifying an unenforced standard should lower enforced coverage, not raise it.
+    //
+    // The note below has now predicted this four times. It is still right, and the article this
+    // branch added is about exactly this shape — a measurement whose question stopped matching the
+    // work. Leaving the prediction standing, unrewritten, is the cheapest available evidence that
+    // hand-maintained snapshots do not survive contact with a busy branch.
+    //
+    // 2026-08-09: 87 -> 88 and 0.7356 -> 0.75. THIRD occurrence of the omission the two
+    // notes above describe, by the same author, one day later again — this branch added
+    // *One Failure Teaches Every Guard* and did not update this snapshot in the same change.
+    // Found by external review pass 14, which was the FIRST of fourteen adversarial passes to
+    // run the test suite at all; my own pre-push smoke had been printing "affected-test listing
+    // timed out — skipping local smoke; CI is the authority" on every push, so the branch sat
+    // red for days behind a skipped gate and an accepted red. The note above predicted exactly
+    // this ("a snapshot that must be hand-updated will keep going stale until something computes
+    // it") and was right a third time; it is left standing rather than rewritten.
+    //
     // 2026-08-08: 86 -> 87 and 0.7326 -> 0.7356. Ruling A added ONE article
     // (*Structure Decides Alone Only on an Exact Match*) and I did not update this
     // snapshot in the same change — the identical omission the note above describes,
@@ -881,14 +904,19 @@ describe('standards-coverage ratchet script', () => {
     // hand-updated will keep going stale until something computes it.
     //
     // The `areaAudit` assertion below is DELIBERATELY not adjusted. It reads
-    // `status: 'current'` and will stay red while the Building / Shipping /
-    // Substrate audit records are stale — which they are, because amending a family
+    // `status: 'current'` and will stay red while the Building and The Substrate
+    // audit records are stale — which they are, because amending a family
+    //
+    // 2026-08-11 (review pass 36 finding 9): this named SHIPPING as stale too. Execution reports only
+    // Building and The Substrate; Shipping's recorded audit is current. The refusal to forge acceptance
+    // was right, but the account of WHY the test is red was wrong — and a red whose stated cause is
+    // wrong is the thing a maintainer reads instead of running it.
     // invalidates its audit. That red is the audit gate working, and the ONLY
     // legitimate way to clear it is refreshing those records from a family review
     // that genuinely accepts. Editing this expectation to make the suite green would
     // be forging the acceptance the record exists to prove.
-    expect(report.total).toBe(87);
-    expect(report.enforcedRatio).toBe(0.7356);
+    expect(report.total).toBe(89);
+    expect(report.enforcedRatio).toBe(0.7416);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',
     ]);
