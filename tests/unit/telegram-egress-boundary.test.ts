@@ -394,6 +394,48 @@ describe('telegram egress boundary — the single door', () => {
       expect(f5).toHaveBeenCalledTimes(1);
     });
 
+    it('honours the METHOD\'s field precedence — a lower field cannot waive an unreadable body', async () => {
+      // The third instance today of one shape: alternatives that are really a PRIORITY union. Telegram's
+      // editMessageText handler branches on whether `rich_message` is PRESENT and only otherwise reads
+      // `text`. So a visible `?text=` beside an unreadable body waived the refusal while the body was
+      // free to carry the rich_message that actually got sent.
+      const f = arm();
+      await expect(telegramFetch(api('editMessageText') + '?chat_id=1&message_id=9&text=LOOKS%20VISIBLE', {
+        method: 'POST',
+        body: new ReadableStream(),
+      })).rejects.toThrow(TelegramEgressError);
+      expect(f, 'text is outranked by rich_message — it cannot vouch for an unreadable body').not.toHaveBeenCalled();
+
+      // The HIGHEST-precedence field still waives, because nothing a body carries can outrank it.
+      const f2 = arm();
+      await telegramFetch(
+        api('editMessageText') + '?chat_id=1&message_id=9&rich_message=' + encodeURIComponent(JSON.stringify({ markdown: 'hello' })),
+        { method: 'POST', body: new ReadableStream() },
+      );
+      expect(f2, 'rich_message is what the method reads — checked, and it wins').toHaveBeenCalledTimes(1);
+    });
+
+    it('judges the ONE field the method will read — not every field present', async () => {
+      // The over-refusal that sat beside the under-refusal above. An edit carrying a visible rich_message
+      // beside a leftover invisible `text` was refused for content Telegram discards.
+      const f = arm();
+      await telegramFetch(api('editMessageText'), post({
+        chat_id: 1, message_id: 9,
+        rich_message: { blocks: [{ type: 'paragraph', text: 'the real content' }] },
+        text: '\u200b',
+      }));
+      expect(f, 'rich_message is read; the leftover text is discarded').toHaveBeenCalledTimes(1);
+
+      // ...and the same shape refuses when the field that WINS is the invisible one.
+      const f2 = arm();
+      await expect(telegramFetch(api('editMessageText'), post({
+        chat_id: 1, message_id: 9,
+        rich_message: { blocks: [{ type: 'paragraph', text: '\u200b' }] },
+        text: 'VISIBLE BUT NEVER READ',
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f2).not.toHaveBeenCalled();
+    });
+
     it('reads only the fields the discriminator declares — a discarded member cannot vouch', async () => {
       // Pass 47 finding 2. Telegram reads `type`, extracts that variant's declared fields, and DISCARDS
       // every other member of the object. The previous walk descended every object-valued property, so a

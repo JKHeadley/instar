@@ -4055,3 +4055,42 @@ paragraph named the reading that would audit it — a reading that had not run a
 therefore not on disk. The archive guard refused the commit for exactly that: a citation is an obligation,
 and reasoning from a reading nobody can read is uncheckable no matter how confident the sentence sounds.
 Fourth time this guard has caught me in two days, and the first time it caught me citing the FUTURE.
+
+### Window 13, second increment — the METHOD's field precedence
+
+**What changed.** The reader-visible field list is now the method's own PRECEDENCE order, highest first
+(`editMessageText: ['rich_message', 'text']`), and two consumers changed with it: the egress waiver
+requires the query to supply the HIGHEST-precedence field, and the visibility check judges the ONE field
+the method will actually read rather than every field present.
+
+This closes a stated-open item rather than a new discovery, and it is the third instance today of one
+shape: a set of alternatives that is really a priority union. The other two were the RichText variant's
+declared fields and the rich-message container's arms.
+
+**1. Over-block.** Reduced. An edit carrying a visible `rich_message` beside a leftover invisible `text`
+was refused for content Telegram discards; it now delivers.
+
+**2. Under-block.** Closed the live one: a visible `?text=` in the query beside an unreadable body waived
+the refusal while the body was free to carry the `rich_message` that actually got sent. Remaining
+exposure is the same closed-world exposure as everywhere else — a method whose precedence Telegram
+changes, or a new multi-field method added without its order.
+
+**3. Level of abstraction.** Unchanged; both consumers already sat at the door.
+
+**4. Signal vs authority.** Strengthened. The waiver was granting an exemption on evidence that did not
+bear on what would be sent. It now grants it only on the field that decides the outcome.
+
+**5. Interactions.** The waiver and the visibility check were wrong in OPPOSITE directions on the same
+fact, which is why they are fixed together — repairing one alone would have left the other's error in
+place and looked complete.
+
+**6. External surfaces.** None beyond which payloads are refused.
+
+**7. Multi-machine posture.** MACHINE-LOCAL BY DESIGN, as above: a pure function over one request on the
+sending machine, with no replicated state, no merged read, and no user-facing notice.
+
+**8. Rollback.** Revert the commit; two small functions and one array order.
+
+**Proof.** Both new tests verified RED against the previous rule before being kept. The table-pinning test
+caught the reorder on its own and now pins the ORDER with its reason, so a future reordering fails there
+first rather than silently reopening the bypass. 140 tests green across the six guard suites.

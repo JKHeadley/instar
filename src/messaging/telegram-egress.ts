@@ -390,11 +390,17 @@ export async function telegramFetch(
     // carries `text` OR the rich structure. Requiring the query to supply ALL of them (pass 44) treated
     // an either-or as an and, so my repair for one over-refusal introduced another one layer up.
     //
-    // ONE query-supplied field is enough to make an unreadable body harmless: query values win on a
-    // conflict, so that field is what Telegram sends, and it has just been checked. If it is invisible
-    // the request is refused anyway; if visible, the reader receives something.
+    // But ANY of them (pass 45's repair) was wrong in the other direction, and this is the third place
+    // today the same shape has bitten: the alternatives are a PRIORITY union, not a free choice.
+    // `editMessageText` reads `rich_message` whenever that key is present ANYWHERE in the request and
+    // only otherwise reads `text`. So a visible `?text=` in the query beside an UNREADABLE body waived
+    // the refusal — and the body was free to carry the `rich_message` that actually got sent.
+    //
+    // The waiver therefore requires the query to supply the method's HIGHEST-PRECEDENCE field. Nothing a
+    // body can carry outranks it, and a same-key body value loses to the query one, so what Telegram
+    // sends is the value just checked. For a single-field method this is exactly the previous rule.
     const fields = readerVisibleFieldsFor(method);
-    const fieldSuppliedByQuery = fields.some((f) => typeof params[f] === 'string');
+    const fieldSuppliedByQuery = fields.length > 0 && typeof params[fields[0]] === 'string';
     if (uncheckable !== null && !fieldSuppliedByQuery) {
       emitInvisiblePayloadRefusal({
         guard: 'invisible-payload',

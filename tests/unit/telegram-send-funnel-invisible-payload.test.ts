@@ -550,9 +550,16 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
       // Verified against the live Bot API documentation, not from memory: I first judged `rich_message`
       // a fabricated field because it postdates what I knew, and dismissing it would have thrown away
       // a real bypass.
+      //
+      // The ORDER inside a list is pinned too, and it is not cosmetic. The list is the method's own
+      // PRECEDENCE, highest first: editMessageText reads `rich_message` whenever that key is present
+      // anywhere in the request and only otherwise reads `text`. While the two were listed as equal
+      // alternatives, a visible `?text=` in the query waived the unreadable-body refusal and the body
+      // was free to carry the rich_message that actually got sent. Reordering this line silently
+      // reopens that bypass, so it fails here first.
       expect(READER_VISIBLE_TELEGRAM_PARAMS).toEqual({
         sendMessage: 'text',
-        editMessageText: ['text', 'rich_message'],
+        editMessageText: ['rich_message', 'text'],
         // `rich_message` ONLY — pass 47: mapping `text` here was a PHANTOM field these methods do not
         // accept, and the egress waives its unreadable-body refusal when any mapped field arrives in
         // the query, so it handed the waiver a key the method never reads.

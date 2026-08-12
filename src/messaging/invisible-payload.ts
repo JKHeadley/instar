@@ -132,7 +132,12 @@ export const READER_VISIBLE_TELEGRAM_PARAMS: Readonly<Record<string, string | re
   // is absent from the Bot API I know, and only fetching the live documentation showed it was added
   // after my knowledge. Dismissing it would have discarded a real bypass on the strength of stale
   // memory — the same defect as trusting a stale claim, pointed the other way.
-  editMessageText: ['text', 'rich_message'],
+  //
+  // ORDERED BY THE METHOD'S OWN PRECEDENCE, highest first, and that order is load-bearing. The handler
+  // branches on whether the `rich_message` key is PRESENT and only otherwise reads `text` — an empty
+  // `rich_message` is a 400, not a fall-through. Listing `text` first (as this did until window 13) made
+  // the two read as equal alternatives, which is exactly what the waiver below then assumed.
+  editMessageText: ['rich_message', 'text'],
   // The dedicated rich-message methods. Absent from this table they were REFUSED as unclassified,
   // which was the safe direction but would have broken a legitimate send the moment one was used.
   // `rich_message` ONLY. Mapping `text` here too was a phantom field (pass 47): these methods do not
@@ -597,17 +602,41 @@ function structuredFieldScan(value: unknown): StructuredScan {
   return NOTHING;
 }
 
-/** Every reader-visible field a method may carry. A method can carry more than one (pass 43). */
+/**
+ * Every reader-visible field a method may carry, IN THE METHOD'S OWN PRECEDENCE ORDER, highest first.
+ *
+ * The order is load-bearing, not cosmetic. A method carrying more than one such field does not treat them
+ * as equal alternatives — it picks one and never reads the others. `editMessageText` takes `rich_message`
+ * whenever the key is present at all (an empty one is a 400, not a fall-through) and only otherwise reads
+ * `text`.
+ */
 export function readerVisibleFieldsFor(method: string): readonly string[] {
   const f = READER_VISIBLE_TELEGRAM_PARAMS[method];
   if (f === undefined) return [];
   return typeof f === 'string' ? [f] : f;
 }
 
-export function assertOutgoingPayloadVisible(method: string, params: Record<string, unknown>): void {
+/**
+ * The ONE field this method will actually read, given what the request carries.
+ *
+ * Checking every present field instead was an over-refusal in the same place the waiver was an
+ * under-refusal: an edit carrying a visible `rich_message` beside a leftover invisible `text` was refused
+ * for content Telegram discards. The reader receives exactly one of these fields; that is the one to judge.
+ */
+export function effectiveReaderVisibleField(
+  method: string,
+  params: Record<string, unknown>,
+): string | undefined {
   for (const field of readerVisibleFieldsFor(method)) {
-    assertOneOutgoingField(method, params, field);
+    const v = params?.[field];
+    if (v !== undefined && v !== null) return field;
   }
+  return undefined;
+}
+
+export function assertOutgoingPayloadVisible(method: string, params: Record<string, unknown>): void {
+  const field = effectiveReaderVisibleField(method, params);
+  if (field !== undefined) assertOneOutgoingField(method, params, field);
 }
 
 function assertOneOutgoingField(method: string, params: Record<string, unknown>, field: string): void {
@@ -695,9 +724,8 @@ function assertOneOutgoingField(method: string, params: Record<string, unknown>,
 }
 
 export function assertTelegramPayloadVisible(method: string, params: Record<string, unknown>): void {
-  for (const field of readerVisibleFieldsFor(method)) {
-    assertOnePreFormatField(method, params, field);
-  }
+  const field = effectiveReaderVisibleField(method, params);
+  if (field !== undefined) assertOnePreFormatField(method, params, field);
 }
 
 function assertOnePreFormatField(method: string, params: Record<string, unknown>, field: string): void {
