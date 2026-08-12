@@ -342,6 +342,30 @@ export function setInvisiblePayloadRefusalSink(
  * Telegram's own parse result, and every regex approximation of that parser has produced errors in
  * BOTH directions (passes 34, 35, 36). It rides CMT-1260 with them.
  *
+ * ── THE ROOT OF EVERY FINDING SINCE PASS 48, named here because it is one root and not five ────────
+ *
+ * Passes 48-51 produced six findings and every one of them was the same shape in a different place:
+ * this reduction counted bytes as content that Telegram treats as markup or does not render. A formula's
+ * LaTeX source. A media id mentioned rather than embedded, then matched as a prefix. An HTML tag inside
+ * a Markdown source. Each was repaired where it was found, and the next reading found the next one.
+ *
+ * They share a root: this function SUBTRACTS known markup and treats whatever survives as visible. That
+ * is an OPEN WORLD, and an open world cannot be complete — it can only ever remove the shapes someone
+ * thought of, which is exactly the sequence the last four readings recorded.
+ *
+ * **This file has already made the opposite move once, and it worked.** `CONTENT_RE` above was originally
+ * subtractive — it removed invisible classes and called the remainder content — and a reviewer produced
+ * six code points it missed on the first try. It was inverted to name what COUNTS, and the class closed.
+ * The same inversion is available here: extract only what is provably rendered text, and treat everything
+ * else as not-content by default.
+ *
+ * It is NOT done here, and the reason is a judgement rather than an oversight. Inverting this changes
+ * refusal semantics on a path where a wrong answer DESTROYS a real message, and the guard's own history
+ * says regex approximations of Telegram's parser have erred in both directions at passes 34, 35 and 36.
+ * The inversion wants the parse result, or a much narrower positive grammar, and it wants doing when it
+ * can be done carefully rather than at the end of a long session. Recorded as the structural next item,
+ * with the observation that its shape is already proven one screen above.
+ *
  * KNOWN UNDER-REFUSALS, accepted deliberately. A character reference (`&#8203;`) is counted as its
  * SOURCE characters, so a payload made only of encoded invisibles passes. Emphasis delimiters count as
  * content, so `*\u200b*` passes. Each is a payload that reaches a reader as nothing — the very harm this
