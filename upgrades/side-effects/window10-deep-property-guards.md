@@ -4354,3 +4354,32 @@ that carries it, with the note that its shape is already proven one screen above
 **1-6.** No behavioural change. **7.** MACHINE-LOCAL BY DESIGN. **8.** Revert; comments only.
 
 **Proof.** 150 tests green; the analysis changes no decision.
+
+### Window 13, twelfth increment — pass 52, and the prediction it confirmed
+
+**Two new, both PRECISION, both in the rich source reduction.** Series on this instrument: 3, 1, 2, 2.
+
+**This reading settles an argument rather than adding to it.** One commit before it ran, I recorded at the
+function itself that all six prior findings shared one root — a SUBTRACTIVE reduction, an open world that
+can only remove the shapes someone thought of — and that patching instances would not converge. Pass 52's
+finding 1 is, in its own words, that "the regex is not an HTML tokenizer", and finding 2 is "the same
+class as pass 50, but still present" in the arms that repair did not reach. The prediction was written
+BEFORE the reading; the reading confirms it. Four consecutive readings, same shape, same place.
+
+**Finding 1 is repaired with a scanner, not a cleverer pattern.** `/<[^>]*>/g` stopped at the first `>`
+even inside a quoted attribute, so the rest of the attribute source stayed in the leaf and counted as
+visible. It now tracks quote state. A scanner deliberately: the nested-quantifier regex that would handle
+quoted attributes is also the shape that backtracks catastrophically, and this runs on every outbound
+message.
+
+**And an over-refusal I introduced, which the reading recorded and pointedly did NOT count.** My
+direct-media matcher recognised image syntax only, so a video- or audio-only rich HTML message was
+refused. It went uncounted because it destroys visible sends rather than leaking invisible ones — which
+is precisely the failure direction I had written, one commit earlier, that this class fails in. I then
+shipped an instance of it inside that same commit. Widened to `img`, `video` and `audio`.
+
+**1. Over-block.** One closed (video/audio media). Real text outside a tag still delivers, proven.
+**2. Under-block.** One closed (quoted-attribute residue). Finding 2's raw-source matching remains an
+instance of the named root. **3-6.** No other change. **7.** MACHINE-LOCAL. **8.** Revert; one function.
+
+**Proof.** Both verified RED against the pre-repair code. 152 tests green across seven suites.
