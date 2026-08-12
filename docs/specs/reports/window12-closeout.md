@@ -210,11 +210,18 @@ handler hides.
 - **16** questions archived, **45** verdicts archived, contiguous
 - **18** laptop reviews archived
 - **42** tests on the door; **18** egress call sites behind it; **19** classified methods
+  — **as measured on 2026-08-12 at the close of window 12.** This is a historical record; the figures are
+  pinned to that moment on purpose and are NOT maintained.
 
-  Each re-derived by command in window 13 rather than carried forward, after pass 47 finding 6 caught the
-  headline table two methods short of the code. The door's test count had also drifted below the file's
-  actual contents before window 13 added three; a count written once and quoted afterwards is a claim, not
-  a measurement, which is this window's own recurring subject.
+  They were re-derived by command rather than carried forward, after pass 47 finding 6 caught the headline
+  table two methods short of the code.
+
+  **And the correction went stale inside the same window, which is the point.** That paragraph originally
+  read as though the numbers were simply current. Window 13 then added nine more tests to the door, so
+  "42" was accurate when written and wrong two hours later — a stale count inside the very note explaining
+  that a count written once and quoted afterwards is a claim rather than a measurement. The fix is not a
+  fresher number, because a historical document should not chase one. The fix is saying WHEN it was
+  measured, so a reader knows whether to re-derive.
 - Full lint chain green, type check green
 
 ## Status, unchanged
