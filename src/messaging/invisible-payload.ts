@@ -373,10 +373,48 @@ export function setInvisiblePayloadRefusalSink(
  * this code cannot supply, and a wrong model destroys real messages in the other direction. Closing them
  * needs Telegram's own parse result, not a better regex. Tracked as CMT-1260.
  */
+/**
+ * Remove tags, tracking QUOTE STATE — because a regex is not a tokenizer, which is the exact sentence
+ * review pass 52 used.
+ *
+ * The previous `/<[^>]*>/g` stopped at the first `>` byte even when that byte sat inside a quoted
+ * attribute value. So a tag carrying `title="a > b VISIBLE"` had its opening consumed only as far as
+ * that inner `>`, and the remaining attribute source stayed in the leaf and counted as visible content —
+ * while Telegram parses the whole quoted attribute as markup and renders only the text node.
+ *
+ * A scanner rather than a cleverer pattern, deliberately: the nested-quantifier regex that would handle
+ * quoted attributes is also the shape that backtracks catastrophically on hostile input, and this runs on
+ * every outbound message.
+ */
+function stripTags(text: string): string {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== '<') { out += text[i]; i += 1; continue; }
+    // Inside a tag: consume until an UNQUOTED '>'. An unterminated tag consumes the remainder, which
+    // matches the previous behaviour for that case and keeps the function total.
+    let j = i + 1;
+    let quote: string | null = null;
+    while (j < text.length) {
+      const ch = text[j];
+      if (quote !== null) {
+        if (ch === quote) quote = null;
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === '>') {
+        break;
+      }
+      j += 1;
+    }
+    i = j + 1;
+  }
+  return out;
+}
+
 export function readerVisibleText(text: string, parseMode?: unknown): string {
   const mode = typeof parseMode === 'string' ? parseMode.toLowerCase() : '';
   if (mode === 'html') {
-    return text.replace(/<[^>]*>/g, '');
+    return stripTags(text);
   }
   if (mode === 'markdown' || mode === 'markdownv2') {
     // Rich Markdown may carry ARBITRARY HTML, and Telegram parses those tags as Rich HTML. So a tag
@@ -386,7 +424,7 @@ export function readerVisibleText(text: string, parseMode?: unknown): string {
     // Worth naming: I read that sentence in the live reference EARLIER IN THIS WINDOW, while deriving
     // the formula syntax from the same page, and did not apply it. Having the fact is not the same as
     // having used it — which is the window's subject pointed at my own reading rather than my own code.
-    text = text.replace(/<[^>]*>/g, '');
+    text = stripTags(text);
     // The optional `!` is IMAGE syntax, not content. Without it the reduction left a bare bang behind,
     // and one visible-looking character is all this check needs to be talked out of a refusal — an
     // image whose destination carried the payload passed on the strength of its own punctuation.
@@ -688,7 +726,12 @@ const HTML_FORMULA = /<tg-math\b[^>]*>([\s\S]*?)<\/tg-math>/gi;
  *
  * A custom emoji is media too — `tg://emoji?id=` in either arm — and needs no declaration.
  */
-const DIRECT_MEDIA_URL = /!\[[^\]]*\]\(\s*https?:\/\/[^)]*\)|<img\b[^>]*\bsrc\s*=\s*["']https?:\/\/[^"']*["']/i;
+// `img`, `video` and `audio`. Pass 52 recorded — and pointedly did NOT count — that recognising image
+// syntax alone over-refuses a video- or audio-only rich HTML message. It went uncounted because it
+// destroys visible sends rather than leaking invisible ones, which is precisely the direction I had said
+// this class fails in; I then shipped an instance of it. Widened, because an over-refusal here is a real
+// message lost.
+const DIRECT_MEDIA_URL = /!\[[^\]]*\]\(\s*https?:\/\/[^)]*\)|<(?:img|video|audio)\b[^>]*\bsrc\s*=\s*["']https?:\/\/[^"']*["']/i;
 const EMOJI_MEDIA = /!\[[^\]]*\]\(\s*tg:\/\/emoji\?id=[^)]*\)|<(?:img|tg-emoji)\b[^>]*tg:\/\/emoji\?id=[^>]*>|<tg-emoji\b[^>]*\bemoji-id\s*=/i;
 
 /**

@@ -659,6 +659,44 @@ describe('telegram egress boundary — the single door', () => {
       expect(f3).toHaveBeenCalledTimes(1);
     });
 
+    it('strips a tag whose quoted attribute contains a > byte', async () => {
+      // Pass 52 finding 1, in its own words: the regex is not a tokenizer. `/<[^>]*>/g` stopped at the
+      // first `>` even inside a quoted attribute, so the rest of the attribute source stayed in the leaf
+      // and counted as visible — while Telegram parses the whole quoted attribute as markup.
+      const f = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1, rich_message: { html: '<a title="a > b VISIBLE">\u200b</a>' },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f, 'attribute source is markup, however many angle brackets it holds').not.toHaveBeenCalled();
+
+      // The same in the markdown arm, which shares the reduction.
+      const f2 = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1, rich_message: { markdown: '<b data="x > y LOOKS VISIBLE">\u200b</b>' },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f2).not.toHaveBeenCalled();
+
+      // Real text outside the tag still delivers — the scanner must not eat content.
+      const f3 = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1, rich_message: { html: '<a title="a > b">hello</a>' },
+      }));
+      expect(f3, 'the label is content; only the tag is markup').toHaveBeenCalledTimes(1);
+    });
+
+    it('recognises video and audio media, not only images', async () => {
+      // Pass 52 recorded this as an OVER-refusal and deliberately did not count it, because it destroys
+      // visible sends rather than leaking invisible ones. I introduced it in this window, in the exact
+      // failure direction I had just written that this class fails in.
+      for (const tag of ['video', 'audio', 'img'] as const) {
+        const f = arm();
+        await telegramFetch(api('sendRichMessage'), post({
+          chat_id: 1, rich_message: { html: `<${tag} src="https://example.com/m"/>\u200b` },
+        }));
+        expect(f, `${tag} is media — a ${tag}-only rich message is a real message`).toHaveBeenCalledTimes(1);
+      }
+    });
+
     it('matches a declared media id EXACTLY, not as a prefix', async () => {
       // Pass 51 finding 2. `id=<declared>[^)]*` is a PREFIX match, so a declared `pic1` vouched for a
       // reference to `pic1EXTRA` — a different, undeclared media that renders nothing.
