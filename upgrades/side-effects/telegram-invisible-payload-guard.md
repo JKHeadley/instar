@@ -278,3 +278,39 @@ surface effect. Comments.
 **8. Rollback.** Revert; comments only.
 
 **Proof.** 142 tests green across the six guard suites, type check clean, boundary lint clean.
+
+---
+
+## The silent-fallback ratchet, and why the baseline was not raised
+
+CI refused this change at 498 designed fail-safes against a shrink-only baseline of 495. All three were
+in the new egress door: two `new URL()` parses and two `decodeURIComponent` calls whose catch blocks
+return a value rather than reporting a degradation.
+
+**The baseline was not touched.** The file's own history shows the baseline raised five times, each with
+a paragraph of justification, and each of those paragraphs is a small argument for why *this* change was
+the exception. Raising it again for three catches I could instead explain would be exactly that move a
+sixth time. The number only decreases from here, and it did not increase here.
+
+Each catch is now tagged with the reason it is a fail-safe rather than a swallow:
+
+- An unparseable URL is not a Bot API URL. `fetch` rejects it too, so classifying it as "not ours" is the
+  accurate answer and there is no degraded delivery to report — the request never happens.
+- A malformed percent-escape is judged in its RAW form rather than dropped. Refusing there would skip
+  every check on a request Telegram still dispatches, which is the precise bypass shape this door exists
+  to close. The fallback is toward MORE checking, not less.
+
+**A detail worth recording, because it cost two runs.** The exemption marker must sit INSIDE the catch
+block — the detector reads the block's own content. Two of my first three markers were written directly
+above the `try`, read perfectly to a human, and did nothing. A marker that looks applied and is not is
+the same shape as a test that looks like coverage and is not, which is what this whole line of work has
+been about.
+
+**1–6.** No behavioural change; comments and one catch reformatted from single-line to braced.
+
+**7. Multi-machine posture.** MACHINE-LOCAL BY DESIGN, unchanged.
+
+**8. Rollback.** Revert; comments only.
+
+**Proof.** The ratchet reports 495 against a baseline of 495 — no net new fallbacks from this change.
+146 tests green across seven suites, type check clean, boundary lint clean.
