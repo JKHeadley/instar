@@ -4232,3 +4232,27 @@ declared. **3–6.** No abstraction, authority, interaction or external-surface 
 
 **Proof.** The new structured-formula tests verified RED against the pre-repair code. 147 tests green
 across seven suites, type check clean, silent-fallback ratchet at 495 against 495.
+
+### Window 13, seventh increment — a claim that had been false for two passes
+
+**Found by reading the code against its own comment**, not by an external reading. The door's header said
+it had stopped spreading `init` because object spread re-reads `body` — a second read of a
+caller-controlled getter. The line below that paragraph still spread `init`.
+
+**Why nothing caught it, which is the interesting part.** The outcome was safe: the spread's value was
+immediately overwritten by the captured body, so the bytes on the wire were always the inspected ones.
+Every test of the SENT payload passes either way. The defect was visible only by counting READS, and
+nothing counted reads — so a false claim sat in the load-bearing paragraph of the load-bearing file for
+two full passes, describing a repair that had not been made.
+
+A second read is not harmless because its value is discarded: a getter with side effects runs twice, and
+the next person to write `outgoing.body = x ?? init.body` inherits a hole the comment promised was shut.
+
+The outgoing init is now built by copying every key EXCEPT `body`, so `init.body` is touched exactly once.
+The new test counts reads rather than contents, and was verified to report 2 against the previous code.
+
+**1. Over-block / 2. Under-block.** No change to any refusal decision.
+**3-6.** No abstraction, authority, interaction or external-surface change.
+**7.** MACHINE-LOCAL BY DESIGN. **8.** Revert; one loop.
+
+**Proof.** Read-count test RED at 2 before, green at 1 after. 148 tests green across seven suites.

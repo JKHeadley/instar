@@ -466,10 +466,23 @@ export async function telegramFetch(
   //
   // So send a request built from the body that was actually inspected. `checkedBody` is read once,
   // above, and reused here; the caller's object can no longer decide what leaves.
-  // Build the outgoing init EXPLICITLY. Spreading `init` re-reads `body` — a SECOND read (pass 42) — and
-  // when the captured value was `undefined` no override followed, so whatever that second read returned
-  // is what went on the wire. `body` is now always set from the captured value, never re-read.
-  const outgoing: RequestInit = { ...init };
+  // Build the outgoing init EXPLICITLY, SKIPPING `body`. Spreading `init` re-reads `body` — object
+  // spread invokes own getters — which is a SECOND read (pass 42).
+  //
+  // This paragraph claimed that repair for two passes while the line below it still spread `init`. The
+  // OUTCOME was safe, because the spread's value was immediately overwritten by the captured one, so no
+  // reading caught it by testing what gets sent. What was false was the claim: the comment said the
+  // spread had been replaced and it had not. Found by reading the code against its own description
+  // rather than by a reading — which is the only way this class is ever found, since every test of the
+  // sent bytes passes either way.
+  //
+  // A second read is not harmless even when discarded: a getter with side effects runs twice, and the
+  // next person to write `outgoing.body = x ?? init.body` inherits a hole the comment promised was shut.
+  const outgoing: RequestInit = {};
+  for (const key of Object.keys(init)) {
+    if (key === 'body') continue;
+    (outgoing as Record<string, unknown>)[key] = (init as Record<string, unknown>)[key];
+  }
   outgoing.body = checkedBody ?? null;
   return fetch(href, outgoing);
 }

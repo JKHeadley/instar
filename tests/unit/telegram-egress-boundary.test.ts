@@ -436,6 +436,23 @@ describe('telegram egress boundary — the single door', () => {
       expect(f2).not.toHaveBeenCalled();
     });
 
+    it('reads the body EXACTLY ONCE — the claim the file makes about itself', async () => {
+      // The door's own comment said it stopped spreading `init` because spreading re-reads `body`.
+      // It still spread. The outcome was safe — the spread's value was overwritten by the captured one
+      // — so every test of the SENT bytes passed either way, which is precisely why no reading caught
+      // it and why this test counts reads instead of contents.
+      const f = arm();
+      let reads = 0;
+      const init: RequestInit = { method: 'POST', headers: { 'content-type': 'application/json' } };
+      Object.defineProperty(init, 'body', {
+        enumerable: true,
+        get() { reads += 1; return JSON.stringify({ chat_id: 1, text: 'visible' }); },
+      });
+      await telegramFetch(api('sendMessage'), init);
+      expect(f).toHaveBeenCalledTimes(1);
+      expect(reads, 'a getter with side effects must not run twice').toBe(1);
+    });
+
     it('reads only the fields the discriminator declares — a discarded member cannot vouch', async () => {
       // Pass 47 finding 2. Telegram reads `type`, extracts that variant's declared fields, and DISCARDS
       // every other member of the object. The previous walk descended every object-valued property, so a
