@@ -4383,3 +4383,30 @@ shipped an instance of it inside that same commit. Widened to `img`, `video` and
 instance of the named root. **3-6.** No other change. **7.** MACHINE-LOCAL. **8.** Revert; one function.
 
 **Proof.** Both verified RED against the pre-repair code. 152 tests green across seven suites.
+
+### Window 13, thirteenth increment — presence is not substance, in the archive guard itself
+
+One of the 52 archived verdicts is a ZERO-BYTE FILE and has been since the day it was committed. The
+archive arm built its population from FILENAMES, so the empty file counted as present and the guard
+reported "52 cited, 52 archived, contiguous" on every commit for a day.
+
+Found while deriving the finding series from the archive rather than from memory. The guard never
+complained — a check that passes on the existence of a file rather than the existence of its contents,
+which is the alive-but-inert shape this same file's two sibling arms already refuse, arriving by a
+different door.
+
+**1. Over-block.** The arm now fails on an empty verdict. That is a NEW refusal, and it fires today on the
+one real instance — which is the point. Verified by emptying the file, watching it fail with its own
+message, and restoring it. **2. Under-block.** Closed: an empty verdict can no longer read as archived.
+**3. Level.** Correct: the check belongs where the population is built, not at each consumer.
+**4. Signal vs authority.** A build-time lint over repository artifacts; no runtime authority.
+**5. Interactions.** "Missing" and "present but hollow" now emit different messages, because they want
+different fixes. **6. External surfaces.** None. **7.** Repository-level, not machine-scoped.
+**8. Rollback.** Revert; one loop.
+
+And pass 46's file now states what it is: NOT the reviewer's verdict, but a record that the verbatim text
+was never captured, plus what survives in the repair commit that cited it — marked as my summary rather
+than the reviewer's words. An archive that exists so claims can be CHECKED is worth nothing if an entry is
+a paraphrase wearing the reviewer's format.
+
+**Proof.** Negative control run: emptied → guard fails naming the file; restored → clean.

@@ -432,10 +432,31 @@ function scan(abs, needles, rel) {
     }
   }
   const dir = path.join(ROOT, ARCHIVE_DIR);
-  const present = new Set(
-    (fs.existsSync(dir) ? fs.readdirSync(dir) : [])
-      .map((f) => /^pass(\d{1,3})-verdict\.md$/.exec(f)).filter(Boolean).map((m) => Number(m[1])),
-  );
+  // PRESENCE IS NOT SUBSTANCE. This built its population from FILENAMES, so a zero-byte verdict counted
+  // as archived and the arm printed "contiguous" over it — which it did, on every commit, for a day.
+  // Found 2026-08-12 by deriving the finding series from the archive instead of from memory; the guard
+  // itself never complained. A check that passes on the existence of a file rather than the existence of
+  // its contents is the alive-but-inert shape this file's two sibling arms already refuse, arriving here
+  // through a different door.
+  const archivedFiles = (fs.existsSync(dir) ? fs.readdirSync(dir) : [])
+    .map((f) => ({ f, m: /^pass(\d{1,3})-verdict\.md$/.exec(f) })).filter((x) => x.m !== null);
+  const empty = [];
+  const present = new Set();
+  for (const { f, m } of archivedFiles) {
+    const n = Number(m[1]);
+    let bytes = 0;
+    try { bytes = fs.statSync(path.join(dir, f)).size; } catch { bytes = 0; }
+    if (bytes === 0) { empty.push(n); continue; }
+    present.add(n);
+  }
+  for (const n of empty.sort((a, b) => a - b)) {
+    failures.push(
+      `${ARCHIVE_DIR}/pass${n}-verdict.md exists but is EMPTY. An archived verdict with no contents is ` +
+      `worse than a missing one: it satisfies every presence check while proving nothing, so the arm ` +
+      `reports the archive contiguous and complete over a hole. Either file the verbatim verdict, or ` +
+      `write in that file what is known and why the verbatim text is unavailable.`,
+    );
+  }
   if (cited.size === 0 && present.size === 0) {
     // Review pass 22 finding 8: both sibling arms refuse over an empty derived population and this one
     // printed clean. "One failure teaches every guard" was not swept here in the commit that applied it
