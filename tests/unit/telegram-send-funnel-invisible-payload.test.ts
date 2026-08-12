@@ -190,7 +190,17 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
   // this increment's headline discovery, so leaving it lint-covered-only was the weakest point in the set.
   describe('TelegramLifeline — its own private funnel', () => {
     let dir: string;
+    let savedHome: string | undefined;
 
+    // The lifeline's constructor loads config, and config REFUSES to load without an agent CLI on the
+    // machine. That made this suite pass on a developer machine and fail in CI, where no CLI exists —
+    // a test whose result depended on who ran it.
+    //
+    // The tempting repair was to skip the suite when no CLI is present. That is the shape this entire
+    // line of work exists to stop: a test that reports green by not running is indistinguishable from
+    // one that ran, and this suite covers the sender whose complete absence of a guard was the headline
+    // discovery. So the test SUPPLIES the prerequisite instead of dodging it — a stub binary in a
+    // throwaway HOME, with the detector's cache cleared so the stub is actually consulted.
     beforeEach(() => {
       dir = fs.mkdtempSync(path.join(os.tmpdir(), 'll-'));
       fs.mkdirSync(path.join(dir, '.instar'), { recursive: true });
@@ -198,8 +208,15 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
         agentName: 'test', stateDir: path.join(dir, '.instar', 'state'),
         messaging: [{ type: 'telegram', enabled: true, config: { token: 'test-token', chatId: '-100123' } }],
       }));
+      const cliDir = path.join(dir, 'home', '.claude', 'local');
+      fs.mkdirSync(cliDir, { recursive: true });
+      fs.writeFileSync(path.join(cliDir, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      savedHome = process.env['HOME'];
+      process.env['HOME'] = path.join(dir, 'home');
     });
     afterEach(() => {
+      if (savedHome === undefined) delete process.env['HOME'];
+      else process.env['HOME'] = savedHome;
       SafeFsExecutor.safeRmSync(dir, {
         recursive: true, force: true,
         operation: 'tests/unit/telegram-send-funnel-invisible-payload.test.ts',
@@ -207,6 +224,10 @@ describe('invisible-payload refusal at the Telegram funnel', () => {
     });
 
     async function lifeline() {
+      // The detector caches its answer process-wide, so a null cached by an earlier suite would defeat
+      // the stub above. Clearing it is what makes the stub load-bearing rather than decorative.
+      const { _resetFrameworkBinaryCache } = await import('../../src/core/Config.js');
+      _resetFrameworkBinaryCache();
       const { TelegramLifeline } = await import('../../src/lifeline/TelegramLifeline.js');
       return new TelegramLifeline(dir) as unknown as {
         sendToTopic(t: number, s: string): Promise<void>;

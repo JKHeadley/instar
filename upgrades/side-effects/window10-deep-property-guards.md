@@ -4285,3 +4285,24 @@ embeds nothing — still counted as a rendered photo. Narrowed to `src` after th
 **7.** MACHINE-LOCAL BY DESIGN. **8.** Revert; one pattern.
 
 **Proof.** Verified RED against the pre-repair code. 148 tests green across seven suites (derived by running them, not recalled — the first draft of this line said 149).
+
+### Window 13, ninth increment — a test that only worked on my machine
+
+CI's shard 4 failed with "Claude CLI not found". The lifeline's constructor loads config, and config
+refuses to load without an agent CLI present — so this suite passed on a developer machine and failed on
+a runner. A test whose result depended on who ran it.
+
+**The tempting repair was to skip the suite when no CLI is present.** That is the exact shape this line of
+work exists to stop: a suite that reports green by not running is indistinguishable from one that ran, and
+this suite covers the sender whose complete absence of a guard was the headline discovery of the whole
+increment. Skipping it would have been coverage theatre in the highest-value place.
+
+So the test SUPPLIES the prerequisite instead of dodging it: a stub binary inside a throwaway HOME, with
+the detector's process-wide cache cleared so the stub is actually consulted rather than a stale null from
+an earlier suite. Verified by probing the detector directly — it returns the stub path, so the mechanism
+is load-bearing rather than decorative.
+
+**1-6.** Test-only; no runtime change. **7.** MACHINE-LOCAL BY DESIGN. **8.** Revert; one setup block.
+
+**Proof.** The detector probe returns the stub. 148 tests green across seven suites locally; the real
+verification is CI, which is where the failure lived.
