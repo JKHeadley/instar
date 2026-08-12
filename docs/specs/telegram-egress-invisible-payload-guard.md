@@ -136,11 +136,23 @@ other's tests). These close DIFFERENT cases and each is independently provable.
 ### 2. Key the refusal by method → field, not by a method set plus a hardcoded field
 
 ```
-sendMessage      → text
-editMessageText  → text
-createForumTopic → name
-editForumTopic   → name
+sendMessage          → text
+editMessageText      → rich_message, text     (PRECEDENCE ORDER — highest first)
+sendRichMessage      → rich_message
+sendRichMessageDraft → rich_message
+createForumTopic     → name
+editForumTopic       → name
 ```
+
+**The ORDER inside a list is load-bearing, not presentation.** `editMessageText` reads `rich_message`
+whenever that key is present anywhere in the request and only otherwise reads `text` — an empty
+`rich_message` is a 400, not a fall-through. A reader who takes this table as the coverage account and
+concludes one field is enough would re-open the class the pass-43 and pass-45 findings closed.
+
+*(Review pass 53 caught this table listing `editMessageText → text` alone, long after the code, the
+pinned test and the live API had all moved. Not a bypass — the code was correct. A false account of the
+design, in the document a maintainer would audit the design FROM, which is how a corrected defect gets
+re-introduced by someone following the paperwork.)*
 
 A forum topic's `name` is as reader-visible as a message body, and an invisibly-titled topic is worse — it
 persists in the topic list, unfindable. The two creating routes validate `name.trim().length >= 1`, and
