@@ -42,7 +42,7 @@ The outbound Telegram guard went from a per-sender check to a single structural 
 | where the check runs | in each sender, before formatting | one door, on the serialised request |
 | Bot API `fetch` call sites | 6 senders, each checked separately | **15 call sites, one door**, lint-confined |
 | what proves it | a lint that could not resolve its own claims | a boundary lint + a runtime closed-world refusal |
-| classified methods | lists existed, unenforced after the move | **17** (4 reader-visible, 13 bodyless), refused if unknown |
+| classified methods | lists existed, unenforced after the move | **19** (6 reader-visible, 13 bodyless), refused if unknown |
 | tests on the surface | — | **110** |
 
 ### Ten ways a payload could have reached the network unchecked, closed
@@ -209,7 +209,12 @@ handler hides.
 - **67** commits since the window opened
 - **16** questions archived, **45** verdicts archived, contiguous
 - **18** laptop reviews archived
-- **37** tests on the door; **18** egress call sites behind it; **19** classified methods
+- **42** tests on the door; **18** egress call sites behind it; **19** classified methods
+
+  Each re-derived by command in window 13 rather than carried forward, after pass 47 finding 6 caught the
+  headline table two methods short of the code. The door's test count had also drifted below the file's
+  actual contents before window 13 added three; a count written once and quoted afterwards is a claim, not
+  a measurement, which is this window's own recurring subject.
 - Full lint chain green, type check green
 
 ## Status, unchanged

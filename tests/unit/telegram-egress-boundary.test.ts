@@ -329,20 +329,25 @@ describe('telegram egress boundary — the single door', () => {
       expect(f3).not.toHaveBeenCalled();
     });
 
-    it('walks the REAL RichText grammar — nested wrappers, sequences, block carriers', async () => {
-      // Built from Telegram's live type definitions, not from key names a reviewer happened to name.
-      // richTextPlain holds its literal in `text`; richTexts branches in `texts`; every wrapper nests a
-      // RichText under `text`. So one recursive walk IS the grammar.
+    it('walks the REAL RichText grammar — the WIRE discriminators, not internal class names', async () => {
+      // Pass 47 finding 4: the previous version of this test used `richTexts`, `richTextBold`,
+      // `richTextPlain` and block type `math`. Those are internal class names that never appear on the
+      // wire — Telegram's parser rejects every one of them — so the test proved only that a key-blind
+      // walk finds nested strings, while its title claimed it exercised the grammar. The values below are
+      // transcribed from the server's own request parser: a SEQUENCE is a bare array (there is no `texts`
+      // key anywhere in the API), a literal is a bare string, and the wrappers are `bold`, `italic`,
+      // `url`, `mathematical_expression`.
       const f = arm();
       await expect(telegramFetch(api('sendRichMessage'), post({
         chat_id: 1,
         rich_message: {
           blocks: [
-            { type: 'paragraph', text: { type: 'richTexts', texts: [
-              { type: 'richTextBold', text: { type: 'richTextItalic', text: { type: 'richTextPlain', text: '\u200b' } } },
-              { type: 'richTextUrl', url: 'https://example.com/VISIBLE-IN-URL-ONLY', text: { type: 'richTextPlain', text: '\u200b' } },
-            ] } },
+            { type: 'paragraph', text: [
+              { type: 'bold', text: { type: 'italic', text: '\u200b' } },
+              { type: 'url', url: 'https://example.com/VISIBLE-IN-URL-ONLY', text: '\u200b' },
+            ] },
             // an anchor's name is a jump TARGET, not rendered text (pass 46) — it must NOT count
+            { type: 'anchor', name: 'VISIBLE-LOOKING-TARGET' },
           ],
         },
       }))).rejects.toThrow(InvisiblePayloadRefusedError);
@@ -352,10 +357,10 @@ describe('telegram egress boundary — the single door', () => {
       const f2 = arm();
       await telegramFetch(api('sendRichMessage'), post({
         chat_id: 1,
-        rich_message: { blocks: [{ type: 'paragraph', text: { type: 'richTexts', texts: [
-          { type: 'richTextBold', text: { type: 'richTextPlain', text: '\u200b' } },
-          { type: 'richTextItalic', text: { type: 'richTextPlain', text: 'hello' } },
-        ] } }] },
+        rich_message: { blocks: [{ type: 'paragraph', text: [
+          { type: 'bold', text: '\u200b' },
+          { type: 'italic', text: { type: 'underline', text: 'hello' } },
+        ] }] },
       }));
       expect(f2).toHaveBeenCalledTimes(1);
 
@@ -367,12 +372,117 @@ describe('telegram egress boundary — the single door', () => {
       }));
       expect(f3, 'a photo-only rich message is valid and text-free').toHaveBeenCalledTimes(1);
 
-      // the block-level string carriers the inline layer does not have
+      // block carriers the inline layer does not have: a details summary, and table cells
       const f4 = arm();
       await expect(telegramFetch(api('sendRichMessage'), post({
-        chat_id: 1, rich_message: { blocks: [{ type: 'math', expression: '\u200b' }] },
+        chat_id: 1,
+        rich_message: { blocks: [
+          { type: 'details', summary: '\u200b', blocks: [{ type: 'paragraph', text: '\u200b' }] },
+          { type: 'table', caption: '\u200b', cells: [[{ text: '\u200b' }, { text: '\u200b' }]] },
+        ] },
       }))).rejects.toThrow(InvisiblePayloadRefusedError);
       expect(f4).not.toHaveBeenCalled();
+
+      // ...and the same shape delivers the moment one cell renders
+      const f5 = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { blocks: [
+          { type: 'table', caption: '\u200b', cells: [[{ text: '\u200b' }, { text: 'total' }]] },
+        ] },
+      }));
+      expect(f5).toHaveBeenCalledTimes(1);
+    });
+
+    it('reads only the fields the discriminator declares — a discarded member cannot vouch', async () => {
+      // Pass 47 finding 2. Telegram reads `type`, extracts that variant's declared fields, and DISCARDS
+      // every other member of the object. The previous walk descended every object-valued property, so a
+      // member the server throws away could make an invisible payload look visible.
+      const f = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { blocks: [{ type: 'paragraph', text: {
+          type: 'bold',
+          text: '\u200b',
+          // `bold` consumes `text` alone. Everything below is discarded by the server.
+          caption: { text: 'LOOKS VISIBLE BUT IS DISCARDED' },
+          summary: 'ALSO DISCARDED',
+        } }] },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f, 'a member the server discards must not license a send').not.toHaveBeenCalled();
+
+      // Same at block level: `paragraph` consumes `text`, so a stray sibling cannot vouch either.
+      const f2 = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { blocks: [{ type: 'paragraph', text: '\u200b', credit: 'DISCARDED ON A PARAGRAPH' }] },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f2).not.toHaveBeenCalled();
+
+      // ...but a field the variant DOES declare still counts: `pullquote` reads text AND credit.
+      const f3 = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { blocks: [{ type: 'pullquote', text: '\u200b', credit: 'a real credit line' }] },
+      }));
+      expect(f3, 'pullquote declares credit — it renders').toHaveBeenCalledTimes(1);
+    });
+
+    it('takes the container arm Telegram takes — blocks, ELSE markdown, ELSE html', async () => {
+      // Found by reading the parser rather than handed over by a reading. The container is a PRIORITY
+      // union: if `blocks` is present the other arms are never read. The previous walk collected all
+      // three, so invisible blocks beside a visible html sibling read as visible here and rendered as
+      // nothing there.
+      const f = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: {
+          blocks: [{ type: 'paragraph', text: '\u200b' }],
+          html: '<b>THIS ARM IS NEVER READ</b>',
+          markdown: '**NOR THIS ONE**',
+        },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f, 'blocks wins — the html sibling is not what the reader gets').not.toHaveBeenCalled();
+
+      // markdown outranks html for the same reason
+      const f2 = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { markdown: '\u200b', html: '<b>NEVER READ</b>' },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f2).not.toHaveBeenCalled();
+    });
+
+    it('does not let an unreadable rendering vouch for an invisible message — or destroy a real one', async () => {
+      // Pass 47 finding 3. A mathematical expression is LaTeX SOURCE; its source characters are not its
+      // rendered glyphs, so counting them as visible let a spacing-only formula license a send. It is now
+      // OPAQUE: it cannot prove visibility, and it cannot be proven invisible either.
+      const f = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { blocks: [
+          { type: 'paragraph', text: '\u200b' },
+          { type: 'mathematical_expression', expression: 'E = mc^2' },
+        ] },
+      }));
+      expect(f, 'a formula renders — this message is not proven invisible').toHaveBeenCalledTimes(1);
+
+      // The direction that matters: the formula no longer VOUCHES on the strength of its source. With no
+      // unreadable content present, the same invisible paragraph is still refused.
+      const f2 = arm();
+      await expect(telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1, rich_message: { blocks: [{ type: 'paragraph', text: '\u200b' }] },
+      }))).rejects.toThrow(InvisiblePayloadRefusedError);
+      expect(f2).not.toHaveBeenCalled();
+
+      // A photo beside an invisible caption is a valid message and must survive — the case the old
+      // all-or-nothing leaf rule destroyed.
+      const f3 = arm();
+      await telegramFetch(api('sendRichMessage'), post({
+        chat_id: 1,
+        rich_message: { blocks: [{ type: 'photo', photo: { file_id: 'abc' }, caption: { text: '\u200b' } }] },
+      }));
+      expect(f3, 'the photo is the content; the caption is not the message').toHaveBeenCalledTimes(1);
     });
 
     it('walks the RichText UNION — a bare string in an array is still content', async () => {

@@ -3969,3 +3969,89 @@ WORD from that number too, since it had hardcoded "Forty-seventh". Neither can g
 This is the same class as everything else the window found, pointed at a test: an artefact that ASSERTS
 coverage rather than exercising it. The guard-population-parity work earlier assumed the same thing about
 guards; this is the version about facts.
+
+---
+
+## Window 13 — the RichText walk becomes the grammar (pass 47 findings 2, 3, 4, 6)
+
+**What changed.** `structuredTextLeaves` — a key-blind recursive descent that collected any string under
+`text`/`expression`/`summary`/`html`/`markdown` anywhere in the structure — is replaced by
+`structuredFieldScan`, which reads Telegram's `type` discriminator and descends only the fields that
+variant declares. The table is transcribed from the Bot API server's own request parser
+(`Client::get_rich_text`, `Client::get_input_page_block`, `Client::get_page_block_caption`,
+`Client::get_page_block_table_cell`, `Client::get_input_rich_message`) rather than from the prose
+reference, which truncated three times, or from my model of the API, which has an end date and was wrong
+twice in one day.
+
+The return type gains a third answer. It was `Leaf[]`, where an empty array meant both "this structure has
+no text" and "I could not read this". Those are now separate: `{ leaves, undecidable }`.
+
+**1. Over-block — what legitimate input does this reject that it should not?**
+
+Strictly fewer than before, and one whole class is recovered. A media block, a map, a custom emoji or a
+mathematical expression is now OPAQUE: it renders something this guard cannot inspect, so it suppresses
+refusal rather than being absent from the leaf set. Before this distinction existed, a photo carrying a
+zero-width caption produced `leaves = [invisible]` and was REFUSED — a valid message destroyed on the way
+out. That case is now delivered and is pinned by test.
+
+The remaining over-block risk is a variant this table does not know. An unrecognised discriminator
+contributes nothing, so a message composed ONLY of unknown variants yields no leaves and is allowed — it
+cannot be refused for being unreadable. The direction is deliberate.
+
+**2. Under-block — what does this still miss?**
+
+Named honestly, three:
+
+- A `mathematical_expression` whose LaTeX renders nothing (a spacing-only expression) is allowed. Deciding
+  it needs a LaTeX renderer. What changed is that it can no longer VOUCH for an otherwise-invisible
+  message on the strength of its source characters, which was the actual defect pass 47 named.
+- A `custom_emoji` is trusted to render. Its `custom_emoji_id` is not resolvable from here.
+- The table is a snapshot of a live parser. If Telegram adds a variant carrying rendered text, this walk
+  contributes nothing for it rather than mis-reading it — the safe direction, but not coverage. This is
+  the same closed-world exposure the method table already carries and is why the method table refuses an
+  unknown method at the door.
+
+**3. Level-of-abstraction fit.** Unchanged and correct: it sits inside the single egress door, on the
+serialised body, below every sender. Nothing above it is better placed to know the wire grammar.
+
+**4. Signal vs authority.** This check HAS blocking authority, which is settled architecture for this
+guard — it refuses only on a PROOF that every leaf is invisible, never on a heuristic. This change
+strengthens compliance in both directions: it removes two ways for the check to claim visibility it had
+not established (a member the server discards; a LaTeX source string), and it adds an explicit
+"cannot decide" state so absence of evidence stops being treated as evidence. A guard that refuses on
+what it could not read is precisely the brittle-authority shape the principle forbids.
+
+**5. Interactions.** The unreadable-body waiver in `telegram-egress.ts` is unaffected — this operates on
+a body that was read. The container change interacts with the method table: `sendRichMessage` and
+`sendRichMessageDraft` declare `rich_message` only (the phantom `text` field was removed in the previous
+commit), so no query field can waive the container walk. No double-fire: `structuredFieldScan` is called
+once, by the post-format arm.
+
+**6. External surfaces.** No route, config, message or state-file change. The only externally visible
+difference is which outbound payloads are refused, and that moves toward delivering valid messages.
+
+**7. Multi-machine posture.** MACHINE-LOCAL BY DESIGN. This is a pure function over one request body on
+the machine performing the send. There is no state to replicate, no read to merge, no URL generated, and
+no user-facing notice — so there is nothing for a second machine to hold a divergent copy of. Every
+machine running this build applies the same table to its own egress.
+
+**8. Rollback cost.** Low and self-contained: one file, one function boundary, no persisted state and no
+migration. Reverting the commit restores the previous walk exactly. The failure mode of a bad rollback is
+a return to the over-refusal (a valid photo message destroyed), not a leak.
+
+**Proof.** The three new behavioural tests were run against the PREVIOUS walker before being kept, and all
+three RED for the right reason: the discarded-member case allowed, the container-priority case allowed,
+and the photo-with-invisible-caption case refused. The fourth new test — corrected wire discriminators —
+passes on both walkers and is a fixture correction rather than a behaviour proof; it is recorded that way
+rather than counted as one. 138 tests green across the six guard suites, full lint chain clean, type check
+clean.
+
+**Second pass.** Routed to the window's independent review lane rather than a local subagent: the next
+reading runs on the other machine, on a different model, with an adversarial brief. That reviewer is a
+stronger audit than a same-session one, and its verdict is archived with the branch either way.
+
+No pass NUMBER is cited here, and that is the point rather than an omission. The first draft of this
+paragraph named the reading that would audit it — a reading that had not run and whose verdict was
+therefore not on disk. The archive guard refused the commit for exactly that: a citation is an obligation,
+and reasoning from a reading nobody can read is uncheckable no matter how confident the sentence sounds.
+Fourth time this guard has caught me in two days, and the first time it caught me citing the FUTURE.

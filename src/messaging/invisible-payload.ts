@@ -369,87 +369,232 @@ export function readerVisibleText(text: string, parseMode?: unknown): string {
  * content stopped being reader-visible when the representation changed — and each is proven to red on
  * its own.
  */
+type StructuredLeaf = { text: string; mode: string };
+
 /**
- * Collect the reader-visible TEXT LEAVES of a structured field, per Telegram's actual RichText grammar.
+ * The result of reading a structured field. `leaves` are the literals Telegram will actually render.
+ * `undecidable` means the structure carries content this guard cannot inspect — a photograph, a custom
+ * emoji, a LaTeX formula — so ABSENCE of a visible leaf no longer proves the reader receives nothing.
  *
- * THE GRAMMAR, derived from the live type definitions rather than inferred from key names. Four readings
- * repaired this by adding whichever key a reviewer had just named, each time correctly and each time one
- * level too shallow; the operator's instruction was to stop doing that and read the spec. What the spec
- * says:
- *
- *   `richTextPlain`  — the LEAF. Its literal lives in `text` (string).
- *   `richTexts`      — the SEQUENCE. Its parts live in `texts` (array of RichText).
- *   the wrappers     — `richTextBold`, `Italic`, `Underline`, `Strikethrough`, `Fixed`, `Marked`,
- *                      `Subscript`, `Superscript`, `Url`, `EmailAddress`, `PhoneNumber`, `Anchor`,
- *                      `AnchorLink`, `Reference`, `Icon` — each carries its content in `text`, which
- *                      holds a nested RichText rather than a string.
- *
- * So `text` is the single carrier at every level, sometimes a string and sometimes a nested node, and
- * `texts` is the only branching point. That is why the recursive walk below is the grammar rather than an
- * approximation of it: descending objects and arrays while collecting `text` strings visits exactly the
- * literals, at any nesting depth, through any wrapper chain.
- *
- * BLOCK level adds ONE string carrier the inline layer does not have: `expression` on a mathematical
- * block, which IS rendered. Plus `html` and `markdown` on the container itself.
- *
- * `name` on a block anchor was briefly included and has been REMOVED (review pass 46). An anchor's name
- * is a jump TARGET, not rendered text — the same category as the destinations excluded below, and
- * including it contradicted the rule stated one paragraph down. A target counted as content makes an
- * invisible message look visible, which is the direction that ships the harm.
- *
- * WHAT IS DELIBERATELY NOT COLLECTED, and why it is not an oversight: `url`, `email_address`,
- * `phone_number`, `anchor_name`, `name` (block anchor), `document`. A link's DESTINATION is not what a
- * reader sees — its label
- * is, and the label is the nested `text`. Counting a destination as content is precisely how the original
- * incident shipped: a payload whose only visible characters lived inside a URL.
- *
- * `name` is EXCLUDED, and that is simply correct rather than a tradeoff. I recorded it here as a known
- * ambiguity — claiming `name` is a displayed label on `RichTextReference` and only an identifier on
- * `RichTextAnchor`, so excluding it under-counted. Review pass 47 checked the live schema: a reference's
- * DISPLAYED content is its `text`; its `name` is the identifier, exactly as on an anchor. Same meaning
- * in both places, and the walk already collects the `text`.
- *
- * Worth leaving visible: I invented a tradeoff that did not exist, then wrote it into the source as a
- * known limitation. A fabricated caveat is not the harmless direction to be wrong in — it tells the next
- * reader the guard is weaker than it is, and invites a repair for a defect that was never there.
- *
- * A structure that yields NO leaves is allowed. That is now a derived conclusion rather than an
- * undecidable shrug: a rich message of media blocks alone — a photo, a collage, a map — legitimately
- * carries no text, and refusing it would destroy a valid message.
+ * The two are separate on purpose. Collapsing "I found nothing" into "there is nothing" is what makes a
+ * guard refuse a valid photo message, and collapsing "I cannot read this" into "this is visible" is what
+ * lets an invisible one through. Neither collapse is available here.
  */
-function structuredTextLeaves(value: unknown, depth = 0): Array<{ text: string; mode: string }> {
-  // Depth bound guards against a cyclic or adversarial structure, NOT against legitimate nesting —
-  // pass 46 found 16 truncates real documents, since every wrapper adds a level and a list inside a
-  // table inside a quotation reaches that quickly. Raised well past any plausible document; a structure
-  // deeper than this is not a message.
-  if (depth > 200 || value === null) return [];
+type StructuredScan = { leaves: StructuredLeaf[]; undecidable: boolean };
 
-  // A RichText is a UNION: a bare STRING, an ARRAY of RichText, or one of the wrapper interfaces. The
-  // bare-string arm is the one a key-based walk loses — `{"text": ["hello", {...}]}` puts "hello" in an
-  // array element, under no key at all, and every previous version returned early on it. Collecting the
-  // string HERE is what makes this a walk of the union rather than a sweep of field names.
-  if (typeof value === 'string') return [{ text: value, mode: '' }];
-  if (typeof value !== 'object') return [];
+const NOTHING: StructuredScan = { leaves: [], undecidable: false };
+const OPAQUE: StructuredScan = { leaves: [], undecidable: true };
 
-  const out: Array<{ text: string; mode: string }> = [];
-  if (Array.isArray(value)) {
-    for (const v of value) out.push(...structuredTextLeaves(v, depth + 1));
-    return out;
+function mergeScans(parts: StructuredScan[]): StructuredScan {
+  const leaves: StructuredLeaf[] = [];
+  let undecidable = false;
+  for (const p of parts) {
+    leaves.push(...p.leaves);
+    undecidable = undecidable || p.undecidable;
   }
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof v === 'string') {
-      // The KEY names the leaf's format. An `html` leaf is HTML whatever the request's `parse_mode`
-      // says — the request-level mode does not govern content nested inside a rich structure.
-      if (k === 'html') out.push({ text: v, mode: 'HTML' });
-      else if (k === 'markdown') out.push({ text: v, mode: 'Markdown' });
-      else if (k === 'text' || k === 'expression' || k === 'summary') out.push({ text: v, mode: '' });
-    } else if (typeof v === 'object' && v !== null) {
-      // `text`/`summary` holding an object or array is a nested RichText; every other object field is
-      // descended too, since captions and container children carry their own text.
-      out.push(...structuredTextLeaves(v, depth + 1));
+  return { leaves, undecidable };
+}
+
+/**
+ * RichText variants that carry their rendered content in a nested `text` (itself a RichText).
+ *
+ * Every other member of such an object is DISCARDED by Telegram, which is the whole point of this table:
+ * a `url` variant renders its `text` and uses `url` only as the destination, so a walk must descend
+ * `text` and nothing else.
+ */
+const RICH_TEXT_NESTED_TEXT: ReadonlySet<string> = new Set([
+  'bold', 'italic', 'underline', 'strikethrough', 'spoiler', 'date_time', 'mention', 'hashtag',
+  'cashtag', 'bot_command', 'code', 'text_mention', 'url', 'email_address', 'bank_card_number',
+  'subscript', 'superscript', 'marked', 'phone_number', 'reference', 'reference_link', 'anchor_link',
+]);
+
+/** RichText variants that render content this guard cannot read from the request. */
+const RICH_TEXT_OPAQUE: ReadonlySet<string> = new Set(['custom_emoji', 'mathematical_expression']);
+
+/** RichText variants that render NOTHING. `anchor` consumes only `name`, a jump target. */
+const RICH_TEXT_RENDERS_NOTHING: ReadonlySet<string> = new Set(['anchor']);
+
+/** Block variants and the RichText-valued fields Telegram reads from each. */
+const BLOCK_RICH_TEXT_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  heading: ['text'],
+  paragraph: ['text'],
+  pre: ['text'],
+  footer: ['text'],
+  thinking: ['text'],
+  pullquote: ['text', 'credit'],
+  blockquote: ['credit'],
+  details: ['summary'],
+  table: ['caption'],
+};
+
+/** Block variants whose children are themselves blocks, and the field holding them. */
+const BLOCK_CHILD_BLOCK_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  blockquote: ['blocks'],
+  collage: ['blocks'],
+  slideshow: ['blocks'],
+  details: ['blocks'],
+};
+
+/** Block variants carrying a PageBlockCaption (`{text, credit}`, both RichText). */
+const BLOCK_CAPTION_VARIANTS: ReadonlySet<string> = new Set([
+  'collage', 'slideshow', 'map', 'animation', 'audio', 'photo', 'video', 'voice_note',
+]);
+
+/** Block variants that render something unreadable here — media, a map, a formula. */
+const BLOCK_OPAQUE: ReadonlySet<string> = new Set([
+  'mathematical_expression', 'map', 'animation', 'audio', 'photo', 'video', 'voice_note',
+]);
+
+/** Block variants that render nothing: a rule, and a jump target. */
+const BLOCK_RENDERS_NOTHING: ReadonlySet<string> = new Set(['divider', 'anchor']);
+
+// A cyclic or adversarial structure must terminate, but the bound is NOT a content limit — pass 46 found
+// 16 truncates real documents, since every wrapper adds a level and a list inside a table inside a
+// quotation reaches that quickly. Set well past any plausible document.
+const STRUCTURE_DEPTH_BOUND = 200;
+
+/**
+ * Read a RichText value, by Telegram's grammar rather than by key name.
+ *
+ * WHERE THIS TABLE COMES FROM, since the last four repairs all failed on this exact point. Not from my
+ * model of the API — that has an end date and was wrong twice in one day. Not from the prose reference —
+ * it truncated three times. It is transcribed from the Bot API server's own request parser, which is the
+ * code that decides what Telegram reads: `Client::get_rich_text`, `Client::get_input_page_block`,
+ * `Client::get_page_block_caption`, `Client::get_page_block_table_cell`, `Client::get_input_rich_message`.
+ *
+ * THE UNION: a bare STRING (the literal), an ARRAY (the sequence), or an OBJECT carrying a `type`
+ * discriminator. There is no `texts` key and no `richTextPlain` type value anywhere on the wire — those
+ * are internal class names, and a previous version of this file asserted them as the grammar.
+ *
+ * WHY THE PREVIOUS WALK WAS WRONG, and it is the same misunderstanding one level deeper rather than a new
+ * bug. It descended EVERY object-valued property. Telegram reads `type`, extracts only that variant's
+ * declared fields, and DISCARDS every other member:
+ *
+ *     { "type": "bold", "text": {"type":"anchor","name":"x"}, "caption": {"text":"LOOKS VISIBLE"} }
+ *
+ * `bold` consumes `text` alone. `caption` is discarded. The old walk found "LOOKS VISIBLE", called the
+ * payload visible, and allowed it — while the reader received an anchor, which renders as nothing. Three
+ * previous repairs answered a reviewer by adding a key name; a key name cannot fix a SHAPE.
+ *
+ * WHAT IS DELIBERATELY NOT COLLECTED: `url`, `email_address`, `phone_number`, `anchor_name`, `name`. A
+ * link's DESTINATION is not what a reader sees — its label is, and the label is the nested `text`.
+ * Counting a destination as content is precisely how the original incident shipped: a payload whose only
+ * visible characters lived inside a URL. This now falls out of the table rather than being a rule applied
+ * beside it.
+ *
+ * A `mathematical_expression` is LaTeX SOURCE. Its source characters are not its rendered glyphs — a
+ * spacing-only expression is all letters and paints nothing — so it is marked OPAQUE rather than counted
+ * as visible. That is the honest position: this guard cannot decide a formula, it can only decline to let
+ * one vouch for an otherwise-invisible message.
+ */
+function richTextScan(value: unknown, depth = 0): StructuredScan {
+  if (depth > STRUCTURE_DEPTH_BOUND || value === null || value === undefined) return NOTHING;
+
+  // The bare-string arm. `{"text": ["hello", {"type":"bold",...}]}` puts "hello" in an array element,
+  // under no key at all — the arm every key-based version of this walk returned early on.
+  if (typeof value === 'string') return { leaves: [{ text: value, mode: '' }], undecidable: false };
+  if (typeof value !== 'object') return NOTHING;
+  if (Array.isArray(value)) {
+    return mergeScans(value.map((v) => richTextScan(v, depth + 1)));
+  }
+
+  const type = (value as { type?: unknown }).type;
+  // An object with no string `type` is rejected by Telegram with 400 before anything renders. It cannot
+  // be a silent invisible send, and it must not be allowed to vouch for one either.
+  if (typeof type !== 'string') return NOTHING;
+  if (RICH_TEXT_RENDERS_NOTHING.has(type)) return NOTHING;
+  if (RICH_TEXT_OPAQUE.has(type)) return OPAQUE;
+  if (RICH_TEXT_NESTED_TEXT.has(type)) {
+    return richTextScan((value as { text?: unknown }).text, depth + 1);
+  }
+  // An unsupported discriminator is a 400 from Telegram's parser — a loud failure, not a silent one.
+  return NOTHING;
+}
+
+/** A PageBlockCaption is `{text, credit}`, both RichText. Nothing else in it is read. */
+function captionScan(value: unknown, depth: number): StructuredScan {
+  if (depth > STRUCTURE_DEPTH_BOUND || value === null || typeof value !== 'object') return NOTHING;
+  const obj = value as Record<string, unknown>;
+  return mergeScans([richTextScan(obj.text, depth + 1), richTextScan(obj.credit, depth + 1)]);
+}
+
+/** A block-level element, read by its own `type` discriminator. */
+function blockScan(value: unknown, depth = 0): StructuredScan {
+  if (depth > STRUCTURE_DEPTH_BOUND || value === null) return NOTHING;
+  if (Array.isArray(value)) return mergeScans(value.map((v) => blockScan(v, depth + 1)));
+  if (typeof value !== 'object') return NOTHING;
+
+  const obj = value as Record<string, unknown>;
+  const type = obj.type;
+  if (typeof type !== 'string') return NOTHING;
+  if (BLOCK_RENDERS_NOTHING.has(type)) return NOTHING;
+
+  const parts: StructuredScan[] = [];
+  // A media block, a map or a formula RENDERS — the message is not arriving as nothing — but what it
+  // renders cannot be inspected here. Its caption is still read, because a caption that is present and
+  // invisible is worth knowing about even when the block itself carries the message.
+  if (BLOCK_OPAQUE.has(type)) parts.push(OPAQUE);
+  for (const field of BLOCK_RICH_TEXT_FIELDS[type] ?? []) parts.push(richTextScan(obj[field], depth + 1));
+  for (const field of BLOCK_CHILD_BLOCK_FIELDS[type] ?? []) parts.push(blockScan(obj[field], depth + 1));
+  if (BLOCK_CAPTION_VARIANTS.has(type)) parts.push(captionScan(obj.caption, depth + 1));
+  if (type === 'list') {
+    const items = obj.items;
+    if (Array.isArray(items)) {
+      for (const item of items) {
+        if (item !== null && typeof item === 'object') {
+          parts.push(blockScan((item as Record<string, unknown>).blocks, depth + 1));
+        }
+      }
     }
   }
-  return out;
+  if (type === 'table') {
+    const rows = obj.cells;
+    if (Array.isArray(rows)) {
+      for (const row of rows) {
+        if (!Array.isArray(row)) continue;
+        for (const cell of row) {
+          if (cell !== null && typeof cell === 'object') {
+            parts.push(richTextScan((cell as Record<string, unknown>).text, depth + 1));
+          }
+        }
+      }
+    }
+  }
+  // An unsupported block type is a 400 before render; it contributes nothing either way.
+  return mergeScans(parts);
+}
+
+/**
+ * Read a structured reader-visible field — in practice the rich-message container.
+ *
+ * THE CONTAINER IS A PRIORITY UNION, not a merge, and this is a bypass I found by reading the parser
+ * rather than one a reading handed me. Telegram takes `blocks` if the object has it, ELSE `markdown`,
+ * ELSE `html`, and ignores the others entirely. The previous walk collected all three, so a container
+ * pairing invisible `blocks` with a visible `html` sibling read as visible here and rendered as nothing
+ * there. Same shape as the discriminator bug, one layer up.
+ *
+ * `media` is read only on the markdown and html arms. Media renders, so its presence is OPAQUE rather
+ * than ignorable — otherwise an image-only markdown message would be refused as invisible.
+ */
+function structuredFieldScan(value: unknown): StructuredScan {
+  if (value === null || typeof value !== 'object') return NOTHING;
+  if (Array.isArray(value)) return blockScan(value, 0);
+
+  const obj = value as Record<string, unknown>;
+  const mediaPresent = Array.isArray(obj.media) && obj.media.length > 0;
+  if ('blocks' in obj) return blockScan(obj.blocks, 0);
+  if ('markdown' in obj) {
+    const md = obj.markdown;
+    const leaves = typeof md === 'string' ? [{ text: md, mode: 'Markdown' }] : [];
+    return { leaves, undecidable: mediaPresent };
+  }
+  if ('html' in obj) {
+    const html = obj.html;
+    const leaves = typeof html === 'string' ? [{ text: html, mode: 'HTML' }] : [];
+    return { leaves, undecidable: mediaPresent };
+  }
+  // Telegram answers 400 "Rich message must be non-empty" — a loud failure, and not this guard's case.
+  return NOTHING;
 }
 
 /** Every reader-visible field a method may carry. A method can carry more than one (pass 43). */
@@ -471,8 +616,14 @@ function assertOneOutgoingField(method: string, params: Record<string, unknown>,
   // A structured field carries its content in leaves, not in the field itself (pass 44). If ANY leaf is
   // visible the payload is visible. If the structure yields NO leaves at all, this cannot decide what a
   // reader receives and allows — the same undecidable line the empty-extraction case takes.
+  //
+  // `undecidable` is the third answer, and it is not the same as finding nothing. A photo block, a custom
+  // emoji or a LaTeX formula RENDERS something this guard cannot read, so a message pairing one with an
+  // invisible caption is not proven invisible and must not be refused. Before this distinction existed
+  // the two collapsed together and a photo with a zero-width caption was destroyed on the way out.
   if (raw !== null && typeof raw === 'object') {
-    const leaves = structuredTextLeaves(raw);
+    const { leaves, undecidable } = structuredFieldScan(raw);
+    if (undecidable) return;
     if (leaves.length === 0) return;
     if (leaves.some((leaf) => !hasNoVisibleCharacters(readerVisibleText(leaf.text, leaf.mode)))) return;
     emitInvisiblePayloadRefusal({
