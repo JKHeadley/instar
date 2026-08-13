@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-13T14:52:29.088Z",
+  "slug": "window14-ruling-4a-archival-retirement",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 22,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/standards-coverage.mjs",
+      "src/core/StandardsRegistryParser.ts"
+    ],
+    "addedLines": 22,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
