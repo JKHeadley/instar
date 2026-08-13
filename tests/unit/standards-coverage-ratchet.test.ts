@@ -887,8 +887,13 @@ describe('standards-coverage ratchet script', () => {
     // legitimate way to clear it is refreshing those records from a family review
     // that genuinely accepts. Editing this expectation to make the suite green would
     // be forging the acceptance the record exists to prove.
-    expect(report.total).toBe(87);
-    expect(report.enforcedRatio).toBe(0.7356);
+    // 88 since 2026-08-13: the operator ordered a new standard — References Run From Both Ends —
+    // as part of the merge-model ruling, and it carries a real guard, which is why the ratio rose
+    // rather than being diluted. These are UPDATED, not relaxed: the count and ratio are re-derived
+    // from the live registry, and the area-audit records below were refreshed by a review that
+    // genuinely accepts, exactly as the comment above requires.
+    expect(report.total).toBe(88);
+    expect(report.enforcedRatio).toBe(0.7386);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',
     ]);
