@@ -2,60 +2,60 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-08-08T19:03:46.000Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-08c.json",
-      "auditSha256": "9d3a3f837f8bb31f7449b4fdc0f8f41c3a0cb87b7f60f20a0e07f76d371d8d23",
-      "areaSha256": "415107d4581ab557f8927a9a3341fb35183e5b062fc592eb7079ea9f6c88a24b",
+      "lastAuditedAt": "2026-08-13T10:16:04.000Z",
+      "auditRef": "docs/audits/standards-area-audit-2026-08-13.json",
+      "auditSha256": "f6a705f97aa0161e99a54e063a54f26dd3681acf0de6ba38b81e84577b39715e",
+      "areaSha256": "0eae1a301590cf96204a6098497b1a554366a8453ce5c4dfe3ddcbf7f32738ff",
       "refResolutionFloor": {
         "enforced": 33,
         "total": 39
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-08-01T07:31:10.091Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-01.json",
-      "auditSha256": "15f67a41b34410eaaf790c1f9dd080f326d3c8039f5c9722a722b6d74132722b",
-      "areaSha256": "edad271c188bb3b9ca6287d48014f73da7fb41c30415b1809bb26bd11d39e6b8",
+      "lastAuditedAt": "2026-08-13T10:16:04.000Z",
+      "auditRef": "docs/audits/standards-area-audit-2026-08-13.json",
+      "auditSha256": "f6a705f97aa0161e99a54e063a54f26dd3681acf0de6ba38b81e84577b39715e",
+      "areaSha256": "3dfe8b72e2c773231e14f891df2cf41d59ebcd3c336df8a7df6cd346e82c686d",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13
       }
     },
     "Shipping": {
-      "lastAuditedAt": "2026-08-08T19:03:46.000Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-08c.json",
-      "auditSha256": "9d3a3f837f8bb31f7449b4fdc0f8f41c3a0cb87b7f60f20a0e07f76d371d8d23",
-      "areaSha256": "b8e9b4bfe331ad1cb8c76c7367d1e900a2d0a64ea9e10b90c97da2170c20a00f",
+      "lastAuditedAt": "2026-08-13T10:16:04.000Z",
+      "auditRef": "docs/audits/standards-area-audit-2026-08-13.json",
+      "auditSha256": "f6a705f97aa0161e99a54e063a54f26dd3681acf0de6ba38b81e84577b39715e",
+      "areaSha256": "ff15d1435836d5e06fb3b956ff62b0fbcab92ec3768072df3dd708f13e0f0820",
       "refResolutionFloor": {
         "enforced": 5,
         "total": 7
       }
     },
     "The Fractal": {
-      "lastAuditedAt": "2026-08-01T07:31:10.091Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-01.json",
-      "auditSha256": "15f67a41b34410eaaf790c1f9dd080f326d3c8039f5c9722a722b6d74132722b",
-      "areaSha256": "88f5c3dd5ae11faae70dfbdf2b91509fdeebf4599197134cc98b2d223cf73da7",
+      "lastAuditedAt": "2026-08-13T10:16:04.000Z",
+      "auditRef": "docs/audits/standards-area-audit-2026-08-13.json",
+      "auditSha256": "f6a705f97aa0161e99a54e063a54f26dd3681acf0de6ba38b81e84577b39715e",
+      "areaSha256": "6413370b93bb1b570171772d98d2c5260c7ccf8fc1d7ea5ba3f7b47b32489f98",
       "refResolutionFloor": {
         "enforced": 1,
         "total": 1
       }
     },
     "The Root": {
-      "lastAuditedAt": "2026-08-01T07:31:10.091Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-01.json",
-      "auditSha256": "15f67a41b34410eaaf790c1f9dd080f326d3c8039f5c9722a722b6d74132722b",
-      "areaSha256": "c303bc03648d06ddc7b35fc890afe52ac3537fc270218cfd09cea76f88c1d0ba",
+      "lastAuditedAt": "2026-08-13T10:16:04.000Z",
+      "auditRef": "docs/audits/standards-area-audit-2026-08-13.json",
+      "auditSha256": "f6a705f97aa0161e99a54e063a54f26dd3681acf0de6ba38b81e84577b39715e",
+      "areaSha256": "0b49790770f39a7cc06d3a39c8d7e8ed3fee7d5540773455830d1a7804c2a60d",
       "refResolutionFloor": {
         "enforced": 1,
         "total": 1
       }
     },
     "The Substrate": {
-      "lastAuditedAt": "2026-08-08T19:03:46.000Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-08c.json",
-      "auditSha256": "9d3a3f837f8bb31f7449b4fdc0f8f41c3a0cb87b7f60f20a0e07f76d371d8d23",
-      "areaSha256": "180ad615fc7e119ce4ebf479ed396fa9d9f058e84618c92d766ec33b3502838c",
+      "lastAuditedAt": "2026-08-13T10:16:04.000Z",
+      "auditRef": "docs/audits/standards-area-audit-2026-08-13.json",
+      "auditSha256": "f6a705f97aa0161e99a54e063a54f26dd3681acf0de6ba38b81e84577b39715e",
+      "areaSha256": "43e80b2efef1233b00093c22406e476d9ca055cc75f12de0928374b010c1a2f0",
       "refResolutionFloor": {
         "enforced": 16,
         "total": 26

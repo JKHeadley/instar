@@ -146,9 +146,23 @@ const ENFORCEMENT_SECTION_HEADINGS = [
   'Full specs',
 ];
 const EXCLUDED_PROVENANCE_SECTION_HEADINGS = [
+  // Added 2026-08-13 with operator rulings 4b/4c. An article whose provenance claimed
+  // an incident it never had was borrowing that incident's authority; the rulings split
+  // the honest cases out of `Earned from`. All are PROVENANCE, never ENFORCEMENT — they
+  // say where an article came FROM, and scanning them for guards would let an origin
+  // story read as a live check.
+  //
+  // NOTE — this list is a hand-kept MIRROR of the same three lists in
+  // `src/core/StandardsRegistryParser.ts`. Adding a heading there and not here is
+  // silent: the parser classifies it while this ratchet counts it unrecognized. That
+  // is exactly how this edit was caught, and the duplication is worth removing.
+  'Articulated during',
   'Derives from',
   'Earned from',
+  'Grounded in',
+  'Provenance status',
   'Ratified by',
+  'Ratified from operator policy',
   'Source documents',
   'Traces to the goal',
 ];
@@ -171,6 +185,19 @@ const EXCLUDED_NARRATIVE_SECTION_HEADINGS = [
   // let a promise-to-build flip an article to `enforced`, which is precisely the
   // over-claim finding 4 was raised about. Its refs must not be scanned.
   'Documented-only until',
+  // Added 2026-08-13 by operator ruling on decision-package item 2 — the seven grouped
+  // failure-direction defaults. NARRATIVE, never ENFORCEMENT, for the same reason as
+  // the countdown above: a failure direction describes what should happen when a guard
+  // is MISSING, which is the opposite of evidence that one exists.
+  // Added 2026-08-13 by operator ruling on decision-package item 3. Ten articles were
+  // accepted as genuinely NOT mechanisable; each says so in place and names the judgment it
+  // turns on, plus the obligation that replaces the check (context sufficiency + rating).
+  //
+  // NARRATIVE, never ENFORCEMENT — and this one most of all: the field's entire content is
+  // 'no mechanical check exists here'. Filing it as enforcement would let an article's own
+  // admission that it is unguarded read as evidence of a guard.
+  'Judgment-bound',
+  'Fails',
   'Neither is whole alone',
   'Notice and fight the reflex (the load-bearing awareness)',
   'Per-feature posture (2026-06-12 widening)',
