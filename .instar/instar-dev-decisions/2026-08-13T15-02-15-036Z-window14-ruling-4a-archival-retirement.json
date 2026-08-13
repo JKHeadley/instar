@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-13T15:02:15.036Z",
+  "slug": "window14-ruling-4a-archival-retirement",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 121,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-retired-article-redirects.mjs"
+    ],
+    "addedLines": 121,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -196,6 +196,17 @@ const EXCLUDED_NARRATIVE_SECTION_HEADINGS = [
   // NARRATIVE, never ENFORCEMENT — and this one most of all: the field's entire content is
   // 'no mechanical check exists here'. Filing it as enforcement would let an article's own
   // admission that it is unguarded read as evidence of a guard.
+  // Added 2026-08-13 by operator ruling 4a. An ARCHIVALLY RETIRED article keeps its text and
+  // gains a retirement record naming what superseded it and which live article absorbed its
+  // obligations. Stripping the body instead would drop the article from this parser entirely —
+  // the count falls, every area ratio moves, and the 27 surviving citations measured during the
+  // escalation start dangling, which is the breakage the ruling refused.
+  //
+  // NARRATIVE, never ENFORCEMENT: 'this no longer governs' is a status, not a guard. And
+  // 'Retirement held' records WHY an article that was proposed for retirement stays live, with
+  // the dated owner whose job is to build the absorption target it lacks.
+  'Retired',
+  'Retirement held',
   'Judgment-bound',
   'Fails',
   'Neither is whole alone',

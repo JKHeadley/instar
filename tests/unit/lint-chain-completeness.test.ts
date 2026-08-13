@@ -55,6 +55,10 @@ const REQUIRED_LINTS = [
   'generate-standards-hierarchy.mjs',
   'lint-no-duplicate-definitions.mjs',
   'lint-recall-surface-names-match-mechanism.mjs',
+  // Retired constitutional articles must never strand a citation: every retired article names a
+  // live successor, every citation site carries a forwarding marker, and the marker agrees with
+  // the retirement record. Operator ruling 4a, 2026-08-13.
+  'lint-retired-article-redirects.mjs',
   'lint-registry-tree-parentage.mjs',
   'lint-single-governing-obligation.mjs',
   'lint-cas-emit-placement.js',
