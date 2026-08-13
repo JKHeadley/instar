@@ -105,3 +105,36 @@ No issue identified that blocks the change. Two are recorded rather than fixed: 
 list duplication (§3, §5) and the absence of any check that a heading's classification matches its
 content (§2). Both are pre-existing properties of this design that this change makes one entry
 larger; neither is created by it.
+
+---
+
+## Addendum — `Judgment-bound` (rulings 1b and 3, same commit lane)
+
+A sixth heading joins the same two lists: `**Judgment-bound.**`, from ruling 3's acceptance of ten
+articles as genuinely not mechanisable.
+
+Classified **NARRATIVE**, and this one is the sharpest case for that choice: the field's entire
+content is *"no mechanical check exists here, and here is the judgment it turns on instead."* Filing
+it as enforcement would let an article's own admission that it is unguarded read as evidence of a
+guard — the over-claim inverted, and the most direct possible instance of the defect ruling 3 exists
+to fix.
+
+All eight answers above hold unchanged for this entry, and the same verification applies: the
+coverage ratio is 0.7356 before and after, so nothing leaked into enforcement extraction. The article
+count stays 87 and the countdown lint picked up the two new sub-obligation countdowns
+(33 → 35), which is the positive control that the new registry sections are being parsed rather than
+ignored.
+
+**One thing worth stating plainly about what shipped here.** Rulings 1b and 3 both require durable
+logging that the operator made non-optional — *"an escalation without a durable record does not
+satisfy this ruling."* No new store was built. Both rulings name **existing** durable, queryable
+surfaces instead: the decision journal (which already carries `conflict`, `principle`, `alternatives`
+and `context` per record) and the attention queue. That is ruling 3's own cheapest-first tier
+discipline applied to ruling 3, and it is why this stayed Tier 1.
+
+What is genuinely missing is the *write at the chokepoint* — nothing forces the journal entry at the
+moment a residual collision is recognised or a judgment-bound call is made. That is not papered over:
+each ruling carries an `UNENFORCED SUB-OBLIGATION, named` plus a dated countdown
+(`STD-SUBCOUNTDOWN-residual-collision-log`, `STD-SUBCOUNTDOWN-judgment-call-rating`, both
+`2026-09-13`), using the registry's own existing convention for an obligation whose mechanism is
+owed. The rule binds; the automation is dated and tracked rather than implied.

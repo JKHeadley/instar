@@ -189,6 +189,14 @@ const EXCLUDED_NARRATIVE_SECTION_HEADINGS = [
   // failure-direction defaults. NARRATIVE, never ENFORCEMENT, for the same reason as
   // the countdown above: a failure direction describes what should happen when a guard
   // is MISSING, which is the opposite of evidence that one exists.
+  // Added 2026-08-13 by operator ruling on decision-package item 3. Ten articles were
+  // accepted as genuinely NOT mechanisable; each says so in place and names the judgment it
+  // turns on, plus the obligation that replaces the check (context sufficiency + rating).
+  //
+  // NARRATIVE, never ENFORCEMENT — and this one most of all: the field's entire content is
+  // 'no mechanical check exists here'. Filing it as enforcement would let an article's own
+  // admission that it is unguarded read as evidence of a guard.
+  'Judgment-bound',
   'Fails',
   'Neither is whole alone',
   'Notice and fight the reflex (the load-bearing awareness)',

@@ -13,7 +13,7 @@ adding a new label to say what kind of thing it is, instead of letting a new fie
 the constitution is measured.
 
 The operator ruled on seven questions about the constitution on 2026-08-12. Applying those rulings
-introduces five new labels. This change tells both tools what those five labels mean.
+introduces six new labels. This change tells both tools what those six labels mean.
 
 ## What already exists
 
@@ -27,7 +27,7 @@ introduces five new labels. This change tells both tools what those five labels 
 
 ## What is new
 
-Five labels, in two groups.
+Six labels, in two groups.
 
 **Four provenance labels**, from rulings 4b and 4c. Some rules in the constitution claimed to be
 "earned from" an incident that never happened — the field said "recurring" while naming no actual
@@ -39,18 +39,30 @@ out of `Earned from`:
 - `Ratified from operator policy` — a rule the operator named directly.
 - `Provenance status` — the origin is genuinely lost, and the field says so plus what would re-earn it.
 
-**One narrative label**, from item 2. `Fails` states which way a rule fails when the machinery it
-depends on is missing — refuse, or proceed. 57 of the 82 machinery-dependent rules never said, and
-an unstated direction becomes whatever the code happened to do, discovered mid-incident.
+**Two narrative labels.**
+
+- `Fails`, from item 2 — states which way a rule fails when the machinery it depends on is missing:
+  refuse, or proceed. 57 of the 82 machinery-dependent rules never said, and an unstated direction
+  becomes whatever the code happened to do, discovered mid-incident.
+- `Judgment-bound`, from ruling 3 — marks a rule that genuinely **cannot** be mechanically checked,
+  names the judgment it turns on, and carries what replaces the check: the call must be made with
+  enough context, and it gets logged and periodically rated. Ten rules were accepted this way. The
+  point is that "a human decides this one" is stated honestly instead of someone building a check on
+  the paperwork and calling the rule enforced.
 
 ## The safeguard, in plain terms
 
-All five are classified as **not enforcement**, and that is the load-bearing decision.
+All six are classified as **not enforcement**, and that is the load-bearing decision.
 
 `Fails` describes what should happen when a guard is **absent**. If it were classified as
 enforcement, a rule's account of its own missing guard could be read as evidence that the guard
 exists — a rule would grade itself "enforced" by describing its own hole. The same logic applies to
 the provenance labels: an origin story is a claim about the past, not a live check.
+
+`Judgment-bound` is the sharpest version of the same point. Its entire content is *"no mechanical
+check exists here."* Classified as enforcement, a rule's own admission that it is unguarded would
+count as evidence that it is guarded — the over-claim exactly inverted, and the precise defect the
+ruling that introduced the label exists to fix.
 
 This mirrors an earlier decision in the same file. `Documented-only until` was classified as
 narrative for exactly this reason: a countdown says a guard is **owed**, not that one exists.
@@ -69,8 +81,8 @@ That is recorded in a comment at the mirror site rather than silently left for t
 ## What you actually need to decide
 
 Nothing, if you agree with the classification. The question a reviewer should ask is the one in the
-safeguard section: **should any of these five labels be treated as evidence that a guard exists?**
-The answer taken here is no for all five, in the conservative direction — a wrong "no" understates
+safeguard section: **should any of these six labels be treated as evidence that a guard exists?**
+The answer taken here is no for all six, in the conservative direction — a wrong "no" understates
 enforcement and shows up as a lower coverage score, while a wrong "yes" would let the constitution
 credit itself with guards it does not have.
 

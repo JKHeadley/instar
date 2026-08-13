@@ -124,6 +124,14 @@ export const EXCLUDED_NARRATIVE_SECTION_HEADINGS = [
   // guard is missing, which is the opposite of evidence that a guard exists. Filing it as
   // enforcement would let an article's account of its own absence read as a live check —
   // the same over-claim the `Documented-only until` classification above guards against.
+  // Added 2026-08-13 by operator ruling on decision-package item 3. Ten articles were
+  // accepted as genuinely NOT mechanisable; each says so in place and names the judgment it
+  // turns on, plus the obligation that replaces the check (context sufficiency + rating).
+  //
+  // NARRATIVE, never ENFORCEMENT — and this one most of all: the field's entire content is
+  // 'no mechanical check exists here'. Filing it as enforcement would let an article's own
+  // admission that it is unguarded read as evidence of a guard.
+  'Judgment-bound',
   'Fails',
   'Neither is whole alone',
   'Notice and fight the reflex (the load-bearing awareness)',
