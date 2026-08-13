@@ -855,7 +855,7 @@ that reset-safe posture must be explicit and tested rather than assumed.
 **Rule.** Every feature must be written into the agent's briefing/template. An agent that doesn't know about a capability effectively doesn't have it.
 **Fails.** If capability-index or briefing-template coverage is absent, fail closed: do not ship a feature or route the agent cannot discover and invoke.
 **In practice.** New API endpoints, proactive triggers, registry lookups, and building blocks all get added to the agent-facing template — because agents interact conversationally, not by reading a CLI manual. The endpoint half is structurally enforced by `src/server/CapabilityIndex.ts`, whose discoverability lint refuses a route that is neither surfaced on `/capabilities` nor explicitly allowlisted with a stated reason; the briefing-template half is still prose, and that is the open part of this standard.
-**Earned from.** The 2026-05-23 codey under-briefing incident: OpenAI-engine agents invented a shell timer instead of using the commitment tracker because their separate, hand-maintained briefing omitted that shipped capability (see *Framework-Agnostic — and Framework-Optimizing*).
+**Earned from.** *Ruled KEEP-AND-RE-EARN 2026-08-12; **re-earned 2026-08-13**, and the transition is recorded rather than silently reclassified.* The operator approved this article as one of four whose provenance was lost and owed re-earning. Applying that ruling surfaced the evidence: the **2026-05-23 codey under-briefing incident** — OpenAI-engine agents invented a shell timer instead of using the commitment tracker, because their separate, hand-maintained briefing omitted that shipped capability (recorded in *Framework-Agnostic — and Framework-Optimizing*). The provenance was recoverable from this registry the whole time, so labelling it "lost" would have been a new false claim produced by the very pass that exists to make labels honest. It is therefore re-earned here — the terminus *keep-and-re-earn* points at — rather than reclassified out of the disposition the operator approved.
 **Traces to the goal.** Self-awareness is half of coherence: the agent must know its own shape.
 
 ### Never-Waste Feedback — corrections compound
@@ -867,7 +867,7 @@ that reset-safe posture must be explicit and tested rather than assumed.
 
 ### Signal vs. Authority
 **Rule.** Brittle, low-context filters detect and emit *signals*. Only a higher-level, full-context intelligent gate has *blocking* authority. **ONE NAMED EXCEPTION, and it is the whole extent of it** (operator ruling 2026-08-12): the emergency-stop literal-match floor owned by *Structure Decides Alone Only on an Exact Match* carries blocking authority **and keeps it when the intelligent gate is unavailable or offline**. The bound is what makes the exception safe — a whole-message exact match against a closed enumerated list, never a substring, never a prefix, never a regex — and it is a grant to **that enumerated floor**, not to cheap matchers as a class. The operator accepted the cost explicitly: a deterministic matcher holds veto power in this one bounded case, because the opposite cost is an emergency stop that fails during exactly the outage it is most needed in. Read the exception's extent and form there; this article states only that it exists and why it is not precedent.
-**Fails.** FAIL-OPEN, and record the degraded check. When the full-context gate this article reserves authority for is absent, a low-context detector does **not** inherit that authority — it may still flag, and the action proceeds. The sole carve-out is the enumerated exact-match floor above, which still halts. **Derived** from the operator's 2026-08-12 ruling on the emergency-stop collision rather than stated by him: he granted the deterministic floor authority in one extremely rare, extremely clear case, so the complement — everywhere else, a cheap matcher does not acquire a veto when the mind is missing — is what that grant means for this article's own absence. The decision-package held this article's direction undecided pending that ruling; this is it, marked as an inference so a reader checks the reasoning and not just the sentence.
+**Fails.** FAIL-OPEN, and record the degraded check. When the full-context gate this article reserves authority for is absent, a low-context detector does **not** inherit that authority — it may still flag, and the action proceeds. The sole carve-out is the enumerated exact-match floor above, which still halts. **This rests on two sources, and they are deliberately separated because they carry different weight.** From the operator's 2026-08-12 ruling: he granted the deterministic floor authority in one extremely rare, extremely clear case, so its complement — everywhere else a cheap matcher does **not** acquire a veto when the mind is missing — follows directly. That settles *who may block*; **it does not by itself settle whether the action proceeds**, since a system could deny the matcher authority and still hold because its authoritative decider is unavailable. The second half comes from *The User Experience Is the Product*, already ratified: *"when a guard cannot do its job, it must fail toward the user being served"*, and a guard may never be the single thing standing between the user and any response. Together they give FAIL-OPEN. Stated this way — rather than as one inference from the emergency-stop ruling — because an external fidelity review of this very amendment found the single-source version claimed more than the ruling supports, and it was right. The decision-package held this article's direction undecided pending 1a; this is it, with each half attributed to what actually carries it.
 **Derives from.** *The Body and the Mind* (Substrate) — structure informs, the mind decides. This is that law at the filter/gate level: the brittle filter is body (signal); blocking authority lives where the full-context mind makes the call.
 **In practice.** A fast regex or a cheap classifier may flag, never veto. The expensive, well-grounded gate makes the final call. Topic-intent's ArcCheck (signal) + the outbound gate (authority) is the model.
 **Earned from.** 2026-07-03 (topic 29836): `NicknameCommand.recognizeNicknameCommand` used a verb list to treat "keep the work on the laptop" as a transfer command and swallowed the operator's message before the agent saw it (see *Intelligence Infers, Keywords Only Guard*).
@@ -945,6 +945,41 @@ reached at all. Three items, recorded and not built here:
    raised the tension himself: it is good practice, but it should probably not be mandatory, because
    some deployments genuinely cannot provide independent redundant services. It is captured here as
    deliberately unratified, with that capability caveat, rather than promoted into an obligation.
+
+---
+
+## What a provenance field claims — and what it does not
+
+**Ratified 2026-08-12** (operator rulings on decision-package items 4b and 4c: *"Yes, I agree."* to
+both).
+
+An article that said it was **earned from** an incident it never had was borrowing that incident's
+authority. Asserting recurrence — "recurring", "classic", plural "pipelines" — while naming no
+occurrence is a quiet route by which a constitution drifts, and it is invisible to every lens that
+reads the *rule* rather than the *provenance*. The rulings split the honest cases apart. Five labels
+now appear, and each claims something different:
+
+| field | what it claims |
+|---|---|
+| `Earned from` | A real, identifiable failure produced this article. The incident is named, and it is checkable. |
+| `Provenance status` | The origin is genuinely **lost**. The field says so plainly and names the evidence that would re-earn it. |
+| `Grounded in` | Never incident-derived. A stated value, or an observed convergence — not a failure. |
+| `Articulated during` | A principle that emerged in a specific, named conversation. A date is not an incident. |
+| `Ratified from operator policy` | The operator named the rule directly. An operating value, not a failure. |
+
+**A provenance field does not change what an article requires, and never has.** These labels record
+*where a rule came from*, not *how much it binds*. An article whose provenance is lost is exactly as
+binding as one whose incident is named — its force comes from its own ratification, the same way a
+ratified child's force comes from its own ratification and never from its parent's status (see *How a
+new standard joins this registry*). Relabelling in this pass changed **no rule's force**: the
+operator ruled zero retirements for these fourteen, and the diff touches provenance lines only.
+
+**Why the labels are worth the trouble anyway.** *How a new standard joins this registry* says a
+lesson crystallizes "after a pattern has **recurred** enough times." That makes recurrence a
+load-bearing claim in this document's own admission process. If an article may assert recurrence
+without ever naming an instance, the joining rule can be satisfied rhetorically. Honest labels are
+what make "recurring" checkable rather than decorative — and the durable logging that rulings 1b and
+3 require is what will make it verifiable going forward.
 
 ---
 

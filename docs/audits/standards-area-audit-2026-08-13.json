@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-13T10:16:04.000Z",
+  "reviewers": [
+    "codex-cli:gpt-5.6-sol",
+    "external-answer-withheld",
+    "blind-behaviour-lens",
+    "fidelity-lens-against-operator-rulings",
+    "cross-article-contradiction-lens-with-resolution-gate",
+    "convergence-criterion-2026-08-13"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 5
+  },
+  "convergenceReport": "docs/specs/reports/standards-family-convergence-2026-08-13.md",
+  "convergenceSha256": "bff03b9b1a5e5142798b706b4ff5e3d0b6a084a4a19ed6f10a8755a8ed83c5c7",
+  "areas": {
+    "Building": {
+      "areaSha256": "0eae1a301590cf96204a6098497b1a554366a8453ce5c4dfe3ddcbf7f32738ff",
+      "verdict": "accepted"
+    },
+    "Interaction": {
+      "areaSha256": "3dfe8b72e2c773231e14f891df2cf41d59ebcd3c336df8a7df6cd346e82c686d",
+      "verdict": "accepted"
+    },
+    "Shipping": {
+      "areaSha256": "ff15d1435836d5e06fb3b956ff62b0fbcab92ec3768072df3dd708f13e0f0820",
+      "verdict": "accepted"
+    },
+    "The Fractal": {
+      "areaSha256": "6413370b93bb1b570171772d98d2c5260c7ccf8fc1d7ea5ba3f7b47b32489f98",
+      "verdict": "accepted"
+    },
+    "The Root": {
+      "areaSha256": "0b49790770f39a7cc06d3a39c8d7e8ed3fee7d5540773455830d1a7804c2a60d",
+      "verdict": "accepted"
+    },
+    "The Substrate": {
+      "areaSha256": "43e80b2efef1233b00093c22406e476d9ca055cc75f12de0928374b010c1a2f0",
+      "verdict": "accepted"
+    }
+  }
+}
