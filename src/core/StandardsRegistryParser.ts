@@ -68,9 +68,25 @@ export interface StandardEnforcementSection {
  * bold headings would turn postmortems and design provenance into enforcement.
  */
 export const EXCLUDED_PROVENANCE_SECTION_HEADINGS = [
+  'Articulated during',
   'Derives from',
   'Earned from',
+  'Grounded in',
+  // Added 2026-08-13 by operator rulings 4b and 4c on the Window-12 decision package.
+  //
+  // An article whose provenance claimed an incident it never had was borrowing that
+  // incident's authority — the quiet route by which a constitution drifts. The rulings
+  // split the honest cases apart from `Earned from`: `Grounded in` and `Articulated
+  // during` for stated values that were never incident-derived, `Ratified from operator
+  // policy` for an operator-named rule, and `Provenance status` for an article whose
+  // origin is genuinely lost and whose re-earning evidence is named in its place.
+  //
+  // PROVENANCE, never ENFORCEMENT — same reasoning as the fields above. These say where
+  // an article CAME FROM; scanning them for guards would let an origin story read as a
+  // live check.
+  'Provenance status',
   'Ratified by',
+  'Ratified from operator policy',
   'Source documents',
   'Traces to the goal',
 ] as const;
@@ -98,6 +114,17 @@ export const EXCLUDED_NARRATIVE_SECTION_HEADINGS = [
   // promise-to-build flip an article to `enforced` — the exact over-claim the
   // ruling was raised against.
   'Documented-only until',
+  // Added 2026-08-13 by operator ruling on decision-package item 2. An article that
+  // depends on machinery (a gate, lint, sentinel, reviewer, model call, hook, job) must
+  // state which way it fails when that machinery is ABSENT — 57 of the 82 machinery-
+  // dependent articles were silent, and an unstated direction becomes whatever the
+  // implementation happened to do, discovered mid-incident.
+  //
+  // NARRATIVE, never ENFORCEMENT: a failure direction says what SHOULD happen when a
+  // guard is missing, which is the opposite of evidence that a guard exists. Filing it as
+  // enforcement would let an article's account of its own absence read as a live check —
+  // the same over-claim the `Documented-only until` classification above guards against.
+  'Fails',
   'Neither is whole alone',
   'Notice and fight the reflex (the load-bearing awareness)',
   'Per-feature posture (2026-06-12 widening)',
