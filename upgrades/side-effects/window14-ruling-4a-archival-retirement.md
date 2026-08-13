@@ -71,3 +71,30 @@ the constitution text alone leaves the list entries inert.
 No issue identified that blocks the change. Three are recorded rather than fixed: the list
 duplication, the absence of a check that a classification matches its content, and — new here — that
 nothing mechanically prevents a retired article from being cited as binding.
+
+---
+
+## Addendum — the citation redirect and its lint (ruling-4a review qualifiers)
+
+An independent review of the ruling added five binding qualifiers. Two changed the code surface.
+
+**The redirect is additive, and that was a judgment.** A blanket substitution would change what live
+articles *claim* — *Intelligence Infers, Keywords Only Guard* "forbids a regex from making it" is a
+statement about **that** article, and swapping in the successor asserts something that may be false.
+Each citation therefore keeps its subject and gains `(retired <date> → *successor*)`.
+
+**A new lint, `scripts/lint-retired-article-redirects.mjs`, wired into `npm run lint`.** It refuses
+on three conditions: a retired article naming no live successor (or one that is itself retired — a
+redirect into a dead end), a citation site with no forwarding marker, and a marker naming a different
+successor than the retirement record does. Signal-vs-authority: it is a deterministic lint over
+artefacts with a narrow, fully-specified refusal — it holds no judgment and adds no authority over
+behaviour.
+
+Two defects it caught, both mine, before it was trusted: the first redirect pass marked only the
+first occurrence per article-pair (29 sites instead of 39), and the lint's own first version matched
+a neighbouring citation's marker on a shared line, producing a false positive. Both fixed, and the
+false positive is recorded rather than removed — an over-broad matcher reporting a defect that is not
+there is the failure this registry keeps catching.
+
+**Rollback** is unchanged and cheap: revert the lint file and its one line in `package.json`; the
+markers in the constitution are inert prose without it.

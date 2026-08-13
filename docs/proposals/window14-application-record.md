@@ -189,3 +189,80 @@ a claim it has actually earned. Every rule survived unchanged — only the unear
 Article count unchanged at 87. Enforcement coverage unchanged at 0.7356 — an amendment that moved it
 would mean narrative text had leaked into enforcement extraction, so the equality is the check.
 Dangling references 0. Unrecognized sections 0.
+
+---
+
+# Ruling 4a — resolved after escalation (2026-08-13)
+
+The escalation returned a ruling with five binding qualifiers from an independent review. This
+section records the outcome and, per qualifier 5, **labels every claim by how it was verified**:
+`BEHAVIOUR-PROVEN` means a check was executed and its result observed; `INSPECTION-VERIFIED` means a
+human or model read the text and judged it. The distinction is stated here so it cannot be
+summarised upward as the stronger claim later.
+
+## The disposition — 29 accounted for, and the split is not the headline
+
+| disposition | count | articles |
+|---|---|---|
+| retired, archivally | 25 | the settled set, each with a named live successor |
+| relabelled, NOT retired | 1 | *Structure beats Willpower* — the registry's sole Root article |
+| held LIVE with owner, deadline and criteria | 3 | *The Body and the Mind*, *Know Your Principal*, *Structure Decides Alone Only on an Exact Match* |
+
+This is **25 retired, not 29**, and the deviation from the headline count was reported upward rather
+than smoothed into the total.
+
+## The five qualifiers, each with its evidence class
+
+**(1) Never bypass or weaken the prepared script's refusal.**
+`BEHAVIOUR-PROVEN`. The refusal was exercised, not asserted: `--include-held` exits **1** with the
+condition-1 reason; an unruled run exits **2**; `--check` exits **0**. Stated plainly because it is a
+deviation in form: the ruling's three-way split (retire / relabel / hold) is not expressible in a
+script that only knows retire-or-refuse, so a second script was written for it. The original was not
+bypassed — and it is not merely assumed to still refuse, it was run.
+
+**(2) Archival retirement must preserve topology integrity.**
+`BEHAVIOUR-PROVEN`, and now permanently enforced. Article count **87** unchanged; enforcement ratio
+**0.7356** unchanged; dangling **0**; the parentage lint clean at **13 relations, all resolving and
+bidirectional**. Measured after the change: **0** surviving articles declare a retired parent, and
+**39** citation sites into retired articles, **39 forwarded**.
+
+The redirect is **additive rather than a substitution**, and that was a judgment with a reason: a
+blanket rewrite would change what live articles *claim*. The document's own example — *Intelligence
+Infers, Keywords Only Guard* "forbids a regex from making it" — is a statement about what **that**
+article says; substituting the successor asserts the successor carries the same obligation, which may
+be false. So each citation keeps its subject and gains `(retired <date> → *successor*)`.
+
+A new lint, `scripts/lint-retired-article-redirects.mjs`, wired into `npm run lint`, holds three
+properties: every retired article names a live successor that is not itself retired; every citation
+site from a live article carries a forwarding marker; and the marker names the same successor the
+retirement record names, so the two cannot drift. `BEHAVIOUR-PROVEN` by reverting the defect — with
+one successor's markers stripped the lint fails naming the stranded citation, and passes when
+restored.
+
+**(3) The root relabel preserves binding force and citation identity.**
+`INSPECTION-VERIFIED`, with one behaviour-proven component. The change is the field label only —
+`**Earned from.**` → `**Grounded in.**` — on an article whose own text already said it is "the
+founding lens, not a single incident". The Rule text, the heading and every inbound citation are
+untouched; that the heading and citations are unchanged is `BEHAVIOUR-PROVEN` by the unchanged
+article count and the clean parentage lint. That the *force* is unchanged is a reading of the text,
+not an executed check.
+
+**(4) The three held articles carry owner, deadline AND defined absorption criteria.**
+`INSPECTION-VERIFIED`. Each held record now states why it is held, an explicit criteria list a future
+candidate can be held against — not "a target exists" but the specific coverage a sufficient
+higher-order rule must provide, with *all* of them required — a tracked owner (`ACT-1765`,
+`ACT-1766`, `ACT-1767`), and a review deadline of `2026-11-13` **in the document**, not only in the
+tracker. The record states that an unmet deadline re-argues the hold on the record rather than
+renewing it by silence.
+
+The criteria are where the real work is. *The Body and the Mind* cannot retire until its replacement
+can also parent the five articles that declare it. *Structure Decides Alone* cannot retire while
+*Signal vs. Authority* names it by name as its single exception — which ruling 1a created hours
+before 4a was ruled. Those are conditions a reviewer can evaluate, not a wish with a date on it.
+
+**(5) Evidence classes are labelled and not collapsible.**
+This section is that labelling. Restating the boundary for the record: the retirement topology,
+the citation forwarding, the lint behaviour and the refusal exit codes are **behaviour-proven**. The
+relabel's preservation of force, the absorption criteria's sufficiency, and the fidelity of every
+retirement record's prose to the operator's ruling are **inspection-verified** — read and judged,
+never executed. A later summary that calls the second group proven would be overstating it.
