@@ -180,7 +180,7 @@ for (const a of articles) {
     // on the line, which is the bolded phrase "**named subsection**" — so the lint reported three
     // parents named "named subsection" and "or". An over-broad matcher inventing a defect is the
     // failure this registry keeps finding; the anchored form is the fix.
-    const m = l.match(/\*\*named subsection\*\* of \*([^*]+)\*/);
+    const m = l.match(/\*\*named subsection\*\* of \*(.+?)\*, merged /);
     if (!m) continue;
     const parent = [...titles].find((t) => t === m[1] || t.startsWith(m[1]));
     if (!parent) errors.push(`"${a.title}" is merged into "${m[1]}", which is not a live article.`);

@@ -54,6 +54,24 @@ const PARENT_CLAIM_RE = /\ba tree node (?:under|beneath) \*{1,2}([^*]+?)\*{1,2}/
 /** "Tree node beneath it: *Child Name*" — the parent's acknowledgement. */
 const CHILD_CLAIM_RE = /\btree nodes? (?:beneath|under) it:?\s*\*{1,2}([^*]+?)\*{1,2}/gi;
 
+/**
+ * THE MERGE SYNTAX (operator re-ruling of 4a, 2026-08-13) — a second way to declare parentage.
+ *
+ * A superseded standard is not retired; it becomes a **named subsection** of its parent and stays
+ * live. That relation is declared with `**Merged into.** … **named subsection** of *Parent*` on the
+ * child and `**Merged subsections.** … **Child** — <tripwire>` on the parent.
+ *
+ * Why this is here rather than in a separate lint: an independent review found the 25 merged
+ * relations were INVISIBLE to this lint, which matched only the legacy "tree node under" wording. A
+ * parent's backlink or a child's tripwire could be deleted and every required check stayed green —
+ * a bidirectionality guard that cannot see most of the tree it guards. The merge model's whole
+ * premise is that the specificity survives at both ends, so both ends have to be checked here, by
+ * the lint that already owns "a declared relation must be real and bidirectional".
+ */
+const MERGED_INTO_RE = /\*\*named subsection\*\* of \*(.+?)\*, merged /gi;
+/** The parent's side: each child is named in bold inside the `**Merged subsections.**` line. */
+const MERGED_SUBSECTION_LINE = /^\*\*Merged subsections\.\*\*/;
+
 const abs = path.join(ROOT, REGISTRY_REL);
 if (!fs.existsSync(abs)) {
   console.error(`[registry-tree-parentage] ${REGISTRY_REL} is missing — refusing to report clean.`);
@@ -126,6 +144,66 @@ for (const a of articles) {
     continue;
   }
   relations.push({ child: a.name, parent: parent.name });
+  }
+
+  // ── MERGED-SUBSECTION relations: the same bidirectional bar, plus the tripwire on both ends ──
+  const mergedClaims = [...text.matchAll(MERGED_INTO_RE)].map((m) => m[1].trim());
+  for (const claimed of mergedClaims) {
+    const parent = resolveArticle(claimed);
+    if (!parent) {
+      failures.push(`${REGISTRY_REL}:${a.lineNo} — "${a.name}" declares itself a merged subsection of "${claimed}", which resolves to no article. A parent that does not exist is a dangling relation.`);
+      continue;
+    }
+    if (parent.name === a.name) {
+      failures.push(`${REGISTRY_REL}:${a.lineNo} — "${a.name}" declares itself its own parent.`);
+      continue;
+    }
+    // The child must state the tripwire it contributes. Without it the merge is a pointer, and the
+    // operator's whole objection to retirement was losing the specificity a pointer cannot carry.
+    if (!/\*\*The tripwire it contributes to its parent:\*\*\s*\S/.test(text)) {
+      failures.push(
+        `${REGISTRY_REL}:${a.lineNo} — "${a.name}" is merged into "${parent.name}" but states NO tripwire it contributes. ` +
+        `A merged subsection without its tripwire is a pointer, and the ruling exists because a pointer does not carry the ` +
+        `specificity the development process needs.`,
+      );
+      continue;
+    }
+    // The parent must name this child in its **Merged subsections.** line — the backlink.
+    const subsLine = parent.body.find((l) => MERGED_SUBSECTION_LINE.test(l));
+    if (!subsLine) {
+      failures.push(
+        `${REGISTRY_REL}:${a.lineNo} — "${a.name}" is merged into "${parent.name}", but that article has no ` +
+        `**Merged subsections.** line naming it back. Every article renders as a peer heading, so an unacknowledged ` +
+        `merge is prose asserting a structure the file does not have.`,
+      );
+      continue;
+    }
+    const shortChild = a.name.split(' — ')[0];
+    if (!subsLine.includes(shortChild)) {
+      failures.push(
+        `${REGISTRY_REL}:${a.lineNo} — "${parent.name}" has a **Merged subsections.** line that does NOT name "${shortChild}". ` +
+        `The backlink is the half that can silently disappear; a merge named in only one direction is not a relation.`,
+      );
+      continue;
+    }
+    // And the parent's entry for this child must carry that child's tripwire, not just its name.
+    //
+    // Bounded to THIS child's entry. The first version looked 400 characters past the name for an
+    // em-dash, which on a multi-child line found the NEXT child's tripwire and passed — a guard that
+    // could not fail, found by removing a tripwire and watching it stay green. Entries are separated
+    // by "; ", so the child's own span ends at the next separator.
+    const nameAt = subsLine.indexOf(shortChild);
+    const afterName = subsLine.slice(nameAt + shortChild.length);
+    const entry = afterName.split(/;\s/)[0];
+    if (!/—\s*\S/.test(entry)) {
+      failures.push(
+        `${REGISTRY_REL}:${a.lineNo} — "${parent.name}" names "${shortChild}" as a merged subsection but records no ` +
+        `tripwire for it. The parent listing a child's NAME without what it actually trips on is the summarisation ` +
+        `the operator ruled against.`,
+      );
+      continue;
+    }
+    relations.push({ child: a.name, parent: parent.name, kind: 'merged-subsection' });
   }
 }
 

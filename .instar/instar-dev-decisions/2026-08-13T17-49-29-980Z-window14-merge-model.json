@@ -1,0 +1,24 @@
+{
+  "ts": "2026-08-13T17:49:29.980Z",
+  "slug": "window14-merge-model",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 114,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-registry-insertion-placement.mjs",
+      "scripts/lint-registry-tree-parentage.mjs",
+      "scripts/lint-standard-code-backreference.mjs"
+    ],
+    "addedLines": 108,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

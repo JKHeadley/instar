@@ -58,3 +58,50 @@ No blocking issue. Three under-blocks recorded, the sharpest carrying a dated ow
 output of this review is §5: a lint reported "clean" three times for three different reasons that had
 nothing to do with the document, and only a positive control distinguished a real pass from a guard
 that never ran.
+
+---
+
+## Addendum — closing three enforcement gaps found by independent review
+
+An independent check found all three of my new checks were **paperwork gates**: they verified a
+declaration had been *written*, not that the relation was *real*. That is precisely the defect the
+ruling they serve was raised against, which makes it worth recording rather than quietly fixing.
+
+**Gap 1 — the 25 merged relations were invisible to the bidirectional parentage lint.** It matched
+only the legacy "tree node under" wording, so a parent's backlink or a child's tripwire could be
+deleted with every required check green. The lint now understands the merge syntax and enforces four
+things per relation: the parent resolves, it is not the article itself, the child states its
+tripwire, and the parent names the child back **with that child's tripwire**. Declared relations went
+from 13 to **38** — the 25 were simply unseen before.
+
+**Gap 2 — the placement lint accepted a declaration without resolving the named parent.** Now it
+refuses a `Merged into` whose parent is not a live article. Both lints catch it independently, which
+is deliberate: placement owns "did you declare", parentage owns "is the relation real".
+
+**Gap 3 — the back-reference lint accepted any generic marker.** `Governed by:` followed by nothing
+resolvable counted as a back-reference. Measured before tightening: of 50 cited files, 23 name a real
+article and **zero** were passing on a bare marker — so closing it cost nothing today and removed the
+shortcut before anyone reached for it.
+
+**Two defects inside these fixes, both found by reverting rather than by reading.**
+
+The merge matcher `of \*([^*]+)\*` broke on the one article title containing internal emphasis —
+`No Manual Work (user *or* agent)` — capturing a truncated parent that resolved to nothing. Anchored
+on the trailing delimiter instead.
+
+And the parent-side tripwire check looked 400 characters past the child's name for an em-dash, which
+on a multi-child line found the **next** child's tripwire and passed. It was a guard that could not
+fail. Removing a tripwire and watching the lint stay green is what exposed it; the check is now
+bounded to the child's own entry. Third time in this window that an over-broad window reported a pass
+it had not earned.
+
+**And one structural defect the fixes exposed.** With the merged relations finally visible, the
+hierarchy generator refused to render: *Decision Provenance & Outcome Review* had **two parents** —
+the one it already declared, and the one my merge added from the audit's successor mapping. An
+article with two parents has no place in a tree.
+
+The resolution is a principle, not a patch: **what supersedes an incident is PROVENANCE; where a
+standard sits is PARENTAGE.** The merge conflated them and silently re-parented an article that
+already had a ratified placement. It now respects the existing parent, and the reconciliation says so
+in the article. Exactly one of the 25 was affected — measured, not assumed. This was invisible while
+the relations were invisible, which is the argument for closing gap 1 in one sentence.

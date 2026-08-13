@@ -55,8 +55,25 @@ for (const l of lines) {
   }
 }
 
+/**
+ * A back-reference must name a REAL article, not merely look like one.
+ *
+ * The first version accepted `namesArticle || MARKER.test(head)` — so a bare `Governed by:` with
+ * nothing resolvable after it counted as a back-reference. An independent review called that out:
+ * it is a paperwork gate, checking that the *form* of a reference was written rather than that a
+ * reference *exists*. That is the precise defect the ruling this lint serves was raised against, so
+ * having it inside the enforcement was not a small irony.
+ *
+ * Measured before tightening: of 50 cited files, 23 name a real article title and **zero** were
+ * passing on a bare marker. So closing the hole costs nothing today and removes the shortcut before
+ * anyone reaches for it.
+ *
+ * A marker is still useful — it makes the reference greppable — but it is no longer sufficient on
+ * its own. What counts is a real registry article title appearing in the file header.
+ */
 const MARKER = /(Governed by:|Enforces:|Standard:|governed by the standard)/i;
 const missing = [];
+const markerWithoutArticle = [];
 const gone = [];
 let ok = 0;
 
@@ -66,8 +83,9 @@ for (const rel of [...cited].sort()) {
   try { body = fs.readFileSync(abs, 'utf8'); } catch { gone.push(rel); continue; }
   const head = body.slice(0, 4000); // the header is where a governing reference belongs
   const namesArticle = titles.some((t) => t.length > 12 && (head.includes(t) || head.includes(t.split(' — ')[0])));
-  if (namesArticle || MARKER.test(head)) ok++;
-  else missing.push(rel);
+  if (namesArticle) { ok++; continue; }
+  if (MARKER.test(head)) markerWithoutArticle.push(rel); // a marker naming nothing real
+  missing.push(rel);
 }
 
 let baseline;
@@ -83,10 +101,16 @@ const errors = [];
 
 for (const rel of missing) {
   if (!grandfathered.has(rel)) {
+    const marker = markerWithoutArticle.includes(rel);
     errors.push(
-      `${rel} is cited by the registry as enforcement but names NO standard back. Add a header ` +
-        `comment naming the standard(s) it enforces — "Governed by: <article title>". A one-way ` +
-        `reference lets this guard be deleted by someone with no way to know a standard depends on it.`,
+      marker
+        ? `${rel} carries a back-reference MARKER that names no real registry article. A marker ` +
+            `without a resolvable standard is the form of a reference without the reference — name ` +
+            `the actual article title, exactly as it appears in the registry.`
+        : `${rel} is cited by the registry as enforcement but names NO standard back. Add a header ` +
+            `comment naming the standard(s) it enforces — "Governed by: <exact article title>". A ` +
+            `one-way reference lets this guard be deleted by someone with no way to know a standard ` +
+            `depends on it.`,
     );
   }
 }
