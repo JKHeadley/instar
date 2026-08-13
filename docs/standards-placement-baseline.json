@@ -1,0 +1,16 @@
+{
+  "_comment": "Articles that predate the insertion-placement rule (Justin, 2026-08-13) and do not yet declare where they sit in the tree. This set MAY ONLY SHRINK. Enforcing all at once would mean inventing placements by resemblance in one pass, which is the unconsidered placement the rule exists to prevent.",
+  "grandfatheredUnplaced": [
+    "An Autonomous Run Must Outlive Its Session",
+    "Architectural Agency in the Gap",
+    "Cross-Store Coherence Is an Invariant",
+    "Deferral = Deletion",
+    "Intelligent Prompts — An LLM Gate Must Not String-Match",
+    "Never-Waste Feedback — corrections compound",
+    "Scrape/Parser Fixture Realness — feed the parser the REAL bytes",
+    "Self-Heal Before Notify — The Operator Hears Only When Self-Healing Fails",
+    "Sovereignty — \"I own what is mine\"",
+    "Structure beats Willpower",
+    "Test Identity Never Enters Production State"
+  ]
+}

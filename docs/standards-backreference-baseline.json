@@ -1,0 +1,32 @@
+{
+  "_comment": "Files the registry cites as enforcement that do not yet name a standard back. Ordered by Justin 2026-08-13: references must run from both ends. This set MAY ONLY SHRINK. It is baselined rather than fixed in one pass because writing 40+ back-references at once would mean naming standards by resemblance instead of by knowledge — the unconsidered linkage the rule exists to prevent.",
+  "grandfatheredNoBackreference": [
+    "scripts/class-closure-lint.mjs",
+    "scripts/doorway-scan.mjs",
+    "scripts/instar-dev-precommit.js",
+    "scripts/lint-dev-agent-dark-gate.js",
+    "scripts/lint-expected-capacity-degradations.js",
+    "scripts/lint-model-registry-freshness.mjs",
+    "scripts/lint-no-unregistered-self-action.js",
+    "scripts/redact-captured-fixture.mjs",
+    "scripts/stall-class-codemod.mjs",
+    "scripts/write-audit-convergence.mjs",
+    "skills/spec-converge/scripts/write-convergence-tag.mjs",
+    "src/core/CapacityEnforcement.ts",
+    "src/core/FeatureMaturationPlanGate.mjs",
+    "src/core/FeatureRolloutReconciler.ts",
+    "src/core/FeedbackManager.ts",
+    "src/core/InitiativeTracker.ts",
+    "src/core/LiveTestArtifactStore.ts",
+    "src/core/LiveTestHarness.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/RealChannelDriver.ts",
+    "src/core/canonicalPipelineRegistry.ts",
+    "src/core/stallCoverageValidator.ts",
+    "src/core/types.ts",
+    "src/monitoring/AutonomousThroughputFloor.ts",
+    "src/monitoring/FeatureMetricsLedger.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts"
+  ]
+}

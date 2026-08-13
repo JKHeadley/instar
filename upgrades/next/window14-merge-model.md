@@ -1,0 +1,35 @@
+# Merge, not archive — 25 standards stay live as named subsections
+
+## What Changed
+
+The retirement model was re-ruled by the operator. Nothing is retired.
+
+- **All 25 previously-retired standards are LIVE**, full text intact and binding. Each declares
+  itself a named subsection of its parent and states the specific tripwire it contributes; each
+  parent names every child and that child's tripwire.
+- **The archival machinery is gone** — 25 retirement records, 39 forwarding markers, and the redirect
+  lint. A live rule needs no forwarding.
+- **New rule: every standard declares its tree placement** (child / root / fold into an existing
+  one), enforced at insertion and when a grandfathered standard is modified. 77 of 88 now declare one.
+- **New rule: references run from both ends** — the registry names the enforcing code, and the code
+  names the standards that govern it.
+
+## Evidence
+
+88 articles, enforcement ratio 0.7386, dangling 0, unrecognized 0, parentage 13/13 resolving, 0
+retirement records, 0 forwarding markers, typecheck clean. Area audit
+`docs/audits/standards-area-audit-2026-08-13c.json` with its convergence report; an independent
+fidelity lens against the operator's own words returned ACCEPTED-WITH-FINDINGS and five of its six
+findings were acted on.
+
+## What to Tell Your User
+
+Nothing changes in how the agent behaves. Twenty-five constitutional rules that were previously
+marked retired are fully live again, now organised under the rules they belong to — with each one's
+specific conditions named at both levels rather than summarised away. The reason is the operator's:
+a high-level rule does not carry the specific tripwire a low-level one did, and losing that is how
+you walk back into the problem the rule was written for.
+
+## Summary of New Capabilities
+
+None — this amends the constitution's text and adds two build-time checks over it.

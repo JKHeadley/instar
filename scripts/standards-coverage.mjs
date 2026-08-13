@@ -205,8 +205,26 @@ const EXCLUDED_NARRATIVE_SECTION_HEADINGS = [
   // NARRATIVE, never ENFORCEMENT: 'this no longer governs' is a status, not a guard. And
   // 'Retirement held' records WHY an article that was proposed for retirement stays live, with
   // the dated owner whose job is to build the absorption target it lacks.
-  'Retired',
-  'Retirement held',
+  // Added 2026-08-13 by the operator's RE-RULING of 4a: MERGE, not archive. A superseded standard
+  // becomes a named SUBSECTION of its parent and stays LIVE — 'Merged into' on the child, 'Merged
+  // subsections' on the parent, which names each child AND the specific tripwire it carries.
+  //
+  // The operator's reason, and the bar the fields exist to hold: 'if the lower level standards are
+  // retired, the higher level standards may not have the level of specificity needed for the
+  // development process to avoid the pitfalls that the retired standards represent.'
+  //
+  // NARRATIVE, never ENFORCEMENT: these state where a standard sits in the tree, not that a guard
+  // exists for it. The child keeps its own enforcement citations.
+  // Justin's structural addition, 2026-08-13, binding: 'The tree structure itself should by default
+  // remove the possibility of duplicates since any new standard introduced has to find a proper place
+  // in the tree, whether that's updating a current standard becoming a child of a current standard or
+  // becoming a new route or foundational standard.' The 25 duplicates existed because that was never
+  // structurally enforced. 'Tree placement' is where a standard states which of the three it took.
+  //
+  // NARRATIVE, never ENFORCEMENT: a placement is where a standard SITS, not a guard that it works.
+  'Tree placement',
+  'Merged into',
+  'Merged subsections',
   'Judgment-bound',
   'Fails',
   'Neither is whole alone',
