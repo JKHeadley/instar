@@ -1,0 +1,107 @@
+#!/usr/bin/env node
+/**
+ * lint-standard-code-backreference — the return half of the reference graph.
+ *
+ * Governed by: *References Run From Both Ends — the Registry Names the Code, the Code Names the
+ * Standard* (docs/STANDARDS-REGISTRY.md). This file is itself an instance of the rule it enforces:
+ * the line above is its own back-reference.
+ *
+ * Justin, 2026-08-13, ordering it:
+ *
+ *   "all infrastructure should have documentation and or comments is maintained with the code that
+ *    states what standards rule over that part of the infrastructure or which standard apply. That
+ *    way we have references from both ends meaning the registry itself list what parts the code
+ *    enforce the standards and the code references back to which standards they are derived from."
+ *
+ * WHAT IT CHECKS. For every repo file the registry cites in an enforcement field, the file must name
+ * at least one standard back — by quoting a real article title, or by a `Governed by:` /
+ * `Enforces:` / `Standard:` marker. One-way references decay silently: the registry can cite a guard
+ * that was deleted (the dangling-ref floor catches that), and a guard can be deleted by someone with
+ * no way to know a standard depended on it (this catches that).
+ *
+ * WHY A SHRINK-ONLY BASELINE. The registry cites many files that predate the rule. Demanding all of
+ * them at once would mean writing back-references by resemblance instead of by knowledge — the exact
+ * unconsidered-linkage failure the article is about. So the un-back-referenced set is baselined and
+ * MAY ONLY SHRINK.
+ *
+ * WHAT IT DOES NOT CHECK, stated rather than implied: that the named standard is the RIGHT one. That
+ * is a reading, and it is carried as a named sub-obligation on the article with a countdown.
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+
+const ROOT = process.cwd();
+const REGISTRY = process.env.STANDARDS_REGISTRY_PATH || path.join(ROOT, 'docs/STANDARDS-REGISTRY.md');
+const BASELINE = path.join(ROOT, 'docs/standards-backreference-baseline.json');
+
+let raw;
+try { raw = fs.readFileSync(REGISTRY, 'utf8'); } catch {
+  console.log('lint-standard-code-backreference: no registry at the resolved path — skipping');
+  process.exit(0);
+}
+
+const lines = raw.split('\n');
+const titles = lines.filter((l) => /^### /.test(l)).map((l) => l.slice(4).trim());
+
+// Files cited in an enforcement field. Kept to the enforcement fields deliberately: provenance and
+// narrative fields also contain paths, and a postmortem is not a guard.
+const ENFORCEMENT = /^\*\*(Applied through|Enforced by \(structure, not willpower\)|Enforcement)\.\*\*/;
+const cited = new Set();
+for (const l of lines) {
+  if (!ENFORCEMENT.test(l)) continue;
+  for (const m of l.matchAll(/`([^`]+\.(?:ts|mjs|cjs|js))`/g)) {
+    const p = m[1].trim();
+    if (p.startsWith('src/') || p.startsWith('scripts/') || p.startsWith('skills/')) cited.add(p);
+  }
+}
+
+const MARKER = /(Governed by:|Enforces:|Standard:|governed by the standard)/i;
+const missing = [];
+const gone = [];
+let ok = 0;
+
+for (const rel of [...cited].sort()) {
+  const abs = path.join(ROOT, rel);
+  let body;
+  try { body = fs.readFileSync(abs, 'utf8'); } catch { gone.push(rel); continue; }
+  const head = body.slice(0, 4000); // the header is where a governing reference belongs
+  const namesArticle = titles.some((t) => t.length > 12 && (head.includes(t) || head.includes(t.split(' — ')[0])));
+  if (namesArticle || MARKER.test(head)) ok++;
+  else missing.push(rel);
+}
+
+let baseline;
+try { baseline = JSON.parse(fs.readFileSync(BASELINE, 'utf8')); } catch { baseline = null; }
+if (!baseline) {
+  console.error('lint-standard-code-backreference: FAILED — no baseline at docs/standards-backreference-baseline.json');
+  console.error('  Write it with: { "grandfatheredNoBackreference": [ ...paths... ] }  (may only shrink)');
+  process.exit(1);
+}
+
+const grandfathered = new Set(baseline.grandfatheredNoBackreference || []);
+const errors = [];
+
+for (const rel of missing) {
+  if (!grandfathered.has(rel)) {
+    errors.push(
+      `${rel} is cited by the registry as enforcement but names NO standard back. Add a header ` +
+        `comment naming the standard(s) it enforces — "Governed by: <article title>". A one-way ` +
+        `reference lets this guard be deleted by someone with no way to know a standard depends on it.`,
+    );
+  }
+}
+for (const rel of grandfathered) {
+  if (!missing.includes(rel) && !gone.includes(rel)) {
+    errors.push(`${rel} is baselined as lacking a back-reference but now has one — remove it from the baseline. The baseline may only shrink.`);
+  }
+}
+
+if (errors.length) {
+  console.error('lint-standard-code-backreference: FAILED');
+  errors.forEach((e) => console.error('  ✗', e));
+  process.exit(1);
+}
+console.log(
+  `lint-standard-code-backreference: clean — ${cited.size} cited file(s), ${ok} naming a standard back, ` +
+    `${missing.length} grandfathered (shrink-only)${gone.length ? `, ${gone.length} cited-but-absent (the dangling-ref floor owns those)` : ''}.`,
+);

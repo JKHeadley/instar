@@ -55,10 +55,11 @@ const REQUIRED_LINTS = [
   'generate-standards-hierarchy.mjs',
   'lint-no-duplicate-definitions.mjs',
   'lint-recall-surface-names-match-mechanism.mjs',
-  // Retired constitutional articles must never strand a citation: every retired article names a
-  // live successor, every citation site carries a forwarding marker, and the marker agrees with
-  // the retirement record. Operator ruling 4a, 2026-08-13.
-  'lint-retired-article-redirects.mjs',
+  // Justin, 2026-08-13: every new standard must find its place in the tree — the duplicates existed
+  // because that was never structurally enforced.
+  'lint-registry-insertion-placement.mjs',
+  // Justin, 2026-08-13: references run from both ends — the code names the standard back.
+  'lint-standard-code-backreference.mjs',
   'lint-registry-tree-parentage.mjs',
   'lint-single-governing-obligation.mjs',
   'lint-cas-emit-placement.js',
