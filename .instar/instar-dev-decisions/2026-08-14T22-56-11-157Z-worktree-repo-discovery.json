@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-14T22:56:11.157Z",
+  "slug": "worktree-repo-discovery",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 122,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AgentWorktreeDetector.ts"
+    ],
+    "addedLines": 122,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

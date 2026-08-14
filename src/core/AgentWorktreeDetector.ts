@@ -401,6 +401,103 @@ export function enumerateSafeRoots(agentsDir?: string): string[] {
   return roots;
 }
 
+// ── Public helper: ask the worktrees which repo owns them ────────────────
+
+/**
+ * Derive candidate instar-repo roots from the agent worktrees themselves.
+ *
+ * WHY THIS EXISTS. The fallback chain below guesses at conventional checkout
+ * locations (`~/Documents/Projects/instar`, `~/instar`). An agent whose repo
+ * lives anywhere else — e.g. `<agent_home>/.dev/instar`, which is where the
+ * dev layout actually puts it — matches none of them, so resolution returned
+ * null and every consumer silently did nothing. Meanwhile the answer was
+ * sitting on disk the whole time: a linked worktree's `.git` is a FILE whose
+ * contents name its owning repo. The worktrees know. Ask them instead of
+ * guessing.
+ *
+ * (2026-07-29 the same blind spot let the reaper report `reclaimable: 0`
+ * against 73 worktrees because its `git -C <path> worktree list` was failing
+ * outright. The honest-reporting fix landed; the resolution did not.)
+ *
+ * Deliberately NO subprocess: reading the pointer file is cheaper than
+ * `git rev-parse`, cannot block the event loop, and keeps this helper usable
+ * from the runtime hot dirs. Returns candidates only — every one is still
+ * integrity-validated by `resolveInstarRepo` before it is believed.
+ *
+ * ORDERED BY COUNT, and the ordering carries a real limitation worth stating.
+ * One agent's `.worktrees/` can legitimately hold worktrees of MORE THAN ONE
+ * clone of the same upstream — measured on a live agent: 29 worktrees owned by
+ * `<home>/.build/instar` and 17 by `<home>/.dev/instar`. This returns the
+ * most-owned first, so a single-repo consumer gets the largest coherent set
+ * rather than an arbitrary one; it does NOT merge them, and a consumer that
+ * takes only `[0]` will not see the smaller repo's worktrees. Consumers that
+ * need full coverage must iterate the whole list. The alternative — picking
+ * arbitrarily — would make the blind spot unpredictable instead of merely
+ * bounded.
+ */
+export function discoverInstarRepoFromWorktrees(
+  roots: ReadonlyArray<string>,
+  opts: { maxWorktrees?: number } = {},
+): string[] {
+  const cap = opts.maxWorktrees ?? 200;
+  const counts = new Map<string, number>();
+  let inspected = 0;
+
+  for (const root of roots) {
+    let entries: string[] = [];
+    try {
+      entries = fs.readdirSync(root);
+    } catch {
+      // @silent-fallback-ok — root vanished between enumeration and read.
+      continue;
+    }
+    for (const entry of entries) {
+      if (inspected >= cap) break;
+      const pointer = path.join(root, entry, '.git');
+      let stat;
+      try {
+        stat = fs.statSync(pointer);
+      } catch {
+        // @silent-fallback-ok — not a worktree (no .git at all). Skip.
+        continue;
+      }
+      // A linked worktree's .git is a FILE. A full clone's is a directory, and
+      // a clone under .worktrees/ is not a worktree of anything — skip it
+      // rather than claim it points somewhere.
+      if (!stat.isFile()) continue;
+      inspected++;
+      let contents: string;
+      try {
+        contents = fs.readFileSync(pointer, 'utf-8');
+      } catch {
+        // @silent-fallback-ok — unreadable pointer; it names nothing.
+        continue;
+      }
+      const repo = parseWorktreeGitPointer(contents);
+      if (repo) counts.set(repo, (counts.get(repo) ?? 0) + 1);
+    }
+    if (inspected >= cap) break;
+  }
+
+  return [...counts.entries()]
+    .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))
+    .map(([repo]) => repo);
+}
+
+/**
+ * `gitdir: /path/to/repo/.git/worktrees/<slug>` → `/path/to/repo`.
+ * Anything that does not have that exact shape names nothing, and returns
+ * null rather than a guess.
+ */
+export function parseWorktreeGitPointer(contents: string): string | null {
+  const match = /^\s*gitdir:\s*(.+?)\s*$/m.exec(contents);
+  if (!match) return null;
+  const marker = `${path.sep}.git${path.sep}worktrees${path.sep}`;
+  const idx = match[1].indexOf(marker);
+  if (idx <= 0) return null;
+  return match[1].slice(0, idx);
+}
+
 // ── Public helper: resolve the canonical instar repo for the detector ────
 
 export interface ResolveDetectorRepoOptions {
@@ -416,6 +513,13 @@ export interface ResolveDetectorRepoOptions {
    * running them has an allowlisted checkout at cwd).
    */
   cwd?: string;
+  /**
+   * The CALLER'S OWN agent `.worktrees` root(s), used to derive the owning
+   * repo from the worktrees themselves. Omitted ⇒ no worktree-derived
+   * candidates. Never pass `enumerateSafeRoots()` here: that spans every agent
+   * on the machine and will resolve you to somebody else's repo.
+   */
+  worktreeRoots?: ReadonlyArray<string>;
 }
 
 /**
@@ -442,6 +546,24 @@ export function resolveDetectorInstarRepo(opts: ResolveDetectorRepoOptions = {})
 
   const candidateChain: string[] = [];
   if (configRepoPath) candidateChain.push(configRepoPath);
+
+  // Ask the worktrees who owns them, BEFORE guessing at conventional
+  // locations. An operator-supplied `worktree.repoPath` still wins — this only
+  // ever gets consulted where the deterministic answer was absent, which is
+  // exactly where resolution used to return null.
+  //
+  // THE CALLER MUST NAME ITS OWN ROOT. There is deliberately no default here,
+  // and `enumerateSafeRoots()` is deliberately NOT it: that helper enumerates
+  // EVERY agent on the machine, so defaulting to it resolved this agent to a
+  // DIFFERENT agent's repo — whichever one happened to own the most worktrees.
+  // (Measured, not hypothesised: with the default in place, echo resolved to
+  // instar-codey's repo.) A confident wrong repo is worse than the null this
+  // change exists to remove, so absent an explicit root we add no candidate
+  // and the pre-existing chain applies unchanged.
+  for (const repo of discoverInstarRepoFromWorktrees(opts.worktreeRoots ?? [])) {
+    if (!candidateChain.includes(repo)) candidateChain.push(repo);
+  }
+
   if (opts.fallbackChain) {
     candidateChain.push(...opts.fallbackChain);
   } else {
