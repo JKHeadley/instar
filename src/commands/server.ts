@@ -85,7 +85,7 @@ import type { TopicProfileStore } from '../core/TopicProfileStore.js';
 import type { TopicResumeMap } from '../core/TopicResumeMap.js';
 import type { IdleReading } from '../core/classifyProfileChange.js';
 import { closeAllSqlite } from '../core/SqliteRegistry.js';
-import { SessionManager, type SessionTerminateAuthority } from '../core/SessionManager.js';
+import { SessionManager, type SessionTerminateAuthority, IDLE_PROMPT_PATTERNS } from '../core/SessionManager.js';
 import { configureSyncOpMarker, defaultInflightMarkerReader } from '../core/InFlightSyncOpMarker.js';
 import { StateManager } from '../core/StateManager.js';
 import { StuckInputSentinel } from '../core/StuckInputSentinel.js';
@@ -12760,6 +12760,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             // Operator ask (2026-06-09): silence/recovery notices land in the
             // STALLED session's OWN topic, not the consolidated lifeline feed.
             getTopicForSession: (name) => telegram?.getTopicForSession(name),
+            // A2(b): a finished turn sitting at a clean prompt is NOT a wedge.
+            // Unwired, the sentinel defaults this to false and escalates such a
+            // session as a "genuine freeze" — a false stuck-notice to the
+            // operator. Uses the SHARED IDLE_PROMPT_PATTERNS export rather than a
+            // parallel copy, per its own docblock.
+            isCleanIdlePrompt: (frame: string) =>
+              IDLE_PROMPT_PATTERNS.some((pat) => frame.includes(pat)),
             deliverToTopic: async (topicId, text) => {
               try {
                 const resp = await fetch(`http://localhost:${config.port}/telegram/reply/${topicId}`, {

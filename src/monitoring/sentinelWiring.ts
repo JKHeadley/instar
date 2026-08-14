@@ -315,6 +315,12 @@ export function buildActiveWorkSilenceDeps(opts: {
   /** HONEST-PROGRESS-MESSAGING A1/A2 — capture the session's CURRENT live frame
    *  for corroboration before escalating. */
   captureFrame?: (sessionName: string) => string | null;
+  /** A2(b) — is the live frame a CLEAN IDLE PROMPT (a finished turn, not a
+   *  wedge)? Without this the sentinel's A2(b) branch is inert: the sentinel
+   *  defaults it to `false`, so a session sitting at a finished prompt escalates
+   *  as a "genuine freeze". Supply it from the SHARED IDLE_PROMPT_PATTERNS, not
+   *  a parallel copy (see the export docblock on SessionManager.ts). */
+  isCleanIdlePrompt?: (frame: string, sessionName: string) => boolean;
   /** A2(c) — does the session have a live sub-agent (SubagentTracker)? */
   hasActiveSubagents?: (sessionName: string) => boolean;
   /** Resolve the framework so the live-frame "generating now" check is accurate. */
@@ -347,6 +353,7 @@ export function buildActiveWorkSilenceDeps(opts: {
     looksActivelyWorking: opts.captureFrame
       ? (frame, sessionName) => looksGeneratingNow(frame, opts.frameworkForSession?.(sessionName))
       : undefined,
+    isCleanIdlePrompt: opts.isCleanIdlePrompt,
     hasActiveSubagents: opts.hasActiveSubagents,
     recordEvent: opts.recordEvent,
   };
