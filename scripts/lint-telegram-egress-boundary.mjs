@@ -23,8 +23,10 @@
  * WHAT IT DOES NOT PROVE, stated because the previous version's claims outran its analysis:
  *   - It resolves a URL through a LOCAL declaration or a local helper only. A Bot API URL assembled
  *     in another module and imported would not be recognised.
- *   - It does not follow a `fetch` reference stored in a variable and called indirectly.
- *   Both are narrower than the gaps they replace, and both are named here rather than discovered.
+ *   - It follows a `fetch` stored in a LOCAL variable declaration (added 2026-08-14), but NOT one
+ *     re-assigned after declaration, arriving as a function parameter, or imported as a wrapper from
+ *     another module.
+ *   All are narrower than the gaps they replace, and all are named here rather than discovered.
  *
  * WHERE THIS ENDS AND THE TESTS BEGIN — established by sabotage, not by assumption. Breaking the
  * door's OWN url-to-method recogniser (so it silently skips the check on every send) leaves this lint
@@ -109,18 +111,25 @@ function denotesBotApiUrl(node, sf) {
  * invisible to a lint whose headline claim is "exactly one file". A property access whose final name
  * is `fetch` counts too.
  *
- * Still NOT covered, said plainly rather than left for the next reading to find: a fetch bound to a
- * DIFFERENT name (`const send = fetch; send(url)`) or reached through a computed member. Catching
- * those needs alias resolution this does not do. The claim below is written to match this scope.
+ * Alias resolution ADDED 2026-08-14 (a peer-agent audit ranked this check #2 of 25 defeatable by
+ * renaming, and this header had honestly named its own gap): a fetch bound to a DIFFERENT name
+ * (`const send = fetch; send(url)`) is now caught, resolved on the AST via collectFetchAliases and
+ * followed to a fixpoint so `const a = fetch; const b = a;` closes too. A computed member on a
+ * string literal (`x['fetch']`) was already covered.
+ *
+ * Still NOT covered, said plainly rather than left for the next reading to find: re-assignment after
+ * declaration, a fetch arriving as a function PARAMETER, and a wrapper imported from another module.
+ * Those need flow and cross-module analysis this does not do. The claim below is written to match
+ * this scope.
  */
-function isFetchCall(n) {
+function isFetchCall(n, aliases = EMPTY_ALIASES) {
   if (!ts.isCallExpression(n)) return false;
   const e = n.expression;
-  if (ts.isIdentifier(e)) return e.text === 'fetch';
+  if (ts.isIdentifier(e)) return e.text === 'fetch' || aliases.has(e.text);
   if (ts.isPropertyAccessExpression(e)) {
     // `fetch.call(...)` / `fetch.apply(...)` are direct invocations of fetch, and `x['fetch']` is a
     // property access spelled differently (pass 40 F3).
-    if (e.name.text === 'call' || e.name.text === 'apply') return isFetchTarget(e.expression);
+    if (e.name.text === 'call' || e.name.text === 'apply') return isFetchTarget(e.expression, aliases);
     return e.name.text === 'fetch';
   }
   if (ts.isElementAccessExpression(e)) {
@@ -131,12 +140,57 @@ function isFetchCall(n) {
 }
 
 /** Is this expression the `fetch` function itself (for `.call`/`.apply` forms)? */
-function isFetchTarget(e) {
-  if (ts.isIdentifier(e)) return e.text === 'fetch';
+function isFetchTarget(e, aliases = EMPTY_ALIASES) {
+  if (ts.isIdentifier(e)) return e.text === 'fetch' || aliases.has(e.text);
   if (ts.isPropertyAccessExpression(e)) return e.name.text === 'fetch';
   return false;
 }
 
+const EMPTY_ALIASES = new Set();
+
+/**
+ * Local names bound to `fetch` in this file, resolved to a fixpoint so a chain
+ * (`const a = fetch; const b = a;`) closes too.
+ *
+ * This closes the gap the header above named plainly and left open: a fetch
+ * bound to a DIFFERENT name. Done on the AST rather than by text, because the
+ * file is already parsed — a variable declaration whose initialiser IS the
+ * fetch function is unambiguous, where a regex over `= fetch` would also match
+ * a property called fetch on an unrelated object.
+ *
+ * Deliberately NOT resolved: re-assignment after declaration, parameters, and
+ * imports of a wrapper from another module. Those need flow/cross-module
+ * analysis; the claim stays scoped to what is actually checked.
+ */
+export function collectFetchAliases(sf) {
+  const names = new Set();
+  const decls = [];
+  const walkNode = (n) => {
+    if (ts.isVariableDeclaration(n) && n.initializer && ts.isIdentifier(n.name)) {
+      decls.push([n.name.text, n.initializer]);
+    }
+    ts.forEachChild(n, walkNode);
+  };
+  walkNode(sf);
+  for (let pass = 0; pass < 10; pass++) {
+    const before = names.size;
+    for (const [name, init] of decls) {
+      if (isFetchTarget(init, names)) names.add(name);
+    }
+    if (names.size === before) break;
+  }
+  return names;
+}
+
+// ── CLI body ─────────────────────────────────────────────────────────────
+// Guarded so collectFetchAliases can be imported by tests WITHOUT running the
+// scan: this module has four process.exit(1) paths, so an unguarded import
+// would kill any test run the moment the repo had a violation. Same pattern as
+// scripts/eli16-pr-description-check.mjs.
+const invokedDirectly =
+  process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
+
+if (invokedDirectly) {
 const violations = [];
 let doorSeen = false;
 
@@ -147,9 +201,10 @@ for (const file of walk(SRC)) {
   if (!text.toLowerCase().includes('api.telegram.org')) continue;
   const sf = parse(file, text);
   const isDoor = path.resolve(file) === DOOR;
+  const aliases = collectFetchAliases(sf);
 
   const visit = (n) => {
-    if (isFetchCall(n) && ts.isCallExpression(n)) {
+    if (isFetchCall(n, aliases) && ts.isCallExpression(n)) {
       if (denotesBotApiUrl(n.arguments[0], sf)) {
         if (isDoor) doorSeen = true;
         else {
@@ -254,3 +309,5 @@ console.log(
   'lint-telegram-egress-boundary: clean — Telegram Bot API egress is confined to '
   + 'src/messaging/telegram-egress.ts, which checks the serialised body before sending.',
 );
+
+}
