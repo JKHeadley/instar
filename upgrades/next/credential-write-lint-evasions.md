@@ -1,0 +1,27 @@
+## What Changed
+
+The rule that stops secrets being written outside the approved path could be switched off by writing one name in two halves.
+
+- **The raw-keychain part of the check only arms itself when it sees a particular service name written out in full.** That narrowing is deliberate — it keeps the other, unrelated keychain stores from being flagged — but it means splitting the name across a join turned the entire rule off.
+- **Two smaller ways past existed too**: assign the credential store to a variable and write through the variable, or reach the write method with bracket notation instead of a dot.
+- **All three were confirmed getting past the check before this change**, with a known-caught example passing in the same run to prove the probe worked.
+- **All three are now closed.** Split strings are joined before the check decides whether to arm, variables holding the store are followed to a fixed point, and bracket access is recognised.
+- **Nothing new is forbidden.** The same writes are disallowed as before; more of them are visible, and the codebase passes cleanly before and after.
+
+## What to Tell Your User
+
+Every write of the stored Claude credential is meant to go through a single controlled path, and a check enforces it. To avoid complaining about unrelated keychain entries, part of that check only switched on when it recognised a specific name spelled out in full — so spelling it in two pieces made the check ignore the file completely.
+
+Nothing was actually being written unsafely; the hole was in the guard. It is closed, along with two smaller ones.
+
+The care here went into the opposite risk. Widening a rule that blocks work can flood people with false complaints about correct code, and the quickest way to silence a noisy check is to switch it off. So five deliberate tests confirm the things that must *not* be flagged still are not, and the whole codebase passes cleanly before and after.
+
+## Summary of New Capabilities
+
+None. This widens what an existing check can see. No new command, route, setting, or rule.
+
+## Evidence
+
+The three bypasses were reproduced against the shipped check before any change, alongside a known-caught example in the same run to prove the probe could detect anything at all. Proven in both directions: restored to the old behaviour, seven tests fail and seven pass — and the seven that pass are exactly the five opposite-direction controls plus the plain cases, which is what makes them guards rather than echoes. Those controls check that a different keychain service is not flagged, that a raw keychain write with no reference to the guarded service is not flagged, that an unrelated store's write is not flagged, that an unrelated variable assignment is not absorbed, and that comments are not violations. The real codebase passes cleanly before and after, and the source was restored byte-identical after the check.
+
+Remaining gaps are named rather than implied: a service name built through a template with a variable in it, or imported as a constant from another file, still disarms the rule — both need value resolution this check does not do.
