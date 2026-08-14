@@ -348,6 +348,39 @@ describe('OutputActivityTracker — change detection + active/idle filtering', (
 });
 
 describe('buildActiveWorkSilenceDeps — wiring integrity', () => {
+  // ── A2(b): the clean-idle-prompt branch ──────────────────────────────
+  // Earned 2026-08-14 (found by a peer agent's optional-dependency audit).
+  // `isCleanIdlePrompt` is optional on the sentinel and defaults to `false`
+  // (`this.deps.isCleanIdlePrompt?.(frame, name) ?? false`). The builder did
+  // not accept OR forward it, and nothing in src/ supplied it — it appeared
+  // exactly twice in the whole tree: its declaration and its one use. So the
+  // A2(b) branch was inert and a session sitting at a FINISHED prompt
+  // escalated as a "genuine freeze": a false stuck-notice to the operator.
+  // This file exists to catch exactly that shape and did not, because the
+  // dep was never in the builder's surface to be checked.
+
+  it('THE DEFECT: forwards isCleanIdlePrompt (A2(b) was inert — dropped by the builder)', () => {
+    const tracker = new OutputActivityTracker();
+    const surface = makeSurface({});
+    const deps = buildActiveWorkSilenceDeps({
+      tracker, sessions: surface, escalate: async () => {},
+      isCleanIdlePrompt: (frame) => frame.includes('bypass permissions on'),
+    });
+    // Before this change the builder had no such option and returned nothing here.
+    expect(typeof deps.isCleanIdlePrompt).toBe('function');
+    expect(deps.isCleanIdlePrompt!('… bypass permissions on', 'sess')).toBe(true);
+    expect(deps.isCleanIdlePrompt!('working… esc to interrupt', 'sess')).toBe(false);
+  });
+
+  it('CONTROL: omitted stays undefined — the sentinel default still applies', () => {
+    const tracker = new OutputActivityTracker();
+    const surface = makeSurface({});
+    const deps = buildActiveWorkSilenceDeps({ tracker, sessions: surface, escalate: async () => {} });
+    // Not fabricated: an unsupplied optional dep must remain absent, so the
+    // sentinel's documented `?? false` default is what governs.
+    expect(deps.isCleanIdlePrompt).toBeUndefined();
+  });
+
   it('listSessions delegates to the tracker snapshot', () => {
     const surface = makeSurface({ output: '⠹ working', sessions: [{ tmuxSession: 'agent-1' }] });
     const tracker = new OutputActivityTracker(surface);
