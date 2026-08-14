@@ -1,0 +1,25 @@
+## What Changed
+
+The check that stops an uncapped AI process being created outside its safety limit could be walked past by renaming an import.
+
+- **It matched the class by its name as literal text.** Two ordinary import styles defeat that: rename it on import and use the new name, or import the whole module and reach the class through it. Either is a real, uncapped construction that the check could not see.
+- **It now works out every local name the class is bound to** in a file before looking for constructions, and separately recognises the module-qualified form.
+- **The detection is now a separate importable function**, so it can be tested with small fixtures rather than only by running the whole check over the whole codebase.
+- **Importing it no longer runs it.** The command body stops the process when it finds a violation, so importing the detector in a test would have killed the test run the moment the codebase had one.
+- **No new rule and no new work.** The same constructions are forbidden as before; more of them are visible. The codebase passes cleanly both before and after.
+
+## What to Tell Your User
+
+In June this system created somewhere between two and three hundred AI processes at once and ran the machine out of memory. The fix was a hard ceiling, plus a check that refuses any code creating one of those processes outside the ceilinged path.
+
+That check looked for the thing by name, and renaming something on import is completely ordinary — so a real violation could sit there in plain sight and the check would report everything fine. Nothing was actually wrong today; the hole was in the guard, not the code it guards.
+
+It now recognises the renamed and module-qualified forms. This was chosen first out of twenty-five checks with the same weakness, because it guards a safety limit rather than a convention, and because the failure it prevents has already happened once.
+
+## Summary of New Capabilities
+
+None. This widens what an existing check can see. No new command, route, setting, or rule, and no new violations are introduced.
+
+## Evidence
+
+The blindness was confirmed in the check's own source before any change: it built a pattern from the class name and tested it line by line, which cannot match across a module qualifier and matches nothing at all once the name is replaced by an alias. Proven in both directions — restricted back to name-only matching, five tests fail and six still pass, those six being the plain case and four deliberate opposite-direction controls: an import alone is not a construction, a comment mentioning the class is not, a differently-named class is not flagged, and a plain variable sharing the name is not. Without those, something that flagged everything would pass every test about catching bypasses and be useless on a healthy codebase. The real codebase passes cleanly before and after, so no false positives were introduced. Import-safety verified in both modes. Source restored byte-identical after the check.
