@@ -42,6 +42,43 @@ const STOPWORDS = new Set([
  * names, camelCase/kebab/snake words, and rare ≥4-char words — minus boilerplate. Bare
  * generic words are dropped so two topics that merely both say "fix the test" don't match.
  */
+/**
+ * Which topics currently have a live session, resolved the SAME way the HTTP
+ * layer resolves a session's topic: from the tmux session name, through the
+ * messaging adapter's registry.
+ *
+ * Earned 2026-08-14. The caller in AgentServer read `s.topicId` off the running
+ * sessions, behind the cast `as Array<{ topicId?: number | null }>`. A `Session`
+ * declares NO topic field at all (see types.ts) and nothing attaches one at
+ * runtime — so the guard `typeof s.topicId === 'number'` was ALWAYS false, the
+ * set was ALWAYS empty, and `running` came back false for every topic forever.
+ * The cast is what let it ship: it asserted a field the type does not have, so
+ * the compiler could never object.
+ *
+ * The index's own unit tests passed throughout, because they inject a stub
+ * `isRunning`. That is why this lives here as a pure, directly-testable
+ * function rather than inline at the wiring site: the bug was in the WIRING,
+ * and only a test that feeds it real-shaped Session objects can catch it.
+ */
+export function runningTopicIds(
+  sessions: ReadonlyArray<{ tmuxSession?: string | null }>,
+  resolveTopic: (tmuxSession: string) => number | null | undefined,
+): Set<number> {
+  const ids = new Set<number>();
+  for (const s of sessions) {
+    const name = typeof s?.tmuxSession === 'string' ? s.tmuxSession : '';
+    if (!name) continue;
+    let topicId: number | null | undefined;
+    try {
+      topicId = resolveTopic(name);
+    } catch {
+      continue; // one unresolvable session must not blind the whole set
+    }
+    if (typeof topicId === 'number' && Number.isFinite(topicId)) ids.add(topicId);
+  }
+  return ids;
+}
+
 export function extractTags(text: string): string[] {
   const out = new Set<string>();
   if (!text) return [];
