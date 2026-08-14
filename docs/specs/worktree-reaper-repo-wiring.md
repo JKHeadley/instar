@@ -27,8 +27,33 @@ enumerationError: git -C /Users/<user>/.instar/agents/echo worktree list --porce
                   → fatal: not a git repository (or any of the parent directories): .git
 ```
 
-45 worktrees under that agent home. **27 GB.** Ninety-eight consecutive passes, none of which enumerated
-anything.
+46 worktrees under that agent home, **27 GB** total. Ninety-eight consecutive passes, none of which
+enumerated anything.
+
+### 1a. What that failure actually costs — measured, after I overstated it
+
+I first wrote this up as "45 worktrees and 27 GB unreclaimed," which is the total on disk and is **not** what
+a working reaper would reclaim. Measured across all 46:
+
+| state | count | reaper's disposition |
+|---|---|---|
+| clean, branch merged (incl. squash-merged PRs) | **14** | reclaim-eligible |
+| clean, genuinely unmerged | 12 | kept — by design |
+| uncommitted changes | 17 | kept — never reaped |
+| detached HEAD | 3 | kept |
+
+So the honest cost of the blind reaper is roughly **14 worktrees, on the order of 8 GB** — not 27 GB. The
+other 32 are work-in-progress and unmerged branches that the reaper protects on purpose; that is the guard
+working, not failing.
+
+Worth recording how I got the number wrong twice: my first pass tested "is HEAD an ancestor of origin/main"
+and returned **3**, because that test cannot see a squash-merged branch — and squash-merge is a normal path
+here. Adding merged-PR state (which is precisely what the reaper's own `githubMergeCheck` does, and which I
+had ignored while measuring the thing it exists for) moved it to 14. The overstatement and the
+understatement had the same root: quoting a number before checking what it implied.
+
+The defect is real and worth fixing at 14 worktrees. It is not worth fixing on a 27 GB claim, and a spec that
+opens with an inflated number invites the reviewer to discount everything after it.
 
 `src/commands/server.ts` constructs both consumers with `instarRepo: config.projectDir`. On this layout
 `projectDir` **is the agent home**, and an agent home is not a git repo — the worktrees belong to
