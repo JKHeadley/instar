@@ -14890,10 +14890,28 @@ export async function startServer(options: StartOptions): Promise<void> {
                 autonomousRunRemainingForTopic,
                 readAutonomousRunMarkers,
               } = await import('../core/AutonomousSessions.js');
-              const { ParallelActivityIndex: AHParallelActivityIndex } = await import('../core/ParallelActivityIndex.js');
+              const { ParallelActivityIndex: AHParallelActivityIndex, runningTopicIds: ahRunningTopicIds } = await import('../core/ParallelActivityIndex.js');
               // Own ParallelActivityIndex (focus source) — fetched ONCE per tick
               // and indexed by topic inside the deps closure.
-              const ahActivityIndex = new AHParallelActivityIndex({ stateDir: config.stateDir });
+              // Wired even though this caller reads only topicId/focus today: an
+              // omitted `isRunning` is indistinguishable from "nothing is running",
+              // so a future consumer of `running` here would inherit a silent false.
+              const ahActivityIndex = new AHParallelActivityIndex({
+                stateDir: config.stateDir,
+                isRunning: (topicId) => {
+                  try {
+                    return ahRunningTopicIds(
+                      sessionManager.listRunningSessions(),
+                      (name) => telegram?.getTopicForSession?.(name),
+                    ).has(topicId);
+                  } catch {
+                    // @silent-fallback-ok: `false` is the pre-existing value for an
+                    // unresolvable topic — the same value the optional dependency
+                    // defaults to — and this index feeds a focus lookup, never a gate.
+                    return false;
+                  }
+                },
+              });
               const ahRunStateStore = new AutonomousHeartbeatRunStateStore(
                 path.join(config.stateDir, 'state', 'autonomous-heartbeat.json'),
               );
@@ -15627,8 +15645,26 @@ export async function startServer(options: StartOptions): Promise<void> {
           const { OrchestratorActuator } = await import('../core/OrchestratorActuator.js');
           const { OrchestratorPoller } = await import('../monitoring/OrchestratorPoller.js');
           const { OscillationBreaker } = await import('../core/OscillationBreaker.js');
-          const { ParallelActivityIndex: SOActivityIndex } = await import('../core/ParallelActivityIndex.js');
-          const soActivityIndex = new SOActivityIndex({ stateDir: config.stateDir });
+          const { ParallelActivityIndex: SOActivityIndex, runningTopicIds: soRunningTopicIds } = await import('../core/ParallelActivityIndex.js');
+          // MUST be wired: `reads.activeTopicsOnThisMachine` below maps `running:
+          // a.running` into SeamlessOrchestratorEngine. Unwired, a read literally
+          // named "activeTopicsOnThisMachine" could never see an active topic.
+          const soActivityIndex = new SOActivityIndex({
+            stateDir: config.stateDir,
+            isRunning: (topicId) => {
+              try {
+                return soRunningTopicIds(
+                  sessionManager.listRunningSessions(),
+                  (name) => telegram?.getTopicForSession?.(name),
+                ).has(topicId);
+              } catch {
+                // @silent-fallback-ok: `false` is the pre-existing value for an
+                // unresolvable topic, and the orchestrator is dryRun-first; a
+                // placement hint must never break the poller that reads it.
+                return false;
+              }
+            },
+          });
           const soBreaker = new OscillationBreaker({
             oscillationWindowMs: soNum(soCfg.oscillationWindowMs, 3_600_000),
             blacklistTtlMs: soNum(soCfg.blacklistTtlMs, 86_400_000),

@@ -35,13 +35,40 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
 }
 
 /**
- * Extract the argument text of each `new ParallelActivityIndex(` occurrence by
- * scanning forward with paren depth — a regex cannot survive the nested object
- * literals and arrow bodies these arguments contain.
+ * Every LOCAL name `ParallelActivityIndex` is bound to in this file.
+ *
+ * Earned 2026-08-14, hours after the first version of this test merged: the
+ * original scanned for the literal `new ParallelActivityIndex(` and therefore
+ * PASSED against a tree containing two unwired sites, because both bind the
+ * class under an alias:
+ *
+ *   const { ParallelActivityIndex: SOActivityIndex } = await import(...)
+ *   const soActivityIndex = new SOActivityIndex({ stateDir })   // no isRunning
+ *
+ * A structural check that matches a name as TEXT is blind to renaming — which
+ * is the same shape as the defect it exists to catch. Found by a peer agent
+ * auditing with the TypeScript checker instead of string matching.
+ */
+export function localBindings(source: string): string[] {
+  const names = new Set<string>(['ParallelActivityIndex']);
+  // `{ ParallelActivityIndex: Alias }` in an import or a destructured await import.
+  for (const m of source.matchAll(/ParallelActivityIndex\s*:\s*([A-Za-z_$][\w$]*)/g)) {
+    names.add(m[1]);
+  }
+  return [...names];
+}
+
+/**
+ * Extract the argument text of each construction of the class — under ANY local
+ * name it is bound to — by scanning forward with paren depth. A regex cannot
+ * survive the nested object literals and arrow bodies these arguments contain.
  */
 export function constructionArgs(source: string): string[] {
+  return localBindings(source).flatMap((name) => argsForNeedle(source, `new ${name}(`));
+}
+
+function argsForNeedle(source: string, needle: string): string[] {
   const out: string[] = [];
-  const needle = 'new ParallelActivityIndex(';
   let i = source.indexOf(needle);
   while (i !== -1) {
     let depth = 0;
@@ -79,6 +106,17 @@ describe('ParallelActivityIndex construction sites (wiring invariant)', () => {
     );
     expect(args).toHaveLength(1);
     expect(args[0]).not.toMatch(/isRunning/);
+  });
+
+  it('THE SECOND DEFECT: an ALIASED construction is found (it was invisible before)', () => {
+    const src = [
+      "const { ParallelActivityIndex: SOActivityIndex } = await import('../core/ParallelActivityIndex.js');",
+      'const soActivityIndex = new SOActivityIndex({ stateDir: config.stateDir });',
+    ].join('\n');
+    expect(localBindings(src)).toContain('SOActivityIndex');
+    const args = constructionArgs(src);
+    expect(args).toHaveLength(1);
+    expect(args[0]).not.toMatch(/isRunning/); // and it is correctly reported as missing
   });
 
   it('CONTROL: the extractor survives nested parens and arrow bodies', () => {
