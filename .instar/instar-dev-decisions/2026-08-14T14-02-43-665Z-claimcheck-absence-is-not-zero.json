@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-14T14:02:43.665Z",
+  "slug": "claimcheck-absence-is-not-zero",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 37,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/devClaimCheck.ts"
+    ],
+    "addedLines": 32,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

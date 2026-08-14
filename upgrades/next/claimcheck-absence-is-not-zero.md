@@ -1,0 +1,22 @@
+## What Changed
+
+The pre-build claim check could report a clean "no claims found" after learning nothing at all.
+
+- **Empty output from GitHub is now treated as unknown, not as zero results.** The gh boundary parsed empty stdout into a null value on a zero exit, and the caller coerced that into an empty pull-request list. Nothing threw, so the degrade flag stayed clear and the all-clear branch fired.
+- **Both queries are guarded** — the open pull requests and the recently-merged ones. Guarding only the first would have left the identical defect one line lower.
+- **Any non-list reply degrades** — an object, a bare string, nothing at all. Previously every one of these collapsed into "no claims".
+- **Absence routes into the existing loud warning** rather than a new reporting channel. That warning was already correct; it simply was never reached on this path.
+
+## What to Tell Your User
+
+Before an agent edits files, it can check whether another agent already has open work touching the same files. When that check could not reach GitHub properly, it used to print a green all-clear instead of admitting it had not checked — which is exactly the collision the check exists to prevent, delivered with a tick.
+
+It now says plainly that the overlap was not checked, and strict callers refuse to bless a claim space they could not see. A genuinely clean run still prints the green all-clear, so this is not a new source of noise.
+
+## Summary of New Capabilities
+
+None. This narrows a false-negative in an existing advisory command; no new command, flag, route, or setting.
+
+## Evidence
+
+Defect verified in source before any edit, then proven in both directions: reverting the guard to the old coercion makes three of the four new tests fail, and restoring it makes them pass. The fourth is the control — a genuinely empty result still prints the green all-clear under both old and new behaviour, which is what makes this a guard rather than a permanent alarm. Source restored byte-identical after the mutation, with sha and size verified and no markers left behind. Typecheck clean and 14 of 14 tests passing in the claim-check suite, up from 10, verified in a dedicated worktree on the mainline dependency set rather than inherited from another tree.

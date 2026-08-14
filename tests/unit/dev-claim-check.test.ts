@@ -126,4 +126,76 @@ describe('runDevClaimCheck', () => {
     expect(code).toBe(2);
     expect(err.join('\n')).toContain('Nothing to check');
   });
+
+  /**
+   * ACT-1469 — gh SUCCEEDING with no usable output must not read as "nobody claims these paths".
+   *
+   * The old code did `JSON.parse(stdout || 'null')` and then `… as ClaimPr[] ?? []`, so empty
+   * stdout on a ZERO EXIT became an empty PR list, nothing threw, `ghDegraded` stayed null, and the
+   * tool printed a GREEN "✓ No claims found" having learned nothing. The error path was already
+   * loud; its success-with-no-data sibling was wide open.
+   *
+   * Coverage note, stated rather than implied: these drive the CALLER guard through the injectable
+   * `ghJson` seam, which is the layer that protects every implementation. The matching change inside
+   * `defaultGhJson` (empty stdout → reject) is defence-in-depth on the real `gh` boundary and is
+   * exercised only indirectly — it turns absence into the throw that the degrade test above pins.
+   */
+  it('THE DEFECT: gh returns nothing on success → degrades LOUDLY, never a green all-clear', async () => {
+    const { out, err, output } = capture();
+    // `null` is exactly what `JSON.parse(stdout || 'null')` produced from empty stdout.
+    const deps = { ghJson: async () => null as unknown, readSpecs: () => [] };
+    const code = await runDevClaimCheck({ paths: ['src/core/Config.ts'], output, deps });
+
+    expect(err.join('\n')).toContain('PR overlap NOT checked');
+    // The assertion that would have failed before the fix: no confident zero.
+    expect(out.join('\n')).not.toContain('No claims found');
+    expect(code).toBe(0); // advisory
+    // strict refuses to bless a claim space it could not see
+    expect(await runDevClaimCheck({ paths: ['src/core/Config.ts'], strict: true, output: capture().output, deps })).toBe(1);
+  });
+
+  it('CONTROL: a GENUINE zero (gh returns []) still prints the green all-clear', async () => {
+    // Without this the fix could be a guard that always fires — indistinguishable from a correct
+    // one on the defect case, and wrong on every real clean run.
+    const { out, err, output } = capture();
+    const code = await runDevClaimCheck({
+      paths: ['src/core/Config.ts'],
+      output,
+      deps: { ghJson: async () => [], readSpecs: () => [] },
+    });
+    expect(code).toBe(0);
+    expect(out.join('\n')).toContain('No claims found');
+    expect(err.join('\n')).not.toContain('PR overlap NOT checked');
+  });
+
+  it('a non-array shape (object/string) is absence of data, not zero results', async () => {
+    for (const shape of [{ prs: [] } as unknown, 'null' as unknown, undefined as unknown]) {
+      const { out, err, output } = capture();
+      const code = await runDevClaimCheck({
+        paths: ['src/core/Config.ts'],
+        output,
+        deps: { ghJson: async () => shape, readSpecs: () => [] },
+      });
+      expect(code).toBe(0);
+      expect(err.join('\n')).toContain('PR overlap NOT checked');
+      expect(out.join('\n')).not.toContain('No claims found');
+    }
+  });
+
+  it('the MERGED call is guarded too, not just the open one', async () => {
+    // Both call sites must be covered — guarding only the first would leave the second able to
+    // coerce absence into zero, which is the same defect one line down.
+    const { out, err, output } = capture();
+    const code = await runDevClaimCheck({
+      paths: ['src/core/Config.ts'],
+      output,
+      deps: {
+        ghJson: async (args) => (args.includes('open') ? [] : (null as unknown)),
+        readSpecs: () => [],
+      },
+    });
+    expect(code).toBe(0);
+    expect(err.join('\n')).toContain('PR overlap NOT checked');
+    expect(out.join('\n')).not.toContain('No claims found');
+  });
 });
