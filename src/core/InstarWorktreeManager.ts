@@ -346,8 +346,19 @@ export function resolveInstarRepo(opts: ResolveInstarRepoOptions = {}): Resolved
     failures.push(`  - ${candidate}: ${result.error}`);
   }
 
+  // Name the remedy, not just the failure. INSTAR_REPO is the FIRST candidate
+  // consulted above, yet it appeared nowhere in this message — so an operator
+  // whose checkout lives outside the default locations (and whose CWD is not
+  // inside it) had no way to learn the escape hatch exists from the error that
+  // blocked them. Earned 2026-08-14: that silence sent an agent around this
+  // command to a raw `git worktree add`, skipping every safety property the
+  // convention exists to provide (jailed destination, per-worktree identity,
+  // shared node_modules, indexer exclusion). The diagnostics above are kept
+  // verbatim; the remedy is appended, never substituted for them.
   throw new Error(
-    `instar repo: no candidate passed integrity validation. Tried:\n${failures.join('\n')}`,
+    `instar repo: no candidate passed integrity validation. Tried:\n${failures.join('\n')}\n\n` +
+      'To fix: run this command from inside your instar checkout, or point INSTAR_REPO at it ' +
+      '(for example: INSTAR_REPO=/path/to/instar instar worktree create <branch>).',
   );
 }
 
