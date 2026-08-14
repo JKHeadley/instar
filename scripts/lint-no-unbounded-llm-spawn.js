@@ -81,12 +81,29 @@ const EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.mjs', '.cjs']);
 // Found by a peer-agent audit for checks defeatable by renaming. Resolve the
 // local bindings FIRST, then match constructions under any of them.
 
-/** Every local name a provider class is bound to in this file, plus namespace forms. */
+/** Every local name a provider class is bound to in this file, plus namespace forms.
+ *
+ *  Widened 2026-08-14 after a peer-agent SABOTAGE pass against the first version
+ *  found two SAME-FILE evasions the alias resolution missed:
+ *    const C = ClaudeCliIntelligenceProvider; new C({});   // plain re-binding
+ *    new Providers['ClaudeCliIntelligenceProvider']({});    // computed access
+ *  The first is probably the easiest bypass of all to write. Re-binding is
+ *  resolved to a FIXPOINT so chains (`const C = Cls; const D = C;`) close too. */
 export function localProviderBindings(content, cls) {
   const names = new Set([cls]);
   // `import { Cls as Alias }` and `const { Cls: Alias } = await import(...)`
   for (const m of content.matchAll(new RegExp(`\\b${cls}\\s+as\\s+([A-Za-z_$][\\w$]*)`, 'g'))) names.add(m[1]);
   for (const m of content.matchAll(new RegExp(`\\b${cls}\\s*:\\s*([A-Za-z_$][\\w$]*)`, 'g'))) names.add(m[1]);
+  // `const|let|var Alias = <knownName>;` — plain re-binding, resolved to a
+  // fixpoint so a chain of re-bindings cannot walk out of the set.
+  for (let pass = 0; pass < 10; pass++) {
+    const before = names.size;
+    for (const known of [...names]) {
+      const re = new RegExp(`\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*${known}\\s*[;,\\n]`, 'g');
+      for (const m of content.matchAll(re)) names.add(m[1]);
+    }
+    if (names.size === before) break;
+  }
   return [...names];
 }
 
@@ -108,7 +125,11 @@ export function findProviderConstructions(content, classes = PROVIDER_CLASSES) {
       const bare = names.some((n) => new RegExp(`\\bnew\\s+${n}\\s*\\(`).test(lines[i]));
       // `new <ns>.<Cls>(` — a namespace import the bare form cannot see.
       const viaNs = new RegExp(`\\bnew\\s+[A-Za-z_$][\\w$]*\\.${cls}\\s*\\(`).test(lines[i]);
-      if (bare || viaNs) { hits.push({ line: i + 1, cls }); break; }
+      // `new <ns>['<Cls>'](` — computed access; found by sabotage 2026-08-14.
+      const viaComputed = new RegExp(
+        `\\bnew\\s+[A-Za-z_$][\\w$]*\\s*\\[\\s*['"\`]${cls}['"\`]\\s*\\]\\s*\\(`,
+      ).test(lines[i]);
+      if (bare || viaNs || viaComputed) { hits.push({ line: i + 1, cls }); break; }
     }
   }
   return hits;

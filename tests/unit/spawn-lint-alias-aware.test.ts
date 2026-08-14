@@ -85,6 +85,57 @@ describe('findProviderConstructions — the bypasses', () => {
     expect(findProviderConstructions(src)).toHaveLength(1);
   });
 
+  // ── Found by a peer-agent SABOTAGE pass against the first version of this
+  //    fix (2026-08-14). Both are SAME-FILE — squarely inside what the per-file
+  //    approach claimed to close — and I had anticipated neither. The PR's
+  //    class-closure declaration said only "re-export chains still evade",
+  //    which covered three of the five evasions found and understated the gap.
+  //    Snippets below are Codey's verbatim.
+
+  it('SABOTAGE: a local re-binding — `const C = Cls; new C()` — is caught', () => {
+    const src = [
+      `import { ${CLS} } from './core.js';`,
+      `const C = ${CLS};`,
+      'const p = new C({});',
+    ].join('\n');
+    expect(findProviderConstructions(src)).toHaveLength(1);
+  });
+
+  it('SABOTAGE: a CHAIN of re-bindings cannot walk out of the set', () => {
+    const src = [
+      `import { ${CLS} } from './core.js';`,
+      `const C = ${CLS};`,
+      'const D = C;',
+      'const p = new D({});',
+    ].join('\n');
+    expect(findProviderConstructions(src)).toHaveLength(1);
+  });
+
+  it('SABOTAGE: computed namespace access — `new NS[\'Cls\']()` — is caught', () => {
+    const src = [
+      "import * as Providers from './core.js';",
+      `const p = new Providers['${CLS}']({});`,
+    ].join('\n');
+    expect(findProviderConstructions(src)).toHaveLength(1);
+  });
+
+  it('SABOTAGE: an aliased re-binding of an aliased import is caught', () => {
+    const src = [
+      `import { ${CLS} as Provider } from './core.js';`,
+      'const Spawner = Provider;',
+      'const p = new Spawner({});',
+    ].join('\n');
+    expect(findProviderConstructions(src)).toHaveLength(1);
+  });
+
+  it('KNOWN GAP, pinned honestly: a cross-module re-export chain still EVADES', () => {
+    // Per-file text resolution cannot follow `export { Cls as X } from '...'`
+    // in another module. Stated in PR #1874 and NOT closed here — this test
+    // documents the boundary so a future reader does not assume otherwise.
+    const consumer = ["import { X } from './reexport-a.js';", 'const p = new X({});'].join('\n');
+    expect(findProviderConstructions(consumer)).toEqual([]);
+  });
+
   // ── The other direction. Without these, a detector that flagged everything
   //    would pass every test above and be useless on a healthy tree.
   it('CONTROL: an IMPORT alone is not a construction', () => {
@@ -103,5 +154,10 @@ describe('findProviderConstructions — the bypasses', () => {
 
   it('CONTROL: a bare identical-name variable is not a construction', () => {
     expect(findProviderConstructions(`const ${CLS} = 1;`)).toEqual([]);
+  });
+
+  it('CONTROL: re-binding an UNRELATED symbol is not flagged', () => {
+    const src = ['const C = SomethingElse;', 'const p = new C({});'].join('\n');
+    expect(findProviderConstructions(src)).toEqual([]);
   });
 });
