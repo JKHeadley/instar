@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-14T22:27:31.509Z",
+  "slug": "blocking-process-scan-command-resolution",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 134,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-no-blocking-process-scans.js"
+    ],
+    "addedLines": 130,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
