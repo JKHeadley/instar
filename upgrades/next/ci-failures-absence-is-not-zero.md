@@ -1,0 +1,25 @@
+## What Changed
+
+The command that prints a red pull request's failing tests could announce a conclusion about failures it never managed to read.
+
+- **A check whose annotations could not be fetched is no longer treated as a check with nothing to report.** The fetch error was caught and skipped in silence, so an unreadable check and a genuinely clean one looked identical.
+- **When nothing could be read at all, the tool no longer diagnoses the cause.** It previously said the failures were "likely a build or lint step" — an assertion about the nature of information that never arrived. It now says their nature is unknown.
+- **A partial read announces that it is partial**, even when some failures were found. A listing that looks complete but is not is the more dangerous case, because the reader has results and no reason to doubt them.
+- **A reply that is not a list** — nothing at all, a bare word, an object — is treated as absence rather than as zero findings.
+- **The file's own stated guarantee is now true.** Its documentation claimed no failed read could render as a clean one. That was accurate for two of its three callers and false for the third.
+
+## What to Tell Your User
+
+When a pull request goes red, this tool fetches each failed check and prints the exact test that broke. If those fetches failed, it used to skip them quietly and then tell you the problem was probably a build or lint issue rather than a test — advice produced without having read anything. That points you away from the one thing you were looking for.
+
+It now distinguishes "I read this and there was nothing" from "I could not read this." The first still gets the original, useful answer. The second says so plainly and names which checks it could not see.
+
+This matters because the tool is recommended precisely for the situation where other ways of looking come back empty. Something you reach for when you cannot see must not be the thing that sounds certain without cause.
+
+## Summary of New Capabilities
+
+None. This removes a false conclusion from an existing diagnostic command and adds its first tests. No new command, flag, route, setting, or exit code.
+
+## Evidence
+
+The defect was verified in source before any edit, and was found by following up an explicit note on an earlier change which recorded that this class of bug had been closed at one place only and not audited elsewhere. A sweep across the source found exactly two remaining candidates; one is this defect and the other is a deliberate default for an optional dependency, documented as such and correct. Proven in both directions: reverting the change fails three of the five new tests while a deliberate control test continues to pass. That control exists to catch the opposite mistake — warning on healthy runs — and holds both before and after. Source restored byte-identical after the check, typecheck clean, five of five tests passing in a file that previously had none.
