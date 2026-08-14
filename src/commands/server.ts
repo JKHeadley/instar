@@ -24675,11 +24675,34 @@ export async function startServer(options: StartOptions): Promise<void> {
     } catch (err) { /* @silent-fallback-ok: fleet-dark optional observer; failure is logged and adds no authority */ console.warn('[AutonomousThroughputFloor] init failed:', (err as Error).message); }
     const { WorkQueueRegistry } = await import('../core/WorkQueue.js');
     const { FeedbackProcessingService, resolveCanonicalStoreDir } = await import('../feedback-factory/processing/FeedbackProcessingService.js');
-    const { ParallelActivityIndex } = await import('../core/ParallelActivityIndex.js');
+    const { ParallelActivityIndex, runningTopicIds } = await import('../core/ParallelActivityIndex.js');
     const ageDays = (value: string | undefined): number => value ? Math.max(0, (Date.now() - Date.parse(value)) / 86_400_000) : 0;
     const feedbackStoreDir = resolveCanonicalStoreDir(config);
     const feedbackReader = feedbackStoreDir ? new FeedbackProcessingService({ dataDir: feedbackStoreDir }) : null;
-    const topicActivityIndex = new ParallelActivityIndex({ stateDir: config.stateDir });
+    // `isRunning` must be wired here too, not only on the AgentServer instance.
+    // The work queue below scores a topic `a.running ? 70 : 40`, so an unwired
+    // predicate silently pins EVERY topic at 40 — a topic with a live session
+    // could never outrank a dormant one. Same resolution AgentServer uses: a
+    // Session carries no topic field; the link lives in the messaging adapter's
+    // registry, keyed on the tmux session name.
+    const topicActivityIndex = new ParallelActivityIndex({
+      stateDir: config.stateDir,
+      isRunning: (topicId) => {
+        try {
+          return runningTopicIds(
+            sessionManager.listRunningSessions(),
+            (name) => telegram?.getTopicForSession?.(name),
+          ).has(topicId);
+        } catch {
+          // @silent-fallback-ok: this is a scoring HINT on an advisory queue, and
+          // `false` is the pre-existing behaviour for an unresolvable topic — the
+          // same value the optional dependency defaults to. Reporting a
+          // degradation here would fire on every tick for a non-Telegram session,
+          // and a ranking hint must never be able to break the queue it ranks.
+          return false;
+        }
+      },
+    });
     const workQueue = new WorkQueueRegistry({
       commitments: () => (commitmentTracker?.getActive() ?? []).map((c) => ({
         id: c.id, source: 'commitment' as const, sourceRef: c.id, title: c.userRequest,

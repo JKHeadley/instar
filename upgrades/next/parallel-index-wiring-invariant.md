@@ -1,0 +1,23 @@
+## What Changed
+
+The same "is this conversation live right now?" answer that was broken in the cross-topic view is also unwired in the work queue — and now a test stops any future place forgetting it.
+
+- **The work queue's copy never asked the question.** The helper that answers it is an optional argument; when it is omitted the answer defaults to "no" for everything, with no error and no warning.
+- **So every conversation scored the same urgency.** The queue is meant to rank a conversation with a live session above a dormant one. Because the answer was always "no", the higher rank was unreachable.
+- **This is the second instance of one root cause in an hour.** The first was the cross-topic view, where the answer was supplied but looked for a field that does not exist. Same silent default, arrived at two different ways.
+- **A structural check now reads the source and fails if any place constructs this without supplying the answer**, naming the file so the fix is obvious. Two places forgot within an hour; a third would have failed exactly as quietly.
+- **Failure stays safe.** If the lookup errors, the answer falls back to "not running" and the queue keeps working.
+
+## What to Tell Your User
+
+There is an internal list that ranks what deserves attention, and a conversation you are actively working in is supposed to rank above one that has been quiet for days. It never did — the part that checks whether a conversation is active was never plugged in, so everything looked equally dormant.
+
+Nothing appeared broken, because "no conversations are active" and "we forgot to check" produce exactly the same answer. That is the whole difficulty with this kind of fault, and it is why the fix comes with a check that refuses to let it recur silently somewhere new.
+
+## Summary of New Capabilities
+
+None. This repairs an input to existing ranking and adds a test. No new command, route, setting, or behaviour, and nothing gates on the corrected value.
+
+## Evidence
+
+The fault was confirmed in the source before any change: the construction supplied only a directory, and its one consumer scores a live conversation at seventy against forty. Proven in both directions — reverting the wiring makes the new check fail and name the offending file, while its three own controls continue to pass. Those controls exist because a structural check that silently matched nothing would pass forever and prove nothing: one proves it finds construction sites at all, one proves it can detect a missing argument, and one proves its scanner survives nested brackets and inline functions. Source restored byte-identical after the check, typecheck clean, sixteen of sixteen tests passing across both related suites, verified in a dedicated working copy on the mainline dependency set.
