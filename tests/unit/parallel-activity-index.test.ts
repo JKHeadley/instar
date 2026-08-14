@@ -14,7 +14,9 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   ParallelActivityIndex,
   extractTags,
+  runningTopicIds,
 } from '../../src/core/ParallelActivityIndex.js';
+import type { Session } from '../../src/core/types.js';
 import type { EstablishedRef } from '../../src/core/TopicIntent.js';
 
 function ref(partial: Partial<EstablishedRef> & { kind: EstablishedRef['kind']; text: string }): EstablishedRef {
@@ -122,4 +124,57 @@ describe('ParallelActivityIndex', () => {
     expect(t.focus).toBe('investigating the lifeline restart loop');
     expect(t.tags).toContain('investigating');
   });
+});
+
+// ── runningTopicIds — the WIRING, not the index ───────────────────────────
+// Earned 2026-08-14. The index's `running` flag was correct and its tests
+// passed, because they inject a stub `isRunning`. Production wired an
+// `isRunning` that read `s.topicId` off the live sessions — a field a Session
+// does not declare and nothing sets — behind a cast that asserted it existed.
+// The set was therefore ALWAYS empty and every topic reported running:false
+// since the surface shipped. These tests feed REAL-SHAPED Session objects, so
+// they fail if the resolution ever goes back to reading a field off a Session.
+
+describe('runningTopicIds (wiring integrity)', () => {
+  /** A Session shaped like the real thing: a tmux name, and NO topic field. */
+  const session = (tmuxSession: string): Session =>
+    ({ id: tmuxSession, name: tmuxSession, status: 'running', tmuxSession, startedAt: '' } as unknown as Session);
+
+  it('THE DEFECT: resolves the topic from the tmux name — a Session carries no topic field', () => {
+    const sessions = [session('echo-llm-pathway'), session('echo-observer')];
+    const registry: Record<string, number> = { 'echo-llm-pathway': 29723, 'echo-observer': 36966 };
+    const ids = runningTopicIds(sessions, (n) => registry[n] ?? null);
+    // The old wiring produced an EMPTY set here, because these objects have no
+    // `topicId` — which is exactly what a real Session looks like.
+    expect([...ids].sort((a, b) => a - b)).toEqual([29723, 36966]);
+  });
+
+  it('CONTROL: a session the registry cannot place is NOT counted (no invented topics)', () => {
+    const ids = runningTopicIds([session('job-health-check'), session('bob-server')], () => null);
+    expect(ids.size).toBe(0);
+  });
+
+  it('CONTROL: an empty session list yields an empty set — a real zero stays zero', () => {
+    expect(runningTopicIds([], () => 29723).size).toBe(0);
+  });
+
+  it('one unresolvable session does not blind the rest', () => {
+    const ids = runningTopicIds(
+      [session('a'), session('boom'), session('c')],
+      (n) => {
+        if (n === 'boom') throw new Error('registry read failed');
+        return n === 'a' ? 1 : 2;
+      },
+    );
+    expect([...ids].sort((a, b) => a - b)).toEqual([1, 2]);
+  });
+
+  it('ignores sessions with no tmux name and non-finite topic ids', () => {
+    const ids = runningTopicIds(
+      [{ tmuxSession: '' }, { tmuxSession: null }, session('nan')],
+      () => Number.NaN,
+    );
+    expect(ids.size).toBe(0);
+  });
+
 });

@@ -1,0 +1,25 @@
+## What Changed
+
+The cross-topic awareness view has reported that nothing is running anywhere since it shipped — including while the agent reading it was itself running.
+
+- **The live-session flag now resolves each conversation the same way everything else does**, from the terminal session name through the messaging registry. It previously looked for a conversation number attached to each running session; sessions have never carried one, so the search found nothing every time, for every topic.
+- **The count of active topics on that view was a permanent zero.** There was no error and no warning: an empty result and "nothing is running" are indistinguishable from outside.
+- **A faulty type assertion is removed.** The lookup was written behind a note telling the compiler those records had a conversation number. They do not, and the assertion is why nothing objected.
+- **The resolution is now separately testable**, with tests that feed it records shaped like real sessions. The view's existing tests supply a stand-in for the live check, so they could never notice that the real one could not work.
+- **A session that cannot be placed is still not counted**, and one that fails to resolve no longer prevents the others from being found.
+
+## What to Tell Your User
+
+Each conversation gets a row in a shared view showing what it is focused on and whether it is active right now. That "active right now" column is the point — it is what tells one conversation that another is already working on something, so the same job is not done twice.
+
+It has been answering "nothing is active" for every conversation, always. Nothing looked broken, because an empty answer and a genuinely quiet system look exactly the same.
+
+It now answers truthfully. If you have asked why two conversations sometimes duplicated each other's work, this is one reason the safeguard against it could not help.
+
+## Summary of New Capabilities
+
+None. This repairs an existing read-only view. No new command, route, setting, or behaviour, and nothing gates on the corrected value.
+
+## Evidence
+
+The fault was confirmed on the running system before any change: the view reported ninety-one conversations and zero active, including the conversation whose own session was confirmed live two independent ways. The cause was then confirmed in the source, where the session record is shown to declare no conversation field at all and nothing attaches one. Proven in both directions: restoring the old lookup fails two of the twelve tests, while both deliberate control tests continue to pass — those exist to catch the opposite error, inventing activity where there is none, and they hold before and after. Source restored byte-identical after the check, typecheck clean, twelve of twelve tests passing, up from seven.

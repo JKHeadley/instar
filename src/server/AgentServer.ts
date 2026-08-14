@@ -177,7 +177,7 @@ import { setDecisionQualityMachineId } from '../core/decisionQualityTypes.js';
 import { TokenLedgerPoller } from '../monitoring/TokenLedgerPoller.js';
 import { ResourceLedger } from '../monitoring/ResourceLedger.js';
 import { ResourceLedgerPoller } from '../monitoring/ResourceLedgerPoller.js';
-import { ParallelActivityIndex } from '../core/ParallelActivityIndex.js';
+import { ParallelActivityIndex, runningTopicIds } from '../core/ParallelActivityIndex.js';
 import { ParallelWorkSentinel } from '../monitoring/ParallelWorkSentinel.js';
 import { ResourceSampler } from '../monitoring/ResourceSampler.js';
 import { ProcessFootprintMonitor, defaultListProcesses } from '../monitoring/ProcessFootprintMonitor.js';
@@ -1219,13 +1219,18 @@ export class AgentServer {
     if (options.config.stateDir) {
       try {
         const runningTopics = (): Set<number> => {
-          const ids = new Set<number>();
+          // A Session carries no topic field — the topic<->session link lives in
+          // the messaging adapter's registry, keyed on the tmux session name.
+          // This is the SAME resolution GET /sessions uses to attach platformId.
+          // Reading `s.topicId` here (behind a cast asserting a field the type
+          // does not declare) made this set permanently empty, so `running` was
+          // false for every topic since it shipped. See runningTopicIds().
           try {
-            for (const s of options.sessionManager.listRunningSessions() as Array<{ topicId?: number | null }>) {
-              if (typeof s.topicId === 'number') ids.add(s.topicId);
-            }
+            const resolve = (name: string): number | null | undefined =>
+              options.telegram?.getTopicForSession?.(name);
+            return runningTopicIds(options.sessionManager.listRunningSessions(), resolve);
           } catch { /* best-effort */ }
-          return ids;
+          return new Set<number>();
         };
         this.parallelActivityIndex = new ParallelActivityIndex({
           stateDir: options.config.stateDir,
