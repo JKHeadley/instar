@@ -1,0 +1,35 @@
+{
+  "ts": "2026-08-14T21:14:08.688Z",
+  "slug": "headless-launch-lint-alias",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 371,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-no-unfunneled-headless-launch.js"
+    ],
+    "addedLines": 331,
+    "deletedLines": 40
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      1874,
+      1875,
+      1876,
+      1877
+    ],
+    "notes": "Present since the lint was written: it identified its target by matching the literal name 'buildHeadlessLaunch' per line, so any renaming defeated it. Surfaced by a peer audit that classed it DEFEATABLE and SAFETY-FLOOR, and reproduced end-to-end against the shipped check before any edit. Same defect class as the four prior closures (unbounded-llm-spawn x2, credential-write, telegram-egress) — the fourth of the audit's 25."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No self-triggered action added or modified. This is a build-time lint script; it emits no restart/swap/respawn/spawn/notify/retry/kill. The words 'spawn' and 'launch' appear only in prose describing the funnel the lint guards."
+  },
+  "verdict": "pass"
+}

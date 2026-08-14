@@ -1,0 +1,27 @@
+## What Changed
+
+The check that keeps every headless subprocess going through a single funnel identified that funnel by its name alone, so putting a second nameplate on it walked straight past.
+
+- **A listed file could hand the builder out under another name**, and any file could then call that name — no forbidden text anywhere, and a real non-funnel spawn path. Reproduced in the real codebase before the fix: one appended line plus one new consumer left a working bypass while the check printed **clean**.
+- **The check now follows the function, not just its name.** Inside a file, a name passed along — relabelled on import, pulled out of a bundle, copied to a variable, reached through a bracket with the text split in half — is followed until nothing new turns up. Across files, the short closed list is read for any name it hands out that leads back to the builder, and those names are guarded wherever they are imported.
+- **The widening is deliberately narrow, and that was the harder half.** Only a plain re-labelling or a one-line pass-through counts as handing the builder out. A listed file that does real work around it does not — because that is exactly what the funnel itself looks like, and counting it would have flagged every ordinary spawn in the codebase.
+- **Four remaining gaps are named in the check's own header** and pinned by tests asserting they are still open, so they read as decisions rather than oversights.
+- **Nothing new is forbidden**, and the codebase passes cleanly before and after.
+
+## What to Tell Your User
+
+Every background process this agent starts is supposed to go through one door, because that door is where the limits are decided. A check enforced it — but only by looking for the door's name, so anyone who gave the door a second name got past without it noticing. That was real, not hypothetical: it was demonstrated on the live codebase while the check reported everything fine.
+
+It now follows the door itself rather than the label on it. The care went into not over-correcting: a check that blocks work has to stay quiet about correct work, or someone turns it off, and then it guards nothing at all.
+
+## Summary of New Capabilities
+
+None. This widens what an existing check can see. No new command, route, setting, or rule.
+
+## Evidence
+
+Proven in both directions. Three deliberate mutations produce three precise failures: removing the cross-file resolution fails exactly the cross-file tests, widening the handout rule fails exactly the control that guards against flagging correct code, and removing the text-splitting defence fails exactly the three forms that depend on it.
+
+That third one is worth recording, because it failed to fail the first time. The original test used a shape a different rule already caught, so it proved nothing about the line it was written for and would have shipped as false coverage. It was rewritten to three shapes with nothing else to catch them. A test that passes for the wrong reason is indistinguishable from real coverage until something depends on it.
+
+Ten opposite-direction controls hold the other side, including two that would have caught the over-correction: a real-work function in a listed file is not treated as a handout, and the live list is asserted to hand out nothing today, so a future refactor that accidentally creates one becomes visible. The source was restored byte-identical after every mutation, the real codebase lints clean before and after, and the module is now safe to import — it previously had an unguarded exit path that would have stopped a test run the moment the codebase had a violation.
