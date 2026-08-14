@@ -177,8 +177,16 @@ function defaultGhJson(args: string[]): Promise<unknown> {
   return new Promise((resolve, reject) => {
     execFile('gh', args, { maxBuffer: 32 * 1024 * 1024, timeout: 30_000 }, (err, stdout) => {
       if (err) return reject(err);
+      // `gh … --json <fields>` ALWAYS emits JSON — zero results is the two-byte array `[]`, never
+      // an empty string. So empty stdout on a ZERO EXIT is absence of data, not absence of PRs.
+      // The old code did `JSON.parse(stdout || 'null')`, which turned that into `null` and let the
+      // caller coerce it to `[]` — a confident "no claims" built out of nothing.
+      const raw = (stdout ?? '').trim();
+      if (raw === '') {
+        return reject(new Error('gh exited 0 but produced no output — PR overlap is UNKNOWN, not zero.'));
+      }
       try {
-        resolve(JSON.parse(stdout || 'null'));
+        resolve(JSON.parse(raw));
       } catch (parseErr) {
         reject(parseErr instanceof Error ? parseErr : new Error(String(parseErr)));
       }
@@ -189,6 +197,25 @@ function defaultGhJson(args: string[]): Promise<unknown> {
 function isoDaysAgo(days: number): string {
   const d = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   return d.toISOString().slice(0, 10);
+}
+
+/**
+ * A `gh --json` call that SUCCEEDS must still hand back a JSON ARRAY.
+ *
+ * Anything else — `null` from empty stdout, an object, a string — is ABSENCE OF DATA, and coercing
+ * it to `[]` makes "we learned nothing" indistinguishable from "nobody claims these paths". That is
+ * the whole defect: this tool exists to tell an agent whether a sibling already owns the files it is
+ * about to touch, so a false "✓ No claims found" is exactly the two-agents-one-branch collision it
+ * is supposed to prevent.
+ *
+ * Throwing here routes absence into the EXISTING degrade path, which is already loud, rather than
+ * inventing a second reporting channel. A genuine zero — `[]` — passes straight through, which is
+ * what keeps this a guard rather than a permanent alarm.
+ */
+function asPrList(value: unknown, label: 'open' | 'merged'): ClaimPr[] {
+  if (Array.isArray(value)) return value as ClaimPr[];
+  const got = value === null || value === undefined ? 'no output' : typeof value;
+  throw new Error(`gh returned no usable ${label}-PR list (${got}) — PR overlap is UNKNOWN, not zero.`);
 }
 
 /**
@@ -215,13 +242,13 @@ export async function runDevClaimCheck(options: DevClaimCheckOptions): Promise<n
   let ghDegraded: string | null = null;
   if (options.paths.length > 0) {
     try {
-      openPrs = (await ghJson([
+      openPrs = asPrList(await ghJson([
         'pr', 'list', '--repo', repo, '--state', 'open', '--limit', '100', '--json', fields,
-      ])) as ClaimPr[] ?? [];
-      mergedPrs = (await ghJson([
+      ]), 'open');
+      mergedPrs = asPrList(await ghJson([
         'pr', 'list', '--repo', repo, '--state', 'merged', '--limit', '50', '--json', fields,
         '--search', `merged:>=${isoDaysAgo(mergedDays)}`,
-      ])) as ClaimPr[] ?? [];
+      ]), 'merged');
     } catch (err) {
       // Advisory tool: a network/gh failure degrades to spec-scan-only, LOUDLY.
       ghDegraded = err instanceof Error ? err.message : String(err);
