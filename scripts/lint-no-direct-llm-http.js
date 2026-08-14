@@ -98,6 +98,162 @@ const FORBIDDEN_PATTERNS = [
 
 const EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.mjs', '.cjs']);
 
+function lineForOffset(text, offset) {
+  let line = 1;
+  for (let i = 0; i < offset; i++) {
+    if (text[i] === '\n') line++;
+  }
+  return line;
+}
+
+function stripCommentsPreserveLayout(text) {
+  let out = '';
+  let i = 0;
+  let quote = null;
+  let escaped = false;
+
+  while (i < text.length) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    if (quote) {
+      out += ch;
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      i++;
+      continue;
+    }
+
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      out += ch;
+      i++;
+      continue;
+    }
+
+    if (ch === '/' && next === '/') {
+      out += '  ';
+      i += 2;
+      while (i < text.length && text[i] !== '\n') {
+        out += ' ';
+        i++;
+      }
+      continue;
+    }
+
+    if (ch === '/' && next === '*') {
+      out += '  ';
+      i += 2;
+      while (i < text.length) {
+        if (text[i] === '*' && text[i + 1] === '/') {
+          out += '  ';
+          i += 2;
+          break;
+        }
+        out += text[i] === '\n' ? '\n' : ' ';
+        i++;
+      }
+      continue;
+    }
+
+    out += ch;
+    i++;
+  }
+
+  return out;
+}
+
+function skipWhitespace(text, index) {
+  while (index < text.length && /\s/.test(text[index])) index++;
+  return index;
+}
+
+function readStringLiteral(text, start) {
+  const quote = text[start];
+  if (quote !== '"' && quote !== "'" && quote !== '`') return null;
+
+  let value = '';
+  let i = start + 1;
+  let escaped = false;
+  while (i < text.length) {
+    const ch = text[i];
+    if (escaped) {
+      value += ch;
+      escaped = false;
+      i++;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      i++;
+      continue;
+    }
+    if (quote === '`' && ch === '$' && text[i + 1] === '{') {
+      return null;
+    }
+    if (ch === quote) {
+      return { value, end: i + 1 };
+    }
+    value += ch;
+    i++;
+  }
+
+  return null;
+}
+
+function findFoldedStringViolations(text, rel) {
+  const stripped = stripCommentsPreserveLayout(text);
+  const violations = [];
+
+  for (let i = 0; i < stripped.length; i++) {
+    const first = readStringLiteral(stripped, i);
+    if (!first) continue;
+
+    let cursor = skipWhitespace(stripped, first.end);
+    if (stripped[cursor] !== '+') {
+      i = first.end - 1;
+      continue;
+    }
+
+    const parts = [first.value];
+    let end = first.end;
+    let literalCount = 1;
+    while (stripped[cursor] === '+') {
+      const nextStart = skipWhitespace(stripped, cursor + 1);
+      const nextString = readStringLiteral(stripped, nextStart);
+      if (!nextString) break;
+      parts.push(nextString.value);
+      literalCount++;
+      end = nextString.end;
+      cursor = skipWhitespace(stripped, nextString.end);
+    }
+
+    if (literalCount > 1) {
+      const folded = parts.join('');
+      const line = lineForOffset(stripped, i);
+      for (const pat of FORBIDDEN_PATTERNS) {
+        if (folded.includes(pat)) {
+          violations.push({
+            file: rel,
+            line,
+            pattern: pat,
+            text: folded.slice(0, 200),
+            folded: true,
+          });
+        }
+      }
+      i = end - 1;
+    }
+  }
+
+  return violations;
+}
+
 function readGitignoreDirs() {
   // Skip node_modules, dist, .instar/worktrees, etc.
   return new Set(['node_modules', 'dist', 'build', '.instar', '.git', '.next', 'coverage']);
@@ -168,6 +324,7 @@ function checkFile(file) {
       }
     }
   }
+  violations.push(...findFoldedStringViolations(text, rel));
   return violations;
 }
 
@@ -184,7 +341,8 @@ function main() {
   console.error('src/core/ClaudeCliIntelligenceProvider.ts so the burn-detection system can');
   console.error('attribute it. See docs/specs/token-burn-detection-and-self-heal.md Phase 1.\n');
   for (const v of all) {
-    console.error(`  ${v.file}:${v.line} — contains "${v.pattern}"`);
+    const reason = v.folded ? `folds to "${v.pattern}"` : `contains "${v.pattern}"`;
+    console.error(`  ${v.file}:${v.line} — ${reason}`);
     console.error(`    ${v.text}`);
   }
   process.exit(1);

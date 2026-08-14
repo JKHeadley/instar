@@ -1,0 +1,13 @@
+<!-- internal-only -->
+
+# LLM HTTP lint catches split provider hosts
+
+## What Changed
+
+`scripts/lint-no-direct-llm-http.js` now folds adjacent constant string and no-expression template literals before checking for direct LLM provider hosts. A raw provider URL split as `'https://api.' + 'anthropic.com/v1/messages'` now fails the same build lint as the unsplit host.
+
+The scope is deliberately narrow: literal-plus-literal URL construction only. Dynamic URL construction is not guessed at, and the existing file-level distinction for OAuth/profile/usage metadata endpoints remains unchanged.
+
+## Evidence
+
+Negative control against the shipped lint: the focused unit file failed 2 tests, both new split-host rejection cases. After the fix, `tests/unit/burn-detection-phase-1.test.ts` passes 20/20, and `node scripts/lint-no-direct-llm-http.js` exits clean against the real tree.

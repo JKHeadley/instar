@@ -198,6 +198,80 @@ describe('lint-no-direct-llm-http', () => {
     }
   });
 
+  it('rejects a synthetic violation with a split Anthropic host literal', () => {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'llm-lint-'));
+    const fakeViolation = path.join(tmpdir, 'BadSplitAnthropic.ts');
+    fs.writeFileSync(
+      fakeViolation,
+      [
+        'export async function bad() {',
+        "  const url = 'https://api.' + 'anthropic.com/v1/messages';",
+        "  return fetch(url, { method: 'POST' });",
+        '}',
+        '',
+      ].join('\n'),
+    );
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [path.join(ROOT, 'scripts/lint-no-direct-llm-http.js'), fakeViolation],
+        { cwd: ROOT, encoding: 'utf-8' },
+      );
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('api.anthropic.com');
+    } finally {
+      SafeFsExecutor.safeRmSync(tmpdir, { recursive: true, force: true, operation: 'tests/unit/burn-detection-phase-1.test.ts:lint-split-anthropic' });
+    }
+  });
+
+  it('rejects synthetic violations with split OpenAI and Google host literals', () => {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'llm-lint-'));
+    const fakeViolation = path.join(tmpdir, 'BadSplitProviders.ts');
+    fs.writeFileSync(
+      fakeViolation,
+      [
+        'export const openai = "https://api." + "openai.com/v1/chat/completions";',
+        'export const google = `https://generativelanguage.` + `googleapis.com/v1beta/models`;',
+        '',
+      ].join('\n'),
+    );
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [path.join(ROOT, 'scripts/lint-no-direct-llm-http.js'), fakeViolation],
+        { cwd: ROOT, encoding: 'utf-8' },
+      );
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('api.openai.com');
+      expect(result.stderr).toContain('generativelanguage.googleapis.com');
+    } finally {
+      SafeFsExecutor.safeRmSync(tmpdir, { recursive: true, force: true, operation: 'tests/unit/burn-detection-phase-1.test.ts:lint-split-providers' });
+    }
+  });
+
+  it('does not fold dynamic URL construction', () => {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'llm-lint-'));
+    const dynamicUrl = path.join(tmpdir, 'DynamicUrl.ts');
+    fs.writeFileSync(
+      dynamicUrl,
+      [
+        "const providerHost = 'anthropic.com';",
+        "export const url = 'https://api.' + providerHost + '/v1/messages';",
+        '',
+      ].join('\n'),
+    );
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [path.join(ROOT, 'scripts/lint-no-direct-llm-http.js'), dynamicUrl],
+        { cwd: ROOT, encoding: 'utf-8' },
+      );
+      expect(result.status).toBe(0);
+    } finally {
+      SafeFsExecutor.safeRmSync(tmpdir, { recursive: true, force: true, operation: 'tests/unit/burn-detection-phase-1.test.ts:lint-dynamic-url' });
+    }
+  });
+
   it('accepts the IntelligenceProvider chokepoint files (allowlist works)', () => {
     const result = spawnSync(
       process.execPath,
