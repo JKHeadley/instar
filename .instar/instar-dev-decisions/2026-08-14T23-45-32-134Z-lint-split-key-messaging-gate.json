@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-14T23:45:32.134Z",
+  "slug": "lint-split-key-messaging-gate",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 154,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-no-unreachable-messaging-gate.js"
+    ],
+    "addedLines": 150,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -42,14 +42,160 @@ export const UNREACHABLE_OFF_GATE =
 
 const SUPPRESS = /lint-allow-messaging-gate\s*:/;
 
+function stripCommentsPreserveLines(text) {
+  let out = '';
+  let inBlock = false;
+  let quote = null;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    if (inBlock) {
+      if (ch === '*' && next === '/') {
+        out += '  ';
+        i += 1;
+        inBlock = false;
+      } else {
+        out += ch === '\n' ? '\n' : ' ';
+      }
+      continue;
+    }
+
+    if (quote) {
+      out += ch;
+      if (ch === '\\' && i + 1 < text.length) {
+        out += text[i + 1];
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+
+    if (ch === '/' && next === '/') {
+      out += '  ';
+      i += 1;
+      while (i + 1 < text.length && text[i + 1] !== '\n') {
+        out += ' ';
+        i += 1;
+      }
+      continue;
+    }
+
+    if (ch === '/' && next === '*') {
+      out += '  ';
+      i += 1;
+      inBlock = true;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"' || ch === '`') quote = ch;
+    out += ch;
+  }
+
+  return out;
+}
+
+function skipWs(s, i) {
+  while (i < s.length && /\s/.test(s[i])) i += 1;
+  return i;
+}
+
+function parseStringLiteral(s, start) {
+  const quote = s[start];
+  if (quote !== "'" && quote !== '"' && quote !== '`') return null;
+
+  let value = '';
+  for (let i = start + 1; i < s.length; i += 1) {
+    const ch = s[i];
+    if (ch === '\\' && i + 1 < s.length) {
+      value += s[i + 1];
+      i += 1;
+      continue;
+    }
+    if (quote === '`' && ch === '$' && s[i + 1] === '{') return null;
+    if (ch === quote) return { value, end: i + 1 };
+    value += ch;
+  }
+  return null;
+}
+
+function parseLiteralConcat(s, start) {
+  let i = skipWs(s, start);
+  let parsed = parseStringLiteral(s, i);
+  if (!parsed) return null;
+
+  let value = parsed.value;
+  i = skipWs(s, parsed.end);
+  while (s[i] === '+') {
+    i = skipWs(s, i + 1);
+    parsed = parseStringLiteral(s, i);
+    if (!parsed) return null;
+    value += parsed.value;
+    i = skipWs(s, parsed.end);
+  }
+
+  return { value, end: i };
+}
+
+function getCallArgStartAt(s, start) {
+  if (!s.startsWith('.get', start)) return null;
+  if (/[$_\p{ID_Continue}]/u.test(s[start + 4] ?? '')) return null;
+
+  let i = skipWs(s, start + 4);
+  if (s[i] === '<') {
+    const close = s.indexOf('>', i + 1);
+    if (close === -1) return null;
+    i = skipWs(s, close + 1);
+  }
+  if (s[i] !== '(') return null;
+  return i + 1;
+}
+
+function lineHasUnreachableOffGate(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === '\\' && i + 1 < line.length) {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      continue;
+    }
+
+    const firstArgStart = getCallArgStartAt(line, i);
+    if (firstArgStart === null) continue;
+
+    const firstArg = parseLiteralConcat(line, firstArgStart);
+    if (!firstArg || !firstArg.value.startsWith('messaging.')) continue;
+
+    let j = skipWs(line, firstArg.end);
+    if (line[j] !== ',') continue;
+    j = skipWs(line, j + 1);
+    if (line.startsWith('false', j) && !/[$_\p{ID_Continue}]/u.test(line[j + 5] ?? '')) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Scan raw source text; return 1-indexed line numbers of un-suppressed offenders. */
 export function scanText(text) {
-  const lines = text.split('\n');
+  const lines = stripCommentsPreserveLines(text).split('\n');
+  const originalLines = text.split('\n');
   const hits = [];
   lines.forEach((line, i) => {
-    if (!UNREACHABLE_OFF_GATE.test(line)) return;
-    if (SUPPRESS.test(line)) return;
-    if (i > 0 && SUPPRESS.test(lines[i - 1])) return;
+    if (!lineHasUnreachableOffGate(line)) return;
+    if (SUPPRESS.test(originalLines[i])) return;
+    if (i > 0 && SUPPRESS.test(originalLines[i - 1])) return;
     hits.push(i + 1);
   });
   return hits;
