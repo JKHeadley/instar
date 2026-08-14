@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-14T20:08:22.876Z",
+  "slug": "telegram-egress-lint-alias",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 79,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-telegram-egress-boundary.mjs"
+    ],
+    "addedLines": 68,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
