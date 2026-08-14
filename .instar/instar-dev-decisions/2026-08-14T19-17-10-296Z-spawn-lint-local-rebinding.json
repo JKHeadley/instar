@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-14T19:17:10.296Z",
+  "slug": "spawn-lint-local-rebinding",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 25,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-no-unbounded-llm-spawn.js"
+    ],
+    "addedLines": 23,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
