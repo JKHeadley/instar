@@ -25,6 +25,29 @@
  * line or the line directly above:
  *     // lint-allow-blocking-scan: <why this can't run periodically>
  *
+ * ── 2026-08-14: the command name does not have to be written at the callsite.
+ * The original pattern required the scan command as a string literal INSIDE the
+ * call, so putting the name one step away walked past it — while the event loop
+ * stalled just the same, because the incident was about what the process DOES,
+ * not how the argument was spelled. instar-codey reproduced the concatenation
+ * form (`const cmd = 'pg' + 'rep'; execFileSync(cmd, ['node'])` → exit 0) while
+ * auditing rename-defeatable checks, and scoped the fix.
+ *
+ * NOW RESOLVED before the decision: literal `+` chains, local `const` string
+ * bindings, and import aliases of the sync entry points. The VALUE decides, so
+ * `const pgrep = 'tmux'` is legal and `const cmd = 'psql'` is not a `ps`.
+ *
+ * DELIBERATELY NOT CLOSED, so it is stated rather than implied:
+ *   · A call split across MULTIPLE LINES. This lint is line-oriented; making it
+ *     multi-line means an AST, which is a different check at a different layer.
+ *     Pre-existing, not introduced here.
+ *   · A command read from config, an argv, or another module. Not foldable
+ *     without dataflow analysis, and guessing would over-block correct code —
+ *     the more expensive failure for a check that blocks commits.
+ *   · Scope: bindings are collected file-wide rather than per-scope, so an
+ *     identifier bound twice to DIFFERENT values is treated as unresolvable and
+ *     never flagged. That is the safe direction, chosen on purpose.
+ *
  * Exit codes: 0 — clean; 1 — at least one violation.
  *
  * Usage:
@@ -46,10 +69,111 @@ const ROOT = path.resolve(path.dirname(__filename), '..');
 const SCAN_DIRS = ['src/monitoring', 'src/server'];
 const EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.mjs', '.cjs']);
 
-// A synchronous child-process call whose command literal is a process-scan tool.
-// Matches e.g.  spawnSync('pgrep', …)   execFileSync('lsof', …)   execSync('ps …')
-const VIOLATION = /\b(spawnSync|execSync|execFileSync)\s*\(\s*['"`]\s*(ps|pgrep|lsof|pkill)\b/;
+// The scan commands themselves. Word-boundary matched against the RESOLVED
+// command value, so `psql` never counts as `ps`.
+const SCAN_COMMAND = /^(ps|pgrep|lsof|pkill)\b/;
+
+// The synchronous child-process entry points. Import aliases of these are
+// resolved per-file below — `import { execFileSync as run }` then `run('pgrep')`
+// stalls the loop exactly as much as calling it by its own name.
+const SYNC_BUILTINS = ['spawnSync', 'execSync', 'execFileSync'];
+
 const ALLOW = /lint-allow-blocking-scan:/;
+
+/** A string literal, or a `+` chain of string literals. Nothing else folds. */
+const FOLDABLE = /^\s*(?:(?:'[^'\\]*'|"[^"\\]*"|`[^`\\$]*`)\s*\+\s*)*(?:'[^'\\]*'|"[^"\\]*"|`[^`\\$]*`)\s*$/;
+
+/**
+ * Fold an expression to its string value, or null if it is not a pure literal
+ * chain. `'pg' + 'rep'` → `pgrep`. A template with `${}` never folds.
+ */
+function foldLiteral(expr) {
+  if (!FOLDABLE.test(expr)) return null;
+  const parts = expr.match(/'[^'\\]*'|"[^"\\]*"|`[^`\\$]*`/g);
+  if (!parts) return null;
+  return parts.map((p) => p.slice(1, -1)).join('');
+}
+
+/**
+ * Local `const NAME = <literal chain>` bindings, file-wide.
+ *
+ * Deliberately NOT scope-aware: this is a line-oriented lint, not a compiler.
+ * The safe direction for a check that BLOCKS COMMITS is to refuse to resolve
+ * anything ambiguous, so an identifier bound more than once to DIFFERENT values
+ * is recorded as unresolvable and never produces a violation. Over-blocking
+ * correct code is the more expensive failure here.
+ */
+function collectStringConsts(lines) {
+  const map = new Map();
+  const conflicted = new Set();
+  const DECL = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::\s*[^=]+?)?=\s*([^;\n]+)/g;
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    if (/^(\/\/|\*|\/\*)/.test(trimmed)) continue; // a commented-out const binds nothing
+    DECL.lastIndex = 0;
+    let m;
+    while ((m = DECL.exec(line)) !== null) {
+      const [, name, rhs] = m;
+      const value = foldLiteral(rhs);
+      if (value === null) { conflicted.add(name); continue; }
+      if (map.has(name) && map.get(name) !== value) conflicted.add(name);
+      else map.set(name, value);
+    }
+  }
+  for (const name of conflicted) map.delete(name);
+  return map;
+}
+
+/** Names in this file that reach a synchronous child-process call. */
+function collectSyncNames(text) {
+  const names = new Set(SYNC_BUILTINS);
+  const IMPORT = /import\s*\{([^}]*)\}\s*from\s*['"]node:child_process['"]/g;
+  let m;
+  while ((m = IMPORT.exec(text)) !== null) {
+    for (const clause of m[1].split(',')) {
+      const alias = clause.match(/([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)/);
+      if (alias && SYNC_BUILTINS.includes(alias[1])) names.add(alias[2]);
+    }
+  }
+  return names;
+}
+
+/**
+ * The first argument of `name(` starting at `from`, as source text. Bounded to
+ * the line, matching this lint's existing granularity — a call split across
+ * lines is a separate, pre-existing gap, declared in the header rather than
+ * silently implied.
+ */
+function firstArg(line, from) {
+  let depth = 0;
+  for (let i = from; i < line.length; i++) {
+    const c = line[i];
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') {
+      if (depth === 0) return line.slice(from, i);
+      depth--;
+    } else if (c === ',' && depth === 0) return line.slice(from, i);
+  }
+  return line.slice(from);
+}
+
+/**
+ * Does this line perform a synchronous scan? Resolves the command through
+ * literal folding and local constants before deciding.
+ */
+function scanViolation(line, syncNames, constMap) {
+  for (const name of syncNames) {
+    const call = new RegExp(`\\b${name}\\s*\\(`, 'g');
+    let m;
+    while ((m = call.exec(line)) !== null) {
+      const arg = firstArg(line, m.index + m[0].length).trim();
+      let value = foldLiteral(arg);
+      if (value === null && /^[A-Za-z_$][\w$]*$/.test(arg)) value = constMap.get(arg) ?? null;
+      if (value !== null && SCAN_COMMAND.test(value.trim())) return true;
+    }
+  }
+  return false;
+}
 
 const inScanDir = (p) => SCAN_DIRS.some((d) => p.startsWith(d + '/'));
 
@@ -86,10 +210,12 @@ for (const rel of listFiles()) {
   let content;
   try { content = fs.readFileSync(full, 'utf-8'); } catch { continue; }
   const lines = content.split('\n');
+  const syncNames = collectSyncNames(content);
+  const constMap = collectStringConsts(lines);
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trimStart();
     if (/^(\/\/|\*|\/\*)/.test(trimmed)) continue; // comment-only mention
-    if (!VIOLATION.test(lines[i])) continue;
+    if (!scanViolation(lines[i], syncNames, constMap)) continue;
     // Inline justification on this line or within the comment block directly
     // above (scan back up to 4 lines so a multi-line reason is honoured).
     let allowed = false;
