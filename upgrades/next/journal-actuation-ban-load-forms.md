@@ -1,0 +1,51 @@
+<!-- internal-only -->
+
+# journal-actuation-ban: every load form, and the staleness half of the population
+
+Developer tooling only — a CI lint. No runtime path, no route, no config key, no user-visible surface, so this
+fragment takes the internal-only lane.
+
+## What Changed
+
+`scripts/lint-journal-actuation-ban.js` enforces COHERENCE-JOURNAL-SPEC §3.9: no actuator (kill / spawn / place /
+transfer / reap) may import the journal READER, because replicated journal data is stale by construction and an
+actuator trusting it can kill live work or double-place a conversation.
+
+The check matched `/from\s+['"]…CoherenceJournalReader…['"]/`, which requires the `from` keyword. `await
+import(…)` and `require(…)` do not have it, so both loaded the reader straight past the ban. Reproduced against
+the shipped lint on a real listed actuator (`src/core/SessionManager.ts`): it printed `clean`. instar-codey
+reproduced the same evasion independently and ranked this lint first of ~20 by consequence-of-defeat.
+
+- All three load forms now match.
+- Comments are stripped (quote-aware, line-preserving) before matching, so prose describing the ban can never
+  itself be a violation.
+- `import type` is now exempt — it is erased at compile time, so it cannot act on stale data. The old pattern
+  flagged it, and a live file in the tree has that shape legitimately.
+- A curated actuator that has vanished from the tree is now a violation instead of a silently skipped line: a
+  renamed module used to leave the ban without a word.
+- A root with no `src/` exits 2 instead of printing `clean` over zero files.
+
+Deliberately NOT changed: the curated actuator list. Automatic discovery by declared-name shape was built and
+measured against this tree — nine flags across three files, every one a part-of-speech or granularity error
+("reaper" as a noun in reporting code; the 22k-line composition root; an `import type`). This lint blocks
+commits, so over-blocking correct code is the more expensive failure, and the enumerated list is the original
+converged design decision. The limit is now stated plainly in the header and pinned by a test that fails if
+anyone closes it properly.
+
+## Evidence
+
+- `tests/unit/journal-actuation-ban-lint.test.ts` — 13/13 green.
+- Negative control: with the shipped lint restored, exactly 5 of 13 fail (dynamic import, `require`,
+  `import type`, vanished-curated-file, rootless-tree) and all 8 controls still pass — controls should pass both
+  ways, which is what makes them controls.
+- Real-tree verdict: `node scripts/lint-journal-actuation-ban.js` → `clean (8 actuator modules, none load the
+  reader)`, exit 0. All eight curated actuators verified present, none referencing the reader.
+- Full `npm run lint` chain green; `tests/unit/lint-chain-completeness.test.ts` 3/3.
+- Side-effects review: `upgrades/side-effects/journal-actuation-ban-load-forms.md`.
+- ELI16: `docs/specs/journal-actuation-ban-load-forms.eli16.md`.
+
+**Raised separately, not actioned here:** `src/commands/server.ts:20853` wires `OwnershipApplier`, which
+materializes durable topic ownership from the REPLICATED placement journal (it does validate `transferTo`
+against the live known-machine set first, and is specified in
+`docs/specs/ownership-applier-meshself-ordering-fix.md`). Whether §3.9 permits a validated read like that is a
+spec question, not a lint decision; it is on the operator's attention queue. The shipped lint does not flag it.
