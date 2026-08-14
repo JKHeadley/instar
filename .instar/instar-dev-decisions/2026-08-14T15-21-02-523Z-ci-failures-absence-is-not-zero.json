@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-14T15:21:02.523Z",
+  "slug": "ci-failures-absence-is-not-zero",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 56,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/devCiFailures.ts"
+    ],
+    "addedLines": 49,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

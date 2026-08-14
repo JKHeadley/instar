@@ -86,9 +86,17 @@ export function extractFailureLines(annotations: CiAnnotation[]): string[] {
  *   caveat. A non-zero `gh` exit rejects with the captured stderr; empty or
  *   malformed stdout throws inside JSON.parse and rejects as "gh returned
  *   non-JSON" (note there is no `|| \'null\'` default here, so empty output
- *   cannot degrade into a successful-looking empty result); and every caller
- *   catches, writes the reason via out.error, and returns exit 1. There is no
- *   path on which a failed read renders as a clean one.
+ *   cannot degrade into a successful-looking empty result).
+ *
+ *   The two SHA/check-list callers catch, write the reason via out.error, and
+ *   return exit 1. The per-check ANNOTATIONS caller deliberately does not — one
+ *   endpoint hiccup must not lose the other checks — so it records the check in
+ *   `unread` and the run reports the gap instead. This paragraph previously
+ *   claimed "there is no path on which a failed read renders as a clean one";
+ *   that was FALSE for the annotations caller, which swallowed the error and
+ *   let the zero-case message diagnose the failure's nature ("likely a
+ *   build/lint/type step") from data it never received. A read that failed and
+ *   a check with no annotations are now distinct outcomes.
  */
 function defaultDeps(): CiFailuresDeps {
   return {
@@ -160,12 +168,28 @@ export async function runDevCiFailures(opts: DevCiFailuresOptions): Promise<numb
   //    the node-20/node-22 shard pairs that report the identical failure).
   const seen = new Set<string>();
   let total = 0;
+  // Checks whose annotation read did not produce a usable list. A read that
+  // failed is NOT a check with no annotations, and the two must not collapse:
+  // the zero-case message below diagnoses the FAILURE'S NATURE ("likely a
+  // build/lint/type step"), which is an assertion about data we did not get.
+  const unread: string[] = [];
   for (const check of failed) {
     let annotations: CiAnnotation[] = [];
     try {
-      annotations = ((await deps.ghJson(['api', `repos/${repo}/check-runs/${check.id}/annotations`])) as CiAnnotation[]) ?? [];
+      const raw = await deps.ghJson(['api', `repos/${repo}/check-runs/${check.id}/annotations`]);
+      // The annotations endpoint returns a JSON array; zero annotations is `[]`,
+      // never absent. Anything else is absence of data, not absence of findings.
+      if (!Array.isArray(raw)) {
+        unread.push(check.name);
+        continue;
+      }
+      annotations = raw as CiAnnotation[];
     } catch {
-      continue; // annotations endpoint hiccup for one check — keep going
+      // Keep going across the other checks (one endpoint hiccup must not lose
+      // the rest), but RECORD it — the docblock's "no path renders a failed
+      // read as a clean one" was false here until this line existed.
+      unread.push(check.name);
+      continue;
     }
     for (const line of extractFailureLines(annotations)) {
       if (seen.has(line)) continue;
@@ -175,11 +199,29 @@ export async function runDevCiFailures(opts: DevCiFailuresOptions): Promise<numb
     }
   }
 
+  // An unread check is reported EVEN WHEN failures were found — otherwise a
+  // partial read looks complete, and the caller stops looking at the checks
+  // whose annotations never arrived.
+  if (unread.length > 0) {
+    out.error(
+      pc.yellow(
+        `\n⚠ Annotations NOT read for ${unread.length} of ${failed.length} failed check(s): ${unread.join(', ')}.\n` +
+          'Their failures are NOT included below — this listing is incomplete.\n',
+      ),
+    );
+  }
+
   if (total === 0) {
     out.write(
       pc.yellow(
-        '\nThe failed checks have no test-level annotations — likely a build/lint/type step.\n' +
-          'Open the run in the browser, or check the step output directly.\n',
+        unread.length === failed.length
+          ? // Every read failed: we know nothing about these checks. Diagnosing the
+            // failure as "likely a build/lint step" here would assert the nature of
+            // data we never received.
+            '\nNo annotations could be read for any failed check — their nature is UNKNOWN, not "no test failures".\n' +
+              'Open the run in the browser, or check the step output directly.\n'
+          : '\nThe failed checks have no test-level annotations — likely a build/lint/type step.\n' +
+              'Open the run in the browser, or check the step output directly.\n',
       ),
     );
   }
