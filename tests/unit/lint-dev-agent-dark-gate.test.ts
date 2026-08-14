@@ -632,3 +632,95 @@ describe('lint-dev-agent-dark-gate', () => {
     }
   });
 });
+
+/**
+ * Assertion A: the gate value does not have to be spelled at the `??`.
+ *
+ * The shipped matcher requires `.developmentAgent` (or `['developmentAgent']`)
+ * LITERALLY after the `??`. Lifting it into a local const first walks past it —
+ * while resolving the gate by hand exactly as before. The header declared this
+ * limit honestly ("cannot catch arbitrary aliases/wrapper helpers"); instar-codey
+ * reproduced it while auditing rename-defeatable checks:
+ *
+ *     const da = config.developmentAgent;
+ *     return enabled ?? !!da;          // exit 0 against the shipped lint
+ *
+ * Measured before any edit, with a positive control: the direct form exits 1, the
+ * aliased form exits 0. The control firing is what makes the evasion verdict mean
+ * something.
+ *
+ * Scope is deliberately the one instar-codey scoped — LOCAL constant aliases of
+ * `<expr>.developmentAgent` feeding a `??`. Not wrapper helpers, not dataflow,
+ * not cross-module. This lint fails builds, so over-matching is the more
+ * expensive error.
+ */
+describe('Assertion A — the gate value one step away', () => {
+  const withFixture = (body: string, run: (file: string) => void): void => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'darkgate-alias-'));
+    const f = path.join(dir, 'someFeature.ts');
+    fs.writeFileSync(f, body);
+    try { run(f); } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/lint-dev-agent-dark-gate.test.ts' });
+    }
+  };
+
+  it('DEFECT: a local const alias of config.developmentAgent is caught', () => {
+    withFixture(
+      'export function f(cfg, config) {\n  const da = config.developmentAgent;\n  const enabled = cfg?.enabled ?? !!da;\n  return enabled;\n}\n',
+      (f) => {
+        const { code, out } = runLint([f]);
+        expect(code, `expected a violation; output was:\n${out}`).toBe(1);
+        expect(out).toContain('A: hand-rolled gate');
+      },
+    );
+  });
+
+  it('DEFECT: the bracket-access alias is caught too', () => {
+    withFixture(
+      "export function f(cfg, config) {\n  const da = config['developmentAgent'];\n  return cfg?.enabled ?? !!da;\n}\n",
+      (f) => expect(runLint([f]).code).toBe(1),
+    );
+  });
+
+  it('DEFECT: Boolean(alias) is caught, matching the direct form it mirrors', () => {
+    withFixture(
+      'export function f(cfg, config) {\n  const da = config.developmentAgent;\n  return cfg?.enabled ?? Boolean(da);\n}\n',
+      (f) => expect(runLint([f]).code).toBe(1),
+    );
+  });
+
+  // ── The other direction. This lint fails builds; flagging correct code costs more.
+  it('CONTROL: an alias of something ELSE is not flagged', () => {
+    withFixture(
+      'export function f(cfg, config) {\n  const other = config.somethingElse;\n  return cfg?.enabled ?? !!other;\n}\n',
+      (f) => {
+        const { code, out } = runLint([f]);
+        expect(code, `only a developmentAgent alias is a hand-rolled gate; output:\n${out}`).toBe(0);
+      },
+    );
+  });
+
+  it('CONTROL: a comment describing the aliased pattern is not flagged', () => {
+    withFixture(
+      '// e.g. const da = config.developmentAgent; enabled ?? !!da  (dev-gate)\nexport const x = 1;\n',
+      (f) => expect(runLint([f]).code).toBe(0),
+    );
+  });
+
+  it('CONTROL: a name that merely LOOKS like the gate is not flagged', () => {
+    // `developmentAgentName` is not `developmentAgent`; the boundary must hold
+    // through the alias just as it does at the direct callsite.
+    withFixture(
+      'export function f(cfg, config) {\n  const da = config.developmentAgentName;\n  return cfg?.enabled ?? !!da;\n}\n',
+      (f) => expect(runLint([f]).code).toBe(0),
+    );
+  });
+
+  it('CONTROL: an alias never used at a `??` is not flagged', () => {
+    // Reading the flag is legal. Resolving the GATE by hand is what is banned.
+    withFixture(
+      'export function f(config) {\n  const da = config.developmentAgent;\n  return da ? "dev" : "fleet";\n}\n',
+      (f) => expect(runLint([f]).code).toBe(0),
+    );
+  });
+});

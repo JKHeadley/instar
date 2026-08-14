@@ -1,0 +1,42 @@
+<!-- internal-only -->
+
+# dev-agent gate check follows a local alias
+
+Developer tooling only — a CI lint. No runtime path, no route, no config key, no user-visible surface, so
+this fragment takes the internal-only lane.
+
+## What Changed
+
+`scripts/lint-dev-agent-dark-gate.js` assertion A bans hand-rolled dev-agent gate resolution outside
+`resolveDevAgentGate`. The matcher required `.developmentAgent` **literally after the `??`**, so lifting the
+value into a local const first walked past it while resolving the gate by hand exactly as before:
+
+```ts
+const da = config.developmentAgent;
+return enabled ?? !!da;          // exit 0 against the shipped lint
+```
+
+instar-codey reproduced this while auditing rename-defeatable checks and pre-scoped the remedy ("low FP for
+simple local alias folding around `developmentAgent` feeding `??`"). That is the scope implemented: local
+`const`/`let`/`var` aliases, collected per file, matched at `?? [!!|Boolean(] <alias>`.
+
+The lint's header already declared this limit ("cannot catch arbitrary aliases/wrapper helpers"). It is
+closed for the shape that actually occurs; the declaration was honest, not wrong.
+
+Four controls keep it from failing correct builds, each with a test: only a `developmentAgent` binding
+counts; matching is whole-word so `developmentAgentName` is untouched; an alias never used at a `??` is
+legal (reading the flag is fine — hand-rolling the fallback is what is banned); and a commented-out
+declaration binds nothing.
+
+Still not caught, stated in the source: wrapper helpers, cross-module aliases, and anything needing
+dataflow. Guessing at those would over-match a build-failing lint.
+
+## Evidence
+
+- `tests/unit/lint-dev-agent-dark-gate.test.ts` — **31/31 green** (24 existing + 7 added).
+- Negative control: tests written BEFORE the fix, run against the shipped lint — **3 of 31 fail** (const
+  alias, bracket-access alias, `Boolean(alias)`). The other 28 pass both ways.
+- Reproduced by hand first with a positive control: direct form exits 1, aliased form exits 0.
+- Real-tree verdict: `node scripts/lint-dev-agent-dark-gate.js` → exit 0, no new flags.
+- Full `npm run lint` chain green.
+- Side-effects: `upgrades/side-effects/dev-agent-gate-alias.md` · ELI16: `docs/specs/dev-agent-gate-alias.eli16.md`.
