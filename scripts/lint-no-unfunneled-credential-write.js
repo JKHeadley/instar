@@ -86,6 +86,83 @@ const PATTERNS = [
 // services) are never false-positived.
 const RAW_KEYCHAIN_WRITE = /add-generic-password/;
 
+// ── Evasion-resistant detection (2026-08-14) ─────────────────────────────
+// A peer-agent audit classified this check DEFEATABLE by ordinary renaming,
+// and three bypasses were then reproduced against it:
+//
+//   const SVC = 'Claude Code' + '-credentials';         // concatenated service
+//   execFileSync('security', ['add-generic-password', '-s', SVC]);
+//   const store = defaultCredentialStore; store.write(p);  // re-bound receiver
+//   provider['writeCredentials'](p);                       // computed access
+//
+// The first is the sharpest: the raw-keychain rule is GATED on the literal
+// service string appearing in the file, so splitting it across a concatenation
+// switches the whole rule off. That gate exists to avoid false-positiving the
+// other, distinct-service vaults, so it is narrowed rather than removed.
+
+/** Collapse simple adjacent string concatenation so `'A' + 'B'` reads as `AB`. */
+export function collapseConcatenation(content) {
+  // `'A' + 'B'` / "A" + "B" / mixed quotes → `AB`. Repeated to fold chains.
+  let out = content;
+  for (let i = 0; i < 5; i++) {
+    const next = out.replace(/(['"])\s*\+\s*(['"])/g, '');
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+/** Local names bound to `defaultCredentialStore`, resolved to a fixpoint. */
+export function credentialStoreBindings(content) {
+  const names = new Set(['defaultCredentialStore']);
+  for (let pass = 0; pass < 10; pass++) {
+    const before = names.size;
+    for (const known of [...names]) {
+      const re = new RegExp(`\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*${known}\\s*[;,\\n]`, 'g');
+      for (const m of content.matchAll(re)) names.add(m[1]);
+    }
+    if (names.size === before) break;
+  }
+  return [...names];
+}
+
+/**
+ * Violations in `content`, as { line, msg }. Exported so the rules can be
+ * driven with fixtures rather than only end-to-end over the tree.
+ */
+export function findCredentialWriteViolations(content) {
+  const hits = [];
+  // Concatenation-tolerant: a split service literal no longer disarms the rule.
+  const targetsGuardedService = collapseConcatenation(content).includes(GUARDED_SERVICE);
+  const storeNames = credentialStoreBindings(content);
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (isCommentLine(line)) continue;
+    // Re-bound receiver + computed access on the store write.
+    for (const n of storeNames) {
+      if (new RegExp(`\\b${n}\\s*\\.\\s*write\\s*\\(`).test(line)
+        || new RegExp(`\\b${n}\\s*\\[\\s*['"\`]write['"\`]\\s*\\]\\s*\\(`).test(line)) {
+        hits.push({ line: i + 1, msg: PATTERNS[0].msg });
+        break;
+      }
+    }
+    // `.writeCredentials(` and its computed form.
+    if (/\.writeCredentials\s*\(/.test(line)
+      || /\[\s*['"`]writeCredentials['"`]\s*\]\s*\(/.test(line)) {
+      hits.push({ line: i + 1, msg: PATTERNS[1].msg });
+    }
+    if (targetsGuardedService && RAW_KEYCHAIN_WRITE.test(line)) {
+      hits.push({
+        line: i + 1,
+        msg: `raw 'add-generic-password' to the ${GUARDED_SERVICE} service outside the funnel. `
+          + `Route the write through CredentialWriteFunnel.withSlotLock, or add an allowlist entry here with a justification.`,
+      });
+    }
+  }
+  return hits;
+}
+
 function isCommentLine(line) {
   const t = line.trim();
   return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') || t.startsWith('#');
@@ -118,6 +195,15 @@ function listFiles() {
   return files;
 }
 
+// ── CLI body ─────────────────────────────────────────────────────────────
+// Guarded so the exported detector can be imported by tests WITHOUT running the
+// scan: this module calls process.exit(1) on a violation, so an unguarded
+// import would kill any test run the moment the repo had one. Same pattern as
+// scripts/eli16-pr-description-check.mjs and lint-no-unbounded-llm-spawn.js.
+const invokedDirectly =
+  process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
+
+if (invokedDirectly) {
 let violations = 0;
 for (const rel of listFiles()) {
   const normalized = rel.split(path.sep).join('/');
@@ -130,25 +216,9 @@ for (const rel of listFiles()) {
   } catch {
     continue;
   }
-  const fileTargetsGuardedService = content.includes(GUARDED_SERVICE);
-  const lines = content.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (isCommentLine(line)) continue;
-    for (const { re, msg } of PATTERNS) {
-      if (re.test(line)) {
-        console.error(`${normalized}:${i + 1} — ${msg}`);
-        violations++;
-      }
-    }
-    if (fileTargetsGuardedService && RAW_KEYCHAIN_WRITE.test(line)) {
-      console.error(
-        `${normalized}:${i + 1} — raw 'add-generic-password' to the ${GUARDED_SERVICE} service outside ` +
-        `the funnel. Route the write through CredentialWriteFunnel.withSlotLock, or add an allowlist entry ` +
-        `here with a justification.`,
-      );
-      violations++;
-    }
+  for (const hit of findCredentialWriteViolations(content)) {
+    console.error(`${normalized}:${hit.line} — ${hit.msg}`);
+    violations++;
   }
 }
 
@@ -160,3 +230,4 @@ if (violations > 0) {
   process.exit(1);
 }
 console.log('lint-no-unfunneled-credential-write: clean');
+}
