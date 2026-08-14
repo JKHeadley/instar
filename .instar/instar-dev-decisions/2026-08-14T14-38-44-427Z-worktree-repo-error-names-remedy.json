@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-14T14:38:44.427Z",
+  "slug": "worktree-repo-error-names-remedy",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 16,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/cli.ts",
+      "src/core/InstarWorktreeManager.ts"
+    ],
+    "addedLines": 15,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

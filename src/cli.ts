@@ -563,6 +563,9 @@ worktreeCmd
     'Create a git worktree of the shared instar repo inside the agent home ' +
       '(~/.instar/agents/<agent>/.worktrees/<slug>). Agent home is resolved from ' +
       'INSTAR_AGENT_HOME (set by the agent launcher) or by walking up from the CWD. ' +
+      'The instar repo itself is resolved from INSTAR_REPO, then the CWD, then ' +
+      'INSTAR_AGENT_HOME, then the default checkout locations — so run this from inside ' +
+      'your checkout, or set INSTAR_REPO when it lives elsewhere. ' +
       'Caveat: GIT_AUTHOR_NAME / GIT_COMMITTER_EMAIL in the environment override the ' +
       "per-worktree identity this command sets — agents that need attribution must avoid exporting those vars.",
   )

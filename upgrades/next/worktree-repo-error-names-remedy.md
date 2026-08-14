@@ -1,0 +1,22 @@
+## What Changed
+
+When `instar worktree create` cannot locate your instar checkout, the failure now names the remedy instead of only the diagnosis.
+
+- **The error names the setting that fixes it.** The first place the command looks is the `INSTAR_REPO` setting, but that name appeared nowhere in the failure — so someone whose checkout lives outside the default locations had no way to learn the escape hatch existed from the message that blocked them.
+- **The diagnosis is kept in full.** Every candidate location and the exact reason each was rejected still comes first, word for word. The remedy is appended after it, never substituted for it.
+- **The command's help now describes how the checkout is located**, matching the detail it already gave for how the agent's home is located. Those two were asymmetric.
+- **No behaviour change.** The same locations are searched in the same order, the same integrity checks apply, and the same inputs succeed and fail.
+
+## What to Tell Your User
+
+Creating an isolated working copy has to find your source checkout first. When it could not, it explained precisely what it had tried and why each attempt failed — and stopped there, without mentioning the one setting that points it somewhere else. The natural response to that is to give up on the command and make the working copy by hand, which quietly skips the protections the command provides: putting it in the one place the system cannot revoke access to mid-session, giving it its own identity, sharing installed packages, and keeping it out of the system file indexer.
+
+It now tells you how to proceed. The detailed explanation of what failed still comes first, because that is what you need in order to understand the situation; the suggestion follows it.
+
+## Summary of New Capabilities
+
+None. This improves the wording of an existing failure and an existing help description. No new command, flag, route, setting, or behaviour.
+
+## Evidence
+
+The defect was reproduced before any edit, and the source file was confirmed byte-identical to the mainline copy first, so this is a live defect rather than a local artifact. Proven in both directions: reverting the change makes the new test fail while a second, deliberate control test continues to pass. That control exists to catch the opposite mistake — making an error friendlier by deleting the detail a reader needs — and it holds both before and after. Typecheck clean and 51 of 51 tests passing in the affected suite, up from 49, verified in a dedicated working copy checked out from the mainline on its own installed dependencies rather than inherited from another tree.

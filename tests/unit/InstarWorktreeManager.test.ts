@@ -327,6 +327,55 @@ describe('resolveInstarRepo', () => {
     ).toThrow(/no candidate passed integrity validation/);
   });
 
+  // ── The failure must name its remedy, not only its diagnosis ──────────
+  // Earned 2026-08-14: an agent whose checkout lives outside the default
+  // locations ran this from its agent home, got an honest but remedyless
+  // error, and went around the command to a raw `git worktree add` — skipping
+  // every safety property the worktree convention exists to provide.
+
+  it('THE DEFECT: the failure names INSTAR_REPO, the escape hatch it already consults', () => {
+    const elsewhere = fs.mkdtempSync(path.join(tmp, 'elsewhere-'));
+    let msg = '';
+    try {
+      resolveInstarRepo({
+        env: {},
+        cwd: elsewhere,
+        fallbackChain: [],
+        urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
+      });
+    } catch (err) {
+      msg = (err as Error).message;
+    }
+    // INSTAR_REPO is the FIRST candidate resolveInstarRepo consults, yet the
+    // operator blocked by this error could not learn that from the error.
+    expect(msg).toMatch(/INSTAR_REPO/);
+    // And the remedy must be actionable, not merely a variable name.
+    expect(msg).toMatch(/run this command from inside your instar checkout/i);
+  });
+
+  it('CONTROL: the remedy is APPENDED — every candidate and its reason survive', () => {
+    const notRepo = fs.mkdtempSync(path.join(tmp, 'notrepo-'));
+    const elsewhere = fs.mkdtempSync(path.join(tmp, 'elsewhere-'));
+    let msg = '';
+    try {
+      resolveInstarRepo({
+        env: { INSTAR_REPO: notRepo },
+        cwd: elsewhere,
+        fallbackChain: [],
+        urlAllowlist: DEFAULT_INSTAR_REPO_URL_ALLOWLIST,
+      });
+    } catch (err) {
+      msg = (err as Error).message;
+    }
+    // This half passes BOTH before and after the change. It is the guard against
+    // "improving" an error by replacing its diagnostics with advice: the reader
+    // still needs to see which paths were tried and why each one failed.
+    expect(msg).toContain('no candidate passed integrity validation');
+    expect(msg).toContain(notRepo);
+    expect(msg).toContain(elsewhere);
+    expect(msg).toMatch(/not a git repo/);
+  });
+
   it('rejects when remote.origin.url is unset', () => {
     const repo = makeRepo();
     const elsewhere = fs.mkdtempSync(path.join(tmp, 'elsewhere-'));
