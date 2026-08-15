@@ -140,8 +140,32 @@ was in the bytes being read, so a clean result means something.
 **Identity is a label, never a permission.** Knowing which account is signed in
 names a row in a list. It grants nothing.
 
+## Stopping the fall-through onto the subscription you pay for
+
+There is a second, quieter way the second provider costs you money. When one of its
+calls fails, the system retries — and the retry list ends at the main subscription.
+So the provider that exists to keep work off your paid account was, on every
+failure, walking work straight onto it.
+
+Now the retry list tries the OTHER Codex account first: same provider, different
+login. Only if that also fails does it continue down the old list. Nothing was
+removed — a step was added in front — so if both Codex accounts are unwell you still
+get an answer exactly as before.
+
+**Working out which account just failed turned out to be the hard part.** Internal
+calls don't name their account; they use whichever login is the default. The first
+version couldn't tell "the other account" from "the account that just failed", so on
+a machine with only one Codex account it would have retried the failing account
+against itself — and written a log line saying it had moved. A test caught that. The
+fix identifies the default account by where its credentials live, and where it can't
+tell, it does nothing rather than guess.
+
+**If you only have one Codex account, none of this happens.** There is no other
+account to try, so the retry list behaves exactly as it does today.
+
 ## What ships when
 
 The identity reader and the enrolment path are useful immediately — they make the
 spare account visible and usable. The slowness trigger ships dark and rehearses
-first. Nothing about the main subscription changes.
+first. The retry-list change is live but self-disabling: with fewer than two usable
+Codex accounts it does nothing at all. Nothing about the main subscription changes.

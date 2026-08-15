@@ -174,6 +174,26 @@ export interface IntelligenceRouterOptions {
    */
   nonGatingFailureSwap?: { enabled: boolean; maxAttempts?: number };
   /**
+   * SIBLING-ACCOUNT failure tail. When a `codex-cli` call fails, the shipped tail sends the
+   * retry to the next DOOR — and the last door is `claude-code`, i.e. the main subscription
+   * this provider exists to protect. Holding two Codex logins makes a nearer position
+   * available: the SAME door on the OTHER account. This resolver supplies those positions,
+   * which are tried BEFORE any door change.
+   *
+   * Called with the framework that just failed and the account it ran on (null when the call
+   * ran on the ambient login, i.e. unattributable). MUST NOT throw. Returning `[]` — or being
+   * absent entirely — leaves the tail byte-identical to today, which is what makes this safe
+   * to land dark: a single-account agent has no sibling and therefore no new behaviour.
+   *
+   * The router does not decide WHICH account is eligible (healthy, not rate-limited, same
+   * framework) — that judgment belongs to the pool that owns account state. The router only
+   * consumes the ordered list it is handed.
+   */
+  resolveSiblingAccounts?: (
+    framework: IntelligenceFramework,
+    failedAccountId: string | null,
+  ) => ReadonlyArray<{ accountId: string; configHome: string }>;
+  /**
    * Build a provider for a non-default framework, with its OWN circuit breaker.
    * Returns null when that framework's binary isn't available. Called at most
    * once per framework (result cached). MUST NOT throw (catch internally).
@@ -1466,12 +1486,62 @@ export class IntelligenceRouter implements IntelligenceProvider {
     // already reserve-clamped); the legacy path supplies the config `failureSwap` frameworks
     // (each taking the caller's tier, clamped per-door in the loop). BOTH ride the SAME
     // gating||deferrable gate and the SAME loop below — the spec's "reuse verbatim".
-    const swapPositions: ReadonlyArray<{ door: IntelligenceFramework; model?: string }> =
+    // The account the primary attempt ran on, when the caller named one. Ambient calls are
+    // `null` — genuinely unknown, not "the default": the router cannot see which login the
+    // child inherited, and inventing an id here would make the self-exclusion filter below
+    // silently wrong. Null simply means no sibling can be excluded by identity.
+    const primaryAccountId: string | null = options?.accountOverride?.accountId ?? null;
+    const doorPositions: ReadonlyArray<{ door: IntelligenceFramework; model?: string }> =
       gating || deferrable
         ? enforced
           ? enforced.swapTail.map((p) => ({ door: p.door as IntelligenceFramework, model: p.modelId }))
           : (cfg?.failureSwap ?? []).map((fw) => ({ door: fw }))
         : [];
+    // SIBLING-ACCOUNT positions come FIRST. The shipped tail's last door is `claude-code` —
+    // the main subscription — so a failing Codex call currently ends up spending exactly the
+    // budget the Codex door exists to protect. The other Codex login is the nearer position:
+    // same door, same model tier, different account. Trying it first is what stops the tail
+    // from reaching Claude at all in the common case (one account unwell, one healthy).
+    //
+    // Positions are prepended, never substituted: if every sibling also fails, the original
+    // door tail runs exactly as before, so this can only ever ADD an attempt before the
+    // fall-through — never remove the fall-through itself.
+    //
+    // Absent resolver ⇒ empty ⇒ `swapPositions` is `doorPositions` unchanged (dark by default).
+    const siblingPositions: ReadonlyArray<{
+      door: IntelligenceFramework;
+      model?: string;
+      account: { accountId: string; configHome: string };
+    }> = (() => {
+      if (doorPositions.length === 0) return []; // no tail eligible at all → nothing to prepend to
+      const resolve = this.opts.resolveSiblingAccounts;
+      if (!resolve) return [];
+      let siblings: ReadonlyArray<{ accountId: string; configHome: string }>;
+      try {
+        siblings = resolve(framework, primaryAccountId) ?? [];
+      } catch {
+        // A broken resolver must cost us the ENHANCEMENT, never the shipped tail.
+        return [];
+      }
+      return siblings
+        .filter(
+          (s) =>
+            typeof s?.configHome === 'string' &&
+            s.configHome.length > 0 &&
+            typeof s?.accountId === 'string' &&
+            s.accountId.length > 0 &&
+            // A "sibling" that is the account that just failed is not a sibling. Retrying the
+            // failing account under a new label is a wasted attempt against a budget the
+            // gating deadline is actively spending.
+            s.accountId !== primaryAccountId,
+        )
+        .map((s) => ({ door: framework, account: { accountId: s.accountId, configHome: s.configHome } }));
+    })();
+    const swapPositions: ReadonlyArray<{
+      door: IntelligenceFramework;
+      model?: string;
+      account?: { accountId: string; configHome: string };
+    }> = siblingPositions.length > 0 ? [...siblingPositions, ...doorPositions] : doorPositions;
     // GATING budget: a single hard wall-clock deadline over the whole gating failure path so an
     // awaited gate stays responsive (no stacking rungs). Deferrable calls are not budgeted this way.
     const gatingDeadlineAt = gating && ladder ? Date.now() + ladder.gatingLadderBudgetMs : undefined;
@@ -1578,7 +1648,12 @@ export class IntelligenceRouter implements IntelligenceProvider {
         // and fail closed now (responsiveness over completeness — spec §3a). Deferrable calls have
         // no such deadline (gatingDeadlineAt is undefined for them).
         if (gatingDeadlineAt !== undefined && Date.now() > gatingDeadlineAt) break;
-        if (target === framework) continue; // don't retry the framework that just failed
+        // Don't retry the framework that just failed — UNLESS this position carries a
+        // different ACCOUNT. The rule's purpose is "don't repeat the attempt that just
+        // failed", and same-door-other-account is not that attempt: it is a different
+        // login, quota window and rate-limit state. Without this carve-out every sibling
+        // position would be skipped and the tail would go straight to the next door.
+        if (target === framework && !t.account) continue;
         const tp = this.resolveProvider(target);
         if (!tp) continue; // target binary missing → skip
         let cap = resolveSwapCap(target, globalCapMs, byFramework, maxCapMs);
@@ -1627,10 +1702,14 @@ export class IntelligenceRouter implements IntelligenceProvider {
         // legacy path, plus the correlation plumbing); an enforced position's model
         // always overrides it below.
         const attemptExtra: Partial<IntelligenceOptions> | undefined =
-          cap !== undefined || overrideModel
+          cap !== undefined || overrideModel || t.account
             ? {
                 ...(cap !== undefined ? { timeoutMs: cap } : {}),
                 ...(overrideModel ? { model: attemptModel } : {}),
+                // A sibling position names the account it must run on. Without this the
+                // attempt would inherit the ambient login — i.e. re-run on the account that
+                // just failed, while the log claimed it had moved.
+                ...(t.account ? { accountOverride: t.account } : {}),
               }
             : undefined;
         try {
@@ -1650,7 +1729,11 @@ export class IntelligenceRouter implements IntelligenceProvider {
             category,
             from: framework,
             to: target,
-            reason: `failure-swap: '${framework}' failed (${err instanceof Error ? err.message : 'error'}); served by '${target}'`,
+            reason: t.account
+              ? // A sibling swap did NOT change door, so 'codex-cli → codex-cli' would read as
+                // a no-op. Name the ACCOUNT, which is the thing that actually changed.
+                `failure-swap: '${framework}' failed (${err instanceof Error ? err.message : 'error'}); served by sibling account '${t.account.accountId}' on the same door`
+              : `failure-swap: '${framework}' failed (${err instanceof Error ? err.message : 'error'}); served by '${target}'`,
           });
           this.opts.onResolved?.(component ?? '(none)', framework); // real answer via swap → auto-resolve
           return result;

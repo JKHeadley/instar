@@ -6036,6 +6036,17 @@ export async function startServer(options: StartOptions): Promise<void> {
     // opt-in flag that older versions accepted), we warn loudly and proceed with the
     // subscription path.
     let sharedIntelligence: IntelligenceProvider | undefined;
+    // Late binding for the router's sibling-account failure tail. The router is built here;
+    // the pool is built much later in boot (behind a dynamic import, to keep it off the boot
+    // path). The resolver is only ever called at failure time, so binding it when the pool
+    // appears is both correct and a smaller change than reordering boot — and it keeps the
+    // module lazy. Null until then ⇒ no siblings ⇒ the shipped tail, unchanged.
+    let siblingAccountResolver:
+      | ((
+          framework: import('../core/intelligenceProviderFactory.js').IntelligenceFramework,
+          failedAccountId: string | null,
+        ) => Array<{ accountId: string; configHome: string }>)
+      | null = null;
     const staleApiProvider =
       (config as unknown as { intelligenceProvider?: string }).intelligenceProvider === 'anthropic-api';
     let intelligenceSource = 'none';
@@ -6516,6 +6527,22 @@ export async function startServer(options: StartOptions): Promise<void> {
             enabled: config.intelligence?.nonGatingFailureSwap?.enabled ?? true,
             maxAttempts: config.intelligence?.nonGatingFailureSwap?.maxAttempts,
           },
+          // SIBLING-ACCOUNT failure tail: before the tail changes DOOR (whose last position
+          // is claude-code — the main subscription this door exists to protect), try the
+          // same door on another enrolled account of the same framework.
+          //
+          // Late-bound on purpose: the pool is constructed much later in boot, and this is
+          // only ever called at failure time, so reading it lazily is both correct and the
+          // smallest possible change to boot order.
+          //
+          // Eligibility lives HERE, not in the router: the pool owns account state. Only
+          // `active` accounts qualify — a rate-limited or warming sibling is a known-bad
+          // attempt against a gating deadline. Bounded to ONE sibling: the tail exists to
+          // find an answer quickly, not to walk an entire pool while a gate waits.
+          resolveSiblingAccounts: (framework, failedAccountId) =>
+            // Null until the pool is built (or on an agent that never builds one) ⇒ no
+            // siblings ⇒ the shipped tail runs exactly as before.
+            siblingAccountResolver?.(framework, failedAccountId) ?? [],
           // The dedicated queue for the DEFERRABLE queue rung (§3b.3); undefined when the rung is
           // dark ⇒ the rung is a no-op (a deferrable call falls straight to its heuristic, as before).
           llmQueue: degradationLadderQueue,
@@ -13139,8 +13166,27 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Subscription & Auth Standard). Always instantiated; ships DARK because an
     // empty pool is a pure no-op (no background loop, no cost) until an operator
     // enrolls an account. Stores each account's login LOCATION, never tokens.
-    const { SubscriptionPool, requiresOwnerRelogin } = await import('../core/SubscriptionPool.js');
+    const { SubscriptionPool, requiresOwnerRelogin, eligibleSiblingAccounts } = await import(
+      '../core/SubscriptionPool.js'
+    );
     const subscriptionPool = new SubscriptionPool({ stateDir: config.stateDir });
+    // Arm the already-built router's sibling-account failure tail. Read live (not a
+    // snapshot) so an account enrolled, rate-limited or disabled later is reflected on the
+    // next failure. Until this line runs the router's resolver sees null and returns no
+    // siblings, so a failure during boot walks exactly the tail it always did.
+    siblingAccountResolver = (framework, failedAccountId) =>
+      eligibleSiblingAccounts(subscriptionPool.list(), framework, failedAccountId, {
+        // Internal calls run on the AMBIENT login today, so `failedAccountId` is almost
+        // always null and the id-based self-exclusion cannot fire. The ambient home is
+        // how we identify which enrolled account actually ran. Same derivation the
+        // Threadline codex bootstrap already uses (empirically verified against a live
+        // ~/.codex). Non-codex doors have no equivalent, so they pass undefined and the
+        // resolver refuses rather than guesses.
+        ambientConfigHome:
+          framework === 'codex-cli'
+            ? process.env['CODEX_HOME'] || path.join(os.homedir(), '.codex')
+            : null,
+      });
     if (subscriptionPool.size() > 0) {
       console.log(pc.green(`  Subscription pool: ${subscriptionPool.size()} account(s) registered`));
     }

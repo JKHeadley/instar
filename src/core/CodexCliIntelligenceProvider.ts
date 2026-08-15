@@ -354,7 +354,14 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
    * failing the call. Losing account SELECTION is a small loss; losing every
    * internal Codex call is not.
    */
-  private accountForCall(): CodexCallAccount | null {
+  private accountForCall(options?: IntelligenceOptions): CodexCallAccount | null {
+    // A per-call override wins over the provider's resolver. The failure tail uses
+    // it to retry ONE call on the sibling account — a decision that belongs to that
+    // attempt, not to the provider, and that a provider-level closure cannot express.
+    const override = options?.accountOverride;
+    if (override && typeof override.configHome === 'string' && override.configHome.length > 0) {
+      return { accountId: override.accountId, configHome: override.configHome };
+    }
     if (!this.resolveAccount) return null;
     try {
       const a = this.resolveAccount();
@@ -440,7 +447,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     // actually used, the health gauge would be quietly wrong — and a gauge that
     // can disagree with reality is worse than no gauge, because a trigger would
     // act on it with confidence.
-    const account = this.accountForCall();
+    const account = this.accountForCall(options);
     const startedAtMs = Date.now();
     let ok = false;
     try {

@@ -267,3 +267,88 @@ than to ordinary pressure. A second control runs with `dryRun:false` and asserts
 real swap happens, so "nothing moved" is a deliberate choice rather than an
 incapacity. Latency-alone and error-rate-alone both trigger; dark changes nothing;
 a throwing gauge is unknown. 43 pre-existing swap-monitor/continuity tests pass.
+
+### Added by piece 6 (item 4 — the failure tail prefers the sibling account)
+
+The charter's first-flagged item, and the one closest to the money: the shipped
+failure tail's LAST door is `claude-code`. So a failing Codex call ended its tail on
+the main subscription — the cheaper door degrades and its failures land on exactly
+the account that door exists to protect.
+
+Piece 6 gives the tail an ACCOUNT dimension (layer 3 of the finding above): a
+position may now name a same-door, different-account attempt, and those positions
+are tried BEFORE any door change.
+
+**Prepended, never substituted.** If every sibling also fails, the original door
+tail runs exactly as before. This can only ADD an attempt ahead of the fall-through;
+it can never remove the fall-through. A test pins the whole ordering
+(`codex → codex-sibling → pi → claude`) precisely so a future edit cannot quietly
+turn the enhancement into a replacement.
+
+**The `target === framework` carve-out.** The loop skipped any position whose door
+was the door that just failed. A sibling position IS that door, so without a
+carve-out every sibling would be skipped and the tail would go straight to the next
+door. The rule's purpose is "don't repeat the attempt that just failed", and
+same-door-other-account is not that attempt — different login, quota window and
+rate-limit state. The carve-out is scoped to positions carrying an account.
+
+#### The defect a test found: identifying the account that failed
+
+The first version excluded the failing account by id, and treated a null id
+(an ambient call) as "excludes nothing". A test asserting a single-account agent
+gets no siblings FAILED — correctly.
+
+Internal Codex calls run on the ambient login, so `failedAccountId` is null in
+production essentially always. Under the first version a single-account agent would
+have been offered its own only account as a "sibling", buying one guaranteed-failing
+retry against a gating deadline on every failure — and reporting it as a swap. The
+logs would have claimed a move that never happened.
+
+The fix identifies the ambient account by its HOME rather than its id, using the
+derivation already verified in production (`ThreadlineBootstrap`:
+`process.env['CODEX_HOME'] || ~/.codex`). Where neither identifier is available the
+resolver returns nothing rather than guess. An ambient home matching no enrolled
+account still yields a sibling — the primary ran on an unenrolled login, so every
+enrolled account is genuinely different.
+
+#### Over-block / under-block
+
+*Over-block:* a `warming` sibling is refused even though it might work. Deliberate —
+the tail is spending a gate's deadline, so a maybe is worse than the next door.
+
+*Under-block:* eligibility reads `status`, which is as fresh as the pool's last
+quota poll. A sibling that became unwell seconds ago can still be selected; it
+simply fails and the tail continues. The cost is one bounded attempt, and the
+existing per-target cap and total budget already bound it.
+
+#### Signal vs authority
+
+The router holds no eligibility opinion — it consumes an ordered list. Which
+accounts qualify is decided by `eligibleSiblingAccounts`, pool-side, where account
+state actually lives. The router's only judgment is ordering (siblings first).
+
+#### Rollback
+
+Delete the `resolveSiblingAccounts` line at the construction site. The option is
+optional; absent ⇒ no sibling positions ⇒ the shipped tail byte-for-byte. No state,
+no migration, no persisted field. A single-account agent is already a no-op.
+
+#### Multi-machine posture
+
+Machine-local BY DESIGN. A sibling attempt runs a local child process against a
+local credential home, so only accounts with a real local login on THIS machine are
+eligible (the empty-`configHome` exclusion is exactly the meta-only, replicated-from-
+a-peer case). Nothing replicates and nothing is proxied.
+
+#### Evidence
+
+20 policy + wiring tests and 12 router tests. Both mechanisms were shown capable of
+failing INDEPENDENTLY: reverting the carve-out fails 4 behaviour tests while the 8
+controls keep passing; breaking only the account threading fails 3 — including
+"the sibling attempt actually RUNS on the sibling account", which is the test that
+separates a real move from a logged one. Removing the ambient-home exclusion fails
+the single-account and production-case tests; removing the refuse-to-guess rule
+fails its two. A CONTROL proves the headline result is attributable: with no
+resolver the same failure walks the tail to Claude, so "never reaches Claude" is
+caused by the sibling position rather than by an unreachable harness. 57 pre-existing
+router/swap tests and 51 pool/swap tests pass.
