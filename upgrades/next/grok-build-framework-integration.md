@@ -36,8 +36,8 @@ subscription; that question is open and blocks any use beyond a single
 development machine.
 
 If you enrol a Grok subscription in your account pool, note that it also changes
-how CLAUDE work is throttled on a single-Claude-account agent, and that removing
-`grok-build` from `enabledFrameworks` does NOT unenrol the account.
+how CLAUDE work is throttled on a single-Claude-account agent, and that turning
+Grok back off does NOT unenrol the account — that is a separate step.
 
 ## Summary of New Capabilities
 
