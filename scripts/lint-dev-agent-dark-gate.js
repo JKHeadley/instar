@@ -72,6 +72,49 @@ const FUNNEL_ALLOWLIST = new Set([
 // in the spec's Layer-1 "misses" row.)
 const HANDROLLED_GATE =
   /\?\?\s*(?:!{1,2}\s*|Boolean\s*\(\s*)?[A-Za-z_$][\w$.?]*(?:\.developmentAgent\b|\[\s*['"]developmentAgent['"]\s*\])/;
+
+// ── 2026-08-14: the gate value does not have to be spelled at the `??`. ──
+// The matcher above requires `.developmentAgent` LITERALLY after the `??`, so
+// lifting it into a local const first walks past it while resolving the gate by
+// hand exactly as before:
+//     const da = config.developmentAgent;
+//     return enabled ?? !!da;              // exit 0 against the old matcher
+// The header's declared limit ("cannot catch arbitrary aliases/wrapper helpers")
+// was honest; this closes the LOCAL-CONST half of it, which is the shape a
+// rename-defeat audit actually reproduced.
+//
+// Deliberately NOT closed, so it stays stated rather than implied: wrapper
+// helpers (`isDevAgent(config)`), cross-module aliases, and any value that needs
+// dataflow to resolve. Guessing at those would over-match, and this lint fails
+// builds — flagging correct code is the more expensive error here.
+//
+// Scope-bounded on purpose: an alias binds only within its own file, so the map
+// is rebuilt per file and never leaks between them.
+const ALIAS_DECL =
+  /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::\s*[^=]+?)?=\s*[A-Za-z_$][\w$.?]*(?:\.developmentAgent\b|\[\s*['"]developmentAgent['"]\s*\])/;
+
+/**
+ * Local identifiers bound to `<expr>.developmentAgent` in THIS file.
+ * `config.developmentAgentName` does not qualify — the `\b` keeps the boundary
+ * through the alias exactly as it holds at the direct callsite.
+ */
+function collectDevAgentAliases(lines) {
+  const names = new Set();
+  for (const line of lines) {
+    const code = codeOnly(line);
+    if (code === null) continue;
+    const m = ALIAS_DECL.exec(code);
+    if (m) names.add(m[1]);
+  }
+  return names;
+}
+
+/** `?? [!! | Boolean(] <alias>` — the aliased spelling of the same hand-rolled gate. */
+function aliasGateMatcher(names) {
+  if (names.size === 0) return null;
+  const alts = [...names].join('|');
+  return new RegExp(`\\?\\?\\s*(?:!{1,2}\\s*|Boolean\\s*\\(\\s*)?(?:${alts})\\b`);
+}
 // A comment referencing the gate convention (for assertion B).
 const GATE_MARKER = /developmentAgent/i;
 const GATE_MARKER_QUALIFIER = /\b(dark|gate)\b/i;
@@ -171,10 +214,11 @@ for (const file of resolveTargets()) {
 
   // ── Assertion A: funnel ──
   if (!FUNNEL_ALLOWLIST.has(rel)) {
+    const aliasGate = aliasGateMatcher(collectDevAgentAliases(lines));
     lines.forEach((line, i) => {
       const code = codeOnly(line);
       if (code === null) return;
-      if (HANDROLLED_GATE.test(code)) {
+      if (HANDROLLED_GATE.test(code) || (aliasGate !== null && aliasGate.test(code))) {
         violations.push({
           file: rel, line: i + 1, kind: 'A: hand-rolled gate',
           text: line.trim(),
