@@ -71,10 +71,10 @@ stall-coverage:
     liveness-surface: 'DEFECT if enabled: a grok session parked on an approval menu reads as running'
   - class: context-window-wall
     status: declared-gap
-    reason: 'CORRECTED 2026-08-15 by the mentee: grok does NOT wall-and-die — it auto-compacts IN PLACE (same session, same process, checkpoints re-injected). The gap is that instar wires no DETECTION of that compaction, not that recovery is absent. The prior text ("no compact-equivalent recovery is wired") described Claude''s failure mode mapped onto grok.'
+    reason: 'CORRECTED round-22 by the mentee: grok auto-compacts IN PLACE rather than walling; the gap is missing DETECTION of that compaction, not missing recovery. See the context-window-wall note below.'
     issueRef: stallclass::context-window-wall::grok-build::gap
     closePath: CMT-1319
-    liveness-surface: 'grok self-heals; the gap is observability. Detectable from OUTSIDE the process: a compaction_checkpoints directory appears while the session id is UNCHANGED; PreCompact/PostCompact hooks fire (grok loads the Claude-compat hook file); the stream emits compact_boundary / auto_compact; token-usage percent drops with NO new session id and NO respawn. Notably absent: Claude''s "conversation too long" idle pane — so a watcher keyed on that signature sees nothing.'
+    liveness-surface: 'grok self-heals; the gap is observability. Outside-visible: compaction_checkpoints appears with the session id UNCHANGED, PreCompact/PostCompact fire, compact_boundary/auto_compact emit, token-percent drops with no respawn.'
 ---
 
 # grok-build — stall-coverage matrix
@@ -164,3 +164,37 @@ CMT-1319, whose text carries the bar itself (round-13: this prose still named CM
 grok-build, build or formally accept the stall coverage** — the same
 detection-before-recovery standard pi paid, priced honestly instead of
 discovered one production stall at a time.
+
+## context-window-wall — corrected by the mentee (round-22, 2026-08-15)
+
+**The row above previously said grok has "no compact-exhaustion signature or
+compact-equivalent recovery" and that a context-walled grok session has "no honest
+surface". That was Claude's failure mode mapped onto grok, and the mentee caught
+it.** Groky, asked to name one class this outside-in document got WRONG (not
+missing), answered:
+
+> I do not wall and die. When the window gets tight, grok auto-compacts in place.
+> Same session, same process. Checkpoints get re-injected. I keep going.
+> Fresh-respawn is not the recovery.
+
+**How an outside watcher sees it** (his answer — the part the mentor could not
+have written, since it requires being inside the process to know what the outside
+looks like):
+
+- a `compaction_checkpoints` directory grows while the **session id stays the
+  same** — no new session, no respawn;
+- `PreCompact` / `PostCompact` hooks fire (grok loads the Claude-compat hook file,
+  so those events are already visible to instar);
+- the stream emits `compact_boundary` / `auto_compact` events;
+- token-usage percent **drops** with no new session id and no process respawn;
+- and the tell-tale ABSENCE: Claude's "conversation too long" idle pane never
+  appears, so any watcher keyed on that signature sees nothing at all.
+
+**Verified before acceptance, not taken on trust:** the shipped grok binary
+contains the literal strings `auto_compact`, `compact_boundary` and
+`compaction_checkpoints`. A mentee's claim about its own internals is exactly the
+kind of assertion that deserves an independent check, and it survived one.
+
+**What remains a gap:** instar wires no detector for any of these signals, so a
+compaction is invisible to the watchers today. The gap is observability, not
+recovery — a distinction the previous wording erased.

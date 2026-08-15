@@ -427,6 +427,29 @@ framework is not "wired" on a passing test alone.
   is LABELLED as that framework; when no such framework exists the lane's own
   `grok-headless-cwd-ungated` refusal stands. What never happens is a
   grok-labelled Claude spawn (§4.3 lane 3, Frontloaded Decision 10).
+
+  **ROUND-22, OBSERVED LIVE — the consequence this bullet never traced.** On a
+  grok-ONLY agent there IS no other enabled framework, so the fallback finds
+  nothing and the refusal stands for EVERY headless job. Groky ships with **33
+  scheduled jobs**. Each one fails, and failure alerting is per job, so the
+  operator's group fills with "Job Alert: … 2 consecutive failures … last error:
+  grok-headless-cwd-ungated" — two were already delivered before this was
+  noticed. The crash-loop pauser bounds it (jobs pause rather than retry
+  forever), so it is finite, not endless.
+
+  The wording above — "the refusal stands", described elsewhere in this document
+  as "the honest outcome on a single-framework machine" — is locally TRUE and
+  was never followed one step downstream to what the operator experiences. An
+  honest refusal repeated 33 times with an alert each is not an honest outcome;
+  it is a flood with a good excuse. This is the operator-surface-quality question
+  the review gate asks about, answered correctly in the small and missed in the
+  aggregate.
+
+  **NOT fixed here, and named rather than deferred silently:** the candidate fix
+  is that a grok-only agent should SKIP (or not install) headless-lane jobs while
+  the lane is closed, with ONE notice, instead of scheduling 33 jobs that cannot
+  run. That is a behavioural change to an agent's job set and belongs to the
+  operator, so it is surfaced as a decision. Carrier: CMT-1317. <!-- tracked: CMT-1317 -->
 - Internal routing (sentinels, gates, extractors) — structurally excluded,
   and on an agent with NO OTHER enabled framework this means no
   IntelligenceProvider at all, hence NO outbound LLM gate (B15-B19 included).
