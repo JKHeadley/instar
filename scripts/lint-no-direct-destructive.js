@@ -39,6 +39,14 @@ import { fileURLToPath } from 'node:url';
 // only when a TS file actually needs parsing.
 let _ts = null;
 function ts() {
+  // Test hook for the parsed-nothing refusal below. It can ONLY force the
+  // fail-closed path (every file fails to parse → the run refuses to report
+  // clean); there is no flag here that can make this lint pass something it
+  // would otherwise flag. Without it the refusal would be untested, which is
+  // the failure mode this whole guard exists to prevent.
+  if (process.env.INSTAR_LINT_FORCE_PARSE_FAILURE === '1') {
+    throw new Error('forced parse failure (INSTAR_LINT_FORCE_PARSE_FAILURE=1)');
+  }
   if (_ts) return _ts;
   _ts = require('typescript');
   return _ts;
@@ -304,7 +312,15 @@ function lintTsFile(file, text) {
   const T = ts();
   const sf = T.createSourceFile(file, text, T.ScriptTarget.Latest, true);
   const ctx = { text };
-  const r = (f, l, c, m) => report(f, l, c, m, ctx);
+  // Declaration collection runs BEFORE reporting (see the collect/report loop at
+  // the foot of this function), so a binding declared after the function that
+  // uses it is still resolved. While collecting, findings are suppressed —
+  // otherwise every violation would be reported once per collection pass.
+  let collecting = true;
+  const r = (f, l, c, m) => {
+    if (collecting) return;
+    report(f, l, c, m, ctx);
+  };
 
   /** module name → local identifier (default + namespace + named) */
   const childProcessIdentifiers = new Set();
@@ -317,6 +333,34 @@ function lintTsFile(file, text) {
   function lineCol(node) {
     const lc = sf.getLineAndCharacterOfPosition(node.getStart(sf));
     return { line: lc.line + 1, col: lc.character + 1 };
+  }
+
+  /**
+   * Strip syntax that changes nothing at runtime but hides an identifier from a
+   * structural check — parentheses, `as` assertions, `<T>` assertions and `!`.
+   * `(fs as any)['rmSync'](p)` performs exactly the same delete as `fs.rmSync(p)`;
+   * without this it reached the computed-access branch as a ParenthesizedExpression
+   * and the `isIdentifier` test failed, so the call was invisible.
+   */
+  /**
+   * Idempotent: collection now runs more than once (see the collect/report loop
+   * below), and an array push is the one collector here that is not naturally
+   * idempotent — repeated passes would duplicate entries and keep the binding
+   * count growing, so the fixpoint would never be reached.
+   */
+  function addSimpleGitImport(localName) {
+    if (!simpleGitImports.some((s2) => s2.localName === localName)) {
+      simpleGitImports.push({ localName });
+    }
+  }
+
+  function unwrap(node) {
+    let n = node;
+    while (n && (T.isParenthesizedExpression(n) || T.isAsExpression(n)
+                 || T.isTypeAssertionExpression?.(n) || T.isNonNullExpression(n))) {
+      n = n.expression;
+    }
+    return n;
   }
 
   function visit(node) {
@@ -342,7 +386,7 @@ function lintTsFile(file, text) {
             } else if (FS_MODULE_NAMES.has(mod) && DESTRUCTIVE_FS_NAMES.has(importedName)) {
               fsNamedDestructiveImports.set(localName, importedName);
             } else if (mod === 'simple-git' && importedName === 'simpleGit') {
-              simpleGitImports.push({ localName });
+              addSimpleGitImport(localName);
             }
           }
         }
@@ -355,7 +399,7 @@ function lintTsFile(file, text) {
         } else if (FS_MODULE_NAMES.has(mod)) {
           fsNamespaceIdentifiers.add(localName);
         } else if (mod === 'simple-git') {
-          simpleGitImports.push({ localName });
+          addSimpleGitImport(localName);
         }
       }
     }
@@ -376,7 +420,7 @@ function lintTsFile(file, text) {
               fsNamespaceIdentifiers.add(localName);
               requireBindings.set(localName, mod);
             } else if (mod === 'simple-git') {
-              simpleGitImports.push({ localName });
+              addSimpleGitImport(localName);
             }
           }
           // Destructured: const { execFileSync } = require('child_process')
@@ -392,7 +436,7 @@ function lintTsFile(file, text) {
               } else if (FS_MODULE_NAMES.has(mod) && DESTRUCTIVE_FS_NAMES.has(importedName)) {
                 fsNamedDestructiveImports.set(localName, importedName);
               } else if (mod === 'simple-git' && importedName === 'simpleGit') {
-                simpleGitImports.push({ localName });
+                addSimpleGitImport(localName);
               }
             }
           }
@@ -441,6 +485,83 @@ function lintTsFile(file, text) {
       }
     }
 
+    // ── Local re-bindings of a banned namespace or function ────
+    // The sets above were populated ONLY from imports/requires, so one line of
+    // ordinary tidying disabled the funnel for a whole file:
+    //
+    //   const fsp = fs.promises;   await fsp.rm(p, { recursive: true });
+    //
+    // Aliasing `fs.promises` to a short name is idiomatic JavaScript, not an
+    // evasion — and `fs.promises.rm` written out IS caught, so the difference
+    // between flagged and invisible was a variable. Resolving the binding feeds
+    // the EXISTING checks below rather than adding a parallel rule.
+    if (T.isVariableDeclaration(node) && node.initializer) {
+      const init = unwrap(node.initializer);
+
+      // `const X = <expr>` where X is a plain identifier.
+      if (T.isIdentifier(node.name)) {
+        const local = node.name.text;
+
+        // Whole-namespace alias: `const f = fs` / `const fsp = fs.promises`.
+        if (T.isIdentifier(init) && fsNamespaceIdentifiers.has(init.text)) {
+          fsNamespaceIdentifiers.add(local);
+        } else if (T.isIdentifier(init) && childProcessIdentifiers.has(init.text)) {
+          childProcessIdentifiers.add(local);
+        } else if (T.isPropertyAccessExpression(init)) {
+          const base = unwrap(init.expression);
+          const member = init.name.text;
+
+          // `const fsp = fs.promises` — still the fs namespace, so the member
+          // checks below apply to it unchanged.
+          if (T.isIdentifier(base) && fsNamespaceIdentifiers.has(base.text) && member === 'promises') {
+            fsNamespaceIdentifiers.add(local);
+          } else if (T.isIdentifier(base) && fsNamespaceIdentifiers.has(base.text)
+                     && DESTRUCTIVE_FS_NAMES.has(member)) {
+            // `const del = fs.rmSync`
+            fsNamedDestructiveImports.set(local, member);
+          } else if (T.isIdentifier(base) && childProcessIdentifiers.has(base.text)
+                     && CHILD_PROCESS_FNS.has(member)) {
+            // `const ex = cp.execFileSync`
+            childProcessNamedImports.set(local, member);
+          } else if (T.isPropertyAccessExpression(base) && T.isIdentifier(unwrap(base.expression))
+                     && fsNamespaceIdentifiers.has(unwrap(base.expression).text)
+                     && base.name.text === 'promises'
+                     && DESTRUCTIVE_FS_NAMES.has(member)) {
+            // `const del = fs.promises.rm`
+            fsNamedDestructiveImports.set(local, member);
+          }
+        }
+      }
+
+      // `const { rmSync, unlink: del } = fs` / `... = fs.promises`
+      if (T.isObjectBindingPattern(node.name)) {
+        const init2 = unwrap(node.initializer);
+        let isFsSource = false;
+        let isCpSource = false;
+        if (T.isIdentifier(init2)) {
+          isFsSource = fsNamespaceIdentifiers.has(init2.text);
+          isCpSource = childProcessIdentifiers.has(init2.text);
+        } else if (T.isPropertyAccessExpression(init2) && init2.name.text === 'promises') {
+          const base = unwrap(init2.expression);
+          isFsSource = T.isIdentifier(base) && fsNamespaceIdentifiers.has(base.text);
+        }
+        if (isFsSource || isCpSource) {
+          for (const el of node.name.elements) {
+            if (!T.isBindingElement(el) || !T.isIdentifier(el.name)) continue;
+            const original = el.propertyName && T.isIdentifier(el.propertyName)
+              ? el.propertyName.text
+              : el.name.text;
+            const local = el.name.text;
+            if (isFsSource && DESTRUCTIVE_FS_NAMES.has(original)) {
+              fsNamedDestructiveImports.set(local, original);
+            } else if (isCpSource && CHILD_PROCESS_FNS.has(original)) {
+              childProcessNamedImports.set(local, original);
+            }
+          }
+        }
+      }
+    }
+
     // ── Member call on namespace identifier ────────────────────
     if (T.isCallExpression(node) && T.isPropertyAccessExpression(node.expression)) {
       const obj = node.expression.expression;
@@ -479,7 +600,7 @@ function lintTsFile(file, text) {
 
     // ── Dynamic / computed access: fs['rm' + 'Sync'](...) ──────
     if (T.isCallExpression(node) && T.isElementAccessExpression(node.expression)) {
-      const obj = node.expression.expression;
+      const obj = unwrap(node.expression.expression);
       const arg = node.expression.argumentExpression;
       if (T.isIdentifier(obj) && fsNamespaceIdentifiers.has(obj.text)) {
         // Any computed member access on the fs namespace is suspicious;
@@ -513,6 +634,19 @@ function lintTsFile(file, text) {
     return false;
   }
 
+  // Collect, then report. Collection repeats until the binding sets stop
+  // growing, so a chain (`const a = fs; const b = a.promises`) resolves however
+  // it is ordered in the file, and a binding declared BELOW the function that
+  // uses it is still known. Bounded so a pathological file cannot spin.
+  const bindingCount = () =>
+    fsNamespaceIdentifiers.size + fsNamedDestructiveImports.size
+    + childProcessIdentifiers.size + childProcessNamedImports.size + simpleGitImports.length;
+  for (let pass = 0; pass < 5; pass += 1) {
+    const before = bindingCount();
+    visit(sf);
+    if (bindingCount() === before) break;
+  }
+  collecting = false;
   visit(sf);
 }
 
@@ -661,6 +795,9 @@ function main() {
     files = gatherAll();
   }
 
+  // Scan-coverage counters: a run that parsed nothing inspected nothing.
+  let astAttempted = 0;
+  let astParsed = 0;
   for (const file of files) {
     let text;
     try {
@@ -685,12 +822,35 @@ function main() {
     if (hasAllowComment(text)) continue;
 
     // AST lint for ts/js/mjs/cjs
+    astAttempted += 1;
     try {
       lintTsFile(file, text);
+      astParsed += 1;
     } catch (err) {
-      // Parse failure → emit a soft warning, not a violation.
+      // Parse failure → emit a soft warning, not a violation. Deliberate: one
+      // unparseable file should not fail a build over syntax this parser does
+      // not accept. The total-failure case below is a different situation.
       process.stderr.write(`[lint-no-direct-destructive] failed to parse ${rel}: ${err.message}\n`);
     }
+  }
+
+  // A run in which NOTHING parsed did not inspect anything, and "no violations
+  // found" would be a statement about a scan that never happened. Measured live
+  // on 2026-08-15: in a checkout without node_modules the `typescript` require
+  // fails for every file, so this guard against unaudited deletes reported
+  // clean and exited 0, with only stderr lines a CI log buries.
+  //
+  // This is deliberately the TOTAL-failure case only, so it cannot fail a build
+  // over one file the parser dislikes: in any working checkout, files parse.
+  if (astAttempted > 0 && astParsed === 0) {
+    process.stderr.write('\n');
+    process.stderr.write(
+      `[lint-no-direct-destructive] REFUSING TO REPORT CLEAN — ${astAttempted} file(s) were scanned `
+      + 'and NONE could be parsed, so nothing was actually inspected. This is an environment '
+      + "problem (most often a missing `typescript` dependency — run `npm install`), not a clean "
+      + 'tree. Reporting success here would silently disable the destructive-operation funnel.\n'
+    );
+    return 1;
   }
 
   if (violations.length === 0) {
