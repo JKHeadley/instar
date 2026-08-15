@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-15T20:03:15.222Z",
+  "slug": "codex-pool-latency-swap",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 147,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-no-direct-llm-http.js",
+      "src/providers/adapters/openai-codex/codexSlotIdentity.ts"
+    ],
+    "addedLines": 147,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
