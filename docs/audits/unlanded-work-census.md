@@ -1,5 +1,42 @@
 # Unlanded work census — 2026-08-15
 
+> ## CORRECTION (same day, after deeper measurement)
+>
+> **The headline number below — "43 stranded" — is wrong as a statement about
+> unlanded WORK. The corrected figure is 18.**
+>
+> The original measurement asked "does this branch's diff differ from main?" and
+> the answer was 44. But a branch differs from main for three quite different
+> reasons, and only one of them means work is stranded:
+>
+> | classification | count | meaning |
+> |---|---|---|
+> | **superseded** | **11** | every code file is already **byte-identical to main** — the work landed by another route; only docs/decision-records differ |
+> | **docs-only** | **15** | the branch contains no code at all — specs, findings, decision records |
+> | **genuinely pending** | **18** | real code not in main |
+>
+> So **18 branches hold unlanded code**, not 43. The remaining 26 are either
+> already landed or were never code.
+>
+> **How I got it wrong.** The census below explicitly stated this limit — *"content
+> differs from main proves UNLANDED, not that the work is missing"* — and then I
+> described the result to the operator as "43 pieces of finished or half-finished
+> work have nowhere to go." That crosses the exact line the caveat drew. Writing
+> the limit down did not stop me from talking past it; only re-measuring did.
+>
+> **What caught it:** inspecting one branch (`cartographer-source-tree-read`) to
+> summarise what it delivered, and finding its fix already present in main at
+> three places. One concrete check beat the caveat I had written twenty minutes
+> earlier.
+>
+> The `8 could land today` figure is likewise misleading: of those 8, six are
+> docs-only and two are fully superseded. **None of the cleanly-mergeable branches
+> carries pending code.** Merge-cleanliness measured recency, not value.
+>
+> The 18 pending branches remain a real finding, and the section below is otherwise
+> accurate as a measurement of branch state.
+
+
 **Why this exists:** Justin, 2026-07-25 —
 
 > *"I feel like instead of trying to expand we need to stop slow down and
