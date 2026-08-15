@@ -177,6 +177,31 @@ const NUMBERED_OPTION_RE = /^\s*\d+\.\s/;
  * Deliberately narrow: the radio glyphs make it near-impossible to match ordinary
  * numbered prose, and the caller's conditions (glyph-led, near-bottom, blocking
  * affordance, not generating) still all apply.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * READ THIS BEFORE WIRING AUTO-ANSWER FOR grok-build.
+ *
+ * This resolver answers by sending `Enter` (see `approveKey`). On claude-code
+ * that presses option 1 = "Yes", approving THE CALL IN FRONT OF IT. On grok,
+ * option 1 — the one carrying the `●`, i.e. pre-selected — is "Yes, and don't
+ * ask again for ANYTHING (always-approve mode)". The approve-ONCE equivalent is
+ * option 2, which is not where the cursor starts.
+ *
+ * So the same keystroke means two different things. Extending Layer 2 to grok by
+ * adding it to the framework list — the obvious completion of this fix — would
+ * not auto-approve a tool call; it would silently convert the session to
+ * standing approval for every future tool call, from a floor the operator never
+ * opted into. That is an authority change wearing the costume of a bug fix, and
+ * it is why the answering half is deliberately withheld and routed to the
+ * operator instead.
+ *
+ * NOT MEASURED, and it must be before anything is wired: whether `Enter`
+ * actually commits the `●` option, or whether grok requires the digit (the
+ * footer reads `1/3:select │ Tab:next option`). Both readings are consistent
+ * with what was observed. Either way the safe answer for grok is the DIGIT `2`,
+ * never `Enter` — an answer whose meaning depends on where a cursor happens to
+ * rest is not a safe default.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 const RADIO_OPTION_RE = /^\s*\d+\s*\([●○]\)\s/;
 /** True for either menu shape — `N. label` (claude-code) or `N (●) label` (grok-build). */

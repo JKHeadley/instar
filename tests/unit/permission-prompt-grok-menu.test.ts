@@ -22,7 +22,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { detectPersistingMenu, toPaneTailLines } from '../../src/monitoring/PermissionPromptAutoResolver.js';
+import {
+  detectPersistingMenu,
+  toPaneTailLines,
+  APPROVAL_PROMPT_SIGNATURES,
+} from '../../src/monitoring/PermissionPromptAutoResolver.js';
 
 /**
  * The REAL pane tail, transcribed from the live wedge. Kept verbatim (including
@@ -69,6 +73,34 @@ describe('permission floor — grok-build approval menu is DETECTED', () => {
     // A menu mid-generation is not a wedge — the floor must not cry wolf on a
     // session that is still working.
     expect(detectPersistingMenu(toPaneTailLines(GROK_APPROVAL_TAIL), true)).toBeNull();
+  });
+
+  it('grok-build is NOT registered for auto-ANSWER — the same keystroke is a different act', () => {
+    // This is the guard that makes the comment in the resolver load-bearing
+    // instead of advisory. Registering a grok-build signature in this table is
+    // the ONE-LINE change that turns auto-answering on, and it looks like the
+    // obvious completion of the detection fix.
+    //
+    // It is not. The resolver answers by sending Enter. On claude-code that is
+    // option 1 = "Yes", approving THE CALL IN FRONT OF IT. On grok, the
+    // pre-selected option 1 is "Yes, and don't ask again for ANYTHING" — the
+    // approve-once equivalent is option 2, which is not where the cursor starts.
+    // So the same key grants a single approval on one framework and a standing
+    // session-wide approval on the other.
+    //
+    // Whoever removes this test must first decide, WITH THE OPERATOR, that the
+    // floor may hand out standing tool approval — and must fix the keystroke,
+    // because Enter cannot be the answer for grok whichever way the TUI commits.
+    expect(Object.keys(APPROVAL_PROMPT_SIGNATURES)).not.toContain('grok-build');
+  });
+
+  it('CONTROL: the table is real and populated (so the assertion above is not vacuous)', () => {
+    // Without this, an empty or renamed table would satisfy the negative check
+    // while proving nothing — the "passing condition narrower than what it
+    // certifies" shape. At least one framework must genuinely be registered.
+    const keys = Object.keys(APPROVAL_PROMPT_SIGNATURES);
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys).toContain('claude-code');
   });
 
   it('CONTROL: does not fire on ordinary numbered prose', () => {

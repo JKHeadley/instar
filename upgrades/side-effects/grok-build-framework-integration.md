@@ -185,6 +185,40 @@ comment now names the exception and marks the other frameworks unmeasured.
 **Both new guards were shown capable of failing**, by restoring the pre-fix
 strings and confirming the intended test — and only that test — goes red.
 
+**5. The answering half was more dangerous than "not yet built" implied — and I
+only found out by checking what the floor actually presses.**
+
+Finding (1) above withheld auto-ANSWER for grok on the grounds that approving
+tool calls is an operator authority decision. That reasoning was right for the
+wrong reason, and the right reason is sharper.
+
+The resolver answers by sending **Enter**. On claude-code that lands on option 1
+= "Yes", approving the call in front of it. On grok, the option carrying the `●`
+— i.e. pre-selected — is **"Yes, and don't ask again for ANYTHING
+(always-approve mode)"**. The approve-once equivalent is option 2, which is not
+where the cursor starts.
+
+**So the identical keystroke is a single approval on one framework and a standing
+session-wide grant on the other.** Registering a `grok-build` entry in
+`APPROVAL_PROMPT_SIGNATURES` is a one-line change that reads as the obvious
+completion of the detection fix; it would have converted grok sessions to
+blanket tool approval from a floor the operator never opted into.
+
+Corroborating observation: the live Groky session's pane footer reads
+`always-approve`, and nothing in our launch path passes that flag
+(`frameworkSessionLaunch.ts` explicitly does not) — consistent with the
+pre-selected option having been committed at some point by a stray keypress.
+
+**Stated as unmeasured, because it is:** whether `Enter` commits the `●` option
+or grok requires the digit (its footer reads `1/3:select │ Tab:next option`).
+Both readings fit the observation. Either way `Enter` cannot be grok's answer —
+an answer whose meaning depends on where a cursor happens to rest is not a safe
+default; the digit `2` is.
+
+The prose now lives in the resolver itself, and a test asserts `grok-build` is
+absent from the signature table with a control proving the table is real, so the
+one-line change trips a build rather than a session.
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**
