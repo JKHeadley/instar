@@ -85,7 +85,61 @@ Delete the branch and the counter field. No data migration, no schema change, no
 config key, no agent state. Ledger rows already written stay valid and are still
 correctly shaped; there are simply fewer new ones.
 
-## Evidence
+---
+
+# Second change in this branch — the Agent Awareness gap
+
+## Summary
+
+ASP merged **without a CLAUDE.md template section**. The routes were live and the
+inbound classifier was running, but no deployed agent knew any of it existed. By
+the Agent Awareness Standard that means the capability effectively did not exist:
+*"an agent that doesn't know about a capability effectively doesn't have it."*
+
+Found by checking the standard against the merged result rather than assuming it
+had been satisfied — a search for provenance terms in the shipped template
+returned exactly one hit, and it was an unrelated pre-existing section
+("Output Provenance Trap"). The control (a feature known to be in the template)
+returned three, so the near-zero was a real absence rather than a broken search.
+
+Fixed on **both** paths, which is what Migration Parity requires:
+
+- `AGENT_SIGNATURE_PROVENANCE_CLAUDEMD_SECTION(port)` exported from
+  `PostUpdateMigrator.ts` — one definition, so the two consumers cannot drift.
+- `generateClaudeMd` interpolates it (new agents).
+- `migrateClaudeMd` appends it behind a content-sniff guard (existing agents),
+  awareness-only: the routes and classifier need no config or state migration.
+
+## Decision points
+
+- **What agents know** — *widened*. This is the point.
+- **Runtime behaviour** — *untouched*. Template text only; no route, no config
+  key, no state, no message-path change.
+
+## Over/under-block
+
+Nothing is blocked either way. The section deliberately states the two honest
+limits (unsigned agent traffic still reads as `human`; signed bodies must
+currently be plain text) and the authority boundary, so an agent reading it
+cannot over-claim what the feature does.
+
+## Rollback
+
+Delete the exported function and its two call sites. Agents that already received
+the section keep harmless documentation.
+
+## Evidence for this half
+
+5 tests in `tests/unit/PostUpdateMigrator-aspProvenanceSection.test.ts`: the
+section is added to an agent that lacks it (with a control asserting the marker
+was genuinely absent first), the migration is idempotent across two runs, the
+authority-boundary sentence is present (a section that dropped it would be worse
+than none), both honest limits are stated, and the configured port is honoured
+rather than hardcoded.
+
+---
+
+## Evidence (direction flag)
 
 15 tests pass in the classifier file (11 pre-existing + 4 new). The four new ones
 pin all three directions: explicit outbound is skipped and unrecorded, the SAME

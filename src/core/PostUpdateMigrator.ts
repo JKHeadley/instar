@@ -178,6 +178,42 @@ Claude Code's ultracode mode is xhigh effort plus dynamic workflow orchestration
 }
 
 /**
+ * Agent-Signature Provenance (ASP v1, Window 16 charter).
+ *
+ * Shared by `generateClaudeMd` (new agents) and `migrateClaudeMd` (existing
+ * agents) so the Agent Awareness Standard cannot ship half-applied: the feature
+ * merged WITHOUT this section, which meant no deployed agent knew the surface
+ * existed — "an agent that doesn't know about a capability effectively doesn't
+ * have it". The unique content-sniff marker is `Agent-Signature Provenance`.
+ *
+ * The authority boundary is stated in the section deliberately: the charter's
+ * standing ruling is that authentication never settles what a message may
+ * DECIDE, and the template is where every agent reads it.
+ */
+export function AGENT_SIGNATURE_PROVENANCE_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Agent-Signature Provenance — proving which messages an agent wrote
+
+Messages an agent sends THROUGH the operator's account look identical to the operator's own. An agent can now SIGN a message so the infrastructure can tell them apart, and every inbound message is classified automatically.
+
+- **My signing identity + whether replay defence is durable:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/provenance\` → \`{ enabled, agentId, fingerprint, replayDefence }\`. Honest degradation: with no identity on disk it answers \`200\` with \`enabled: false\` rather than 404, so a probe tells "off" from "absent".
+- **Classify raw bytes:** \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/provenance/verify -H 'Content-Type: application/json' -d '{"raw":"<message>","topicId":N}'\`.
+- **Three verdicts, only three:** \`human\` (no tag — the account holder typed it) · \`agent-verified\` (valid signature; names the agent AND the topic) · \`rejected\` (\`malformed\` / \`unknown-agent\` / \`bad-signature\` / \`replay\` / \`stale\` / \`topic-mismatch\`).
+- **Inbound classification is automatic** — verdicts append to \`asp-classifications.jsonl\`. The ledger stores the body **hash and byte length, never the body**.
+
+**AUTHORITY BOUNDARY (load-bearing):** a valid signature establishes WHO wrote a message, **never what it may DECIDE**. The verdict carries no permission, role or trust field. Treating "signed by agent X" as authorization is a defect, not a feature.
+
+**Why cryptographic rather than heuristic:** a style detector cannot reject an exact replay — a byte-identical copy of a genuine agent message *is* the genuine text. Only a signature bound to a single-use nonce separates the original from the copy.
+
+**Two limits, stated rather than implied away:**
+- **Unsigned agent traffic still classifies as \`human\`.** Outbound signing is not automatic, so an agent that never calls \`signMessage\` is indistinguishable from the operator by this layer.
+- **Signed messages must currently be plain text.** The Telegram send path rewrites markdown, changing the bytes the signature covers, so a signed markdown body is rejected as \`bad-signature\` even though it is genuine.
+
+There is deliberately **no sign-on-demand endpoint** — one would let anyone holding the bearer token mint messages attributed to this agent, which is the exact forgery this prevents.
+
+**When to use** (PROACTIVE): user asks "can you prove which messages were you rather than me?" → \`GET /provenance\` plus the ledger. "Did someone forge or replay a message?" → the rejection reason names which guard refused it.\n`;
+}
+
+/**
  * Tone-gate advisory migration (operator approval 2026-07-19, topic 33368).
  * Shared by `generateClaudeMd` (new installs) and `migrateClaudeMd` (existing
  * agents) — Agent Awareness Standard + Migration Parity. An agent that does not
@@ -6062,6 +6098,17 @@ setTimeout(() => process.exit(0), 2000);
       content += ULTRACODE_SPAWN_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Ultracode one-shot spawn section');
+    }
+
+    // Agent-Signature Provenance (Window 16). Agent Awareness Standard +
+    // Migration Parity: the feature merged WITHOUT a template section, so no
+    // deployed agent knew the surface existed. Awareness-only — the routes and
+    // the inbound classifier need no config or state migration. Content-sniff
+    // keeps it idempotent.
+    if (!content.includes('Agent-Signature Provenance')) {
+      content += AGENT_SIGNATURE_PROVENANCE_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Agent-Signature Provenance section');
     }
 
     // Machine Load Assessment (CMT-1703, spec robust-load-assessment-fleet) — Agent

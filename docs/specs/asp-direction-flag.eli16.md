@@ -51,6 +51,29 @@ well against a checker that had simply stopped working.
 and the other thirteen still pass — so they measure this change and not something
 else.
 
+## The second thing in here: agents didn't know the feature existed
+
+The provenance feature shipped with its controls live and working — and with no
+mention of it in the instruction sheet every agent reads. So an agent asked "can
+you prove which of these messages were you?" had no idea it could.
+
+There is a standard for exactly this, and it is blunt: an agent that doesn't know
+about a capability effectively doesn't have it. I checked whether the standard had
+been met rather than assuming it had, by searching the shipped instruction sheet
+for the feature. One match came back — and it turned out to be an unrelated older
+section that happened to use the same word. A control search for a feature I knew
+*was* documented returned three matches, which is how I knew the near-zero was a
+real absence rather than a broken search.
+
+Fixed in both directions, because there are two: new agents get the text when
+they are first set up, and agents already running get it added on their next
+update. Both come from a single copy of the words, so the two cannot drift apart
+later. Adding it twice does nothing the second time.
+
+The text deliberately includes the boundary — a signature proves *who wrote*
+something, never *what it may decide* — and both current limitations, so an agent
+reading it can't overstate what the feature does.
+
 ## What ships when
 
 All at once. It is a few lines plus tests, with no configuration and nothing for

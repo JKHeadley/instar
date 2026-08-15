@@ -19,6 +19,15 @@ outbound traffic are noise in exactly that evidence.
 Found by reading the deployed system rather than by a test: a real ledger row's
 byte count matched a message the agent had just sent itself.
 
+**Agents now actually know the feature exists.** Agent-signature provenance
+shipped without a section in the agent instruction template, so the routes were
+live and the classifier was running while no deployed agent knew any of it was
+there. Both paths are fixed from one shared definition: new agents get the
+section at setup, existing agents receive it on update (awareness only — no
+config or state migration, and it is idempotent). The section states the
+authority boundary and both current limits rather than implying the feature is
+finished.
+
 ## What to Tell Your User
 
 - "The record of who wrote what now only covers messages that arrived, which is
