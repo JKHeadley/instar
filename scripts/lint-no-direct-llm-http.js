@@ -41,6 +41,15 @@ const ALLOWLIST = new Set([
   'src/core/ClaudeCliIntelligenceProvider.ts',
   // The lint rule itself names the URLs in the patterns array.
   'scripts/lint-no-direct-llm-http.js',
+  // NOT a URL: OpenAI namespaces its non-standard OIDC claims under a
+  // URL-SHAPED KEY, so `https://api.openai.com/auth` appears here as a JSON
+  // property name being read out of a locally-stored id_token — never as an
+  // endpoint. The module makes no network call of any kind (pure fs read +
+  // base64 decode), so there is no inference for burn-detection to attribute.
+  // Listed explicitly rather than assembled from fragments: hiding the literal
+  // would defeat this lint for every future reader of the file, which is worse
+  // than one reviewable exemption.
+  'src/providers/adapters/openai-codex/codexSlotIdentity.ts',
   // Provider-portability v1.0.0 (spec/provider-portability): the
   // anthropic-headless adapter implements the IntelligenceProvider
   // contract via legitimate OAuth + Messages-API calls. It IS the

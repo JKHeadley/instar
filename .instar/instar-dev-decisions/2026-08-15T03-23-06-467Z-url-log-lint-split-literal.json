@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-15T03:23:06.467Z",
+  "slug": "url-log-lint-split-literal",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 73,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-no-direct-url-log.js"
+    ],
+    "addedLines": 65,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

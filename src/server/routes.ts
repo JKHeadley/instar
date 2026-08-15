@@ -42,6 +42,24 @@ import { enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
 import { QUOTA_SNAPSHOT_STALE_AFTER_MS } from '../core/QuotaPoller.js';
 import { SubscriptionAccountEmailRegistrar } from '../core/SubscriptionPool.js';
 import { CredentialIdentityOracle } from '../core/CredentialIdentityOracle.js';
+import { CompositeCredentialIdentityOracle } from '../core/CompositeCredentialIdentityOracle.js';
+
+/**
+ * The default slot-identity oracle.
+ *
+ * Wraps the Anthropic OAuth oracle in the composite so a CODEX credential slot
+ * can identify itself too (offline, from its own id_token). Without this the
+ * pool's verified-add path rejects every Codex home as `email-unresolved`, which
+ * is why the pool held 6 anthropic accounts and 0 codex ones while both Codex
+ * logins sat authenticated on disk.
+ *
+ * The Anthropic path is unchanged — the composite delegates to it verbatim for
+ * any slot that is not a Codex home.
+ */
+function defaultSubscriptionIdentityOracle(): CompositeCredentialIdentityOracle {
+  return new CompositeCredentialIdentityOracle({ anthropic: new CredentialIdentityOracle() });
+}
+
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -2957,6 +2975,33 @@ export function createRoutes(ctx: RouteContext): Router {
           templateFingerprint,
           agentState,
           recipientClass,
+          // F5 interactive reservation (spec spawn-cap-interactive-priority §A).
+          //
+          // The host spawn cap reserves slots for a lane the gate is explicitly
+          // named for — a synchronous, user-blocking review. The gate claims that
+          // reserve only when the caller says BOTH that the recipient is the
+          // operator AND that a human is waiting on THIS message. It already
+          // received the first; nothing ever sent the second, so `interactiveLane`
+          // was permanently false and the reserved slots were never claimed —
+          // operator replies queued behind background work and were held closed
+          // under load (observed: 12 refusals in ~15 minutes during a live demo,
+          // with liveInteractive reading 0 throughout).
+          //
+          // `'reply'` IS that condition, exactly: it is set only for a reply to a
+          // live inbound turn. Every other kind — automated cadence, health
+          // alerts, unknown — is proactive: nobody is blocked on it, so it stays
+          // on the background lane. Deriving it here rather than adding a
+          // parameter keeps the classification at the one place that already
+          // knows, and makes the safe value the default for every other caller.
+          //
+          // ABSENT means 'reply'. That is this file's own established convention
+          // (`kindForSignals` above resolves it the same way, and the reply route
+          // documents "absent → 'reply'"), and it is the COMMON case: an ordinary
+          // conversational reply carries no explicit kind. A strict equality here
+          // silently excluded exactly the messages this reserve exists to protect
+          // — caught by the integration test, which is why it drives the real route
+          // rather than calling the gate directly.
+          synchronousReply: (options.messageKind ?? 'reply') === 'reply',
           // Undefined in observe-only mode (the default) and on every uncertainty,
           // so the gate's verdict is unchanged until graduation (BIAS-TO-ACTION D8).
           standingAuthorization,
@@ -28961,7 +29006,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (existing) {
       return new SubscriptionAccountEmailRegistrar(
         pool,
-        ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+        ctx.subscriptionIdentityOracle ?? defaultSubscriptionIdentityOracle(),
       ).completeValidated(login.id, email, {
         nickname: login.label,
         status: 'active',
@@ -28970,7 +29015,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     return new SubscriptionAccountEmailRegistrar(
       pool,
-      ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+      ctx.subscriptionIdentityOracle ?? defaultSubscriptionIdentityOracle(),
       ctx.subscriptionEmailBinding,
     ).completeNewValidated({
       id: login.id, nickname: login.label,
@@ -29119,7 +29164,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const registrar = new SubscriptionAccountEmailRegistrar(
         ctx.subscriptionPool,
-        ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+        ctx.subscriptionIdentityOracle ?? defaultSubscriptionIdentityOracle(),
         ctx.subscriptionEmailBinding,
       );
       res.json(await registrar.repairLegacy(req.params.id));
@@ -29190,7 +29235,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // attempt to smuggle a token into the registry (structural invariant).
       const account = await new SubscriptionAccountEmailRegistrar(
         ctx.subscriptionPool,
-        ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+        ctx.subscriptionIdentityOracle ?? defaultSubscriptionIdentityOracle(),
       ).register(
         { id, nickname, provider, framework, configHome, status, email },
         req.body,

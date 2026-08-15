@@ -186,7 +186,7 @@ export interface ProactiveIntentInput {
   deferCount?: number;
   /** Login loss bypasses only the source-pressure arithmetic. Every target,
    * work, dwell, breaker, freshness, and execution-boundary guard still binds. */
-  sourceTrigger?: 'quota-pressure' | 'login-loss';
+  sourceTrigger?: 'quota-pressure' | 'login-loss' | 'degradation';
 }
 
 export type BrakeVerdict =
@@ -692,7 +692,7 @@ export class SwapAntiThrashEngine {
     defaultAccountChanged?: boolean;
     sourceWasUntagged?: boolean;
     dryRun?: boolean;
-    sourceTrigger?: 'quota-pressure' | 'login-loss';
+    sourceTrigger?: 'quota-pressure' | 'login-loss' | 'degradation';
   }): void {
     const k = this.getKnobs();
     const row: SwapLedgerRow = {

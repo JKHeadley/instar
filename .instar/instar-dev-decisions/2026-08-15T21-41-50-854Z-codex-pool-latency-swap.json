@@ -1,0 +1,25 @@
+{
+  "ts": "2026-08-15T21:41:50.854Z",
+  "slug": "codex-pool-latency-swap",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 122,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ProactiveSwapMonitor.ts",
+      "src/core/QuotaAwareScheduler.ts",
+      "src/core/SwapAntiThrash.ts",
+      "src/core/SwapLedger.ts"
+    ],
+    "addedLines": 107,
+    "deletedLines": 15
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

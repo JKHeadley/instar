@@ -95,6 +95,10 @@ import { mountWhatsAppWebhooks } from '../messaging/backends/WhatsAppWebhookRout
 import { createMachineRoutes } from './machineRoutes.js';
 import { createWorktreeRoutes, createOidcWorktreeRoutes } from './worktreeRoutes.js';
 import { registerRemediationProposalsRoutes } from './routes/remediation-proposals.js';
+import { registerProvenanceRoutes } from './routes/provenance.js';
+import { CanonicalIdentityManager } from '../identity/IdentityManager.js';
+import { FileSeenNonceStore } from '../core/aspNonceStore.js';
+import { AspKeyDirectory } from '../core/AspKeyDirectory.js';
 import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
 import { createTopicIntentRoutes } from './topicIntentRoutes.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
@@ -3871,6 +3875,77 @@ export class AgentServer {
       // from starting (matches the burn-detection-system convention).
       // eslint-disable-next-line no-console
       console.warn('[agent-server] failed to register remediation-proposals routes:', err);
+    }
+
+    // Agent-Signature Provenance (ASP v1) — spec: docs/specs/agent-signature-provenance.md
+    //
+    // Mounted unconditionally so the surface always exists for capability
+    // probing; `GET /provenance` reports `enabled: false` when this agent has
+    // no canonical identity on disk rather than 404-ing.
+    //
+    // Only the PUBLIC key is loaded (`readRaw()`), never the private key —
+    // these routes verify, they never sign. That is deliberate: a
+    // sign-on-demand endpoint would let anyone holding the bearer token mint
+    // messages attributed to this agent, which is the exact forgery the
+    // mechanism exists to prevent. It also means an encrypted identity needs
+    // no passphrase here.
+    try {
+      const identityDir = options.config.stateDir;
+      let aspPublicKey: Buffer | null = null;
+      try {
+        const rawIdentity = new CanonicalIdentityManager(identityDir).readRaw();
+        if (rawIdentity?.publicKey) {
+          const decoded = Buffer.from(rawIdentity.publicKey, 'base64');
+          if (decoded.length === 32) aspPublicKey = decoded;
+        }
+      } catch {
+        /* @silent-fallback-ok: an agent with no canonical identity is a legitimate state, not an
+           error. Null means the feature reports `enabled: false` at 200 — honestly OFF rather than
+           absent — and every signature then classifies `unknown-agent`, i.e. rejected. */
+        aspPublicKey = null;
+      }
+
+      // Replay defence is durable or it is not wired at all. A store that
+      // failed to open must NOT silently degrade to "no replay defence while
+      // still reporting healthy" — the route reports `unavailable` instead.
+      let aspNonces: FileSeenNonceStore | undefined;
+      try {
+        aspNonces = new FileSeenNonceStore({
+          filePath: path.join(identityDir, 'asp-nonces.json'),
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        /* @silent-fallback-ok: LOUD, not silent — logged here AND surfaced to every caller as
+           replayDefence:'unavailable' on GET /provenance. The store throws on damage by design;
+           this converts that into an honest degradation instead of a dead server. */
+        console.warn('[agent-server] ASP nonce store unavailable (replay defence off):', err);
+        aspNonces = undefined;
+      }
+
+      registerProvenanceRoutes({
+        app: this.app,
+        agentId: options.config.projectName,
+        publicKey: aspPublicKey,
+        // Self-only for now. A peer public-key directory is a named gap in the
+        // spec; resolving an unknown id MUST return null so an unrecognised
+        // agent is `rejected` rather than trusted.
+        // Peers resolve through the key directory (self stays authoritative);
+        // an unknown id MUST return null so an unrecognised signer is
+        // `rejected` rather than trusted.
+        resolvePublicKey: new AspKeyDirectory({
+          stateDir: identityDir,
+          selfAgentId: options.config.projectName,
+        }).resolver(),
+        seenNonces: aspNonces,
+        nonceCount: aspNonces ? () => aspNonces!.size() : undefined,
+      });
+    } catch (err) {
+      // Non-fatal, matching the convention above.
+      // eslint-disable-next-line no-console
+      /* @silent-fallback-ok: a provenance-wiring error must not prevent the rest of the server
+         from starting (matches the burn-detection-system convention above). Logged loudly; the
+         routes then 404, which a probe distinguishes from the 200-with-enabled:false state. */
+      console.warn('[agent-server] failed to register provenance routes:', err);
     }
 
     // Topic Intent Layer (Layer 1) diagnostics + read-only routes.

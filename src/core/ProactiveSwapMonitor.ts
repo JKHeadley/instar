@@ -131,7 +131,7 @@ export interface ProactiveSwapMonitorConfig {
     targetAccountId?: string;
     callerClass?: 'proactive-swap';
     sourceWasUntagged?: boolean;
-    sourceTrigger?: 'quota-pressure' | 'login-loss';
+    sourceTrigger?: 'quota-pressure' | 'login-loss' | 'degradation';
   }) => Promise<ProactiveSwapOutcome>;
   /** Optional fresh-poll trigger, awaited when an account is in the watch zone. */
   triggerPoll?: () => Promise<unknown>;
@@ -160,6 +160,35 @@ export interface ProactiveSwapMonitorConfig {
     enabled: boolean;
     dryRun: boolean;
   };
+  /**
+   * Degradation trigger: swap off an account that is SLOW or ERRORING, not just
+   * one that is full.
+   *
+   * Quota was never the problem being solved. The observed failure was latency —
+   * a trivial call taking ~13s while several checks sat at the 60s ceiling, with
+   * the account at 17% of its window. A quota-only trigger cannot see any of that.
+   *
+   * `readHealth` returns null when it cannot answer honestly (too few samples).
+   * Null means UNKNOWN and is treated as NOT degraded — never as a reason to move
+   * a live session. Acting on an unknown is how a trigger starts thrashing.
+   *
+   * Same shape as `loginLoss` above: dark by default, and dryRun records the
+   * would-swap without touching a session.
+   */
+  degradation?: {
+    enabled: boolean;
+    dryRun: boolean;
+    /** p50 latency at or above which an account counts as degrading. */
+    p50ThresholdMs: number;
+    /** error rate (0..1) at or above which an account counts as degrading. */
+    errorRateThreshold: number;
+    /** Per-account health, or null when it cannot responsibly answer. */
+    readHealth: (accountId: string) => {
+      p50LatencyMs: number;
+      errorRate: number;
+      samples: number;
+    } | null;
+  };
   /** In-flight work deferral (Piece 2). Knobs read live per evaluation. */
   workGate?: {
     probe: (sessionName: string) => Promise<WorkProbeResult>;
@@ -187,7 +216,7 @@ interface Candidate {
   startedMs: number;
   /** True when the session carries no tag (resolved via the default slot). */
   untagged: boolean;
-  sourceTrigger: 'quota-pressure' | 'login-loss';
+  sourceTrigger: 'quota-pressure' | 'login-loss' | 'degradation';
 }
 
 interface DeferralEntry {
@@ -337,6 +366,31 @@ export class ProactiveSwapMonitor {
     }
   }
 
+  /**
+   * Is this account measurably degrading right now?
+   *
+   * False whenever we cannot tell. An unreadable account, a missing reading, or a
+   * throwing health source all mean UNKNOWN — and unknown must never move a live
+   * session, because the cost of a wrong swap (thrash, a conversation restarted
+   * for nothing) exceeds the cost of a late one.
+   */
+  private isDegraded(accountId: string): boolean {
+    const d = this.cfg.degradation;
+    if (!d || d.enabled !== true) return false;
+    let reading: { p50LatencyMs: number; errorRate: number; samples: number } | null;
+    try {
+      reading = d.readHealth(accountId);
+    } catch {
+      /* @silent-fallback-ok: an unreadable gauge is UNKNOWN, never "degraded".
+         Swapping on a broken measurement is worse than not swapping. */
+      return false;
+    }
+    if (!reading) return false;
+    return (
+      reading.p50LatencyMs >= d.p50ThresholdMs || reading.errorRate >= d.errorRateThreshold
+    );
+  }
+
   // ── The LIVE braked pipeline (§3 + §4 proactive arm) ─────────────────────
   private async evaluateBraked(
     engine: SwapAntiThrashEngine,
@@ -361,14 +415,19 @@ export class ProactiveSwapMonitor {
       const acct = byId.get(effectiveAccountId);
       if (!acct) continue;
       const loginLoss = this.cfg.loginLoss?.enabled === true && requiresOwnerRelogin(acct);
-      if (!loginLoss && !engine.sourceEligible(acct, nowMs)) continue;
+      // A degrading account is a reason to move REGARDLESS of how full it is —
+      // that is the entire point, since quota was never the problem. It bypasses
+      // only SOURCE pressure; target freshness, ceilings and execution-time
+      // revalidation all still apply.
+      const degraded = !loginLoss && this.isDegraded(effectiveAccountId);
+      if (!loginLoss && !degraded && !engine.sourceEligible(acct, nowMs)) continue;
       const startedMs = s.startedAt ? Date.parse(s.startedAt) : NaN;
       candidates.push({
         sessionName: s.sessionName,
         accountId: effectiveAccountId,
         startedMs: Number.isFinite(startedMs) ? startedMs : 0,
         untagged: s.accountId === null,
-        sourceTrigger: loginLoss ? 'login-loss' : 'quota-pressure',
+        sourceTrigger: loginLoss ? 'login-loss' : degraded ? 'degradation' : 'quota-pressure',
       });
     }
     candidates.sort((a, b) => b.startedMs - a.startedMs);
@@ -501,7 +560,14 @@ export class ProactiveSwapMonitor {
       // The trigger stays explicit so login loss bypasses only source pressure,
       // never target freshness, target ceilings, or execution-time safeguards.
       try {
-        if (c.sourceTrigger === 'login-loss' && this.cfg.loginLoss?.dryRun !== false) {
+        // Rehearsal for the two extension triggers. Each records the EXACT
+        // would-swap — same target the live path would have used — without
+        // touching the session, so the decision can be reviewed before any
+        // conversation is moved.
+        const dryRunTrigger =
+          (c.sourceTrigger === 'login-loss' && this.cfg.loginLoss?.dryRun !== false) ||
+          (c.sourceTrigger === 'degradation' && this.cfg.degradation?.dryRun !== false);
+        if (dryRunTrigger) {
           engine.recordProactiveExecuted({
             session: c.sessionName,
             from: c.accountId,
@@ -509,13 +575,15 @@ export class ProactiveSwapMonitor {
             nowMs,
             fromUtilPct: verdict.fromUtilPct,
             toUtilPct: verdict.toUtilPct,
-            sourceTrigger: 'login-loss',
+            sourceTrigger: c.sourceTrigger,
             dryRun: true,
             ...(c.untagged ? { sourceWasUntagged: true } : {}),
           });
           targetsUsedThisTick.add(verdict.targetAccountId);
           this.logger.log(
-            `[ProactiveSwap] ${c.sessionName}: would swap off missing login ${c.accountId} → ${verdict.targetAccountId} (dry-run; conversation untouched)`,
+            c.sourceTrigger === 'degradation'
+              ? `[ProactiveSwap] ${c.sessionName}: would swap off DEGRADING ${c.accountId} → ${verdict.targetAccountId} (dry-run; conversation untouched)`
+              : `[ProactiveSwap] ${c.sessionName}: would swap off missing login ${c.accountId} → ${verdict.targetAccountId} (dry-run; conversation untouched)`,
           );
           continue;
         }
@@ -554,7 +622,13 @@ export class ProactiveSwapMonitor {
           swapped.push(c.sessionName);
           this.logger.log(
             `[ProactiveSwap] ${c.sessionName}: proactively swapped off ${c.accountId} → ${outcome.toAccountId ?? verdict.targetAccountId} ` +
-              `(${c.sourceTrigger === 'login-loss' ? 'local login missing' : `account ≥${this.thresholdPct}% measured`} — conversation preserved)`,
+              `(${
+                c.sourceTrigger === 'login-loss'
+                  ? 'local login missing'
+                  : c.sourceTrigger === 'degradation'
+                    ? 'account measurably degrading'
+                    : `account ≥${this.thresholdPct}% measured`
+              } — conversation preserved)`,
           );
         } else if (outcome.reason === 'target-revalidation-failed') {
           engine.recordRevalidationRefusal({
@@ -660,6 +734,18 @@ export class ProactiveSwapMonitor {
     const swapped: string[] = [];
     for (const c of toSwap) {
       let outcome: ProactiveSwapOutcome;
+      // REHEARSAL, and the safety-critical half of it. The braked pipeline has a
+      // dry-run short-circuit; this legacy pipeline is the one that actually runs
+      // wherever the anti-thrash brakes are dark or dry-run — i.e. where the
+      // degradation trigger ships. Without this guard a "dry-run" trigger would
+      // move a live conversation on its very first firing, which is the opposite
+      // of what dry-run means.
+      if (c.sourceTrigger === 'degradation' && this.cfg.degradation?.dryRun !== false) {
+        this.logger.log(
+          `[ProactiveSwap] ${c.sessionName}: would swap off DEGRADING ${c.accountId} (dry-run; conversation untouched)`,
+        );
+        continue;
+      }
       try {
         // Self-action backpressure admission (observe-only; legacy path keys
         // on the vacated account — the scheduler picks the destination).
@@ -745,14 +831,20 @@ export class ProactiveSwapMonitor {
       if (!eff) continue;
       const acct = byId.get(eff);
       if (!acct) continue;
-      if (!accountAtPressure(acct, minPct)) continue;
+      // The degradation trigger must reach BOTH pipelines. The braked path only
+      // runs when the anti-thrash brakes are live; on every install where they
+      // are dark or dry-run this legacy path is the one that executes, so wiring
+      // only the braked path would have left the trigger silently inert exactly
+      // where it ships today.
+      const degraded = this.isDegraded(eff);
+      if (!degraded && !accountAtPressure(acct, minPct)) continue;
       const startedMs = s.startedAt ? Date.parse(s.startedAt) : NaN;
       out.push({
         sessionName: s.sessionName,
         accountId: eff,
         startedMs: Number.isFinite(startedMs) ? startedMs : 0,
         untagged: s.accountId === null,
-        sourceTrigger: 'quota-pressure',
+        sourceTrigger: degraded ? 'degradation' : 'quota-pressure',
       });
     }
     return out;

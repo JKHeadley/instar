@@ -14,6 +14,7 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { registryAssetIsStale } from './registryAssetFreshness.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -110,6 +111,11 @@ function ensureRegistryAsset(): void {
     path.join(ROOT, 'dist', 'data', 'standards-guard-index.json'),
     path.join(ROOT, 'dist', 'data', 'standards-guard-index.meta.json'),
   ];
-  if (needed.every((p) => fs.existsSync(p))) return;
+  // PRESENCE IS NOT FRESHNESS. This used to return whenever every output existed,
+  // so an asset generated from an older source was accepted forever — while
+  // `ensureDistBuilt()` twelve lines up already compared mtimes. Measured cost:
+  // three test files, eight assertions, in a checkout whose asset was three hours
+  // behind its source. See tests/setup/registryAssetFreshness.ts.
+  if (!registryAssetIsStale(ROOT, needed)) return;
   execSync('node scripts/generate-standards-registry-asset.mjs', { cwd: ROOT, stdio: 'inherit' });
 }

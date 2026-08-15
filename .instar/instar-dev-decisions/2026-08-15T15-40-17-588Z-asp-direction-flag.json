@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-15T15:40:17.588Z",
+  "slug": "asp-direction-flag",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 19,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AspInboundClassifier.ts"
+    ],
+    "addedLines": 19,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

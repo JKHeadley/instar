@@ -1,0 +1,26 @@
+{
+  "ts": "2026-08-15T22:17:14.993Z",
+  "slug": "codex-pool-latency-swap",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 225,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/CodexCliIntelligenceProvider.ts",
+      "src/core/IntelligenceRouter.ts",
+      "src/core/SubscriptionPool.ts",
+      "src/core/types.ts"
+    ],
+    "addedLines": 218,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

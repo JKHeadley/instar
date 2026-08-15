@@ -55,11 +55,26 @@ describe('parked-test re-check', () => {
     expect(report.parkedTotal).toBeGreaterThan(50);
   });
 
-  it('finds the dangling entry that excludes a file which does not exist', () => {
+  it('RATCHET: the live exclusion list has no entry for a file that does not exist', () => {
+    // This used to assert the OPPOSITE — that the report CONTAINS
+    // 'tests/unit/slack-stall-active-gate.test.ts', the one real dangling entry
+    // in the repo at the time. That made a known defect load-bearing: fixing the
+    // dangling entry broke the test that used it as a fixture, and the only way
+    // to go green was to put the defect back.
+    //
+    // The capability this was reaching for — "the tool detects an exclusion whose
+    // file is gone" — is proven properly by the synthetic-config test below,
+    // which builds two missing files and requires both to be found. That proof
+    // does not need the repo to keep a defect around.
+    //
+    // So the assertion is inverted into a ratchet: the list must stay clean. Park
+    // a test and later delete the file, and this goes red — which is the failure
+    // the parked-list re-check exists to surface.
     const report = runAgainstRealRepo();
-    expect(report.missingFiles).toContain('tests/unit/slack-stall-active-gate.test.ts');
-    // Exactly one, not the 42 the naive parser hallucinated.
-    expect(report.missingFiles.length).toBeLessThan(5);
+    expect(
+      report.missingFiles,
+      'an exclusion points at a file that no longer exists — remove the exclusion, do not re-add the file',
+    ).toEqual([]);
   });
 
   it('reports glob patterns separately rather than pretending they are files', () => {

@@ -19,19 +19,29 @@
  *      v0.25.2 installed): a real `gemini -m gemini-2.5-flash --approval-mode
  *      default -p "<known-answer>"` returns the expected PONG-style text. A
  *      genuine alive proof, not a mock.
+ *
+ * MEASURED 2026-08-14 (round 10) — WHERE THAT CLAIM CURRENTLY STOPS. On this dev box the smoke
+ * assertion has never actually executed. The binary IS present, so layer 2 runs and the file
+ * reports green — but the CLI cannot authenticate by any path here, so it always reaches the
+ * environmental skip instead of the assertion. Two independent facts, both measured rather than
+ * inferred: the child env is key-free BY DESIGN (the API-key vars are hard-deleted as billing
+ * vars — see tests/helpers/geminiEnvRefusal.ts), and there is no cached `oauth_creds.json` under
+ * ~/.gemini either. Run directly in a shell with no filtering at all, `gemini` still exits 41.
+ *
+ * So "a genuine alive proof, not a mock" describes what this test WOULD prove on a credentialed
+ * box, not what it has proven on this one. The skip is loud, and nothing here is broken — but a
+ * reader counting this file among the green ones should not conclude the gemini body was exercised.
+ * Stated rather than fixed: making it exercisable needs a credential decision that is the operator's.
  */
 
 import { describe, it, expect } from 'vitest';
+import { geminiEnvRefusal } from '../helpers/geminiEnvRefusal.js';
 import { buildIntelligenceProvider } from '../../src/core/intelligenceProviderFactory.js';
 import { GeminiCliIntelligenceProvider } from '../../src/core/GeminiCliIntelligenceProvider.js';
 import { CircuitBreakingIntelligenceProvider } from '../../src/core/CircuitBreakingIntelligenceProvider.js';
 import { SpawnCapIntelligenceProvider } from '../../src/core/SpawnCapIntelligenceProvider.js';
 import { detectGeminiPath } from '../../src/core/Config.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
-import {
-  isUnconfiguredCredentialError,
-  announceCredentialSkip,
-} from '../support/liveCredentialGate.js';
 
 const geminiPath = detectGeminiPath();
 const haveGemini = !!geminiPath;
@@ -64,7 +74,7 @@ describe('Gemini CLI body — feature is alive (E2E)', () => {
 
   it.skipIf(!haveGemini)(
     'a REAL one-shot returns the expected smoke text through the production provider',
-    async (ctx) => {
+    async () => {
       const provider = buildIntelligenceProvider({
         framework: 'gemini-cli',
         binaryPath: geminiPath!,
@@ -80,23 +90,14 @@ describe('Gemini CLI body — feature is alive (E2E)', () => {
           { model: 'fast', timeoutMs: 45_000 },
         );
       } catch (err) {
-        // Round-17: `haveGemini` gates on the BINARY EXISTING, which is not the
-        // same as it being usable — this dev box has gemini installed with no
-        // credential, so the gate said "available", the canary ran for real,
-        // and it hard-failed on auth rather than on anything it was written to
-        // catch. A suite that stays red on every machine without a third-party
-        // key trains everyone to ignore red.
-        //
-        // The skip is deliberately NARROW: only the specific unconfigured-
-        // credential signature. A wrong answer, a timeout, a crash, or an auth
-        // REGRESSION (a credential that exists and is rejected) all still fail,
-        // because those are exactly what this canary exists to catch.
-        if (isUnconfiguredCredentialError('gemini', err)) {
-          announceCredentialSkip('gemini-cli', err);
-          ctx.skip();
-          return;
-        }
-        throw err;
+        // `haveGemini` proves the binary is INSTALLED, not that it is USABLE. An uncredentialed CLI
+        // exits before it reads our prompt, so there is nothing here to assert about our code — the
+        // provider embeds the CLI's own stderr in this message, and only that named cause is skipped.
+        // Anything else rethrows, because a non-zero exit is also what a genuine break looks like.
+        const refusal = geminiEnvRefusal(err instanceof Error ? err.message : String(err));
+        if (!refusal) throw err;
+        console.warn(`Skipping live Gemini smoke assertion: ${refusal}.`);
+        return;
       }
       expect(out.toUpperCase()).toContain('PONGGEMINI');
     },

@@ -1041,6 +1041,18 @@ export interface IntelligenceOptions {
    * attribution lands under the `unknown::*` fallback keys so existing
    * callers keep working unchanged. New callers should set it.
    */
+  /**
+   * Force THIS call onto a specific provider account (its credential slot).
+   *
+   * Used by the failure tail: when a Codex call fails, the next thing tried should
+   * be the SIBLING Codex account, not the main subscription the second provider
+   * exists to protect. That retry has to name an account for one call only, which
+   * a provider-level resolver cannot express.
+   *
+   * Absent ⇒ the provider's own account resolution (usually: the ambient login).
+   * Honoured only by providers that support account selection; ignored elsewhere.
+   */
+  accountOverride?: { accountId: string; configHome: string };
   attribution?: {
     /** Stable source-side component label, e.g. "InputDetector", "MessagingToneGate". */
     component: string;

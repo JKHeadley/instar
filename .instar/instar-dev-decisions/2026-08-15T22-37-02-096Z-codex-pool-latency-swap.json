@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-15T22:37:02.096Z",
+  "slug": "codex-pool-latency-swap",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 17,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/IntelligenceRouter.ts"
+    ],
+    "addedLines": 15,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

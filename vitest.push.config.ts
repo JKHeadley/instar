@@ -225,8 +225,6 @@ const FLAKY_TESTS = [
   'tests/integration/server-full.test.ts',
   'tests/e2e/phase4-multi-machine-coordination.test.ts',
 
-  // ── Test-first stubs (feature not yet implemented) ────────────────
-  'tests/unit/slack-stall-active-gate.test.ts',
 ];
 
 export default defineConfig(withTestRunnerBound('push', {
