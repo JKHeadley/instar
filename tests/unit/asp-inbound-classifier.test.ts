@@ -180,3 +180,50 @@ describe('AspInboundClassifier — it can never break message delivery', () => {
     expect(fs.existsSync(ledger)).toBe(true);
   });
 });
+
+describe('AspInboundClassifier — INBOUND only (the direction flag is load-bearing)', () => {
+  /**
+   * Found by reading the deployed surface, not by a test: the seam this chains
+   * onto carries BOTH directions, `fromUser` distinguishes them, and the
+   * classifier accepted the flag in its type while never reading it. The live
+   * ledger consequently grew rows about this agent's OWN outbound traffic — in
+   * an audit trail whose whole question is "operator, or agent?".
+   */
+  const signed = () => signMessage({
+    agentId: AGENT, topicId: TOPIC, body: 'directional', privateKey: keys.privateKey,
+  }).text;
+
+  it('an explicitly OUTBOUND entry is not classified and not recorded', () => {
+    const c = make();
+    const v = c.classify({ topicId: TOPIC, text: signed(), fromUser: false });
+    expect(v).toBeNull();
+    expect(c.counters.skippedOutbound).toBe(1);
+    expect(c.counters.seen).toBe(0);
+    expect(rows()).toHaveLength(0);
+  });
+
+  it('CONTROL — the same bytes INBOUND are classified and recorded', () => {
+    // Without this the test above would pass just as well against a classifier
+    // that had stopped working entirely.
+    const c = make();
+    const v = c.classify({ topicId: TOPIC, text: signed(), fromUser: true });
+    expect(v?.classification).toBe('agent-verified');
+    expect(c.counters.skippedOutbound).toBe(0);
+    expect(rows()).toHaveLength(1);
+  });
+
+  it('an ABSENT flag still classifies — the skip fails toward recording', () => {
+    // A caller that never supplies direction must not silently lose provenance.
+    const c = make();
+    const v = c.classify({ topicId: TOPIC, text: signed() });
+    expect(v?.classification).toBe('agent-verified');
+    expect(c.counters.skippedOutbound).toBe(0);
+  });
+
+  it('the chained handler honours direction too', () => {
+    const c = make();
+    c.handler()({ topicId: TOPIC, text: signed(), fromUser: false });
+    expect(c.counters.skippedOutbound).toBe(1);
+    expect(rows()).toHaveLength(0);
+  });
+});
