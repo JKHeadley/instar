@@ -139,7 +139,20 @@ describe('AspInboundClassifier — it can never break message delivery', () => {
   });
 
   it('does not throw when the ledger path is unwritable', () => {
-    const c = make({ ledgerPath: '/proc/definitely-not-writable/asp.jsonl' });
+    // The unwritable path is built, not hardcoded: a regular FILE stands where a
+    // directory would have to be, so creating the ledger fails with ENOTDIR on
+    // every platform.
+    //
+    // It previously hardcoded `/proc/definitely-not-writable/...`. That is a
+    // Linux-only kernel filesystem: on macOS the path simply does not exist, so
+    // the write failed instantly and this test proved nothing locally, while on
+    // the Linux CI runners the same line hung the whole worker — a freeze that
+    // could not be reproduced on any local configuration precisely because the
+    // platform could not exercise it. A test must fail the same way everywhere
+    // it runs; a real OS path smuggles the host in as an untested variable.
+    const blocker = path.join(dir, 'a-file-where-a-directory-must-be');
+    fs.writeFileSync(blocker, 'not a directory');
+    const c = make({ ledgerPath: path.join(blocker, 'asp.jsonl') });
     const { text } = signMessage({ agentId: AGENT, topicId: TOPIC, body: 'x', privateKey: keys.privateKey });
     expect(() => c.classify({ topicId: TOPIC, text })).not.toThrow();
     // Classification still succeeded even though recording failed.
