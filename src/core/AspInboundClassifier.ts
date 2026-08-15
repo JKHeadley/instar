@@ -30,6 +30,7 @@ import { createHash } from 'crypto';
 import { verifyMessage } from './agentSignatureProvenance.js';
 import type { SeenNonceStore, AspVerdict } from './agentSignatureProvenance.js';
 import { FileSeenNonceStore } from './aspNonceStore.js';
+import { AspKeyDirectory } from './AspKeyDirectory.js';
 
 export interface AspInboundEntry {
   topicId: number | null;
@@ -200,9 +201,14 @@ export function buildAspInboundClassifier(
       seenNonces = undefined;
     }
 
+    // Resolve peers too, not just self — otherwise every other agent's signed
+    // message classifies `unknown-agent`, which is safe but useless. The
+    // directory keeps self authoritative so a discovery file cannot displace us.
+    const directory = new AspKeyDirectory({ stateDir, selfAgentId: agentId });
+
     return new AspInboundClassifier({
       ledgerPath: path.join(stateDir, 'asp-classifications.jsonl'),
-      resolvePublicKey: (id: string) => (id === agentId ? publicKey : null),
+      resolvePublicKey: directory.resolver(),
       seenNonces,
     });
   } catch {

@@ -98,6 +98,7 @@ import { registerRemediationProposalsRoutes } from './routes/remediation-proposa
 import { registerProvenanceRoutes } from './routes/provenance.js';
 import { CanonicalIdentityManager } from '../identity/IdentityManager.js';
 import { FileSeenNonceStore } from '../core/aspNonceStore.js';
+import { AspKeyDirectory } from '../core/AspKeyDirectory.js';
 import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
 import { createTopicIntentRoutes } from './topicIntentRoutes.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
@@ -3922,8 +3923,13 @@ export class AgentServer {
         // Self-only for now. A peer public-key directory is a named gap in the
         // spec; resolving an unknown id MUST return null so an unrecognised
         // agent is `rejected` rather than trusted.
-        resolvePublicKey: (id: string) =>
-          id === options.config.projectName ? aspPublicKey : null,
+        // Peers resolve through the key directory (self stays authoritative);
+        // an unknown id MUST return null so an unrecognised signer is
+        // `rejected` rather than trusted.
+        resolvePublicKey: new AspKeyDirectory({
+          stateDir: identityDir,
+          selfAgentId: options.config.projectName,
+        }).resolver(),
         seenNonces: aspNonces,
         nonceCount: aspNonces ? () => aspNonces!.size() : undefined,
       });
