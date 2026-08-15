@@ -189,18 +189,32 @@ const NUMBERED_OPTION_RE = /^\s*\d+\.\s/;
  *
  * So the same keystroke means two different things. Extending Layer 2 to grok by
  * adding it to the framework list — the obvious completion of this fix — would
- * not auto-approve a tool call; it would silently convert the session to
- * standing approval for every future tool call, from a floor the operator never
- * opted into. That is an authority change wearing the costume of a bug fix, and
- * it is why the answering half is deliberately withheld and routed to the
- * operator instead.
+ * not auto-approve a tool call; it would silently convert grok to standing
+ * approval, from a floor the operator never opted into. That is an authority
+ * change wearing the costume of a bug fix, and it is why the answering half is
+ * deliberately withheld and routed to the operator instead.
  *
- * NOT MEASURED, and it must be before anything is wired: whether `Enter`
- * actually commits the `●` option, or whether grok requires the digit (the
- * footer reads `1/3:select │ Tab:next option`). Both readings are consistent
- * with what was observed. Either way the safe answer for grok is the DIGIT `2`,
- * never `Enter` — an answer whose meaning depends on where a cursor happens to
- * rest is not a safe default.
+ * SCOPE, CORRECTED — it is worse than "for this session". This comment first
+ * said option 1 grants standing approval for the rest of the SESSION. The grok
+ * agent, asked directly and answering from its own docs and config, corrected
+ * that: the mode is USER-GLOBAL. It is persisted to `~/.grok/config.toml`
+ * (`permission_mode = "always-approve"`), so it is not per-session, per-tool or
+ * per-directory — it governs every future grok session for that user on that
+ * machine. Corroborated independently: that file carries exactly that key, and
+ * its mtime sits ~50s after the wedged session started.
+ *
+ * So a single mistaken `Enter` does not degrade one session's safety posture. It
+ * writes a persistent config flag that disables approval prompting for all grok
+ * work on the machine, and nothing in this resolver would ever surface that it
+ * had happened.
+ *
+ * NOT MEASURED, and it must be before anything is wired: whether `Enter` commits
+ * the `●` option, or whether grok requires the digit (the footer reads
+ * `1/3:select │ Tab:next option`). The grok agent says Enter commits the focused
+ * option; that is its report, not a measurement of ours. Either way the safe
+ * answer is the DIGIT `2`, never `Enter` — an answer whose meaning depends on
+ * where a cursor happens to rest is not a safe default, and here the cursor
+ * rests on the irreversible one.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 const RADIO_OPTION_RE = /^\s*\d+\s*\([●○]\)\s/;

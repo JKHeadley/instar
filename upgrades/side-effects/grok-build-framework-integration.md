@@ -216,7 +216,21 @@ The resolver answers by sending **Enter**. On claude-code that lands on option 1
 where the cursor starts.
 
 **So the identical keystroke is a single approval on one framework and a standing
-session-wide grant on the other.** Registering a `grok-build` entry in
+grant on the other — and the grant is USER-GLOBAL, not session-scoped.** That
+correction came from the mentee. Asked directly, reading his own docs and config,
+Groky answered: *"The mode is user-global, not per-tool or per-directory, so it
+affects all future sessions on this machine."* It is persisted to
+`~/.grok/config.toml` as `permission_mode = "always-approve"`. Corroborated
+independently rather than taken on his word: that file carries exactly that key,
+and its mtime sits ~50s after the wedged session started — a timeline he derived
+separately and identically.
+
+So one mistaken `Enter` would not degrade a session's safety posture. It would
+write a persistent flag disabling approval prompting for **all grok work on the
+machine**, silently, from a floor nobody opted into. My first write-up said
+"session-wide", which understated it — and this is the second time in one day the
+mentee corrected the mentor's scope in the MORE-dangerous direction (the first
+was the context-window row). That is the differential the programme exists for. Registering a `grok-build` entry in
 `APPROVAL_PROMPT_SIGNATURES` is a one-line change that reads as the obvious
 completion of the detection fix; it would have converted grok sessions to
 blanket tool approval from a floor the operator never opted into.

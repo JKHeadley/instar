@@ -85,8 +85,17 @@ describe('permission floor — grok-build approval menu is DETECTED', () => {
     // option 1 = "Yes", approving THE CALL IN FRONT OF IT. On grok, the
     // pre-selected option 1 is "Yes, and don't ask again for ANYTHING" — the
     // approve-once equivalent is option 2, which is not where the cursor starts.
-    // So the same key grants a single approval on one framework and a standing
-    // session-wide approval on the other.
+    //
+    // And the scope is worse than "this session". The grok agent, asked directly
+    // and answering from its own docs and config, corrected an earlier version of
+    // this comment: the mode is USER-GLOBAL, persisted to ~/.grok/config.toml as
+    // `permission_mode = "always-approve"`. Not per-session, not per-tool, not
+    // per-directory — every future grok session for that user on that machine.
+    // Corroborated independently: that file carries exactly that key.
+    //
+    // So one mistaken Enter would not degrade a session's posture; it would write
+    // a persistent flag disabling approval prompting for all grok work on the
+    // box, silently.
     //
     // Whoever removes this test must first decide, WITH THE OPERATOR, that the
     // floor may hand out standing tool approval — and must fix the keystroke,
