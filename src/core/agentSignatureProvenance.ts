@@ -308,6 +308,8 @@ export function verifyMessage(params: {
       );
     }
   } catch {
+    /* @silent-fallback-ok: a malformed signature/base64 IS a rejection — the verdict
+       below reports `bad-signature`, so the failure is surfaced as the answer, not swallowed. */
     signatureOk = false;
   }
 

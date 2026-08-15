@@ -14648,6 +14648,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             } catch (err) {
               // Non-fatal by design — provenance recording must never prevent
               // the messaging stack from coming up.
+              /* @silent-fallback-ok: provenance recording must NEVER prevent the messaging stack
+                 from coming up. Logged loudly; the consequence of this path is simply that no
+                 verdicts are recorded — never a blocked, delayed or dropped message. */
               console.warn('[instar] ASP inbound classifier not wired:', err);
             }
 

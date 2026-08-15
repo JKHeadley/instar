@@ -128,6 +128,9 @@ export class AspKeyDirectory {
       ) as { publicKey?: unknown };
       return decodeKey(raw?.publicKey);
     } catch {
+      /* @silent-fallback-ok: no identity on disk is a legitimate state (fresh agent), not an
+         error. Returning null means self is unresolvable, so every signature classifies
+         `unknown-agent` — a REJECTION. This degrades toward refusal, never toward trust. */
       return null;
     }
   }
@@ -146,8 +149,10 @@ export class AspKeyDirectory {
       }
       return out;
     } catch {
-      // No peer file, or damaged: we simply know fewer agents. Everything we do
-      // not know is rejected, so this degrades toward refusal, never toward trust.
+      /* @silent-fallback-ok: a missing or damaged discovery cache means we simply KNOW FEWER
+         AGENTS. Every unknown id resolves null -> `unknown-agent` -> rejection, so the failure
+         mode is strictly more refusal, never accidental trust. Tested: 'a missing or corrupt
+         peer file degrades to fewer agents, never to trust'. */
       return [];
     }
   }
@@ -164,6 +169,8 @@ function decodeKey(value: unknown): Buffer | null {
     const b = Buffer.from(value, 'base64');
     return b.length === KEY_BYTES ? b : null;
   } catch {
+    /* @silent-fallback-ok: a malformed key is DROPPED rather than coerced — an unusable key must
+       never become a usable one. The caller sees null and the agent stays unresolvable. */
     return null;
   }
 }

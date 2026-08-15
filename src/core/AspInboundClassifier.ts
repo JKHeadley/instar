@@ -125,7 +125,10 @@ export class AspInboundClassifier {
 
       return verdict;
     } catch {
-      // Signal-only: a classifier failure must never surface in the message path.
+      /* @silent-fallback-ok: SIGNAL-ONLY BY DESIGN. A provenance recorder that can throw into
+         the message path is a worse problem than the one it solves, so every failure is counted
+         (counters.errors, readable by the caller) and swallowed. Tested explicitly:
+         'does not throw when the resolver throws' + 'the chained handler never throws either'. */
       this.counters.errors += 1;
       return null;
     }
@@ -156,6 +159,9 @@ export class AspInboundClassifier {
       fs.appendFileSync(this.opts.ledgerPath, `${JSON.stringify(row)}\n`, { mode: 0o600 });
       this.counters.recorded += 1;
     } catch {
+      /* @silent-fallback-ok: ledger write failure must not break delivery NOR lose the verdict's
+         effect — classification already succeeded and its counter is incremented. Surfaced via
+         counters.errors; tested by 'does not throw when the ledger path is unwritable'. */
       this.counters.errors += 1;
     }
   }
@@ -195,9 +201,10 @@ export function buildAspInboundClassifier(
     try {
       seenNonces = new FileSeenNonceStore({ filePath: path.join(stateDir, 'asp-nonces.json') });
     } catch {
-      // A damaged store must not silently become "no replay defence while
-      // reporting healthy" — we drop to classification-without-replay-check and
-      // the recorded rows say so via replayChecked:false.
+      /* @silent-fallback-ok: the store itself throws LOUDLY on damage (see aspNonceStore); this
+         catch converts that into an HONEST DEGRADATION rather than a dead messaging stack —
+         classification continues and every recorded row carries replayChecked:false, so the
+         missing guard is visible in the data instead of being implied present. */
       seenNonces = undefined;
     }
 
@@ -212,6 +219,9 @@ export function buildAspInboundClassifier(
       seenNonces,
     });
   } catch {
+    /* @silent-fallback-ok: construction failure yields null so a provenance recorder can never
+       prevent the messaging stack from coming up. The caller logs the null case; a null
+       classifier simply means no verdicts are recorded, never a blocked message. */
     return null;
   }
 }

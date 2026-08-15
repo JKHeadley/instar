@@ -56,7 +56,10 @@ export function registerProvenanceRoutes(opts: RegisterProvenanceRoutesOpts): vo
       try {
         nonceCount = opts.nonceCount ? opts.nonceCount() : null;
       } catch {
-        nonceCount = null; // diagnostics must never fail the status route
+        /* @silent-fallback-ok: a diagnostics counter must never fail the STATUS route — the
+           route's job is to report whether the feature is alive, and a nonce-count read failing
+           would otherwise mask that answer. Reported as null, i.e. 'unknown', not as zero. */
+        nonceCount = null;
       }
       res.json({
         enabled: Boolean(publicKey),

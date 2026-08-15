@@ -138,6 +138,9 @@ export class FileSeenNonceStore implements SeenNonceStore {
     try {
       parsed = JSON.parse(raw);
     } catch {
+      /* @silent-fallback-ok: NOT a swallow — this catch RETHROWS as a named error. A corrupt
+         store must fail loudly rather than start empty, because an empty store accepts every
+         replay. See the tests 'THROWS on a corrupt file rather than starting empty'. */
       throw new Error(
         `asp-nonce-store: ${this.filePath} is corrupt. Refusing to treat a damaged ` +
           `store as empty, because an empty store accepts every replay.`

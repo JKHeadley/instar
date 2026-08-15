@@ -89,6 +89,27 @@ encrypted identity needs no passphrase here. A test asserts no response contains
 private key material, paired with a control asserting it *can* find the public
 fingerprint, so a clean scan is a measurement rather than a broken search.
 
+## 5b. Declared silent fallbacks
+
+The `no-silent-fallbacks` ratchet flagged 8 new error-swallowing catch blocks
+over its 495 baseline. They are deliberate, and each is now annotated
+`@silent-fallback-ok` with the reason and — more importantly — **which direction
+it fails**:
+
+| Site | Why it swallows | Direction of failure |
+|---|---|---|
+| classifier (4 sites) | signal-only: a provenance recorder that can throw into the message path is worse than the problem it solves | counted in `counters.errors`; message never blocked, delayed or dropped |
+| key directory (3 sites) | a missing identity or damaged discovery cache means fewer known agents | toward **refusal** — unresolvable ids classify `unknown-agent` |
+| nonce store parse | **not a swallow** — it rethrows as a named error | loudly, because an empty store accepts every replay |
+| wiring (4 sites) | provenance must not stop the server or messaging stack booting | logged AND surfaced in the API (`replayDefence: "unavailable"`, `enabled: false` at 200) |
+
+The baseline was **not** raised. Raising it would have recorded "8 more swallows
+exist somewhere" and lost the reasons; annotating records why each one is correct
+and leaves the ratchet able to catch the next undeclared one. Two tests assert
+the classifier's swallowing property directly ("does not throw when the resolver
+throws", "the chained handler never throws either"), so the claim is enforced
+rather than asserted.
+
 ## 6. Reversibility
 
 Fully reversible. Removing the `onMessageLogged` chain stops classification; the

@@ -3899,7 +3899,10 @@ export class AgentServer {
           if (decoded.length === 32) aspPublicKey = decoded;
         }
       } catch {
-        aspPublicKey = null; // no identity yet -> feature reports itself disabled
+        /* @silent-fallback-ok: an agent with no canonical identity is a legitimate state, not an
+           error. Null means the feature reports `enabled: false` at 200 — honestly OFF rather than
+           absent — and every signature then classifies `unknown-agent`, i.e. rejected. */
+        aspPublicKey = null;
       }
 
       // Replay defence is durable or it is not wired at all. A store that
@@ -3912,6 +3915,9 @@ export class AgentServer {
         });
       } catch (err) {
         // eslint-disable-next-line no-console
+        /* @silent-fallback-ok: LOUD, not silent — logged here AND surfaced to every caller as
+           replayDefence:'unavailable' on GET /provenance. The store throws on damage by design;
+           this converts that into an honest degradation instead of a dead server. */
         console.warn('[agent-server] ASP nonce store unavailable (replay defence off):', err);
         aspNonces = undefined;
       }
@@ -3936,6 +3942,9 @@ export class AgentServer {
     } catch (err) {
       // Non-fatal, matching the convention above.
       // eslint-disable-next-line no-console
+      /* @silent-fallback-ok: a provenance-wiring error must not prevent the rest of the server
+         from starting (matches the burn-detection-system convention above). Logged loudly; the
+         routes then 404, which a probe distinguishes from the 200-with-enabled:false state. */
       console.warn('[agent-server] failed to register provenance routes:', err);
     }
 
