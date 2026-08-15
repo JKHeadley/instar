@@ -213,7 +213,7 @@ export interface QuotaSwapAntiThrashHooks {
   resolveEffectiveAccountId: (
     sessionName: string,
     sourceWasUntagged: boolean,
-    sourceTrigger?: 'quota-pressure' | 'login-loss',
+    sourceTrigger?: 'quota-pressure' | 'login-loss' | 'degradation',
   ) => Promise<string | null>;
   /** Observe an executed REACTIVE swap (dwell clock-start, hop alerts). */
   onReactiveExecuted?: (args: { session: string; from: string; to: string; nowMs: number }) => void;
@@ -278,7 +278,7 @@ export class QuotaAwareScheduler {
     sourceWasUntagged?: boolean;
     /** Level-triggered source condition. Login loss is revalidated at the same
      * kill boundary as the untagged default-account identity. */
-    sourceTrigger?: 'quota-pressure' | 'login-loss';
+    sourceTrigger?: 'quota-pressure' | 'login-loss' | 'degradation';
   }): Promise<SwapResult> {
     const { sessionName, exhaustedAccountId, nowMs, targetAccountId } = args;
     const isProactive = targetAccountId !== undefined;

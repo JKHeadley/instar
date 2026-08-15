@@ -163,6 +163,69 @@ export function requiresOwnerRelogin(account: SubscriptionAccount): boolean {
 }
 
 /**
+ * Which accounts may serve as the SIBLING position in the router's failure tail —
+ * the same door on a different login, tried before the tail changes door (whose last
+ * position is `claude-code`, the main subscription that door exists to protect).
+ *
+ * Eligibility lives here rather than in the router because the pool owns account
+ * state. Three rules, each protecting a bounded gating deadline:
+ *
+ *  - SAME framework. A Codex session cannot run on a Claude login; a cross-framework
+ *    "sibling" is a guaranteed-failed attempt (and would be the very spend we are
+ *    avoiding). This mirrors SwapAntiThrash's existing same-framework restriction.
+ *  - `active` ONLY. A rate-limited, warming, disabled or needs-reauth account is a
+ *    known-bad attempt. Excluding it is not caution, it is correctness: the tail is
+ *    trying to find a working answer quickly.
+ *  - NOT the account that just failed. Retrying the failing login under a fresh label
+ *    spends the deadline on an attempt already known to fail — and, worse, reports it
+ *    as a swap, so the logs claim a move that never happened.
+ *
+ * IDENTIFYING THE FAILED ACCOUNT is the subtle part. A call that named its account is
+ * easy (`failedAccountId`). A call that ran on the AMBIENT login is not: the router
+ * cannot see which login the child inherited. For those, the caller supplies the
+ * ambient home (`ambientConfigHome`) and the match is made on that instead.
+ *
+ * When NEITHER identifier is available we return nothing rather than guess. A guess is
+ * not merely unhelpful here: on a single-account agent every candidate IS the account
+ * that just failed, so guessing would reliably re-run the failure — the exact defect
+ * the self-exclusion rule exists to prevent.
+ *
+ * An ambient home matching NO enrolled account is not a failure: the primary ran on an
+ * unenrolled login, so every enrolled account is genuinely a different one.
+ *
+ * Bounded by `limit` (default 1): the tail exists to find an answer, not to walk an
+ * entire pool while a gate waits.
+ */
+export function eligibleSiblingAccounts(
+  accounts: readonly SubscriptionAccount[],
+  framework: SubscriptionFramework,
+  failedAccountId: string | null,
+  opts: { ambientConfigHome?: string | null; limit?: number } = {},
+): Array<{ accountId: string; configHome: string }> {
+  const limit = opts.limit ?? 1;
+  const ambient = opts.ambientConfigHome;
+  const hasAmbient = typeof ambient === 'string' && ambient.length > 0;
+  if (!Array.isArray(accounts) || limit <= 0) return [];
+  // Neither identifier ⇒ we cannot tell a sibling from the account that just failed.
+  if (failedAccountId === null && !hasAmbient) return [];
+  return accounts
+    .filter(
+      (a) =>
+        !!a &&
+        a.framework === framework &&
+        a.status === 'active' &&
+        typeof a.configHome === 'string' &&
+        a.configHome.length > 0 &&
+        typeof a.id === 'string' &&
+        a.id.length > 0 &&
+        a.id !== failedAccountId &&
+        !(hasAmbient && a.configHome === ambient),
+    )
+    .slice(0, limit)
+    .map((a) => ({ accountId: a.id, configHome: a.configHome }));
+}
+
+/**
  * WS5.2 §6.2 — "locally executable" predicate. An account is executable on THIS
  * machine iff this machine holds it with a real local `configHome` AND a valid
  * login (status active/warming, never needs-reauth/disabled/rate-limited). A

@@ -42,6 +42,24 @@ import { enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
 import { QUOTA_SNAPSHOT_STALE_AFTER_MS } from '../core/QuotaPoller.js';
 import { SubscriptionAccountEmailRegistrar } from '../core/SubscriptionPool.js';
 import { CredentialIdentityOracle } from '../core/CredentialIdentityOracle.js';
+import { CompositeCredentialIdentityOracle } from '../core/CompositeCredentialIdentityOracle.js';
+
+/**
+ * The default slot-identity oracle.
+ *
+ * Wraps the Anthropic OAuth oracle in the composite so a CODEX credential slot
+ * can identify itself too (offline, from its own id_token). Without this the
+ * pool's verified-add path rejects every Codex home as `email-unresolved`, which
+ * is why the pool held 6 anthropic accounts and 0 codex ones while both Codex
+ * logins sat authenticated on disk.
+ *
+ * The Anthropic path is unchanged — the composite delegates to it verbatim for
+ * any slot that is not a Codex home.
+ */
+function defaultSubscriptionIdentityOracle(): CompositeCredentialIdentityOracle {
+  return new CompositeCredentialIdentityOracle({ anthropic: new CredentialIdentityOracle() });
+}
+
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -28908,7 +28926,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (existing) {
       return new SubscriptionAccountEmailRegistrar(
         pool,
-        ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+        ctx.subscriptionIdentityOracle ?? defaultSubscriptionIdentityOracle(),
       ).completeValidated(login.id, email, {
         nickname: login.label,
         status: 'active',
@@ -28917,7 +28935,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     return new SubscriptionAccountEmailRegistrar(
       pool,
-      ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+      ctx.subscriptionIdentityOracle ?? defaultSubscriptionIdentityOracle(),
       ctx.subscriptionEmailBinding,
     ).completeNewValidated({
       id: login.id, nickname: login.label,
@@ -29066,7 +29084,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const registrar = new SubscriptionAccountEmailRegistrar(
         ctx.subscriptionPool,
-        ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+        ctx.subscriptionIdentityOracle ?? defaultSubscriptionIdentityOracle(),
         ctx.subscriptionEmailBinding,
       );
       res.json(await registrar.repairLegacy(req.params.id));
@@ -29137,7 +29155,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // attempt to smuggle a token into the registry (structural invariant).
       const account = await new SubscriptionAccountEmailRegistrar(
         ctx.subscriptionPool,
-        ctx.subscriptionIdentityOracle ?? new CredentialIdentityOracle(),
+        ctx.subscriptionIdentityOracle ?? defaultSubscriptionIdentityOracle(),
       ).register(
         { id, nickname, provider, framework, configHome, status, email },
         req.body,
