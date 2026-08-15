@@ -29,6 +29,7 @@ import path from 'path';
 import { createHash } from 'crypto';
 import { verifyMessage } from './agentSignatureProvenance.js';
 import type { SeenNonceStore, AspVerdict } from './agentSignatureProvenance.js';
+import { FileSeenNonceStore } from './aspNonceStore.js';
 
 export interface AspInboundEntry {
   topicId: number | null;
@@ -161,4 +162,50 @@ export class AspInboundClassifier {
 
 function sha256(s: string): string {
   return createHash('sha256').update(s, 'utf8').digest('hex');
+}
+
+/**
+ * Build a classifier wired to this agent's identity and durable stores.
+ *
+ * Returns null when the agent has no canonical identity — with no public key
+ * there is nothing to verify against, and a classifier that rejected every
+ * signed message for want of a key would be worse than silence.
+ *
+ * NEVER throws: a construction failure yields null, because a provenance
+ * recorder must not be able to stop the messaging stack from coming up.
+ *
+ * Only the PUBLIC key is read (no decryption), so an encrypted identity needs
+ * no passphrase here — this path verifies, it never signs.
+ */
+export function buildAspInboundClassifier(
+  stateDir: string,
+  agentId: string
+): AspInboundClassifier | null {
+  try {
+    const identityPath = path.join(stateDir, 'identity.json');
+    if (!fs.existsSync(identityPath)) return null;
+
+    const raw = JSON.parse(fs.readFileSync(identityPath, 'utf8')) as { publicKey?: string };
+    if (typeof raw?.publicKey !== 'string') return null;
+    const publicKey = Buffer.from(raw.publicKey, 'base64');
+    if (publicKey.length !== 32) return null;
+
+    let seenNonces: FileSeenNonceStore | undefined;
+    try {
+      seenNonces = new FileSeenNonceStore({ filePath: path.join(stateDir, 'asp-nonces.json') });
+    } catch {
+      // A damaged store must not silently become "no replay defence while
+      // reporting healthy" — we drop to classification-without-replay-check and
+      // the recorded rows say so via replayChecked:false.
+      seenNonces = undefined;
+    }
+
+    return new AspInboundClassifier({
+      ledgerPath: path.join(stateDir, 'asp-classifications.jsonl'),
+      resolvePublicKey: (id: string) => (id === agentId ? publicKey : null),
+      seenNonces,
+    });
+  } catch {
+    return null;
+  }
 }
