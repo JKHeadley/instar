@@ -24594,6 +24594,19 @@ export async function startServer(options: StartOptions): Promise<void> {
         const waCfg = config.multiMachine?.writeAdmission;
         writeAdmission = new waMod.WriteAdmission({
           thisMachineId: waMachineId,
+          // Without this the write-admission status surface reported
+          // `thisMachine.nickname: null` on every machine — the one refusing a
+          // write could not name itself, which is the entire point of a refusal
+          // that says WHO owns the state. The dep was declared and consumed
+          // (WriteAdmission.ts:403) but supplied nowhere.
+          // Null-safe twice over: `_listPoolMachines` is assigned inside a
+          // conditional block (declared null at module scope), and a machine
+          // absent from the pool has no nickname. Both degrade to null, which is
+          // exactly today's behaviour — so this can only ever ADD a name.
+          selfNickname: () =>
+            (waMachineId
+              ? (_listPoolMachines?.() ?? []).find((m) => m.machineId === waMachineId)?.nickname ?? null
+              : null),
           isReadOnly: () => state.readOnly,
           isPoolActive: () => state.sessionPoolActive,
           registry: regMod.buildWriteDomainRegistry({ machineId: waMachineId }),
