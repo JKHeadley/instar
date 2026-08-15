@@ -160,6 +160,12 @@ against itself — and written a log line saying it had moved. A test caught tha
 fix identifies the default account by where its credentials live, and where it can't
 tell, it does nothing rather than guess.
 
+**If the account lookup itself breaks, you find out.** The retry list asks the account
+pool which other account to try. If that question fails, the retry list quietly goes
+back to its old behaviour — which means the fall-through onto your subscription returns
+without anyone noticing. A check in the build caught that this failure was invisible, so
+it now gets recorded: losing the feature is survivable, losing it silently is not.
+
 **If you only have one Codex account, none of this happens.** There is no other
 account to try, so the retry list behaves exactly as it does today.
 

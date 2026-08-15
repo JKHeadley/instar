@@ -61,6 +61,7 @@ function build(opts: {
   codexOkHome?: string | null;
   siblings?: IntelligenceRouterOpts['resolveSiblingAccounts'];
   tail?: IntelligenceFramework[];
+  onDegrade?: IntelligenceRouterOpts['onDegrade'];
 }) {
   const rec = opts.rec;
   const providers: Partial<Record<IntelligenceFramework, IntelligenceProvider>> = {
@@ -77,6 +78,7 @@ function build(opts: {
     }),
     buildProvider: (fw) => providers[fw] ?? null,
     ...(opts.siblings ? { resolveSiblingAccounts: opts.siblings } : {}),
+    ...(opts.onDegrade ? { onDegrade: opts.onDegrade } : {}),
   });
 }
 
@@ -181,6 +183,42 @@ describe('failure tail — prefer the sibling Codex account before changing door
     });
 
     await expect(router.evaluate('x', GATING)).resolves.toBe('claude-code-ok');
+  });
+
+  it('...and it is REPORTED, because silently losing it restores the spend it prevents', async () => {
+    // A resolver throwing on every call disables the sibling tail completely, so every
+    // Codex failure walks back onto the main subscription — the exact problem this
+    // feature exists to stop, invisibly restored. Surviving quietly is not good enough.
+    const rec: Recorder = { calls: [] };
+    const degrades: string[] = [];
+    const router = build({
+      rec,
+      codexOkHome: B_HOME,
+      siblings: () => {
+        throw new Error('pool exploded');
+      },
+      onDegrade: (d) => degrades.push(d.reason),
+    });
+
+    await router.evaluate('x', GATING);
+    expect(degrades.some((r) => /sibling-account resolver threw/.test(r))).toBe(true);
+    expect(degrades.some((r) => /pool exploded/.test(r))).toBe(true);
+  });
+
+  it('CONTROL: a healthy resolver reports NO resolver fault', async () => {
+    // Without this, the assertion above could pass against a change that reported a
+    // resolver fault on every call.
+    const rec: Recorder = { calls: [] };
+    const degrades: string[] = [];
+    const router = build({
+      rec,
+      codexOkHome: B_HOME,
+      siblings: () => [{ accountId: 'codex-b', configHome: B_HOME }],
+      onDegrade: (d) => degrades.push(d.reason),
+    });
+
+    await router.evaluate('x', GATING);
+    expect(degrades.some((r) => /sibling-account resolver threw/.test(r))).toBe(false);
   });
 
   it('malformed entries are filtered — an empty home would silently mean "ambient"', async () => {

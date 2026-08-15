@@ -1519,8 +1519,21 @@ export class IntelligenceRouter implements IntelligenceProvider {
       let siblings: ReadonlyArray<{ accountId: string; configHome: string }>;
       try {
         siblings = resolve(framework, primaryAccountId) ?? [];
-      } catch {
-        // A broken resolver must cost us the ENHANCEMENT, never the shipped tail.
+      } catch (resolveErr) {
+        // A broken resolver costs us the ENHANCEMENT, never the shipped tail — but it must
+        // not cost it SILENTLY. A resolver throwing on every call disables the sibling tail
+        // completely, so every Codex failure walks back onto the main subscription: the
+        // exact spend this feature exists to stop, invisibly restored. Surfacing it through
+        // onDegrade puts it in DegradationReporter where a persistent fault is visible.
+        this.opts.onDegrade?.({
+          component: component ?? '(none)',
+          category,
+          from: framework,
+          to: framework, // nothing moved — that IS the degradation being reported
+          reason:
+            `sibling-account resolver threw (${resolveErr instanceof Error ? resolveErr.message : 'error'}); ` +
+            `'${framework}' failure tail falls through to the next door instead of a sibling account`,
+        });
         return [];
       }
       return siblings

@@ -352,3 +352,18 @@ fails its two. A CONTROL proves the headline result is attributable: with no
 resolver the same failure walks the tail to Claude, so "never reaches Claude" is
 caused by the sibling position rather than by an unreachable harness. 57 pre-existing
 router/swap tests and 51 pool/swap tests pass.
+
+#### CI finding: the throwing-resolver path was a silent fallback
+
+The no-silent-fallbacks ratchet caught the resolver guard (496 vs a baseline of 495).
+Raising the baseline would have been the wrong resolution: a resolver throwing on every
+call disables the sibling tail COMPLETELY, so every Codex failure walks back onto the
+main subscription — the exact spend this piece exists to stop, invisibly restored. That
+is precisely the class the ratchet exists to catch, and it was catching a real one.
+
+The fault now surfaces through `onDegrade` into DegradationReporter, so a persistent
+resolver fault is visible rather than merely survivable. Two tests: the fault is
+reported and names the underlying error, plus a CONTROL that a healthy resolver reports
+no fault (without it the assertion would pass against a change that reported on every
+call). Shown capable of failing by changing the reason text. The baseline is unchanged
+at 495.
