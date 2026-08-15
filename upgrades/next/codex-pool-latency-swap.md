@@ -4,10 +4,13 @@
 
 ## What Changed
 
-Codex accounts can now be enrolled in the subscription pool, and an internal Codex
-call can now choose which account it runs on.
+You can now hold more than one Codex login, and work moves off one that goes wrong —
+whether it goes slow or simply fails.
 
-Both were previously impossible, for reasons that were invisible from outside:
+Instar deliberately runs its small background judgements on a second provider so they
+don't consume the main subscription you pay for. That only works while the second
+provider is healthy. Two separate paths sent its trouble back onto your subscription
+anyway, and neither was visible from outside.
 
 **Enrolment.** The pool refuses to add an account whose credential slot it cannot
 identify — a sensible guard, since two rows pointing at the same login would make
@@ -28,58 +31,90 @@ target a specific slot existed in the spawn layer and was honoured — this path
 never used it. So "move a struggling account's work to the other account" had nothing
 to move.
 
+**Swapping off a SLOW account.** The existing proactive swap triggers on quota, and
+quota was never the problem. The observed failure was latency: a trivial Codex call
+taking around 13 seconds while internal checks sat at their 60-second ceiling, with the
+account at 17% of its quota window. A quota-only trigger cannot see any of that. A new
+degradation trigger watches per-account latency and error rate, so an account that is
+slow or failing becomes a candidate to move off regardless of how full it is.
+
+**The retry list no longer ends on your subscription.** When a Codex call failed, the
+retry list walked to the next provider — and its last entry is the main subscription. So
+the provider that exists to keep work off your paid account was, on every failure,
+walking work straight onto it. The retry list now tries the OTHER Codex account first.
+
 ## What to Tell Your User
 
 - "If you have more than one Codex login, I can now hold both — before, I could only
   ever see one of them."
-- "Nothing changes about which account I use until that's deliberately configured."
+- "When one Codex account goes slow or starts failing, I move work to the other one
+  instead of falling back onto the subscription you pay for."
+- "If you only have one Codex account, none of this changes anything."
 
 ## Summary of New Capabilities
 
 | Capability | How to Use |
 |-----------|-----------|
 | Enrol a Codex account in the subscription pool | The existing enrolment path now accepts a Codex credential slot |
-| Point an internal Codex call at a specific account | `resolveAccount` on the Codex provider (unused by default) |
+| Move work off a slow or failing account | `subscriptionPool.proactiveSwap.degradation` — off by default, rehearses first |
+| Retry a failed Codex call on your other Codex account | Automatic once two Codex accounts are enrolled; nothing to configure |
 
-No new endpoint and no configuration.
+No new endpoint.
 
 ## Compatibility Notes
 
-**Nothing changes by default.** A Codex call that does not name an account behaves
-exactly as before — same account, same result — and nothing in the shipped wiring names
-one. A broken or throwing account resolver also falls back to the previous behaviour
-rather than failing the call.
+**A single Codex account changes nothing at all.** There is no other account to move to
+or retry on, so both new behaviours are inert — not disabled by a flag, but with nothing
+to act on.
+
+The degradation trigger ships **off**, and rehearses when switched on: it records the
+swap it would have made and leaves the session alone until dry-run is turned off. No
+data, too few samples, or a broken gauge all mean *unknown*, and unknown never moves
+anything.
+
+The retry-list change **adds** a step in front of the existing list; it never replaces
+it. If both Codex accounts are unwell, the retry list continues exactly as it does
+today and you still get an answer. Only accounts that are active and have a real local
+login are eligible, and a Codex session can only ever be retried on a Codex account —
+never on the main subscription's account.
+
+A Codex call that does not name an account behaves exactly as before. A broken or
+throwing account resolver falls back to the previous behaviour rather than failing the
+call.
 
 The Anthropic identity path is untouched: any slot that is not a Codex home takes the
-identical pre-existing check with the identical result. A Codex slot that cannot
-identify itself is reported as a Codex problem rather than mislabelled as an Anthropic
-failure.
-
-Reading a credential never exposes it: the identity reader returns an email, an account
-id and a plan, and no token material.
+identical pre-existing check with the identical result. Reading a credential never
+exposes it — the identity reader returns an email, an account id and a plan, and no
+token material.
 
 ## Evidence
 
-26 tests across two tiers.
+67 tests across two tiers.
 
-Unit: the identity reader (real-shaped read, two logins resolving to DIFFERENT
-identities, every named failure reason, never-throws across six malformed shapes, and
-two security canaries); the composing identity check (Codex resolves, a CONTROL that a
-non-Codex slot still reaches the Anthropic path verbatim, a broken Codex slot reported
-honestly, a throwing probe degrading safely); and account selection (no resolver means
-no override, two accounts genuinely distinguishable, per-call rather than
-per-construction resolution, all three degradation paths, and a CONTROL that env
-scrubbing still holds when an account is selected).
+*Enrolment and selection (26).* The identity reader (real-shaped read, two logins
+resolving to DIFFERENT identities, every named failure reason, never-throws across six
+malformed shapes, two security canaries); the composing identity check, with a CONTROL
+that a non-Codex slot still reaches the Anthropic path verbatim; and per-call account
+selection, with a CONTROL that env scrubbing still holds when an account is selected.
+Integration drives the real registrar against a real pool and asserts BOTH directions —
+the Anthropic-only check rejects a Codex account, the composing one enrols it. Verified
+against real credentials: two Codex homes on this machine resolve to two distinct
+accounts.
 
-Integration: the tier that would have caught the real defect, since unit tests of a
-reader pass whether or not it is wired. It drives the real registrar against a real pool
-and asserts BOTH directions — the Anthropic-only check REJECTS a Codex account, and the
-composing one enrols it. The identity guard is shown still biting: a caller-supplied
-email contradicting the slot is refused, and a slot with no credential is refused.
+*Degradation trigger (9).* Including its acceptance test — a degrading account produces
+a dry-run would-swap and moves nothing. A CONTROL proves quota alone would not have
+selected that account (17%), so the pass is attributable to the new trigger. A second
+control runs with dry-run off and asserts a real swap, so "nothing moved" is a choice
+rather than an incapacity.
 
-Both security canaries carry controls: the planted secret is asserted absent from the
-result AND asserted present in the bytes being read, so a clean scan is a measurement.
+*Retry list (32).* Both mechanisms were shown capable of failing independently, which is
+how a real defect surfaced: the first version identified the failing account by id, but
+internal calls run on the ambient login and have no id — so a single-account agent would
+have been handed its own only account as a "sibling", buying a guaranteed-failing retry
+and reporting it as a move. A test caught it; the account is now identified by where its
+credentials live, and where it cannot be identified nothing is offered. A CONTROL proves
+the headline result is attributable: with the resolver absent, the same failure walks the
+retry list to the subscription.
 
-Verified against real credentials, not only fixtures: two Codex homes on this machine
-resolve to two distinct accounts. The 45 pre-existing Codex provider and env tests still
-pass.
+108 pre-existing router, swap and pool tests pass, plus the 45 pre-existing Codex
+provider and env tests.
