@@ -72,6 +72,51 @@ It also explains a shape seen elsewhere today: my own ASP branch is #6 on that
 list within hours of being created. The reflex that produced 43 abandoned
 branches is the same reflex that would have produced a 44th today.
 
+## Triage: which of them could still land today
+
+Merge-tested each stranded branch against current `main` (read-only, no working
+tree touched):
+
+| | count |
+|---|---|
+| **still merges cleanly** | **9** (8 excluding today's own branch) |
+| needs conflict resolution | 35 |
+
+The clean nine are small and recent — mostly single-commit branches from
+2026-08-14:
+
+| branch | commits | last |
+|---|---|---|
+| `echo/sync-spawn-alias-resolution` | 1 | 2026-08-14 |
+| `echo/claimcheck-absence-is-not-zero` | 1 | 2026-08-14 |
+| `echo/native-module-health-banner` | 1 | 2026-08-14 |
+| `echo/destructive-lint-local-bindings` | 2 | 2026-08-14 |
+| `echo/tmux-send-lint-multiline` | 1 | 2026-08-14 |
+| `echo/topic-creation-lint-resolution` | 1 | 2026-08-14 |
+| `echo/grok-build-integration` | 1 | 2026-08-14 |
+| `echo/three-queues-verification-gap` | 1 | 2026-07-30 |
+
+**This sharpens the finding.** "43 stranded" is the headline, but 8 of them carry
+no technical obstacle whatsoever — they would land today untouched. Those are
+pure omission. The other 35 have drifted far enough from main to need real work,
+and for the oldest the honest question is whether the premise still holds at all.
+
+### A broken probe, caught by uniformity
+
+The first merge-test returned **0 clean / 44 conflicted**. That is implausible on
+its face: my own branch was cut from current `main` hours earlier and must merge
+cleanly. Uniformity across every row is the signature of a broken instrument, not
+a finding.
+
+Cause: `git merge-tree` was invoked with two arguments, which the old three-arg
+form (base, ours, theirs) silently misreads. Both correct forms — the three-arg
+version with an explicit merge-base, and `--write-tree` — report my branch clean.
+Re-run with `--write-tree`, the real split is 9/35.
+
+Had I reported the first number, the conclusion would have been "all 44 have
+rotted beyond easy recovery" — the opposite of the truth for eight of them, and
+an argument for abandoning work that is one merge away from landing.
+
 ## What I did NOT do
 
 I did not open PRs, delete branches, or rebase anything. Landing 43 branches in
