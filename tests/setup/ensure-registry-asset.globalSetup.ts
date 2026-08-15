@@ -15,6 +15,7 @@ import {
   runRegistryCanary,
 } from '../../src/core/StandardsRegistryParser.js';
 import { buildGuardTreeIndex } from '../../src/core/StandardsEnforcementAuditor.js';
+import { registryAssetIsStale } from './registryAssetFreshness.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -31,7 +32,10 @@ export function ensureRegistryAsset(root: string): void {
     path.join(dir, 'standards-guard-index.json'),
     path.join(dir, 'standards-guard-index.meta.json'),
   ]);
-  if (outputs.every(output => fs.existsSync(output))) return;
+  // PRESENCE IS NOT FRESHNESS — same defect as the sibling setup, same fix. An
+  // asset that exists but was generated from an older source is the case a
+  // presence check is structurally unable to see.
+  if (!registryAssetIsStale(root, outputs)) return;
 
   const sourceRelative = 'docs/STANDARDS-REGISTRY.md';
   const bytes = fs.readFileSync(path.join(root, sourceRelative));
