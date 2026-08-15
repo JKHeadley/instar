@@ -64,6 +64,86 @@ const PATTERNS = [
   /method\s*:\s*['"`]createForumTopic['"`]/,
 ];
 
+// ── Name resolution (added 2026-08-15) ────────────────────────────────────
+// The three patterns above each require `createForumTopic` as a string
+// LITERAL adjacent to the seam. Measured against the shipped lint, all three
+// of these reach the Bot API and NONE were caught:
+//
+//   const M = 'createForumTopic'; apiCall(M, {...});
+//   apiCall('createForum' + 'Topic', {...});
+//   const M = 'createForumTopic'; ({ method: M, ... });
+//
+// None of that is evasive — lifting a repeated string into a named constant
+// is ordinary tidying. Someone could step around the notification-flood
+// ceiling while making code NICER, and this lint would say `clean`. So the
+// method name is RESOLVED before the existing rules are applied; the rules
+// themselves are unchanged, they simply see through one level of naming.
+//
+// Deliberately NOT a parser. Everything below is bounded, per-file, and
+// fails toward NOT flagging, because this lint blocks commits and a check
+// that flags correct code gets switched off — which would cost more than the
+// hole it closes.
+
+const METHOD = 'createForumTopic';
+
+/**
+ * Fold ADJACENT string literals only: `'a' + 'b'` -> `'ab'`.
+ * Never invents text and never folds across an identifier, so
+ * `'createForum' + suffix` stays unresolved rather than guessed at.
+ */
+export function foldAdjacentLiterals(text) {
+  let out = text;
+  for (let i = 0; i < 5; i++) {
+    const next = out.replace(
+      /(['"`])([^'"`\n]*)\1\s*\+\s*(['"`])([^'"`\n]*)\3/g,
+      (_m, q, a, _q2, b) => `${q}${a}${b}${q}`,
+    );
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+/**
+ * Identifiers bound to a string literal (after folding) in THIS file.
+ * An identifier bound more than once to DIFFERENT values is UNRESOLVABLE and
+ * is dropped, so an ambiguous name can never be substituted into a match.
+ */
+export function collectStringConsts(lines) {
+  const seen = new Map();
+  const conflicting = new Set();
+  const DECL = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;]+)/;
+  for (const line of lines) {
+    const m = DECL.exec(line);
+    if (!m) continue;
+    const name = m[1];
+    const folded = foldAdjacentLiterals(m[2].trim());
+    const lit = /^(['"`])([^'"`\n]*)\1\s*$/.exec(folded);
+    if (!lit) continue;
+    const value = lit[2];
+    if (seen.has(name) && seen.get(name) !== value) conflicting.add(name);
+    else seen.set(name, value);
+  }
+  for (const name of conflicting) seen.delete(name);
+  return seen;
+}
+
+/**
+ * Produce a view of one line with the method name resolved, for matching only.
+ * Substitution happens ONLY in the two seam positions the rules look at —
+ * never globally — so an unrelated identifier sharing a value is untouched.
+ */
+export function resolveLine(line, consts) {
+  let out = foldAdjacentLiterals(line);
+  out = out.replace(/(apiCall\(\s*)([A-Za-z_$][\w$]*)/g, (m, head, name) =>
+    consts.get(name) === METHOD ? `${head}'${METHOD}'` : m,
+  );
+  out = out.replace(/(method\s*:\s*)([A-Za-z_$][\w$]*)/g, (m, head, name) =>
+    consts.get(name) === METHOD ? `${head}'${METHOD}'` : m,
+  );
+  return out;
+}
+
 function listFiles() {
   const staged = process.argv.includes('--staged');
   if (staged) {
@@ -94,36 +174,54 @@ function listFiles() {
   return files;
 }
 
-let violations = 0;
-for (const rel of listFiles()) {
-  const normalized = rel.split(path.sep).join('/');
-  if (ALLOWLIST.has(normalized)) continue;
-  if (!EXTENSIONS.has(path.extname(normalized))) continue;
-  const full = path.join(ROOT, normalized);
-  let content;
-  try {
-    content = fs.readFileSync(full, 'utf-8');
-  } catch {
-    continue;
-  }
+export function scanFile(normalized, content) {
   const lines = content.split('\n');
+  const consts = collectStringConsts(lines);
+  const hits = [];
   for (let i = 0; i < lines.length; i++) {
+    const resolved = resolveLine(lines[i], consts);
     for (const pattern of PATTERNS) {
-      if (pattern.test(lines[i])) {
-        console.error(
-          `${normalized}:${i + 1} — raw createForumTopic invocation outside the budgeted funnel. ` +
-          `Route through TelegramAdapter.createForumTopic / findOrCreateForumTopic (declare an origin/label), ` +
-          `or add an allowlist entry here with a bounded-volume justification.`,
-        );
-        violations++;
-      }
+      if (pattern.test(resolved)) hits.push({ file: normalized, line: i + 1 });
     }
   }
+  return hits;
 }
 
-if (violations > 0) {
-  console.error(`\nlint-no-unfunneled-topic-creation: ${violations} violation(s). ` +
-    `See docs/STANDARDS-REGISTRY.md "Bounded Notification Surface".`);
-  process.exit(1);
+function runLint() {
+  let violations = 0;
+  for (const rel of listFiles()) {
+    const normalized = rel.split(path.sep).join('/');
+    if (ALLOWLIST.has(normalized)) continue;
+    if (!EXTENSIONS.has(path.extname(normalized))) continue;
+    const full = path.join(ROOT, normalized);
+    let content;
+    try {
+      content = fs.readFileSync(full, 'utf-8');
+    } catch {
+      continue;
+    }
+    for (const hit of scanFile(normalized, content)) {
+      console.error(
+        `${hit.file}:${hit.line} — raw createForumTopic invocation outside the budgeted funnel. ` +
+        `Route through TelegramAdapter.createForumTopic / findOrCreateForumTopic (declare an origin/label), ` +
+        `or add an allowlist entry here with a bounded-volume justification.`,
+      );
+      violations++;
+    }
+  }
+
+  if (violations > 0) {
+    console.error(`\nlint-no-unfunneled-topic-creation: ${violations} violation(s). ` +
+      `See docs/STANDARDS-REGISTRY.md "Bounded Notification Surface".`);
+    process.exit(1);
+  }
+  console.log('lint-no-unfunneled-topic-creation: clean');
 }
-console.log('lint-no-unfunneled-topic-creation: clean');
+
+// DIRECT-INVOCATION GUARD. Without this, importing this module to unit-test the
+// resolution helpers runs the whole repo scan — and calls process.exit(1) the
+// moment the repo has a real violation, killing the test runner. Three other
+// lints hit exactly that this window; the guard is the same fix.
+const invokedDirectly =
+  process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename);
+if (invokedDirectly) runLint();
