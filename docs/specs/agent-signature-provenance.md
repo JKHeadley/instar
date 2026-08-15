@@ -111,9 +111,12 @@ Two guards live outside the signature and must be supplied by the caller:
 Both have dedicated tests that demonstrate the attack *succeeding* when the guard
 is omitted, so the adversarial tests provably measure those guards.
 
-A durable, restart-surviving nonce store is **not yet built** — `MemorySeenNonceStore`
-is process-local. Until it exists, replay defence does not survive a restart.
-This is a named gap, not an implied capability.
+`FileSeenNonceStore` provides durable, restart-surviving replay defence. It
+**fails closed on damage**: a corrupt or unreadable store throws rather than
+starting empty, because an empty store accepts every replay — a silently
+disarmed guard is worse than a loud failure. A *missing* file is still a
+legitimate first run. `MemorySeenNonceStore` remains for tests and single-process
+callers and is explicitly not durable.
 
 ## Evidence
 
@@ -128,10 +131,44 @@ This is a named gap, not an implied capability.
   (SHA-256 match), and the recorded copy classifies `agent-verified`. All four
   attacks were then run against those real bytes and all four were rejected.
 
+## HTTP surface
+
+| Route | Purpose |
+|---|---|
+| `GET /provenance` | status: agent id, public fingerprint, whether replay defence is durable |
+| `POST /provenance/verify` | classify raw bytes; reports which guards actually ran |
+
+There is deliberately **no sign-on-demand route**. One would let anyone holding
+the bearer token mint messages attributed to this agent — precisely the forgery
+this mechanism exists to prevent. A test asserts those paths 404.
+
+`GET /provenance` degrades honestly: with no identity on disk it answers `200`
+with `enabled: false` rather than 404, so a probe can distinguish "off" from
+"absent"; and a nonce store that fails to open reports
+`replayDefence: "unavailable"` rather than running silently without it.
+
 ## Not yet done
 
-- Durable nonce store (replay defence currently process-local).
-- Inbound wiring: classification is not yet applied automatically to every
-  received message, nor is the verdict yet written to the durable record.
-- Integration and E2E tiers (required by the Testing Integrity Standard).
-- Public-key directory for peers; the live slice resolves only self.
+- **Inbound wiring** — classification is not yet applied automatically to every
+  received message, nor is the verdict written to the durable message record.
+  Today the mechanism is available (routes + library) but must be called; it is
+  not yet an automatic property of every inbound message. **This is the largest
+  remaining gap and the one that separates "available" from "in force".**
+- **Peer public-key directory** — the server resolves only itself, so any other
+  agent currently classifies `unknown-agent`. Correct-but-narrow: it fails
+  closed, never trusting an unrecognised signer.
+- **Speaker-label integration** — the `renderSpeakerLabel` seam lives in the
+  uncommitted authorship-provenance worktree at the operator's approval gate,
+  and was deliberately not disturbed.
+
+## Test evidence (three tiers, per the Testing Integrity Standard)
+
+| Tier | File | Count |
+|---|---|---|
+| Unit | `tests/unit/agent-signature-provenance.test.ts` | 24 |
+| Unit | `tests/unit/asp-nonce-store.test.ts` | 10 |
+| Integration | `tests/integration/provenance-routes.test.ts` | 14 |
+| E2E (alive) | `tests/e2e/agent-signature-provenance-alive.test.ts` | 8 |
+
+The E2E tier is the one that catches a registration block that never runs: unit
+and integration both pass even if `AgentServer` never mounts the routes.
