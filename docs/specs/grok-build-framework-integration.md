@@ -2464,13 +2464,41 @@ Every decision a builder would otherwise have to stop and ask about, decided her
    the funnel obligations itself (§4.1 fork-bomb floor). Rationale: the
    weekly pool is unobservable (§0.3). Revisit ONLY when a real
    remaining-allowance signal AND the §6 cumulative budget exist.
-2. **ACP face: NOT declared.** The agentic-session capability ships undeclared
-   until a hands-on probe characterizes session-id equality, resume semantics,
-   and permission default-deny (both external reviews, finding 10/16).
-   Interactive sessions run through the standard tmux path meanwhile.
-   *cheap-to-change-after:* adding the capability later is an additive
-   declaration + probed transport behind the same dark gate; nothing ships
-   dark-er by deferring it, and no consumer depends on its absence.
+2. **ACP face: NOT declared — but the stated REASON was wrong, and that is
+   corrected here (round-22).** This read: undeclared "until a hands-on probe
+   characterizes session-id equality, resume semantics, and permission
+   default-deny". **That probe has now been run, and it cost nothing**: a
+   JSON-RPC `initialize` handshake against `grok agent stdio` spends no model
+   tokens, because no prompt is sent. It should have been run before the
+   capability was written off, and the honest reading of the old wording is not
+   "this cannot be verified" but "I had not verified it."
+
+   **What `grok agent stdio` actually declares** (grok 1.0.4, probed
+   2026-08-15, `protocolVersion: 1` — it speaks ACP):
+   - `sessionCapabilities: { list, resume, close }` and `loadSession: true` —
+     so resume AND cancellation are supported, the two behaviours named above
+     as unknown.
+   - `x.ai/hooks.blockingEvents: [pre_tool_use, stop, subagent_stop]` with
+     `decisions: [deny, block]` — a real permission surface with a deny
+     decision on tool use, which is the default-deny question answered.
+   - `authMethods: [cached_token (~/.grok/auth.json), grok.com]` — the same
+     subscription session the one-shot lane uses; no key path appears.
+   - `promptCapabilities: { embeddedContext: true, image: false, audio: false }`
+     and `mcpCapabilities: { http: true, sse: true }`.
+   - `x.ai/capabilities.toolOverrides: { x_keyword_search: true,
+     x_semantic_search: true }` — the agent's OWN declaration of the
+     server-side X search round-19 found empirically. Better evidence than the
+     inference that found it.
+
+   **It stays undeclared anyway, for a reason that is now true.** The blocker
+   is no longer knowledge; it is that declaring an agentic capability means
+   BUILDING and testing that transport to the same bar as the one-shot lane
+   (confinement proven by side-effect probe, budget accounting, stall coverage
+   for the ACP stream), and that work is not in this increment. Declaring a
+   capability we have characterized but not built is precisely the overclaim
+   this spec exists to avoid.
+   *cheap-to-change-after:* adding it later is an additive declaration behind
+   the same dark gate; no consumer depends on its absence.
 3. **Prompt transport: file-only in the adapter.** `--prompt-file` on every
    adapter path; `-p` argv is forbidden there (host-readable +
    length-limited). The tmux headless SESSION lane retains `-p` with a
