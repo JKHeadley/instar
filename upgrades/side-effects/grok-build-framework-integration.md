@@ -145,6 +145,26 @@ Verified independently before accepting it: the grok binary contains
 `auto_compact`, `compact_boundary` and `compaction_checkpoints`. Row corrected,
 including the outside-observable signature the mentor could not have supplied.
 
+**3. Readiness messages announced the wrong framework — FIVE of them.** A
+genuinely grok-build session logged `[SessionManager] Claude ready in "…"`. The
+spawn line said grok-build; the readiness line said Claude. I nearly read that as
+the grok deployment having failed.
+
+It was never grok-specific: those strings have been wrong for codex-cli,
+gemini-cli and pi-cli for as long as those frameworks have existed. The readiness
+check waits on a PANE and never receives a framework, so the honest fix is to stop
+naming one rather than plumb one through — a message that cannot know a fact
+should not assert it.
+
+**The sweep mattered more than the fix.** My first pass changed the success-path
+message and left four others, including three `Claude not ready` ERROR messages —
+the ones an operator reads when something has already gone wrong, so the more
+consequential half. Same "fix the instance, miss the siblings" shape as the ten
+binary-resolution sites. The guard now asserts on both the success and failure
+forms, and carries a CONTROL that the one genuinely Claude-specific label (the
+subscription-path reroute, which really is a Claude pool) is NOT swept up —
+accuracy is the goal, not the absence of the word.
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**

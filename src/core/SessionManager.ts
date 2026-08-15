@@ -5126,7 +5126,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Tmux still alive but readiness probe couldn't confirm — best-effort inject.
     // (Preserves the original behavior for prompt-detection false negatives.)
     if (stillAlive) {
-      console.error(`[SessionManager] Claude not ready in session "${tmuxSession}" — message NOT injected. Session may need manual intervention.`);
+      console.error(`[SessionManager] Session not ready in "${tmuxSession}" — message NOT injected. Session may need manual intervention.`);
       console.log(`[SessionManager] Session "${tmuxSession}" still alive — attempting injection anyway`);
       // Same instar-composed bootstrap as the ready path above — first-party (F7).
       this.injectMessage(tmuxSession, initialMessage, { firstParty: { source: 'session-bootstrap' } });
@@ -5139,10 +5139,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // notice. The bridge already retries on the next inbound message.
     // (The pending-inject record is deliberately NOT cleared here — the boot
     // sweep reports the loss loudly instead of letting it vanish.)
-    console.error(`[SessionManager] Claude not ready in session "${tmuxSession}" — tmux died during fresh startup. Message NOT injected.`);
+    console.error(`[SessionManager] Session not ready in "${tmuxSession}" — tmux died during fresh startup. Message NOT injected.`);
     DegradationReporter.getInstance().report({
       feature: 'SessionManager.handleReadyAndInject',
-      primary: 'Wait for Claude ready, inject initial message',
+      primary: 'Wait for session ready, inject initial message',
       fallback: 'tmux died during startup with no --resume to fall back from',
       reason: 'fresh-spawn crashed during startup; readiness probe could not verify prompt',
       impact: 'Initial message dropped; bridge will respawn on next inbound message',
@@ -6134,14 +6134,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
         return false;
       }
       if (this.detectClaudePrompt(tmuxSession)) {
-        console.log(`[SessionManager] Claude ready in "${tmuxSession}" after ${Date.now() - start}ms`);
+        console.log(`[SessionManager] Session ready in "${tmuxSession}" after ${Date.now() - start}ms`);
         return true;
       }
       await new Promise(r => setTimeout(r, 500));
     }
     // Log what we see on timeout for debugging
     const finalOutput = this.captureOutput(tmuxSession, 30);
-    console.error(`[SessionManager] Claude not ready in "${tmuxSession}" after ${timeoutMs}ms. Output: ${(finalOutput || '').slice(-300)}`);
+    console.error(`[SessionManager] Session not ready in "${tmuxSession}" after ${timeoutMs}ms. Output: ${(finalOutput || '').slice(-300)}`);
     return false;
   }
 
@@ -6243,7 +6243,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         return false;
       }
       if (this.detectClaudePrompt(tmuxSession)) {
-        console.log(`[SessionManager] Claude ready in "${tmuxSession}" during extended wait (${Date.now() - extendedStart}ms after primary timeout)`);
+        console.log(`[SessionManager] Session ready in "${tmuxSession}" during extended wait (${Date.now() - extendedStart}ms after primary timeout)`);
         return true;
       }
       await new Promise(r => setTimeout(r, 1000));

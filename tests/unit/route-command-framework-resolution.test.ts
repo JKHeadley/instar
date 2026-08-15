@@ -94,6 +94,53 @@ describe('instar route — framework resolution never impersonates', () => {
   });
 });
 
+describe('session readiness is not announced as a framework it may not be', () => {
+  /**
+   * ROUND-22, observed live: a genuinely grok-build session logged
+   * "[SessionManager] Claude ready in …". The spawn line said grok-build; the
+   * readiness line said Claude. Anyone trusting the readiness line would have
+   * concluded the grok deployment had failed — I nearly did.
+   *
+   * It was never grok-specific: that string has been wrong for codex-cli,
+   * gemini-cli and pi-cli sessions for as long as they have existed. The
+   * readiness check does not receive a framework (it waits on a pane), so the
+   * honest fix is to stop naming one rather than to plumb one through — a
+   * message that cannot know a fact should not assert it.
+   *
+   * Same family as round-21's "a topic pinned to grok spawned grok and then
+   * reported claude": the session is right and the SENTENCE ABOUT it is wrong,
+   * which is the harder half to notice because everything works.
+   */
+  const sessionManagerSource = fs.readFileSync(
+    path.resolve(__dirname, '../../src/core/SessionManager.ts'),
+    'utf-8',
+  );
+
+  it('NO readiness message — success or failure — names a framework', () => {
+    // FIVE instances, not one. My first sweep fixed the success path and left
+    // the failure paths, which is the same "fix the instance, miss the siblings"
+    // shape this branch found at ten binary-resolution sites. The error messages
+    // matter MORE than the success one: they are what an operator reads when
+    // something has already gone wrong.
+    expect(sessionManagerSource).not.toMatch(/\[SessionManager\] Claude ready in/);
+    expect(sessionManagerSource).not.toMatch(/\[SessionManager\] Claude not ready/);
+  });
+
+  it('CONTROL: the genuinely Claude-specific step label is NOT swept up', () => {
+    // The subscription-path reroute really is a Claude interactive pool, so
+    // naming Claude there is correct. A sweep that renamed it too would be
+    // trading one wrong label for another — the point is accuracy, not the
+    // absence of the word.
+    expect(sessionManagerSource).toMatch(/rerouted interactive Claude ready/);
+  });
+
+  it('CONTROL: the readiness log still exists (the fix is a rename, not a deletion)', () => {
+    // Guards the lazy "fix": deleting the line would also satisfy the assertion
+    // above while removing a genuinely useful signal.
+    expect(sessionManagerSource).toMatch(/\[SessionManager\] Session ready in/);
+  });
+});
+
 describe('the alias table the route command resolves through', () => {
   it('accepts both spellings of every canonical framework', () => {
     // The behavioural half: whatever the source says, every framework the agent

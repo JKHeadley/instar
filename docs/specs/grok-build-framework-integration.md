@@ -445,7 +445,7 @@ framework is not "wired" on a passing test alone.
   the review gate asks about, answered correctly in the small and missed in the
   aggregate.
 
-  **NOT fixed here, and named rather than deferred silently:** the candidate fix
+  **NOT fixed here, and named rather than deferred silently** <!-- tracked: CMT-1317 -->**:** the candidate fix
   is that a grok-only agent should SKIP (or not install) headless-lane jobs while
   the lane is closed, with ONE notice, instead of scheduling 33 jobs that cannot
   run. That is a behavioural change to an agent's job set and belongs to the

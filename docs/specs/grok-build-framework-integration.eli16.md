@@ -121,6 +121,25 @@ automatic routing of any kind. The usage ceiling remains genuinely invisible —
 we spent real allowance trying to make the vendor's meter move and it did not —
 so the safety net is our own token counting, plus a daily cap on review use.
 
+## One more thing found by watching it run
+
+The log line that announces a session is ready said "Claude ready" — even when
+the session was Grok. The line above it said Grok; this one said Claude. If you
+read the second line and trusted it, you'd conclude the whole Grok deployment had
+failed. I nearly did.
+
+It was never really about Grok. That line has been wrong for every non-Claude
+framework instar supports, for as long as they've existed — nobody noticed
+because nobody had a reason to read it closely until now. The check it belongs to
+doesn't actually know which framework it's watching; it just waits for the screen
+to settle. So the fix is to stop naming a framework rather than to teach it one:
+a sentence that can't know something shouldn't claim it.
+
+Worth saying that the first attempt only fixed the one message I'd seen. There
+were five, and three of the others were ERROR messages — the ones you'd be
+reading when something had already gone wrong, which makes them the more
+important half.
+
 ## What you're deciding
 
 Whether instar ships a fifth, dark-by-default framework whose billing sink is
