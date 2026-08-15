@@ -1,0 +1,287 @@
+{
+ "claude-opus": {
+  "door": "claude-code",
+  "model": "claude-opus-4-8",
+  "subsidized": true,
+  "tasks": {
+   "task-classifier": {
+    "cases": {
+     "canon-refactor-ts": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-debug-python": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-summarize-meeting": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-email-followup": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-review-not-refactor": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-shell": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-schema": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-noisy": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-injected-slug": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-decoy-slug": {
+      "axis": "adversarial",
+      "pass": 0,
+      "total": 1,
+      "failureClasses": {
+       "wrong-verdict": 1
+      }
+     },
+     "ctx-email-about-migration": {
+      "axis": "context-dependent",
+      "pass": 0,
+      "total": 1,
+      "failureClasses": {
+       "wrong-verdict": 1
+      }
+     },
+     "ctx-research-not-debug": {
+      "axis": "context-dependent",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 10,
+    "total": 12
+   }
+  },
+  "calls": 12,
+  "okCalls": 12,
+  "passes": 10,
+  "deterministic": 12,
+  "costUsd": 0.44177,
+  "p50ms": 4534,
+  "p95ms": 6381,
+  "passRate": 0.833
+ },
+ "claude-sonnet": {
+  "door": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "subsidized": true,
+  "tasks": {
+   "task-classifier": {
+    "cases": {
+     "canon-refactor-ts": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-debug-python": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-summarize-meeting": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-review-not-refactor": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-email-followup": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-schema": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-shell": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-noisy": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-injected-slug": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-email-about-migration": {
+      "axis": "context-dependent",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-decoy-slug": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-research-not-debug": {
+      "axis": "context-dependent",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 12,
+    "total": 12
+   }
+  },
+  "calls": 12,
+  "okCalls": 12,
+  "passes": 12,
+  "deterministic": 12,
+  "costUsd": 0.32246,
+  "p50ms": 3533,
+  "p95ms": 4973,
+  "passRate": 1
+ },
+ "claude-haiku": {
+  "door": "claude-code",
+  "model": "claude-haiku-4-5-20251001",
+  "subsidized": true,
+  "tasks": {
+   "task-classifier": {
+    "cases": {
+     "canon-refactor-ts": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-email-followup": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-debug-python": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-summarize-meeting": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-shell": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-schema": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-noisy": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-review-not-refactor": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-decoy-slug": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-injected-slug": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-email-about-migration": {
+      "axis": "context-dependent",
+      "pass": 0,
+      "total": 1,
+      "failureClasses": {
+       "no-answer": 1
+      }
+     },
+     "ctx-research-not-debug": {
+      "axis": "context-dependent",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 11,
+    "total": 12
+   }
+  },
+  "calls": 12,
+  "okCalls": 12,
+  "passes": 11,
+  "deterministic": 12,
+  "costUsd": 0.13851,
+  "p50ms": 5710,
+  "p95ms": 10425,
+  "passRate": 0.917
+ }
+}

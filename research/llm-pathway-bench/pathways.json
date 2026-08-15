@@ -1,0 +1,289 @@
+{
+  "_comment": "LLM pathway registry for the benchmark harness. A pathway = framework x model x mode. Invocation templates are resolved in harness.mjs by `framework`+`mode`. Models mirror instar's configured pathways (2026-06-30). Each pathway can specify env overrides for account/auth isolation. Edit freely; harness captures stderr+exit so a wrong flag is diagnostic, not silent.",
+  "cwd": "/Users/justin/.instar/agents/echo",
+  "pathways": [
+    {
+      "id": "claude-opus",
+      "framework": "claude",
+      "bin": "/opt/homebrew/bin/claude",
+      "model": "claude-opus-4-8",
+      "mode": "print-json",
+      "tier": "large",
+      "env": {
+        "CLAUDE_CONFIG_DIR": "~/.claude-echo-4"
+      }
+    },
+    {
+      "id": "claude-sonnet",
+      "framework": "claude",
+      "bin": "/opt/homebrew/bin/claude",
+      "model": "claude-sonnet-4-6",
+      "mode": "print-json",
+      "tier": "mid",
+      "env": {
+        "CLAUDE_CONFIG_DIR": "~/.claude-echo-4"
+      }
+    },
+    {
+      "id": "claude-haiku",
+      "framework": "claude",
+      "bin": "/opt/homebrew/bin/claude",
+      "model": "claude-haiku-4-5-20251001",
+      "mode": "print-json",
+      "tier": "small",
+      "env": {
+        "CLAUDE_CONFIG_DIR": "~/.claude-echo-4"
+      }
+    },
+    {
+      "id": "codex-gpt55",
+      "framework": "codex",
+      "bin": "/Users/justin/.asdf/shims/codex",
+      "model": "gpt-5.5",
+      "mode": "exec-json",
+      "tier": "large",
+      "redundantGroup": "gpt-5.5"
+    },
+    {
+      "id": "codex-gpt54mini",
+      "framework": "codex",
+      "bin": "/Users/justin/.asdf/shims/codex",
+      "model": "gpt-5.4-mini",
+      "mode": "exec-json",
+      "tier": "small"
+    },
+    {
+      "id": "codex-gpt55-plain",
+      "framework": "codex",
+      "bin": "/Users/justin/.asdf/shims/codex",
+      "model": "gpt-5.5",
+      "mode": "exec-plain",
+      "tier": "large"
+    },
+    {
+      "id": "pi-gpt55",
+      "framework": "pi",
+      "bin": "/opt/homebrew/bin/pi",
+      "model": "openai-codex/gpt-5.5",
+      "mode": "json",
+      "tier": "large",
+      "redundantGroup": "gpt-5.5"
+    },
+    {
+      "id": "gemini-flash",
+      "framework": "gemini",
+      "bin": "/opt/homebrew/bin/gemini",
+      "model": "gemini-2.5-flash",
+      "mode": "json",
+      "tier": "small"
+    },
+    {
+      "id": "or-gpt-55",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "openai/gpt-5.5",
+      "mode": "funnel",
+      "tier": "large"
+    },
+    {
+      "id": "or-claude-opus-48",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "anthropic/claude-opus-4.8",
+      "mode": "funnel",
+      "tier": "large"
+    },
+    {
+      "id": "or-gemini-31-pro-preview",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "google/gemini-3.1-pro-preview",
+      "mode": "funnel",
+      "tier": "large"
+    },
+    {
+      "id": "or-glm-52",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "z-ai/glm-5.2",
+      "mode": "funnel",
+      "tier": "large"
+    },
+    {
+      "id": "or-qwen37-max",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "qwen/qwen3.7-max",
+      "mode": "funnel",
+      "tier": "large"
+    },
+    {
+      "id": "or-deepseek-v4-pro",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "deepseek/deepseek-v4-pro",
+      "mode": "funnel",
+      "tier": "large"
+    },
+    {
+      "id": "or-kimi-k26",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "moonshotai/kimi-k2.6",
+      "mode": "funnel",
+      "tier": "large"
+    },
+    {
+      "id": "or-claude-sonnet-5",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "anthropic/claude-sonnet-5",
+      "mode": "funnel",
+      "tier": "mid"
+    },
+    {
+      "id": "or-gpt-54",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "openai/gpt-5.4",
+      "mode": "funnel",
+      "tier": "mid"
+    },
+    {
+      "id": "or-gemini-35-flash",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "google/gemini-3.5-flash",
+      "mode": "funnel",
+      "tier": "mid"
+    },
+    {
+      "id": "or-glm-5-turbo",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "z-ai/glm-5-turbo",
+      "mode": "funnel",
+      "tier": "mid"
+    },
+    {
+      "id": "or-deepseek-v4-flash",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "deepseek/deepseek-v4-flash",
+      "mode": "funnel",
+      "tier": "mid"
+    },
+    {
+      "id": "or-qwen37-plus",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "qwen/qwen3.7-plus",
+      "mode": "funnel",
+      "tier": "mid"
+    },
+    {
+      "id": "or-claude-haiku-45",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "anthropic/claude-haiku-4.5",
+      "mode": "funnel",
+      "tier": "small"
+    },
+    {
+      "id": "or-gpt-54-mini",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "openai/gpt-5.4-mini",
+      "mode": "funnel",
+      "tier": "small"
+    },
+    {
+      "id": "or-gpt-54-nano",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "openai/gpt-5.4-nano",
+      "mode": "funnel",
+      "tier": "small"
+    },
+    {
+      "id": "or-gemini-31-flash-lite",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "google/gemini-3.1-flash-lite",
+      "mode": "funnel",
+      "tier": "small"
+    },
+    {
+      "id": "or-glm-47-flash",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "z-ai/glm-4.7-flash",
+      "mode": "funnel",
+      "tier": "small"
+    },
+    {
+      "id": "or-qwen36-flash",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "qwen/qwen3.6-flash",
+      "mode": "funnel",
+      "tier": "small"
+    },
+    {
+      "id": "or-llama-4-scout",
+      "framework": "funnel",
+      "key": "metered_openrouter_bench",
+      "model": "meta-llama/llama-4-scout",
+      "mode": "funnel",
+      "tier": "small"
+    },
+    {
+      "id": "groq-llama33-70b",
+      "framework": "funnel",
+      "key": "metered_groq_bench",
+      "model": "llama-3.3-70b-versatile",
+      "mode": "funnel",
+      "tier": "mid"
+    },
+    {
+      "id": "groq-llama4-scout",
+      "framework": "funnel",
+      "key": "metered_groq_bench",
+      "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+      "mode": "funnel",
+      "tier": "small"
+    },
+    {
+      "id": "groq-qwen3-32b",
+      "framework": "funnel",
+      "key": "metered_groq_bench",
+      "model": "qwen/qwen3-32b",
+      "mode": "funnel",
+      "tier": "small"
+    },
+    {
+      "id": "groq-qwen36-27b",
+      "framework": "funnel",
+      "key": "metered_groq_bench",
+      "model": "qwen/qwen3.6-27b",
+      "mode": "funnel",
+      "tier": "small"
+    },
+    {
+      "id": "groq-gpt-oss-120b",
+      "framework": "funnel",
+      "key": "metered_groq_bench",
+      "model": "openai/gpt-oss-120b",
+      "mode": "funnel",
+      "tier": "large"
+    },
+    {
+      "id": "groq-gpt-oss-20b",
+      "framework": "funnel",
+      "key": "metered_groq_bench",
+      "model": "openai/gpt-oss-20b",
+      "mode": "funnel",
+      "tier": "small"
+    }
+  ]
+}

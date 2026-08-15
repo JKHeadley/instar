@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-01T02-40-11-561Z",
+  "label": "tokfix-gem",
+  "prompt": "ping",
+  "N": 1,
+  "concurrency": 1,
+  "timeoutMs": 40000,
+  "summaries": [
+    {
+      "pathway": "gemini-flash",
+      "model": "gemini-2.5-flash",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 1,
+      "ok": 1,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 10857,
+        "p95": 10857,
+        "p99": 10857,
+        "min": 10857,
+        "max": 10857,
+        "mean": 10857
+      },
+      "tokens": {
+        "meanIn": 5960,
+        "meanOut": 2
+      },
+      "byError": {}
+    }
+  ]
+}

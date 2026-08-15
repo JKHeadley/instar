@@ -1,0 +1,1 @@
+or-gpt-55 or-claude-opus-48 or-gemini-31-pro-preview or-glm-52 or-qwen37-max or-deepseek-v4-pro or-kimi-k26 or-claude-sonnet-5 or-gpt-54 or-gemini-35-flash or-glm-5-turbo or-deepseek-v4-flash or-qwen37-plus or-claude-haiku-45 or-gpt-54-mini or-gpt-54-nano or-gemini-31-flash-lite or-glm-47-flash or-qwen36-flash or-llama-4-scout

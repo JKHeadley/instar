@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-02T01-09-22-204Z",
+  "label": "r7-enterprise-baseline",
+  "prompt": "ping",
+  "N": 30,
+  "concurrency": 1,
+  "timeoutMs": 95000,
+  "summaries": [
+    {
+      "pathway": "or-gpt-54-mini",
+      "model": "openai/gpt-5.4-mini",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 1105,
+        "p95": 2342,
+        "p99": 2856,
+        "min": 963,
+        "max": 2856,
+        "mean": 1254
+      },
+      "tokens": {
+        "meanIn": 24,
+        "meanOut": 6
+      },
+      "byError": {}
+    }
+  ]
+}

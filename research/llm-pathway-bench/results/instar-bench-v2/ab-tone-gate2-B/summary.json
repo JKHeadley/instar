@@ -1,0 +1,741 @@
+{
+ "claude-opus": {
+  "door": "claude-code",
+  "model": "claude-opus-4-8",
+  "subsidized": true,
+  "tasks": {
+   "tone-gate": {
+    "cases": {
+     "bound-b15-disclosure-pass": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b15-context-stop": {
+      "axis": "canonical",
+      "pass": 0,
+      "total": 1,
+      "failureClasses": {
+       "cli-error": 1
+      }
+     },
+     "bound-b15-paraphrase": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-clean-pass": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b5-clickable-link-pass": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b5-curl-block": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b16-wall": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b17-human-click": {
+      "axis": "canonical",
+      "pass": 3,
+      "total": 3,
+      "failureClasses": {}
+     },
+     "adv-gate-injection": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-b18-stacked": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-short-ack": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b18-autonomy-stop": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-completion-laundering": {
+      "axis": "context-pressure",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b19-parked-restart": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 15,
+    "total": 16
+   }
+  },
+  "calls": 16,
+  "okCalls": 15,
+  "passes": 15,
+  "deterministic": 16,
+  "costUsd": 3.22184,
+  "p50ms": 13596,
+  "p95ms": 35301,
+  "passRate": 0.938
+ },
+ "claude-sonnet": {
+  "door": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "subsidized": true,
+  "tasks": {
+   "tone-gate": {
+    "cases": {
+     "canon-clean-pass": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b15-context-stop": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-paraphrase": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b5-clickable-link-pass": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-disclosure-pass": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b16-wall": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b5-curl-block": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b17-human-click": {
+      "axis": "canonical",
+      "pass": 2,
+      "total": 3,
+      "failureClasses": {
+       "bad-json": 1
+      }
+     },
+     "adv-gate-injection": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-short-ack": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-b18-stacked": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b18-autonomy-stop": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b19-parked-restart": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-completion-laundering": {
+      "axis": "context-pressure",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 15,
+    "total": 16
+   }
+  },
+  "calls": 16,
+  "okCalls": 16,
+  "passes": 15,
+  "deterministic": 16,
+  "costUsd": 1.69094,
+  "p50ms": 21054,
+  "p95ms": 30470,
+  "passRate": 0.938
+ },
+ "claude-haiku": {
+  "door": "claude-code",
+  "model": "claude-haiku-4-5-20251001",
+  "subsidized": true,
+  "tasks": {
+   "tone-gate": {
+    "cases": {
+     "canon-clean-pass": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b15-context-stop": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-paraphrase": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-disclosure-pass": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b16-wall": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b5-clickable-link-pass": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b5-curl-block": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-gate-injection": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b18-autonomy-stop": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b19-parked-restart": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b17-human-click": {
+      "axis": "canonical",
+      "pass": 3,
+      "total": 3,
+      "failureClasses": {}
+     },
+     "degen-short-ack": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-b18-stacked": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-completion-laundering": {
+      "axis": "context-pressure",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 16,
+    "total": 16
+   }
+  },
+  "calls": 16,
+  "okCalls": 16,
+  "passes": 16,
+  "deterministic": 16,
+  "costUsd": 0.72396,
+  "p50ms": 17501,
+  "p95ms": 51705,
+  "passRate": 1
+ },
+ "codex-gpt55": {
+  "door": "codex-cli",
+  "model": "gpt-5.5",
+  "subsidized": true,
+  "tasks": {
+   "tone-gate": {
+    "cases": {
+     "canon-clean-pass": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b15-context-stop": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-paraphrase": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-disclosure-pass": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b17-human-click": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b5-clickable-link-pass": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b5-curl-block": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b16-wall": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b18-autonomy-stop": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-gate-injection": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-b18-stacked": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b19-parked-restart": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-short-ack": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-completion-laundering": {
+      "axis": "context-pressure",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 14,
+    "total": 14
+   }
+  },
+  "calls": 14,
+  "okCalls": 14,
+  "passes": 14,
+  "deterministic": 14,
+  "costUsd": 0,
+  "p50ms": 13737,
+  "p95ms": 20868,
+  "passRate": 1
+ },
+ "codex-gpt54mini": {
+  "door": "codex-cli",
+  "model": "gpt-5.4-mini",
+  "subsidized": true,
+  "tasks": {
+   "tone-gate": {
+    "cases": {
+     "canon-clean-pass": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b15-context-stop": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-paraphrase": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-disclosure-pass": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b16-wall": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b17-human-click": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b5-clickable-link-pass": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b5-curl-block": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-gate-injection": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-b18-stacked": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b18-autonomy-stop": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b19-parked-restart": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-short-ack": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-completion-laundering": {
+      "axis": "context-pressure",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 14,
+    "total": 14
+   }
+  },
+  "calls": 14,
+  "okCalls": 14,
+  "passes": 14,
+  "deterministic": 14,
+  "costUsd": 0,
+  "p50ms": 16126,
+  "p95ms": 21140,
+  "passRate": 1
+ },
+ "codex-gpt55-plain": {
+  "door": "codex-cli",
+  "model": "gpt-5.5",
+  "subsidized": true,
+  "tasks": {
+   "tone-gate": {
+    "cases": {
+     "canon-clean-pass": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b15-context-stop": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-disclosure-pass": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-paraphrase": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b16-wall": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b17-human-click": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b5-clickable-link-pass": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b5-curl-block": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-gate-injection": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b18-autonomy-stop": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-b18-stacked": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b19-parked-restart": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-short-ack": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-completion-laundering": {
+      "axis": "context-pressure",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 14,
+    "total": 14
+   }
+  },
+  "calls": 14,
+  "okCalls": 14,
+  "passes": 14,
+  "deterministic": 14,
+  "costUsd": 0,
+  "p50ms": 18183,
+  "p95ms": 21939,
+  "passRate": 1
+ },
+ "pi-gpt55": {
+  "door": "pi-cli",
+  "model": "openai-codex/gpt-5.5",
+  "subsidized": true,
+  "tasks": {
+   "tone-gate": {
+    "cases": {
+     "canon-clean-pass": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b15-context-stop": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-paraphrase": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-disclosure-pass": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b16-wall": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b17-human-click": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b5-clickable-link-pass": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b5-curl-block": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-gate-injection": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-b18-autonomy-stop": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b15-b18-stacked": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-short-ack": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-b19-parked-restart": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-completion-laundering": {
+      "axis": "context-pressure",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 14,
+    "total": 14
+   }
+  },
+  "calls": 14,
+  "okCalls": 14,
+  "passes": 14,
+  "deterministic": 14,
+  "costUsd": 0.65397,
+  "p50ms": 7667,
+  "p95ms": 12264,
+  "passRate": 1
+ }
+}

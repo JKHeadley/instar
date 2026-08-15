@@ -1,0 +1,1 @@
+{"ts":1782872220252,"pathway":"pi-gpt55","framework":"pi","model":"openai-codex/gpt-5.5","mode":"message","promptName":"ping","concurrency":1,"iter":0,"ok":true,"latencyMs":5487,"exitCode":0,"timedOut":false,"errorSig":null,"stdoutBytes":5,"stderrTail":"","tokensIn":null,"tokensOut":null,"tokensCached":null,"costUsd":null}

@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-02T01-14-57-459Z",
+  "label": "r7-enterprise-baseline",
+  "prompt": "ping",
+  "N": 30,
+  "concurrency": 1,
+  "timeoutMs": 95000,
+  "summaries": [
+    {
+      "pathway": "or-llama-4-scout",
+      "model": "meta-llama/llama-4-scout",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 734,
+        "p95": 1284,
+        "p99": 1698,
+        "min": 506,
+        "max": 1698,
+        "mean": 812
+      },
+      "tokens": {
+        "meanIn": 27,
+        "meanOut": 3
+      },
+      "byError": {}
+    }
+  ]
+}

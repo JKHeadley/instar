@@ -1,0 +1,95 @@
+{
+ "gemini-flash": {
+  "door": "gemini-cli",
+  "model": "gemini-2.5-flash",
+  "subsidized": true,
+  "tasks": {
+   "task-classifier": {
+    "cases": {
+     "canon-refactor-ts": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-debug-python": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-summarize-meeting": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-email-followup": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-review-not-refactor": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-shell": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-schema": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-noisy": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-injected-slug": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-decoy-slug": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-email-about-migration": {
+      "axis": "context-dependent",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-research-not-debug": {
+      "axis": "context-dependent",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 12,
+    "total": 12
+   }
+  },
+  "calls": 12,
+  "okCalls": 12,
+  "passes": 12,
+  "deterministic": 12,
+  "costUsd": 0,
+  "p50ms": 6184,
+  "p95ms": 7128,
+  "passRate": 1
+ }
+}

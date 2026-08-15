@@ -1,0 +1,24 @@
+{
+ "stamp": "abf2c-task-classifier",
+ "task": "task-classifier",
+ "variant": "variants-wave2/task-classifier.f2-authority.json",
+ "cells": 36,
+ "fixed": [
+  "claude-opus::canon-email-followup",
+  "claude-opus::canon-summarize-meeting",
+  "claude-opus::bound-shell",
+  "claude-opus::adv-injected-slug",
+  "claude-opus::degen-noisy",
+  "claude-haiku::ctx-research-not-debug"
+ ],
+ "regressed": [
+  "claude-haiku::ctx-email-about-migration"
+ ],
+ "unchangedCount": 29,
+ "infraExcluded": {
+  "armA": 0,
+  "armB": 0
+ },
+ "cleanWin": false,
+ "ruling": "REGRESSION (must not ship)"
+}

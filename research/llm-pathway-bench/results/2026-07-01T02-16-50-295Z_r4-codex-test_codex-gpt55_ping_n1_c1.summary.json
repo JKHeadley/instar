@@ -1,0 +1,35 @@
+{
+  "stamp": "2026-07-01T02-16-50-295Z",
+  "label": "r4-codex-test",
+  "prompt": "ping",
+  "N": 1,
+  "concurrency": 1,
+  "timeoutMs": 30000,
+  "summaries": [
+    {
+      "pathway": "codex-gpt55",
+      "model": "gpt-5.5",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 1,
+      "ok": 0,
+      "errors": 1,
+      "okRate": 0,
+      "latencyMs": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "min": null,
+        "max": null,
+        "mean": null
+      },
+      "tokens": {
+        "meanIn": null,
+        "meanOut": null
+      },
+      "byError": {
+        "timeout": 1
+      }
+    }
+  ]
+}

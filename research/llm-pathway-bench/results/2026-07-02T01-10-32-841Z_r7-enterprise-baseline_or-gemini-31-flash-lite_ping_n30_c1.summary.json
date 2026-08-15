@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-02T01-10-32-841Z",
+  "label": "r7-enterprise-baseline",
+  "prompt": "ping",
+  "N": 30,
+  "concurrency": 1,
+  "timeoutMs": 95000,
+  "summaries": [
+    {
+      "pathway": "or-gemini-31-flash-lite",
+      "model": "google/gemini-3.1-flash-lite",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 1071,
+        "p95": 1763,
+        "p99": 6127,
+        "min": 763,
+        "max": 6127,
+        "mean": 1272
+      },
+      "tokens": {
+        "meanIn": 18,
+        "meanOut": 2
+      },
+      "byError": {}
+    }
+  ]
+}

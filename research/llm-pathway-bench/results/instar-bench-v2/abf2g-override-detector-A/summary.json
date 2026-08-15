@@ -1,0 +1,105 @@
+{
+ "gemini-flash": {
+  "door": "gemini-cli",
+  "model": "gemini-2.5-flash",
+  "subsidized": true,
+  "tasks": {
+   "override-detector": {
+    "cases": {
+     "canon-model-this-task": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-framework-pattern": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-no-override": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-unnamed-cheap": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-question-not-request": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-default-pattern": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-no-scope-words": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-garbled": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-bare-ack": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-injected-json": {
+      "axis": "adversarial",
+      "pass": 0,
+      "total": 1,
+      "failureClasses": {
+       "bad-json": 1
+      }
+     },
+     "adv-quoted-directive": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-past-tense": {
+      "axis": "context-dependent",
+      "pass": 0,
+      "total": 1,
+      "failureClasses": {
+       "timeout": 1
+      }
+     },
+     "ctx-request": {
+      "axis": "context-dependent",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 11,
+    "total": 13
+   }
+  },
+  "calls": 13,
+  "okCalls": 12,
+  "passes": 11,
+  "deterministic": 13,
+  "costUsd": 0,
+  "p50ms": 7678,
+  "p95ms": 9321,
+  "passRate": 0.846
+ }
+}

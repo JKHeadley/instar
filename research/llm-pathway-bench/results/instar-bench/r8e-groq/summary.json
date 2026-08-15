@@ -1,0 +1,54 @@
+{
+ "groq-qwen3-32b": {
+  "model": "qwen/qwen3-32b",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 0.5,
+   "gate": 0.5,
+   "extractor": 0.4583333333333333
+  },
+  "overallDeterministic": 0.4861111111111111,
+  "p50ms": 1328,
+  "okRate": 1,
+  "costUsd": 0.01451
+ },
+ "groq-qwen36-27b": {
+  "model": "qwen/qwen3.6-27b",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 0.047619047619047616,
+   "gate": 0,
+   "extractor": 0.125
+  },
+  "overallDeterministic": 0.057539682539682536,
+  "p50ms": 1443,
+  "okRate": 1,
+  "costUsd": 0.02363
+ },
+ "groq-gpt-oss-120b": {
+  "model": "openai/gpt-oss-120b",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 0.9523809523809523,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 0.9841269841269842,
+  "p50ms": 786,
+  "okRate": 1,
+  "costUsd": 0.01038
+ },
+ "groq-gpt-oss-20b": {
+  "model": "openai/gpt-oss-20b",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 723,
+  "okRate": 1,
+  "costUsd": 0.00861
+ }
+}

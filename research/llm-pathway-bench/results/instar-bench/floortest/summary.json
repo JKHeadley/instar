@@ -1,0 +1,28 @@
+{
+ "or-gemini-35-flash": {
+  "model": "google/gemini-3.5-flash",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 2907,
+  "okRate": 1,
+  "costUsd": 0.07281
+ },
+ "or-glm-5-turbo": {
+  "model": "z-ai/glm-5-turbo",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 0.8571428571428571,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 0.9523809523809524,
+  "p50ms": 4431,
+  "okRate": 0.783,
+  "costUsd": 0.03111
+ }
+}

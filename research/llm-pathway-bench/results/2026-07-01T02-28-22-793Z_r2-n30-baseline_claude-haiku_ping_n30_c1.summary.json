@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-01T02-28-22-793Z",
+  "label": "r2-n30-baseline",
+  "prompt": "ping",
+  "N": 30,
+  "concurrency": 1,
+  "timeoutMs": 60000,
+  "summaries": [
+    {
+      "pathway": "claude-haiku",
+      "model": "claude-haiku-4-5-20251001",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 2812,
+        "p95": 4636,
+        "p99": 4997,
+        "min": 2342,
+        "max": 4997,
+        "mean": 3011
+      },
+      "tokens": {
+        "meanIn": 23635,
+        "meanOut": 62
+      },
+      "byError": {}
+    }
+  ]
+}

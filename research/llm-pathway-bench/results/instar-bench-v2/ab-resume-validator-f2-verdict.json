@@ -1,0 +1,17 @@
+{
+ "stamp": "ab-resume-validator-f2",
+ "task": "resume-validator",
+ "variant": "variants-wave2/resume-validator.f2-authority.json",
+ "cells": 30,
+ "fixed": [
+  "claude-sonnet::adv-topic-injection"
+ ],
+ "regressed": [],
+ "unchangedCount": 29,
+ "infraExcluded": {
+  "armA": 0,
+  "armB": 0
+ },
+ "cleanWin": true,
+ "ruling": "CLEAN-WIN (ships per ratified policy)"
+}

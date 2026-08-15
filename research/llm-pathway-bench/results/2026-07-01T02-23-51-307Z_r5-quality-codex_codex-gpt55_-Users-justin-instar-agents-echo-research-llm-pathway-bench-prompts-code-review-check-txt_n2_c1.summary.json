@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-01T02-23-51-307Z",
+  "label": "r5-quality-codex",
+  "prompt": "-Users-justin-instar-agents-echo-research-llm-pathway-bench-prompts-code-review-check-txt",
+  "N": 2,
+  "concurrency": 1,
+  "timeoutMs": 90000,
+  "summaries": [
+    {
+      "pathway": "codex-gpt55",
+      "model": "gpt-5.5",
+      "promptName": "-Users-justin-instar-agents-echo-research-llm-pathway-bench-prompts-code-review-check-txt",
+      "concurrency": 1,
+      "n": 2,
+      "ok": 2,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 36712,
+        "p95": 36712,
+        "p99": 36712,
+        "min": 23611,
+        "max": 36712,
+        "mean": 30162
+      },
+      "tokens": {
+        "meanIn": 11826,
+        "meanOut": 95
+      },
+      "byError": {}
+    }
+  ]
+}

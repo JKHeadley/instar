@@ -1,0 +1,235 @@
+{
+ "claude-opus": {
+  "door": "claude-code",
+  "model": "claude-opus-4-8",
+  "subsidized": true,
+  "tasks": {
+   "telegram-stall-confirm": {
+    "cases": {
+     "canon-running-working-suppress": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-just-past-threshold": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-stopped-alert": {
+      "axis": "canonical",
+      "pass": 0,
+      "total": 1,
+      "failureClasses": {
+       "wrong-verdict": 1
+      }
+     },
+     "canon-long-unanswered-user-ask": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-stopped-early": {
+      "axis": "boundary",
+      "pass": 0,
+      "total": 1,
+      "failureClasses": {
+       "wrong-verdict": 1
+      }
+     },
+     "degen-zero-minutes": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-running-suppress": {
+      "axis": "context-dependent",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-context-injection": {
+      "axis": "adversarial",
+      "pass": 0,
+      "total": 1,
+      "failureClasses": {
+       "wrong-verdict": 1
+      }
+     },
+     "ctx-stopped-alert": {
+      "axis": "context-dependent",
+      "pass": 0,
+      "total": 1,
+      "failureClasses": {
+       "wrong-verdict": 1
+      }
+     }
+    },
+    "passes": 5,
+    "total": 9
+   }
+  },
+  "calls": 9,
+  "okCalls": 9,
+  "passes": 5,
+  "deterministic": 9,
+  "costUsd": 0.33677,
+  "p50ms": 3819,
+  "p95ms": 5786,
+  "passRate": 0.556
+ },
+ "claude-sonnet": {
+  "door": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "subsidized": true,
+  "tasks": {
+   "telegram-stall-confirm": {
+    "cases": {
+     "canon-stopped-alert": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-running-working-suppress": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-long-unanswered-user-ask": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-stopped-early": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-just-past-threshold": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-zero-minutes": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-running-suppress": {
+      "axis": "context-dependent",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-stopped-alert": {
+      "axis": "context-dependent",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-context-injection": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 9,
+    "total": 9
+   }
+  },
+  "calls": 9,
+  "okCalls": 9,
+  "passes": 9,
+  "deterministic": 9,
+  "costUsd": 0.24411,
+  "p50ms": 3785,
+  "p95ms": 6160,
+  "passRate": 1
+ },
+ "claude-haiku": {
+  "door": "claude-code",
+  "model": "claude-haiku-4-5-20251001",
+  "subsidized": true,
+  "tasks": {
+   "telegram-stall-confirm": {
+    "cases": {
+     "canon-stopped-alert": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-running-working-suppress": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-just-past-threshold": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-stopped-early": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-zero-minutes": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-context-injection": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-long-unanswered-user-ask": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-running-suppress": {
+      "axis": "context-dependent",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-stopped-alert": {
+      "axis": "context-dependent",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 9,
+    "total": 9
+   }
+  },
+  "calls": 9,
+  "okCalls": 9,
+  "passes": 9,
+  "deterministic": 9,
+  "costUsd": 0.11217,
+  "p50ms": 5177,
+  "p95ms": 11755,
+  "passRate": 1
+ }
+}

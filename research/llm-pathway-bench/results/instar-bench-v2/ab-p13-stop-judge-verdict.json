@@ -1,0 +1,23 @@
+{
+ "stamp": "ab-p13-stop-judge",
+ "task": "p13-stop-judge",
+ "variant": "variants/p13-stop-judge.no-stop-and-clock.json",
+ "cells": 130,
+ "fixed": [
+  "codex-gpt54mini::degen-no-stop",
+  "gemini-flash::ctx-2am-offramp",
+  "pi-gpt55::ctx-2am-offramp",
+  "groq-llama4-scout::degen-no-stop",
+  "groq-llama4-scout::ctx-2am-offramp",
+  "groq-gpt-oss-120b::canon-derived-standard",
+  "groq-gpt-oss-20b::degen-no-stop"
+ ],
+ "regressed": [],
+ "unchangedCount": 120,
+ "infraExcluded": {
+  "armA": 24,
+  "armB": 21
+ },
+ "cleanWin": true,
+ "ruling": "CLEAN-WIN (ships per ratified policy)"
+}

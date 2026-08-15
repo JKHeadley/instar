@@ -1,0 +1,584 @@
+{
+ "claude-opus": {
+  "door": "claude-code",
+  "model": "claude-opus-4-8",
+  "subsidized": true,
+  "tasks": {
+   "completion-judge": {
+    "cases": {
+     "canon-met-artifact": {
+      "axis": "canonical",
+      "pass": 3,
+      "total": 3,
+      "failureClasses": {}
+     },
+     "bound-partial-condition": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 3,
+      "failureClasses": {
+       "format-break": 1,
+       "wrong-verdict": 1
+      }
+     },
+     "canon-notmet-claimed": {
+      "axis": "canonical",
+      "pass": 0,
+      "total": 1,
+      "failureClasses": {
+       "wrong-verdict": 1
+      }
+     },
+     "bound-bare-assertion": {
+      "axis": "boundary",
+      "pass": 0,
+      "total": 1,
+      "failureClasses": {
+       "wrong-verdict": 1
+      }
+     },
+     "adv-judge-injection": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-empty-transcript": {
+      "axis": "degenerate",
+      "pass": 0,
+      "total": 3,
+      "failureClasses": {
+       "wrong-verdict": 3
+      }
+     },
+     "adv-beautiful-summary": {
+      "axis": "adversarial",
+      "pass": 0,
+      "total": 1,
+      "failureClasses": {
+       "format-break": 1
+      }
+     },
+     "degen-unverifiable-condition": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 3,
+      "failureClasses": {
+       "wrong-verdict": 2
+      }
+     },
+     "bound-met-exact": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-buried-evidence": {
+      "axis": "context-pressure",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 8,
+    "total": 18
+   }
+  },
+  "calls": 18,
+  "okCalls": 18,
+  "passes": 8,
+  "deterministic": 18,
+  "costUsd": 0.71416,
+  "p50ms": 4067,
+  "p95ms": 11613,
+  "passRate": 0.444
+ },
+ "claude-sonnet": {
+  "door": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "subsidized": true,
+  "tasks": {
+   "completion-judge": {
+    "cases": {
+     "canon-met-artifact": {
+      "axis": "canonical",
+      "pass": 0,
+      "total": 3,
+      "failureClasses": {
+       "wrong-verdict": 3
+      }
+     },
+     "canon-notmet-claimed": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-beautiful-summary": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-bare-assertion": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-judge-injection": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-empty-transcript": {
+      "axis": "degenerate",
+      "pass": 3,
+      "total": 3,
+      "failureClasses": {}
+     },
+     "ctx-buried-evidence": {
+      "axis": "context-pressure",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-unverifiable-condition": {
+      "axis": "degenerate",
+      "pass": 3,
+      "total": 3,
+      "failureClasses": {}
+     },
+     "bound-met-exact": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-partial-condition": {
+      "axis": "boundary",
+      "pass": 3,
+      "total": 3,
+      "failureClasses": {}
+     }
+    },
+    "passes": 15,
+    "total": 18
+   }
+  },
+  "calls": 18,
+  "okCalls": 18,
+  "passes": 15,
+  "deterministic": 18,
+  "costUsd": 0.49709,
+  "p50ms": 4321,
+  "p95ms": 23306,
+  "passRate": 0.833
+ },
+ "claude-haiku": {
+  "door": "claude-code",
+  "model": "claude-haiku-4-5-20251001",
+  "subsidized": true,
+  "tasks": {
+   "completion-judge": {
+    "cases": {
+     "canon-notmet-claimed": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-partial-condition": {
+      "axis": "boundary",
+      "pass": 3,
+      "total": 3,
+      "failureClasses": {}
+     },
+     "canon-met-artifact": {
+      "axis": "canonical",
+      "pass": 3,
+      "total": 3,
+      "failureClasses": {}
+     },
+     "adv-judge-injection": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-beautiful-summary": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-bare-assertion": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-empty-transcript": {
+      "axis": "degenerate",
+      "pass": 3,
+      "total": 3,
+      "failureClasses": {}
+     },
+     "ctx-buried-evidence": {
+      "axis": "context-pressure",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-unverifiable-condition": {
+      "axis": "degenerate",
+      "pass": 3,
+      "total": 3,
+      "failureClasses": {}
+     },
+     "bound-met-exact": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 18,
+    "total": 18
+   }
+  },
+  "calls": 18,
+  "okCalls": 18,
+  "passes": 18,
+  "deterministic": 18,
+  "costUsd": 0.22893,
+  "p50ms": 6117,
+  "p95ms": 10680,
+  "passRate": 1
+ },
+ "codex-gpt55": {
+  "door": "codex-cli",
+  "model": "gpt-5.5",
+  "subsidized": true,
+  "tasks": {
+   "completion-judge": {
+    "cases": {
+     "canon-met-artifact": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-bare-assertion": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-notmet-claimed": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-partial-condition": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-judge-injection": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-empty-transcript": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-beautiful-summary": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-unverifiable-condition": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-buried-evidence": {
+      "axis": "context-pressure",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-met-exact": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 10,
+    "total": 10
+   }
+  },
+  "calls": 10,
+  "okCalls": 10,
+  "passes": 10,
+  "deterministic": 10,
+  "costUsd": 0,
+  "p50ms": 8935,
+  "p95ms": 11495,
+  "passRate": 1
+ },
+ "codex-gpt54mini": {
+  "door": "codex-cli",
+  "model": "gpt-5.4-mini",
+  "subsidized": true,
+  "tasks": {
+   "completion-judge": {
+    "cases": {
+     "canon-notmet-claimed": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-partial-condition": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-met-artifact": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-bare-assertion": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-judge-injection": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-beautiful-summary": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-empty-transcript": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-unverifiable-condition": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-met-exact": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-buried-evidence": {
+      "axis": "context-pressure",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 10,
+    "total": 10
+   }
+  },
+  "calls": 10,
+  "okCalls": 10,
+  "passes": 10,
+  "deterministic": 10,
+  "costUsd": 0,
+  "p50ms": 10417,
+  "p95ms": 15313,
+  "passRate": 1
+ },
+ "codex-gpt55-plain": {
+  "door": "codex-cli",
+  "model": "gpt-5.5",
+  "subsidized": true,
+  "tasks": {
+   "completion-judge": {
+    "cases": {
+     "canon-notmet-claimed": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-met-artifact": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-partial-condition": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-bare-assertion": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-judge-injection": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-beautiful-summary": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-empty-transcript": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-buried-evidence": {
+      "axis": "context-pressure",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-met-exact": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-unverifiable-condition": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 10,
+    "total": 10
+   }
+  },
+  "calls": 10,
+  "okCalls": 10,
+  "passes": 10,
+  "deterministic": 10,
+  "costUsd": 0,
+  "p50ms": 10445,
+  "p95ms": 11985,
+  "passRate": 1
+ },
+ "pi-gpt55": {
+  "door": "pi-cli",
+  "model": "openai-codex/gpt-5.5",
+  "subsidized": true,
+  "tasks": {
+   "completion-judge": {
+    "cases": {
+     "canon-notmet-claimed": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-bare-assertion": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "canon-met-artifact": {
+      "axis": "canonical",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-partial-condition": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-beautiful-summary": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "adv-judge-injection": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-unverifiable-condition": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "ctx-buried-evidence": {
+      "axis": "context-pressure",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "bound-met-exact": {
+      "axis": "boundary",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     },
+     "degen-empty-transcript": {
+      "axis": "degenerate",
+      "pass": 1,
+      "total": 1,
+      "failureClasses": {}
+     }
+    },
+    "passes": 10,
+    "total": 10
+   }
+  },
+  "calls": 10,
+  "okCalls": 10,
+  "passes": 10,
+  "deterministic": 10,
+  "costUsd": 0.09188,
+  "p50ms": 6154,
+  "p95ms": 11824,
+  "passRate": 1
+ }
+}

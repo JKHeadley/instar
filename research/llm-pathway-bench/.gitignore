@@ -1,0 +1,4 @@
+
+# transient per-task prompt scratch files written by the bench runner
+results/**/.prompt-*.txt
+instar-bench/../results/**/.prompt-*.txt

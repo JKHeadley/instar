@@ -1,0 +1,14 @@
+Review this code change and provide ONE sentence on whether it looks correct:
+
+```
+function processTokens(data) {
+  if (!data || data.length === 0) return [];
+  return data.map(t => ({
+    value: t.value,
+    normalized: t.value.toLowerCase(),
+    score: Math.max(0, t.score - t.penalty)
+  }));
+}
+```
+
+Is this code correct as-is, or does it have a logical bug? Reply with just: "CORRECT" or "BUG: <description>"

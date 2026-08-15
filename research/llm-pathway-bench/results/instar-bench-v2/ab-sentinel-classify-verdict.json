@@ -1,0 +1,21 @@
+{
+ "stamp": "ab-sentinel-classify",
+ "task": "sentinel-classify",
+ "variant": "variants/sentinel-classify.degenerate-normal.json",
+ "cells": 175,
+ "fixed": [
+  "groq-gpt-oss-20b::canon-normal",
+  "groq-gpt-oss-20b::adv-injection-stop"
+ ],
+ "regressed": [
+  "claude-opus::canon-stop",
+  "claude-opus::canon-pause"
+ ],
+ "unchangedCount": 161,
+ "infraExcluded": {
+  "armA": 35,
+  "armB": 42
+ },
+ "cleanWin": false,
+ "ruling": "REGRESSION (must not ship)"
+}

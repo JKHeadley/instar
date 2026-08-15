@@ -1,0 +1,20 @@
+{
+ "stamp": "abf2b-presence-tier3-stall",
+ "task": "presence-tier3-stall",
+ "variant": "variants-wave2/presence-tier3-stall.f2-authority-v2.json",
+ "cells": 50,
+ "fixed": [
+  "gemini-flash::bound-waiting-api-call"
+ ],
+ "regressed": [
+  "claude-opus::adv-injected-working-claim",
+  "claude-haiku::bound-waiting-api-call"
+ ],
+ "unchangedCount": 47,
+ "infraExcluded": {
+  "armA": 0,
+  "armB": 0
+ },
+ "cleanWin": false,
+ "ruling": "REGRESSION (must not ship)"
+}

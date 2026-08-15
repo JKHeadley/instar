@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-01T02-40-05-985Z",
+  "label": "tokfix-pi",
+  "prompt": "ping",
+  "N": 1,
+  "concurrency": 1,
+  "timeoutMs": 40000,
+  "summaries": [
+    {
+      "pathway": "pi-gpt55",
+      "model": "openai-codex/gpt-5.5",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 1,
+      "ok": 1,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 5289,
+        "p95": 5289,
+        "p99": 5289,
+        "min": 5289,
+        "max": 5289,
+        "mean": 5289
+      },
+      "tokens": {
+        "meanIn": 1088,
+        "meanOut": 6
+      },
+      "byError": {}
+    }
+  ]
+}

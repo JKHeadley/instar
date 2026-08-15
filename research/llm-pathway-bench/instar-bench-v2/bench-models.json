@@ -1,0 +1,2135 @@
+{
+ "seededFrom": "pathways.json",
+ "doors": {
+  "claude": {
+   "models": [
+    {
+     "id": "claude-opus-4-8",
+     "tier": "large",
+     "routeId": "claude-opus",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "claude-sonnet-4-6",
+     "tier": "mid",
+     "routeId": "claude-sonnet",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "claude-haiku-4-5-20251001",
+     "tier": "small",
+     "routeId": "claude-haiku",
+     "benchStatus": "benched-v1"
+    }
+   ]
+  },
+  "codex": {
+   "models": [
+    {
+     "id": "gpt-5.5",
+     "tier": "large",
+     "routeId": "codex-gpt55",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "gpt-5.4-mini",
+     "tier": "small",
+     "routeId": "codex-gpt54mini",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "gpt-5.5",
+     "tier": "large",
+     "routeId": "codex-gpt55-plain",
+     "benchStatus": "benched-v1"
+    }
+   ]
+  },
+  "pi": {
+   "models": [
+    {
+     "id": "openai-codex/gpt-5.5",
+     "tier": "large",
+     "routeId": "pi-gpt55",
+     "benchStatus": "benched-v1"
+    }
+   ]
+  },
+  "gemini": {
+   "models": [
+    {
+     "id": "gemini-2.5-flash",
+     "tier": "small",
+     "routeId": "gemini-flash",
+     "benchStatus": "benched-v1"
+    }
+   ]
+  },
+  "metered:metered_openrouter_bench": {
+   "models": [
+    {
+     "id": "openai/gpt-5.5",
+     "tier": "large",
+     "routeId": "or-gpt-55",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "anthropic/claude-opus-4.8",
+     "tier": "large",
+     "routeId": "or-claude-opus-48",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "google/gemini-3.1-pro-preview",
+     "tier": "large",
+     "routeId": "or-gemini-31-pro-preview",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "z-ai/glm-5.2",
+     "tier": "large",
+     "routeId": "or-glm-52",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "qwen/qwen3.7-max",
+     "tier": "large",
+     "routeId": "or-qwen37-max",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "deepseek/deepseek-v4-pro",
+     "tier": "large",
+     "routeId": "or-deepseek-v4-pro",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "moonshotai/kimi-k2.6",
+     "tier": "large",
+     "routeId": "or-kimi-k26",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "anthropic/claude-sonnet-5",
+     "tier": "mid",
+     "routeId": "or-claude-sonnet-5",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "openai/gpt-5.4",
+     "tier": "mid",
+     "routeId": "or-gpt-54",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "google/gemini-3.5-flash",
+     "tier": "mid",
+     "routeId": "or-gemini-35-flash",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "z-ai/glm-5-turbo",
+     "tier": "mid",
+     "routeId": "or-glm-5-turbo",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "deepseek/deepseek-v4-flash",
+     "tier": "mid",
+     "routeId": "or-deepseek-v4-flash",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "qwen/qwen3.7-plus",
+     "tier": "mid",
+     "routeId": "or-qwen37-plus",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "anthropic/claude-haiku-4.5",
+     "tier": "small",
+     "routeId": "or-claude-haiku-45",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "openai/gpt-5.4-mini",
+     "tier": "small",
+     "routeId": "or-gpt-54-mini",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "openai/gpt-5.4-nano",
+     "tier": "small",
+     "routeId": "or-gpt-54-nano",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "google/gemini-3.1-flash-lite",
+     "tier": "small",
+     "routeId": "or-gemini-31-flash-lite",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "z-ai/glm-4.7-flash",
+     "tier": "small",
+     "routeId": "or-glm-47-flash",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "qwen/qwen3.6-flash",
+     "tier": "small",
+     "routeId": "or-qwen36-flash",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "meta-llama/llama-4-scout",
+     "tier": "small",
+     "routeId": "or-llama-4-scout",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "google/gemini-3.1-flash-lite-image",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000025",
+      "completion": "0.0000015"
+     },
+     "contextLength": 65536
+    },
+    {
+     "id": "google/gemini-3.1-flash-image",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000005",
+      "completion": "0.000003"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "google/gemini-3-pro-image",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000002",
+      "completion": "0.000012"
+     },
+     "contextLength": 65536
+    },
+    {
+     "id": "moonshotai/kimi-k2.7-code",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000074",
+      "completion": "0.0000035"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "anthropic/claude-fable-5",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00001",
+      "completion": "0.00005"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "anthropic/claude-opus-4.8-fast",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00001",
+      "completion": "0.00005"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "x-ai/grok-build-0.1",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000001",
+      "completion": "0.000002"
+     },
+     "contextLength": 256000
+    },
+    {
+     "id": "anthropic/claude-opus-4.7-fast",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00003",
+      "completion": "0.00015"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "openai/gpt-chat-latest",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000005",
+      "completion": "0.00003"
+     },
+     "contextLength": 400000
+    },
+    {
+     "id": "x-ai/grok-4.3",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000125",
+      "completion": "0.0000025"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "mistralai/mistral-medium-3-5",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000015",
+      "completion": "0.0000075"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "qwen/qwen3.5-plus-20260420",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000003",
+      "completion": "0.0000018"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "qwen/qwen3.6-35b-a3b",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000014",
+      "completion": "0.000001"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "qwen/qwen3.6-max-preview",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000104",
+      "completion": "0.00000624"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "qwen/qwen3.6-27b",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000285",
+      "completion": "0.0000024"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "openai/gpt-5.5-pro",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00003",
+      "completion": "0.00018"
+     },
+     "contextLength": 1050000
+    },
+    {
+     "id": "openai/gpt-5.4-image-2",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000008",
+      "completion": "0.000015"
+     },
+     "contextLength": 272000
+    },
+    {
+     "id": "anthropic/claude-opus-4.7",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000005",
+      "completion": "0.000025"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "z-ai/glm-5.1",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000975",
+      "completion": "0.0000043"
+     },
+     "contextLength": 202752
+    },
+    {
+     "id": "qwen/qwen3.6-plus",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000325",
+      "completion": "0.00000195"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "z-ai/glm-5v-turbo",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000012",
+      "completion": "0.000004"
+     },
+     "contextLength": 202752
+    },
+    {
+     "id": "x-ai/grok-4.20-multi-agent",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000125",
+      "completion": "0.0000025"
+     },
+     "contextLength": 2000000
+    },
+    {
+     "id": "x-ai/grok-4.20",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000125",
+      "completion": "0.0000025"
+     },
+     "contextLength": 2000000
+    },
+    {
+     "id": "mistralai/mistral-small-2603",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000015",
+      "completion": "0.0000006"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "qwen/qwen3.5-9b",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000001",
+      "completion": "0.00000015"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "openai/gpt-5.4-pro",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00003",
+      "completion": "0.00018"
+     },
+     "contextLength": 1050000
+    },
+    {
+     "id": "openai/gpt-5.3-chat",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000175",
+      "completion": "0.000014"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "google/gemini-3.1-flash-lite-preview",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000025",
+      "completion": "0.0000015"
+     },
+     "contextLength": 1048576
+    },
+    {
+     "id": "google/gemini-3.1-flash-image-preview",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000005",
+      "completion": "0.000003"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "qwen/qwen3.5-35b-a3b",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000014",
+      "completion": "0.000001"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "qwen/qwen3.5-27b",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000195",
+      "completion": "0.00000156"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "qwen/qwen3.5-122b-a10b",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000026",
+      "completion": "0.00000208"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "qwen/qwen3.5-flash-02-23",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000065",
+      "completion": "0.00000026"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "google/gemini-3.1-pro-preview-customtools",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000002",
+      "completion": "0.000012"
+     },
+     "contextLength": 1048756
+    },
+    {
+     "id": "openai/gpt-5.3-codex",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000175",
+      "completion": "0.000014"
+     },
+     "contextLength": 400000
+    },
+    {
+     "id": "anthropic/claude-sonnet-4.6",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000003",
+      "completion": "0.000015"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "qwen/qwen3.5-plus-02-15",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000026",
+      "completion": "0.00000156"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "qwen/qwen3.5-397b-a17b",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000385",
+      "completion": "0.00000245"
+     },
+     "contextLength": 256000
+    },
+    {
+     "id": "z-ai/glm-5",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000006",
+      "completion": "0.00000192"
+     },
+     "contextLength": 202752
+    },
+    {
+     "id": "qwen/qwen3-max-thinking",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000078",
+      "completion": "0.0000039"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "anthropic/claude-opus-4.6",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000005",
+      "completion": "0.000025"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "qwen/qwen3-coder-next",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000011",
+      "completion": "0.0000008"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "moonshotai/kimi-k2.5",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000375",
+      "completion": "0.000002025"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "openai/gpt-audio",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000025",
+      "completion": "0.00001"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "openai/gpt-audio-mini",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000006",
+      "completion": "0.0000024"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "openai/gpt-5.2-codex",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000175",
+      "completion": "0.000014"
+     },
+     "contextLength": 400000
+    },
+    {
+     "id": "z-ai/glm-4.7",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000004",
+      "completion": "0.00000175"
+     },
+     "contextLength": 202752
+    },
+    {
+     "id": "google/gemini-3-flash-preview",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000005",
+      "completion": "0.000003"
+     },
+     "contextLength": 1048576
+    },
+    {
+     "id": "openai/gpt-5.2-chat",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000175",
+      "completion": "0.000014"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "openai/gpt-5.2-pro",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000021",
+      "completion": "0.000168"
+     },
+     "contextLength": 400000
+    },
+    {
+     "id": "openai/gpt-5.2",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000175",
+      "completion": "0.000014"
+     },
+     "contextLength": 400000
+    },
+    {
+     "id": "mistralai/devstral-2512",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000004",
+      "completion": "0.000002"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "z-ai/glm-4.6v",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000003",
+      "completion": "0.0000009"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "openai/gpt-5.1-codex-max",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000125",
+      "completion": "0.00001"
+     },
+     "contextLength": 400000
+    },
+    {
+     "id": "mistralai/ministral-14b-2512",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000002",
+      "completion": "0.0000002"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "mistralai/ministral-8b-2512",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000015",
+      "completion": "0.00000015"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "mistralai/ministral-3b-2512",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000001",
+      "completion": "0.0000001"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "mistralai/mistral-large-2512",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000005",
+      "completion": "0.0000015"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "deepseek/deepseek-v3.2",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000002288",
+      "completion": "0.0000003432"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "anthropic/claude-opus-4.5",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000005",
+      "completion": "0.000025"
+     },
+     "contextLength": 200000
+    },
+    {
+     "id": "google/gemini-3-pro-image-preview",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000002",
+      "completion": "0.000012"
+     },
+     "contextLength": 65536
+    },
+    {
+     "id": "openai/gpt-5.1",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000125",
+      "completion": "0.00001"
+     },
+     "contextLength": 400000
+    },
+    {
+     "id": "openai/gpt-5.1-chat",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000125",
+      "completion": "0.00001"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "openai/gpt-5.1-codex",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000125",
+      "completion": "0.00001"
+     },
+     "contextLength": 400000
+    },
+    {
+     "id": "openai/gpt-5.1-codex-mini",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000025",
+      "completion": "0.000002"
+     },
+     "contextLength": 400000
+    },
+    {
+     "id": "moonshotai/kimi-k2-thinking",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000006",
+      "completion": "0.0000025"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "mistralai/voxtral-small-24b-2507",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000001",
+      "completion": "0.0000003"
+     },
+     "contextLength": 32000
+    },
+    {
+     "id": "qwen/qwen3-vl-32b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000104",
+      "completion": "0.000000416"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "openai/gpt-5-image-mini",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000025",
+      "completion": "0.000002"
+     },
+     "contextLength": 400000
+    },
+    {
+     "id": "qwen/qwen3-vl-8b-thinking",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000117",
+      "completion": "0.000001365"
+     },
+     "contextLength": 256000
+    },
+    {
+     "id": "qwen/qwen3-vl-8b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000008",
+      "completion": "0.0000005"
+     },
+     "contextLength": 256000
+    },
+    {
+     "id": "openai/gpt-5-image",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00001",
+      "completion": "0.00001"
+     },
+     "contextLength": 400000
+    },
+    {
+     "id": "openai/o3-deep-research",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00001",
+      "completion": "0.00004"
+     },
+     "contextLength": 200000
+    },
+    {
+     "id": "openai/o4-mini-deep-research",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000002",
+      "completion": "0.000008"
+     },
+     "contextLength": 200000
+    },
+    {
+     "id": "google/gemini-2.5-flash-image",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000003",
+      "completion": "0.0000025"
+     },
+     "contextLength": 32768
+    },
+    {
+     "id": "qwen/qwen3-vl-30b-a3b-thinking",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000013",
+      "completion": "0.00000156"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "qwen/qwen3-vl-30b-a3b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000013",
+      "completion": "0.00000052"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "openai/gpt-5-pro",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000015",
+      "completion": "0.00012"
+     },
+     "contextLength": 400000
+    },
+    {
+     "id": "z-ai/glm-4.6",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000043",
+      "completion": "0.00000174"
+     },
+     "contextLength": 202752
+    },
+    {
+     "id": "anthropic/claude-sonnet-4.5",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000003",
+      "completion": "0.000015"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "deepseek/deepseek-v3.2-exp",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000027",
+      "completion": "0.00000041"
+     },
+     "contextLength": 163840
+    },
+    {
+     "id": "google/gemini-2.5-flash-lite-preview-09-2025",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000001",
+      "completion": "0.0000004"
+     },
+     "contextLength": 1048576
+    },
+    {
+     "id": "qwen/qwen3-vl-235b-a22b-thinking",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000026",
+      "completion": "0.0000026"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "qwen/qwen3-vl-235b-a22b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000002",
+      "completion": "0.00000088"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "qwen/qwen3-max",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000078",
+      "completion": "0.0000039"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "qwen/qwen3-coder-plus",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000065",
+      "completion": "0.00000325"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "openai/gpt-5-codex",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000125",
+      "completion": "0.00001"
+     },
+     "contextLength": 400000
+    },
+    {
+     "id": "deepseek/deepseek-v3.1-terminus",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000027",
+      "completion": "0.00000095"
+     },
+     "contextLength": 163840
+    },
+    {
+     "id": "qwen/qwen3-coder-flash",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000195",
+      "completion": "0.000000975"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "qwen/qwen3-next-80b-a3b-thinking",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000000975",
+      "completion": "0.00000078"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "qwen/qwen3-next-80b-a3b-instruct:free",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0",
+      "completion": "0"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "qwen/qwen3-next-80b-a3b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000009",
+      "completion": "0.0000011"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "qwen/qwen-plus-2025-07-28:thinking",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000026",
+      "completion": "0.00000078"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "qwen/qwen-plus-2025-07-28",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000026",
+      "completion": "0.00000078"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "moonshotai/kimi-k2-0905",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000006",
+      "completion": "0.0000025"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "qwen/qwen3-30b-a3b-thinking-2507",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000013",
+      "completion": "0.00000156"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "deepseek/deepseek-chat-v3.1",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000021",
+      "completion": "0.00000079"
+     },
+     "contextLength": 163840
+    },
+    {
+     "id": "mistralai/mistral-medium-3.1",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000004",
+      "completion": "0.000002"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "z-ai/glm-4.5v",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000006",
+      "completion": "0.0000018"
+     },
+     "contextLength": 65536
+    },
+    {
+     "id": "openai/gpt-5-chat",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000125",
+      "completion": "0.00001"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "openai/gpt-5",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000125",
+      "completion": "0.00001"
+     },
+     "contextLength": 400000
+    },
+    {
+     "id": "openai/gpt-5-mini",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000025",
+      "completion": "0.000002"
+     },
+     "contextLength": 400000
+    },
+    {
+     "id": "openai/gpt-5-nano",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000005",
+      "completion": "0.0000004"
+     },
+     "contextLength": 400000
+    },
+    {
+     "id": "openai/gpt-oss-120b:free",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0",
+      "completion": "0"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "openai/gpt-oss-120b",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000003",
+      "completion": "0.00000015"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "openai/gpt-oss-20b:free",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0",
+      "completion": "0"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "openai/gpt-oss-20b",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000029",
+      "completion": "0.00000014"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "anthropic/claude-opus-4.1",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000015",
+      "completion": "0.000075"
+     },
+     "contextLength": 200000
+    },
+    {
+     "id": "mistralai/codestral-2508",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000003",
+      "completion": "0.0000009"
+     },
+     "contextLength": 256000
+    },
+    {
+     "id": "qwen/qwen3-coder-30b-a3b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000007",
+      "completion": "0.00000027"
+     },
+     "contextLength": 160000
+    },
+    {
+     "id": "qwen/qwen3-30b-a3b-instruct-2507",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000004815",
+      "completion": "0.00000019305"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "z-ai/glm-4.5",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000006",
+      "completion": "0.0000022"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "z-ai/glm-4.5-air",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000013",
+      "completion": "0.00000085"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "qwen/qwen3-235b-a22b-thinking-2507",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000001495",
+      "completion": "0.000001495"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "qwen/qwen3-coder:free",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0",
+      "completion": "0"
+     },
+     "contextLength": 1048576
+    },
+    {
+     "id": "qwen/qwen3-coder",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000022",
+      "completion": "0.0000018"
+     },
+     "contextLength": 1048576
+    },
+    {
+     "id": "google/gemini-2.5-flash-lite",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000001",
+      "completion": "0.0000004"
+     },
+     "contextLength": 1048576
+    },
+    {
+     "id": "qwen/qwen3-235b-a22b-2507",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000009",
+      "completion": "0.0000001"
+     },
+     "contextLength": 262144
+    },
+    {
+     "id": "moonshotai/kimi-k2",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000057",
+      "completion": "0.0000023"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "mistralai/mistral-small-3.2-24b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000075",
+      "completion": "0.0000002"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "google/gemini-2.5-flash",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000003",
+      "completion": "0.0000025"
+     },
+     "contextLength": 1048576
+    },
+    {
+     "id": "google/gemini-2.5-pro",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000125",
+      "completion": "0.00001"
+     },
+     "contextLength": 1048576
+    },
+    {
+     "id": "openai/o3-pro",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00002",
+      "completion": "0.00008"
+     },
+     "contextLength": 200000
+    },
+    {
+     "id": "google/gemini-2.5-pro-preview",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000125",
+      "completion": "0.00001"
+     },
+     "contextLength": 1048576
+    },
+    {
+     "id": "deepseek/deepseek-r1-0528",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000005",
+      "completion": "0.00000215"
+     },
+     "contextLength": 163840
+    },
+    {
+     "id": "anthropic/claude-opus-4",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000015",
+      "completion": "0.000075"
+     },
+     "contextLength": 200000
+    },
+    {
+     "id": "anthropic/claude-sonnet-4",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000003",
+      "completion": "0.000015"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "mistralai/mistral-medium-3",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000004",
+      "completion": "0.000002"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "google/gemini-2.5-pro-preview-05-06",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000125",
+      "completion": "0.00001"
+     },
+     "contextLength": 1048576
+    },
+    {
+     "id": "qwen/qwen3-30b-a3b",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000012",
+      "completion": "0.0000005"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "qwen/qwen3-8b",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000117",
+      "completion": "0.000000455"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "qwen/qwen3-14b",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000001",
+      "completion": "0.00000024"
+     },
+     "contextLength": 131702
+    },
+    {
+     "id": "qwen/qwen3-32b",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000008",
+      "completion": "0.00000028"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "qwen/qwen3-235b-a22b",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000455",
+      "completion": "0.00000182"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "openai/o4-mini-high",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000011",
+      "completion": "0.0000044"
+     },
+     "contextLength": 200000
+    },
+    {
+     "id": "openai/o3",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000002",
+      "completion": "0.000008"
+     },
+     "contextLength": 200000
+    },
+    {
+     "id": "openai/o4-mini",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000011",
+      "completion": "0.0000044"
+     },
+     "contextLength": 200000
+    },
+    {
+     "id": "openai/gpt-4.1",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000002",
+      "completion": "0.000008"
+     },
+     "contextLength": 1047576
+    },
+    {
+     "id": "openai/gpt-4.1-mini",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000004",
+      "completion": "0.0000016"
+     },
+     "contextLength": 1047576
+    },
+    {
+     "id": "openai/gpt-4.1-nano",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000001",
+      "completion": "0.0000004"
+     },
+     "contextLength": 1047576
+    },
+    {
+     "id": "meta-llama/llama-4-maverick",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000015",
+      "completion": "0.0000006"
+     },
+     "contextLength": 1048576
+    },
+    {
+     "id": "deepseek/deepseek-chat-v3-0324",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000024",
+      "completion": "0.0000009"
+     },
+     "contextLength": 163840
+    },
+    {
+     "id": "openai/o1-pro",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00015",
+      "completion": "0.0006"
+     },
+     "contextLength": 200000
+    },
+    {
+     "id": "mistralai/mistral-small-3.1-24b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000351",
+      "completion": "0.000000555"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "openai/gpt-4o-mini-search-preview",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000015",
+      "completion": "0.0000006"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "openai/gpt-4o-search-preview",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000025",
+      "completion": "0.00001"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "mistralai/mistral-saba",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000002",
+      "completion": "0.0000006"
+     },
+     "contextLength": 32768
+    },
+    {
+     "id": "openai/o3-mini-high",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000011",
+      "completion": "0.0000044"
+     },
+     "contextLength": 200000
+    },
+    {
+     "id": "qwen/qwen2.5-vl-72b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000008",
+      "completion": "0.000001"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "qwen/qwen-plus",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000026",
+      "completion": "0.00000078"
+     },
+     "contextLength": 1000000
+    },
+    {
+     "id": "openai/o3-mini",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000011",
+      "completion": "0.0000044"
+     },
+     "contextLength": 200000
+    },
+    {
+     "id": "mistralai/mistral-small-24b-instruct-2501",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000005",
+      "completion": "0.00000008"
+     },
+     "contextLength": 32768
+    },
+    {
+     "id": "deepseek/deepseek-r1-distill-llama-70b",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000008",
+      "completion": "0.0000008"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "deepseek/deepseek-r1",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000007",
+      "completion": "0.0000025"
+     },
+     "contextLength": 163840
+    },
+    {
+     "id": "deepseek/deepseek-chat",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000002002",
+      "completion": "0.0000008001"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "openai/o1",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000015",
+      "completion": "0.00006"
+     },
+     "contextLength": 200000
+    },
+    {
+     "id": "meta-llama/llama-3.3-70b-instruct:free",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0",
+      "completion": "0"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "meta-llama/llama-3.3-70b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000001",
+      "completion": "0.00000032"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "openai/gpt-4o-2024-11-20",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000025",
+      "completion": "0.00001"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "mistralai/mistral-large-2407",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000002",
+      "completion": "0.000006"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "qwen/qwen-2.5-coder-32b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000066",
+      "completion": "0.000001"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "qwen/qwen-2.5-7b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000004",
+      "completion": "0.0000001"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "meta-llama/llama-3.2-1b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000027",
+      "completion": "0.000000201"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "meta-llama/llama-3.2-11b-vision-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000000345",
+      "completion": "0.000000345"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "meta-llama/llama-3.2-3b-instruct:free",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0",
+      "completion": "0"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "meta-llama/llama-3.2-3b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000000509",
+      "completion": "0.000000335"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "qwen/qwen-2.5-72b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000036",
+      "completion": "0.0000004"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "openai/gpt-4o-2024-08-06",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000025",
+      "completion": "0.00001"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "meta-llama/llama-3.1-8b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000002",
+      "completion": "0.00000003"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "meta-llama/llama-3.1-70b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000004",
+      "completion": "0.0000004"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "mistralai/mistral-nemo",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000002",
+      "completion": "0.00000003"
+     },
+     "contextLength": 131072
+    },
+    {
+     "id": "openai/gpt-4o-mini-2024-07-18",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000015",
+      "completion": "0.0000006"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "openai/gpt-4o-mini",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000015",
+      "completion": "0.0000006"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "openai/gpt-4o-2024-05-13",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000005",
+      "completion": "0.000015"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "openai/gpt-4o",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000025",
+      "completion": "0.00001"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "meta-llama/llama-3-8b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000014",
+      "completion": "0.00000014"
+     },
+     "contextLength": 8192
+    },
+    {
+     "id": "mistralai/mixtral-8x22b-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000002",
+      "completion": "0.000006"
+     },
+     "contextLength": 65536
+    },
+    {
+     "id": "openai/gpt-4-turbo",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00001",
+      "completion": "0.00003"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "anthropic/claude-3-haiku",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000025",
+      "completion": "0.00000125"
+     },
+     "contextLength": 200000
+    },
+    {
+     "id": "mistralai/mistral-large",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000002",
+      "completion": "0.000006"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "openai/gpt-3.5-turbo-0613",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000001",
+      "completion": "0.000002"
+     },
+     "contextLength": 4095
+    },
+    {
+     "id": "openai/gpt-4-turbo-preview",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00001",
+      "completion": "0.00003"
+     },
+     "contextLength": 128000
+    },
+    {
+     "id": "openai/gpt-3.5-turbo-instruct",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000015",
+      "completion": "0.000002"
+     },
+     "contextLength": 4095
+    },
+    {
+     "id": "openai/gpt-3.5-turbo-16k",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.000003",
+      "completion": "0.000004"
+     },
+     "contextLength": 16385
+    },
+    {
+     "id": "openai/gpt-3.5-turbo",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.0000005",
+      "completion": "0.0000015"
+     },
+     "contextLength": 16385
+    },
+    {
+     "id": "openai/gpt-4",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00003",
+      "completion": "0.00006"
+     },
+     "contextLength": 8191
+    }
+   ],
+   "baselinedAt": "2026-07-02"
+  },
+  "metered:metered_groq_bench": {
+   "models": [
+    {
+     "id": "llama-3.3-70b-versatile",
+     "tier": "mid",
+     "routeId": "groq-llama33-70b",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "meta-llama/llama-4-scout-17b-16e-instruct",
+     "tier": "small",
+     "routeId": "groq-llama4-scout",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "qwen/qwen3-32b",
+     "tier": "small",
+     "routeId": "groq-qwen3-32b",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "qwen/qwen3.6-27b",
+     "tier": "small",
+     "routeId": "groq-qwen36-27b",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "openai/gpt-oss-120b",
+     "tier": "large",
+     "routeId": "groq-gpt-oss-120b",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "openai/gpt-oss-20b",
+     "tier": "small",
+     "routeId": "groq-gpt-oss-20b",
+     "benchStatus": "benched-v1"
+    },
+    {
+     "id": "llama-3.1-8b-instant",
+     "benchStatus": "catalog-baseline",
+     "firstSeen": "2026-07-02",
+     "pricing": {
+      "prompt": "0.00000005",
+      "completion": "0.00000008"
+     },
+     "contextLength": 131072
+    }
+   ],
+   "baselinedAt": "2026-07-02"
+  },
+  "metered:metered_gemini_bench": {
+   "models": [
+    {
+     "id": "gemini-3.1-pro-preview",
+     "tier": "large",
+     "routeId": "gnat-gemini-31-pro-preview"
+    },
+    {
+     "id": "gemini-3.5-flash",
+     "tier": "mid",
+     "routeId": "gnat-gemini-35-flash"
+    },
+    {
+     "id": "gemini-3.1-flash-lite",
+     "tier": "small",
+     "routeId": "gnat-gemini-31-flash-lite"
+    },
+    {
+     "id": "gemini-2.5-flash",
+     "tier": "small",
+     "routeId": "gnat-gemini-25-flash"
+    },
+    {
+     "id": "gemini-3-flash-preview",
+     "tier": "mid",
+     "routeId": "gnat-gemini-3-flash-preview"
+    }
+   ]
+  }
+ },
+ "lastScan": "2026-07-02"
+}

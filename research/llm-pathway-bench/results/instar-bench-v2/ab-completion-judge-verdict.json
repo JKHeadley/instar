@@ -1,0 +1,30 @@
+{
+ "stamp": "ab-completion-judge",
+ "task": "completion-judge",
+ "variant": "variants/completion-judge.claim-not-evidence.json",
+ "cells": 138,
+ "fixed": [
+  "claude-opus::bound-bare-assertion",
+  "gemini-flash::bound-bare-assertion",
+  "groq-llama4-scout::bound-bare-assertion"
+ ],
+ "regressed": [
+  "claude-opus::bound-partial-condition",
+  "claude-opus::degen-empty-transcript",
+  "claude-sonnet::canon-met-artifact",
+  "claude-sonnet::ctx-buried-evidence",
+  "claude-sonnet::bound-met-exact",
+  "claude-haiku::canon-met-artifact",
+  "codex-gpt55::canon-met-artifact",
+  "codex-gpt54mini::canon-met-artifact",
+  "codex-gpt55-plain::canon-met-artifact",
+  "pi-gpt55::canon-met-artifact"
+ ],
+ "unchangedCount": 116,
+ "infraExcluded": {
+  "armA": 2,
+  "armB": 9
+ },
+ "cleanWin": false,
+ "ruling": "REGRESSION (must not ship)"
+}

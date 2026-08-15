@@ -1,0 +1,134 @@
+{
+  "_schema": "instar-bench/run-manifest@1",
+  "stamp": "crit-cli2",
+  "benchCode": {
+    "gitSha": "4379bdcbe3aa4ace060051f16bb93ec7525f0d3a",
+    "gitDirty": true
+  },
+  "taskBatteries": {
+    "count": 11,
+    "files": [
+      {
+        "file": "completion-judge.json",
+        "sha256": "c903528bbbbc80293ee1bb6301c00b87050c68287bc49c00b0e155309a858c6b",
+        "cases": 10
+      },
+      {
+        "file": "correction-distiller.json",
+        "sha256": "bf735db9426998b2a7c7e102bb55a99039f23dcdb4f23bcd5a31ffab917ce2d8",
+        "cases": 8
+      },
+      {
+        "file": "external-op-gate.json",
+        "sha256": "a53d0653d323d066750d0c687d1d11174594dc988000eb767294bb35a98f5ae2",
+        "cases": 8
+      },
+      {
+        "file": "gate-triage.json",
+        "sha256": "7722f5b1030f2c534f9027b0c21aa2e57ef4674816030c62deaa8c990ab6b839",
+        "cases": 9
+      },
+      {
+        "file": "injection-sanitizer.json",
+        "sha256": "390d9a457b0ddfa97ece334c83062be81b0873c92bce66a7b1f53c19d4daaac9",
+        "cases": 9
+      },
+      {
+        "file": "input-classifier.json",
+        "sha256": "faef2556bf8fd2577fb7fa5fd1489bf5240ce32b30cbd6a5c87f3d10c1138f1d",
+        "cases": 9
+      },
+      {
+        "file": "p13-stop-judge.json",
+        "sha256": "d4ebeb98567a7facf5319202e2026cd73f2f56a3c5aeaaeef2297e079909f1a8",
+        "cases": 11
+      },
+      {
+        "file": "sentinel-classify.json",
+        "sha256": "514335fd90521b5e61d0ae41cca80f90c497032dc861a703d6eff4ed33eda50e",
+        "cases": 15
+      },
+      {
+        "file": "tone-gate.json",
+        "sha256": "ecb4954a922055a1f006ebb2a754051c182403bba0f94e9356e2abd6ee0c828c",
+        "cases": 14
+      },
+      {
+        "file": "usher.json",
+        "sha256": "cd47b90c394d93b9f454cac9cc83470ade9503eece9dd12977d74352c55c81e1",
+        "cases": 8
+      },
+      {
+        "file": "warrants-reply.json",
+        "sha256": "f8ea0a72b1b0c38e7200447edb532f495322cee15489b1e96d4fa26dc41d803d",
+        "cases": 8
+      }
+    ]
+  },
+  "doorsBenched": {
+    "claude-code": [
+      "claude-haiku::claude-haiku-4-5-20251001",
+      "claude-opus::claude-opus-4-8",
+      "claude-sonnet::claude-sonnet-4-6"
+    ],
+    "gemini-cli": [
+      "gemini-flash::gemini-2.5-flash"
+    ],
+    "codex-cli": [
+      "codex-gpt54mini::gpt-5.4-mini",
+      "codex-gpt55-plain::gpt-5.5",
+      "codex-gpt55::gpt-5.5"
+    ],
+    "pi-cli": [
+      "pi-gpt55::openai-codex/gpt-5.5"
+    ]
+  },
+  "doorVersions": {
+    "claude-code": {
+      "kind": "cli-subscription",
+      "binary": "/opt/homebrew/bin/claude",
+      "version": "2.1.199 (Claude Code)"
+    },
+    "codex-cli": {
+      "kind": "cli-subscription",
+      "binary": "/Users/justin/.asdf/shims/codex",
+      "version": "codex-cli 0.137.0"
+    },
+    "pi-cli": {
+      "kind": "cli-subscription",
+      "binary": "/opt/homebrew/bin/pi",
+      "version": "0.78.1"
+    },
+    "gemini-cli": {
+      "kind": "cli-subscription",
+      "binary": "/opt/homebrew/bin/gemini",
+      "version": "0.25.2"
+    },
+    "metered:metered_openrouter_bench": {
+      "kind": "metered-funnel",
+      "binary": null,
+      "version": null
+    },
+    "metered:metered_groq_bench": {
+      "kind": "metered-funnel",
+      "binary": null,
+      "version": null
+    },
+    "metered:metered_gemini_bench": {
+      "kind": "metered-funnel",
+      "binary": null,
+      "version": null
+    }
+  },
+  "rawRowCount": 1554,
+  "priceTable": {
+    "file": "metered-prices.json",
+    "sha256": "ca79310b92bb50e38c42fc15652272677ecdadabb602c26365ee4d4e0e89cab1"
+  },
+  "capsTable": {
+    "file": "metered-caps.json",
+    "sha256": "4615b95e17825cc764a5ba3a10485ea1170f0d371be32f3b5cdbc87d3ac44447"
+  },
+  "infraNoisePolicy": "Environmental failures (rate-limit, auth, binary-missing, spawn-throw, spawn-error, no-invocation) are excluded from pass/total scoring (reported as infra counts in summary.json) and re-run on --resume; budget-refused/vendor-wall rows are never recorded at all. Route-behavior failures (timeout, refusal, cli-error, model-error, empty-output) STAY scored as failures — a router must care about them. Cost is booked to vendor truth, not reserved worst-case.",
+  "reproduce": "node run2.mjs --stamp crit-cli2 --samples <n> --routes-filter <f> --resume"
+}

@@ -1,0 +1,158 @@
+{
+ "or-deepseek-v4-pro": {
+  "model": "deepseek/deepseek-v4-pro",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 0.9523809523809523,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 0.9841269841269842,
+  "p50ms": 3851,
+  "okRate": 0.899,
+  "costUsd": 0.0116
+ },
+ "or-kimi-k26": {
+  "model": "moonshotai/kimi-k2.6",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 0.9166666666666666
+  },
+  "overallDeterministic": 0.9722222222222222,
+  "p50ms": 4272,
+  "okRate": 0.797,
+  "costUsd": 0.06446
+ },
+ "or-gemini-35-flash": {
+  "model": "google/gemini-3.5-flash",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 3010,
+  "okRate": 1,
+  "costUsd": 0.21484
+ },
+ "or-glm-5-turbo": {
+  "model": "z-ai/glm-5-turbo",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 0.8095238095238094,
+   "gate": 0.7777777777777778,
+   "extractor": 1
+  },
+  "overallDeterministic": 0.8624338624338623,
+  "p50ms": 12310,
+  "okRate": 0.681,
+  "costUsd": 0.09847
+ },
+ "or-deepseek-v4-flash": {
+  "model": "deepseek/deepseek-v4-flash",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 0.9444444444444443,
+   "extractor": 1
+  },
+  "overallDeterministic": 0.9814814814814814,
+  "p50ms": 2852,
+  "okRate": 0.986,
+  "costUsd": 0.002
+ },
+ "or-glm-47-flash": {
+  "model": "z-ai/glm-4.7-flash",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 0.8571428571428571,
+   "gate": 0.8888888888888888,
+   "extractor": 0.9166666666666666
+  },
+  "overallDeterministic": 0.8875661375661376,
+  "p50ms": 7155,
+  "okRate": 0.696,
+  "costUsd": 0.0116
+ },
+ "groq-llama33-70b": {
+  "model": "llama-3.3-70b-versatile",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 0.5,
+   "extractor": 0.08333333333333333
+  },
+  "overallDeterministic": 0.5277777777777778,
+  "p50ms": 835,
+  "okRate": 0.478,
+  "costUsd": 0.01889
+ },
+ "groq-llama4-scout": {
+  "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 0.5,
+   "extractor": 0.16666666666666666
+  },
+  "overallDeterministic": 0.5555555555555556,
+  "p50ms": 1232,
+  "okRate": 0.478,
+  "costUsd": 0.00835
+ },
+ "groq-qwen3-32b": {
+  "model": "qwen/qwen3-32b",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 0.19047619047619047,
+   "gate": 0.027777777777777776,
+   "extractor": 0.041666666666666664
+  },
+  "overallDeterministic": 0.08664021164021164,
+  "p50ms": 1578,
+  "okRate": 0.145,
+  "costUsd": 0.02155
+ },
+ "groq-qwen36-27b": {
+  "model": "qwen/qwen3.6-27b",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 0,
+   "gate": 0,
+   "extractor": 0
+  },
+  "overallDeterministic": 0,
+  "p50ms": 1553,
+  "okRate": 0.159,
+  "costUsd": 0.02631
+ },
+ "groq-gpt-oss-120b": {
+  "model": "openai/gpt-oss-120b",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 0.8095238095238094,
+   "gate": 0.1111111111111111,
+   "extractor": 0.16666666666666666
+  },
+  "overallDeterministic": 0.3624338624338624,
+  "p50ms": 980,
+  "okRate": 0.333,
+  "costUsd": 0.02238
+ },
+ "groq-gpt-oss-20b": {
+  "model": "openai/gpt-oss-20b",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 0.5714285714285714,
+   "gate": 0.1111111111111111,
+   "extractor": 0.08333333333333333
+  },
+  "overallDeterministic": 0.2552910052910053,
+  "p50ms": 842,
+  "okRate": 0.246,
+  "costUsd": 0.01726
+ }
+}

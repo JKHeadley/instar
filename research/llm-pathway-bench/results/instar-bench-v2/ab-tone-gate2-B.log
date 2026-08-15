@@ -1,0 +1,5 @@
+[ib2] resume: 0 rows preloaded, 98 calls remain
+[ib2] 7 routes × 1 tasks (14 cases) × 1 samples = 98 calls, c=4
+[ib2] 50/98
+[ib2] DONE — 98 calls, 2 failing samples, cost $5.484 → /Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/ab-tone-gate2-B
+{"stamp":"ab-tone-gate2-B","routes":7,"tasks":1,"calls":98,"failures":2,"judgeOutputs":0,"outdir":"/Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/ab-tone-gate2-B"}

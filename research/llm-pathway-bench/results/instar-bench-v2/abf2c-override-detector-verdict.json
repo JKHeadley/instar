@@ -1,0 +1,20 @@
+{
+ "stamp": "abf2c-override-detector",
+ "task": "override-detector",
+ "variant": "variants-wave2/override-detector.f2-authority.json",
+ "cells": 39,
+ "fixed": [
+  "claude-opus::bound-no-scope-words",
+  "claude-opus::ctx-past-tense"
+ ],
+ "regressed": [
+  "claude-opus::bound-default-pattern"
+ ],
+ "unchangedCount": 36,
+ "infraExcluded": {
+  "armA": 0,
+  "armB": 0
+ },
+ "cleanWin": false,
+ "ruling": "REGRESSION (must not ship)"
+}

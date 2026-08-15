@@ -1,0 +1,16 @@
+[ib2] resume: 337 rows preloaded, 527 calls remain
+[ib2] 8 routes × 11 tasks (108 cases) × 1 samples = 527 calls, c=3
+[ib2] 50/527
+[ib2] 100/527
+[ib2] 150/527
+[ib2] 200/527
+[ib2] 250/527
+[ib2] 300/527
+[ib2] 350/527
+[ib2] 400/527
+[ib2] resume: 764 rows preloaded, 100 calls remain
+[ib2] 8 routes × 11 tasks (108 cases) × 1 samples = 100 calls, c=3
+[ib2] 50/100
+[ib2] 100/100
+[ib2] DONE — 864 calls, 141 failing samples, cost $12.651 → /Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/crit-cli
+{"stamp":"crit-cli","routes":8,"tasks":11,"calls":864,"failures":141,"judgeOutputs":0,"outdir":"/Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/crit-cli"}

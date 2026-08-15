@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-02T00-53-56-657Z",
+  "label": "r7-enterprise-baseline",
+  "prompt": "ping",
+  "N": 30,
+  "concurrency": 1,
+  "timeoutMs": 95000,
+  "summaries": [
+    {
+      "pathway": "or-qwen37-max",
+      "model": "qwen/qwen3.7-max",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 5240,
+        "p95": 6620,
+        "p99": 7014,
+        "min": 4023,
+        "max": 7014,
+        "mean": 5178
+      },
+      "tokens": {
+        "meanIn": 28,
+        "meanOut": 203
+      },
+      "byError": {}
+    }
+  ]
+}

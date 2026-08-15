@@ -1,0 +1,138 @@
+{
+ "ok": true,
+ "provider": "groq",
+ "count": 17,
+ "models": [
+  {
+   "id": "openai/gpt-oss-safeguard-20b",
+   "pricing": {
+    "prompt": "0.000000075",
+    "completion": "0.0000003"
+   },
+   "contextLength": 131072,
+   "created": 1761708789
+  },
+  {
+   "id": "canopylabs/orpheus-arabic-saudi",
+   "pricing": {
+    "prompt": "0.00004"
+   },
+   "contextLength": 4000,
+   "created": 1765926439
+  },
+  {
+   "id": "qwen/qwen3-32b",
+   "pricing": {
+    "prompt": "0.00000029",
+    "completion": "0.00000059"
+   },
+   "contextLength": 131072,
+   "created": 1748396646
+  },
+  {
+   "id": "canopylabs/orpheus-v1-english",
+   "pricing": {
+    "prompt": "0.000022"
+   },
+   "contextLength": 4000,
+   "created": 1766186316
+  },
+  {
+   "id": "qwen/qwen3.6-27b",
+   "pricing": {
+    "prompt": "0.0000006",
+    "completion": "0.000003"
+   },
+   "contextLength": 131072,
+   "created": 1778288776
+  },
+  {
+   "id": "openai/gpt-oss-120b",
+   "pricing": {
+    "prompt": "0.00000015",
+    "completion": "0.0000006"
+   },
+   "contextLength": 131072,
+   "created": 1754408224
+  },
+  {
+   "id": "llama-3.3-70b-versatile",
+   "pricing": {
+    "prompt": "0.00000059",
+    "completion": "0.00000079"
+   },
+   "contextLength": 131072,
+   "created": 1733447754
+  },
+  {
+   "id": "meta-llama/llama-4-scout-17b-16e-instruct",
+   "pricing": {
+    "prompt": "0.00000011",
+    "completion": "0.00000034"
+   },
+   "contextLength": 131072,
+   "created": 1743874824
+  },
+  {
+   "id": "openai/gpt-oss-20b",
+   "pricing": {
+    "prompt": "0.000000075",
+    "completion": "0.0000003"
+   },
+   "contextLength": 131072,
+   "created": 1754407957
+  },
+  {
+   "id": "meta-llama/llama-prompt-guard-2-22m",
+   "pricing": {
+    "prompt": "0.00000003",
+    "completion": "0.00000003"
+   },
+   "contextLength": 512,
+   "created": 1748632101
+  },
+  {
+   "id": "groq/compound",
+   "contextLength": 131072,
+   "created": 1756949530
+  },
+  {
+   "id": "whisper-large-v3-turbo",
+   "contextLength": 448,
+   "created": 1728413088
+  },
+  {
+   "id": "whisper-large-v3",
+   "contextLength": 448,
+   "created": 1693721698
+  },
+  {
+   "id": "llama-3.1-8b-instant",
+   "pricing": {
+    "prompt": "0.00000005",
+    "completion": "0.00000008"
+   },
+   "contextLength": 131072,
+   "created": 1693721698
+  },
+  {
+   "id": "allam-2-7b",
+   "contextLength": 4096,
+   "created": 1737672203
+  },
+  {
+   "id": "groq/compound-mini",
+   "contextLength": 131072,
+   "created": 1756949707
+  },
+  {
+   "id": "meta-llama/llama-prompt-guard-2-86m",
+   "pricing": {
+    "prompt": "0.00000004",
+    "completion": "0.00000004"
+   },
+   "contextLength": 512,
+   "created": 1748632165
+  }
+ ]
+}

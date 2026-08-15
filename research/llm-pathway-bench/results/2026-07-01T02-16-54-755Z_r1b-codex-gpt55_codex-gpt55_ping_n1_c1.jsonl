@@ -1,0 +1,1 @@
+{"ts":1782872276141,"pathway":"codex-gpt55","framework":"codex","model":"gpt-5.5","mode":"exec-json","promptName":"ping","concurrency":1,"iter":0,"ok":true,"latencyMs":61385,"exitCode":0,"timedOut":false,"errorSig":null,"stdoutBytes":317,"stderrTail":"Reading additional input from stdin...\n","tokensIn":11741,"tokensOut":6,"tokensCached":0,"costUsd":null}

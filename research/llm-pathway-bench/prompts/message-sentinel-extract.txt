@@ -1,0 +1,5 @@
+Extract the primary action/intent from this message. The user sends: "I need you to review the PR and figure out if the migration is safe to ship."
+
+Respond with JSON: {"action": "...", "complexity": "low|mid|high", "blocking": "none|external|user-input"}
+
+This is a quick triage - what would you do first?

@@ -1,0 +1,29 @@
+{
+ "_doc": "Budget caps per metered vault key. NO SECRETS HERE \u2014 key NAMES only. The funnel refuses any key absent from this file. frozen:true = kill switch.",
+ "keys": {
+  "metered_openrouter_bench": {
+   "provider": "openrouter",
+   "lifetimeCapUsd": 30,
+   "dailyCapUsd": 28,
+   "frozen": false
+  },
+  "metered_openai_bench": {
+   "provider": "openai",
+   "lifetimeCapUsd": 30,
+   "dailyCapUsd": 10,
+   "frozen": false
+  },
+  "metered_anthropic_bench": {
+   "provider": "anthropic",
+   "lifetimeCapUsd": 30,
+   "dailyCapUsd": 10,
+   "frozen": false
+  },
+  "metered_groq_bench": {
+   "provider": "groq",
+   "lifetimeCapUsd": 30,
+   "dailyCapUsd": 10,
+   "frozen": false
+  }
+ }
+}

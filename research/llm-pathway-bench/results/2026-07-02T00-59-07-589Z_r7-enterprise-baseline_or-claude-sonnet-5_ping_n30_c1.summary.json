@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-02T00-59-07-589Z",
+  "label": "r7-enterprise-baseline",
+  "prompt": "ping",
+  "N": 30,
+  "concurrency": 1,
+  "timeoutMs": 95000,
+  "summaries": [
+    {
+      "pathway": "or-claude-sonnet-5",
+      "model": "anthropic/claude-sonnet-5",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 2938,
+        "p95": 5137,
+        "p99": 6361,
+        "min": 2571,
+        "max": 6361,
+        "mean": 3233
+      },
+      "tokens": {
+        "meanIn": 33,
+        "meanOut": 5
+      },
+      "byError": {}
+    }
+  ]
+}

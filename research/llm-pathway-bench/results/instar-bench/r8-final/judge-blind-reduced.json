@@ -1,0 +1,542 @@
+[
+ {
+  "anonId": "J000",
+  "task": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "J001",
+  "task": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "# Bug Analysis\n\nThe function always returns `{action:'forwarded', acked:true}` regardless of whether the delivery succeeded or failed. When `deliver()` fails to reach the peer (or returns a rejection), the function still claims the message was forwarded and acknowledged, silently losing the operator's message.\n\n# One-line Fix\n\n```js\nif(ack.accepted==='sender-rejected') return {action:'forwarded', acked:false};\n```\n\nOr more robustly, return `acked:false` whenever acceptance is not successful:\n```js\nreturn {action:'forwarded', acked: ack.accepted !== 'sender-rejected'};\n```"
+ },
+ {
+  "anonId": "J002",
+  "task": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes, this violates the standard because it creates a circular dependency where the load-bearing path is functionally disabled unless the feature flag is toggled, effectively making the system non-functional by default. Because the old path is deleted, the \"delivery path\" now depends entirely on an \"off\" feature, which violates the requirement for robust availability.\n\n**The Fix:** Before deleting the old path, you must keep both paths operational and route only a subset of traffic through the new module (or keep it behind the flag but provide a \"default-on\" transition period). Only flip the flag to \"on\" as the default state for all users *before* the old path is removed, or ensure the new module is promoted to a mandatory, non-flagged component before the deprecation of the old path."
+ },
+ {
+  "anonId": "J003",
+  "task": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "J004",
+  "task": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "(no successful output)"
+ },
+ {
+  "anonId": "J005",
+  "task": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "(no successful output)"
+ },
+ {
+  "anonId": "J006",
+  "task": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "# Migrating a Telegram Long-Polling Bot from Machine A → Machine B\n\n## Ordered Steps\n\n1. **Prepare machine B fully** — deploy code, config, env vars, dependencies — but do **not** start the polling process yet.\n\n2. **Verify B's connectivity and correctness** — run a dry check (e.g., load token, hit `getMe`) without calling `getUpdates`. Confirm B *can* run, but keep it idle.\n\n3. **Stop the poller on machine A completely.**\n   - Kill the process (not just SIGTERM to a queue — ensure the `getUpdates` long-poll loop actually exits).\n   - Confirm no retry/supervisor (systemd, k8s, pm2, etc.) will auto-restart it.\n\n4. **Confirm A has released its poll session.** Telegram's `getUpdates` uses an implicit lock tied to the last `offset` committed; make sure A's last call has returned/timed-out and it is not mid-request. Waiting a couple seconds past A's poll timeout window is sufficient.\n\n5. **Start the poller on machine B**, using the correct persisted `offset` (last `update_id + 1`) so B resumes exactly where A left off —"
+ },
+ {
+  "anonId": "J007",
+  "task": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "# Incident Summary\n\nA missing user account on the laptop caused the system to reject messages from the operator, but the router incorrectly logged them as successful, so messages disappeared silently with no error alerts. The issue was fixed by restoring the user account."
+ },
+ {
+  "anonId": "J008",
+  "task": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "Determines if a transaction is authorized based on account limits and pricing, returning a failure reason if the account is frozen, the price is missing, or the projected cost exceeds the lifetime cap."
+ },
+ {
+  "anonId": "J009",
+  "task": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "## Telegram Poller Migration: Machine A → Machine B\n\n### The Core Mechanic\n\nTelegram's `getUpdates` long-polling enforces **one active consumer per bot token**. If two clients poll simultaneously, Telegram returns **HTTP 409 Conflict** to the newer connection. Updates arriving while *no* poller is active are queued server-side for ~24 hours and delivered to the next poller that connects.\n\n---\n\n### Correct Ordered Steps\n\n| Step | Action | Why |\n|------|--------|-----|\n| **1** | **Drain machine A** — stop accepting new work, but let the current `getUpdates` call finish and process its batch normally. | Ensures the last batch is acknowledged via `offset`, so those messages won't be re-delivered. |\n| **2** | **Kill machine A's poller process** and verify the process is dead and its HTTP connection to `api.telegram.org` is closed. | A lingering TCP connection (e.g., a zombie long-poll) still counts as an active poller to Telegram. |\n| **3** | **Wait briefly** (~5–10 seconds) — roughly one long-poll timeout cycle. | Guarantees Telegram's side has fully torn down the session from A. |\n| **4** | **Start machine B's poller** using the same bot token. Call `getUpdates` with `offset = 0` (or no offset). | Telegram delivers all queued, un-acknowledged updates that arrived during the gap. |\n| **5** | **Verify** machine B is receiving and processing updates (check logs, send a test message). | Confirms the migration succeeded. |\n\n> **No messages are lost** because any updates arriving during the gap between steps 2 and 4 are held in Telegram's queue and handed to B on its first poll.\n\n---\n\n### The ONE"
+ },
+ {
+  "anonId": "J010",
+  "task": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "(no successful output)"
+ },
+ {
+  "anonId": "J011",
+  "task": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "(no successful output)"
+ },
+ {
+  "anonId": "J012",
+  "task": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes, this violates the standard. By deleting the old path and routing ALL delivery through a module that defaults to OFF, the load-bearing delivery path now depends entirely on a dark-shipped feature—meaning in the default state, delivery is broken. The fix is either to keep the old path intact until the new module is enabled by default (flag defaults ON or the flag is fully removed after validation), or don't delete the old path until the new one is no longer dark-shipped."
+ },
+ {
+  "anonId": "J013",
+  "task": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "J014",
+  "task": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "The bug is that `deliver(owner, msg)` can fail or reject when the peer is unreachable, and this function doesn’t handle that at all. As a result, the operator’s message is lost instead of being marked as undelivered or retried; also, the `if` branch and the default return are identical, so the ack value is ignored entirely.\n\nOne-line fix:\n```js\nasync function forwardToOwner(msg, owner){ try { const ack = await deliver(owner, msg); return {action:'forwarded', acked: ack.accepted !== 'sender-rejected'}; } catch { return {action:'forwarded', acked:false}; } }\n```"
+ },
+ {
+  "anonId": "J015",
+  "task": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "**Yes, this violates the standard.** \n\nBy deleting the old path and routing all traffic through"
+ },
+ {
+  "anonId": "J016",
+  "task": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "J017",
+  "task": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "**Bug Explanation:** \nThe function silently drops the operator's message when a peer machine is unreachable, as it does not handle cases where `deliver(owner, msg)` fails or returns an error. The current implementation assumes a successful delivery and only checks for a specific rejection reason ('sender-rejected'). If any other error or rejection occurs, it will be ignored.\n\n**One-line Fix:**\n```javascript\nasync function forwardToOwner(msg, owner){\n  try { \n    const ack = await deliver(owner, msg);\n    if(ack.accepted==='sender-rejected') return {action:'forwarded', acked:true};\n    return {action:'forwarded', acked:true};\n  } catch (error) {\n    return {action:'forwarded', acked:false, error};\n  }\n}\n```"
+ },
+ {
+  "anonId": "J018",
+  "task": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes, this proposed change violates the standard because the load-bearing delivery path now depends on a dark-shipped feature (the new module behind a flag defaulting to OFF). To fix this, the new module should be enabled by default or the old path should be reinstated as a fallback. The fix is to either make the flag default to ON or keep the old path as a redundant but enabled delivery method."
+ },
+ {
+  "anonId": "J019",
+  "task": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "`gateCheck` decides whether to allow a request by rejecting frozen accounts, missing price data, and estimated spend (based on `maxTokens` and output price) that would exceed the lifetime USD cap—otherwise allowing it."
+ },
+ {
+  "anonId": "J020",
+  "task": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "1. **Prepare machine B first**\n   - Deploy the bot code/config on **B**.\n   - Make sure **B** is ready to start polling, but **do not start it yet**.\n\n2. **Stop the poller on machine A**\n   - Fully stop the Telegram polling process on **A**.\n   - Confirm it is no longer calling `getUpdates`.\n\n3. **Wait until A is really down**\n   - Ensure no supervisor/container/process manager restarts it.\n   - Verify only after A has completely released polling.\n\n4. **Start the poller on machine B**\n   - Start polling on **B**.\n   - It will continue consuming queued updates from Telegram, including anything that arrived while no poller was running.\n\n5. **Verify B is receiving updates**\n   - Check logs/health.\n   - Confirm offsets advance normally and inbound messages are being processed.\n\n### Why no messages are lost\nTelegram keeps undelivered updates queued for about 24 hours, so a short gap between stopping **A** and starting **B** does not lose inbound messages.\n\n### The ordering mistake that causes duplicate-poller conflicts\n**Starting machine B before machine A is fully stopped.**\n\nBecause Telegram permits only one active poller per bot, overlapping pollers causes the classic conflict (`terminated by other getUpdates request`) and can create instability or missed/duplicated handling depending on your app logic."
+ },
+ {
+  "anonId": "J021",
+  "task": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "The laptop’s user registry lost the operator’s entry, so the system could no longer verify messages from that user. As a result, messages were rejected and dropped without a visible trace until the entry was restored."
+ },
+ {
+  "anonId": "J022",
+  "task": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "This function determines if an API request is allowed by estimating its cost against the user's lifetime spending limit"
+ },
+ {
+  "anonId": "J023",
+  "task": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "(no successful output)"
+ },
+ {
+  "anonId": "J024",
+  "task": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "Here is a 2-sentence summary of the incident in plain language:\n\nThe laptop's user registry had a problem that caused it to forget the operator's information. This caused messages to be lost and not delivered, but fortunately, the issue was fixed by restoring the operator's information."
+ },
+ {
+  "anonId": "J025",
+  "task": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "**Function Behavior:** The `gateCheck` function determines whether a transaction is allowed based on capacity checks. \n**Edge Case Guarded:** It guards against transactions when the capacity is frozen, the price is unknown, or the estimated spend exceeds the lifetime cap. \n\nHere is a one-sentence summary for the codebase doc-tree:\nThe `gateCheck` function evaluates a transaction's allowance based on capacity constraints, guarding against scenarios where the capacity is frozen, the price is unknown, or the lifetime cap would be exceeded."
+ },
+ {
+  "anonId": "J026",
+  "task": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes. Routing **all** inbound delivery through a module behind a default-OFF flag makes the load-bearing delivery path depend on a dark-shipped feature, and deleting the old path removes the fallback.\n\nFix: keep the old delivery path until the new module is enabled by default/fully shipped, or make the new module non-dark and default-ON before making it the sole load-bearing path."
+ },
+ {
+  "anonId": "J027",
+  "task": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "J028",
+  "task": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "The function fails to handle cases where `deliver` rejects the promise (e.g., due to a network timeout or unreachable peer), causing the error to propagate unhandled rather than signaling a delivery failure. Consequently, the caller remains unaware that the message was never actually sent.\n\n**One-line fix:**\nWrap the `deliver` call in a `try...catch` block to handle the error, or use a default response:\n```js\nconst ack = await deliver(owner, msg).catch(() => ({ accepted: 'failed' }));\n```"
+ },
+ {
+  "anonId": "J029",
+  "task": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "**Yes, this violates the standard.** Because the old delivery path is deleted and the new module defaults"
+ },
+ {
+  "anonId": "J030",
+  "task": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "J031",
+  "task": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "(no successful output)"
+ },
+ {
+  "anonId": "J032",
+  "task": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "`gateCheck` decides whether to allow a token-spending action based on account caps and estimated output cost, guarding against frozen accounts, missing price data, and lifetime USD cap overrun."
+ },
+ {
+  "anonId": "J033",
+  "task": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "# Migrating Telegram Poller from Machine A to Machine B\n\n## Correct Ordered Steps:\n\n1. **Deploy the poller code to Machine B** (but don't start it yet)\n2. **Verify Machine B is ready** (dependencies, credentials, database access all working)\n3. **Start the poller on Machine B**\n4. **Monitor Machine B** for 1-2 minutes to confirm it's receiving updates\n5. **Stop the poller on Machine A**\n6. **Verify no messages are lost** (check Telegram's queued updates)\n7. **Decommission/disable the poller on Machine A**\n\n## The Critical Ordering Mistake:\n\n**Starting Machine B's poller BEFORE stopping Machine A's poller** would cause a **duplicate-poller conflict**.\n\n### Why This Breaks:\n- Telegram recognizes two pollers simultaneously requesting updates\n- Both would receive copies of the same messages (duplicates)\n- Both would be marked as \"active,\" confusing Telegram's internal state\n- When you eventually stop Machine A, the conflict resolution is already corrupted\n- You'd lose the exactly-once delivery guarantee\n\n### The Safe Principle:\n**Stop the old poller → (brief grace period) → Start the new poller**\n\nNever overlap running instances, even briefly."
+ },
+ {
+  "anonId": "J034",
+  "task": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "The laptop couldn't send messages because the user's account information was accidentally deleted. The system wrongly flagged these failures as successful, causing the messages to vanish without warning until we restored the account."
+ },
+ {
+  "anonId": "J035",
+  "task": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "This function determines if an operation is allowed by verifying its maximum estimated cost won't"
+ },
+ {
+  "anonId": "J036",
+  "task": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "[Wafer: response was truncated before the model finished its internal reasoning. Increase max_tokens, or disable thinking on this model (e.g. chat_template_kwargs.enable_thinking=false), then retry.]"
+ },
+ {
+  "anonId": "J037",
+  "task": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "The operator's account information was missing from the laptop, causing their messages to be dropped without any error or trace. We fixed it by restoring their account information."
+ },
+ {
+  "anonId": "J038",
+  "task": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "## The Bug\n\nBoth branches of the `if` return `{action:'forwarded', acked:true}` — meaning the function **always claims success** regardless of what `deliver()` actually returned. When a peer is unreachable (and `ack` indicates rejection/failure), the code still reports `acked:true`, so the operator's message is silently dropped while the caller believes it was delivered.\n\n## The Fix\n\nMake the return value reflect the actual acknowledgment status:\n\n```js\nreturn {action:'forwarded', acked: ack.accepted !== 'sender-rejected'};\n```\n\n*(Note: depending on `deliver()`'s contract, you should also guard against `ack` being null/undefined when the peer is truly unreachable — e.g. `acked: !!ack && ack.accepted !== 'sender-rejected'` — since an unreachable peer may reject/throw rather than return a `sender-rejected` ack.)*"
+ },
+ {
+  "anonId": "J039",
+  "task": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes, this violates the standard. Once the old path is deleted, all inbound message delivery — a load-bearing path — depends entirely on the new module, which is dark-shipped (flag defaults to OFF). This means the default production state has no working delivery path at all, which directly contradicts the requirement that load-bearing paths not depend on disabled-by-default features.\n\n**Fix:** Either (1) keep the old delivery path intact until the new module's flag is flipped to ON by default and has been validated in production, then remove the old path in a subsequent change, or (2) ship the new module with the flag defaulting to ON (with a documented kill-switch to fall back), so the load-bearing path is never dependent on a dark feature."
+ },
+ {
+  "anonId": "J040",
+  "task": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "J041",
+  "task": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "**Bug Explanation:**\nThe function always returns `{action:'forwarded', acked"
+ },
+ {
+  "anonId": "J042",
+  "task": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes, this violates the standard because deleting the legacy path makes the load-bearing inbound delivery system entirely dependent on a disabled-by-default module, effectively breaking message delivery for environments on the default configuration. To fix this, either change the new module's feature flag to default to ON or retain the old delivery path as a fallback when the flag is OFF."
+ },
+ {
+  "anonId": "J043",
+  "task": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "J044",
+  "task": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "The bug is that the function does not handle the case where the `deliver` function throws an error due to a peer machine being unreachable. As a result, the error is silently dropped, and the function returns as if the message was successfully forwarded. \n\nThe one-line fix is to add a try-catch block: \n```javascript\nasync function forwardToOwner(msg, owner){\n  try {\n    const ack = await deliver(owner, msg);\n    if(ack.accepted==='sender-rejected') return {action:'forwarded', acked:true};\n    return {action:'forwarded', acked:true};\n  } catch (error) {\n    // Handle the error, e.g., return {action:'forwarded', acked:false, error};\n    return {action:'forwarded', acked:false, error};\n  }\n}\n```"
+ },
+ {
+  "anonId": "J045",
+  "task": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "The laptop had lost the operator's user account, which caused the system to silently reject and permanently delete their messages while incorrectly logging them as delivered. The issue was fixed by restoring the missing account."
+ },
+ {
+  "anonId": "J046",
+  "task": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "This function determines whether a request is allowed to proceed by checking if the account is frozen, if pricing is unknown, or if the estimated cost (based on `maxTokens` and price per million tokens) would push cumulative lifetime spend over the account's lifetime cap—rejecting the request with a specific reason in any of these cases, and otherwise allowing it."
+ },
+ {
+  "anonId": "J047",
+  "task": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "Here’s the safe **handoff order** to move a Telegram long-polling bot from **machine A** to **machine B** without losing inbound updates:\n\n1. **Stop poller on machine A cleanly**\n   - Make sure A fully exits the long-poll loop and no process remains polling `getUpdates`.\n\n2. **Confirm A is no longer polling**\n   - Verify the process is down and there’s no active outbound long-poll request.\n\n3. **Start poller on machine B**\n   - Bring up the bot on B and let it begin polling with the same bot token.\n\n4. **Verify B is receiving updates**\n   - Send a test message / check logs to confirm updates are flowing to B.\n\n## The key rule\nTelegram permits **only one active poller per bot token**. Any updates that arrive while no poller is running are queued for roughly 24 hours, so a short gap between stopping A and starting B is fine.\n\n## The one ordering mistake that causes duplicate-poller conflicts\n**Starting machine B before machine A has fully stopped polling.**\n\nThat creates two simultaneous pollers on the same bot token, which leads to conflict errors like:\n\n- `409 Conflict`\n- `terminated by other getUpdates request`\n\nIf you want, I can also give you a zero-downtime migration runbook with health checks and rollback steps."
+ },
+ {
+  "anonId": "J048",
+  "task": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "Because a laptop lost the operator's account information, the system rejected outgoing messages and"
+ },
+ {
+  "anonId": "J049",
+  "task": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "This function acts as a pre-flight authorization gate that estimates token costs against lifetime spending limits, guarding against the edge case of unbillable or over-budget requests resulting from frozen accounts, missing pricing data, or exhausted caps."
+ },
+ {
+  "anonId": "J050",
+  "task": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "To move the Telegram poller from machine A to machine B without losing any inbound messages, follow these ordered steps:\n\n1. **Set up a temporary Telegram bot on machine B**: Create a new bot on machine B but do not start polling yet. This new bot will have a different API hash and bot token than the one on machine A. The purpose of this step is to prepare machine B to take over.\n\n2. **Configure the new bot on machine B to get updates**: Even though you won't start polling yet, configure the bot on machine B with the correct webhook or polling settings so that it's ready to receive updates as soon as the switch happens.\n\n3. **Start getting updates on machine B (in parallel)**: Begin polling with the new bot on machine B, but make sure it's set to get all updates, including those that have already been sent to machine A, by setting the `offset` parameter correctly if you're using polling, or ensure the webhook can handle historical updates if you're using webhooks.\n\n4. **On machine A, stop the current poller but keep it running long enough**: Stop polling on machine A but ensure that it remains operational long enough for Telegram to redirect any queued messages (up to 24 hours). \n\n5. **Transfer and process updates on machine B if necessary**: If there are updates that were received by machine A before it stopped polling but after machine B started, you'll need to handle these updates carefully to avoid duplication. If they were processed before stopping the poller on A, no action is needed.\n\n6. **Confirm all old updates are processed or discarded**: Ensure that any updates received by machine A before it stopped are processed or discarded to prevent them from being processed twice.\n\n7. **Fully switch to machine B**: Once you've confirmed that machine B is receiving updates and you've handled any backlog from machine A, fully switch over to machine B.\n\n**One ordering mistake that would cause duplicate-poller conflicts:**\n\n- **Mistake:** Starting the"
+ },
+ {
+  "anonId": "J051",
+  "task": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "Here is a 2-sentence summary of the incident:\n\nThe laptop's user registry lost the operator's information, which caused a problem with sending messages. As a result, messages were not being delivered and didn't leave a trail, but the issue was resolved once the operator's record was restored."
+ },
+ {
+  "anonId": "J052",
+  "task": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "Bug: the function treats a failed delivery (`ack.accepted === 'sender-rejected'`) exactly like a successful one. By returning `acked:true`, the caller believes the message was handled and drops it instead of retrying or surfacing the failure.\n\nOne-line fix:\n\n```js\nif (ack.accepted === 'sender-rejected') return {action:'forwarded', acked:false};\n```"
+ },
+ {
+  "anonId": "J053",
+  "task": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes. If all inbound delivery depends on a module that is dark-shipped and disabled by default, then the load-bearing path depends on a feature that is OFF in the default configuration, which violates the standard. The fix is to keep the existing path as the default load-bearing path or ship the new module enabled-by-default before deleting the old path; the flag can only guard an optional/non-critical path, not the only delivery path."
+ },
+ {
+  "anonId": "J054",
+  "task": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug  \n2: feature  \n3: question"
+ },
+ {
+  "anonId": "J055",
+  "task": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "**Explanation:**\nThe bug occurs because the function unconditionally returns `acked: true` regardless of"
+ },
+ {
+  "anonId": "J056",
+  "task": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes, this violates the standard because the entire load-bearing delivery path is now gated by a flag that defaults to OFF, meaning the default state breaks all message delivery with no fallback. The fix is to either change the flag's default to ON, or keep the old path as a safe fallback until the new module is fully validated and the flag can be safely retired."
+ },
+ {
+  "anonId": "J057",
+  "task": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "Here are the labels:\n\n1. 'the reaper never reclaims worktrees': N: bug\n2. 'can we add a dark-mode dashboard': N: feature\n3. 'does the tone gate run on every message': N: question"
+ },
+ {
+  "anonId": "J058",
+  "task": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "The laptop lost the operator’s account record, so it started rejecting outgoing messages and they were silently dropped. Restoring the account record fixed the problem."
+ },
+ {
+  "anonId": "J059",
+  "task": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "Checks whether a token purchase is allowed by blocking frozen accounts, rejecting when price data is missing, and denying buys that would push the estimated spend over the lifetime USD cap."
+ },
+ {
+  "anonId": "J060",
+  "task": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "To move a Telegram bot poller from Machine A to Machine B without data loss or downtime (and avoiding the \"409 Conflict\" error), you must ensure that Machine A stops polling precisely before or as Machine B begins.\n\n### The Ordered Steps\n\n1.  **Prepare Machine B:** Deploy your code to Machine B, but **do not start the bot process yet**. Ensure that the environment variables and dependencies are identical to Machine A.\n2.  **Stop Machine A:** Shut down the polling process on Machine A. Because Telegram queues updates for up to 24 hours, any messages sent during the transition will simply sit in Telegram's queue waiting for the next authorized request.\n3.  **Start Machine B:** Immediately start the polling process on Machine B.\n4.  **Verification:** Check the logs on Machine B to ensure it has successfully established a connection and is fetching the \"backlog\" of updates that accumulated in the few seconds between the shutdown of A and the startup of B.\n\n---\n\n### The Ordering Mistake: \"The Race Condition\"\n\n**The Mistake:** Starting the poller on Machine B **before** shutting down the poller on Machine A.\n\n**Why this fails:**\nTelegram’s Bot API architecture is designed to enforce a \"single active connection\" rule. When a bot starts, it assumes the role of the primary handler. If Machine B starts polling while Machine A is still running, Telegram will detect two concurrent requests for the same `getUpdates` call. \n\nTelegram will respond with a **409 Conflict error** (\"Conflict: terminated by other getUpdates request\"). While this is a safety switch to prevent duplicate processing, it often triggers \"restart loops\" in many bot libraries (like `python-telegram-bot` or `telegraf`), leading to:\n1.  **Intermittent service:** The two machines will \"fight\" for the connection, causing"
+ },
+ {
+  "anonId": "J061",
+  "task": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": " but keeping it simple):**\n    *Sentence 1:* Because your laptop lost your user record,"
+ },
+ {
+  "anonId": "J062",
+  "task": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "This function performs a **gating check** against a **lifetime spending cap**, returning `{allow:false}` with a reason if the account is frozen, missing pricing, or the estimated cost of minting `maxTokens` would cause total spend to exceed `caps.lifetimeCapUsd`."
+ },
+ {
+  "anonId": "J063",
+  "task": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "(no successful output)"
+ },
+ {
+  "anonId": "J064",
+  "task": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "**Bug:** The function always returns `{action:'forwarded', acked:true}` regardless of what `deliver()` actually returns. If `deliver` fails or throws because the peer machine is unreachable (e.g., network error, timeout, or an `ack` indicating failure), that error is never checked or propagated — the code doesn't even use a try/catch around `await deliver(...)`, and the `if` branch checking `ack.accepted==='sender-rejected'` is dead code since it returns the exact same success result as the fallback. So delivery failures are swallowed and the caller is falsely told the message was forwarded and acknowledged.\n\n**One-line fix:**\n```js\nasync function forwardToOwner(msg, owner){\n  const ack = await deliver(owner, msg);\n  return { action: 'forwarded', acked: ack.accepted === true };\n}\n```\n(or wrap `deliver` in try/catch and return `{action:'failed', acked:false}` on error/unreachable peer instead of hardcoding success.)"
+ },
+ {
+  "anonId": "J065",
+  "task": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "**Yes, this violates the standard.** The standard prohibits load-bearing paths from *depending on* dark-shipped features, meaning critical delivery cannot require users to opt-in to experimental code. **Fix:** Either ship the new module with the flag defaulting to ON, or maintain the old delivery path as a fallback until the new module is sufficiently validated and the flag is removed."
+ },
+ {
+  "anonId": "J066",
+  "task": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "J067",
+  "task": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "**Explanation:**\nThe function unconditionally returns a hardcoded successful acknowledgment (`acked: true`) on all code paths, tricking the caller into falsely believing the message was delivered and discarding it from the queue. Furthermore, the `if` statement is entirely redundant since both branches execute the exact same return statement, and there is no error handling if the `deliver()` promise rejects due to an unreachable peer.\n\n**One-line fix:**\n*(Replace the `if` and `return` statements with the following to accurately reflect the delivery status)*\n```js\nreturn { action: 'forwarded', acked: ack.accepted === 'accepted' };\n```"
+ },
+ {
+  "anonId": "J068",
+  "task": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "(no successful output)"
+ },
+ {
+  "anonId": "J069",
+  "task": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": " 1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "J070",
+  "task": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "# Migrating a Telegram Poller (A → B) Without Message Loss\n\nTelegram's long-polling model uses `getUpdates`, where each call with an `offset` (last update_id + 1) acknowledges prior updates. Only one poller can call `getUpdates` at a time — a second concurrent poller triggers **409 Conflict**.\n\n## Ordered Steps\n\n1. **Deploy B in a stopped/paused state** — get the code, config, and bot token onto machine B, but do **not** start polling yet.\n\n2. **Stop the poller on A completely.** Ensure the process is fully terminated and no `getUpdates` call is in flight. Confirm the connection is closed.\n\n3. **Persist/transfer the offset (if you track it yourself).** Note the last acknowledged `update_id`. If you rely on Telegram's server-side offset tracking, this is handled automatically — but make sure A's final `getUpdates` didn't ack updates you haven't fully processed.\n\n4. **Verify A is silent.** Optionally probe once from B or check that no 409 arises — confirm A is truly not polling.\n\n5. **Start the poller on B**, resuming from the correct offset. Telegram will deliver the queued (undelivered) updates from the ~24h buffer.\n\n6. **Monitor B** for successful update flow and absence of 409 Conflict errors.\n\n## The Critical Ordering Mistake\n\n> **Starting B's poller before A's poller is fully stopped.**\n\nIf B begins calling `getUpdates` while A is still running (or even mid-request), you have **two conc"
+ },
+ {
+  "anonId": "J071",
+  "task": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "The laptop had lost the record that identifies you as a valid operator, so the mesh network refused your outgoing messages. To make matters worse, the router mistakenly logged these rejected messages as successfully sent, so they silently disappeared with no error shown. The fix was to restore your operator record on the laptop."
+ },
+ {
+  "anonId": "J072",
+  "task": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "This function validates whether a token request should be allowed by checking spending caps and account status, guarding against the edge case of missing price data that would cause incorrect cost estimation."
+ },
+ {
+  "anonId": "J073",
+  "task": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "Concurrent running).\n    *   *Consequence:* This causes a `409 Conflict` error"
+ },
+ {
+  "anonId": "J074",
+  "task": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "The laptop lost your user account details, causing the system to silently block your messages without showing an error. We fixed the issue by restoring your account, so everything is working normally again."
+ },
+ {
+  "anonId": "J075",
+  "task": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "(no successful output)"
+ },
+ {
+  "anonId": "J076",
+  "task": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "To move the Telegram poller from machine A to machine B without losing any inbound messages, follow these steps:\n\n### Step 1: Preparation on Machine A\n- **Stop the Telegram Bot API Poller on Machine A but do not terminate the process immediately.** Ensure that the poller is in a state where it can still receive updates from Telegram but is not processing new messages. You might need to implement a \"drain\" mode for your poller.\n\n### Step 2: Fetch and Store All Pending Updates\n- **Fetch all pending updates from the Telegram Bot API on Machine A.** Use the `getUpdates` method to fetch any pending updates. Store these updates in a database or a temporary storage that can be accessed by Machine B. Make sure to fetch updates with a reasonable offset to ensure you get all of them.\n\n### Step 3: Confirm No New Updates Are Coming\n- **Wait for a short period (e.g., 5-10 minutes) and then check again for updates.** This step ensures that you've fetched all updates and that there are no new ones being sent to Machine A. Given Telegram's 24-hour buffer, this step provides confidence that you've captured everything.\n\n### Step 4: Setup on Machine B\n- **Configure and start the Telegram poller on Machine B.** Before starting, ensure that the bot's API token is correctly set up and that the poller is configured to fetch updates from where Machine A left off (if applicable). However, because you are fetching updates directly, this might not be strictly necessary.\n\n### Step 5: Process Updates on Machine B\n- **Process the stored updates on Machine B.** Take the updates stored from Machine A and process them on Machine B. Ensure your application logic can handle these updates correctly.\n\n### Step 6: Switch to Live on Machine B\n- **Start live polling on Machine B.** Once you've processed the backlog, you can switch the bot to live mode on Machine B. Telegram will begin sending new updates to Machine B.\n\n### Step 7: Terminate on Machine A\n- **Terminate the Telegram poller on Machine A.** Now that Machine B is live and processing updates, you can safely terminate the poller on Machine A.\n\n### Ordering Mistake: Duplicate Poller Conflict\nA critical mistake that would cause a duplicate-poller conflict is:\n- **Starting the poller on Machine B (Step 4) before fetching and processing all pending updates on Machine A (Steps 2 & 3).** If Machine B starts polling"
+ },
+ {
+  "anonId": "J077",
+  "task": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "J078",
+  "task": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "The function reports success no matter what `deliver` returns, so if the peer is unreachable or any non-accepted status comes back, the caller still sees `{acked:true}` and the operator’s message gets treated as delivered. The special-case check is also backwards: it marks `'sender-rejected'` as success instead of a failure.\n\n**One-line fix:**\n```js\nreturn {action:'forwarded', acked: ack.accepted === true};\n```"
+ },
+ {
+  "anonId": "J079",
+  "task": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes. If **all** inbound delivery now goes through a module that is **dark-shipped by default**, then the core load-bearing path depends on a disabled-by-default feature, which violates the standard.\n\n**Fix:** keep the existing delivery path enabled by default, and make the new module either\n1) ship enabled for the load-bearing path, or  \n2) be introduced in a non-critical/opt-in way until it’s no longer dark-shipped."
+ },
+ {
+  "anonId": "J080",
+  "task": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "J081",
+  "task": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "The bug is that the function returns `{action:'forwarded', acked:true}` regardless of the actual acknowledgment outcome, which means it reports success even when `deliver` fails due to an unreachable peer. The unreachable case likely throws an exception that goes uncaught, or results in an ack object that doesn't match `'sender-rejected'`, but the function still claims the message was acknowledged.\n\n**One-line fix:**\n```js\nreturn {action:'forwarded', acked: ack.accepted !== 'sender-rejected'};\n```"
+ },
+ {
+  "anonId": "J082",
+  "task": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes, this proposed change violates the standard because it makes the load-bearing delivery path dependent on a dark-shipped feature that is disabled by default. This means that if the feature flag is not enabled, the delivery path will not function. To fix this, the new module should be enabled by default or the delivery path should be made to work through the old path or an alternative path if the new module is disabled."
+ },
+ {
+  "anonId": "J083",
+  "task": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "Here are the labels:\n\n1. N: bug\n2. N: feature\n3. N: question"
+ },
+ {
+  "anonId": "J084",
+  "task": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "(no successful output)"
+ },
+ {
+  "anonId": "J085",
+  "task": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "The laptop had lost the operator’s account entry, so when it checked incoming messages, it rejected them and they were dropped without any visible error. Restoring the missing account entry fixed the problem."
+ },
+ {
+  "anonId": "J086",
+  "task": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "Rejects a token spend request when the account is frozen, the price is unknown, or the estimated cost would exceed the lifetime USD cap, guarding against underpriced/uncalculable requests."
+ },
+ {
+  "anonId": "J087",
+  "task": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": " (Self-Correction during drafting):**\n    *   *Initial thought for steps"
+ },
+ {
+  "anonId": "J088",
+  "task": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "An operator’s registry record disappeared from a laptop, so the mesh forwarding check rejected all their messages. The router mistakenly logged these rejected messages as successfully delivered, causing permanent loss with no visibility until the missing record was restored."
+ },
+ {
+  "anonId": "J089",
+  "task": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "This function, `gateCheck`, determines whether a token transaction is allowed based on a set of caps and spending limits, guarding against edge cases where the caps are frozen, the price is unknown, or the lifetime cap has been exceeded."
+ }
+]

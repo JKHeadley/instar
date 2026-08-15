@@ -1,0 +1,79 @@
+<anonymous_script>:71
+   "input": "The agent received a message 1400 seconds ago and hasn't responded.\n\nUser's message: \"hello?\"\n\nPost-message activity at 20 seconds:\n<tmux_output>\n[scope: only output that appeared AFTER the user's message arrived]\n]0;�� ]10;? P>|��\\ [?12l\n</tmux_output>\n\nPost-message activity at 2 minutes:\n<tmux_output>\n[scope: only output that appeared AFTER the user's message arrived]\n]0;�� ]10;? P>|��\\ [?12l\n</tmux_output>\n\nCurrent post-message activity:\n<tmux_output>\n[scope: only output that appeared AFTER the user's message arrived]\n]0;�� ]10;? P>|��\\ [?12l\n</tmux_output>\n\nActive child processes:\n(no child processes detected)",
+                                                                                                                                                                                                                                            ^
+
+SyntaxError: Bad control character in string literal in JSON at position 7946 (line 71 column 237)
+    at JSON.parse (<anonymous>)
+    at file:///Users/justin/.instar/agents/echo/research/llm-pathway-bench/instar-bench-v2/run2.mjs:44:87
+    at Array.map (<anonymous>)
+    at file:///Users/justin/.instar/agents/echo/research/llm-pathway-bench/instar-bench-v2/run2.mjs:44:71
+    at ModuleJob.run (node:internal/modules/esm/module_job:430:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:655:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+
+Node.js v25.6.1
+[ib2] resume: 0 rows preloaded, 585 calls remain
+[ib2] 3 routes × 18 tasks (195 cases) × 1 samples = 585 calls, c=4
+[ib2] 50/585
+[ib2] 100/585
+[ib2] 150/585
+[ib2] 200/585
+[ib2] 250/585
+[ib2] 300/585
+[ib2] 350/585
+[ib2] 400/585
+[ib2] 450/585
+[ib2] 500/585
+[ib2] 550/585
+[ib2] DONE — 585 calls, 85 failing samples, cost $16.490 → /Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/wave2
+{"stamp":"wave2","routes":3,"tasks":18,"calls":585,"failures":85,"judgeOutputs":24,"outdir":"/Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/wave2"}
+[ib2] resume: 585 rows preloaded, 780 calls remain
+[ib2] 4 routes × 18 tasks (195 cases) × 1 samples = 780 calls, c=4
+[ib2] 50/780
+[ib2] 100/780
+[ib2] 150/780
+[ib2] 200/780
+[ib2] 250/780
+[ib2] 300/780
+[ib2] 350/780
+[ib2] 400/780
+[ib2] 450/780
+[ib2] 500/780
+[ib2] 550/780
+[ib2] 600/780
+[ib2] 650/780
+[ib2] 700/780
+[ib2] 750/780
+[ib2] DONE — 1365 calls, 106 failing samples, cost $18.447 → /Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/wave2
+{"stamp":"wave2","routes":4,"tasks":18,"calls":1365,"failures":106,"judgeOutputs":56,"outdir":"/Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/wave2"}
+[ib2] resume: 1365 rows preloaded, 1365 calls remain
+[ib2] 7 routes × 18 tasks (195 cases) × 1 samples = 1365 calls, c=4
+[ib2] 50/1365
+[ib2] 100/1365
+[ib2] 150/1365
+[ib2] 200/1365
+[ib2] 250/1365
+[ib2] 300/1365
+[ib2] 350/1365
+[ib2] 400/1365
+[ib2] 450/1365
+[ib2] 500/1365
+[ib2] 550/1365
+[ib2] 600/1365
+[ib2] 650/1365
+[ib2] 700/1365
+[ib2] 750/1365
+[ib2] 800/1365
+[ib2] 850/1365
+[ib2] 900/1365
+[ib2] 950/1365
+[ib2] 1000/1365
+[ib2] 1050/1365
+[ib2] 1100/1365
+[ib2] 1150/1365
+[ib2] 1200/1365
+[ib2] 1250/1365
+[ib2] 1300/1365
+[ib2] 1350/1365
+[ib2] DONE — 2730 calls, 1062 failing samples, cost $19.331 → /Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/wave2
+{"stamp":"wave2","routes":7,"tasks":18,"calls":2730,"failures":1062,"judgeOutputs":90,"outdir":"/Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/wave2"}

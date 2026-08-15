@@ -1,0 +1,74 @@
+[
+ {
+  "anonId": "A000",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A001",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A002",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "To safely move your Telegram bot poller from Machine A to Machine B without losing messages or causing conflicts"
+ },
+ {
+  "anonId": "A003",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A004",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A005",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A006",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "**Yes, this violates the standard.** By deleting the old path and routing all traffic through a"
+ },
+ {
+  "anonId": "A007",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "Determines if a request is allowed based on lifetime USD spending limits, while guarding against frozen accounts and"
+ },
+ {
+  "anonId": "A008",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes, this violates the standard because routing all inbound messages through a module that defaults to off means the primary delivery path is"
+ },
+ {
+  "anonId": "A009",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A010",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "... forwarded...}`\n        *   Both blocks return `{action:'forwarded"
+ },
+ {
+  "anonId": "A011",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "An error on the laptop deleted the operator's profile, which caused the system to silently"
+ }
+]

@@ -1,0 +1,8 @@
+[ib2] 3 routes × 0 tasks (0 cases) × 3 samples = 0 calls, c=4
+{"calls":0,"note":"nothing to run (filters or empty discovery)"}
+[ib2] 3 routes × 1 tasks (8 cases) × 3 samples = 9 calls, c=4
+[ib2] DONE — 9 calls, 0 failing samples, cost $0.320 → /Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/abds-arbB
+{"stamp":"abds-arbB","routes":3,"tasks":1,"calls":9,"failures":0,"judgeOutputs":9,"outdir":"/Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/abds-arbB"}
+[ib2] 3 routes × 1 tasks (8 cases) × 3 samples = 9 calls, c=4
+[ib2] DONE — 9 calls, 0 failing samples, cost $0.286 → /Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/abds-arbA2
+{"stamp":"abds-arbA2","routes":3,"tasks":1,"calls":9,"failures":0,"judgeOutputs":9,"outdir":"/Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/abds-arbA2"}

@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-02T00-42-39-312Z",
+  "label": "smoke-funnel",
+  "prompt": "ping",
+  "N": 1,
+  "concurrency": 1,
+  "timeoutMs": 60000,
+  "summaries": [
+    {
+      "pathway": "or-glm-52",
+      "model": "z-ai/glm-5.2",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 1,
+      "ok": 1,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 3201,
+        "p95": 3201,
+        "p99": 3201,
+        "min": 3201,
+        "max": 3201,
+        "mean": 3201
+      },
+      "tokens": {
+        "meanIn": 30,
+        "meanOut": 168
+      },
+      "byError": {}
+    }
+  ]
+}

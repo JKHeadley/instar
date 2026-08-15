@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-01T02-29-15-838Z",
+  "label": "r2-baseline_pi-gpt55",
+  "prompt": "ping",
+  "N": 30,
+  "concurrency": 1,
+  "timeoutMs": 60000,
+  "summaries": [
+    {
+      "pathway": "pi-gpt55",
+      "model": "openai-codex/gpt-5.5",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 4607,
+        "p95": 7157,
+        "p99": 11547,
+        "min": 3918,
+        "max": 11547,
+        "mean": 5023
+      },
+      "tokens": {
+        "meanIn": null,
+        "meanOut": null
+      },
+      "byError": {}
+    }
+  ]
+}

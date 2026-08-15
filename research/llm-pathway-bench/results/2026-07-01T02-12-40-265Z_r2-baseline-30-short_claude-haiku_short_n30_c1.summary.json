@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-01T02-12-40-265Z",
+  "label": "r2-baseline-30-short",
+  "prompt": "short",
+  "N": 30,
+  "concurrency": 1,
+  "timeoutMs": 90000,
+  "summaries": [
+    {
+      "pathway": "claude-haiku",
+      "model": "claude-haiku-4-5-20251001",
+      "promptName": "short",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 6717,
+        "p95": 11541,
+        "p99": 12721,
+        "min": 5457,
+        "max": 12721,
+        "mean": 7442
+      },
+      "tokens": {
+        "meanIn": 23663,
+        "meanOut": 72
+      },
+      "byError": {}
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "stamp": "2026-07-02T01-11-11-137Z",
+  "label": "r7-enterprise-baseline",
+  "prompt": "ping",
+  "N": 30,
+  "concurrency": 1,
+  "timeoutMs": 95000,
+  "summaries": [
+    {
+      "pathway": "or-glm-47-flash",
+      "model": "z-ai/glm-4.7-flash",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 28,
+      "errors": 2,
+      "okRate": 0.933,
+      "latencyMs": {
+        "p50": 3525,
+        "p95": 10605,
+        "p99": 17818,
+        "min": 1161,
+        "max": 17818,
+        "mean": 4203
+      },
+      "tokens": {
+        "meanIn": 23,
+        "meanOut": 152
+      },
+      "byError": {
+        "model-error": 2
+      }
+    }
+  ]
+}

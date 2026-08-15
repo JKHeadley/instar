@@ -1,0 +1,1298 @@
+[
+ {
+  "anonId": "A000",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A001",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A002",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "**Bug**  \n`forwardToOwner` always returns `{acked:true}` regardless of the acknowledgment it receives. If the `owner` machine is unreachable, `deliver` will return an acknowledgment that isn’t `sender‑rejected`, yet the function still reports the message as “acked”, silently dropping the operator’s message.\n\n**One‑line fix**  \n```js\nreturn {action:'forwarded', acked: ack.accepted !== 'sender-rejected'};\n```\nThis sets `acked` to `true` only when the acknowledgment is not a sender rejection, correctly reflecting the delivery status."
+ },
+ {
+  "anonId": "A003",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A004",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A005",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "Your laptop lost your user profile, causing the system to silently delete all outgoing messages without showing any error warnings. We fixed the issue by restoring your profile information."
+ },
+ {
+  "anonId": "A006",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "### Ordered Steps to Move the Telegram Poller from Machine A to Machine B\n\n1. **Stop the poller on Machine A**  \n   Gracefully shut down the process (e.g., stop the systemd service, kill the process, or disable the cron job). Ensure it is no longer polling Telegram’s API.\n\n2. **Wait for a brief verification period** (optional but recommended)  \n   Allow a few seconds to confirm that machine A has fully stopped and any in‑flight update processing is complete.\n\n3. **Start the poller on Machine B**  \n   Launch the new poller service on machine B. It will begin receiving any updates queued by Telegram since the last successful poll from machine A.\n\n### The One Ordering Mistake That Causes Duplicate-Poller Conflicts\n\n**Starting the new poller on Machine B *before* stopping the old poller on Machine A.**  \n\nIf both pollers are active simultaneously, Telegram’s API will see two parallel long-poll requests for the same bot. This results in conflicts where:  \n- Both pollers may receive duplicate updates (each gets its own copy).  \n- Updates may be acknowledged by one poller but not the other, leading to missed messages or duplicate processing.  \n- Telegram’s"
+ },
+ {
+  "anonId": "A007",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A008",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A009",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A010",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A011",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A012",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A013",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A014",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A015",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A016",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A017",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "**Bug Explanation:**\nThe function always returns `{action:'forwarded', acked"
+ },
+ {
+  "anonId": "A018",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A019",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "This function determines if an API request is allowed by estimating its cost against the user's lifetime spending limit"
+ },
+ {
+  "anonId": "A020",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A021",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes, this violates the standard because the sole inbound message delivery path now depends on a feature that is disabled by default—if the flag is off, delivery fails entirely since the old path is deleted. The fix is to either set the new module's flag to default ON, or keep the old path as a fallback so the delivery path remains functional regardless of the flag state."
+ },
+ {
+  "anonId": "A022",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A023",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A024",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A025",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A026",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A027",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A028",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug  \n2: feature  \n3: question"
+ },
+ {
+  "anonId": "A029",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A030",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A031",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A032",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "Concurrent running).\n    *   *Consequence:* This causes a `409 Conflict` error"
+ },
+ {
+  "anonId": "A033",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A034",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A035",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A036",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "The operator's account record was missing from the laptop's user registry, causing the system to silently discard messages while incorrectly logging them as acknowledged. The issue was fixed by restoring the missing record."
+ },
+ {
+  "anonId": "A037",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A038",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A039",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A040",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A041",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A042",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "The bug is that the function returns `{action:'forwarded', acked:true}` regardless of the actual acknowledgment outcome, which means it reports success even when `deliver` fails due to an unreachable peer. The unreachable case likely throws an exception that goes uncaught, or results in an ack object that doesn't match `'sender-rejected'`, but the function still claims the message was acknowledged.\n\n**One-line fix:**\n```js\nreturn {action:'forwarded', acked: ack.accepted !== 'sender-rejected'};\n```"
+ },
+ {
+  "anonId": "A043",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A044",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A045",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A046",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": " 1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A047",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A048",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "**Yes, this violates the standard.** \n\nBy deleting the old path and routing all traffic through"
+ },
+ {
+  "anonId": "A049",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A050",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A051",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A052",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A053",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A054",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A055",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A056",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A057",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A058",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A059",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A060",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A061",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A062",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A063",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A064",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "A missing operator account on the laptop caused the system to silently delete messages without showing any errors. We have"
+ },
+ {
+  "anonId": "A065",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A066",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A067",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "## Ordered Steps to Move the Telegram Poller from Machine A to Machine B\n\n1. **Stop the poller on Machine A** – Send a graceful shutdown signal (e.g., SIGTERM) so the process finishes handling its current update and closes the long-poll connection properly.\n2. **Confirm the poller on A has completely stopped** – Verify the process is no longer running (e.g., `ps aux | grep poller`). Optionally wait 1–2 seconds to ensure any pending network requests have terminated.\n3. **Start the poller on Machine B** – Launch the new poller process, which will immediately begin a `getUpdates` long‑poll request with the stored `offset` (last processed update ID) to avoid re‑processing old messages.\n4. **Verify that Machine B is receiving updates** – Check logs or test with a message to ensure the new poller is working correctly and processing new inbound messages.\n\n> **Note**: Telegram queues undelivered updates for up to 24 hours. If the switch is performed while the old poller is still running, those updates will be picked up by whichever poller first requests them, or may be lost if the new poller starts"
+ },
+ {
+  "anonId": "A068",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "This function performs a **spending gate check** that blocks a transaction if the contract is **frozen**, if the **price is unavailable**, or if the estimated **lifetime spend would exceed the lifetime cap** (guarding against overspending when the calculated USD equivalent of requested tokens pushes cumulative spend over the limit)."
+ },
+ {
+  "anonId": "A069",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A070",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A071",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A072",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A073",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A074",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes, this violates the standard because the entire load-bearing delivery path is now gated by a flag that defaults to OFF, meaning the default state breaks all message delivery with no fallback. The fix is to either change the flag's default to ON, or keep the old path as a safe fallback until the new module is fully validated and the flag can be safely retired."
+ },
+ {
+  "anonId": "A075",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A076",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A077",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes, it violates the standard. By deleting the existing delivery path and routing every inbound message through a module that is hidden behind a flag whose default is **OFF**, the production‑grade delivery pipeline now depends on a dark‑shipped (disabled‑by‑default) feature.  \n\n**Fix:** either ship the new module **on‑by‑default** (after it’s proven safe) or retain the original path as the always‑enabled fallback so that the load‑bearing delivery does not rely on a disabled‑by‑default flag."
+ },
+ {
+  "anonId": "A078",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "**Bug Explanation:**\nThe function returns a successful `{action:'forwarded', acked:true}`"
+ },
+ {
+  "anonId": "A079",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A080",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A081",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A082",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A083",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes, this violates the standard. The proposed change makes the entire inbound message delivery path dependent on a feature that is disabled by default, meaning that with the default configuration, delivery would completely fail (since the old path is deleted). The standard explicitly forbids a load-bearing path from relying on a dark-shipped (disabled-by-default) feature.\n\n**Fix:** Either enable the new module by default (change the flag to default ON) so it is no longer dark-shipped, or retain the old delivery path as a fallback when the flag is OFF, ensuring the load-bearing path remains functional regardless of the flag state."
+ },
+ {
+  "anonId": "A084",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A085",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A086",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A087",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A088",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A089",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "\n<think>\nHere's a thinking process:\n\n1.  **Analyze the User Input:**\n   - **Function:** `forwardToOwner(msg, owner)`\n   - **Code:**\n     ```js\n     async function forwardToOwner(msg, owner){\n       const ack = await deliver(owner, msg);\n       if(ack.accepted==='sender-rejected') return {action:'forwarded', acked:true};\n       return {action:'forwarded', acked:true};\n     }\n     ```\n   - **Problem described:** \"silently drops the operator's message when a peer machine is unreachable\"\n   - **Task:** Explain the bug in 2-3 sentences and give the one-line fix.\n\n2.  **Identify the Bug:**\n   - The function awaits `deliver(owner, msg)`. If the peer is unreachable, `deliver` will likely throw an error (network timeout, connection refused, etc.).\n   - The function doesn't have a `try/catch` block, so when an error is thrown, it propagates up silently (or crashes the async chain) without handling the failure, effectively dropping the message or failing ungracefully.\n   - Additionally, the `if` condition checks for `ack.accepted==='sender-rejected'`, but the `else` branch does the exact same thing, making the `if` redundant. However, the core bug related to the unreachable peer is the missing error handling.\n   - Wait, the prompt says \"silently drops the operator's message when a peer machine is unreachable.\" This strongly implies an unhandled promise rejection or exception from `deliver` that isn't caught, causing the message to be lost or the operation to fail silently depending on how the caller handles it. The fix should add error handling.\n\n   Let's think about what `deliver` likely does. It probably returns an object like `{accepted: ...}` on success, but throws on failure (network error). Without a `try/catch`, the exception escapes, dropping the message.\n   Alternatively, maybe `deliver` returns something else on failure, but the code doesn't check it. However, the most standard bug in async functions like this is missing `try/catch` for network operations.\n\n   Another possibility: The `if` condition is weird. `ack.accepted === 'sender-rejected'` returns the same thing as the fallback. This might be a red herring, or maybe it's supposed to"
+ },
+ {
+  "anonId": "A090",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "The laptop lost the operator's account, so it rejected messages as being from an unknown sender. The router incorrectly logged these rejections as successful deliveries, causing messages to be silently dropped until the account was restored."
+ },
+ {
+  "anonId": "A091",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A092",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A093",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A094",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "To safely move a Telegram bot poller from Machine A to Machine B without losing messages or causing conflicts"
+ },
+ {
+  "anonId": "A095",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A096",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "Determines whether a token transaction is allowed to proceed by evaluating account limits, guarding against estimated transaction"
+ },
+ {
+  "anonId": "A097",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A098",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "A missing operator record caused messages to be silently dropped because the system incorrectly logged a rejection as accepted. Restoring the record resolved the issue."
+ },
+ {
+  "anonId": "A099",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A100",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "The bug in this function is that it doesn't handle the case when the `deliver` function fails or returns an error, resulting in the operator's message being silently dropped. This can occur when the peer machine is unreachable. \nFix: `return {action: 'error', error: await deliver(owner, msg).catch(e => e) };`"
+ },
+ {
+  "anonId": "A101",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A102",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A103",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A104",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A105",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A106",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A107",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A108",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "The operator's account information was missing from the laptop, causing their messages to be dropped without any error or trace. We fixed it by restoring their account information."
+ },
+ {
+  "anonId": "A109",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A110",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "**Yes, this violates the standard.** \n\nBy deleting the old path and routing all inbound"
+ },
+ {
+  "anonId": "A111",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A112",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A113",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A114",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A115",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A116",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A117",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A118",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A119",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A120",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A121",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A122",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "This function gates token generation by denying access if the account is frozen, the price is unknown, or the estimated lifetime spending would exceed the user’s USD cap."
+ },
+ {
+  "anonId": "A123",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A124",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": " 1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A125",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A126",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "Because a laptop lost the operator's account information, the system rejected outgoing messages and"
+ },
+ {
+  "anonId": "A127",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A128",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A129",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "The bug is that the function returns `{action:'forwarded', acked:true}` regardless of whether the delivery succeeded or was rejected, so when `deliver` throws an error (due to an unreachable peer), the error is silently swallowed and the function still returns a success response. The fix is to let the error propagate or handle it properly:\n\n```js\nasync function forwardToOwner(msg, owner){\n  const ack = await deliver(owner, msg);\n  if(ack.accepted==='sender-rejected') return {action:'rejected', acked:true};\n  return {action:'forwarded', acked:true};\n}\n```"
+ },
+ {
+  "anonId": "A130",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "Gate checks a token purchase request by verifying frozen status, price availability, and lifetime cap, guarding against transactions that would exceed the maximum allowed lifetime spend."
+ },
+ {
+  "anonId": "A131",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A132",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A133",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A134",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A135",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A136",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes, this violates the standard because the proposal makes the sole load-bearing delivery path dependent on a feature that is disabled by default, meaning delivery would fail entirely if the flag is not explicitly enabled. The fix is to ship the new module with the flag defaulting to ON, or alternatively, keep the old path as a fallback until the new module is stable and the flag can be removed."
+ },
+ {
+  "anonId": "A137",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A138",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A139",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A140",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A141",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A142",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A143",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A144",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A145",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "Here’s the ordered procedure to migrate a Telegram poller from **Machine A** to **Machine B** without losing messages, followed by the critical ordering mistake.\n\n---\n\n## ✅ Ordered Steps (Safe Migration)\n\n1. **Stop the poller on Machine A**  \n   - Gracefully shut down the process (e.g., `systemctl stop telegram-poller`, `kill -TERM <PID>`, or stop the Docker container).  \n   - Verify it is no longer running (`ps aux | grep poller`, no active connections to Telegram API).\n\n2. **Wait at least 1–2 seconds**  \n   - This ensures Telegram’s server sees the disconnection before a new poller connects.\n\n3. **Start the poller on Machine B**  \n   - Use the same bot token, same polling settings (offset, timeout, allowed_updates, etc.).  \n   - The new poller should automatically receive any updates queued since step 1 (Telegram’s long polling will pick up from the last known `update_id`).\n\n4. **Monitor the new poller**  \n   - Confirm it is receiving updates, including any that were queued during the migration window.\n\n---\n\n## ❌ The Single Ordering Mistake That Causes Duplicate-Poller Conflicts\n\n**Starting the poller on Machine B *before* stopping the poller on Machine A.**\n\nIf both machines poll the same bot token simultaneously, Telegram will:\n- Treat them as two concurrent pollers (which is not allowed).\n- Return `409 Conflict` errors for one or both pollers.\n- Likely cause update loss or skipping, because the API will reject one connection entirely.\n\nEven a few milliseconds of overlap is enough to trigger the conflict.\n\n---\n\n## Why This Works\n\n- Telegram’s **getUpdates** method supports long polling with a single active connection per bot.  \n- When the old poller disconnects, Telegram keeps updates in its queue (up to ~24 hours).  \n- The new poller, starting with no `offset` or the old saved offset, will fetch all missed updates.  \n- The key is **no overlap** and **order: stop → start**."
+ },
+ {
+  "anonId": "A146",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A147",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A148",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A149",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A150",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A151",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A152",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "An operator’s registry record disappeared from a laptop, so the mesh forwarding check rejected all their messages. The router mistakenly logged these rejected messages as successfully delivered, causing permanent loss with no visibility until the missing record was restored."
+ },
+ {
+  "anonId": "A153",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A154",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A155",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A156",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "**Explanation of the bug:**\nThe function contains redundant code where both the `if` condition and the"
+ },
+ {
+  "anonId": "A157",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A158",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "**\n    *   *Draft 1:* This function determines if a token-use"
+ },
+ {
+  "anonId": "A159",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A160",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "The proposed change violates the standard because it makes the entire inbound message delivery path dependent on a feature that is disabled by default. Since the old path is deleted, when the flag is off, there is no working delivery path, meaning the load-bearing path effectively relies on the feature being enabled. The standard explicitly forbids such dependence.\n\n**Fix:** Ensure the new module is enabled by default (i.e., not dark-shipped) or keep the old path as a fallback when the flag is off, so that the delivery path does not require an opt-in feature to function."
+ },
+ {
+  "anonId": "A161",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A162",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A163",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A164",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A165",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A166",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A167",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A168",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A169",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A170",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A171",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "To safely move a Telegram bot poller from Machine A to Machine B without losing messages or causing conflicts,"
+ },
+ {
+  "anonId": "A172",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A173",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A174",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A175",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "A laptop lost the operator's user record, causing the system to reject messages from them but incorrectly log them as accepted, which made the messages disappear permanently. The issue was fixed by restoring the missing record."
+ },
+ {
+  "anonId": "A176",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A177",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A178",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A179",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "Here are the labels:\n\n1: bug\n2: feature\n3: question\n\nLet me know if you'd like me to explain the reasoning behind each label:\n\n* Statement 1 describes an undesirable behavior, which is a characteristic of a bug.\n* Statement 2 describes a desired addition to the functionality, which is a characteristic of a feature.\n* Statement 3 is a query about the current behavior or functionality, which is a characteristic of a question."
+ },
+ {
+  "anonId": "A180",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A181",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A182",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A183",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "This function performs a **gating check** against a **lifetime spending cap**, returning `{allow:false}` with a reason if the account is frozen, missing pricing, or the estimated cost of minting `maxTokens` would cause total spend to exceed `caps.lifetimeCapUsd`."
+ },
+ {
+  "anonId": "A184",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A185",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A186",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A187",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "**Yes, this proposed change violates the standard.** By routing all inbound message delivery through a disabled-by"
+ },
+ {
+  "anonId": "A188",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A189",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A190",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A191",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A192",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A193",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A194",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A195",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A196",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A197",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A198",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A199",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A200",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A201",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": " 1: bug\n2: feature\n3: question"
+ },
+ {
+  "anonId": "A202",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A203",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": " issue by restoring the lost profile.\n    *   *Draft 2:* This issue has been fixed"
+ },
+ {
+  "anonId": "A204",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A205",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A206",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "The bug is that the function **always returns `{action:'forwarded', acked:true}` regardless of the delivery result** — it never checks if `deliver()` actually succeeded or threw an error when the peer is unreachable. If the peer is unreachable, `deliver()` will throw, and since there's no try/catch, the calling code never knows the message was dropped.\n\n**One-line fix:** Wrap the call in a try/catch to handle unreachable peers:\n\n```js\nasync function forwardToOwner(msg, owner){\n  try { const ack = await deliver(owner, msg); } catch(e) { return {action:'failed', acked:false}; }\n  return {action:'forwarded', acked:true};\n}\n```"
+ },
+ {
+  "anonId": "A207",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "This function enforces **minting capacity gates** by blocking mints if the contract is frozen, the price is unavailable, or if the estimated USD value of the requested tokens would exceed the lifetime cap."
+ },
+ {
+  "anonId": "A208",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1) bug\n2) feature\n3) question"
+ },
+ {
+  "anonId": "A209",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": null
+ },
+ {
+  "anonId": "A210",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ },
+ {
+  "anonId": "A211",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": null
+ },
+ {
+  "anonId": "A212",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": null
+ },
+ {
+  "anonId": "A213",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes, this violates the standard because the entire load-bearing delivery path is now gated behind a feature whose default state is OFF, meaning the system will be non-functional unless the flag is manually enabled. The fix is to change the flag’s default to ON (so it ships enabled) or to keep the old delivery path as a fallback until the new module is no longer dark-shipped."
+ },
+ {
+  "anonId": "A214",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": null
+ },
+ {
+  "anonId": "A215",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": null
+ }
+]

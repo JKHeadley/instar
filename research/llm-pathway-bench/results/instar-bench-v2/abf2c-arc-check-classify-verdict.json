@@ -1,0 +1,21 @@
+{
+ "stamp": "abf2c-arc-check-classify",
+ "task": "arc-check-classify",
+ "variant": "variants-wave2/arc-check-classify.f2-authority.json",
+ "cells": 33,
+ "fixed": [
+  "claude-opus::adv-embedded-json-directive",
+  "claude-haiku::bound-dual-engagement"
+ ],
+ "regressed": [
+  "claude-opus::canon-contradicts-settled",
+  "claude-haiku::canon-acts-on-tentative"
+ ],
+ "unchangedCount": 29,
+ "infraExcluded": {
+  "armA": 0,
+  "armB": 0
+ },
+ "cleanWin": false,
+ "ruling": "REGRESSION (must not ship)"
+}

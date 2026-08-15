@@ -1,0 +1,202 @@
+{
+  "round": "r2-baseline",
+  "prompt": "ping",
+  "n": 30,
+  "concurrency": 1,
+  "rows": [
+    {
+      "file": "2026-07-01T02-23-48-718Z_r2-baseline_claude-haiku_claude-haiku_ping_n30_c1.summary.json",
+      "pathway": "claude-haiku",
+      "model": "claude-haiku-4-5-20251001",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 3544,
+        "p95": 5821,
+        "p99": 8069,
+        "min": 2562,
+        "max": 8069,
+        "mean": 3674
+      },
+      "tokens": {
+        "meanIn": 23662,
+        "meanOut": 62
+      },
+      "byError": {}
+    },
+    {
+      "file": "2026-07-01T02-25-39-106Z_r2-baseline_claude-sonnet_claude-sonnet_ping_n30_c1.summary.json",
+      "pathway": "claude-sonnet",
+      "model": "claude-sonnet-4-6",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 2899,
+        "p95": 5514,
+        "p99": 23928,
+        "min": 2343,
+        "max": 23928,
+        "mean": 3812
+      },
+      "tokens": {
+        "meanIn": 22903,
+        "meanOut": 6
+      },
+      "byError": {}
+    },
+    {
+      "file": "2026-07-01T02-27-33-596Z_r2-baseline_claude-opus_claude-opus_ping_n30_c1.summary.json",
+      "pathway": "claude-opus",
+      "model": "claude-opus-4-8",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 3036,
+        "p95": 5785,
+        "p99": 7441,
+        "min": 2235,
+        "max": 7441,
+        "mean": 3404
+      },
+      "tokens": {
+        "meanIn": 19544,
+        "meanOut": 5
+      },
+      "byError": {}
+    },
+    {
+      "file": "2026-07-01T02-29-15-838Z_r2-baseline_pi-gpt55_pi-gpt55_ping_n30_c1.summary.json",
+      "pathway": "pi-gpt55",
+      "model": "openai-codex/gpt-5.5",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 4607,
+        "p95": 7157,
+        "p99": 11547,
+        "min": 3918,
+        "max": 11547,
+        "mean": 5023
+      },
+      "tokens": {
+        "meanIn": null,
+        "meanOut": null
+      },
+      "byError": {}
+    },
+    {
+      "file": "2026-07-01T02-31-46-609Z_r2-baseline_gemini-flash_gemini-flash_ping_n30_c1.summary.json",
+      "pathway": "gemini-flash",
+      "model": "gemini-2.5-flash",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 8538,
+        "p95": 15726,
+        "p99": 17228,
+        "min": 6533,
+        "max": 17228,
+        "mean": 9400
+      },
+      "tokens": {
+        "meanIn": null,
+        "meanOut": null
+      },
+      "byError": {}
+    },
+    {
+      "file": "2026-07-01T02-44-58-106Z_r2-baseline_codex-gpt55_codex-gpt55_ping_n30_c1.summary.json",
+      "pathway": "codex-gpt55",
+      "model": "gpt-5.5",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 29,
+      "errors": 1,
+      "okRate": 0.967,
+      "latencyMs": {
+        "p50": 18053,
+        "p95": 43343,
+        "p99": 86241,
+        "min": 10291,
+        "max": 86241,
+        "mean": 22637
+      },
+      "tokens": {
+        "meanIn": 11735,
+        "meanOut": 6
+      },
+      "byError": {
+        "timeout": 1
+      }
+    },
+    {
+      "file": "2026-07-01T02-57-54-683Z_r2-baseline_codex-gpt54mini_codex-gpt54mini_ping_n30_c1.summary.json",
+      "pathway": "codex-gpt54mini",
+      "model": "gpt-5.4-mini",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 15523,
+        "p95": 38678,
+        "p99": 51192,
+        "min": 8729,
+        "max": 51192,
+        "mean": 19092
+      },
+      "tokens": {
+        "meanIn": 10004,
+        "meanOut": 23
+      },
+      "byError": {}
+    },
+    {
+      "file": "2026-07-01T03-07-27-591Z_r2-baseline_codex-gpt55-plain_codex-gpt55-plain_ping_n30_c1.summary.json",
+      "pathway": "codex-gpt55-plain",
+      "model": "gpt-5.5",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 15586,
+        "p95": 40625,
+        "p99": 41223,
+        "min": 7453,
+        "max": 41223,
+        "mean": 18432
+      },
+      "tokens": {
+        "meanIn": null,
+        "meanOut": null
+      },
+      "byError": {}
+    }
+  ]
+}

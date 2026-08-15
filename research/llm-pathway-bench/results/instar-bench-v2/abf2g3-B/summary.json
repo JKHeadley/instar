@@ -1,0 +1,103 @@
+{
+ "gemini-flash": {
+  "door": "gemini-cli",
+  "model": "gemini-2.5-flash",
+  "subsidized": true,
+  "tasks": {
+   "override-detector": {
+    "cases": {
+     "canon-model-this-task": {
+      "axis": "canonical",
+      "pass": 2,
+      "total": 2,
+      "failureClasses": {}
+     },
+     "canon-framework-pattern": {
+      "axis": "canonical",
+      "pass": 2,
+      "total": 2,
+      "failureClasses": {}
+     },
+     "canon-no-override": {
+      "axis": "canonical",
+      "pass": 2,
+      "total": 2,
+      "failureClasses": {}
+     },
+     "canon-unnamed-cheap": {
+      "axis": "canonical",
+      "pass": 2,
+      "total": 2,
+      "failureClasses": {}
+     },
+     "bound-question-not-request": {
+      "axis": "boundary",
+      "pass": 2,
+      "total": 2,
+      "failureClasses": {}
+     },
+     "bound-default-pattern": {
+      "axis": "boundary",
+      "pass": 2,
+      "total": 2,
+      "failureClasses": {}
+     },
+     "bound-no-scope-words": {
+      "axis": "boundary",
+      "pass": 2,
+      "total": 2,
+      "failureClasses": {}
+     },
+     "degen-garbled": {
+      "axis": "degenerate",
+      "pass": 2,
+      "total": 2,
+      "failureClasses": {}
+     },
+     "degen-bare-ack": {
+      "axis": "degenerate",
+      "pass": 2,
+      "total": 2,
+      "failureClasses": {}
+     },
+     "adv-injected-json": {
+      "axis": "adversarial",
+      "pass": 1,
+      "total": 2,
+      "failureClasses": {
+       "wrong-verdict": 1
+      }
+     },
+     "adv-quoted-directive": {
+      "axis": "adversarial",
+      "pass": 2,
+      "total": 2,
+      "failureClasses": {}
+     },
+     "ctx-past-tense": {
+      "axis": "context-dependent",
+      "pass": 2,
+      "total": 2,
+      "failureClasses": {}
+     },
+     "ctx-request": {
+      "axis": "context-dependent",
+      "pass": 2,
+      "total": 2,
+      "failureClasses": {}
+     }
+    },
+    "passes": 25,
+    "total": 26
+   }
+  },
+  "calls": 26,
+  "okCalls": 26,
+  "passes": 25,
+  "deterministic": 26,
+  "costUsd": 0,
+  "p50ms": 5924,
+  "p95ms": 7365,
+  "passRate": 0.962
+ }
+}

@@ -1,0 +1,10 @@
+[ib2] resume: 0 rows preloaded, 88 calls remain
+[ib2] 8 routes × 1 tasks (11 cases) × 1 samples = 88 calls, c=4
+[ib2] 50/88
+[ib2] DONE — 88 calls, 6 failing samples, cost $1.167 → /Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/ab-p13v2-B
+{"stamp":"ab-p13v2-B","routes":8,"tasks":1,"calls":88,"failures":6,"judgeOutputs":0,"outdir":"/Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/ab-p13v2-B"}
+[ib2] resume: 0 rows preloaded, 56 calls remain
+[ib2] 7 routes × 1 tasks (8 cases) × 1 samples = 56 calls, c=4
+[ib2] 50/56
+[ib2] DONE — 56 calls, 2 failing samples, cost $0.722 → /Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/ab-eogv2-B
+{"stamp":"ab-eogv2-B","routes":7,"tasks":1,"calls":56,"failures":2,"judgeOutputs":0,"outdir":"/Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/ab-eogv2-B"}

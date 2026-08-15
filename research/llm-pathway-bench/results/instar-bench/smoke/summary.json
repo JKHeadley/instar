@@ -1,0 +1,28 @@
+{
+ "or-claude-haiku-45": {
+  "model": "anthropic/claude-haiku-4.5",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 1354,
+  "okRate": 1,
+  "costUsd": 0.0063
+ },
+ "groq-llama4-scout": {
+  "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 1034,
+  "okRate": 1,
+  "costUsd": 0.00064
+ }
+}

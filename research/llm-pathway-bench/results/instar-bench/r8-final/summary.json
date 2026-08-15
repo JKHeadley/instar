@@ -1,0 +1,418 @@
+{
+ "or-gpt-55": {
+  "model": "openai/gpt-5.5",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 2306,
+  "medianTokensOut": 42,
+  "okRate": 0.928,
+  "costUsd": 0.21033,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-claude-opus-48": {
+  "model": "anthropic/claude-opus-4.8",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 2241,
+  "medianTokensOut": 13,
+  "okRate": 1,
+  "costUsd": 0.1407,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-gemini-31-pro-preview": {
+  "model": "google/gemini-3.1-pro-preview",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 0.9166666666666666
+  },
+  "overallDeterministic": 0.9722222222222222,
+  "p50ms": 5049,
+  "medianTokensOut": 317,
+  "okRate": 1,
+  "costUsd": 0.28417,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-glm-52": {
+  "model": "z-ai/glm-5.2",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 0.7499999999999999
+  },
+  "overallDeterministic": 0.9166666666666666,
+  "p50ms": 3898,
+  "medianTokensOut": 195,
+  "okRate": 0.754,
+  "costUsd": 0.05534,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-qwen37-max": {
+  "model": "qwen/qwen3.7-max",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 10272,
+  "medianTokensOut": 462,
+  "okRate": 0.986,
+  "costUsd": 0.1896,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-deepseek-v4-pro": {
+  "model": "deepseek/deepseek-v4-pro",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 0.9523809523809523,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 0.9841269841269842,
+  "p50ms": 3851,
+  "medianTokensOut": 100,
+  "okRate": 0.899,
+  "costUsd": 0.0116,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-kimi-k26": {
+  "model": "moonshotai/kimi-k2.6",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 0.9166666666666666
+  },
+  "overallDeterministic": 0.9722222222222222,
+  "p50ms": 4272,
+  "medianTokensOut": 184,
+  "okRate": 0.797,
+  "costUsd": 0.06446,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-claude-sonnet-5": {
+  "model": "anthropic/claude-sonnet-5",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 3129,
+  "medianTokensOut": 13,
+  "okRate": 1,
+  "costUsd": 0.05778,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-gpt-54": {
+  "model": "openai/gpt-5.4",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 1234,
+  "medianTokensOut": 11,
+  "okRate": 1,
+  "costUsd": 0.04714,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-gemini-35-flash": {
+  "model": "google/gemini-3.5-flash",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 3010,
+  "medianTokensOut": 330,
+  "okRate": 1,
+  "costUsd": 0.21484,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-glm-5-turbo": {
+  "model": "z-ai/glm-5-turbo",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 0.8095238095238094,
+   "gate": 0.7777777777777778,
+   "extractor": 1
+  },
+  "overallDeterministic": 0.8624338624338623,
+  "p50ms": 12310,
+  "medianTokensOut": 249,
+  "okRate": 0.681,
+  "costUsd": 0.09847,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-deepseek-v4-flash": {
+  "model": "deepseek/deepseek-v4-flash",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 0.9444444444444443,
+   "extractor": 1
+  },
+  "overallDeterministic": 0.9814814814814814,
+  "p50ms": 2852,
+  "medianTokensOut": 89,
+  "okRate": 0.986,
+  "costUsd": 0.002,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-qwen37-plus": {
+  "model": "qwen/qwen3.7-plus",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 10942,
+  "medianTokensOut": 455,
+  "okRate": 0.971,
+  "costUsd": 0.06514,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-claude-haiku-45": {
+  "model": "anthropic/claude-haiku-4.5",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 0.9722222222222223,
+   "extractor": 1
+  },
+  "overallDeterministic": 0.9907407407407408,
+  "p50ms": 1487,
+  "medianTokensOut": 13,
+  "okRate": 1,
+  "costUsd": 0.01935,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-gpt-54-mini": {
+  "model": "openai/gpt-5.4-mini",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 1222,
+  "medianTokensOut": 11,
+  "okRate": 1,
+  "costUsd": 0.01486,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-gpt-54-nano": {
+  "model": "openai/gpt-5.4-nano",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 0.7142857142857143,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 0.9047619047619048,
+  "p50ms": 1271,
+  "medianTokensOut": 10,
+  "okRate": 1,
+  "costUsd": 0.00464,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-gemini-31-flash-lite": {
+  "model": "google/gemini-3.1-flash-lite",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 1180,
+  "medianTokensOut": 6,
+  "okRate": 1,
+  "costUsd": 0.00509,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-glm-47-flash": {
+  "model": "z-ai/glm-4.7-flash",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 0.8571428571428571,
+   "gate": 0.8888888888888888,
+   "extractor": 0.9166666666666666
+  },
+  "overallDeterministic": 0.8875661375661376,
+  "p50ms": 7155,
+  "medianTokensOut": 367,
+  "okRate": 0.696,
+  "costUsd": 0.0116,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-qwen36-flash": {
+  "model": "qwen/qwen3.6-flash",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 5152,
+  "medianTokensOut": 433,
+  "okRate": 1,
+  "costUsd": 0.0607,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "or-llama-4-scout": {
+  "model": "meta-llama/llama-4-scout",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 0.9444444444444443,
+   "extractor": 0.8333333333333333
+  },
+  "overallDeterministic": 0.9259259259259259,
+  "p50ms": 1090,
+  "medianTokensOut": 8,
+  "okRate": 1,
+  "costUsd": 0.00138,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "groq-llama33-70b": {
+  "model": "llama-3.3-70b-versatile",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 0.6666666666666666
+  },
+  "overallDeterministic": 0.8888888888888888,
+  "p50ms": 777,
+  "medianTokensOut": 7,
+  "okRate": 0.826,
+  "costUsd": 0.01004,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "groq-llama4-scout": {
+  "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 0.9047619047619048,
+   "gate": 1,
+   "extractor": 0.9166666666666666
+  },
+  "overallDeterministic": 0.9404761904761904,
+  "p50ms": 987,
+  "medianTokensOut": 8,
+  "okRate": 0.971,
+  "costUsd": 0.00247,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "groq-qwen3-32b": {
+  "model": "qwen/qwen3-32b",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 0.5,
+   "gate": 0.5,
+   "extractor": 0.4583333333333333
+  },
+  "overallDeterministic": 0.4861111111111111,
+  "p50ms": 1328,
+  "medianTokensOut": 302,
+  "okRate": 1,
+  "costUsd": 0.01451,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "groq-qwen36-27b": {
+  "model": "qwen/qwen3.6-27b",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 0.047619047619047616,
+   "gate": 0,
+   "extractor": 0.125
+  },
+  "overallDeterministic": 0.057539682539682536,
+  "p50ms": 1443,
+  "medianTokensOut": 512,
+  "okRate": 1,
+  "costUsd": 0.02363,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "groq-gpt-oss-120b": {
+  "model": "openai/gpt-oss-120b",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 0.9523809523809523,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 0.9841269841269842,
+  "p50ms": 786,
+  "medianTokensOut": 111,
+  "okRate": 1,
+  "costUsd": 0.01038,
+  "detSamples": 51,
+  "judgeSamples": 18
+ },
+ "groq-gpt-oss-20b": {
+  "model": "openai/gpt-oss-20b",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 723,
+  "medianTokensOut": 127,
+  "okRate": 1,
+  "costUsd": 0.00861,
+  "detSamples": 51,
+  "judgeSamples": 18
+ }
+}

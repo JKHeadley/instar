@@ -1,0 +1,15 @@
+{
+ "stamp": "ab-completion-judge3",
+ "task": "completion-judge",
+ "variant": "variants/completion-judge.claim-not-evidence-v3.json",
+ "cells": 138,
+ "fixed": [],
+ "regressed": [],
+ "unchangedCount": 70,
+ "infraExcluded": {
+  "armA": 2,
+  "armB": 0
+ },
+ "cleanWin": false,
+ "ruling": "NO-GAIN (must not ship)"
+}

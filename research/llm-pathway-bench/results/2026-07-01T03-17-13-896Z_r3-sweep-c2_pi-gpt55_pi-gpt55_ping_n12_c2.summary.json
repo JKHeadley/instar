@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-01T03-17-13-896Z",
+  "label": "r3-sweep-c2_pi-gpt55",
+  "prompt": "ping",
+  "N": 12,
+  "concurrency": 2,
+  "timeoutMs": 60000,
+  "summaries": [
+    {
+      "pathway": "pi-gpt55",
+      "model": "openai-codex/gpt-5.5",
+      "promptName": "ping",
+      "concurrency": 2,
+      "n": 12,
+      "ok": 12,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 4622,
+        "p95": 7776,
+        "p99": 7776,
+        "min": 3797,
+        "max": 7776,
+        "mean": 4894
+      },
+      "tokens": {
+        "meanIn": 1089,
+        "meanOut": 6
+      },
+      "byError": {}
+    }
+  ]
+}

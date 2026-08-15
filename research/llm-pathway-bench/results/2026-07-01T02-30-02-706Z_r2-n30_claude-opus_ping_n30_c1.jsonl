@@ -1,0 +1,1 @@
+{"ts":1782873010416,"pathway":"claude-opus","framework":"claude","model":"claude-opus-4-8","mode":"print-json","promptName":"ping","concurrency":1,"iter":0,"ok":true,"latencyMs":7708,"exitCode":0,"timedOut":false,"errorSig":null,"stdoutBytes":1452,"stderrTail":"","tokensIn":19546,"tokensOut":5,"tokensCached":14839,"costUsd":0.04182349999999999}

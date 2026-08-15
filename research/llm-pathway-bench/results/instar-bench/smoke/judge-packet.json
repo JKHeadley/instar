@@ -1,0 +1,86 @@
+[
+ {
+  "anonId": "A000",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "**Bug Explanation:** \nThe function silently drops the operator's message when a peer machine is unreachable, likely because the `deliver` function does not handle the case where the peer machine is down. If the peer machine is unreachable, `deliver` may throw an error or return a rejected promise, but the current implementation does not account for this. As a result, the message is lost without any notification.\n\n**One-line Fix:**\n```javascript\nasync function forwardToOwner(msg, owner){\n  try { \n    const ack = await deliver(owner, msg);\n    if(ack.accepted==='sender-rejected') return {action:'forwarded', acked:true};\n    return {action:'forwarded', acked:true};\n  } catch (error) { \n    return {action:'forwarded', acked:false, error}; \n  }\n}\n```",
+  "_model": "groq-llama4-scout"
+ },
+ {
+  "anonId": "A001",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "Here is a 2-sentence summary:\n\nThe laptop's user registry had a problem that caused it to forget about the operator, which prevented messages from being delivered. The issue was fixed by restoring the operator's record, which allowed messages to be sent and received properly again.",
+  "_model": "groq-llama4-scout"
+ },
+ {
+  "anonId": "A002",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "# Moving Telegram Poller from Machine A to Machine B\n\n## Correct Ordered Steps\n\n1. **Deploy poller code to Machine B** (but don't start it yet)\n2. **Start the poller on Machine B**\n3. **Wait for Machine B to catch up** (verify it's receiving updates and has processed pending queue)\n4. **Stop the poller on Machine A**\n5. **Verify no messages lost** (check update IDs are sequential across the handoff)\n\n## The Critical Ordering Mistake\n\n**Starting Machine B's poller BEFORE stopping Machine A's poller** causes a duplicate-poller conflict.\n\n### Why This Breaks\n\n- Both pollers call `getUpdates()` simultaneously\n- Telegram's single-poller guarantee means both receive overlapping updates\n- Conflicting state: unclear which poller \"owns\" which updates\n- Messages may be processed twice or marked as delivered by both instances\n- The ~24h queue doesn't help because *both are actively pulling*\n\n## Key Principle\n\n**Stop the old poller → Start the new poller** (never overlap active pollers)\n\n---\n\n**Alternative safer approach**: Use a **graceful handoff with an intermediate pause**—stop A, wait 5-10 seconds, then start B (ensures no race condition on Telegram's backend state machine).",
+  "_model": "or-claude-haiku-45"
+ },
+ {
+  "anonId": "A003",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "1: bug\n2: feature\n3: question",
+  "_model": "or-claude-haiku-45"
+ },
+ {
+  "anonId": "A004",
+  "taskId": "agent-plan",
+  "rubric": "10 = correct order (stop A's poller BEFORE starting B's; verify A stopped; then start B) AND names that starting B before stopping A causes the 409 two-poller conflict. 5 = right idea, fuzzy on the conflict. 0 = would run both pollers.",
+  "output": "To move the Telegram poller from machine A to machine B without losing any inbound messages, follow these ordered steps:\n\n### Step 1: Preparation on Machine A\n- **Stop the Telegram Bot API Poller on Machine A**: Gracefully shut down the poller. Ensure that no new updates are being processed or fetched.\n\n### Step 2: Fetch and Save Current Offset\n- **Fetch the Current Offset**: Immediately after stopping the poller on Machine A, fetch the current offset or the last update ID that was processed. This can typically be done through the Telegram Bot API's `getUpdates` method with an appropriate offset. \n- **Save the Offset**: Save this offset securely. You'll use it to resume where the other poller left off.\n\n### Step 3: Setup on Machine B\n- **Configure and Test Machine B**: Set up the Telegram bot poller on Machine B but do **not** start it yet. Ensure the bot is configured correctly and can authenticate with Telegram.\n\n### Step 4: Update Offset on Machine B\n- **Set Offset on Machine B**: Before starting the poller on Machine B, use the saved offset to `setWebhook` or to directly influence the `getUpdates` method's offset parameter. This ensures that Machine B starts pulling updates from where Machine A left off.\n\n### Step 5: Start Poller on Machine B\n- **Start the Poller on Machine B**: Now, start the Telegram bot poller on Machine B. It will begin fetching updates from the point where you left off on Machine A.\n\n### Step 6: Monitor for Overlap\n- **Monitor Both Machines**: Even though you've moved the poller, monitor both machines to ensure no updates are being processed twice. Since you've carefully managed the offset, this should not happen, but monitoring is crucial.\n\n### One Ordering Mistake: Starting Poller on Machine B Before Updating Offset\n- **Mistake**: Starting the poller on Machine B before updating",
+  "_model": "groq-llama4-scout"
+ },
+ {
+  "anonId": "A005",
+  "taskId": "bg-classify-batch",
+  "rubric": "10 = 1:bug 2:feature 3:question, clean format. 5 = one mislabel or messy format. 0 = multiple wrong.",
+  "output": "Here are the labels:\n\n1. N: bug\n2. N: feature\n3. N: question",
+  "_model": "groq-llama4-scout"
+ },
+ {
+  "anonId": "A006",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "# Analysis\n\n**Yes, this violates the standard.** The standard prohibits load-bearing paths from *depending on* dark-shipped features, meaning critical functionality cannot rely on disabled-by-default code. By deleting the old path and routing ALL delivery through the flagged module, the delivery path now depends entirely on the feature being enabled.\n\n**Fix:** Keep the old delivery path active as the default route, and use the flag to route only *new or opt-in* traffic through the new module. Once the new module is battle-tested in production (flag enabled for a subset of users), then transition the default and eventually deprecate the old path.",
+  "_model": "or-claude-haiku-45"
+ },
+ {
+  "anonId": "A007",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "This function authorizes API requests by checking spending caps and estimated costs, guarding against frozen accounts, unknown pricing, and lifetime spending overages.",
+  "_model": "or-claude-haiku-45"
+ },
+ {
+  "anonId": "A008",
+  "taskId": "agent-standards",
+  "rubric": "10 = clear YES-violation (delivery now depends on a default-off feature → messages silently undelivered until flag flipped) + fix (keep old path until the flag is defaulted on / graduate the flag first). 5 = senses a problem, muddled. 0 = says compliant.",
+  "output": "Yes, this proposed change violates the standard because the load-bearing delivery path now depends on a dark-shipped feature (the new module behind a flag defaulting to OFF). To fix this, the new module should be enabled by default, or an alternative load-bearing delivery path that does not depend on the dark-shipped feature should be maintained. The old path should not be deleted until the new path is made the default.",
+  "_model": "groq-llama4-scout"
+ },
+ {
+  "anonId": "A009",
+  "taskId": "bg-codesummary",
+  "rubric": "10 = one sentence: fail-closed budget gate that refuses a call when frozen, price-unknown, or over the lifetime cap. 5 = correct but vague or misses fail-closed nature. 0 = wrong.",
+  "output": "**Gate Check Function:** This function determines whether a transaction should be allowed to proceed, guarding against edge cases where the capability is frozen, the price is unknown, or the estimated spend exceeds the lifetime cap.",
+  "_model": "groq-llama4-scout"
+ },
+ {
+  "anonId": "A010",
+  "taskId": "agent-debug",
+  "rubric": "10 = identifies that sender-rejected (and the fallthrough) is treated as success/acked so the message is dropped with no retry/local-fallback, AND proposes surfacing/failing the rejection. 5 = notices the acked:true-on-rejection smell but vague fix. 0 = misses the drop entirely.",
+  "output": "# Bug Explanation\n\nThe function always returns `{action:'forwarded', acked:true}` regardless of whether the message was successfully delivered or rejected. When `deliver()` fails to reach the peer machine, the function silently reports success instead of indicating the failure to the operator.\n\n# One-line Fix\n\n```js\nif(ack.accepted==='sender-rejected') return {action:'forwarded', acked:false};\n```\n\nThis returns `acked:false` when the message is rejected, allowing the operator to know the delivery failed.",
+  "_model": "or-claude-haiku-45"
+ },
+ {
+  "anonId": "A011",
+  "taskId": "bg-digest",
+  "rubric": "10 = 2 plain sentences a non-engineer grasps, captures cause (agent didn't recognize the operator → silently dropped messages) + resolution, no jargon/paths. 5 = accurate but jargony. 0 = wrong or unreadable.",
+  "output": "# Incident Summary\n\nA missing operator record on the laptop caused the system to reject messages without any notification, making it impossible to trace what happened. The issue was resolved by restoring the operator's record.",
+  "_model": "or-claude-haiku-45"
+ }
+]

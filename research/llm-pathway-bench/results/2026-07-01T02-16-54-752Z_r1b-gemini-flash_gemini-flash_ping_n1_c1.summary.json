@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-01T02-16-54-752Z",
+  "label": "r1b-gemini-flash",
+  "prompt": "ping",
+  "N": 1,
+  "concurrency": 1,
+  "timeoutMs": 100000,
+  "summaries": [
+    {
+      "pathway": "gemini-flash",
+      "model": "gemini-2.5-flash",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 1,
+      "ok": 1,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 11821,
+        "p95": 11821,
+        "p99": 11821,
+        "min": 11821,
+        "max": 11821,
+        "mean": 11821
+      },
+      "tokens": {
+        "meanIn": null,
+        "meanOut": null
+      },
+      "byError": {}
+    }
+  ]
+}

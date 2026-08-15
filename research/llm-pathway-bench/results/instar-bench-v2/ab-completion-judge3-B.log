@@ -1,0 +1,5 @@
+[ib2] resume: 0 rows preloaded, 70 calls remain
+[ib2] 7 routes × 1 tasks (10 cases) × 1 samples = 70 calls, c=4
+[ib2] 50/70
+[ib2] DONE — 70 calls, 7 failing samples, cost $0.921 → /Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/ab-completion-judge3-B
+{"stamp":"ab-completion-judge3-B","routes":7,"tasks":1,"calls":70,"failures":7,"judgeOutputs":0,"outdir":"/Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/ab-completion-judge3-B"}

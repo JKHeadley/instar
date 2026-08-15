@@ -1,0 +1,80 @@
+{
+  "round": "r3-sweep-c2",
+  "prompt": "ping",
+  "n": 12,
+  "concurrency": 2,
+  "rows": [
+    {
+      "file": "2026-07-01T03-16-55-355Z_r3-sweep-c2_claude-haiku_claude-haiku_ping_n12_c2.summary.json",
+      "pathway": "claude-haiku",
+      "model": "claude-haiku-4-5-20251001",
+      "promptName": "ping",
+      "concurrency": 2,
+      "n": 12,
+      "ok": 12,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 2888,
+        "p95": 4351,
+        "p99": 4351,
+        "min": 2341,
+        "max": 4351,
+        "mean": 3066
+      },
+      "tokens": {
+        "meanIn": 23662,
+        "meanOut": 62
+      },
+      "byError": {}
+    },
+    {
+      "file": "2026-07-01T03-17-13-896Z_r3-sweep-c2_pi-gpt55_pi-gpt55_ping_n12_c2.summary.json",
+      "pathway": "pi-gpt55",
+      "model": "openai-codex/gpt-5.5",
+      "promptName": "ping",
+      "concurrency": 2,
+      "n": 12,
+      "ok": 12,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 4622,
+        "p95": 7776,
+        "p99": 7776,
+        "min": 3797,
+        "max": 7776,
+        "mean": 4894
+      },
+      "tokens": {
+        "meanIn": 1089,
+        "meanOut": 6
+      },
+      "byError": {}
+    },
+    {
+      "file": "2026-07-01T03-17-43-649Z_r3-sweep-c2_gemini-flash_gemini-flash_ping_n12_c2.summary.json",
+      "pathway": "gemini-flash",
+      "model": "gemini-2.5-flash",
+      "promptName": "ping",
+      "concurrency": 2,
+      "n": 12,
+      "ok": 12,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 9100,
+        "p95": 14517,
+        "p99": 14517,
+        "min": 6182,
+        "max": 14517,
+        "mean": 9208
+      },
+      "tokens": {
+        "meanIn": 5959,
+        "meanOut": 2
+      },
+      "byError": {}
+    }
+  ]
+}

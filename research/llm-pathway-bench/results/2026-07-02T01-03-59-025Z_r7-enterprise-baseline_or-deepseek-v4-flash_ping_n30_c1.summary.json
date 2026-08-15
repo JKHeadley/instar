@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-02T01-03-59-025Z",
+  "label": "r7-enterprise-baseline",
+  "prompt": "ping",
+  "N": 30,
+  "concurrency": 1,
+  "timeoutMs": 95000,
+  "summaries": [
+    {
+      "pathway": "or-deepseek-v4-flash",
+      "model": "deepseek/deepseek-v4-flash",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 2566,
+        "p95": 9563,
+        "p99": 11477,
+        "min": 748,
+        "max": 11477,
+        "mean": 3247
+      },
+      "tokens": {
+        "meanIn": 22,
+        "meanOut": 28
+      },
+      "byError": {}
+    }
+  ]
+}

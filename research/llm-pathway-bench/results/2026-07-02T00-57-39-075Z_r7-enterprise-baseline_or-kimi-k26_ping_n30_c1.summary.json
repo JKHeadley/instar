@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-02T00-57-39-075Z",
+  "label": "r7-enterprise-baseline",
+  "prompt": "ping",
+  "N": 30,
+  "concurrency": 1,
+  "timeoutMs": 95000,
+  "summaries": [
+    {
+      "pathway": "or-kimi-k26",
+      "model": "moonshotai/kimi-k2.6",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 2770,
+        "p95": 6834,
+        "p99": 7115,
+        "min": 1666,
+        "max": 7115,
+        "mean": 2948
+      },
+      "tokens": {
+        "meanIn": 26,
+        "meanOut": 71
+      },
+      "byError": {}
+    }
+  ]
+}

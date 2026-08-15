@@ -1,0 +1,1 @@
+{"ts":1782952962515,"pathway":"or-glm-52","framework":"funnel","model":"z-ai/glm-5.2","mode":"funnel","promptName":"ping","concurrency":1,"iter":0,"ok":true,"latencyMs":3201,"exitCode":0,"timedOut":false,"errorSig":null,"stdoutBytes":192,"stderrTail":"","tokensIn":30,"tokensOut":168,"tokensCached":null,"costUsd":0.000532}

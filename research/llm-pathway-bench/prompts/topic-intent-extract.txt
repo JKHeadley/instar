@@ -1,0 +1,5 @@
+Extract the intent from this conversation snippet. The session history shows the user asking "What's the status on the migration?" after 2 hours of silence. I haven't sent any update.
+
+Respond with: {"intent": "...", "sentiment": "neutral|concerned|urgent", "requires_action": true/false}
+
+What should I understand about this message?

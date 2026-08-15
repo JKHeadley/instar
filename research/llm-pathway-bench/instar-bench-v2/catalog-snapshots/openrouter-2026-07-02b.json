@@ -1,0 +1,3049 @@
+{
+ "ok": true,
+ "provider": "openrouter",
+ "count": 338,
+ "models": [
+  {
+   "id": "anthropic/claude-sonnet-5",
+   "pricing": {
+    "prompt": "0.000002",
+    "completion": "0.00001"
+   },
+   "contextLength": 1000000,
+   "created": 1782843083
+  },
+  {
+   "id": "google/gemini-3.1-flash-lite-image",
+   "pricing": {
+    "prompt": "0.00000025",
+    "completion": "0.0000015"
+   },
+   "contextLength": 65536,
+   "created": 1782837225
+  },
+  {
+   "id": "sakana/fugu-ultra",
+   "pricing": {
+    "prompt": "0.000005",
+    "completion": "0.00003"
+   },
+   "contextLength": 1000000,
+   "created": 1782276303
+  },
+  {
+   "id": "google/gemini-3.1-flash-image",
+   "pricing": {
+    "prompt": "0.0000005",
+    "completion": "0.000003"
+   },
+   "contextLength": 131072,
+   "created": 1781754065
+  },
+  {
+   "id": "google/gemini-3-pro-image",
+   "pricing": {
+    "prompt": "0.000002",
+    "completion": "0.000012"
+   },
+   "contextLength": 65536,
+   "created": 1781754054
+  },
+  {
+   "id": "cohere/north-mini-code:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 256000,
+   "created": 1781723748
+  },
+  {
+   "id": "z-ai/glm-5.2",
+   "pricing": {
+    "prompt": "0.00000093",
+    "completion": "0.000003"
+   },
+   "contextLength": 1048576,
+   "created": 1781631930
+  },
+  {
+   "id": "openrouter/fusion",
+   "pricing": {
+    "prompt": "-1",
+    "completion": "-1"
+   },
+   "contextLength": 1000000,
+   "created": 1781371647
+  },
+  {
+   "id": "moonshotai/kimi-k2.7-code",
+   "pricing": {
+    "prompt": "0.00000074",
+    "completion": "0.0000035"
+   },
+   "contextLength": 262144,
+   "created": 1781266361
+  },
+  {
+   "id": "~anthropic/claude-fable-latest",
+   "pricing": {
+    "prompt": "0.00001",
+    "completion": "0.00005"
+   },
+   "contextLength": 1000000,
+   "created": 1781029944
+  },
+  {
+   "id": "anthropic/claude-fable-5",
+   "pricing": {
+    "prompt": "0.00001",
+    "completion": "0.00005"
+   },
+   "contextLength": 1000000,
+   "created": 1781007515
+  },
+  {
+   "id": "nex-agi/nex-n2-pro",
+   "pricing": {
+    "prompt": "0.00000025",
+    "completion": "0.000001"
+   },
+   "contextLength": 262144,
+   "created": 1780937140
+  },
+  {
+   "id": "nvidia/nemotron-3.5-content-safety:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 128000,
+   "created": 1780581864
+  },
+  {
+   "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 1000000,
+   "created": 1780551208
+  },
+  {
+   "id": "nvidia/nemotron-3-ultra-550b-a55b",
+   "pricing": {
+    "prompt": "0.0000005",
+    "completion": "0.0000022"
+   },
+   "contextLength": 1000000,
+   "created": 1780551208
+  },
+  {
+   "id": "qwen/qwen3.7-plus",
+   "pricing": {
+    "prompt": "0.00000032",
+    "completion": "0.00000128"
+   },
+   "contextLength": 1000000,
+   "created": 1780491783
+  },
+  {
+   "id": "minimax/minimax-m3",
+   "pricing": {
+    "prompt": "0.0000003",
+    "completion": "0.0000012"
+   },
+   "contextLength": 1048576,
+   "created": 1780245374
+  },
+  {
+   "id": "stepfun/step-3.7-flash",
+   "pricing": {
+    "prompt": "0.0000002",
+    "completion": "0.00000115"
+   },
+   "contextLength": 256000,
+   "created": 1779985069
+  },
+  {
+   "id": "anthropic/claude-opus-4.8-fast",
+   "pricing": {
+    "prompt": "0.00001",
+    "completion": "0.00005"
+   },
+   "contextLength": 1000000,
+   "created": 1779913703
+  },
+  {
+   "id": "anthropic/claude-opus-4.8",
+   "pricing": {
+    "prompt": "0.000005",
+    "completion": "0.000025"
+   },
+   "contextLength": 1000000,
+   "created": 1779905091
+  },
+  {
+   "id": "qwen/qwen3.7-max",
+   "pricing": {
+    "prompt": "0.00000125",
+    "completion": "0.00000375"
+   },
+   "contextLength": 1000000,
+   "created": 1779376861
+  },
+  {
+   "id": "x-ai/grok-build-0.1",
+   "pricing": {
+    "prompt": "0.000001",
+    "completion": "0.000002"
+   },
+   "contextLength": 256000,
+   "created": 1779298123
+  },
+  {
+   "id": "google/gemini-3.5-flash",
+   "pricing": {
+    "prompt": "0.0000015",
+    "completion": "0.000009"
+   },
+   "contextLength": 1048576,
+   "created": 1779193800
+  },
+  {
+   "id": "anthropic/claude-opus-4.7-fast",
+   "pricing": {
+    "prompt": "0.00003",
+    "completion": "0.00015"
+   },
+   "contextLength": 1000000,
+   "created": 1778613011
+  },
+  {
+   "id": "perceptron/perceptron-mk1",
+   "pricing": {
+    "prompt": "0.00000015",
+    "completion": "0.0000015"
+   },
+   "contextLength": 32768,
+   "created": 1778597029
+  },
+  {
+   "id": "inclusionai/ring-2.6-1t",
+   "pricing": {
+    "prompt": "0.000000075",
+    "completion": "0.000000625"
+   },
+   "contextLength": 262144,
+   "created": 1778247440
+  },
+  {
+   "id": "google/gemini-3.1-flash-lite",
+   "pricing": {
+    "prompt": "0.00000025",
+    "completion": "0.0000015"
+   },
+   "contextLength": 1048576,
+   "created": 1778168828
+  },
+  {
+   "id": "openai/gpt-chat-latest",
+   "pricing": {
+    "prompt": "0.000005",
+    "completion": "0.00003"
+   },
+   "contextLength": 400000,
+   "created": 1778000212
+  },
+  {
+   "id": "x-ai/grok-4.3",
+   "pricing": {
+    "prompt": "0.00000125",
+    "completion": "0.0000025"
+   },
+   "contextLength": 1000000,
+   "created": 1777591821
+  },
+  {
+   "id": "ibm-granite/granite-4.1-8b",
+   "pricing": {
+    "prompt": "0.00000005",
+    "completion": "0.0000001"
+   },
+   "contextLength": 131072,
+   "created": 1777577071
+  },
+  {
+   "id": "mistralai/mistral-medium-3-5",
+   "pricing": {
+    "prompt": "0.0000015",
+    "completion": "0.0000075"
+   },
+   "contextLength": 262144,
+   "created": 1777570439
+  },
+  {
+   "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 256000,
+   "created": 1777393095
+  },
+  {
+   "id": "poolside/laguna-xs.2:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 262144,
+   "created": 1777389604
+  },
+  {
+   "id": "poolside/laguna-xs.2",
+   "pricing": {
+    "prompt": "0.0000001",
+    "completion": "0.0000002"
+   },
+   "contextLength": 262144,
+   "created": 1777389604
+  },
+  {
+   "id": "poolside/laguna-m.1:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 262144,
+   "created": 1777388504
+  },
+  {
+   "id": "poolside/laguna-m.1",
+   "pricing": {
+    "prompt": "0.0000002",
+    "completion": "0.0000004"
+   },
+   "contextLength": 262144,
+   "created": 1777388504
+  },
+  {
+   "id": "~anthropic/claude-haiku-latest",
+   "pricing": {
+    "prompt": "0.000001",
+    "completion": "0.000005"
+   },
+   "contextLength": 200000,
+   "created": 1777318492
+  },
+  {
+   "id": "~openai/gpt-mini-latest",
+   "pricing": {
+    "prompt": "0.00000075",
+    "completion": "0.0000045"
+   },
+   "contextLength": 400000,
+   "created": 1777318471
+  },
+  {
+   "id": "~google/gemini-pro-latest",
+   "pricing": {
+    "prompt": "0.000002",
+    "completion": "0.000012"
+   },
+   "contextLength": 1048576,
+   "created": 1777318451
+  },
+  {
+   "id": "~moonshotai/kimi-latest",
+   "pricing": {
+    "prompt": "0.00000055",
+    "completion": "0.0000032"
+   },
+   "contextLength": 262144,
+   "created": 1777318428
+  },
+  {
+   "id": "~google/gemini-flash-latest",
+   "pricing": {
+    "prompt": "0.0000015",
+    "completion": "0.000009"
+   },
+   "contextLength": 1048576,
+   "created": 1777318398
+  },
+  {
+   "id": "~anthropic/claude-sonnet-latest",
+   "pricing": {
+    "prompt": "0.000002",
+    "completion": "0.00001"
+   },
+   "contextLength": 1000000,
+   "created": 1777318368
+  },
+  {
+   "id": "~openai/gpt-latest",
+   "pricing": {
+    "prompt": "0.000005",
+    "completion": "0.00003"
+   },
+   "contextLength": 1050000,
+   "created": 1777318334
+  },
+  {
+   "id": "qwen/qwen3.5-plus-20260420",
+   "pricing": {
+    "prompt": "0.0000003",
+    "completion": "0.0000018"
+   },
+   "contextLength": 1000000,
+   "created": 1777261368
+  },
+  {
+   "id": "qwen/qwen3.6-flash",
+   "pricing": {
+    "prompt": "0.0000001875",
+    "completion": "0.000001125"
+   },
+   "contextLength": 1000000,
+   "created": 1777261362
+  },
+  {
+   "id": "qwen/qwen3.6-35b-a3b",
+   "pricing": {
+    "prompt": "0.00000014",
+    "completion": "0.000001"
+   },
+   "contextLength": 262144,
+   "created": 1777260255
+  },
+  {
+   "id": "qwen/qwen3.6-max-preview",
+   "pricing": {
+    "prompt": "0.00000104",
+    "completion": "0.00000624"
+   },
+   "contextLength": 262144,
+   "created": 1777260242
+  },
+  {
+   "id": "qwen/qwen3.6-27b",
+   "pricing": {
+    "prompt": "0.000000285",
+    "completion": "0.0000024"
+   },
+   "contextLength": 262144,
+   "created": 1777255064
+  },
+  {
+   "id": "openai/gpt-5.5-pro",
+   "pricing": {
+    "prompt": "0.00003",
+    "completion": "0.00018"
+   },
+   "contextLength": 1050000,
+   "created": 1777051896
+  },
+  {
+   "id": "openai/gpt-5.5",
+   "pricing": {
+    "prompt": "0.000005",
+    "completion": "0.00003"
+   },
+   "contextLength": 1050000,
+   "created": 1777051893
+  },
+  {
+   "id": "deepseek/deepseek-v4-pro",
+   "pricing": {
+    "prompt": "0.000000435",
+    "completion": "0.00000087"
+   },
+   "contextLength": 1048576,
+   "created": 1777000679
+  },
+  {
+   "id": "deepseek/deepseek-v4-flash",
+   "pricing": {
+    "prompt": "0.00000009",
+    "completion": "0.00000018"
+   },
+   "contextLength": 1048576,
+   "created": 1777000666
+  },
+  {
+   "id": "inclusionai/ling-2.6-1t",
+   "pricing": {
+    "prompt": "0.000000075",
+    "completion": "0.000000625"
+   },
+   "contextLength": 262144,
+   "created": 1776948238
+  },
+  {
+   "id": "tencent/hy3-preview",
+   "pricing": {
+    "prompt": "0.000000063",
+    "completion": "0.00000021"
+   },
+   "contextLength": 262144,
+   "created": 1776878150
+  },
+  {
+   "id": "xiaomi/mimo-v2.5-pro",
+   "pricing": {
+    "prompt": "0.000000435",
+    "completion": "0.00000087"
+   },
+   "contextLength": 1048576,
+   "created": 1776874273
+  },
+  {
+   "id": "xiaomi/mimo-v2.5",
+   "pricing": {
+    "prompt": "0.000000105",
+    "completion": "0.00000028"
+   },
+   "contextLength": 1048576,
+   "created": 1776874269
+  },
+  {
+   "id": "openai/gpt-5.4-image-2",
+   "pricing": {
+    "prompt": "0.000008",
+    "completion": "0.000015"
+   },
+   "contextLength": 272000,
+   "created": 1776797528
+  },
+  {
+   "id": "inclusionai/ling-2.6-flash",
+   "pricing": {
+    "prompt": "0.00000001",
+    "completion": "0.00000003"
+   },
+   "contextLength": 262144,
+   "created": 1776795886
+  },
+  {
+   "id": "~anthropic/claude-opus-latest",
+   "pricing": {
+    "prompt": "0.000005",
+    "completion": "0.000025"
+   },
+   "contextLength": 1000000,
+   "created": 1776795361
+  },
+  {
+   "id": "openrouter/pareto-code",
+   "pricing": {
+    "prompt": "-1",
+    "completion": "-1"
+   },
+   "contextLength": 2000000,
+   "created": 1776747900
+  },
+  {
+   "id": "moonshotai/kimi-k2.6",
+   "pricing": {
+    "prompt": "0.00000055",
+    "completion": "0.0000032"
+   },
+   "contextLength": 262144,
+   "created": 1776699402
+  },
+  {
+   "id": "anthropic/claude-opus-4.7",
+   "pricing": {
+    "prompt": "0.000005",
+    "completion": "0.000025"
+   },
+   "contextLength": 1000000,
+   "created": 1776351100
+  },
+  {
+   "id": "z-ai/glm-5.1",
+   "pricing": {
+    "prompt": "0.000000975",
+    "completion": "0.0000043"
+   },
+   "contextLength": 202752,
+   "created": 1775578025
+  },
+  {
+   "id": "google/gemma-4-26b-a4b-it:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 262144,
+   "created": 1775227989
+  },
+  {
+   "id": "google/gemma-4-26b-a4b-it",
+   "pricing": {
+    "prompt": "0.00000006",
+    "completion": "0.00000033"
+   },
+   "contextLength": 262144,
+   "created": 1775227989
+  },
+  {
+   "id": "google/gemma-4-31b-it:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 262144,
+   "created": 1775148486
+  },
+  {
+   "id": "google/gemma-4-31b-it",
+   "pricing": {
+    "prompt": "0.00000012",
+    "completion": "0.00000035"
+   },
+   "contextLength": 262144,
+   "created": 1775148486
+  },
+  {
+   "id": "qwen/qwen3.6-plus",
+   "pricing": {
+    "prompt": "0.000000325",
+    "completion": "0.00000195"
+   },
+   "contextLength": 1000000,
+   "created": 1775133557
+  },
+  {
+   "id": "z-ai/glm-5v-turbo",
+   "pricing": {
+    "prompt": "0.0000012",
+    "completion": "0.000004"
+   },
+   "contextLength": 202752,
+   "created": 1775061458
+  },
+  {
+   "id": "arcee-ai/trinity-large-thinking",
+   "pricing": {
+    "prompt": "0.00000025",
+    "completion": "0.0000008"
+   },
+   "contextLength": 262144,
+   "created": 1775058318
+  },
+  {
+   "id": "x-ai/grok-4.20-multi-agent",
+   "pricing": {
+    "prompt": "0.00000125",
+    "completion": "0.0000025"
+   },
+   "contextLength": 2000000,
+   "created": 1774979158
+  },
+  {
+   "id": "x-ai/grok-4.20",
+   "pricing": {
+    "prompt": "0.00000125",
+    "completion": "0.0000025"
+   },
+   "contextLength": 2000000,
+   "created": 1774979019
+  },
+  {
+   "id": "google/lyria-3-pro-preview",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 1048576,
+   "created": 1774907286
+  },
+  {
+   "id": "google/lyria-3-clip-preview",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 1048576,
+   "created": 1774907255
+  },
+  {
+   "id": "kwaipilot/kat-coder-pro-v2",
+   "pricing": {
+    "prompt": "0.0000003",
+    "completion": "0.0000012"
+   },
+   "contextLength": 256000,
+   "created": 1774649310
+  },
+  {
+   "id": "rekaai/reka-edge",
+   "pricing": {
+    "prompt": "0.0000001",
+    "completion": "0.0000001"
+   },
+   "contextLength": 16384,
+   "created": 1774026965
+  },
+  {
+   "id": "minimax/minimax-m2.7",
+   "pricing": {
+    "prompt": "0.00000018",
+    "completion": "0.00000072"
+   },
+   "contextLength": 204800,
+   "created": 1773836697
+  },
+  {
+   "id": "openai/gpt-5.4-nano",
+   "pricing": {
+    "prompt": "0.0000002",
+    "completion": "0.00000125"
+   },
+   "contextLength": 400000,
+   "created": 1773748187
+  },
+  {
+   "id": "openai/gpt-5.4-mini",
+   "pricing": {
+    "prompt": "0.00000075",
+    "completion": "0.0000045"
+   },
+   "contextLength": 400000,
+   "created": 1773748178
+  },
+  {
+   "id": "mistralai/mistral-small-2603",
+   "pricing": {
+    "prompt": "0.00000015",
+    "completion": "0.0000006"
+   },
+   "contextLength": 262144,
+   "created": 1773695685
+  },
+  {
+   "id": "z-ai/glm-5-turbo",
+   "pricing": {
+    "prompt": "0.0000012",
+    "completion": "0.000004"
+   },
+   "contextLength": 262144,
+   "created": 1773583573
+  },
+  {
+   "id": "nvidia/nemotron-3-super-120b-a12b:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 1000000,
+   "created": 1773245239
+  },
+  {
+   "id": "nvidia/nemotron-3-super-120b-a12b",
+   "pricing": {
+    "prompt": "0.000000085",
+    "completion": "0.0000004"
+   },
+   "contextLength": 1000000,
+   "created": 1773245239
+  },
+  {
+   "id": "bytedance-seed/seed-2.0-lite",
+   "pricing": {
+    "prompt": "0.00000025",
+    "completion": "0.000002"
+   },
+   "contextLength": 262144,
+   "created": 1773157231
+  },
+  {
+   "id": "qwen/qwen3.5-9b",
+   "pricing": {
+    "prompt": "0.0000001",
+    "completion": "0.00000015"
+   },
+   "contextLength": 262144,
+   "created": 1773152396
+  },
+  {
+   "id": "openai/gpt-5.4-pro",
+   "pricing": {
+    "prompt": "0.00003",
+    "completion": "0.00018"
+   },
+   "contextLength": 1050000,
+   "created": 1772734366
+  },
+  {
+   "id": "openai/gpt-5.4",
+   "pricing": {
+    "prompt": "0.0000025",
+    "completion": "0.000015"
+   },
+   "contextLength": 1050000,
+   "created": 1772734352
+  },
+  {
+   "id": "inception/mercury-2",
+   "pricing": {
+    "prompt": "0.00000025",
+    "completion": "0.00000075"
+   },
+   "contextLength": 128000,
+   "created": 1772636275
+  },
+  {
+   "id": "openai/gpt-5.3-chat",
+   "pricing": {
+    "prompt": "0.00000175",
+    "completion": "0.000014"
+   },
+   "contextLength": 128000,
+   "created": 1772564061
+  },
+  {
+   "id": "google/gemini-3.1-flash-lite-preview",
+   "pricing": {
+    "prompt": "0.00000025",
+    "completion": "0.0000015"
+   },
+   "contextLength": 1048576,
+   "created": 1772512673
+  },
+  {
+   "id": "bytedance-seed/seed-2.0-mini",
+   "pricing": {
+    "prompt": "0.0000001",
+    "completion": "0.0000004"
+   },
+   "contextLength": 262144,
+   "created": 1772131107
+  },
+  {
+   "id": "google/gemini-3.1-flash-image-preview",
+   "pricing": {
+    "prompt": "0.0000005",
+    "completion": "0.000003"
+   },
+   "contextLength": 131072,
+   "created": 1772119558
+  },
+  {
+   "id": "qwen/qwen3.5-35b-a3b",
+   "pricing": {
+    "prompt": "0.00000014",
+    "completion": "0.000001"
+   },
+   "contextLength": 262144,
+   "created": 1772053822
+  },
+  {
+   "id": "qwen/qwen3.5-27b",
+   "pricing": {
+    "prompt": "0.000000195",
+    "completion": "0.00000156"
+   },
+   "contextLength": 262144,
+   "created": 1772053810
+  },
+  {
+   "id": "qwen/qwen3.5-122b-a10b",
+   "pricing": {
+    "prompt": "0.00000026",
+    "completion": "0.00000208"
+   },
+   "contextLength": 262144,
+   "created": 1772053789
+  },
+  {
+   "id": "qwen/qwen3.5-flash-02-23",
+   "pricing": {
+    "prompt": "0.000000065",
+    "completion": "0.00000026"
+   },
+   "contextLength": 1000000,
+   "created": 1772053776
+  },
+  {
+   "id": "liquid/lfm-2-24b-a2b",
+   "pricing": {
+    "prompt": "0.00000003",
+    "completion": "0.00000012"
+   },
+   "contextLength": 128000,
+   "created": 1772048711
+  },
+  {
+   "id": "google/gemini-3.1-pro-preview-customtools",
+   "pricing": {
+    "prompt": "0.000002",
+    "completion": "0.000012"
+   },
+   "contextLength": 1048756,
+   "created": 1772045923
+  },
+  {
+   "id": "openai/gpt-5.3-codex",
+   "pricing": {
+    "prompt": "0.00000175",
+    "completion": "0.000014"
+   },
+   "contextLength": 400000,
+   "created": 1771959164
+  },
+  {
+   "id": "aion-labs/aion-2.0",
+   "pricing": {
+    "prompt": "0.0000008",
+    "completion": "0.0000016"
+   },
+   "contextLength": 131072,
+   "created": 1771881306
+  },
+  {
+   "id": "google/gemini-3.1-pro-preview",
+   "pricing": {
+    "prompt": "0.000002",
+    "completion": "0.000012"
+   },
+   "contextLength": 1048576,
+   "created": 1771509627
+  },
+  {
+   "id": "anthropic/claude-sonnet-4.6",
+   "pricing": {
+    "prompt": "0.000003",
+    "completion": "0.000015"
+   },
+   "contextLength": 1000000,
+   "created": 1771342990
+  },
+  {
+   "id": "qwen/qwen3.5-plus-02-15",
+   "pricing": {
+    "prompt": "0.00000026",
+    "completion": "0.00000156"
+   },
+   "contextLength": 1000000,
+   "created": 1771229416
+  },
+  {
+   "id": "qwen/qwen3.5-397b-a17b",
+   "pricing": {
+    "prompt": "0.000000385",
+    "completion": "0.00000245"
+   },
+   "contextLength": 256000,
+   "created": 1771223018
+  },
+  {
+   "id": "minimax/minimax-m2.5",
+   "pricing": {
+    "prompt": "0.00000012",
+    "completion": "0.00000048"
+   },
+   "contextLength": 204800,
+   "created": 1770908502
+  },
+  {
+   "id": "z-ai/glm-5",
+   "pricing": {
+    "prompt": "0.0000006",
+    "completion": "0.00000192"
+   },
+   "contextLength": 202752,
+   "created": 1770829182
+  },
+  {
+   "id": "qwen/qwen3-max-thinking",
+   "pricing": {
+    "prompt": "0.00000078",
+    "completion": "0.0000039"
+   },
+   "contextLength": 262144,
+   "created": 1770671901
+  },
+  {
+   "id": "anthropic/claude-opus-4.6",
+   "pricing": {
+    "prompt": "0.000005",
+    "completion": "0.000025"
+   },
+   "contextLength": 1000000,
+   "created": 1770219050
+  },
+  {
+   "id": "qwen/qwen3-coder-next",
+   "pricing": {
+    "prompt": "0.00000011",
+    "completion": "0.0000008"
+   },
+   "contextLength": 262144,
+   "created": 1770164101
+  },
+  {
+   "id": "openrouter/free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 200000,
+   "created": 1769917427
+  },
+  {
+   "id": "stepfun/step-3.5-flash",
+   "pricing": {
+    "prompt": "0.0000001",
+    "completion": "0.0000003"
+   },
+   "contextLength": 262144,
+   "created": 1769728337
+  },
+  {
+   "id": "moonshotai/kimi-k2.5",
+   "pricing": {
+    "prompt": "0.000000375",
+    "completion": "0.000002025"
+   },
+   "contextLength": 262144,
+   "created": 1769487076
+  },
+  {
+   "id": "upstage/solar-pro-3",
+   "pricing": {
+    "prompt": "0.00000015",
+    "completion": "0.0000006"
+   },
+   "contextLength": 128000,
+   "created": 1769481200
+  },
+  {
+   "id": "minimax/minimax-m2-her",
+   "pricing": {
+    "prompt": "0.0000003",
+    "completion": "0.0000012"
+   },
+   "contextLength": 65536,
+   "created": 1769177239
+  },
+  {
+   "id": "writer/palmyra-x5",
+   "pricing": {
+    "prompt": "0.0000006",
+    "completion": "0.000006"
+   },
+   "contextLength": 1040000,
+   "created": 1769003823
+  },
+  {
+   "id": "liquid/lfm-2.5-1.2b-thinking:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 32768,
+   "created": 1768927527
+  },
+  {
+   "id": "liquid/lfm-2.5-1.2b-instruct:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 32768,
+   "created": 1768927521
+  },
+  {
+   "id": "openai/gpt-audio",
+   "pricing": {
+    "prompt": "0.0000025",
+    "completion": "0.00001"
+   },
+   "contextLength": 128000,
+   "created": 1768862569
+  },
+  {
+   "id": "openai/gpt-audio-mini",
+   "pricing": {
+    "prompt": "0.0000006",
+    "completion": "0.0000024"
+   },
+   "contextLength": 128000,
+   "created": 1768859419
+  },
+  {
+   "id": "z-ai/glm-4.7-flash",
+   "pricing": {
+    "prompt": "0.00000006",
+    "completion": "0.0000004"
+   },
+   "contextLength": 202752,
+   "created": 1768833913
+  },
+  {
+   "id": "openai/gpt-5.2-codex",
+   "pricing": {
+    "prompt": "0.00000175",
+    "completion": "0.000014"
+   },
+   "contextLength": 400000,
+   "created": 1768409315
+  },
+  {
+   "id": "bytedance-seed/seed-1.6-flash",
+   "pricing": {
+    "prompt": "0.000000075",
+    "completion": "0.0000003"
+   },
+   "contextLength": 262144,
+   "created": 1766505011
+  },
+  {
+   "id": "bytedance-seed/seed-1.6",
+   "pricing": {
+    "prompt": "0.00000025",
+    "completion": "0.000002"
+   },
+   "contextLength": 262144,
+   "created": 1766504997
+  },
+  {
+   "id": "minimax/minimax-m2.1",
+   "pricing": {
+    "prompt": "0.0000003",
+    "completion": "0.0000012"
+   },
+   "contextLength": 204800,
+   "created": 1766454997
+  },
+  {
+   "id": "z-ai/glm-4.7",
+   "pricing": {
+    "prompt": "0.0000004",
+    "completion": "0.00000175"
+   },
+   "contextLength": 202752,
+   "created": 1766378014
+  },
+  {
+   "id": "google/gemini-3-flash-preview",
+   "pricing": {
+    "prompt": "0.0000005",
+    "completion": "0.000003"
+   },
+   "contextLength": 1048576,
+   "created": 1765987078
+  },
+  {
+   "id": "nvidia/nemotron-3-nano-30b-a3b:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 256000,
+   "created": 1765731275
+  },
+  {
+   "id": "nvidia/nemotron-3-nano-30b-a3b",
+   "pricing": {
+    "prompt": "0.00000005",
+    "completion": "0.0000002"
+   },
+   "contextLength": 262144,
+   "created": 1765731275
+  },
+  {
+   "id": "openai/gpt-5.2-chat",
+   "pricing": {
+    "prompt": "0.00000175",
+    "completion": "0.000014"
+   },
+   "contextLength": 128000,
+   "created": 1765389783
+  },
+  {
+   "id": "openai/gpt-5.2-pro",
+   "pricing": {
+    "prompt": "0.000021",
+    "completion": "0.000168"
+   },
+   "contextLength": 400000,
+   "created": 1765389780
+  },
+  {
+   "id": "openai/gpt-5.2",
+   "pricing": {
+    "prompt": "0.00000175",
+    "completion": "0.000014"
+   },
+   "contextLength": 400000,
+   "created": 1765389775
+  },
+  {
+   "id": "mistralai/devstral-2512",
+   "pricing": {
+    "prompt": "0.0000004",
+    "completion": "0.000002"
+   },
+   "contextLength": 262144,
+   "created": 1765285419
+  },
+  {
+   "id": "relace/relace-search",
+   "pricing": {
+    "prompt": "0.000001",
+    "completion": "0.000003"
+   },
+   "contextLength": 256000,
+   "created": 1765213560
+  },
+  {
+   "id": "z-ai/glm-4.6v",
+   "pricing": {
+    "prompt": "0.0000003",
+    "completion": "0.0000009"
+   },
+   "contextLength": 131072,
+   "created": 1765207462
+  },
+  {
+   "id": "openrouter/bodybuilder",
+   "pricing": {
+    "prompt": "-1",
+    "completion": "-1"
+   },
+   "contextLength": 128000,
+   "created": 1764903653
+  },
+  {
+   "id": "openai/gpt-5.1-codex-max",
+   "pricing": {
+    "prompt": "0.00000125",
+    "completion": "0.00001"
+   },
+   "contextLength": 400000,
+   "created": 1764878934
+  },
+  {
+   "id": "amazon/nova-2-lite-v1",
+   "pricing": {
+    "prompt": "0.0000003",
+    "completion": "0.0000025"
+   },
+   "contextLength": 1000000,
+   "created": 1764696672
+  },
+  {
+   "id": "mistralai/ministral-14b-2512",
+   "pricing": {
+    "prompt": "0.0000002",
+    "completion": "0.0000002"
+   },
+   "contextLength": 262144,
+   "created": 1764681735
+  },
+  {
+   "id": "mistralai/ministral-8b-2512",
+   "pricing": {
+    "prompt": "0.00000015",
+    "completion": "0.00000015"
+   },
+   "contextLength": 262144,
+   "created": 1764681654
+  },
+  {
+   "id": "mistralai/ministral-3b-2512",
+   "pricing": {
+    "prompt": "0.0000001",
+    "completion": "0.0000001"
+   },
+   "contextLength": 131072,
+   "created": 1764681560
+  },
+  {
+   "id": "mistralai/mistral-large-2512",
+   "pricing": {
+    "prompt": "0.0000005",
+    "completion": "0.0000015"
+   },
+   "contextLength": 262144,
+   "created": 1764624472
+  },
+  {
+   "id": "arcee-ai/trinity-mini",
+   "pricing": {
+    "prompt": "0.000000045",
+    "completion": "0.00000015"
+   },
+   "contextLength": 131072,
+   "created": 1764601720
+  },
+  {
+   "id": "deepseek/deepseek-v3.2",
+   "pricing": {
+    "prompt": "0.0000002288",
+    "completion": "0.0000003432"
+   },
+   "contextLength": 131072,
+   "created": 1764594642
+  },
+  {
+   "id": "anthropic/claude-opus-4.5",
+   "pricing": {
+    "prompt": "0.000005",
+    "completion": "0.000025"
+   },
+   "contextLength": 200000,
+   "created": 1764010580
+  },
+  {
+   "id": "allenai/olmo-3-32b-think",
+   "pricing": {
+    "prompt": "0.00000015",
+    "completion": "0.0000005"
+   },
+   "contextLength": 65536,
+   "created": 1763758276
+  },
+  {
+   "id": "google/gemini-3-pro-image-preview",
+   "pricing": {
+    "prompt": "0.000002",
+    "completion": "0.000012"
+   },
+   "contextLength": 65536,
+   "created": 1763653797
+  },
+  {
+   "id": "deepcogito/cogito-v2.1-671b",
+   "pricing": {
+    "prompt": "0.00000125",
+    "completion": "0.00000125"
+   },
+   "contextLength": 128000,
+   "created": 1763071233
+  },
+  {
+   "id": "openai/gpt-5.1",
+   "pricing": {
+    "prompt": "0.00000125",
+    "completion": "0.00001"
+   },
+   "contextLength": 400000,
+   "created": 1763060305
+  },
+  {
+   "id": "openai/gpt-5.1-chat",
+   "pricing": {
+    "prompt": "0.00000125",
+    "completion": "0.00001"
+   },
+   "contextLength": 128000,
+   "created": 1763060302
+  },
+  {
+   "id": "openai/gpt-5.1-codex",
+   "pricing": {
+    "prompt": "0.00000125",
+    "completion": "0.00001"
+   },
+   "contextLength": 400000,
+   "created": 1763060298
+  },
+  {
+   "id": "openai/gpt-5.1-codex-mini",
+   "pricing": {
+    "prompt": "0.00000025",
+    "completion": "0.000002"
+   },
+   "contextLength": 400000,
+   "created": 1763057820
+  },
+  {
+   "id": "moonshotai/kimi-k2-thinking",
+   "pricing": {
+    "prompt": "0.0000006",
+    "completion": "0.0000025"
+   },
+   "contextLength": 262144,
+   "created": 1762440622
+  },
+  {
+   "id": "amazon/nova-premier-v1",
+   "pricing": {
+    "prompt": "0.0000025",
+    "completion": "0.0000125"
+   },
+   "contextLength": 1000000,
+   "created": 1761950332
+  },
+  {
+   "id": "perplexity/sonar-pro-search",
+   "pricing": {
+    "prompt": "0.000003",
+    "completion": "0.000015"
+   },
+   "contextLength": 200000,
+   "created": 1761854366
+  },
+  {
+   "id": "mistralai/voxtral-small-24b-2507",
+   "pricing": {
+    "prompt": "0.0000001",
+    "completion": "0.0000003"
+   },
+   "contextLength": 32000,
+   "created": 1761835144
+  },
+  {
+   "id": "openai/gpt-oss-safeguard-20b",
+   "pricing": {
+    "prompt": "0.000000075",
+    "completion": "0.0000003"
+   },
+   "contextLength": 131072,
+   "created": 1761752836
+  },
+  {
+   "id": "nvidia/nemotron-nano-12b-v2-vl:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 128000,
+   "created": 1761675565
+  },
+  {
+   "id": "minimax/minimax-m2",
+   "pricing": {
+    "prompt": "0.000000255",
+    "completion": "0.00000102"
+   },
+   "contextLength": 204800,
+   "created": 1761252093
+  },
+  {
+   "id": "qwen/qwen3-vl-32b-instruct",
+   "pricing": {
+    "prompt": "0.000000104",
+    "completion": "0.000000416"
+   },
+   "contextLength": 262144,
+   "created": 1761231332
+  },
+  {
+   "id": "ibm-granite/granite-4.0-h-micro",
+   "pricing": {
+    "prompt": "0.000000017",
+    "completion": "0.000000112"
+   },
+   "contextLength": 131000,
+   "created": 1760927695
+  },
+  {
+   "id": "openai/gpt-5-image-mini",
+   "pricing": {
+    "prompt": "0.0000025",
+    "completion": "0.000002"
+   },
+   "contextLength": 400000,
+   "created": 1760624583
+  },
+  {
+   "id": "anthropic/claude-haiku-4.5",
+   "pricing": {
+    "prompt": "0.000001",
+    "completion": "0.000005"
+   },
+   "contextLength": 200000,
+   "created": 1760547638
+  },
+  {
+   "id": "qwen/qwen3-vl-8b-thinking",
+   "pricing": {
+    "prompt": "0.000000117",
+    "completion": "0.000001365"
+   },
+   "contextLength": 256000,
+   "created": 1760463746
+  },
+  {
+   "id": "qwen/qwen3-vl-8b-instruct",
+   "pricing": {
+    "prompt": "0.00000008",
+    "completion": "0.0000005"
+   },
+   "contextLength": 256000,
+   "created": 1760463308
+  },
+  {
+   "id": "openai/gpt-5-image",
+   "pricing": {
+    "prompt": "0.00001",
+    "completion": "0.00001"
+   },
+   "contextLength": 400000,
+   "created": 1760447986
+  },
+  {
+   "id": "openai/o3-deep-research",
+   "pricing": {
+    "prompt": "0.00001",
+    "completion": "0.00004"
+   },
+   "contextLength": 200000,
+   "created": 1760129661
+  },
+  {
+   "id": "openai/o4-mini-deep-research",
+   "pricing": {
+    "prompt": "0.000002",
+    "completion": "0.000008"
+   },
+   "contextLength": 200000,
+   "created": 1760129642
+  },
+  {
+   "id": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+   "pricing": {
+    "prompt": "0.0000004",
+    "completion": "0.0000004"
+   },
+   "contextLength": 131072,
+   "created": 1760101395
+  },
+  {
+   "id": "google/gemini-2.5-flash-image",
+   "pricing": {
+    "prompt": "0.0000003",
+    "completion": "0.0000025"
+   },
+   "contextLength": 32768,
+   "created": 1759870431
+  },
+  {
+   "id": "qwen/qwen3-vl-30b-a3b-thinking",
+   "pricing": {
+    "prompt": "0.00000013",
+    "completion": "0.00000156"
+   },
+   "contextLength": 131072,
+   "created": 1759794479
+  },
+  {
+   "id": "qwen/qwen3-vl-30b-a3b-instruct",
+   "pricing": {
+    "prompt": "0.00000013",
+    "completion": "0.00000052"
+   },
+   "contextLength": 262144,
+   "created": 1759794476
+  },
+  {
+   "id": "openai/gpt-5-pro",
+   "pricing": {
+    "prompt": "0.000015",
+    "completion": "0.00012"
+   },
+   "contextLength": 400000,
+   "created": 1759776663
+  },
+  {
+   "id": "z-ai/glm-4.6",
+   "pricing": {
+    "prompt": "0.00000043",
+    "completion": "0.00000174"
+   },
+   "contextLength": 202752,
+   "created": 1759235576
+  },
+  {
+   "id": "anthropic/claude-sonnet-4.5",
+   "pricing": {
+    "prompt": "0.000003",
+    "completion": "0.000015"
+   },
+   "contextLength": 1000000,
+   "created": 1759161676
+  },
+  {
+   "id": "deepseek/deepseek-v3.2-exp",
+   "pricing": {
+    "prompt": "0.00000027",
+    "completion": "0.00000041"
+   },
+   "contextLength": 163840,
+   "created": 1759150481
+  },
+  {
+   "id": "thedrummer/cydonia-24b-v4.1",
+   "pricing": {
+    "prompt": "0.0000003",
+    "completion": "0.0000005"
+   },
+   "contextLength": 131072,
+   "created": 1758931878
+  },
+  {
+   "id": "relace/relace-apply-3",
+   "pricing": {
+    "prompt": "0.00000085",
+    "completion": "0.00000125"
+   },
+   "contextLength": 256000,
+   "created": 1758891572
+  },
+  {
+   "id": "google/gemini-2.5-flash-lite-preview-09-2025",
+   "pricing": {
+    "prompt": "0.0000001",
+    "completion": "0.0000004"
+   },
+   "contextLength": 1048576,
+   "created": 1758819686
+  },
+  {
+   "id": "qwen/qwen3-vl-235b-a22b-thinking",
+   "pricing": {
+    "prompt": "0.00000026",
+    "completion": "0.0000026"
+   },
+   "contextLength": 131072,
+   "created": 1758668690
+  },
+  {
+   "id": "qwen/qwen3-vl-235b-a22b-instruct",
+   "pricing": {
+    "prompt": "0.0000002",
+    "completion": "0.00000088"
+   },
+   "contextLength": 262144,
+   "created": 1758668687
+  },
+  {
+   "id": "qwen/qwen3-max",
+   "pricing": {
+    "prompt": "0.00000078",
+    "completion": "0.0000039"
+   },
+   "contextLength": 262144,
+   "created": 1758662808
+  },
+  {
+   "id": "qwen/qwen3-coder-plus",
+   "pricing": {
+    "prompt": "0.00000065",
+    "completion": "0.00000325"
+   },
+   "contextLength": 1000000,
+   "created": 1758662707
+  },
+  {
+   "id": "openai/gpt-5-codex",
+   "pricing": {
+    "prompt": "0.00000125",
+    "completion": "0.00001"
+   },
+   "contextLength": 400000,
+   "created": 1758643403
+  },
+  {
+   "id": "deepseek/deepseek-v3.1-terminus",
+   "pricing": {
+    "prompt": "0.00000027",
+    "completion": "0.00000095"
+   },
+   "contextLength": 163840,
+   "created": 1758548275
+  },
+  {
+   "id": "qwen/qwen3-coder-flash",
+   "pricing": {
+    "prompt": "0.000000195",
+    "completion": "0.000000975"
+   },
+   "contextLength": 1000000,
+   "created": 1758115536
+  },
+  {
+   "id": "qwen/qwen3-next-80b-a3b-thinking",
+   "pricing": {
+    "prompt": "0.0000000975",
+    "completion": "0.00000078"
+   },
+   "contextLength": 262144,
+   "created": 1757612284
+  },
+  {
+   "id": "qwen/qwen3-next-80b-a3b-instruct:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 262144,
+   "created": 1757612213
+  },
+  {
+   "id": "qwen/qwen3-next-80b-a3b-instruct",
+   "pricing": {
+    "prompt": "0.00000009",
+    "completion": "0.0000011"
+   },
+   "contextLength": 262144,
+   "created": 1757612213
+  },
+  {
+   "id": "qwen/qwen-plus-2025-07-28:thinking",
+   "pricing": {
+    "prompt": "0.00000026",
+    "completion": "0.00000078"
+   },
+   "contextLength": 1000000,
+   "created": 1757347599
+  },
+  {
+   "id": "qwen/qwen-plus-2025-07-28",
+   "pricing": {
+    "prompt": "0.00000026",
+    "completion": "0.00000078"
+   },
+   "contextLength": 1000000,
+   "created": 1757347599
+  },
+  {
+   "id": "nvidia/nemotron-nano-9b-v2:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 128000,
+   "created": 1757106807
+  },
+  {
+   "id": "moonshotai/kimi-k2-0905",
+   "pricing": {
+    "prompt": "0.0000006",
+    "completion": "0.0000025"
+   },
+   "contextLength": 262144,
+   "created": 1757021147
+  },
+  {
+   "id": "qwen/qwen3-30b-a3b-thinking-2507",
+   "pricing": {
+    "prompt": "0.00000013",
+    "completion": "0.00000156"
+   },
+   "contextLength": 131072,
+   "created": 1756399192
+  },
+  {
+   "id": "nousresearch/hermes-4-70b",
+   "pricing": {
+    "prompt": "0.00000013",
+    "completion": "0.0000004"
+   },
+   "contextLength": 131072,
+   "created": 1756236182
+  },
+  {
+   "id": "nousresearch/hermes-4-405b",
+   "pricing": {
+    "prompt": "0.000001",
+    "completion": "0.000003"
+   },
+   "contextLength": 131072,
+   "created": 1756235463
+  },
+  {
+   "id": "deepseek/deepseek-chat-v3.1",
+   "pricing": {
+    "prompt": "0.00000021",
+    "completion": "0.00000079"
+   },
+   "contextLength": 163840,
+   "created": 1755779628
+  },
+  {
+   "id": "mistralai/mistral-medium-3.1",
+   "pricing": {
+    "prompt": "0.0000004",
+    "completion": "0.000002"
+   },
+   "contextLength": 131072,
+   "created": 1755095639
+  },
+  {
+   "id": "z-ai/glm-4.5v",
+   "pricing": {
+    "prompt": "0.0000006",
+    "completion": "0.0000018"
+   },
+   "contextLength": 65536,
+   "created": 1754922288
+  },
+  {
+   "id": "ai21/jamba-large-1.7",
+   "pricing": {
+    "prompt": "0.000002",
+    "completion": "0.000008"
+   },
+   "contextLength": 256000,
+   "created": 1754669020
+  },
+  {
+   "id": "openai/gpt-5-chat",
+   "pricing": {
+    "prompt": "0.00000125",
+    "completion": "0.00001"
+   },
+   "contextLength": 128000,
+   "created": 1754587837
+  },
+  {
+   "id": "openai/gpt-5",
+   "pricing": {
+    "prompt": "0.00000125",
+    "completion": "0.00001"
+   },
+   "contextLength": 400000,
+   "created": 1754587413
+  },
+  {
+   "id": "openai/gpt-5-mini",
+   "pricing": {
+    "prompt": "0.00000025",
+    "completion": "0.000002"
+   },
+   "contextLength": 400000,
+   "created": 1754587407
+  },
+  {
+   "id": "openai/gpt-5-nano",
+   "pricing": {
+    "prompt": "0.00000005",
+    "completion": "0.0000004"
+   },
+   "contextLength": 400000,
+   "created": 1754587402
+  },
+  {
+   "id": "openai/gpt-oss-120b:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 131072,
+   "created": 1754414231
+  },
+  {
+   "id": "openai/gpt-oss-120b",
+   "pricing": {
+    "prompt": "0.00000003",
+    "completion": "0.00000015"
+   },
+   "contextLength": 131072,
+   "created": 1754414231
+  },
+  {
+   "id": "openai/gpt-oss-20b:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 131072,
+   "created": 1754414229
+  },
+  {
+   "id": "openai/gpt-oss-20b",
+   "pricing": {
+    "prompt": "0.000000029",
+    "completion": "0.00000014"
+   },
+   "contextLength": 131072,
+   "created": 1754414229
+  },
+  {
+   "id": "anthropic/claude-opus-4.1",
+   "pricing": {
+    "prompt": "0.000015",
+    "completion": "0.000075"
+   },
+   "contextLength": 200000,
+   "created": 1754411591
+  },
+  {
+   "id": "mistralai/codestral-2508",
+   "pricing": {
+    "prompt": "0.0000003",
+    "completion": "0.0000009"
+   },
+   "contextLength": 256000,
+   "created": 1754079630
+  },
+  {
+   "id": "qwen/qwen3-coder-30b-a3b-instruct",
+   "pricing": {
+    "prompt": "0.00000007",
+    "completion": "0.00000027"
+   },
+   "contextLength": 160000,
+   "created": 1753972379
+  },
+  {
+   "id": "qwen/qwen3-30b-a3b-instruct-2507",
+   "pricing": {
+    "prompt": "0.00000004815",
+    "completion": "0.00000019305"
+   },
+   "contextLength": 131072,
+   "created": 1753806965
+  },
+  {
+   "id": "z-ai/glm-4.5",
+   "pricing": {
+    "prompt": "0.0000006",
+    "completion": "0.0000022"
+   },
+   "contextLength": 131072,
+   "created": 1753471347
+  },
+  {
+   "id": "z-ai/glm-4.5-air",
+   "pricing": {
+    "prompt": "0.00000013",
+    "completion": "0.00000085"
+   },
+   "contextLength": 131072,
+   "created": 1753471258
+  },
+  {
+   "id": "qwen/qwen3-235b-a22b-thinking-2507",
+   "pricing": {
+    "prompt": "0.0000001495",
+    "completion": "0.000001495"
+   },
+   "contextLength": 262144,
+   "created": 1753449557
+  },
+  {
+   "id": "qwen/qwen3-coder:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 1048576,
+   "created": 1753230546
+  },
+  {
+   "id": "qwen/qwen3-coder",
+   "pricing": {
+    "prompt": "0.00000022",
+    "completion": "0.0000018"
+   },
+   "contextLength": 1048576,
+   "created": 1753230546
+  },
+  {
+   "id": "bytedance/ui-tars-1.5-7b",
+   "pricing": {
+    "prompt": "0.0000001",
+    "completion": "0.0000002"
+   },
+   "contextLength": 128000,
+   "created": 1753205056
+  },
+  {
+   "id": "google/gemini-2.5-flash-lite",
+   "pricing": {
+    "prompt": "0.0000001",
+    "completion": "0.0000004"
+   },
+   "contextLength": 1048576,
+   "created": 1753200276
+  },
+  {
+   "id": "qwen/qwen3-235b-a22b-2507",
+   "pricing": {
+    "prompt": "0.00000009",
+    "completion": "0.0000001"
+   },
+   "contextLength": 262144,
+   "created": 1753119555
+  },
+  {
+   "id": "switchpoint/router",
+   "pricing": {
+    "prompt": "0.00000085",
+    "completion": "0.0000034"
+   },
+   "contextLength": 131072,
+   "created": 1752272899
+  },
+  {
+   "id": "moonshotai/kimi-k2",
+   "pricing": {
+    "prompt": "0.00000057",
+    "completion": "0.0000023"
+   },
+   "contextLength": 131072,
+   "created": 1752263252
+  },
+  {
+   "id": "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 32768,
+   "created": 1752094966
+  },
+  {
+   "id": "tencent/hunyuan-a13b-instruct",
+   "pricing": {
+    "prompt": "0.00000014",
+    "completion": "0.00000057"
+   },
+   "contextLength": 131072,
+   "created": 1751987664
+  },
+  {
+   "id": "morph/morph-v3-large",
+   "pricing": {
+    "prompt": "0.0000009",
+    "completion": "0.0000019"
+   },
+   "contextLength": 262144,
+   "created": 1751910858
+  },
+  {
+   "id": "morph/morph-v3-fast",
+   "pricing": {
+    "prompt": "0.0000008",
+    "completion": "0.0000012"
+   },
+   "contextLength": 81920,
+   "created": 1751910002
+  },
+  {
+   "id": "baidu/ernie-4.5-vl-424b-a47b",
+   "pricing": {
+    "prompt": "0.00000042",
+    "completion": "0.00000125"
+   },
+   "contextLength": 131072,
+   "created": 1751300903
+  },
+  {
+   "id": "mistralai/mistral-small-3.2-24b-instruct",
+   "pricing": {
+    "prompt": "0.000000075",
+    "completion": "0.0000002"
+   },
+   "contextLength": 128000,
+   "created": 1750443016
+  },
+  {
+   "id": "minimax/minimax-m1",
+   "pricing": {
+    "prompt": "0.0000004",
+    "completion": "0.0000022"
+   },
+   "contextLength": 1000000,
+   "created": 1750200414
+  },
+  {
+   "id": "google/gemini-2.5-flash",
+   "pricing": {
+    "prompt": "0.0000003",
+    "completion": "0.0000025"
+   },
+   "contextLength": 1048576,
+   "created": 1750172488
+  },
+  {
+   "id": "google/gemini-2.5-pro",
+   "pricing": {
+    "prompt": "0.00000125",
+    "completion": "0.00001"
+   },
+   "contextLength": 1048576,
+   "created": 1750169544
+  },
+  {
+   "id": "openai/o3-pro",
+   "pricing": {
+    "prompt": "0.00002",
+    "completion": "0.00008"
+   },
+   "contextLength": 200000,
+   "created": 1749598352
+  },
+  {
+   "id": "google/gemini-2.5-pro-preview",
+   "pricing": {
+    "prompt": "0.00000125",
+    "completion": "0.00001"
+   },
+   "contextLength": 1048576,
+   "created": 1749137257
+  },
+  {
+   "id": "deepseek/deepseek-r1-0528",
+   "pricing": {
+    "prompt": "0.0000005",
+    "completion": "0.00000215"
+   },
+   "contextLength": 163840,
+   "created": 1748455170
+  },
+  {
+   "id": "anthropic/claude-opus-4",
+   "pricing": {
+    "prompt": "0.000015",
+    "completion": "0.000075"
+   },
+   "contextLength": 200000,
+   "created": 1747931245
+  },
+  {
+   "id": "anthropic/claude-sonnet-4",
+   "pricing": {
+    "prompt": "0.000003",
+    "completion": "0.000015"
+   },
+   "contextLength": 1000000,
+   "created": 1747930371
+  },
+  {
+   "id": "google/gemma-3n-e4b-it",
+   "pricing": {
+    "prompt": "0.00000006",
+    "completion": "0.00000012"
+   },
+   "contextLength": 32768,
+   "created": 1747776824
+  },
+  {
+   "id": "mistralai/mistral-medium-3",
+   "pricing": {
+    "prompt": "0.0000004",
+    "completion": "0.000002"
+   },
+   "contextLength": 131072,
+   "created": 1746627341
+  },
+  {
+   "id": "google/gemini-2.5-pro-preview-05-06",
+   "pricing": {
+    "prompt": "0.00000125",
+    "completion": "0.00001"
+   },
+   "contextLength": 1048576,
+   "created": 1746578513
+  },
+  {
+   "id": "arcee-ai/virtuoso-large",
+   "pricing": {
+    "prompt": "0.00000075",
+    "completion": "0.0000012"
+   },
+   "contextLength": 131072,
+   "created": 1746478885
+  },
+  {
+   "id": "arcee-ai/coder-large",
+   "pricing": {
+    "prompt": "0.0000005",
+    "completion": "0.0000008"
+   },
+   "contextLength": 32768,
+   "created": 1746478663
+  },
+  {
+   "id": "meta-llama/llama-guard-4-12b",
+   "pricing": {
+    "prompt": "0.00000018",
+    "completion": "0.00000018"
+   },
+   "contextLength": 163840,
+   "created": 1745975193
+  },
+  {
+   "id": "qwen/qwen3-30b-a3b",
+   "pricing": {
+    "prompt": "0.00000012",
+    "completion": "0.0000005"
+   },
+   "contextLength": 131072,
+   "created": 1745878604
+  },
+  {
+   "id": "qwen/qwen3-8b",
+   "pricing": {
+    "prompt": "0.000000117",
+    "completion": "0.000000455"
+   },
+   "contextLength": 131072,
+   "created": 1745876632
+  },
+  {
+   "id": "qwen/qwen3-14b",
+   "pricing": {
+    "prompt": "0.0000001",
+    "completion": "0.00000024"
+   },
+   "contextLength": 131702,
+   "created": 1745876478
+  },
+  {
+   "id": "qwen/qwen3-32b",
+   "pricing": {
+    "prompt": "0.00000008",
+    "completion": "0.00000028"
+   },
+   "contextLength": 131072,
+   "created": 1745875945
+  },
+  {
+   "id": "qwen/qwen3-235b-a22b",
+   "pricing": {
+    "prompt": "0.000000455",
+    "completion": "0.00000182"
+   },
+   "contextLength": 131072,
+   "created": 1745875757
+  },
+  {
+   "id": "openai/o4-mini-high",
+   "pricing": {
+    "prompt": "0.0000011",
+    "completion": "0.0000044"
+   },
+   "contextLength": 200000,
+   "created": 1744824212
+  },
+  {
+   "id": "openai/o3",
+   "pricing": {
+    "prompt": "0.000002",
+    "completion": "0.000008"
+   },
+   "contextLength": 200000,
+   "created": 1744823457
+  },
+  {
+   "id": "openai/o4-mini",
+   "pricing": {
+    "prompt": "0.0000011",
+    "completion": "0.0000044"
+   },
+   "contextLength": 200000,
+   "created": 1744820942
+  },
+  {
+   "id": "openai/gpt-4.1",
+   "pricing": {
+    "prompt": "0.000002",
+    "completion": "0.000008"
+   },
+   "contextLength": 1047576,
+   "created": 1744651385
+  },
+  {
+   "id": "openai/gpt-4.1-mini",
+   "pricing": {
+    "prompt": "0.0000004",
+    "completion": "0.0000016"
+   },
+   "contextLength": 1047576,
+   "created": 1744651381
+  },
+  {
+   "id": "openai/gpt-4.1-nano",
+   "pricing": {
+    "prompt": "0.0000001",
+    "completion": "0.0000004"
+   },
+   "contextLength": 1047576,
+   "created": 1744651369
+  },
+  {
+   "id": "meta-llama/llama-4-maverick",
+   "pricing": {
+    "prompt": "0.00000015",
+    "completion": "0.0000006"
+   },
+   "contextLength": 1048576,
+   "created": 1743881822
+  },
+  {
+   "id": "meta-llama/llama-4-scout",
+   "pricing": {
+    "prompt": "0.0000001",
+    "completion": "0.0000003"
+   },
+   "contextLength": 10000000,
+   "created": 1743881519
+  },
+  {
+   "id": "deepseek/deepseek-chat-v3-0324",
+   "pricing": {
+    "prompt": "0.00000024",
+    "completion": "0.0000009"
+   },
+   "contextLength": 163840,
+   "created": 1742824755
+  },
+  {
+   "id": "openai/o1-pro",
+   "pricing": {
+    "prompt": "0.00015",
+    "completion": "0.0006"
+   },
+   "contextLength": 200000,
+   "created": 1742423211
+  },
+  {
+   "id": "mistralai/mistral-small-3.1-24b-instruct",
+   "pricing": {
+    "prompt": "0.000000351",
+    "completion": "0.000000555"
+   },
+   "contextLength": 128000,
+   "created": 1742238937
+  },
+  {
+   "id": "google/gemma-3-4b-it",
+   "pricing": {
+    "prompt": "0.00000005",
+    "completion": "0.0000001"
+   },
+   "contextLength": 131072,
+   "created": 1741905510
+  },
+  {
+   "id": "google/gemma-3-12b-it",
+   "pricing": {
+    "prompt": "0.00000005",
+    "completion": "0.00000015"
+   },
+   "contextLength": 131072,
+   "created": 1741902625
+  },
+  {
+   "id": "cohere/command-a",
+   "pricing": {
+    "prompt": "0.0000025",
+    "completion": "0.00001"
+   },
+   "contextLength": 256000,
+   "created": 1741894342
+  },
+  {
+   "id": "openai/gpt-4o-mini-search-preview",
+   "pricing": {
+    "prompt": "0.00000015",
+    "completion": "0.0000006"
+   },
+   "contextLength": 128000,
+   "created": 1741818122
+  },
+  {
+   "id": "openai/gpt-4o-search-preview",
+   "pricing": {
+    "prompt": "0.0000025",
+    "completion": "0.00001"
+   },
+   "contextLength": 128000,
+   "created": 1741817949
+  },
+  {
+   "id": "rekaai/reka-flash-3",
+   "pricing": {
+    "prompt": "0.0000001",
+    "completion": "0.0000002"
+   },
+   "contextLength": 65536,
+   "created": 1741812813
+  },
+  {
+   "id": "google/gemma-3-27b-it",
+   "pricing": {
+    "prompt": "0.00000008",
+    "completion": "0.00000016"
+   },
+   "contextLength": 131072,
+   "created": 1741756359
+  },
+  {
+   "id": "thedrummer/skyfall-36b-v2",
+   "pricing": {
+    "prompt": "0.00000055",
+    "completion": "0.0000008"
+   },
+   "contextLength": 32768,
+   "created": 1741636566
+  },
+  {
+   "id": "perplexity/sonar-reasoning-pro",
+   "pricing": {
+    "prompt": "0.000002",
+    "completion": "0.000008"
+   },
+   "contextLength": 128000,
+   "created": 1741313308
+  },
+  {
+   "id": "perplexity/sonar-pro",
+   "pricing": {
+    "prompt": "0.000003",
+    "completion": "0.000015"
+   },
+   "contextLength": 200000,
+   "created": 1741312423
+  },
+  {
+   "id": "perplexity/sonar-deep-research",
+   "pricing": {
+    "prompt": "0.000002",
+    "completion": "0.000008"
+   },
+   "contextLength": 128000,
+   "created": 1741311246
+  },
+  {
+   "id": "mistralai/mistral-saba",
+   "pricing": {
+    "prompt": "0.0000002",
+    "completion": "0.0000006"
+   },
+   "contextLength": 32768,
+   "created": 1739803239
+  },
+  {
+   "id": "openai/o3-mini-high",
+   "pricing": {
+    "prompt": "0.0000011",
+    "completion": "0.0000044"
+   },
+   "contextLength": 200000,
+   "created": 1739372611
+  },
+  {
+   "id": "aion-labs/aion-1.0",
+   "pricing": {
+    "prompt": "0.000004",
+    "completion": "0.000008"
+   },
+   "contextLength": 131072,
+   "created": 1738697557
+  },
+  {
+   "id": "aion-labs/aion-1.0-mini",
+   "pricing": {
+    "prompt": "0.0000007",
+    "completion": "0.0000014"
+   },
+   "contextLength": 131072,
+   "created": 1738697107
+  },
+  {
+   "id": "aion-labs/aion-rp-llama-3.1-8b",
+   "pricing": {
+    "prompt": "0.0000008",
+    "completion": "0.0000016"
+   },
+   "contextLength": 32768,
+   "created": 1738696718
+  },
+  {
+   "id": "qwen/qwen2.5-vl-72b-instruct",
+   "pricing": {
+    "prompt": "0.0000008",
+    "completion": "0.000001"
+   },
+   "contextLength": 131072,
+   "created": 1738410311
+  },
+  {
+   "id": "qwen/qwen-plus",
+   "pricing": {
+    "prompt": "0.00000026",
+    "completion": "0.00000078"
+   },
+   "contextLength": 1000000,
+   "created": 1738409840
+  },
+  {
+   "id": "openai/o3-mini",
+   "pricing": {
+    "prompt": "0.0000011",
+    "completion": "0.0000044"
+   },
+   "contextLength": 200000,
+   "created": 1738351721
+  },
+  {
+   "id": "mistralai/mistral-small-24b-instruct-2501",
+   "pricing": {
+    "prompt": "0.00000005",
+    "completion": "0.00000008"
+   },
+   "contextLength": 32768,
+   "created": 1738255409
+  },
+  {
+   "id": "perplexity/sonar",
+   "pricing": {
+    "prompt": "0.000001",
+    "completion": "0.000001"
+   },
+   "contextLength": 127072,
+   "created": 1738013808
+  },
+  {
+   "id": "deepseek/deepseek-r1-distill-llama-70b",
+   "pricing": {
+    "prompt": "0.0000008",
+    "completion": "0.0000008"
+   },
+   "contextLength": 128000,
+   "created": 1737663169
+  },
+  {
+   "id": "deepseek/deepseek-r1",
+   "pricing": {
+    "prompt": "0.0000007",
+    "completion": "0.0000025"
+   },
+   "contextLength": 163840,
+   "created": 1737381095
+  },
+  {
+   "id": "minimax/minimax-01",
+   "pricing": {
+    "prompt": "0.0000002",
+    "completion": "0.0000011"
+   },
+   "contextLength": 1000192,
+   "created": 1736915462
+  },
+  {
+   "id": "microsoft/phi-4",
+   "pricing": {
+    "prompt": "0.00000007",
+    "completion": "0.00000014"
+   },
+   "contextLength": 16384,
+   "created": 1736489872
+  },
+  {
+   "id": "sao10k/l3.1-70b-hanami-x1",
+   "pricing": {
+    "prompt": "0.000003",
+    "completion": "0.000003"
+   },
+   "contextLength": 16000,
+   "created": 1736302854
+  },
+  {
+   "id": "deepseek/deepseek-chat",
+   "pricing": {
+    "prompt": "0.0000002002",
+    "completion": "0.0000008001"
+   },
+   "contextLength": 131072,
+   "created": 1735241320
+  },
+  {
+   "id": "sao10k/l3.3-euryale-70b",
+   "pricing": {
+    "prompt": "0.00000065",
+    "completion": "0.00000075"
+   },
+   "contextLength": 131072,
+   "created": 1734535928
+  },
+  {
+   "id": "openai/o1",
+   "pricing": {
+    "prompt": "0.000015",
+    "completion": "0.00006"
+   },
+   "contextLength": 200000,
+   "created": 1734459999
+  },
+  {
+   "id": "cohere/command-r7b-12-2024",
+   "pricing": {
+    "prompt": "0.0000000375",
+    "completion": "0.00000015"
+   },
+   "contextLength": 128000,
+   "created": 1734158152
+  },
+  {
+   "id": "meta-llama/llama-3.3-70b-instruct:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 131072,
+   "created": 1733506137
+  },
+  {
+   "id": "meta-llama/llama-3.3-70b-instruct",
+   "pricing": {
+    "prompt": "0.0000001",
+    "completion": "0.00000032"
+   },
+   "contextLength": 131072,
+   "created": 1733506137
+  },
+  {
+   "id": "amazon/nova-lite-v1",
+   "pricing": {
+    "prompt": "0.00000006",
+    "completion": "0.00000024"
+   },
+   "contextLength": 300000,
+   "created": 1733437363
+  },
+  {
+   "id": "amazon/nova-micro-v1",
+   "pricing": {
+    "prompt": "0.000000035",
+    "completion": "0.00000014"
+   },
+   "contextLength": 128000,
+   "created": 1733437237
+  },
+  {
+   "id": "amazon/nova-pro-v1",
+   "pricing": {
+    "prompt": "0.0000008",
+    "completion": "0.0000032"
+   },
+   "contextLength": 300000,
+   "created": 1733436303
+  },
+  {
+   "id": "openai/gpt-4o-2024-11-20",
+   "pricing": {
+    "prompt": "0.0000025",
+    "completion": "0.00001"
+   },
+   "contextLength": 128000,
+   "created": 1732127594
+  },
+  {
+   "id": "mistralai/mistral-large-2407",
+   "pricing": {
+    "prompt": "0.000002",
+    "completion": "0.000006"
+   },
+   "contextLength": 131072,
+   "created": 1731978415
+  },
+  {
+   "id": "qwen/qwen-2.5-coder-32b-instruct",
+   "pricing": {
+    "prompt": "0.00000066",
+    "completion": "0.000001"
+   },
+   "contextLength": 128000,
+   "created": 1731368400
+  },
+  {
+   "id": "thedrummer/unslopnemo-12b",
+   "pricing": {
+    "prompt": "0.0000004",
+    "completion": "0.0000004"
+   },
+   "contextLength": 32768,
+   "created": 1731103448
+  },
+  {
+   "id": "anthracite-org/magnum-v4-72b",
+   "pricing": {
+    "prompt": "0.000003",
+    "completion": "0.000005"
+   },
+   "contextLength": 32768,
+   "created": 1729555200
+  },
+  {
+   "id": "qwen/qwen-2.5-7b-instruct",
+   "pricing": {
+    "prompt": "0.00000004",
+    "completion": "0.0000001"
+   },
+   "contextLength": 131072,
+   "created": 1729036800
+  },
+  {
+   "id": "inflection/inflection-3-pi",
+   "pricing": {
+    "prompt": "0.0000025",
+    "completion": "0.00001"
+   },
+   "contextLength": 8000,
+   "created": 1728604800
+  },
+  {
+   "id": "inflection/inflection-3-productivity",
+   "pricing": {
+    "prompt": "0.0000025",
+    "completion": "0.00001"
+   },
+   "contextLength": 8000,
+   "created": 1728604800
+  },
+  {
+   "id": "thedrummer/rocinante-12b",
+   "pricing": {
+    "prompt": "0.00000025",
+    "completion": "0.0000005"
+   },
+   "contextLength": 32768,
+   "created": 1727654400
+  },
+  {
+   "id": "meta-llama/llama-3.2-1b-instruct",
+   "pricing": {
+    "prompt": "0.000000027",
+    "completion": "0.000000201"
+   },
+   "contextLength": 131072,
+   "created": 1727222400
+  },
+  {
+   "id": "meta-llama/llama-3.2-11b-vision-instruct",
+   "pricing": {
+    "prompt": "0.000000345",
+    "completion": "0.000000345"
+   },
+   "contextLength": 131072,
+   "created": 1727222400
+  },
+  {
+   "id": "meta-llama/llama-3.2-3b-instruct:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 131072,
+   "created": 1727222400
+  },
+  {
+   "id": "meta-llama/llama-3.2-3b-instruct",
+   "pricing": {
+    "prompt": "0.0000000509",
+    "completion": "0.000000335"
+   },
+   "contextLength": 131072,
+   "created": 1727222400
+  },
+  {
+   "id": "qwen/qwen-2.5-72b-instruct",
+   "pricing": {
+    "prompt": "0.00000036",
+    "completion": "0.0000004"
+   },
+   "contextLength": 131072,
+   "created": 1726704000
+  },
+  {
+   "id": "cohere/command-r-08-2024",
+   "pricing": {
+    "prompt": "0.00000015",
+    "completion": "0.0000006"
+   },
+   "contextLength": 128000,
+   "created": 1724976000
+  },
+  {
+   "id": "cohere/command-r-plus-08-2024",
+   "pricing": {
+    "prompt": "0.0000025",
+    "completion": "0.00001"
+   },
+   "contextLength": 128000,
+   "created": 1724976000
+  },
+  {
+   "id": "sao10k/l3.1-euryale-70b",
+   "pricing": {
+    "prompt": "0.00000085",
+    "completion": "0.00000085"
+   },
+   "contextLength": 131072,
+   "created": 1724803200
+  },
+  {
+   "id": "nousresearch/hermes-3-llama-3.1-70b",
+   "pricing": {
+    "prompt": "0.0000007",
+    "completion": "0.0000007"
+   },
+   "contextLength": 131072,
+   "created": 1723939200
+  },
+  {
+   "id": "nousresearch/hermes-3-llama-3.1-405b:free",
+   "pricing": {
+    "prompt": "0",
+    "completion": "0"
+   },
+   "contextLength": 131072,
+   "created": 1723766400
+  },
+  {
+   "id": "nousresearch/hermes-3-llama-3.1-405b",
+   "pricing": {
+    "prompt": "0.000001",
+    "completion": "0.000001"
+   },
+   "contextLength": 131072,
+   "created": 1723766400
+  },
+  {
+   "id": "sao10k/l3-lunaris-8b",
+   "pricing": {
+    "prompt": "0.00000004",
+    "completion": "0.00000005"
+   },
+   "contextLength": 8192,
+   "created": 1723507200
+  },
+  {
+   "id": "openai/gpt-4o-2024-08-06",
+   "pricing": {
+    "prompt": "0.0000025",
+    "completion": "0.00001"
+   },
+   "contextLength": 128000,
+   "created": 1722902400
+  },
+  {
+   "id": "meta-llama/llama-3.1-8b-instruct",
+   "pricing": {
+    "prompt": "0.00000002",
+    "completion": "0.00000003"
+   },
+   "contextLength": 131072,
+   "created": 1721692800
+  },
+  {
+   "id": "meta-llama/llama-3.1-70b-instruct",
+   "pricing": {
+    "prompt": "0.0000004",
+    "completion": "0.0000004"
+   },
+   "contextLength": 131072,
+   "created": 1721692800
+  },
+  {
+   "id": "mistralai/mistral-nemo",
+   "pricing": {
+    "prompt": "0.00000002",
+    "completion": "0.00000003"
+   },
+   "contextLength": 131072,
+   "created": 1721347200
+  },
+  {
+   "id": "openai/gpt-4o-mini-2024-07-18",
+   "pricing": {
+    "prompt": "0.00000015",
+    "completion": "0.0000006"
+   },
+   "contextLength": 128000,
+   "created": 1721260800
+  },
+  {
+   "id": "openai/gpt-4o-mini",
+   "pricing": {
+    "prompt": "0.00000015",
+    "completion": "0.0000006"
+   },
+   "contextLength": 128000,
+   "created": 1721260800
+  },
+  {
+   "id": "google/gemma-2-27b-it",
+   "pricing": {
+    "prompt": "0.00000065",
+    "completion": "0.00000065"
+   },
+   "contextLength": 8192,
+   "created": 1720828800
+  },
+  {
+   "id": "openai/gpt-4o-2024-05-13",
+   "pricing": {
+    "prompt": "0.000005",
+    "completion": "0.000015"
+   },
+   "contextLength": 128000,
+   "created": 1715558400
+  },
+  {
+   "id": "openai/gpt-4o",
+   "pricing": {
+    "prompt": "0.0000025",
+    "completion": "0.00001"
+   },
+   "contextLength": 128000,
+   "created": 1715558400
+  },
+  {
+   "id": "meta-llama/llama-3-8b-instruct",
+   "pricing": {
+    "prompt": "0.00000014",
+    "completion": "0.00000014"
+   },
+   "contextLength": 8192,
+   "created": 1713398400
+  },
+  {
+   "id": "mistralai/mixtral-8x22b-instruct",
+   "pricing": {
+    "prompt": "0.000002",
+    "completion": "0.000006"
+   },
+   "contextLength": 65536,
+   "created": 1713312000
+  },
+  {
+   "id": "microsoft/wizardlm-2-8x22b",
+   "pricing": {
+    "prompt": "0.00000062",
+    "completion": "0.00000062"
+   },
+   "contextLength": 65536,
+   "created": 1713225600
+  },
+  {
+   "id": "openai/gpt-4-turbo",
+   "pricing": {
+    "prompt": "0.00001",
+    "completion": "0.00003"
+   },
+   "contextLength": 128000,
+   "created": 1712620800
+  },
+  {
+   "id": "anthropic/claude-3-haiku",
+   "pricing": {
+    "prompt": "0.00000025",
+    "completion": "0.00000125"
+   },
+   "contextLength": 200000,
+   "created": 1710288000
+  },
+  {
+   "id": "mistralai/mistral-large",
+   "pricing": {
+    "prompt": "0.000002",
+    "completion": "0.000006"
+   },
+   "contextLength": 128000,
+   "created": 1708905600
+  },
+  {
+   "id": "openai/gpt-3.5-turbo-0613",
+   "pricing": {
+    "prompt": "0.000001",
+    "completion": "0.000002"
+   },
+   "contextLength": 4095,
+   "created": 1706140800
+  },
+  {
+   "id": "openai/gpt-4-turbo-preview",
+   "pricing": {
+    "prompt": "0.00001",
+    "completion": "0.00003"
+   },
+   "contextLength": 128000,
+   "created": 1706140800
+  },
+  {
+   "id": "openrouter/auto",
+   "pricing": {
+    "prompt": "-1",
+    "completion": "-1"
+   },
+   "contextLength": 2000000,
+   "created": 1699401600
+  },
+  {
+   "id": "openai/gpt-3.5-turbo-instruct",
+   "pricing": {
+    "prompt": "0.0000015",
+    "completion": "0.000002"
+   },
+   "contextLength": 4095,
+   "created": 1695859200
+  },
+  {
+   "id": "openai/gpt-3.5-turbo-16k",
+   "pricing": {
+    "prompt": "0.000003",
+    "completion": "0.000004"
+   },
+   "contextLength": 16385,
+   "created": 1693180800
+  },
+  {
+   "id": "mancer/weaver",
+   "pricing": {
+    "prompt": "0.00000075",
+    "completion": "0.000001"
+   },
+   "contextLength": 8000,
+   "created": 1690934400
+  },
+  {
+   "id": "undi95/remm-slerp-l2-13b",
+   "pricing": {
+    "prompt": "0.00000045",
+    "completion": "0.00000065"
+   },
+   "contextLength": 6144,
+   "created": 1689984000
+  },
+  {
+   "id": "gryphe/mythomax-l2-13b",
+   "pricing": {
+    "prompt": "0.00000006",
+    "completion": "0.00000006"
+   },
+   "contextLength": 4096,
+   "created": 1688256000
+  },
+  {
+   "id": "openai/gpt-3.5-turbo",
+   "pricing": {
+    "prompt": "0.0000005",
+    "completion": "0.0000015"
+   },
+   "contextLength": 16385,
+   "created": 1685232000
+  },
+  {
+   "id": "openai/gpt-4",
+   "pricing": {
+    "prompt": "0.00003",
+    "completion": "0.00006"
+   },
+   "contextLength": 8191,
+   "created": 1685232000
+  }
+ ]
+}

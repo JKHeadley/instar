@@ -1,0 +1,155 @@
+{
+ "_doc": "USD per MILLION tokens per model id. OpenRouter models: live /models API 2026-07-01. Groq models: published prices rounded UP (pessimistic; funnel over-books). Funnel REFUSES models absent here.",
+ "anthropic/claude-haiku-4-5": {
+  "inPerMtok": 1.0,
+  "outPerMtok": 5.0
+ },
+ "claude-haiku-4-5": {
+  "inPerMtok": 1.0,
+  "outPerMtok": 5.0
+ },
+ "openai/gpt-5.4-mini": {
+  "inPerMtok": 0.75,
+  "outPerMtok": 4.5
+ },
+ "gpt-5.4-mini": {
+  "inPerMtok": 0.6,
+  "outPerMtok": 2.4
+ },
+ "google/gemini-2.5-flash": {
+  "inPerMtok": 0.3,
+  "outPerMtok": 2.5
+ },
+ "google/gemini-3.1-flash-lite": {
+  "inPerMtok": 0.25,
+  "outPerMtok": 1.5
+ },
+ "llama-3.3-70b-versatile": {
+  "inPerMtok": 0.6,
+  "outPerMtok": 0.8
+ },
+ "meta-llama/llama-3.3-70b-instruct": {
+  "inPerMtok": 0.6,
+  "outPerMtok": 0.8
+ },
+ "openai/gpt-5.5": {
+  "inPerMtok": 5.0,
+  "outPerMtok": 30.0
+ },
+ "anthropic/claude-opus-4.8": {
+  "inPerMtok": 5.0,
+  "outPerMtok": 25.0
+ },
+ "google/gemini-3.1-pro-preview": {
+  "inPerMtok": 2.0,
+  "outPerMtok": 12.0
+ },
+ "z-ai/glm-5.2": {
+  "inPerMtok": 0.93,
+  "outPerMtok": 3.0
+ },
+ "qwen/qwen3.7-max": {
+  "inPerMtok": 1.25,
+  "outPerMtok": 3.75
+ },
+ "deepseek/deepseek-v4-pro": {
+  "inPerMtok": 0.435,
+  "outPerMtok": 0.87
+ },
+ "moonshotai/kimi-k2.6": {
+  "inPerMtok": 0.55,
+  "outPerMtok": 3.2
+ },
+ "anthropic/claude-sonnet-5": {
+  "inPerMtok": 2.0,
+  "outPerMtok": 10.0
+ },
+ "openai/gpt-5.4": {
+  "inPerMtok": 2.5,
+  "outPerMtok": 15.0
+ },
+ "google/gemini-3.5-flash": {
+  "inPerMtok": 1.5,
+  "outPerMtok": 9.0
+ },
+ "z-ai/glm-5-turbo": {
+  "inPerMtok": 1.2,
+  "outPerMtok": 4.0
+ },
+ "deepseek/deepseek-v4-flash": {
+  "inPerMtok": 0.09,
+  "outPerMtok": 0.18
+ },
+ "qwen/qwen3.7-plus": {
+  "inPerMtok": 0.32,
+  "outPerMtok": 1.28
+ },
+ "anthropic/claude-haiku-4.5": {
+  "inPerMtok": 1.0,
+  "outPerMtok": 5.0
+ },
+ "openai/gpt-5.4-nano": {
+  "inPerMtok": 0.2,
+  "outPerMtok": 1.25
+ },
+ "z-ai/glm-4.7-flash": {
+  "inPerMtok": 0.06,
+  "outPerMtok": 0.4
+ },
+ "qwen/qwen3.6-flash": {
+  "inPerMtok": 0.1875,
+  "outPerMtok": 1.125
+ },
+ "meta-llama/llama-4-scout": {
+  "inPerMtok": 0.1,
+  "outPerMtok": 0.3
+ },
+ "meta-llama/llama-4-scout-17b-16e-instruct": {
+  "inPerMtok": 0.15,
+  "outPerMtok": 0.4
+ },
+ "qwen/qwen3-32b": {
+  "inPerMtok": 0.3,
+  "outPerMtok": 0.6
+ },
+ "qwen/qwen3.6-27b": {
+  "inPerMtok": 0.35,
+  "outPerMtok": 0.7
+ },
+ "openai/gpt-oss-120b": {
+  "inPerMtok": 0.2,
+  "outPerMtok": 0.8
+ },
+ "openai/gpt-oss-20b": {
+  "inPerMtok": 0.15,
+  "outPerMtok": 0.55
+ },
+ "gemini-3.1-pro-preview": {
+  "inPerMtok": 2.0,
+  "outPerMtok": 12.0
+ },
+ "gemini-3.5-flash": {
+  "inPerMtok": 1.5,
+  "outPerMtok": 9.0
+ },
+ "gemini-3.1-flash-lite": {
+  "inPerMtok": 0.25,
+  "outPerMtok": 1.5
+ },
+ "gemini-3-flash-preview": {
+  "inPerMtok": 0.5,
+  "outPerMtok": 3.0
+ },
+ "gemini-2.5-pro": {
+  "inPerMtok": 2.5,
+  "outPerMtok": 15.0
+ },
+ "gemini-2.5-flash": {
+  "inPerMtok": 0.3,
+  "outPerMtok": 2.5
+ },
+ "gemini-2.5-flash-lite": {
+  "inPerMtok": 0.1,
+  "outPerMtok": 0.4
+ }
+}

@@ -1,0 +1,35 @@
+{
+  "stamp": "2026-07-01T02-44-14-310Z",
+  "label": "treekill-test",
+  "prompt": "ping",
+  "N": 2,
+  "concurrency": 1,
+  "timeoutMs": 4000,
+  "summaries": [
+    {
+      "pathway": "codex-gpt55",
+      "model": "gpt-5.5",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 2,
+      "ok": 0,
+      "errors": 2,
+      "okRate": 0,
+      "latencyMs": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "min": null,
+        "max": null,
+        "mean": null
+      },
+      "tokens": {
+        "meanIn": null,
+        "meanOut": null
+      },
+      "byError": {
+        "timeout": 2
+      }
+    }
+  ]
+}

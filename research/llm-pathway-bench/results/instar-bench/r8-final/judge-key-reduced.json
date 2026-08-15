@@ -1,0 +1,452 @@
+[
+ {
+  "anonId": "J000",
+  "pathway": "or-gpt-55",
+  "task": "bg-classify-batch"
+ },
+ {
+  "anonId": "J001",
+  "pathway": "or-claude-haiku-45",
+  "task": "agent-debug"
+ },
+ {
+  "anonId": "J002",
+  "pathway": "or-gemini-31-flash-lite",
+  "task": "agent-standards"
+ },
+ {
+  "anonId": "J003",
+  "pathway": "or-gemini-31-pro-preview",
+  "task": "bg-classify-batch"
+ },
+ {
+  "anonId": "J004",
+  "pathway": "or-glm-52",
+  "task": "agent-debug"
+ },
+ {
+  "anonId": "J005",
+  "pathway": "or-kimi-k26",
+  "task": "agent-standards"
+ },
+ {
+  "anonId": "J006",
+  "pathway": "or-claude-sonnet-5",
+  "task": "agent-plan"
+ },
+ {
+  "anonId": "J007",
+  "pathway": "or-claude-haiku-45",
+  "task": "bg-digest"
+ },
+ {
+  "anonId": "J008",
+  "pathway": "or-gemini-31-flash-lite",
+  "task": "bg-codesummary"
+ },
+ {
+  "anonId": "J009",
+  "pathway": "or-qwen37-max",
+  "task": "agent-plan"
+ },
+ {
+  "anonId": "J010",
+  "pathway": "or-glm-52",
+  "task": "bg-digest"
+ },
+ {
+  "anonId": "J011",
+  "pathway": "or-kimi-k26",
+  "task": "bg-codesummary"
+ },
+ {
+  "anonId": "J012",
+  "pathway": "or-claude-opus-48",
+  "task": "agent-standards"
+ },
+ {
+  "anonId": "J013",
+  "pathway": "or-claude-sonnet-5",
+  "task": "bg-classify-batch"
+ },
+ {
+  "anonId": "J014",
+  "pathway": "or-gpt-54-mini",
+  "task": "agent-debug"
+ },
+ {
+  "anonId": "J015",
+  "pathway": "or-gemini-35-flash",
+  "task": "agent-standards"
+ },
+ {
+  "anonId": "J016",
+  "pathway": "or-qwen37-max",
+  "task": "bg-classify-batch"
+ },
+ {
+  "anonId": "J017",
+  "pathway": "or-llama-4-scout",
+  "task": "agent-debug"
+ },
+ {
+  "anonId": "J018",
+  "pathway": "groq-llama4-scout",
+  "task": "agent-standards"
+ },
+ {
+  "anonId": "J019",
+  "pathway": "or-claude-opus-48",
+  "task": "bg-codesummary"
+ },
+ {
+  "anonId": "J020",
+  "pathway": "or-gpt-54",
+  "task": "agent-plan"
+ },
+ {
+  "anonId": "J021",
+  "pathway": "or-gpt-54-mini",
+  "task": "bg-digest"
+ },
+ {
+  "anonId": "J022",
+  "pathway": "or-gemini-35-flash",
+  "task": "bg-codesummary"
+ },
+ {
+  "anonId": "J023",
+  "pathway": "or-deepseek-v4-pro",
+  "task": "agent-plan"
+ },
+ {
+  "anonId": "J024",
+  "pathway": "or-llama-4-scout",
+  "task": "bg-digest"
+ },
+ {
+  "anonId": "J025",
+  "pathway": "groq-llama4-scout",
+  "task": "bg-codesummary"
+ },
+ {
+  "anonId": "J026",
+  "pathway": "or-gpt-55",
+  "task": "agent-standards"
+ },
+ {
+  "anonId": "J027",
+  "pathway": "or-gpt-54",
+  "task": "bg-classify-batch"
+ },
+ {
+  "anonId": "J028",
+  "pathway": "or-gemini-31-flash-lite",
+  "task": "agent-debug"
+ },
+ {
+  "anonId": "J029",
+  "pathway": "or-gemini-31-pro-preview",
+  "task": "agent-standards"
+ },
+ {
+  "anonId": "J030",
+  "pathway": "or-deepseek-v4-pro",
+  "task": "bg-classify-batch"
+ },
+ {
+  "anonId": "J031",
+  "pathway": "or-kimi-k26",
+  "task": "agent-debug"
+ },
+ {
+  "anonId": "J032",
+  "pathway": "or-gpt-55",
+  "task": "bg-codesummary"
+ },
+ {
+  "anonId": "J033",
+  "pathway": "or-claude-haiku-45",
+  "task": "agent-plan"
+ },
+ {
+  "anonId": "J034",
+  "pathway": "or-gemini-31-flash-lite",
+  "task": "bg-digest"
+ },
+ {
+  "anonId": "J035",
+  "pathway": "or-gemini-31-pro-preview",
+  "task": "bg-codesummary"
+ },
+ {
+  "anonId": "J036",
+  "pathway": "or-glm-52",
+  "task": "agent-plan"
+ },
+ {
+  "anonId": "J037",
+  "pathway": "or-kimi-k26",
+  "task": "bg-digest"
+ },
+ {
+  "anonId": "J038",
+  "pathway": "or-claude-opus-48",
+  "task": "agent-debug"
+ },
+ {
+  "anonId": "J039",
+  "pathway": "or-claude-sonnet-5",
+  "task": "agent-standards"
+ },
+ {
+  "anonId": "J040",
+  "pathway": "or-claude-haiku-45",
+  "task": "bg-classify-batch"
+ },
+ {
+  "anonId": "J041",
+  "pathway": "or-gemini-35-flash",
+  "task": "agent-debug"
+ },
+ {
+  "anonId": "J042",
+  "pathway": "or-qwen37-max",
+  "task": "agent-standards"
+ },
+ {
+  "anonId": "J043",
+  "pathway": "or-glm-52",
+  "task": "bg-classify-batch"
+ },
+ {
+  "anonId": "J044",
+  "pathway": "groq-llama4-scout",
+  "task": "agent-debug"
+ },
+ {
+  "anonId": "J045",
+  "pathway": "or-claude-opus-48",
+  "task": "bg-digest"
+ },
+ {
+  "anonId": "J046",
+  "pathway": "or-claude-sonnet-5",
+  "task": "bg-codesummary"
+ },
+ {
+  "anonId": "J047",
+  "pathway": "or-gpt-54-mini",
+  "task": "agent-plan"
+ },
+ {
+  "anonId": "J048",
+  "pathway": "or-gemini-35-flash",
+  "task": "bg-digest"
+ },
+ {
+  "anonId": "J049",
+  "pathway": "or-qwen37-max",
+  "task": "bg-codesummary"
+ },
+ {
+  "anonId": "J050",
+  "pathway": "or-llama-4-scout",
+  "task": "agent-plan"
+ },
+ {
+  "anonId": "J051",
+  "pathway": "groq-llama4-scout",
+  "task": "bg-digest"
+ },
+ {
+  "anonId": "J052",
+  "pathway": "or-gpt-55",
+  "task": "agent-debug"
+ },
+ {
+  "anonId": "J053",
+  "pathway": "or-gpt-54",
+  "task": "agent-standards"
+ },
+ {
+  "anonId": "J054",
+  "pathway": "or-gpt-54-mini",
+  "task": "bg-classify-batch"
+ },
+ {
+  "anonId": "J055",
+  "pathway": "or-gemini-31-pro-preview",
+  "task": "agent-debug"
+ },
+ {
+  "anonId": "J056",
+  "pathway": "or-deepseek-v4-pro",
+  "task": "agent-standards"
+ },
+ {
+  "anonId": "J057",
+  "pathway": "or-llama-4-scout",
+  "task": "bg-classify-batch"
+ },
+ {
+  "anonId": "J058",
+  "pathway": "or-gpt-55",
+  "task": "bg-digest"
+ },
+ {
+  "anonId": "J059",
+  "pathway": "or-gpt-54",
+  "task": "bg-codesummary"
+ },
+ {
+  "anonId": "J060",
+  "pathway": "or-gemini-31-flash-lite",
+  "task": "agent-plan"
+ },
+ {
+  "anonId": "J061",
+  "pathway": "or-gemini-31-pro-preview",
+  "task": "bg-digest"
+ },
+ {
+  "anonId": "J062",
+  "pathway": "or-deepseek-v4-pro",
+  "task": "bg-codesummary"
+ },
+ {
+  "anonId": "J063",
+  "pathway": "or-kimi-k26",
+  "task": "agent-plan"
+ },
+ {
+  "anonId": "J064",
+  "pathway": "or-claude-sonnet-5",
+  "task": "agent-debug"
+ },
+ {
+  "anonId": "J065",
+  "pathway": "or-claude-haiku-45",
+  "task": "agent-standards"
+ },
+ {
+  "anonId": "J066",
+  "pathway": "or-gemini-31-flash-lite",
+  "task": "bg-classify-batch"
+ },
+ {
+  "anonId": "J067",
+  "pathway": "or-qwen37-max",
+  "task": "agent-debug"
+ },
+ {
+  "anonId": "J068",
+  "pathway": "or-glm-52",
+  "task": "agent-standards"
+ },
+ {
+  "anonId": "J069",
+  "pathway": "or-kimi-k26",
+  "task": "bg-classify-batch"
+ },
+ {
+  "anonId": "J070",
+  "pathway": "or-claude-opus-48",
+  "task": "agent-plan"
+ },
+ {
+  "anonId": "J071",
+  "pathway": "or-claude-sonnet-5",
+  "task": "bg-digest"
+ },
+ {
+  "anonId": "J072",
+  "pathway": "or-claude-haiku-45",
+  "task": "bg-codesummary"
+ },
+ {
+  "anonId": "J073",
+  "pathway": "or-gemini-35-flash",
+  "task": "agent-plan"
+ },
+ {
+  "anonId": "J074",
+  "pathway": "or-qwen37-max",
+  "task": "bg-digest"
+ },
+ {
+  "anonId": "J075",
+  "pathway": "or-glm-52",
+  "task": "bg-codesummary"
+ },
+ {
+  "anonId": "J076",
+  "pathway": "groq-llama4-scout",
+  "task": "agent-plan"
+ },
+ {
+  "anonId": "J077",
+  "pathway": "or-claude-opus-48",
+  "task": "bg-classify-batch"
+ },
+ {
+  "anonId": "J078",
+  "pathway": "or-gpt-54",
+  "task": "agent-debug"
+ },
+ {
+  "anonId": "J079",
+  "pathway": "or-gpt-54-mini",
+  "task": "agent-standards"
+ },
+ {
+  "anonId": "J080",
+  "pathway": "or-gemini-35-flash",
+  "task": "bg-classify-batch"
+ },
+ {
+  "anonId": "J081",
+  "pathway": "or-deepseek-v4-pro",
+  "task": "agent-debug"
+ },
+ {
+  "anonId": "J082",
+  "pathway": "or-llama-4-scout",
+  "task": "agent-standards"
+ },
+ {
+  "anonId": "J083",
+  "pathway": "groq-llama4-scout",
+  "task": "bg-classify-batch"
+ },
+ {
+  "anonId": "J084",
+  "pathway": "or-gpt-55",
+  "task": "agent-plan"
+ },
+ {
+  "anonId": "J085",
+  "pathway": "or-gpt-54",
+  "task": "bg-digest"
+ },
+ {
+  "anonId": "J086",
+  "pathway": "or-gpt-54-mini",
+  "task": "bg-codesummary"
+ },
+ {
+  "anonId": "J087",
+  "pathway": "or-gemini-31-pro-preview",
+  "task": "agent-plan"
+ },
+ {
+  "anonId": "J088",
+  "pathway": "or-deepseek-v4-pro",
+  "task": "bg-digest"
+ },
+ {
+  "anonId": "J089",
+  "pathway": "or-llama-4-scout",
+  "task": "bg-codesummary"
+ }
+]

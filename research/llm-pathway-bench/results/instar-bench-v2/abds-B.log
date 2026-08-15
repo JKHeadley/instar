@@ -1,0 +1,6 @@
+[ib2] 6 routes × 1 tasks (8 cases) × 1 samples = 48 calls, c=4
+[ib2] ABORT — vendor-wall wall hit (3 refusals). Resolve the wall (cap / vendor balance), then re-run with --resume.
+[ib2] resume: 18 rows preloaded, 22 calls remain
+[ib2] 5 routes × 1 tasks (8 cases) × 1 samples = 22 calls, c=4
+[ib2] DONE — 40 calls, 0 failing samples, cost $1.069 → /Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/abds-B
+{"stamp":"abds-B","routes":5,"tasks":1,"calls":40,"failures":0,"judgeOutputs":40,"outdir":"/Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/abds-B"}

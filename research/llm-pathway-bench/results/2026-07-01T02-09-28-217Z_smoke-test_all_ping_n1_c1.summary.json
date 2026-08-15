@@ -1,0 +1,202 @@
+{
+  "stamp": "2026-07-01T02-09-28-217Z",
+  "label": "smoke-test",
+  "prompt": "ping",
+  "N": 1,
+  "concurrency": 1,
+  "timeoutMs": 60000,
+  "summaries": [
+    {
+      "pathway": "claude-opus",
+      "model": "claude-opus-4-8",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 1,
+      "ok": 1,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 5411,
+        "p95": 5411,
+        "p99": 5411,
+        "min": 5411,
+        "max": 5411,
+        "mean": 5411
+      },
+      "tokens": {
+        "meanIn": 19564,
+        "meanOut": 5
+      },
+      "byError": {}
+    },
+    {
+      "pathway": "claude-sonnet",
+      "model": "claude-sonnet-4-6",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 1,
+      "ok": 1,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 6872,
+        "p95": 6872,
+        "p99": 6872,
+        "min": 6872,
+        "max": 6872,
+        "mean": 6872
+      },
+      "tokens": {
+        "meanIn": 22918,
+        "meanOut": 6
+      },
+      "byError": {}
+    },
+    {
+      "pathway": "claude-haiku",
+      "model": "claude-haiku-4-5-20251001",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 1,
+      "ok": 1,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 5825,
+        "p95": 5825,
+        "p99": 5825,
+        "min": 5825,
+        "max": 5825,
+        "mean": 5825
+      },
+      "tokens": {
+        "meanIn": 23661,
+        "meanOut": 66
+      },
+      "byError": {}
+    },
+    {
+      "pathway": "codex-gpt55",
+      "model": "gpt-5.5",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 1,
+      "ok": 0,
+      "errors": 1,
+      "okRate": 0,
+      "latencyMs": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "min": null,
+        "max": null,
+        "mean": null
+      },
+      "tokens": {
+        "meanIn": null,
+        "meanOut": null
+      },
+      "byError": {
+        "binary-missing": 1
+      }
+    },
+    {
+      "pathway": "codex-gpt54mini",
+      "model": "gpt-5.4-mini",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 1,
+      "ok": 0,
+      "errors": 1,
+      "okRate": 0,
+      "latencyMs": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "min": null,
+        "max": null,
+        "mean": null
+      },
+      "tokens": {
+        "meanIn": null,
+        "meanOut": null
+      },
+      "byError": {
+        "binary-missing": 1
+      }
+    },
+    {
+      "pathway": "codex-gpt55-plain",
+      "model": "gpt-5.5",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 1,
+      "ok": 0,
+      "errors": 1,
+      "okRate": 0,
+      "latencyMs": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "min": null,
+        "max": null,
+        "mean": null
+      },
+      "tokens": {
+        "meanIn": null,
+        "meanOut": null
+      },
+      "byError": {
+        "binary-missing": 1
+      }
+    },
+    {
+      "pathway": "pi-gpt55",
+      "model": "openai-codex/gpt-5.5",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 1,
+      "ok": 0,
+      "errors": 1,
+      "okRate": 0,
+      "latencyMs": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "min": null,
+        "max": null,
+        "mean": null
+      },
+      "tokens": {
+        "meanIn": null,
+        "meanOut": null
+      },
+      "byError": {
+        "timeout": 1
+      }
+    },
+    {
+      "pathway": "gemini-flash",
+      "model": "gemini-2.5-flash",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 1,
+      "ok": 1,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 9034,
+        "p95": 9034,
+        "p99": 9034,
+        "min": 9034,
+        "max": 9034,
+        "mean": 9034
+      },
+      "tokens": {
+        "meanIn": null,
+        "meanOut": null
+      },
+      "byError": {}
+    }
+  ]
+}

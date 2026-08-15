@@ -1,0 +1,37 @@
+{
+ "run": "wave2",
+ "probes": [
+  {
+   "probeId": "P000",
+   "duplicates": "B005"
+  },
+  {
+   "probeId": "P001",
+   "duplicates": "B017"
+  },
+  {
+   "probeId": "P002",
+   "duplicates": "B028"
+  },
+  {
+   "probeId": "P003",
+   "duplicates": "B040"
+  },
+  {
+   "probeId": "P004",
+   "duplicates": "B050"
+  },
+  {
+   "probeId": "P005",
+   "duplicates": "B062"
+  },
+  {
+   "probeId": "P006",
+   "duplicates": "B073"
+  },
+  {
+   "probeId": "P007",
+   "duplicates": "B083"
+  }
+ ]
+}

@@ -1,0 +1,2 @@
+[ab] NO-GAIN (must not ship) — fixed 0, regressed 0, cells 13 → /Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/abf2g3-verdict.json
+{"stamp":"abf2g3","task":"override-detector","variant":"variants-wave2/override-detector.f2-authority.json","cells":13,"fixed":[],"regressed":[],"unchangedCount":13,"infraExcluded":{"armA":0,"armB":0},"cleanWin":false,"ruling":"NO-GAIN (must not ship)"}

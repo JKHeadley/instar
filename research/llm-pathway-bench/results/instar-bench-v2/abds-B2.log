@@ -1,0 +1,9 @@
+[ib2] 5 routes × 1 tasks (8 cases) × 1 samples = 40 calls, c=4
+[ib2] DONE — 40 calls, 0 failing samples, cost $1.020 → /Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/abds-B2
+{"stamp":"abds-B2","routes":5,"tasks":1,"calls":40,"failures":0,"judgeOutputs":40,"outdir":"/Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/abds-B2"}
+[ib2] 4 routes × 1 tasks (8 cases) × 3 samples = 12 calls, c=4
+[ib2] ABORT — vendor-wall wall hit (3 refusals). Resolve the wall (cap / vendor balance), then re-run with --resume.
+[ib2] resume: 7 rows preloaded, 2 calls remain
+[ib2] 3 routes × 1 tasks (8 cases) × 3 samples = 2 calls, c=4
+[ib2] DONE — 9 calls, 0 failing samples, cost $0.297 → /Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/abds-B2emp
+{"stamp":"abds-B2emp","routes":3,"tasks":1,"calls":9,"failures":0,"judgeOutputs":9,"outdir":"/Users/justin/.instar/agents/echo/research/llm-pathway-bench/results/instar-bench-v2/abds-B2emp"}

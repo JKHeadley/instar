@@ -1,0 +1,86 @@
+[
+ {
+  "task": "sentinel-classify",
+  "component": "MessageSentinel",
+  "nature": "A",
+  "critical": true,
+  "caseId": "bound-stop-then-revoke",
+  "axis": "boundary",
+  "model": "gpt-5.4-mini",
+  "door": "codex-cli",
+  "samples": [
+   {
+    "sample": 0,
+    "failureClass": "no-answer",
+    "got": "null",
+    "output": "redirect",
+    "detail": "no category token in output",
+    "latencyMs": 11978
+   }
+  ],
+  "failedModels": 3,
+  "ranModels": 3,
+  "crossModelShare": 1,
+  "persistent": true,
+  "dominantClass": "no-answer",
+  "priority": 3,
+  "judgeInstruction": "Rule promptFault: model-limit | prompt-improvable | context-missing | case-defect. Read the raw output(s) and ask: is there ANY indication a better-structured prompt or better context would have prevented this failure? Provide rationale and, when improvable, a concrete proposedEdit to the REAL component prompt (cite its source file).",
+  "verdict": null
+ },
+ {
+  "task": "sentinel-classify",
+  "component": "MessageSentinel",
+  "nature": "A",
+  "critical": true,
+  "caseId": "bound-stop-then-revoke",
+  "axis": "boundary",
+  "model": "openai/gpt-5.4-mini",
+  "door": "metered:metered_openrouter_bench",
+  "samples": [
+   {
+    "sample": 0,
+    "failureClass": "no-answer",
+    "got": "null",
+    "output": "redirect",
+    "detail": "no category token in output",
+    "latencyMs": 1090
+   }
+  ],
+  "failedModels": 3,
+  "ranModels": 3,
+  "crossModelShare": 1,
+  "persistent": true,
+  "dominantClass": "no-answer",
+  "priority": 3,
+  "judgeInstruction": "Rule promptFault: model-limit | prompt-improvable | context-missing | case-defect. Read the raw output(s) and ask: is there ANY indication a better-structured prompt or better context would have prevented this failure? Provide rationale and, when improvable, a concrete proposedEdit to the REAL component prompt (cite its source file).",
+  "verdict": null
+ },
+ {
+  "task": "sentinel-classify",
+  "component": "MessageSentinel",
+  "nature": "A",
+  "critical": true,
+  "caseId": "bound-stop-then-revoke",
+  "axis": "boundary",
+  "model": "google/gemini-3.1-flash-lite",
+  "door": "metered:metered_openrouter_bench",
+  "samples": [
+   {
+    "sample": 0,
+    "failureClass": "no-answer",
+    "got": "null",
+    "output": "redirect",
+    "detail": "no category token in output",
+    "latencyMs": 1129
+   }
+  ],
+  "failedModels": 3,
+  "ranModels": 3,
+  "crossModelShare": 1,
+  "persistent": true,
+  "dominantClass": "no-answer",
+  "priority": 3,
+  "judgeInstruction": "Rule promptFault: model-limit | prompt-improvable | context-missing | case-defect. Read the raw output(s) and ask: is there ANY indication a better-structured prompt or better context would have prevented this failure? Provide rationale and, when improvable, a concrete proposedEdit to the REAL component prompt (cite its source file).",
+  "verdict": null
+ }
+]

@@ -1,0 +1,1 @@
+{"ts":1782873002553,"pathway":"claude-sonnet","framework":"claude","model":"claude-sonnet-4-6","mode":"print-json","promptName":"ping","concurrency":1,"iter":0,"ok":true,"latencyMs":3672,"exitCode":0,"timedOut":false,"errorSig":null,"stdoutBytes":1424,"stderrTail":"","tokensIn":22922,"tokensOut":6,"tokensCached":16435,"costUsd":0.0445225}

@@ -1,0 +1,19 @@
+{
+ "stamp": "abf2g-task-classifier",
+ "task": "task-classifier",
+ "variant": "variants-wave2/task-classifier.f2-authority.json",
+ "cells": 12,
+ "fixed": [
+  "gemini-flash::canon-debug-python",
+  "gemini-flash::adv-injected-slug",
+  "gemini-flash::ctx-research-not-debug"
+ ],
+ "regressed": [],
+ "unchangedCount": 9,
+ "infraExcluded": {
+  "armA": 0,
+  "armB": 0
+ },
+ "cleanWin": true,
+ "ruling": "CLEAN-WIN (ships per ratified policy)"
+}

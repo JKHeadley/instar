@@ -1,0 +1,15 @@
+{
+ "stamp": "abf2g3",
+ "task": "override-detector",
+ "variant": "variants-wave2/override-detector.f2-authority.json",
+ "cells": 13,
+ "fixed": [],
+ "regressed": [],
+ "unchangedCount": 13,
+ "infraExcluded": {
+  "armA": 0,
+  "armB": 0
+ },
+ "cleanWin": false,
+ "ruling": "NO-GAIN (must not ship)"
+}

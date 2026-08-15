@@ -1,0 +1,21 @@
+{
+ "_judge": "Echo running claude-fable-5 (interactive, in-session, blind)",
+ "_scale": "1-10 per task rubric; (no successful output) = 0",
+ "scores": {
+  "J000": 10, "J001": 9, "J002": 9, "J003": 10, "J004": 0, "J005": 0, "J006": 7, "J007": 9, "J008": 9, "J009": 9,
+  "J010": 0, "J011": 0, "J012": 10, "J013": 10, "J014": 10, "J015": 3, "J016": 10, "J017": 4, "J018": 9, "J019": 10,
+  "J020": 10, "J021": 8, "J022": 4, "J023": 0, "J024": 7, "J025": 6, "J026": 10, "J027": 10, "J028": 5, "J029": 3,
+  "J030": 10, "J031": 0, "J032": 10, "J033": 2, "J034": 10, "J035": 2, "J036": 0, "J037": 9, "J038": 10, "J039": 10,
+  "J040": 10, "J041": 3, "J042": 9, "J043": 10, "J044": 4, "J045": 10, "J046": 10, "J047": 10, "J048": 2, "J049": 9,
+  "J050": 1, "J051": 7, "J052": 10, "J053": 10, "J054": 10, "J055": 3, "J056": 10, "J057": 6, "J058": 9, "J059": 10,
+  "J060": 10, "J061": 1, "J062": 10, "J063": 0, "J064": 10, "J065": 10, "J066": 10, "J067": 10, "J068": 0, "J069": 10,
+  "J070": 9, "J071": 9, "J072": 4, "J073": 2, "J074": 9, "J075": 0, "J076": 3, "J077": 10, "J078": 10, "J079": 10,
+  "J080": 10, "J081": 9, "J082": 9, "J083": 7, "J084": 0, "J085": 9, "J086": 10, "J087": 1, "J088": 7, "J089": 10
+ },
+ "_notes": {
+  "agent-plan penalties": "J033/J050/J076 named the 409 conflict but their OWN plan runs both pollers (self-contradiction) → scored low per rubric intent",
+  "agent-debug penalties": "J017/J044 proposed a try/catch fix that STILL returns acked:true on sender-rejected → didn't actually fix the drop",
+  "truncations": "several outputs cut mid-answer (reasoning models); scored on what was delivered",
+  "zeros": "(no successful output) = free-tier 429 or reasoning-only output; not a capability signal on its own"
+ }
+}

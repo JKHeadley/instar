@@ -1,0 +1,83 @@
+{
+ "claude-opus": {
+  "door": "claude-code",
+  "model": "claude-opus-4-8",
+  "subsidized": true,
+  "tasks": {
+   "activity-digest": {
+    "cases": {
+     "degen-empty-content": {
+      "axis": "degenerate",
+      "pass": 0,
+      "total": 0,
+      "failureClasses": {}
+     }
+    },
+    "passes": 0,
+    "total": 0
+   }
+  },
+  "calls": 3,
+  "okCalls": 3,
+  "passes": 0,
+  "deterministic": 0,
+  "costUsd": 0.17732,
+  "p50ms": 5679,
+  "p95ms": 5881,
+  "passRate": null
+ },
+ "claude-sonnet": {
+  "door": "claude-code",
+  "model": "claude-sonnet-4-6",
+  "subsidized": true,
+  "tasks": {
+   "activity-digest": {
+    "cases": {
+     "degen-empty-content": {
+      "axis": "degenerate",
+      "pass": 0,
+      "total": 0,
+      "failureClasses": {}
+     }
+    },
+    "passes": 0,
+    "total": 0
+   }
+  },
+  "calls": 3,
+  "okCalls": 3,
+  "passes": 0,
+  "deterministic": 0,
+  "costUsd": 0.09737,
+  "p50ms": 5153,
+  "p95ms": 9296,
+  "passRate": null
+ },
+ "claude-haiku": {
+  "door": "claude-code",
+  "model": "claude-haiku-4-5-20251001",
+  "subsidized": true,
+  "tasks": {
+   "activity-digest": {
+    "cases": {
+     "degen-empty-content": {
+      "axis": "degenerate",
+      "pass": 0,
+      "total": 0,
+      "failureClasses": {}
+     }
+    },
+    "passes": 0,
+    "total": 0
+   }
+  },
+  "calls": 3,
+  "okCalls": 3,
+  "passes": 0,
+  "deterministic": 0,
+  "costUsd": 0.04556,
+  "p50ms": 5773,
+  "p95ms": 8529,
+  "passRate": null
+ }
+}

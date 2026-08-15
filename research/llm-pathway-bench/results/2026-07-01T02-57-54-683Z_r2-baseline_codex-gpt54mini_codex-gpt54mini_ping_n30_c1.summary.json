@@ -1,0 +1,33 @@
+{
+  "stamp": "2026-07-01T02-57-54-683Z",
+  "label": "r2-baseline_codex-gpt54mini",
+  "prompt": "ping",
+  "N": 30,
+  "concurrency": 1,
+  "timeoutMs": 120000,
+  "summaries": [
+    {
+      "pathway": "codex-gpt54mini",
+      "model": "gpt-5.4-mini",
+      "promptName": "ping",
+      "concurrency": 1,
+      "n": 30,
+      "ok": 30,
+      "errors": 0,
+      "okRate": 1,
+      "latencyMs": {
+        "p50": 15523,
+        "p95": 38678,
+        "p99": 51192,
+        "min": 8729,
+        "max": 51192,
+        "mean": 19092
+      },
+      "tokens": {
+        "meanIn": 10004,
+        "meanOut": 23
+      },
+      "byError": {}
+    }
+  ]
+}

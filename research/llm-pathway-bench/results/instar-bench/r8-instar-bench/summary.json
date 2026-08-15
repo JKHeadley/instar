@@ -1,0 +1,340 @@
+{
+ "or-gpt-55": {
+  "model": "openai/gpt-5.5",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 2351,
+  "okRate": 0.913,
+  "costUsd": 0.19752
+ },
+ "or-claude-opus-48": {
+  "model": "anthropic/claude-opus-4.8",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 2013,
+  "okRate": 1,
+  "costUsd": 0.13206
+ },
+ "or-gemini-31-pro-preview": {
+  "model": "google/gemini-3.1-pro-preview",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 0,
+   "gate": 0,
+   "extractor": 0
+  },
+  "overallDeterministic": 0,
+  "p50ms": 3133,
+  "okRate": 0.783,
+  "costUsd": 0.12406
+ },
+ "or-glm-52": {
+  "model": "z-ai/glm-5.2",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 0.19047619047619047,
+   "gate": 0.16666666666666666,
+   "extractor": 0.08333333333333333
+  },
+  "overallDeterministic": 0.1468253968253968,
+  "p50ms": 2408,
+  "okRate": 0.174,
+  "costUsd": 0.03362
+ },
+ "or-qwen37-max": {
+  "model": "qwen/qwen3.7-max",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 10423,
+  "okRate": 0.986,
+  "costUsd": 0.18932
+ },
+ "or-deepseek-v4-pro": {
+  "model": "deepseek/deepseek-v4-pro",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 0.47619047619047616,
+   "gate": 0.611111111111111,
+   "extractor": 0.7499999999999999
+  },
+  "overallDeterministic": 0.6124338624338623,
+  "p50ms": 2589,
+  "okRate": 0.638,
+  "costUsd": 0.00945
+ },
+ "or-kimi-k26": {
+  "model": "moonshotai/kimi-k2.6",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 0.14285714285714285,
+   "gate": 0.16666666666666666,
+   "extractor": 0.08333333333333333
+  },
+  "overallDeterministic": 0.13095238095238096,
+  "p50ms": 7563,
+  "okRate": 0.13,
+  "costUsd": 0.03865
+ },
+ "or-claude-sonnet-5": {
+  "model": "anthropic/claude-sonnet-5",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 3129,
+  "okRate": 1,
+  "costUsd": 0.05778
+ },
+ "or-gpt-54": {
+  "model": "openai/gpt-5.4",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 1234,
+  "okRate": 1,
+  "costUsd": 0.04714
+ },
+ "or-gemini-35-flash": {
+  "model": "google/gemini-3.5-flash",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 0,
+   "gate": 0,
+   "extractor": 0
+  },
+  "overallDeterministic": 0,
+  "p50ms": 1753,
+  "okRate": 0.739,
+  "costUsd": 0.09298
+ },
+ "or-glm-5-turbo": {
+  "model": "z-ai/glm-5-turbo",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 0,
+   "gate": 0,
+   "extractor": 0
+  },
+  "overallDeterministic": 0,
+  "p50ms": null,
+  "okRate": 0,
+  "costUsd": 0.04519
+ },
+ "or-deepseek-v4-flash": {
+  "model": "deepseek/deepseek-v4-flash",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 0.5714285714285714,
+   "gate": 0.8888888888888888,
+   "extractor": 0.9166666666666666
+  },
+  "overallDeterministic": 0.7923280423280423,
+  "p50ms": 3051,
+  "okRate": 0.841,
+  "costUsd": 0.00273
+ },
+ "or-qwen37-plus": {
+  "model": "qwen/qwen3.7-plus",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 10942,
+  "okRate": 0.971,
+  "costUsd": 0.06514
+ },
+ "or-claude-haiku-45": {
+  "model": "anthropic/claude-haiku-4.5",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 0.9722222222222223,
+   "extractor": 1
+  },
+  "overallDeterministic": 0.9907407407407408,
+  "p50ms": 1487,
+  "okRate": 1,
+  "costUsd": 0.01934
+ },
+ "or-gpt-54-mini": {
+  "model": "openai/gpt-5.4-mini",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 1222,
+  "okRate": 1,
+  "costUsd": 0.01486
+ },
+ "or-gpt-54-nano": {
+  "model": "openai/gpt-5.4-nano",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 0.7142857142857143,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 0.9047619047619048,
+  "p50ms": 1271,
+  "okRate": 1,
+  "costUsd": 0.00464
+ },
+ "or-gemini-31-flash-lite": {
+  "model": "google/gemini-3.1-flash-lite",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 1180,
+  "okRate": 1,
+  "costUsd": 0.00509
+ },
+ "or-glm-47-flash": {
+  "model": "z-ai/glm-4.7-flash",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 0,
+   "gate": 0,
+   "extractor": 0
+  },
+  "overallDeterministic": 0,
+  "p50ms": null,
+  "okRate": 0,
+  "costUsd": 0.00423
+ },
+ "or-qwen36-flash": {
+  "model": "qwen/qwen3.6-flash",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 1,
+   "extractor": 1
+  },
+  "overallDeterministic": 1,
+  "p50ms": 5152,
+  "okRate": 1,
+  "costUsd": 0.0607
+ },
+ "or-llama-4-scout": {
+  "model": "meta-llama/llama-4-scout",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 0.9444444444444443,
+   "extractor": 0.8333333333333333
+  },
+  "overallDeterministic": 0.9259259259259259,
+  "p50ms": 1090,
+  "okRate": 1,
+  "costUsd": 0.00138
+ },
+ "groq-llama33-70b": {
+  "model": "llama-3.3-70b-versatile",
+  "tier": "mid",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 0.5,
+   "extractor": 0.16666666666666666
+  },
+  "overallDeterministic": 0.5555555555555556,
+  "p50ms": 796,
+  "okRate": 0.493,
+  "costUsd": 0.0094
+ },
+ "groq-llama4-scout": {
+  "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 1,
+   "gate": 0.5555555555555556,
+   "extractor": 0.08333333333333333
+  },
+  "overallDeterministic": 0.5462962962962963,
+  "p50ms": 898,
+  "okRate": 0.478,
+  "costUsd": 0.00367
+ },
+ "groq-qwen3-32b": {
+  "model": "qwen/qwen3-32b",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 0,
+   "gate": 0,
+   "extractor": 0.041666666666666664
+  },
+  "overallDeterministic": 0.013888888888888888,
+  "p50ms": 774,
+  "okRate": 0.565,
+  "costUsd": 0.00751
+ },
+ "groq-qwen36-27b": {
+  "model": "qwen/qwen3.6-27b",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 0,
+   "gate": 0,
+   "extractor": 0
+  },
+  "overallDeterministic": 0,
+  "p50ms": 864,
+  "okRate": 0.478,
+  "costUsd": 0.00885
+ },
+ "groq-gpt-oss-120b": {
+  "model": "openai/gpt-oss-120b",
+  "tier": "large",
+  "familyScores": {
+   "sentinel": 0.14285714285714285,
+   "gate": 0.1111111111111111,
+   "extractor": 0
+  },
+  "overallDeterministic": 0.08465608465608465,
+  "p50ms": 997,
+  "okRate": 0.493,
+  "costUsd": 0.00918
+ },
+ "groq-gpt-oss-20b": {
+  "model": "openai/gpt-oss-20b",
+  "tier": "small",
+  "familyScores": {
+   "sentinel": 0,
+   "gate": 0.2222222222222222,
+   "extractor": 0
+  },
+  "overallDeterministic": 0.07407407407407407,
+  "p50ms": 824,
+  "okRate": 0.478,
+  "costUsd": 0.0065
+ }
+}
