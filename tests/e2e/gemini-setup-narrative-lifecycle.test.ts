@@ -7,6 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { geminiEnvRefusal } from '../helpers/geminiEnvRefusal.js';
 import { detectGeminiPath } from '../../src/core/Config.js';
 import { GEMINI_WIZARD_MODEL } from '../../src/commands/setup-wizard/model-constants.js';
 import {
@@ -59,8 +60,12 @@ paths, tool names, bullet lists, or questions. Output prose only.
         }
       }
 
-      if (result.exitCode !== 0 && /QUOTA_EXHAUSTED|exhausted your capacity|quota/i.test(result.stderr)) {
-        console.warn('Skipping live Gemini narrative assertion: Gemini CLI quota is exhausted.');
+      // The binary being INSTALLED is not the binary being USABLE — see tests/helpers/geminiEnvRefusal.ts.
+      // This hatch previously covered quota only; an uncredentialed CLI exits 41 before it reads our
+      // prompt, which made this test red on the one kind of box that actually runs it.
+      const refusal = result.exitCode !== 0 ? geminiEnvRefusal(result.stderr) : null;
+      if (refusal) {
+        console.warn(`Skipping live Gemini narrative assertion: ${refusal}.`);
         return;
       }
 
