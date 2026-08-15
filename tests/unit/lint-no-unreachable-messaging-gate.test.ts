@@ -19,8 +19,18 @@ describe('lint-no-unreachable-messaging-gate detector', () => {
     expect(scanText(`x.get('messaging.bar.baz', false)`)).toEqual([1]);
   });
 
+  it('flags literal-concatenated messaging keys with a false default', () => {
+    const src = `const enabled = liveConfig.get('messaging.' + 'actionClaim.enabled', false);`;
+    expect(scanText(src)).toEqual([1]);
+  });
+
   it('does NOT flag a default-TRUE messaging gate (unreachable just means it stays on)', () => {
     const src = `const on = liveConfig.get('messaging.outboundAdvisory.enabled', true) ?? true;`;
+    expect(scanText(src)).toEqual([]);
+  });
+
+  it('does NOT flag a literal-concatenated default-TRUE messaging gate', () => {
+    const src = `const on = liveConfig.get('messaging.' + 'outboundAdvisory.enabled', true) ?? true;`;
     expect(scanText(src)).toEqual([]);
   });
 
@@ -31,6 +41,31 @@ describe('lint-no-unreachable-messaging-gate detector', () => {
 
   it('does NOT flag a non-messaging default-off gate', () => {
     const src = `const on = liveConfig.get('monitoring.burnDetection.enabled', false);`;
+    expect(scanText(src)).toEqual([]);
+  });
+
+  it('does NOT flag literal-concatenated non-messaging keys with a false default', () => {
+    const src = `const on = liveConfig.get('monitoring.' + 'burnDetection.enabled', false);`;
+    expect(scanText(src)).toEqual([]);
+  });
+
+  it('does NOT fold non-literal concatenated messaging keys', () => {
+    const src = `const on = liveConfig.get('messaging.' + featureKey, false);`;
+    expect(scanText(src)).toEqual([]);
+  });
+
+  it('does NOT fold template expressions', () => {
+    const src = 'const on = liveConfig.get(`messaging.${featureKey}`, false);';
+    expect(scanText(src)).toEqual([]);
+  });
+
+  it('does NOT flag messaging keys mentioned only in comments', () => {
+    const src = `// liveConfig.get('messaging.actionClaim.enabled', false)`;
+    expect(scanText(src)).toEqual([]);
+  });
+
+  it('does NOT flag messaging gate examples inside string literals', () => {
+    const src = `const example = "liveConfig.get('messaging.' + 'actionClaim.enabled', false)";`;
     expect(scanText(src)).toEqual([]);
   });
 
