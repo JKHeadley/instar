@@ -5946,8 +5946,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
         }
 
         // The marker is at the prompt — but if the session is actively working,
-        // that's NOT a stuck Enter: the injected text is correctly queued and
-        // Claude submits it when the current turn ends. Firing Enter now is a
+        // that's NOT a stuck Enter: the injected text is correctly queued and is
+        // submitted when the current turn ends. (Not universal — codex holds the
+        // draft instead, which is exactly why the stranded-draft marker above
+        // exists for it. Frameworks beyond claude/codex are unmeasured here.)
+        // Firing Enter now is a
         // no-op at best and a premature/duplicate submit at worst — and it's
         // the noisy "Injection stuck — Auto-recovering" spam that fires on
         // every inbound to a busy session. Skip recovery this tick; keep
@@ -5971,7 +5974,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
             feature: 'SessionManager.verifyInjection',
             primary: 'Bracketed paste + Enter submits injected message',
             fallback: 'Auto-resent Enter after detecting stuck input',
-            reason: 'Enter eaten by paste-end race on fresh Claude Code TUI',
+            // States the OBSERVED condition, not a presumed cause. This recovery
+            // runs for every framework (the codex branch is separate, above), so
+            // naming Claude Code here handed an operator on a grok/gemini/pi
+            // session a diagnosis about a program that was not running. The
+            // provenance is kept as provenance — where it was first seen — which
+            // is what makes it useful without making it a claim about THIS pane.
+            reason:
+              'Enter after bracketed-paste-end did not submit; text left at the prompt ' +
+              '(first observed on Claude Code TUI v2.1.105+, but the race is not framework-specific)',
             impact: 'Recovered without user intervention',
           });
         }

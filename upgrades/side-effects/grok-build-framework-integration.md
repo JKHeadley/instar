@@ -165,6 +165,26 @@ forms, and carries a CONTROL that the one genuinely Claude-specific label (the
 subscription-path reroute, which really is a Claude pool) is NOT swept up —
 accuracy is the goal, not the absence of the word.
 
+**4. And a SECOND mislabelling, found by sweeping rather than by being told.**
+Having just written that the lesson of (3) was "fix the class, not the instance",
+the honest move was to grep the class before closing it. `verifyInjection`'s
+degradation report read *"Enter eaten by paste-end race on fresh Claude Code
+TUI"* — and that recovery runs unconditionally for every framework (the codex
+branch sits above it, outside). An operator on a grok/gemini/pi session got a
+diagnosis naming a program that was not running, in the one field they read to
+find out WHY a recovery fired.
+
+The fix keeps the provenance (where the race was first observed) and drops the
+claim about the pane in front of them: provenance is useful, attribution is a
+guess. An adjacent comment asserting that "Claude submits it when the current
+turn ends" was corrected in the same pass — and my first correction of it,
+"the framework submits it", was itself wrong, since codex specifically does NOT
+(which is exactly why the stranded-draft marker three lines above exists). The
+comment now names the exception and marks the other frameworks unmeasured.
+
+**Both new guards were shown capable of failing**, by restoring the pre-fix
+strings and confirming the intended test — and only that test — goes red.
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**

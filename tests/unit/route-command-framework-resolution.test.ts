@@ -134,6 +134,27 @@ describe('session readiness is not announced as a framework it may not be', () =
     expect(sessionManagerSource).toMatch(/rerouted interactive Claude ready/);
   });
 
+  it('the injection-recovery diagnosis does not blame a framework it cannot know is running', () => {
+    // A SECOND sibling, found by sweeping the same class rather than by anyone
+    // reporting it. `verifyInjection` runs unconditionally for every framework —
+    // the codex branch sits above it, outside — but its DegradationReporter
+    // `reason` read "Enter eaten by paste-end race on fresh Claude Code TUI".
+    // An operator on a grok/gemini/pi session got a diagnosis naming a program
+    // that was not running, in the one field they read to understand WHY a
+    // recovery fired.
+    //
+    // The fix keeps the provenance (where the race was first seen) and drops the
+    // claim about THIS pane — provenance is useful; attribution is a guess.
+    expect(sessionManagerSource).not.toMatch(/reason: 'Enter eaten by paste-end race on fresh Claude Code TUI'/);
+    expect(sessionManagerSource).toMatch(/Enter after bracketed-paste-end did not submit/);
+  });
+
+  it('CONTROL: the recovery still REPORTS (the fix is a rewording, not a removal)', () => {
+    // Same lazy-fix guard as the one below: deleting the DegradationReporter
+    // call would satisfy the negative assertion above while removing the signal.
+    expect(sessionManagerSource).toMatch(/feature: 'SessionManager\.verifyInjection'/);
+  });
+
   it('CONTROL: the readiness log still exists (the fix is a rename, not a deletion)', () => {
     // Guards the lazy "fix": deleting the line would also satisfy the assertion
     // above while removing a genuinely useful signal.
