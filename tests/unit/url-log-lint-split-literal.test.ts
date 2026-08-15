@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 // @ts-expect-error — plain JS lint script, no types
-import { collapseConcatenation } from '../../scripts/lint-no-direct-url-log.js';
+import { collapseConcatenation, scanForCredentialedUrlLogs } from '../../scripts/lint-no-direct-url-log.js';
 
 /**
  * `lint-no-direct-url-log` exists because of the 2026-05-27 incident: `instar
@@ -30,20 +31,29 @@ import { collapseConcatenation } from '../../scripts/lint-no-direct-url-log.js';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const LINT = path.join(ROOT, 'scripts', 'lint-no-direct-url-log.js');
-const PROBE = path.join(ROOT, 'src', 'core', '__urlLogLintProbe.ts');
+const OP = 'tests/unit/url-log-lint-split-literal.test.ts';
 
-/** Run the real lint with `body` present as a source file. Returns its exit code. */
+/**
+ * Run the real scanner over a THROWAWAY tree containing `body`. Returns 1 if it
+ * would fail the build, 0 otherwise — the same two values the CLI exits with.
+ *
+ * An earlier version of this planted the probe at `src/core/__urlLogLintProbe.ts`
+ * and deleted it afterwards. That was wrong twice over, and CI caught it:
+ * SourceTreeGuard refuses ANY delete inside the instar source tree (the
+ * 2026-04-22 incident class), and a probe file sitting in `src/` is visible to
+ * every other suite running concurrently. Scanning a temp tree removes both.
+ */
 function lintWith(body: string): number {
-  fs.writeFileSync(PROBE, `${body}\n`);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'urllog-lint-'));
   try {
-    execFileSync(process.execPath, [LINT], { stdio: 'pipe' });
-    return 0;
-  } catch (e: unknown) {
-    return (e as { status?: number }).status ?? -1;
+    const core = path.join(dir, 'src', 'core');
+    fs.mkdirSync(core, { recursive: true });
+    fs.writeFileSync(path.join(core, 'probe.ts'), `${body}\n`);
+    return scanForCredentialedUrlLogs(path.join(dir, 'src'), dir).length > 0 ? 1 : 0;
   } finally {
-    // Routed through the audited funnel rather than a raw fs.rmSync: this is a
-    // test about a guard, and the destructive-op guard applies to it too.
-    SafeFsExecutor.safeRmSync(PROBE, { force: true, operation: 'tests/unit/url-log-lint-split-literal.test.ts' });
+    // Outside the source tree, so the funnel permits it — and it is still the
+    // funnel, because the destructive-op rule applies to test code too.
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: OP });
   }
 }
 
@@ -93,9 +103,17 @@ describe('ANTI-OVER-BLOCK — this lint fails builds, so correct code must pass'
     expect(lintWith('const u = "https://user:" + secret + "@h/x"; console.log(u);')).toBe(0);
   });
 
-  it('leaves the clean repository clean', () => {
-    // The decisive anti-over-block control: the real tree, unmodified.
-    expect(lintWith('export const __probeNoop = 1;')).toBe(0);
+  it('leaves the REAL repository clean — scanner defaults, nothing planted', () => {
+    // The decisive anti-over-block control, and it is stronger than the version
+    // it replaces: it asserts the actual tree is clean under the real defaults,
+    // instead of asserting a temp tree containing one inert line is clean.
+    expect(scanForCredentialedUrlLogs()).toEqual([]);
+  });
+
+  it('the shipped CLI still exits 0 on the clean tree', () => {
+    // Keeps the exit-code path covered now that the cases above drive the
+    // exported scanner directly. Plants nothing.
+    expect(() => execFileSync(process.execPath, [LINT], { stdio: 'pipe' })).not.toThrow();
   });
 });
 

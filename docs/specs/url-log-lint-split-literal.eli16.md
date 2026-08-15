@@ -59,3 +59,28 @@ with it. Ten other cases pass either way, which is what makes them controls
 rather than decoration. Four pieces of correct-but-similar-looking code were run
 against both the old and new versions and got identical verdicts, so the change
 adds no new false alarms. The real codebase is clean before and after.
+
+## A correction made after this was first written
+
+The first version of the test proved the fix by dropping a small decoy file
+into the project's own source folder, letting the checker find it, and then
+deleting it. Continuous integration rejected that, and it was right to: this
+project has a separate safety rule that refuses to delete anything inside its
+own source folder, because deleting the wrong thing there once caused real
+damage. Satisfying one safety rule had walked straight into another.
+
+There was a second problem nobody had flagged, and it is the worse of the two.
+Other tests run at the same time and can see that folder. A decoy file sitting
+in it is something they could stumble over — so the test was not only unsafe,
+it was quietly unfair to everyone else's tests.
+
+The fix is not a workaround. The checker can now be pointed at a scratch folder
+made for the moment and thrown away afterwards, so the test never touches the
+real source folder at all. Left alone, the checker behaves exactly as before —
+that was confirmed by running it both ways.
+
+One honest reduction: the three leak cases now exercise the checker's decision
+directly rather than by running it as a command, so the command's own
+error-printing path is only covered in the "nothing wrong" direction. That
+wrapper is eight lines and this change does not touch it. It is written down
+rather than left for someone to discover.

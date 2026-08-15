@@ -92,10 +92,15 @@ function walk(dir, out = []) {
  * test process the moment the repo had a real violation. Hence the
  * direct-invocation guard at the bottom.
  */
-export function scanForCredentialedUrlLogs() {
+// `srcDir`/`rootDir` default to this repo, so the shipped CLI behaviour is
+// unchanged. They exist so the scanner can be driven over a throwaway tree in a
+// test WITHOUT planting a probe file inside `src/` — planting one there both
+// trips SourceTreeGuard (which refuses any delete inside the instar source
+// tree) and is visible to every other test running at the same time.
+export function scanForCredentialedUrlLogs(srcDir = SRC, rootDir = ROOT) {
 const offenders = [];
-for (const file of walk(SRC)) {
-  const rel = path.relative(ROOT, file);
+for (const file of walk(srcDir)) {
+  const rel = path.relative(rootDir, file);
   if (EXEMPT.includes(rel)) continue;
   const lines = fs.readFileSync(file, 'utf-8').split('\n');
   lines.forEach((line, i) => {
