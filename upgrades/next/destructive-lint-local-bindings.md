@@ -43,8 +43,13 @@ and the lint reported **clean, exit 0** — a guard against unaudited deletes
 silently became a no-op, with only stderr lines a CI log buries. The per-file
 soft-warning is deliberate and right; ONE file failing and EVERY file failing are
 different situations. A run that scanned files and parsed none of them now
-refuses to report clean and names the likely cause. Scoped to the total-failure
-case only, which no working checkout can reach.
+refuses to report clean and names the likely cause, exiting **2** rather than 1:
+"I could not look" and "I looked and found nothing" are different facts, and
+`pre-push-gate.js` already treats a lint that failed to run as a warning and one
+that found violations as a push-blocking error. (The first version returned 1 and
+turned three pre-push-gate tests red — the gate copies itself into a scratch
+fixture with no dependencies, so my "no working checkout can reach it" claim was
+wrong; a test fixture reaches it.)
 
 **Declared open in the source:** cross-module names, runtime-assembled access,
 and indirection through a container object (`const io = { del: fs.unlinkSync }`)

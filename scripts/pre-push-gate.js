@@ -420,7 +420,13 @@ try {
     [path.join(ROOT, 'scripts/lint-no-direct-destructive.js')],
     { cwd: ROOT, stdio: ['ignore', 'inherit', 'inherit'] },
   );
-  if (result.status !== 0) {
+  if (result.status === 2) {
+    // Exit 2 = the lint could not inspect anything (an environment problem such
+    // as a missing `typescript`), which is NOT a violation. The gate already
+    // treats a lint that failed to run as a warning; this is the same fact
+    // arriving through an exit code instead of a thrown error.
+    warnings.push('lint-no-direct-destructive could not inspect this tree (see output above)');
+  } else if (result.status !== 0) {
     errors.push('lint-no-direct-destructive: violations detected (see output above)');
   }
 } catch (err) {

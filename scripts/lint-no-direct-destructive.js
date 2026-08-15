@@ -23,6 +23,9 @@
  * Exit codes:
  *   0 — no violations.
  *   1 — at least one violation.
+ *   2 — could not inspect: files were scanned and NONE parsed (an environment
+ *       problem, e.g. a missing `typescript`). Distinct from 1 on purpose —
+ *       "I could not look" is not "I looked and found nothing".
  *
  * Usage:
  *   node scripts/lint-no-direct-destructive.js                # full repo
@@ -845,12 +848,18 @@ function main() {
   if (astAttempted > 0 && astParsed === 0) {
     process.stderr.write('\n');
     process.stderr.write(
-      `[lint-no-direct-destructive] REFUSING TO REPORT CLEAN — ${astAttempted} file(s) were scanned `
+      `[lint-no-direct-destructive] COULD NOT INSPECT — ${astAttempted} file(s) were scanned `
       + 'and NONE could be parsed, so nothing was actually inspected. This is an environment '
       + "problem (most often a missing `typescript` dependency — run `npm install`), not a clean "
       + 'tree. Reporting success here would silently disable the destructive-operation funnel.\n'
     );
-    return 1;
+    // Exit 2, NOT 1. "I could not inspect" and "I found violations" are
+    // different facts and callers act on them differently: pre-push-gate.js
+    // already treats a lint that FAILED TO RUN as a warning and a lint that
+    // found VIOLATIONS as a push-blocking error. Returning 1 here reported an
+    // uninstalled scratch tree as violations — which is how this was caught,
+    // by three pre-push-gate tests going red in CI.
+    return 2;
   }
 
   if (violations.length === 0) {

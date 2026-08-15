@@ -49,7 +49,18 @@ found" is then a statement about a scan that never happened.
 
 Added: a run that scanned files and parsed NONE of them refuses to report clean
 and names the likely cause. Deliberately the total-failure case only, so it
-cannot fail a build over one awkward file — in any working checkout, files parse.
+cannot fail a build over one awkward file.
+
+**It exits 2, not 1, and CI taught me that distinction.** My first version
+returned 1 — the violation code — and three `pre-push-gate` tests went red,
+because the gate copies itself into a scratch fixture with no `node_modules`,
+runs this lint there, and (correctly) reads a non-zero exit as "violations
+detected". My claim that "no working checkout can reach it" was wrong: a test
+fixture reaches it. The gate ALREADY distinguishes a lint that failed to RUN
+(warning) from one that found VIOLATIONS (push-blocking error) — I was sending an
+environment problem down the violation channel. Now the lint exits **2** for
+could-not-inspect and `pre-push-gate.js` maps 2 onto its existing warning path.
+"I could not look" and "I looked and found nothing" are different facts.
 
 ## Decision-point inventory
 
@@ -65,8 +76,11 @@ cannot fail a build over one awkward file — in any working checkout, files par
 - `INSTAR_LINT_FORCE_PARSE_FAILURE` — ADD, test hook. It can ONLY force the
   fail-closed path; there is no flag here that can make this lint pass something
   it would otherwise flag.
+- Exit code **2** — ADD, for could-not-inspect. 0 and 1 keep their meanings.
+- `scripts/pre-push-gate.js` — CHANGED: maps exit 2 onto its EXISTING
+  failed-to-run warning path instead of the violations error path.
 - `ALLOWLIST`, `DESTRUCTIVE_FS_NAMES`, `CHILD_PROCESS_FNS`, the violation
-  messages, the shell/package.json grep and the exit codes — UNCHANGED.
+  messages and the shell/package.json grep — UNCHANGED.
 
 ## 1. Over-block
 
@@ -85,8 +99,13 @@ passing under BOTH the old and new behaviour:
 **Real tree: exit 0 before AND after, zero violations.** Full `npm run lint`
 chain exit 0.
 
-The parsed-nothing refusal is scoped to `attempted > 0 && parsed === 0`, which no
-working checkout can reach.
+The parsed-nothing refusal is scoped to `attempted > 0 && parsed === 0`.
+**I first wrote here that "no working checkout can reach it" — that was wrong and
+CI proved it.** The pre-push gate copies itself into a scratch fixture with no
+`node_modules` and runs this lint there, so three of its tests went red. The
+condition is reachable; what was wrong was reporting it through the VIOLATION
+exit code. Exit 2 fixes the signal rather than narrowing the condition, and the
+three tests pass with the refusal still firing.
 
 ## 2. Under-block
 

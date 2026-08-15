@@ -208,8 +208,15 @@ describe('a run that parsed nothing must not report clean', () => {
     }
 
     expect(out).toContain('failed to parse'); // the condition really was created
-    expect(code).toBe(1);
-    expect(out).toContain('REFUSING TO REPORT CLEAN');
+    expect(out).toContain('COULD NOT INSPECT');
+
+    // Exit 2, NOT 1, and the distinction is the whole point: "I could not look"
+    // and "I looked and found violations" are different facts, and callers act
+    // on them differently. pre-push-gate.js treats 2 as a warning and 1 as a
+    // push-blocking error. Reporting 1 here made an uninstalled scratch tree
+    // look like violations and turned three pre-push-gate tests red in CI.
+    expect(code).toBe(2);
+    expect(code).not.toBe(1);
   });
 
   it('CONTROL — a file that DOES parse and is clean still exits 0', () => {

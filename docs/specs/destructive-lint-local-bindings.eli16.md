@@ -62,8 +62,17 @@ inspected at all, and "no problems found" is then a statement about a search tha
 never happened.
 
 So: if a run scans files and not one of them parses, it now refuses to report
-success and says why. This cannot fail a build in any working checkout, because
-in a working checkout files parse.
+success and says why.
+
+**And I got the first version of that wrong, which CI caught.** I made it report
+failure using the same signal as "I found a problem" — and three tests went red,
+because one of them copies the build machinery into a bare temporary folder with
+no dependencies installed and runs it there. My reasoning had been "no real
+checkout can hit this", and a test fixture is not a real checkout. The machinery
+already knew the difference between a check that *failed to run* and a check that
+*found something*; I was sending one down the other's channel. It now reports
+"could not look" distinctly, and the surrounding machinery treats that as a
+warning rather than a blocked push.
 
 ## Why it won't start failing builds it shouldn't
 

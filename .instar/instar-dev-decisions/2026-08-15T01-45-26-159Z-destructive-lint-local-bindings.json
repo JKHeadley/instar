@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-15T01:45:26.159Z",
+  "slug": "destructive-lint-local-bindings",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 21,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-no-direct-destructive.js",
+      "scripts/pre-push-gate.js"
+    ],
+    "addedLines": 18,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
