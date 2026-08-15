@@ -2554,9 +2554,15 @@ program
   .command('dev:preflight')
   .description('Run the verify-only new-surface friction guard for contributor PRs')
   .option('--base <ref>', 'Diff base ref for the route heuristic (default: main remote candidates)')
-  .action(async (opts: { base?: string }) => {
+  .option('--body <file>', 'Path to the PR body; runs the gates that read the PR description (ELI16, UX impact)')
+  .option('--title <text>', 'PR title, used by the ELI16 gate exemption logic')
+  .action(async (opts: { base?: string; body?: string; title?: string }) => {
     const { runDevPreflight } = await import('./commands/devPreflight.js');
-    const exitCode = await runDevPreflight({ baseRef: opts.base });
+    const exitCode = await runDevPreflight({
+      baseRef: opts.base,
+      bodyPath: opts.body,
+      prTitle: opts.title,
+    });
     process.exit(exitCode);
   });
 
