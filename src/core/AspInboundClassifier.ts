@@ -80,6 +80,8 @@ export interface AspClassifierCounters {
   rejected: number;
   errors: number;
   recorded: number;
+  /** Entries skipped because they were explicitly OUTBOUND (this agent's own sends). */
+  skippedOutbound: number;
 }
 
 const TAG_HINT = '⟦asp1 ';
@@ -89,6 +91,7 @@ export class AspInboundClassifier {
   private readonly now: () => number;
   readonly counters: AspClassifierCounters = {
     seen: 0, human: 0, agentVerified: 0, rejected: 0, errors: 0, recorded: 0,
+    skippedOutbound: 0,
   };
 
   constructor(opts: AspInboundClassifierOptions) {
@@ -105,6 +108,22 @@ export class AspInboundClassifier {
   classify(entry: AspInboundEntry): AspVerdict | null {
     try {
       if (typeof entry?.text !== 'string' || entry.text === '') return null;
+
+      // INBOUND ONLY. The seam this chains onto (`onMessageLogged`) carries BOTH
+      // directions, and `fromUser` is how they are told apart: true for a message
+      // that arrived, false for one this agent sent.
+      //
+      // Classifying our own sends put ledger rows about outbound traffic into an
+      // audit trail whose entire question is "did this arrive from the operator or
+      // from an agent". Skipping is also what the class name has always claimed.
+      //
+      // Explicit `false` only: an ABSENT flag still classifies, so a caller that
+      // does not supply it silently loses nothing. Fails toward recording.
+      if (entry.fromUser === false) {
+        this.counters.skippedOutbound += 1;
+        return null;
+      }
+
       this.counters.seen += 1;
 
       const verdict = verifyMessage({
