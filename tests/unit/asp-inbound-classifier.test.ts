@@ -53,7 +53,7 @@ beforeEach(() => {
 
 afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/asp-inbound-classifier.test.ts' }));
 
-describe.skip('AspInboundClassifier — classification', () => {
+describe('AspInboundClassifier — classification', () => {
   it('classifies a signed inbound message as agent-verified and records it', () => {
     const c = make();
     const { text } = signMessage({ agentId: AGENT, topicId: TOPIC, body: 'hello', privateKey: keys.privateKey });
@@ -126,7 +126,7 @@ describe.skip('AspInboundClassifier — classification', () => {
   });
 });
 
-describe.skip('AspInboundClassifier — it can never break message delivery', () => {
+describe('AspInboundClassifier — it can never break message delivery', () => {
   /**
    * A provenance recorder that can throw into the message path is a worse
    * problem than the one it solves. These prove it swallows everything.
