@@ -17,6 +17,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { registerProvenanceRoutes } from '../../src/server/routes/provenance.js';
 import { signMessage, formatTag } from '../../src/core/agentSignatureProvenance.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { FileSeenNonceStore } from '../../src/core/aspNonceStore.js';
 
 const AUTH_TOKEN = 'test-auth-token-provenance';
@@ -63,7 +64,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/provenance-routes.test.ts' });
 });
 
 describe('GET /provenance — the feature is alive', () => {

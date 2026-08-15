@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { AspInboundClassifier } from '../../src/core/AspInboundClassifier.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { signMessage, formatTag } from '../../src/core/agentSignatureProvenance.js';
 import { MemorySeenNonceStore } from '../../src/core/agentSignatureProvenance.js';
 
@@ -50,7 +51,7 @@ beforeEach(() => {
   keys = keypair();
 });
 
-afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/asp-inbound-classifier.test.ts' }));
 
 describe('AspInboundClassifier — classification', () => {
   it('classifies a signed inbound message as agent-verified and records it', () => {

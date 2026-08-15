@@ -13,6 +13,7 @@ import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import { FileSeenNonceStore } from '../../src/core/aspNonceStore.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { signMessage, verifyMessage } from '../../src/core/agentSignatureProvenance.js';
 
 let dir: string;
@@ -24,7 +25,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  fs.rmSync(dir, { recursive: true, force: true });
+  SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/asp-nonce-store.test.ts' });
 });
 
 function keypair() {

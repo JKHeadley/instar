@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { AspKeyDirectory } from '../../src/core/AspKeyDirectory.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { signMessage, verifyMessage } from '../../src/core/agentSignatureProvenance.js';
 
 let dir: string;
@@ -42,7 +43,7 @@ function writePeers(peers: Array<{ name: string; publicKey?: string }>) {
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'asp-keys-'));
 });
-afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/asp-key-directory.test.ts' }));
 
 describe('AspKeyDirectory — resolution', () => {
   it('resolves self from identity.json with trust "self"', () => {
