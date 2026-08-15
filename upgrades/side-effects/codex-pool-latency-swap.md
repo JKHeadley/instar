@@ -18,9 +18,12 @@ sections below mark what is IN and what is still PENDING.
 3. **IN (foundation) — per-call account selection**: internal Codex calls can now
    target a specific pool account's credential slot. This was the missing layer
    under BOTH remaining items — see "The finding" below.
-4. **PENDING — latency/error swap trigger**: needs per-account health recording,
-   which needs (3). Dark + dry-run when it lands.
-5. **PENDING — failure-swap tail**: prefer the sibling Codex account before
+4. **IN (foundation) — per-account health**: `CodexAccountHealth` records how each
+   account's calls actually went, and the provider feeds it. This is layer 2 of
+   the three below.
+5. **PENDING — the swap trigger itself**: reads (4), proposes a swap. Dark +
+   dry-run when it lands.
+6. **PENDING — failure-swap tail**: prefer the sibling Codex account before
    falling through to `claude-code`. Also needs (3): `failureSwap` is a FRAMEWORK
    list with no account dimension.
 
@@ -202,3 +205,34 @@ no mechanism), per-call rather than per-construction resolution, all three
 degradation paths, and a CONTROL that env scrubbing still holds when an account IS
 selected — so account selection cannot become a way to smuggle the parent env into
 the child. 45 pre-existing codex provider/env tests still pass.
+
+### Added by piece 4 (layer 2 — the gauge)
+
+`CodexAccountHealth`: a bounded, in-memory, time-windowed record of how each
+account's calls went, exposing p50 latency and error rate per account.
+
+**The load-bearing rule is honest-unknown.** `read()` returns `null` when it cannot
+responsibly answer — no samples, or too few to tell degradation from variance. It
+never returns a zero or an optimistic default, because a trigger acting on two
+samples would move live sessions on noise, and a too-eager swap (thrash) is a worse
+failure than a late one (a slow account stays slow a little longer). Deliberately
+not persisted: health is a claim about the last few minutes, and a reading
+resurrected across a restart would be a confident answer about a world that no
+longer exists.
+
+The provider feeds it via an optional `onCallObserved`, and the account is now
+resolved ONCE and threaded down the call chain rather than re-read at each spawn
+site — so the account RECORDED is provably the account USED. A gauge that can
+disagree with reality is worse than no gauge, because a trigger acts on it with
+confidence.
+
+22 tests. Health store (10): median/error-rate from real samples; the
+honest-unknown rule WITH a control (one more sample and it answers, so null was the
+guard and not a broken store); unknown account; window expiry returning to
+not-knowing rather than stale good news; accounts measured independently; readAll
+omitting unanswerable accounts; bounded memory; never-throws on junk. Provider (12,
+up from 8): successful AND failed calls both observed — a gauge that only sees
+successes would read 0% errors however bad things got — nothing observed when no
+account was named, and a throwing observer never breaking the call it measures.
+
+35 pre-existing/adjacent codex tests still pass.

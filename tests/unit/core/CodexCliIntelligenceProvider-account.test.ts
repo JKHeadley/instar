@@ -155,4 +155,60 @@ describe('CodexCliIntelligenceProvider — per-call account selection', () => {
       delete process.env.OPENAI_API_KEY;
     }
   });
+  it('OBSERVATION: a successful call is reported against the account that ran it', async () => {
+    const seen: Array<{ accountId: string; latencyMs: number; ok: boolean }> = [];
+    const provider = new CodexCliIntelligenceProvider({
+      codexPath: '/usr/local/bin/codex',
+      resolveAccount: () => ({ accountId: 'codex-b', configHome: '/slots/codex-b' }),
+      onCallObserved: (s) => seen.push(s),
+    });
+    await provider.evaluate('test prompt');
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.accountId).toBe('codex-b');
+    expect(seen[0]!.ok).toBe(true);
+    expect(seen[0]!.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('OBSERVATION: a FAILED call is reported too — a gauge that only sees successes is useless', async () => {
+    // The whole purpose is spotting a degrading account. If failures went
+    // unrecorded, the error rate would read 0 no matter how bad things got.
+    execFileSpy.mockImplementation((_p, _a, _o, cb) => {
+      setImmediate(() => cb(new Error('codex exec failed'), '', 'boom'));
+      return { stdin: { end: () => {} } };
+    });
+    const seen: Array<{ accountId: string; ok: boolean }> = [];
+    const provider = new CodexCliIntelligenceProvider({
+      codexPath: '/usr/local/bin/codex',
+      resolveAccount: () => ({ accountId: 'codex-b', configHome: '/slots/codex-b' }),
+      onCallObserved: (s) => seen.push(s),
+    });
+
+    await expect(provider.evaluate('test prompt')).rejects.toBeTruthy();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.ok).toBe(false);
+  });
+
+  it('OBSERVATION: nothing is reported when no account was named', async () => {
+    // With no account there is nothing to attribute a sample to. Attributing it
+    // to "the default" would invent a measurement the trigger would then trust.
+    const seen: unknown[] = [];
+    const provider = new CodexCliIntelligenceProvider({
+      codexPath: '/usr/local/bin/codex',
+      onCallObserved: (s) => seen.push(s),
+    });
+    await provider.evaluate('test prompt');
+    expect(seen).toHaveLength(0);
+  });
+
+  it('a THROWING observer never breaks the call it measures', async () => {
+    const provider = new CodexCliIntelligenceProvider({
+      codexPath: '/usr/local/bin/codex',
+      resolveAccount: () => ({ accountId: 'codex-b', configHome: '/slots/codex-b' }),
+      onCallObserved: () => {
+        throw new Error('observer exploded');
+      },
+    });
+    await expect(provider.evaluate('test prompt')).resolves.toContain('mocked-judgment-output');
+  });
 });

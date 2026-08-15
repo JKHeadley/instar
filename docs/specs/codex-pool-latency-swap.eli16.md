@@ -95,9 +95,21 @@ system offer to move off it — could not have passed. Not because the trigger w
 missing, but because nothing measured or selected the thing the trigger would act
 on. Building the trigger alone would have produced a dial wired to a dead gauge.
 
-**This adds the first of those three: a request can now name its account.** The
-other two are reported rather than quietly built, because they change the size of
-the job and that is not mine to decide alone.
+**This adds the first two of those three.** A request can now name its account, and
+there is now a record of how each account's requests actually went — how long they
+took and how many failed — kept per account rather than per asking-component.
+
+That record refuses to answer when it cannot answer honestly. With only a couple of
+requests to go on it says "I don't know" rather than producing a number, because a
+trigger acting on two samples would start moving live work around on noise. Moving
+work for nothing is a worse failure than noticing a slow account a few minutes late.
+It also forgets: the record covers the last few minutes and is not carried across a
+restart, because a confident answer about a world that no longer exists is worse than
+no answer.
+
+The remaining piece — the trigger that reads that record and proposes a move — is reported rather than
+quietly built where it grows the job, and built where the charter's author confirmed
+it was the job.
 
 ## The safeguards
 

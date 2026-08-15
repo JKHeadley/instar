@@ -312,6 +312,20 @@ export interface CodexCliIntelligenceProviderOptions {
    * strictly worse than losing account selection for one of them.
    */
   resolveAccount?: () => CodexCallAccount | null;
+  /**
+   * Optional observer for per-account health: reports how each call actually
+   * went, so "is THIS account unwell" has a measurement behind it.
+   *
+   * Instar records LLM metrics against the COMPONENT that asked, never the
+   * account that answered — the right shape for cost, the wrong shape for a
+   * degradation trigger. This supplies the missing dimension.
+   *
+   * Called ONLY when an account was actually named. With no account there is
+   * nothing to attribute a sample to, and attributing it to "the default" would
+   * invent a measurement. Must not throw; a throwing observer is swallowed
+   * rather than allowed to break the call it is measuring.
+   */
+  onCallObserved?: (sample: { accountId: string; latencyMs: number; ok: boolean }) => void;
 }
 
 /** Which pool account an internal Codex call should run under. */
@@ -326,6 +340,10 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
   private readonly codexPath: string;
   /** @see CodexCliIntelligenceProviderOptions.resolveAccount */
   private readonly resolveAccount: (() => CodexCallAccount | null) | undefined;
+  /** @see CodexCliIntelligenceProviderOptions.onCallObserved */
+  private readonly onCallObserved:
+    | ((sample: { accountId: string; latencyMs: number; ok: boolean }) => void)
+    | undefined;
   private readonly sandboxMode: 'read-only' | 'workspace-write' | 'danger-full-access';
   private readonly resolveExecJson: () => boolean;
 
@@ -354,6 +372,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     this.sandboxMode = options.sandboxMode ?? 'read-only';
     this.resolveExecJson = options.resolveExecJson ?? execJsonEnvDefault;
     this.resolveAccount = options.resolveAccount;
+    this.onCallObserved = options.onCallObserved;
     // options.workingDirectory is intentionally NOT stored: judgment calls
     // always run in an empty scratch dir (resolveIntelligenceScratchDir), so
     // the agent's project identity + hooks never load. The option is retained
@@ -415,8 +434,54 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     } catch {
       execJson = execJsonEnvDefault(); // a throwing resolver must not take the call down
     }
+
+    // Resolve the account ONCE and thread it down, rather than re-reading it at
+    // each spawn site. If the recorded account could differ from the account
+    // actually used, the health gauge would be quietly wrong — and a gauge that
+    // can disagree with reality is worse than no gauge, because a trigger would
+    // act on it with confidence.
+    const account = this.accountForCall();
+    const startedAtMs = Date.now();
+    let ok = false;
     try {
-      return await this.evaluateWithModel(prompt, options, model, execJson);
+      const result = await this.evaluateWithModelObserved(
+        prompt,
+        options,
+        model,
+        execJson,
+        account,
+      );
+      ok = true;
+      return result;
+    } finally {
+      // Per-account health is recorded ONLY when an account was actually named.
+      // With no account there is nothing to attribute the sample to, and
+      // attributing it to "the default" would invent a measurement.
+      if (account && this.onCallObserved) {
+        try {
+          this.onCallObserved({
+            accountId: account.accountId,
+            latencyMs: Date.now() - startedAtMs,
+            ok,
+          });
+        } catch {
+          /* @silent-fallback-ok: observation is a gauge. A throwing observer must
+             never break the call it is measuring. */
+        }
+      }
+    }
+  }
+
+  /** The pre-existing evaluate body: model-retirement self-heal around the call. */
+  private async evaluateWithModelObserved(
+    prompt: string,
+    options: IntelligenceOptions | undefined,
+    model: string,
+    execJson: boolean,
+    account: CodexCallAccount | null,
+  ): Promise<string> {
+    try {
+      return await this.evaluateWithModel(prompt, options, model, execJson, account);
     } catch (error) {
       if (
         model !== CODEX_CHATGPT_FALLBACK_MODEL &&
@@ -432,6 +497,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
           options,
           CODEX_CHATGPT_FALLBACK_MODEL,
           execJson,
+          account,
         );
       }
       throw error;
@@ -443,10 +509,11 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     options: IntelligenceOptions | undefined,
     model: string,
     execJson: boolean,
+    account: CodexCallAccount | null,
   ): Promise<string> {
     return execJson
-      ? this.evaluateExecJson(prompt, options, model)
-      : this.evaluatePlain(prompt, options, model);
+      ? this.evaluateExecJson(prompt, options, model, account)
+      : this.evaluatePlain(prompt, options, model, account);
   }
 
   /**
@@ -465,6 +532,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     prompt: string,
     options: IntelligenceOptions | undefined,
     model: string,
+    account: CodexCallAccount | null,
   ): Promise<string> {
     const scratchDir = resolveIntelligenceScratchDir();
 
@@ -490,9 +558,8 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
       // CLAUDECODE / CLAUDE_SESSION_ID are not in the allowlist so they
       // are dropped automatically — the prior explicit deletes are now
       // redundant but the hygiene intent is preserved by the allowlist.
-      const spawnAccount = this.accountForCall();
       const childEnv = buildCodexChildEnv(
-        spawnAccount ? { codexHome: spawnAccount.configHome } : undefined,
+        account ? { codexHome: account.configHome } : undefined,
       );
 
       const child = execFile(
@@ -538,6 +605,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
     prompt: string,
     options: IntelligenceOptions | undefined,
     model: string,
+    account: CodexCallAccount | null,
   ): Promise<string> {
     const scratchDir = resolveIntelligenceScratchDir();
     const outDir = createCodexOutDir();
@@ -572,7 +640,7 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
       const result = await spawnCodexExecJson(this.codexPath, args, {
         timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         env: buildCodexChildEnv(
-          this.accountForCall() ? { codexHome: this.accountForCall()!.configHome } : undefined,
+          account ? { codexHome: account.configHome } : undefined,
         ), // Spec 12 Rule 1a — both modes
         prompt,
         onLine: (line) => {
