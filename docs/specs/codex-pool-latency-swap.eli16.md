@@ -107,9 +107,13 @@ It also forgets: the record covers the last few minutes and is not carried acros
 restart, because a confident answer about a world that no longer exists is worse than
 no answer.
 
-The remaining piece — the trigger that reads that record and proposes a move — is reported rather than
-quietly built where it grows the job, and built where the charter's author confirmed
-it was the job.
+**And the trigger itself now exists.** It reads that per-account record and, when an
+account is genuinely slow or failing, proposes moving work off it — where before it
+could only react to an account being *full*, which was never the problem here.
+
+It refuses to act on "I don't know": if the record can't answer, nothing moves. And
+it rehearses — it writes down what it *would* have done and leaves the conversation
+alone — until someone deliberately turns rehearsal off.
 
 ## The safeguards
 

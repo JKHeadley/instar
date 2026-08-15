@@ -21,8 +21,8 @@ sections below mark what is IN and what is still PENDING.
 4. **IN (foundation) — per-account health**: `CodexAccountHealth` records how each
    account's calls actually went, and the provider feeds it. This is layer 2 of
    the three below.
-5. **PENDING — the swap trigger itself**: reads (4), proposes a swap. Dark +
-   dry-run when it lands.
+5. **IN — the swap trigger**: `degradation` on `ProactiveSwapMonitor`. Reads (4),
+   proposes a swap on latency OR error rate. Dark by default, dry-run first.
 6. **PENDING — failure-swap tail**: prefer the sibling Codex account before
    falling through to `claude-code`. Also needs (3): `failureSwap` is a FRAMEWORK
    list with no account dimension.
@@ -236,3 +236,34 @@ successes would read 0% errors however bad things got — nothing observed when 
 account was named, and a throwing observer never breaking the call it measures.
 
 35 pre-existing/adjacent codex tests still pass.
+
+### Added by piece 5 (the trigger — the charter's deliverable)
+
+`degradation` on `ProactiveSwapMonitor`, mirroring the existing `loginLoss`
+extension exactly (enabled/dryRun, dark by default). A degrading account becomes a
+swap candidate REGARDLESS of how full it is — which is the point, since quota was
+never the problem (17% used while p50 sat at the 60s ceiling). It bypasses only
+SOURCE pressure; target freshness, per-target ceilings, anti-thrash dwell and
+execution-time revalidation all still apply, and `SwapAntiThrash` still refuses to
+cross frameworks, so a Codex session can only ever land on another Codex account.
+
+**Two safety properties carry this:**
+
+*Unknown is not degraded.* `readHealth` returning null — too few samples, no data,
+or a throwing gauge — means UNKNOWN and never selects a session. Acting on an
+unknown is how a trigger starts thrashing.
+
+*Rehearsal must not move anything.* The monitor has TWO pipelines: the braked one
+(only when anti-thrash brakes are live) and the legacy one (everywhere else — i.e.
+exactly where this ships). Wiring only the braked path would have left the trigger
+silently inert where it actually runs; wiring the legacy path without its own
+dry-run guard would have moved a live conversation on the trigger's FIRST firing,
+the opposite of what dry-run means. Both paths are wired, and both rehearse.
+
+9 tests, including the charter's own exit test — a degrading account produces a
+dry-run would-swap and moves nothing. A CONTROL proves quota alone would NOT have
+selected that account (17%), so the pass is attributable to the new trigger rather
+than to ordinary pressure. A second control runs with `dryRun:false` and asserts a
+real swap happens, so "nothing moved" is a deliberate choice rather than an
+incapacity. Latency-alone and error-rate-alone both trigger; dark changes nothing;
+a throwing gauge is unknown. 43 pre-existing swap-monitor/continuity tests pass.
