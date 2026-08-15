@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-15T11:59:29.935Z",
+  "slug": "preflight-body-gates",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 113,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/cli.ts",
+      "src/commands/devPreflight.ts"
+    ],
+    "addedLines": 107,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

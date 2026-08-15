@@ -12,7 +12,12 @@ export interface CommandResult {
 }
 
 export interface DevPreflightRunner {
-  run(command: string, args: string[], label: string): Promise<CommandResult>;
+  run(
+    command: string,
+    args: string[],
+    label: string,
+    env?: NodeJS.ProcessEnv,
+  ): Promise<CommandResult>;
 }
 
 export interface DevPreflightOutput {
@@ -34,6 +39,15 @@ export interface DevPreflightOptions {
   diffProvider?: () => string;
   /** Injectable so callers/tests pin the manager instead of probing the host. */
   lintCommandResolver?: () => LintCommand | null;
+  /**
+   * Path to a file holding the PR BODY. Supplying it runs the body-gates —
+   * the checks whose subject is the pull-request description rather than the
+   * diff. Omitted, they are skipped (never failed): a contributor running
+   * preflight before writing a description has nothing to check yet.
+   */
+  bodyPath?: string;
+  /** PR title, needed by the ELI16 gate's exemption logic. */
+  prTitle?: string;
 }
 
 export interface RouteWarning {
@@ -53,6 +67,12 @@ export interface DevPreflightSummary {
    * fails the preflight.
    */
   selfDisableExitCode?: number;
+  /**
+   * Worst exit code across the PR-body gates (ELI16 description, UX impact).
+   * Optional: absent means no body was supplied, which is a SKIP and never a
+   * failure. See the note on `bodyPath`.
+   */
+  bodyGateExitCode?: number;
 }
 
 const DISCOVERABILITY_TEST_ARGS = [
@@ -71,14 +91,21 @@ const ROUTE_REGISTRATION_PATTERN = new RegExp(
 export class SpawnDevPreflightRunner implements DevPreflightRunner {
   constructor(private readonly cwd: string) {}
 
-  run(command: string, args: string[], label: string): Promise<CommandResult> {
+  run(
+    command: string,
+    args: string[],
+    label: string,
+    env?: NodeJS.ProcessEnv,
+  ): Promise<CommandResult> {
     return new Promise((resolve) => {
       process.stdout.write(`${pc.bold(label)}\n`);
       process.stdout.write(`$ ${[command, ...args].join(' ')}\n`);
       const child = spawn(command, args, {
         cwd: this.cwd,
         stdio: 'inherit',
-        env: process.env,
+        // Extra vars are MERGED over the ambient env, never replace it — a body
+        // gate still needs PATH and friends to run at all.
+        env: env ? { ...process.env, ...env } : process.env,
       });
       child.on('error', (err) => {
         process.stderr.write(`${label} failed to start: ${err.message}\n`);
@@ -153,7 +180,8 @@ export function findMissingCapabilityPrefixes(
 export function aggregateExitCode(summary: DevPreflightSummary): number {
   return summary.lintExitCode === 0 &&
     summary.discoverabilityExitCode === 0 &&
-    (summary.selfDisableExitCode ?? 0) === 0
+    (summary.selfDisableExitCode ?? 0) === 0 &&
+    (summary.bodyGateExitCode ?? 0) === 0
     ? 0
     : 1;
 }
@@ -172,6 +200,24 @@ export function aggregateExitCode(summary: DevPreflightSummary): number {
  * is structurally WARN-only and never fails.
  */
 export const SELF_DISABLE_CHECK_SCRIPT = 'scripts/pre-push-test-runner-selfdisable.mjs';
+
+/**
+ * The PR-BODY gates — checks whose subject is the pull-request description, not
+ * the diff.
+ *
+ * WHY THIS EXISTS. `dev:preflight` verified the diff (lint, discoverability,
+ * route heuristic) and was therefore structurally incapable of catching a gate
+ * that reads the PR body. Measured consequence: the ELI16 description gate went
+ * red across three separate sessions on work whose local lint was green the
+ * whole time — "I ran the gates locally" was true and still missed them, because
+ * the body does not exist until `gh pr create` runs.
+ *
+ * Each entry is skipped quietly when its script is absent (older checkout).
+ */
+export const BODY_GATE_SCRIPTS = {
+  eli16: 'scripts/eli16-pr-description-check.mjs',
+  uxImpact: 'scripts/ux-impact-lint.mjs',
+} as const;
 
 export function defaultCapabilityPrefixes(): Set<string> {
   return new Set(buildPrefixToKeyMap().keys());
@@ -270,6 +316,49 @@ export async function runDevPreflight(options: DevPreflightOptions = {}): Promis
     selfDisableExitCode = selfDisable.exitCode;
   }
 
+  // ── PR-body gates (see BODY_GATE_SCRIPTS) ───────────────────────────────
+  // Only run when a body was supplied. No body === nothing to check yet, which
+  // is a SKIP: failing it would punish running preflight early, which is
+  // exactly when it is most useful.
+  let bodyGateExitCode: number | undefined;
+  if (options.bodyPath) {
+    let body: string;
+    try {
+      body = fs.readFileSync(path.resolve(cwd, options.bodyPath), 'utf8');
+    } catch (err) {
+      output.error(`\nbody gates: cannot read ${options.bodyPath} (${(err as Error).message})\n`);
+      // An unreadable body is a REAL failure — the caller asked for these gates
+      // and we could not run them. Silently passing would be the plausible-zero
+      // this whole command exists to prevent.
+      bodyGateExitCode = 1;
+    }
+    if (bodyGateExitCode === undefined) {
+      let worst = 0;
+      const eli16 = path.join(cwd, BODY_GATE_SCRIPTS.eli16);
+      if (fs.existsSync(eli16)) {
+        output.write('\n');
+        const res = await runner.run(
+          'node',
+          [BODY_GATE_SCRIPTS.eli16],
+          'ELI16 PR-description gate',
+          { PR_BODY: body!, PR_TITLE: options.prTitle ?? '', PR_AUTHOR_TYPE: 'User' },
+        );
+        worst = Math.max(worst, res.exitCode);
+      }
+      const ux = path.join(cwd, BODY_GATE_SCRIPTS.uxImpact);
+      if (fs.existsSync(ux)) {
+        output.write('\n');
+        const res = await runner.run(
+          'node',
+          [BODY_GATE_SCRIPTS.uxImpact, '--base', options.baseRef ?? 'origin/main', '--head', 'HEAD', '--body', body!],
+          'UX impact declaration gate',
+        );
+        worst = Math.max(worst, res.exitCode);
+      }
+      bodyGateExitCode = worst;
+    }
+  }
+
   let routeWarnings: RouteWarning[] = [];
   let heuristicUnavailable: string | undefined;
   try {
@@ -288,6 +377,7 @@ export async function runDevPreflight(options: DevPreflightOptions = {}): Promis
     routeWarnings,
     heuristicUnavailable,
     selfDisableExitCode,
+    bodyGateExitCode,
   };
 
   output.write('\nSummary:\n');
@@ -298,6 +388,11 @@ export async function runDevPreflight(options: DevPreflightOptions = {}): Promis
       `- test-runner self-disable ledger: ${selfDisableExitCode === 0 ? pc.green('PASS') : pc.red('FAIL')} (advisory WARN details above; fails only on sustained off/spoofed-CI)\n`,
     );
   }
+  output.write(
+    bodyGateExitCode === undefined
+      ? `- PR-body gates: ${pc.dim('SKIPPED')} (no --body given; these read the PR description, which local lint never sees)\n`
+      : `- PR-body gates (ELI16 description, UX impact): ${bodyGateExitCode === 0 ? pc.green('PASS') : pc.red('FAIL')}\n`,
+  );
   printHeuristic(output, summary);
   printChecklist(output);
 
