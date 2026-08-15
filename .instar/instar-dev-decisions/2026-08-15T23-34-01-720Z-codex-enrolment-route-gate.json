@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-15T23:34:01.720Z",
+  "slug": "codex-enrolment-route-gate",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 45,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/CompositeCredentialIdentityOracle.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 43,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

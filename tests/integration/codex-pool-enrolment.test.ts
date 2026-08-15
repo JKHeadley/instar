@@ -21,7 +21,11 @@ import {
   SubscriptionAccountEmailRegistrar,
   SubscriptionIdentityError,
 } from '../../src/core/SubscriptionPool.js';
-import { CompositeCredentialIdentityOracle } from '../../src/core/CompositeCredentialIdentityOracle.js';
+import {
+  CompositeCredentialIdentityOracle,
+  IDENTITY_VERIFIABLE_SLOTS,
+  isIdentityVerifiableSlot,
+} from '../../src/core/CompositeCredentialIdentityOracle.js';
 import type { IdentityOracle, IdentityOracleResult } from '../../src/core/CredentialLocationLedger.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -161,5 +165,73 @@ describe('subscription pool — Codex enrolment (integration)', () => {
       registrar.register({ id: 'x', nickname: 'X', provider: 'openai', framework: 'codex-cli', configHome: empty }),
     ).rejects.toBeInstanceOf(SubscriptionIdentityError);
     expect(pool.list()).toHaveLength(0);
+  });
+});
+
+/**
+ * The layer the tests above did NOT cover, and the defect that hid there.
+ *
+ * Everything above drives the REGISTRAR. The enrol route sits one layer higher and
+ * carried its own gate — `provider !== 'anthropic' || framework !== 'claude-code'` —
+ * so it refused Codex BEFORE the oracle was ever asked. Every registrar test passed
+ * while enrolling a real Codex account through the real route still returned
+ * `subscription-account-identity-provider-unsupported`. Found by attempting the
+ * actual enrolment on a live server, not by reading.
+ */
+describe('enrolment gate — the route must not disagree with the identity layer', () => {
+  it('the gate admits every pair the identity layer covers', () => {
+    expect(isIdentityVerifiableSlot('anthropic', 'claude-code')).toBe(true);
+    expect(isIdentityVerifiableSlot('openai', 'codex-cli')).toBe(true);
+  });
+
+  it('CONTROL: it still refuses a pair no oracle can answer for', () => {
+    // Without this the gate could pass by admitting everything, which would push an
+    // unanswerable slot down to the oracle and fail with a confusing reason.
+    expect(isIdentityVerifiableSlot('google', 'gemini-cli')).toBe(false);
+    expect(isIdentityVerifiableSlot('openai', 'claude-code')).toBe(false); // provider/framework must AGREE
+    expect(isIdentityVerifiableSlot(undefined, undefined)).toBe(false);
+  });
+
+  it('THE REGRESSION: every advertised pair is genuinely answerable by the oracle', async () => {
+    // This is what keeps the list honest in the other direction. Adding a pair here
+    // without an oracle behind it would let the route accept an enrolment it cannot
+    // verify — trading a false refusal for a false acceptance, which is worse.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-consist-'));
+    try {
+      const codexHome = writeCodexHome(root, 'codex', 'someone@example.com', 'acct-consistency');
+      const anthropicHome = path.join(root, 'anthropic');
+      fs.mkdirSync(anthropicHome, { recursive: true });
+
+      let anthropicAsked = false;
+      const oracle = new CompositeCredentialIdentityOracle({
+        anthropic: {
+          async resolveSlotTenant(): Promise<IdentityOracleResult> {
+            anthropicAsked = true;
+            return { email: 'anthropic@example.com' };
+          },
+        },
+      });
+
+      for (const pair of IDENTITY_VERIFIABLE_SLOTS) {
+        const slot = pair.framework === 'codex-cli' ? codexHome : anthropicHome;
+        const res = await oracle.resolveSlotTenant(slot);
+        expect(res.unavailable, `${pair.provider}/${pair.framework} is advertised but unanswerable`).toBeFalsy();
+        expect(res.email).toBeTruthy();
+      }
+      expect(anthropicAsked, 'the anthropic pair should still route to the anthropic oracle').toBe(true);
+    } finally {
+      SafeFsExecutor.safeRmSync(root, {
+        recursive: true,
+        force: true,
+        operation: 'tests/integration/codex-pool-enrolment.test.ts:gate-consistency',
+      });
+    }
+  });
+
+  it('the route asks the identity layer instead of restating it', () => {
+    // The inline pair is exactly what went stale. If it comes back, so does the bug.
+    const routes = fs.readFileSync('src/server/routes.ts', 'utf8');
+    expect(routes).toContain('isIdentityVerifiableSlot(provider, framework)');
+    expect(routes).not.toContain("provider !== 'anthropic' || framework !== 'claude-code'");
   });
 });

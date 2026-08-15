@@ -42,7 +42,10 @@ import { enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
 import { QUOTA_SNAPSHOT_STALE_AFTER_MS } from '../core/QuotaPoller.js';
 import { SubscriptionAccountEmailRegistrar } from '../core/SubscriptionPool.js';
 import { CredentialIdentityOracle } from '../core/CredentialIdentityOracle.js';
-import { CompositeCredentialIdentityOracle } from '../core/CompositeCredentialIdentityOracle.js';
+import {
+  CompositeCredentialIdentityOracle,
+  isIdentityVerifiableSlot,
+} from '../core/CompositeCredentialIdentityOracle.js';
 
 /**
  * The default slot-identity oracle.
@@ -29144,7 +29147,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           return;
         }
       }
-      if (provider !== 'anthropic' || framework !== 'claude-code') {
+      // Ask the identity layer what it covers rather than restating it here. The inline
+      // pair this replaced (`anthropic`/`claude-code`) was correct while Anthropic was the
+      // only oracle, and went stale the moment the Codex oracle landed: the route refused
+      // Codex before the oracle was ever asked, so a Codex account could not be enrolled
+      // even though its identity was by then perfectly resolvable.
+      if (!isIdentityVerifiableSlot(provider, framework)) {
         res.status(400).json({
           error: `provider identity verification is not supported for ${String(provider)}/${String(framework)}`,
           code: 'subscription-account-identity-provider-unsupported',
