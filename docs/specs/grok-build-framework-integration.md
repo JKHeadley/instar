@@ -454,10 +454,20 @@ framework is not "wired" on a passing test alone.
 
   This is the same closed lane, and that is exactly the point: the bullet above
   scoped the blast radius to "scheduled jobs" because scheduled jobs were what we
-  happened to observe. The honest scope is **everything that reaches this agent
-  through a headless spawn**, and neither instance was predicted — both were found
-  by running it. Anything else on that list is unenumerated, which is the state to
-  record rather than a list I would be guessing at.
+  happened to observe. Neither instance was predicted — both were found by running
+  it, which is a signal that the list was never DERIVED.
+
+  **So it was derived.** Every path into the lane goes through
+  `buildHeadlessLaunch`, and across `src/` there are exactly **two** call sites:
+  `core/SessionManager.ts` (scheduled jobs — and the path `POST /sessions/spawn`
+  arrives through) and `threadline/PipeSessionSpawner.ts` (agent-to-agent
+  ingress). That is the complete census, pinned by
+  `tests/unit/headless-lane-entrypoint-census.test.ts` so a third consumer cannot
+  appear silently the way the second one did.
+
+  Recorded because it is the point of measuring: I first wrote **three**, counting
+  `server/routes.ts` — which names the builder in a comment but does not call it.
+  The test caught the wrong number before it reached this document.
 
   Not fixed here for the same reason as the jobs case: closing the lane properly
   means the scratch-cwd wiring, and leaving it closed while suppressing the

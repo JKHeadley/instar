@@ -154,11 +154,18 @@ noticing on its own — the transient-looking cause was sitting on top of the
 permanent one.
 
 The point isn't the second example. It's that the written blast radius said
-"scheduled jobs" because scheduled jobs were what we happened to see first. The
-true scope is everything that reaches the agent through that door, and both
-examples so far were found by running it rather than by reasoning about it. So the
-honest statement is that the list is incomplete — not a longer list I'd be
-guessing at.
+"scheduled jobs" because scheduled jobs were what we happened to see first — and
+finding two things by accident is a sign nobody ever counted.
+
+So I counted. Everything that goes through that door goes through one function,
+and there are exactly two places in the whole codebase that call it: the one that
+runs scheduled work, and the one that receives messages from other agents. That's
+the complete list, and there's now a test that fails if a third ever appears, so
+the next one can't sneak in the way the second did.
+
+Worth admitting: I first wrote "three", because a third file mentions that
+function in a comment without ever calling it. The test caught my wrong number
+before it got into the document, which is precisely why counting beats asserting.
 
 ## What you're deciding
 

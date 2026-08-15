@@ -247,6 +247,21 @@ INCOMPLETE rather than extending it with cases I would be guessing at.
 Not fixed here — closing it properly is the scratch-cwd wiring, and suppressing
 the symptoms would hide a real incapacity. Carrier: CMT-1317.
 
+**7. So the list was DERIVED instead of left honest-but-unknown.** Recording
+"the scope is incomplete" was truthful and also lazy: finding two consumers by
+accident is a signal nobody ever counted. Every path into the lane goes through
+`buildHeadlessLaunch`, and across `src/` there are exactly TWO call sites —
+`core/SessionManager.ts` (scheduled jobs, and where `POST /sessions/spawn`
+arrives) and `threadline/PipeSessionSpawner.ts` (A2A ingress). Pinned by
+`tests/unit/headless-lane-entrypoint-census.test.ts`, with a control proving the
+walker finds source and a control proving comments/imports are not counted.
+
+**The census immediately earned itself:** I wrote THREE, counting
+`server/routes.ts`, which names the builder in a comment but never calls it. The
+test failed and the wrong number never reached the spec. An honest unknown is
+better than a confident guess — but a measurement is better than both, and this
+one was roughly ten minutes of work.
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**
