@@ -250,6 +250,15 @@ The prose now lives in the resolver itself, and a test asserts `grok-build` is
 absent from the signature table with a control proving the table is real, so the
 one-line change trips a build rather than a session.
 
+**And the refusal was made legible.** Layer 3's escalation read *"an unrecognized
+or drifted prompt"* — which names only the BROKEN causes. After grok there is a
+third and now-common one: a menu the floor recognizes fine and deliberately does
+not answer, because no auto-answer policy is registered for that framework. An
+operator reads those differently — "the UI changed, investigate" versus "expected,
+answer it yourself" — so asserting the first when it is the second sends them
+hunting a fault that does not exist. Reworded to name all three. Not an authority
+change: it answers nothing, it only stops mis-describing why it declined.
+
 **6. The closed headless lane blocks agent-to-agent INGRESS too — and the
 transient-looking cause was sitting on top of the permanent one.**
 

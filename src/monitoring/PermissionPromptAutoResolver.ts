@@ -701,8 +701,18 @@ export class PermissionPromptAutoResolver {
         layer: 'layer3',
         dedupKey: session + '|' + menuStructureKey,
         menuStructureKey,
+        // WORDING, deliberately: the old text said "an unrecognized or drifted
+        // prompt", which names only the BROKEN causes. There is a third, and
+        // after grok it is the common one: a menu this floor recognizes fine and
+        // deliberately does not answer, because no auto-answer policy is
+        // registered for that framework. An operator reads these two situations
+        // differently — "the UI changed, investigate" versus "this is expected,
+        // answer it yourself" — so asserting the first when it is the second
+        // sends them looking for a fault that does not exist.
         reason:
-          'a session is wedged on a menu I could not auto-clear (an unrecognized or drifted prompt) — it needs a look',
+          'a session is wedged on a menu I did not auto-clear — either the prompt is ' +
+          'unrecognized or drifted, or it is a framework whose menu I deliberately do ' +
+          'not answer. Either way it needs a person.',
       });
     }
   }
