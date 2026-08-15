@@ -1,0 +1,28 @@
+{
+  "ts": "2026-08-15T11:40:33.098Z",
+  "slug": "agent-signature-provenance",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 53,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/AspInboundClassifier.ts",
+      "src/core/AspKeyDirectory.ts",
+      "src/core/agentSignatureProvenance.ts",
+      "src/core/aspNonceStore.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes/provenance.ts"
+    ],
+    "addedLines": 45,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

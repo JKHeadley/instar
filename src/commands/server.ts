@@ -36,6 +36,7 @@ function localSlackRelayReadiness(stateDir: string): { ready: true } | { ready: 
   if (!template) return { ready: false, reason: 'packaged Slack reply relay template is unavailable' };
   return slackReplyRelayReadiness(stateDir, template);
 }
+import { buildAspInboundClassifier } from '../core/AspInboundClassifier.js';
 import { resolveStandardsRegistry } from '../core/standardsRegistryPath.js';
 import { chunkLiteralForTmux, buildLiteralSendArgs } from '../core/tmuxLiteralSend.js';
 import { parseStandardsRegistry } from '../core/StandardsRegistryParser.js';
@@ -14620,6 +14621,38 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
               })();
             };
+
+            // Agent-Signature Provenance — classify every inbound message and
+            // record the verdict. Spec: docs/specs/agent-signature-provenance.md
+            //
+            // Chained (never replacing) so it composes with the handlers above.
+            // Signal-only: the classifier swallows all its own failures, so this
+            // cannot break delivery. Constructed once, lazily, and skipped
+            // entirely when this agent has no canonical identity.
+            try {
+              const aspClassifier = buildAspInboundClassifier(config.stateDir, config.projectName);
+              if (aspClassifier) {
+                const beforeAspCb = telegram.onMessageLogged;
+                telegram.onMessageLogged = (entry) => {
+                  if (beforeAspCb) beforeAspCb(entry);
+                  aspClassifier.classify({
+                    topicId: entry.topicId,
+                    text: entry.text,
+                    timestamp: entry.timestamp,
+                    messageId: entry.messageId,
+                    senderName: entry.senderName,
+                    fromUser: entry.fromUser,
+                  });
+                };
+              }
+            } catch (err) {
+              // Non-fatal by design — provenance recording must never prevent
+              // the messaging stack from coming up.
+              /* @silent-fallback-ok: provenance recording must NEVER prevent the messaging stack
+                 from coming up. Logged loudly; the consequence of this path is simply that no
+                 verdicts are recorded — never a blocked, delayed or dropped message. */
+              console.warn('[instar] ASP inbound classifier not wired:', err);
+            }
 
             const beforeCorrectionCb = telegram.onMessageLogged;
             telegram.onMessageLogged = (entry) => {
