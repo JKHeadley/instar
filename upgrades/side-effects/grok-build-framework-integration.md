@@ -137,6 +137,23 @@ Worth recording that the first cut of this fix did not work: the option shape is
 consulted in THREE places and I widened two. A shape that must be taught in three
 places is a shape that gets taught in two.
 
+**Scope correction, in the UNDER-claiming direction (checked 2026-08-15).** This
+was described above as a grok detection fix. It is wider than that: Layer 3
+(`detectPersistingMenu(tail, isGenerating)`) takes no framework argument at all —
+it is prose-agnostic and runs for every session — so widening `isOptionLine` to
+accept radio options improved the wedge-detection floor for EVERY framework, not
+only grok. Any framework whose TUI uses `N (●)` options was equally invisible
+before and is covered now.
+
+The corollary, stated so it is not mistaken for a gap I found and left: Layer 2
+(auto-ANSWER) still registers `claude-code` only, with codex-cli and gemini-cli
+commented out pending a characterized live prompt. That is the same deliberate
+posture grok is in — detected, not answered — and it predates this branch.
+
+Recorded because the correction runs the unusual way. The habit worth keeping is
+checking the scope of a claim in both directions rather than only guarding against
+overstatement.
+
 **2. The stall-coverage doc's `context-window-wall` row was WRONG**, and the
 mentee found it. It claimed grok has "no compact-equivalent recovery" and that a
 context-walled session has "no honest surface" — Claude's failure mode mapped onto
