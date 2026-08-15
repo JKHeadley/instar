@@ -1,0 +1,39 @@
+<!-- internal-only -->
+
+## What Changed
+
+Adds `tests/setup/nativeModuleHealth.globalSetup.ts`, wired into `vitest.config.ts`
+after `build-dist.globalSetup.ts`. It probes better-sqlite3 once (load AND open an
+in-memory DB) and, only when that fails, prints one line at setup and a single
+banner at TEARDOWN — which vitest renders after the run summary, beside the failure
+count.
+
+## Why
+
+Measured 2026-08-15: a local full suite reported 225 failing files; 108 were
+downstream of better-sqlite3 having no native binary in that checkout (the install
+had skipped its postinstall). instar diagnosed it correctly and printed the remedy
+**189 times**, and that did not help — 189 lines in a 21MB log is volume, not a
+signal. This does not add detection; it moves the existing diagnosis to where it is
+read.
+
+## Evidence
+
+- `tests/unit/native-module-health-banner.test.ts` — 11/11.
+- **Placement proven END-TO-END, not asserted**: the broken branch was forced by
+  mutation (count-asserted at exactly 1 — the first attempt applied 0 times and was
+  caught by that control), a suite was run, and the banner rendered AFTER the
+  `Test Files / Tests / Duration` summary. Source restored byte-exact, 0 markers.
+- Probe covers the incident's real signature — the module LOADS but cannot open a
+  database. A require-only probe would have reported healthy for the entire outage;
+  that case is pinned.
+- Over-block control: given a healthy probe it writes NOTHING and returns NO
+  teardown. It also cannot throw — a throwing probe is reported, not propagated,
+  because this runs before every suite.
+- `tsc --noEmit` exit 0 via the real binary; full lint chain exit 0.
+
+## Not closed
+
+Scoped to better-sqlite3 alone — deliberately, since generalising from one incident
+is the over-read that caused it. The install hygiene itself is unchanged; this makes
+its consequence legible, it does not prevent it.

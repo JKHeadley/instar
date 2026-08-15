@@ -20,7 +20,9 @@ export default defineConfig(withTestRunnerBound('unit', {
     // globalSetup's own comment names: a per-file bootstrap is invisible to the next file
     // that needs it. Round 6 caught that `vitest.push` and `vitest.integration` got it and
     // this config did not.
-    globalSetup: ['tests/setup/build-dist.globalSetup.ts'],
+    // nativeModuleHealth is LAST in setup order, so its teardown runs FIRST —
+    // teardowns run in reverse, and the banner belongs closest to the summary.
+    globalSetup: ['tests/setup/build-dist.globalSetup.ts', 'tests/setup/nativeModuleHealth.globalSetup.ts'],
     setupFiles: ['./tests/vitest-setup.ts'],
     environment: 'node',
     testTimeout: 10000,
