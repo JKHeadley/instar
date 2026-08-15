@@ -15,10 +15,14 @@ sections below mark what is IN and what is still PENDING.
 2. **IN — enrolment**: `CompositeCredentialIdentityOracle` composes the Anthropic
    oracle so the pool's verified-add path accepts a Codex slot. All four
    production construction sites route through one factory.
-3. **PENDING — latency/error swap trigger**: extend the proactive-swap monitor to
-   fire on degradation, not only on quota. Dark + dry-run first.
-4. **PENDING — failure-swap tail**: prefer the sibling Codex account before
-   falling through to `claude-code`.
+3. **IN (foundation) — per-call account selection**: internal Codex calls can now
+   target a specific pool account's credential slot. This was the missing layer
+   under BOTH remaining items — see "The finding" below.
+4. **PENDING — latency/error swap trigger**: needs per-account health recording,
+   which needs (3). Dark + dry-run when it lands.
+5. **PENDING — failure-swap tail**: prefer the sibling Codex account before
+   falling through to `claude-code`. Also needs (3): `failureSwap` is a FRAMEWORK
+   list with no account dimension.
 
 ## Why this exists (measured, not assumed)
 
@@ -153,3 +157,48 @@ override is recorded with reasoning in the decisions ledger. Rationale: the chan
 composes rather than replaces, the pre-existing path is pinned unchanged by a
 control, and it creates no new authority — it widens which accounts may be
 enrolled while every existing guard still gates the add.
+
+## The finding that reshaped items 2 and 4
+
+The charter read as though only the swap TRIGGER needed changing — "the machinery
+exists but triggers on QUOTA". Verified against the code, three layers were
+missing, and the trigger is the top one:
+
+1. **Internal Codex calls never chose an account.** `CodexCliIntelligenceProvider`
+   called `buildCodexChildEnv()` with no options, so the child inherited the
+   ambient `CODEX_HOME` — every internal call landed on the default login. The
+   ability to point a call at a slot existed in `codexSpawn` and was honoured; it
+   was simply never used by this path. (Control: only `QuotaPoller` and
+   `structuredOneShot` passed `codexHome`.)
+2. **Latency and errors are not attributed per account.** `attribution` carries
+   component/category/gating — no account. `AccountQuotaSnapshot` carries quota
+   only. (Control: the same searches DO find per-account quota, so the absence is
+   a measurement.)
+3. **`failureSwap` is a framework list** (`{ door: fw }`), with no account
+   dimension — so "prefer the other Codex account" has nothing to name.
+
+So the charter's exit test — make one account artificially slow and watch a
+would-swap — could not pass, not because the trigger was missing but because
+nothing measured or selected the thing it would act on. Building the trigger alone
+would have produced a dial wired to a dead gauge.
+
+Piece 3 supplies layer 1. Reported to the charter author before building further.
+
+### Added by piece 3
+
+`resolveAccount?: () => CodexCallAccount | null` — a per-call CLOSURE, matching
+`resolveExecJson`'s established pattern in the same file, because the router caches
+built providers and a construction-time value would freeze the first answer.
+
+**The load-bearing property is the null case, not the selection.** Absent or null
+resolver ⇒ no `CODEX_HOME` override ⇒ byte-identical to before. Nothing is wired in
+production, so adding the capability changes nothing until a later, deliberate act.
+A throwing or malformed resolver also degrades to ambient: losing account selection
+is a small loss, losing every internal Codex call is not.
+
+8 unit tests, including the safety property (no resolver ⇒ no override), two
+accounts genuinely distinguishable (without which "swap to the other account" has
+no mechanism), per-call rather than per-construction resolution, all three
+degradation paths, and a CONTROL that env scrubbing still holds when an account IS
+selected — so account selection cannot become a way to smuggle the parent env into
+the child. 45 pre-existing codex provider/env tests still pass.

@@ -69,7 +69,44 @@ taught to react to an account being *slow or erroring* as well.
 the next thing tried is the main subscription. It should try the *other Codex
 account* first, and only fall back to the expensive one if both are unwell.
 
+## What checking the plan first turned up
+
+The plan read as though only the trigger needed building — the machinery is there,
+it just watches the wrong thing. Checking that against the actual code before
+building on it, three pieces were missing, and the trigger is the last of them.
+
+**Nothing was choosing an account.** When the agent asks its second provider a
+question, it never said which account to use — so every one of those requests went
+to the default one. The ability to say which account already existed in the code
+and worked; this path simply never used it. So "move a struggling account's work to
+the other account" had nothing to move: there was only ever one account involved.
+
+**Nothing was recording which account was slow.** Timing and failure counts are
+recorded against the piece of the agent that asked, never against the account that
+answered. So even with two accounts in play, there was no per-account measurement
+for a trigger to read.
+
+**The fallback list names providers, not accounts.** "Try the other Codex account
+before the expensive one" has nothing to name today, because that list only knows
+about providers.
+
+So the test the plan proposed — make one account artificially slow and watch the
+system offer to move off it — could not have passed. Not because the trigger was
+missing, but because nothing measured or selected the thing the trigger would act
+on. Building the trigger alone would have produced a dial wired to a dead gauge.
+
+**This adds the first of those three: a request can now name its account.** The
+other two are reported rather than quietly built, because they change the size of
+the job and that is not mine to decide alone.
+
 ## The safeguards
+
+**Adding the ability changes nothing on its own.** A request that does not name an
+account behaves exactly as before — same account, same result. Nothing in the
+running system names one yet, so this is a capability sitting unused until someone
+deliberately switches it on. If the part that names the account is ever broken, the
+request quietly falls back to the old behaviour instead of failing: losing the
+choice is a small loss, losing every background request is not.
 
 **Nothing moves on its own yet.** The new trigger ships switched off, and when
 switched on it starts in a rehearsal mode that only writes down what it *would*

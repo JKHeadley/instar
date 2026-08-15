@@ -289,17 +289,71 @@ export interface CodexCliIntelligenceProviderOptions {
    * working rollback lever.
    */
   resolveExecJson?: () => boolean;
+  /**
+   * Optional per-call resolver naming WHICH pool account this call runs on.
+   *
+   * Internal Codex calls have never chosen an account: the child inherits the
+   * ambient `CODEX_HOME`, so every one of them lands on the default login. That
+   * is why "swap a degrading Codex session onto the other Codex account" has no
+   * mechanism behind it for internal calls — there is only ever one account in
+   * play, and nothing records which.
+   *
+   * This supplies the missing degree of freedom. It is a per-call CLOSURE, not a
+   * constructor value, for the same reason `resolveExecJson` is: the router
+   * caches built providers, so a value captured at construction would freeze the
+   * first answer forever.
+   *
+   * ABSENT OR NULL ⇒ ambient behaviour, byte-identical to today. The account is
+   * only ever narrowed when a caller deliberately supplies one, so wiring this
+   * is a separate, deliberate act — nothing changes by adding the capability.
+   *
+   * The resolver must not throw; if it does, the call falls back to ambient
+   * rather than failing, because losing every internal Codex call would be
+   * strictly worse than losing account selection for one of them.
+   */
+  resolveAccount?: () => CodexCallAccount | null;
+}
+
+/** Which pool account an internal Codex call should run under. */
+export interface CodexCallAccount {
+  /** Pool account id — recorded so a later reading can be attributed to it. */
+  accountId: string;
+  /** That account's credential slot; becomes the child's `CODEX_HOME`. */
+  configHome: string;
 }
 
 export class CodexCliIntelligenceProvider implements IntelligenceProvider {
   private readonly codexPath: string;
+  /** @see CodexCliIntelligenceProviderOptions.resolveAccount */
+  private readonly resolveAccount: (() => CodexCallAccount | null) | undefined;
   private readonly sandboxMode: 'read-only' | 'workspace-write' | 'danger-full-access';
   private readonly resolveExecJson: () => boolean;
+
+  /**
+   * Resolve the account for this call, or null for ambient.
+   *
+   * Never throws: a broken resolver degrades to the ambient default rather than
+   * failing the call. Losing account SELECTION is a small loss; losing every
+   * internal Codex call is not.
+   */
+  private accountForCall(): CodexCallAccount | null {
+    if (!this.resolveAccount) return null;
+    try {
+      const a = this.resolveAccount();
+      if (!a || typeof a.configHome !== 'string' || a.configHome.length === 0) return null;
+      return a;
+    } catch {
+      /* @silent-fallback-ok: degrade to ambient. Documented on the option; the
+         alternative is failing calls that would otherwise have succeeded. */
+      return null;
+    }
+  }
 
   constructor(options: CodexCliIntelligenceProviderOptions) {
     this.codexPath = options.codexPath;
     this.sandboxMode = options.sandboxMode ?? 'read-only';
     this.resolveExecJson = options.resolveExecJson ?? execJsonEnvDefault;
+    this.resolveAccount = options.resolveAccount;
     // options.workingDirectory is intentionally NOT stored: judgment calls
     // always run in an empty scratch dir (resolveIntelligenceScratchDir), so
     // the agent's project identity + hooks never load. The option is retained
@@ -436,7 +490,10 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
       // CLAUDECODE / CLAUDE_SESSION_ID are not in the allowlist so they
       // are dropped automatically — the prior explicit deletes are now
       // redundant but the hygiene intent is preserved by the allowlist.
-      const childEnv = buildCodexChildEnv();
+      const spawnAccount = this.accountForCall();
+      const childEnv = buildCodexChildEnv(
+        spawnAccount ? { codexHome: spawnAccount.configHome } : undefined,
+      );
 
       const child = execFile(
         this.codexPath,
@@ -514,7 +571,9 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
 
       const result = await spawnCodexExecJson(this.codexPath, args, {
         timeoutMs: options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        env: buildCodexChildEnv(), // Spec 12 Rule 1a — both modes
+        env: buildCodexChildEnv(
+          this.accountForCall() ? { codexHome: this.accountForCall()!.configHome } : undefined,
+        ), // Spec 12 Rule 1a — both modes
         prompt,
         onLine: (line) => {
           acc.feedLine(line);
