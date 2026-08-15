@@ -140,6 +140,26 @@ were five, and three of the others were ERROR messages — the ones you'd be
 reading when something had already gone wrong, which makes them the more
 important half.
 
+## And one that turned out to be bigger than it looked
+
+Background jobs don't run on a Grok-only agent — that was known and written down,
+along with the fact that it makes 33 scheduled jobs fail. What wasn't traced is
+that the same closed door blocks something else: **other agents can't reach it
+either.** A message sent to the Grok agent was accepted, queued, and then never
+handled. The sender sees it as sent and waits for a reply that cannot come.
+
+The first refusal in the log was ordinary memory pressure, which made it look like
+a temporary hiccup. Every attempt after that hit the real wall. That's worth
+noticing on its own — the transient-looking cause was sitting on top of the
+permanent one.
+
+The point isn't the second example. It's that the written blast radius said
+"scheduled jobs" because scheduled jobs were what we happened to see first. The
+true scope is everything that reaches the agent through that door, and both
+examples so far were found by running it rather than by reasoning about it. So the
+honest statement is that the list is incomplete — not a longer list I'd be
+guessing at.
+
 ## What you're deciding
 
 Whether instar ships a fifth, dark-by-default framework whose billing sink is

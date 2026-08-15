@@ -437,6 +437,32 @@ framework is not "wired" on a passing test alone.
   noticed. The crash-loop pauser bounds it (jobs pause rather than retry
   forever), so it is finite, not endless.
 
+  **AND THE CONSEQUENCE THAT BULLET *ALSO* NEVER TRACED — observed live the same
+  day, one step further out.** Scheduled jobs are not the only thing that needs a
+  headless spawn. **Agent-to-agent ingress does too.** A Threadline message sent
+  to Groky was accepted by his relay and then never handled:
+
+      [relay-agent] Accepted message from echo … {"handled":false,"accepted":true,
+        "delivered":false,"queued":true, "error":"Spawn denied: Memory pressure…"}
+      [spawn-manager] drain re-attempt not approved: grok-headless-cwd-ungated
+
+  The first refusal was incidental memory pressure — a red herring that made this
+  look transient. Every re-attempt after it hit the headless gate, which is not
+  transient at all. **So a grok-primary agent cannot RECEIVE agent-to-agent
+  messages.** They are accepted, queued, and never processed; the sender sees
+  `sent: true` and an ack that never comes.
+
+  This is the same closed lane, and that is exactly the point: the bullet above
+  scoped the blast radius to "scheduled jobs" because scheduled jobs were what we
+  happened to observe. The honest scope is **everything that reaches this agent
+  through a headless spawn**, and neither instance was predicted — both were found
+  by running it. Anything else on that list is unenumerated, which is the state to
+  record rather than a list I would be guessing at.
+
+  Not fixed here for the same reason as the jobs case: closing the lane properly
+  means the scratch-cwd wiring, and leaving it closed while suppressing the
+  symptoms would hide a real incapacity. Carrier: CMT-1317. <!-- tracked: CMT-1317 -->
+
   The wording above — "the refusal stands", described elsewhere in this document
   as "the honest outcome on a single-framework machine" — is locally TRUE and
   was never followed one step downstream to what the operator experiences. An

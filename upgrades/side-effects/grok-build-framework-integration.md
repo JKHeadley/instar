@@ -219,6 +219,34 @@ The prose now lives in the resolver itself, and a test asserts `grok-build` is
 absent from the signature table with a control proving the table is real, so the
 one-line change trips a build rather than a session.
 
+**6. The closed headless lane blocks agent-to-agent INGRESS too — and the
+transient-looking cause was sitting on top of the permanent one.**
+
+Finding (from the round-22 live drive) recorded that a grok-only agent's 33
+scheduled jobs all fail, because every headless spawn hits
+`grok-headless-cwd-ungated` with no other enabled framework to fall back to.
+That bullet scoped the blast radius to scheduled jobs.
+
+Sending Groky a Threadline message showed the scope is wider. His relay ACCEPTED
+the message and never handled it — first refusal `Spawn denied: Memory pressure
+too high`, every re-attempt after it `grok-headless-cwd-ungated`. **A
+grok-primary agent cannot receive agent-to-agent messages**; the sender sees
+`sent: true` and waits for an ack that cannot arrive.
+
+**The diagnostic lesson is the memory refusal.** It was real, it was first, and
+it was incidental — and it made a permanent incapacity look like a passing blip.
+I nearly re-sent and waited. What settled it was reading every subsequent drain
+attempt rather than the first failure.
+
+**The scoping lesson is the bullet.** It said "scheduled jobs" because scheduled
+jobs were what we happened to observe. The honest scope is everything that
+reaches the agent through a headless spawn; both known instances were found by
+running it, neither by reasoning about it. The spec now records the list as
+INCOMPLETE rather than extending it with cases I would be guessing at.
+
+Not fixed here — closing it properly is the scratch-cwd wiring, and suppressing
+the symptoms would hide a real incapacity. Carrier: CMT-1317.
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**
