@@ -85,3 +85,36 @@ export class CompositeCredentialIdentityOracle implements IdentityOracle {
     return this.anthropic.resolveSlotTenant(slot);
   }
 }
+
+/**
+ * The (provider, framework) pairs whose credential slot identity can actually be
+ * VERIFIED — i.e. the pairs some oracle above can answer for.
+ *
+ * This exists because the enrolment route used to carry the answer inline as
+ * `provider !== 'anthropic' || framework !== 'claude-code'`. That was correct while
+ * Anthropic was the only oracle, and it went stale the moment a Codex oracle was
+ * added: the route refused Codex BEFORE the oracle was ever asked, so a Codex account
+ * still could not be enrolled even though the identity layer could now identify it.
+ *
+ * Hardcoding a second pair at the callsite would repeat exactly that bug on the third
+ * oracle. Keeping the list HERE, beside the oracle that implements it, means adding an
+ * oracle and declaring what it covers are the same edit.
+ *
+ * Note what this list is NOT: it is not a claim that a given slot WILL verify, only
+ * that something can be asked. The oracle still decides, and an unidentifiable slot is
+ * still refused — this gate only stops us refusing without asking.
+ */
+export const IDENTITY_VERIFIABLE_SLOTS: ReadonlyArray<{
+  readonly provider: string;
+  readonly framework: string;
+}> = [
+  { provider: 'anthropic', framework: 'claude-code' },
+  { provider: 'openai', framework: 'codex-cli' },
+];
+
+/** True when some identity oracle can be asked about this provider/framework pair. */
+export function isIdentityVerifiableSlot(provider: unknown, framework: unknown): boolean {
+  return IDENTITY_VERIFIABLE_SLOTS.some(
+    (s) => s.provider === provider && s.framework === framework,
+  );
+}
