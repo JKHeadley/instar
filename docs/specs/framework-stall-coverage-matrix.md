@@ -115,6 +115,18 @@ co-present failure modes.
 | `quota-wall` | Quota/rate-limit wall | turn fails on limits; recovery is wait-or-swap; truthful state must surface |
 | `approval-prompt-wedge` | Permission/approval prompt wedge | blocked on an interactive prompt no remote user can answer |
 | `context-window-wall` | Context-window wall | compact-in-place first, fresh-respawn fallback |
+| `in-flight-tool-hang` | In-flight tool hang | live turn blocked on a tool result that never returns (shell, MCP, subagent) — process UP and unable to emit; neither an approval prompt nor a host death, so process-liveness checks read it as healthy |
+
+Provenance of the ninth class, because it says something about how this taxonomy
+was built: `in-flight-tool-hang` was found on 2026-08-15 by a MENTEE agent asked
+to review its own framework's matrix (apprenticeship instance
+`groky-onboarding`, cycle 2). The first eight were enumerated by observing
+frameworks from OUTSIDE, and this one is only visible from INSIDE a turn —
+which is why five framework matrices missed it. It is framework-agnostic: any
+framework that can call a tool can hang on one. The same review also found that
+a detection signal previously written into the grok matrix (`stopReason:
+cancelled`) is not runtime-observable at all, which is the inverse defect —
+an outside observer writing down a signal no watcher can see.
 
 (Secondary tags v1: `host-loss`, `own-server-restart`, `network-partition` — causal
 annotations, never a row of their own.)

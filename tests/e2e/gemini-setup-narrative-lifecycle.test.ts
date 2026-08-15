@@ -16,12 +16,17 @@ import {
 } from '../../src/providers/adapters/gemini-cli/transport/geminiSpawn.js';
 
 const geminiPath = detectGeminiPath();
+import {
+  isUnconfiguredCredentialResult,
+  announceCredentialSkip,
+} from '../support/liveCredentialGate.js';
+
 const haveGemini = !!geminiPath;
 
 describe('Gemini setup wizard narrative one-shot (E2E)', () => {
   it.skipIf(!haveGemini)(
     'a real gemini-cli one-shot can produce bounded setup narrative',
-    async () => {
+    async (ctx) => {
       const prompt = `
 You are the Instar setup wizard. Generate exactly one short welcoming
 paragraph for a new user. Do not include commands, shell snippets, file
@@ -59,8 +64,27 @@ paths, tool names, bullet lists, or questions. Output prose only.
         }
       }
 
+      // Round-17: `haveGemini` gates on the BINARY EXISTING, which is not the
+      // same as usable — this box has gemini installed with no credential, so
+      // the gate said "available" and the canary hard-failed on auth. Unlike
+      // the sibling e2e (where the provider THROWS), `spawnGeminiAndWait`
+      // RESOLVES with { exitCode, stderr }, so the thrown-error matcher alone
+      // would have missed this file entirely — a fix for "both failing tests"
+      // that covered one. Same narrow rule: only the unconfigured-credential
+      // signature skips; a rejected credential, a wrong answer, a timeout or a
+      // crash all still fail.
+      if (isUnconfiguredCredentialResult('gemini', result)) {
+        announceCredentialSkip('gemini-cli', new Error(result.stderr));
+        ctx.skip();
+        return;
+      }
+
       if (result.exitCode !== 0 && /QUOTA_EXHAUSTED|exhausted your capacity|quota/i.test(result.stderr)) {
-        console.warn('Skipping live Gemini narrative assertion: Gemini CLI quota is exhausted.');
+        // Round-17: this was a bare `return`, which renders as a PASS — the
+        // same "could not run looks identical to ran and passed" defect the
+        // credential gate above exists to avoid, already present in this file.
+        console.warn('[live-canary] SKIPPED — Gemini CLI quota is exhausted; the canary did not run.');
+        ctx.skip();
         return;
       }
 

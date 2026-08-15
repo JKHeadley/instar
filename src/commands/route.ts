@@ -25,7 +25,6 @@ import path from 'node:path';
 import { loadConfig, ensureStateDir } from '../core/Config.js';
 import {
   buildIntelligenceProvider,
-  frameworkFromEnv,
   type IntelligenceFramework,
 } from '../core/intelligenceProviderFactory.js';
 import { createCodexExecJsonConfigResolver } from '../core/CodexCliIntelligenceProvider.js';
@@ -36,6 +35,8 @@ import { TelegramConfirmer } from '../providers/uxConfirm/TelegramConfirmer.js';
 import { StaticCatalogProvider } from '../providers/uxConfirm/StaticCatalogProvider.js';
 import { FrameworkModelRouter } from '../providers/uxConfirm/FrameworkModelRouter.js';
 import { CostStateTracker } from '../providers/costAwareRouting.js';
+import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
+import { resolveFrameworkAlias } from '../core/frameworkFacts.js';
 
 export interface RouteCommandOptions {
   user?: string;
@@ -45,7 +46,18 @@ export interface RouteCommandOptions {
   dir?: string;
 }
 
-const KNOWN_FRAMEWORKS = ['claude-code', 'codex-cli', 'gemini-cli'];
+/**
+ * Round-22: this was the literal `['claude-code', 'codex-cli', 'gemini-cli']` —
+ * an unannotated hand-written list, which is precisely the shape
+ * `lint-framework-list-completeness` documents that it CANNOT see. Found by
+ * grepping for the fixed defect's siblings rather than by the lint, which is the
+ * honest reason to record the gap in that lint's header rather than paper over it.
+ *
+ * The consequence was small but the class is the recurring one: this feeds
+ * OverrideDetector, so an operator saying "run it on grok" was not recognised as
+ * naming a framework at all, and the request fell through to the default.
+ */
+const KNOWN_FRAMEWORKS: ReadonlyArray<string> = SUPPORTED_FRAMEWORKS;
 const KNOWN_MODELS = [
   'opus-4.7',
   'sonnet-4.6',
@@ -56,14 +68,52 @@ const KNOWN_MODELS = [
   'deepseek-v4',
 ];
 
-function resolveFramework(opt: string | undefined): IntelligenceFramework {
-  if (opt) {
-    const normalized = opt.toLowerCase();
-    if (normalized === 'claude' || normalized === 'claude-code') return 'claude-code';
-    if (normalized === 'codex' || normalized === 'codex-cli') return 'codex-cli';
-    if (normalized === 'gemini' || normalized === 'gemini-cli') return 'gemini-cli';
-  }
-  return frameworkFromEnv() ?? 'claude-code';
+/**
+ * Round-22: the alias table listed three frameworks, so `--framework grok-build`
+ * (or `pi-cli`) matched nothing and fell through to `'claude-code'` — an explicit
+ * operator instruction to use one framework silently answered by another. That is
+ * the same class as the five impersonation sites rounds 15-17 closed, in the
+ * mildest possible place: a CLI flag rather than a spawn path.
+ *
+ * The fix routes through `resolveFrameworkAlias` — the canonical table this repo
+ * ALREADY had, which `frameworkFromEnv` had been using all along. My first cut
+ * re-derived the aliases here from the canonical list, which would have been a
+ * third spelling of the same table: correct today, free to drift tomorrow, and the
+ * exact thing this whole round is about. Two callers of one table, not two tables.
+ *
+ * ROUND-22, SECOND DEFECT IN THE SAME FUNCTION — the sixth impersonation site.
+ * The chain ended at a hardcoded `'claude-code'`, ignoring what the agent is
+ * actually configured to run. Paired with the call site's
+ * `binaryPath: framework === 'claude-code' ? config.sessions.claudePath : undefined`,
+ * that is the round-15/16 shape at a sixth location: on a grok-primary agent
+ * `sessions.claudePath` HOLDS THE GROK BINARY (Config.ts sets it from the
+ * configured framework, a documented back-compat carry), so `instar route "..."`
+ * with no flag resolved the label `claude-code`, handed it grok's binary, and
+ * built a Claude provider around it — Claude's argv against grok's CLI, with none
+ * of the grok lane's controls.
+ *
+ * Scope, stated at the width of the evidence: this is a CODE-PATH finding, read
+ * from Config.ts's claudePath assignment and this call site. I did not execute it
+ * — doing so spends real tokens against an unmetered pool, and the read is
+ * unambiguous.
+ *
+ * Two corrections, both removing a duplicate rather than adding a guard:
+ *   1. The chain now falls back to the agent's OWN resolved framework
+ *      (`config.sessions.framework`) before the historical default. That value is
+ *      `resolveConfiguredFramework`'s output, which ALREADY consults
+ *      INSTAR_FRAMEWORK — so `frameworkFromEnv()` is dropped here rather than kept
+ *      alongside it. A second env read is a second precedence chain, which is how
+ *      two readers of one variable came to disagree in round 21.
+ *   2. The call site now reads `frameworkBinaryPaths[framework]` — the canonical
+ *      per-framework map that already honours operator overrides — instead of the
+ *      back-compat `claudePath` whose meaning depends on which framework the agent
+ *      runs. No framework label is ever paired with another framework's binary.
+ */
+function resolveFramework(
+  opt: string | undefined,
+  configuredFramework: IntelligenceFramework | undefined,
+): IntelligenceFramework {
+  return resolveFrameworkAlias(opt) ?? configuredFramework ?? 'claude-code';
 }
 
 export async function route(taskPrompt: string, options: RouteCommandOptions): Promise<void> {
@@ -76,10 +126,12 @@ export async function route(taskPrompt: string, options: RouteCommandOptions): P
   const config = loadConfig(options.dir);
   ensureStateDir(config.stateDir);
 
-  const framework = resolveFramework(options.framework);
+  const framework = resolveFramework(options.framework, config.sessions.framework);
   const intelligence = buildIntelligenceProvider({
     framework,
-    binaryPath: framework === 'claude-code' ? config.sessions.claudePath : undefined,
+    // See resolveFramework above: NEVER `sessions.claudePath`, whose value is the
+    // configured framework's binary rather than Claude's on a non-Claude agent.
+    binaryPath: config.sessions.frameworkBinaryPaths?.[framework],
     workingDirectory: config.stateDir,
     // codex exec-json kill-switch — read from this project's config.json.
     resolveExecJson: createCodexExecJsonConfigResolver(

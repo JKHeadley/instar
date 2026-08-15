@@ -44,6 +44,7 @@ import {
 } from './adapters/anthropic-interactive-pool/index.js';
 import type { InteractivePoolConfig } from './adapters/anthropic-interactive-pool/config.js';
 import { isClaudeForbidden } from '../core/claudeForbiddenGuard.js';
+import { frameworkBinaryExists } from '../core/frameworkSessionLaunch.js';
 
 export interface RegisterAnthropicAdaptersOptions {
   /**
@@ -313,4 +314,97 @@ async function registerPiAdaptersInner(
   });
   await reg.register(adapter);
   return { registered: [PI_CLI_ID], alreadyRegistered: [], adapter };
+}
+
+// ── grok-build adapter registration (grok-build framework integration spec §7) ──
+
+export interface RegisterGrokBuildAdaptersOptions {
+  /**
+   * The agent's enabled frameworks (InstarConfig.enabledFrameworks).
+   * grok-build is ADDITIVE and ships dark: registration happens ONLY when
+   * 'grok-build' is explicitly present — unset/empty means NOT enabled.
+   */
+  enabledFrameworks?: ReadonlyArray<string>;
+  /** Detected `grok` binary path. Unset → adapter env detection. */
+  grokPath?: string | null;
+  /** The grok `-m` model id (frameworkDefaultModels['grok-build']). */
+  model?: string;
+  /** Target registry override for tests. */
+  registryInstance?: Registry;
+}
+
+export interface RegisterGrokBuildAdaptersResult {
+  registered: ProviderId[];
+  alreadyRegistered: ProviderId[];
+  skippedReason?: 'grok-not-enabled' | 'grok-binary-missing';
+  adapter?: ProviderAdapter;
+}
+
+const inFlightGrokByRegistry = new WeakMap<Registry, Promise<RegisterGrokBuildAdaptersResult>>();
+
+/**
+ * Register the grok-build adapter, gated and idempotent (mirrors
+ * registerPiAdapters' contract):
+ *
+ *   - GATED on explicit opt-in: `enabledFrameworks` must contain 'grok-build'.
+ *   - GATED on the binary: configured-but-missing grok degrades to a skip +
+ *     doctor-visible reason, never a boot failure.
+ *   - IDEMPOTENT including under concurrent calls (single-flight).
+ *   - LAZY: pure in-memory construction; nothing spawns at registration.
+ *   - GUARDED: the adapter's transport enforces the billing gate at every
+ *     call construction — a metered key in the environment or a
+ *     missing/expired subscription session refuses the call (spec §3.1).
+ */
+export async function registerGrokBuildAdapters(
+  options: RegisterGrokBuildAdaptersOptions = {},
+): Promise<RegisterGrokBuildAdaptersResult> {
+  const targetRegistry = options.registryInstance ?? defaultRegistry;
+  const existing = inFlightGrokByRegistry.get(targetRegistry);
+  if (existing) return existing;
+  const run = registerGrokBuildAdaptersInner(options, targetRegistry).finally(() => {
+    inFlightGrokByRegistry.delete(targetRegistry);
+  });
+  inFlightGrokByRegistry.set(targetRegistry, run);
+  return run;
+}
+
+async function registerGrokBuildAdaptersInner(
+  options: RegisterGrokBuildAdaptersOptions,
+  reg: Registry,
+): Promise<RegisterGrokBuildAdaptersResult> {
+  // Gate 1 — explicit opt-in (ships dark).
+  if (!options.enabledFrameworks?.includes('grok-build')) {
+    return { registered: [], alreadyRegistered: [], skippedReason: 'grok-not-enabled' };
+  }
+
+  // Gate 2 — binary present. Lazy import keeps the adapter graph out of
+  // boots that never enable grok.
+  // Round-11 (adversarial): this inlined a PARTIAL ladder (`options.grokPath ??
+  // detectGrokPath()`), so `GROK_BUILD_PATH` — the lever §2.1 names first —
+  // was invisible here, and the path this function returns is what the adapter
+  // actually spawns. Route through the ONE canonical resolver instead.
+  const { resolveGrokBinaryPath } = await import('./adapters/grok-build/config.js');
+  const grokPath = resolveGrokBinaryPath({ configuredPath: options.grokPath ?? undefined });
+  // Round-17 (security): `resolveGrokBinaryPath` is TOTAL — it always falls
+  // through to a $GROK_HOME-relative path — so `!grokPath` alone could never
+  // fire and this gate was dead code. An operator who enabled grok-build
+  // without installing the CLI got a green "registered" line instead of the
+  // install prompt below. Only an explicit `false` refuses; an 'unknown'
+  // probe result means the prober failed, not that the binary is absent.
+  if (!grokPath || frameworkBinaryExists(grokPath) === false) {
+    return { registered: [], alreadyRegistered: [], skippedReason: 'grok-binary-missing' };
+  }
+
+  const { createGrokBuildAdapter, GROK_BUILD_ID } = await import('./adapters/grok-build/index.js');
+
+  const already = reg.get(GROK_BUILD_ID);
+  if (already) {
+    return { registered: [], alreadyRegistered: [GROK_BUILD_ID], adapter: already };
+  }
+  const adapter = createGrokBuildAdapter({
+    grokPath,
+    ...(options.model ? { model: options.model } : {}),
+  });
+  await reg.register(adapter);
+  return { registered: [GROK_BUILD_ID], alreadyRegistered: [], adapter };
 }

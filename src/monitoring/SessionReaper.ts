@@ -515,7 +515,7 @@ export class SessionReaper extends EventEmitter {
    * a ready-for-input prompt AND contains no active-work marker. Conservative —
    * an undetected ready prompt returns false (→ KEEP), never a false idle.
    */
-  static isPositivelyIdle(framework: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | undefined, frame: string): boolean {
+  static isPositivelyIdle(framework: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build' | undefined, frame: string): boolean {
     if (!framework) return false; // unknown framework → cannot positively assert idle
     const sig = getActivitySignal(framework);
     // Any LIVE-generation marker anywhere in the captured buffer ⇒ not idle. Uses
@@ -679,7 +679,7 @@ export class SessionReaper extends EventEmitter {
    * and transcript (no extra tmux/fs work). Pure observation — never reaps.
    */
   private looksIdleApartFromBusyChild(
-    framework: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | undefined,
+    framework: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build' | undefined,
     frame: string,
     transcript: TranscriptProbe,
     session: Session,

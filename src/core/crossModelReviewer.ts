@@ -45,12 +45,26 @@
  *     to untrusted/custom endpoints).
  */
 
+import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { frameworkBinaryExists } from './frameworkSessionLaunch.js';
+import { resolveGrokBinaryPath } from '../providers/adapters/grok-build/config.js';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { detectCodexPath, detectGeminiPath, detectClaudePath } from './Config.js';
+import { detectCodexPath, detectGeminiPath, detectClaudePath, detectGrokPath } from './Config.js';
+import {
+  resolveGrokHome,
+  grokAuthPath as grokAuthPathFor,
+} from '../providers/adapters/grok-build/config.js';
+import {
+  readSessionAuthState,
+  isLoginPolicyVerified,
+  checkGrokVersionDrift,
+  getGrokVersionDriftNote,
+  GROK_FORBIDDEN_ENV_VARS,
+} from '../providers/adapters/grok-build/policy.js';
 import { validateRule1 } from '../providers/adapters/openai-codex/credentials.js';
 import { resolveCliModelFlag } from '../providers/adapters/openai-codex/models.js';
 import { resolveCliModelFlag as resolveGeminiModelFlag } from '../providers/adapters/gemini-cli/models.js';
@@ -156,6 +170,11 @@ export type CrossModelUnavailableReason =
   | 'codex-auth-apikey-forbidden'
   | 'gemini-not-installed'
   | 'gemini-not-authed'
+  | 'grok-not-installed'
+  | 'grok-not-authed'
+  | 'grok-auth-apikey-forbidden'
+  | 'grok-login-policy-unverified'
+  | 'grok-not-enabled'
   // Claude clean-door reviewer (REVIEWER-DOOR-REWIRING §1.2) — detection reasons
   // are PURELY STATIC/presence-based; auth/entitlement failures are invocation-time
   // `degraded` results (§1.4), never detection reasons.
@@ -166,6 +185,13 @@ export type CrossModelUnavailableReason =
 
 export interface CrossModelDetectionResult {
   available: boolean;
+  /**
+   * The binary path detection actually resolved (round-12 adversarial). Carried
+   * so the REVIEW spawns exactly what DETECTION approved — the reviewer used to
+   * re-resolve independently via `configFromEnv()`, which skipped §2.1 rung 2
+   * and could spawn a different binary than every other lane.
+   */
+  binaryPath?: string;
   /** Present when available; the framework id that will run the review. */
   framework?: IntelligenceFramework;
   /** Present when available; the concrete model the review resolves to. */
@@ -212,6 +238,23 @@ export interface CrossModelDetectInputs {
    * `${GEMINI_HOME || ~/.gemini}/oauth_creds.json`.
    */
   geminiOauthCredsPath?: string;
+  /**
+   * Path to the grok binary if detected, else null. Defaults to
+   * `detectGrokPath()` (grok-build framework integration spec §8).
+   */
+  grokPathDetected?: string | null;
+  /**
+   * `sessions.frameworkBinaryPaths['grok-build']` — §2.1 rung 2 (round-12
+   * adversarial). Boot registration and the session fence both honoured the
+   * persisted lever while the ONE LIVE lane did not, so a configured relocated
+   * install detected + spawned a different binary here than everywhere else:
+   * §2.1's split-roots failure arriving through the reviewer.
+   */
+  grokConfiguredPath?: string | undefined;
+  /**
+   * Path to the grok auth.json. Defaults to `${GROK_HOME || ~/.grok}/auth.json`.
+   */
+  grokAuthPath?: string;
   /**
    * Path to the claude binary if detected, else null. Defaults to
    * `detectClaudePath()` (REVIEWER-DOOR-REWIRING §1.2).
@@ -365,6 +408,625 @@ export function detectGeminiReviewer(
     crossFamily: true,
   };
 }
+
+/**
+ * Detect a grok reviewer (the THIRD cross-model family — grok-build spec §8).
+ * Returns `{ available: true, framework, model }` iff ALL of: grok binary
+ * detected, a USABLE subscription session in `$GROK_HOME/auth.json`, and
+ * no metered key (XAI_API_KEY / GROK_DEPLOYMENT_KEY) in the env — the same
+ * no-API-key rule the codex reviewer door enforces (Rule 1), applied to xAI.
+ * "auth.json exists" is deliberately NOT the auth check — an unusable session
+ * invites the CLI's own key-fallback ambiguity (review-1 finding 3), so the
+ * expiry is parsed.
+ *
+ * ROUND-22 — "usable", not "non-expired", and the difference is load-bearing.
+ * This previously required a NON-EXPIRED session and answered `grok-not-authed`
+ * on any stale one. The CLI renews itself lazily from a stored refresh token, on
+ * the next command that needs auth — so refusing here prevented the only call
+ * that would have renewed it, and the reviewer went dark after any idle gap
+ * until a human ran grok by hand. A lapsed session carrying a renewal credential
+ * is now admitted (the call renews it); one with nothing to renew from still
+ * detects `grok-not-authed`. The billing controls are untouched and independent:
+ * the metered-key refusal above and the login-policy check below both still run
+ * on every probe.
+ *
+ * Pure-ish: all external inputs are injectable. It NEVER throws.
+ */
+export function detectGrokReviewer(
+  inputs: CrossModelDetectInputs = {},
+): CrossModelDetectionResult {
+  const env = inputs.env ?? process.env;
+  // Round-11 (adversarial): this inlined a PARTIAL ladder too — an injected
+  // value or bare detection — so an operator's `GROK_BUILD_PATH` (§2.1 rung 1)
+  // could not open the reviewer door even with a working binary. The injected
+  // value stays authoritative for tests; otherwise use the ONE resolver.
+  const grokPath =
+    inputs.grokPathDetected !== undefined
+      ? inputs.grokPathDetected
+      : resolveGrokBinaryPath({ env, configuredPath: inputs.grokConfiguredPath });
+  const authPath = inputs.grokAuthPath ?? grokAuthPathFor(resolveGrokHome(env));
+  const now = inputs.now ?? new Date();
+
+  // 0. DARK-SHIP GATE (codex round-6): the grok reviewer requires the
+  // EXPLICIT enabledFrameworks opt-in — UNLIKE codex/gemini, whose doors
+  // open on installed+authed alone. The justified difference: those bill
+  // separately per account, while grok draws an INVISIBLE pool SHARED
+  // across every machine on the account — so an installed-but-not-opted-in
+  // machine (e.g. machine 2 before the burn-rollup precondition) must not
+  // silently consume reviewer budget. Absent list ⇒ NOT enabled (the dark
+  // default; deliberately the inverse of the claude door's absent⇒allowed).
+  if (!inputs.enabledFrameworks?.includes('grok-build')) {
+    return { available: false, reason: 'grok-not-enabled' };
+  }
+
+  // 1. Binary present?
+  // Round-17 (security): same dead gate as bootRegistration — the resolver is
+  // total, so this could never fire and a missing CLI presented as an
+  // available reviewer. Explicit `false` only.
+  if (!grokPath || frameworkBinaryExists(grokPath) === false) {
+    return { available: false, reason: 'grok-not-installed' };
+  }
+
+  // 2. No metered key in the environment (the no-API-key door rule).
+  for (const name of GROK_FORBIDDEN_ENV_VARS) {
+    if (env[name] !== undefined && env[name] !== '') {
+      return { available: false, reason: 'grok-auth-apikey-forbidden' };
+    }
+  }
+
+  // Version-drift canary (warn-only; async, cached per process; runs with
+  // a minimal clean env AFTER the metered-key refusal — security round-7).
+  checkGrokVersionDrift(grokPath);
+
+  // 3. A live subscription session — or a lapsed one that can renew itself?
+  //
+  // ROUND-22, SECOND BOUNDARY. The deadlock fix landed first in
+  // `assertGrokAuthAllowed` (the transport preflight) and would have been
+  // reported as done while this gate, which runs EARLIER, still closed the
+  // reviewer door on a bare expiry. Detection refuses → the transport is never
+  // reached → the CLI is never invoked → the session never renews. Fixing the
+  // later boundary alone leaves the outage exactly where it was, and the lane
+  // this whole feature exists for is the one that stays dark.
+  //
+  // Found by checking the SEVERITY claim ("the grok reviewer goes dark") against
+  // the code rather than assuming the one fix covered it. This is the round-20
+  // shape verbatim — a fact carried correctly across one boundary and dropped at
+  // the next — which is the argument for verifying a fix's reach, not just its
+  // correctness.
+  //
+  // Same narrowing, same reasoning as the transport gate: a lapsed session
+  // holding a renewal credential is ADMITTED (the reviewer call renews it), a
+  // lapsed session with nothing to renew from is refused as before. The billing
+  // controls are unchanged and independent — the metered-key refusal above and
+  // the login-policy check below both still run on every probe.
+  const { expiry, refreshable } = readSessionAuthState(authPath);
+  if (expiry === null || (expiry.getTime() <= now.getTime() && !refreshable)) {
+    return { available: false, reason: 'grok-not-authed' };
+  }
+
+  // 4. The vendor login policy (disable_api_key_auth) verifiably in force —
+  // checked on EVERY availability probe, never a remembered one-time
+  // verification (lessons review: the policy lives in vendor-owned mutable
+  // state; a CLI update or config rewrite can silently reset it). This is
+  // the PRIMARY billing control (spec §3.1.1); without it the reviewer door
+  // must not open.
+  const grokHome = inputs.grokAuthPath
+    ? path.dirname(inputs.grokAuthPath)
+    : resolveGrokHome(env);
+  if (!isLoginPolicyVerified(grokHome, env)) {
+    return { available: false, reason: 'grok-login-policy-unverified' };
+  }
+
+  return {
+    available: true,
+    binaryPath: grokPath,
+    framework: 'grok-build',
+    model: GROK_REVIEWER_MODEL,
+    crossFamily: true,
+  };
+}
+
+/**
+ * Per-day grok reviewer-family budget (codex round-3 finding 4: the
+ * reviewer is the FIRST production use, so the ceiling ships WITH it, not
+ * as a deferred precondition). Durable at $HOME/.instar/grok-reviewer-budget.json
+ * (machine-stable — see grokBudgetPath; the $GROK_HOME path is legacy, read once for migration)
+ * — a simple {date, runs, totalTokens} counter; when either ceiling is hit,
+ * further grok reviews DEGRADE for the rest of the UTC day (a degraded
+ * family is loud in the convergence report; the pool stays protected).
+ * Failure directions (round-6/7): MISSING ⇒ fresh day; CORRUPT ⇒
+ * quarantine aside + DURABLY-persisted half-cap-precharged fresh day
+ * (bounded self-heal — never a permanent brick, never a free full reset);
+ * quarantine-failure ⇒ fail CLOSED for the day; ceiling breach ⇒ degrade.
+ */
+export const GROK_REVIEWER_DAILY_MAX_RUNS = 24;
+export const GROK_REVIEWER_DAILY_MAX_TOKENS = 5_000_000;
+
+interface GrokReviewerBudget {
+  date: string;
+  runs: number;
+  totalTokens: number;
+  /** Durable per-run trail (security/lessons round-5: the drift signal
+   *  needs a durable consumer TODAY, not only at ledger-wiring time):
+   *  the last runs' usage + anomaly notes, capped. */
+  recentRuns?: Array<{
+    at: string;
+    inputTokens: number;
+    outputTokens: number;
+    anomalies: string[] | null;
+  }>;
+  /**
+   * In-flight admissions (round-17 scalability). A reservation is a PENDING
+   * claim on the daily ceiling, taken under the lock at admission and settled
+   * into `runs` when the run records. Admission compares
+   * `runs + live reservations` against the ceiling, which is what makes the
+   * ceiling hold under concurrency — before this, N parallel reviewers all
+   * read the same pre-run count and all admitted.
+   *
+   * Each carries an expiry so a crashed holder cannot leak its claim forever.
+   * The TTL is generous on purpose: sweeping too early over-admits, which is
+   * the failure this exists to prevent.
+   */
+  reservations?: Array<{ id: string; expiresAtMs: number }>;
+}
+
+/**
+ * The daily reviewer ledger's location — MACHINE-STABLE, deliberately NOT under
+ * `$GROK_HOME` (round-9 security).
+ *
+ * The spec's Multi-machine posture states the 24-run / 5M-token ceiling is
+ * per-MACHINE. Keying the ledger to `resolveGrokHome(env)` made it per-GROK_HOME
+ * instead, and Frontloaded Decision 9 explicitly blesses relocating that home —
+ * so N homes on one machine meant N full budgets against the ONE invisible pool
+ * the ceiling exists to protect. Anchoring to the OS user's instar root restores
+ * the stated invariant, and incidentally removes the separately-accepted
+ * "vendor home reset ⇒ ledger resets" residual, since a `grok logout`/reinstall
+ * no longer takes the ledger with it.
+ *
+ * Per-OS-user rather than per-agent ON PURPOSE: every agent on this machine
+ * draws on the same subscription pool, so they must share one ceiling.
+ */
+function grokBudgetPath(env: NodeJS.ProcessEnv = process.env): string {
+  const home = env['HOME'] ?? os.homedir();
+  return path.join(home, '.instar', 'grok-reviewer-budget.json');
+}
+
+/** The pre-round-9 location, read ONCE for migration (never written). */
+function legacyGrokBudgetPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveGrokHome(env), 'instar-grok-reviewer-budget.json');
+}
+
+/** Sentinel returned when the ledger EXISTS but cannot be trusted —
+ *  distinct from absent (decision-completeness round-6: missing-vs-corrupt
+ *  are different cases with different fail directions). */
+const CORRUPT_BUDGET: unique symbol = Symbol('corrupt-grok-budget');
+
+function readGrokBudget(now: Date): GrokReviewerBudget | typeof CORRUPT_BUDGET {
+  const today = now.toISOString().slice(0, 10);
+  const p = grokBudgetPath();
+  if (!fs.existsSync(p)) {
+    // One-way migration off the pre-round-9 `$GROK_HOME` location: adopt
+    // TODAY's legacy spend rather than handing out a free fresh ceiling on the
+    // upgrade. Read-only — the legacy file is never written again, and a
+    // stale-dated or unreadable one is simply ignored (fresh day).
+    const legacy = legacyGrokBudgetPath();
+    if (legacy !== p && fs.existsSync(legacy)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(legacy, 'utf8')) as GrokReviewerBudget;
+        if (
+          parsed.date === today
+          && Number.isFinite(parsed.runs)
+          && Number.isFinite(parsed.totalTokens)
+        ) {
+          return {
+            date: today,
+            runs: Math.max(0, parsed.runs),
+            totalTokens: Math.max(0, parsed.totalTokens),
+          };
+        }
+      } catch {
+        // @silent-fallback-ok — the LEGACY ledger is a one-way migration
+        // SOURCE, read only while the machine-stable path is absent. An
+        // unreadable one is treated exactly as an absent one (fresh day), which
+        // is the same decided failure direction §8 states for the primary
+        // ledger; the primary path's own corrupt/unwritable branches are the
+        // ones that warn, and they still do.
+      }
+    }
+    // MISSING ⇒ fresh day (blast radius bounded to one day's ceiling).
+    return { date: today, runs: 0, totalTokens: 0 };
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as GrokReviewerBudget;
+    if (typeof parsed.date === 'string' && Number.isFinite(parsed.runs) && Number.isFinite(parsed.totalTokens)) {
+      // Negative values must not disarm the cap (tampered/corrupt file).
+      parsed.runs = Math.max(0, parsed.runs);
+      parsed.totalTokens = Math.max(0, parsed.totalTokens);
+      // Shape-validate recentRuns (a corrupt non-array value must not throw
+      // inside the post-review record path — security round-6).
+      if (!Array.isArray(parsed.recentRuns)) delete parsed.recentRuns;
+      if (parsed.date === today) return parsed;
+      return { date: today, runs: 0, totalTokens: 0 }; // day rollover
+    }
+  } catch {
+    /* fall through to CORRUPT */
+  }
+  // PRESENT-but-unreadable/malformed ⇒ bounded SELF-HEAL, never a permanent
+  // brick (lessons round-6 / P22): quarantine the corrupt file aside
+  // (timestamped sibling — auditable, never silently destroyed) and start a
+  // CONSERVATIVE fresh day with half the run cap pre-charged, so a crash-
+  // corrupted ledger costs at most half a day's headroom instead of
+  // degrading the family forever until a human deletes a file.
+  try {
+    const quarantine = `${p}.corrupt-${Date.now()}`;
+    fs.renameSync(p, quarantine);
+    const precharged: GrokReviewerBudget = {
+      date: today,
+      runs: Math.floor(GROK_REVIEWER_DAILY_MAX_RUNS / 2),
+      totalTokens: Math.floor(GROK_REVIEWER_DAILY_MAX_TOKENS / 2),
+    };
+    // PERSIST the pre-charge (scalability round-7: an ephemeral in-memory
+    // charge held for exactly one admission — the next reader would see
+    // MISSING ⇒ zero-charged. Durable write also removes the concurrent-
+    // reader divergence: the rename-race loser now parses a valid ledger).
+    try {
+      const tmp = `${p}.tmp-${process.pid}`;
+      fs.writeFileSync(tmp, JSON.stringify(precharged), { mode: 0o600 });
+      fs.renameSync(tmp, p);
+    } catch {
+      /* best-effort: the in-memory pre-charge still governs this admission */
+    }
+    console.warn(
+      `[grok-reviewer-budget] ledger was corrupt — quarantined to ${quarantine}; ` +
+        `conservative fresh day persisted (half the caps pre-charged)`,
+    );
+    return precharged;
+  } catch {
+    // Quarantine itself failed (permissions?) — NOW fail closed for the
+    // day; a family we can neither budget nor heal must not run unbudgeted.
+    return CORRUPT_BUDGET;
+  }
+}
+
+/**
+ * Exclusive advisory lock around the ledger's read-modify-write (round-12
+ * external). The bounded last-writer-wins loss was accepted for three rounds
+ * on the reasoning that a 24-run/day dark lane cannot lose much — but the
+ * reviewer's operational framing is the right one: the risk is that someone
+ * later parallelizes convergence and silently weakens the only live spend
+ * brake, with nothing to notice. A lockfile removes the class instead of
+ * bounding it.
+ *
+ * Deliberately SMALL: `wx` create (atomic), a stale-holder reclaim so a crashed
+ * writer cannot wedge the brake forever, a short bounded wait, and — on failure
+ * to acquire — proceed anyway. A lock that could BLOCK recording would trade a
+ * bounded undercount for a possible total loss, which is the wrong direction
+ * for a spend brake.
+ */
+function withGrokBudgetLock<T>(fn: (lockHeld: boolean) => T): T {
+  if (process.env['GROK_LOCK_SENSITIVITY_PROBE'] === '1') return fn(false);
+  const lockPath = `${grokBudgetPath()}.lock`;
+  const STALE_MS = 30_000;
+  const deadline = Date.now() + 2_000;
+  let held = false;
+  while (Date.now() < deadline) {
+    try {
+      fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+      const fd = fs.openSync(lockPath, 'wx', 0o600);
+      fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }));
+      fs.closeSync(fd);
+      held = true;
+      break;
+    } catch {
+      // Held by someone else — reclaim it if the holder is provably stale.
+      try {
+        const st = fs.statSync(lockPath);
+        if (Date.now() - st.mtimeMs > STALE_MS) {
+          SafeFsExecutor.safeRmSync(lockPath, {
+            force: true,
+            operation: 'crossModelReviewer.withGrokBudgetLock.stale-reclaim',
+          });
+          continue;
+        }
+      } catch {
+        // @silent-fallback-ok — the lock vanished between the failed create and
+        // this stat, i.e. the holder just released. Loop and retry.
+      }
+      // Busy-wait briefly; this path is a per-review write, never hot.
+      const until = Date.now() + 25;
+      while (Date.now() < until) { /* spin */ }
+    }
+  }
+  try {
+    // ROUND-19: `fn` now RECEIVES whether the lock was actually acquired.
+    //
+    // Round-18 tried to make admission fail closed with a `lockHeld` flag the
+    // callback set as its first statement — but this `try` runs `fn()`
+    // UNCONDITIONALLY, so that flag was always true and the refusal branch was
+    // dead code. The fix was written from a correct measurement and never
+    // re-measured against itself; three independent reviewers reproduced the
+    // original over-admission on the "fixed" version (12 concurrent admissions
+    // with a foreign lock held: 12 admitted, only 8 reservations persisted —
+    // 4 slots lost).
+    //
+    // A flag set INSIDE the callback can never observe whether the callback
+    // should have run. The acquisition fact has to cross the boundary.
+    return fn(held);
+  } finally {
+    if (held) {
+      try {
+        SafeFsExecutor.safeRmSync(lockPath, {
+          force: true,
+          operation: 'crossModelReviewer.withGrokBudgetLock.release',
+        });
+      } catch {
+        // @silent-fallback-ok — a leftover lockfile is reclaimed as stale by
+        // the next writer; failing to unlink must never mask the write result.
+      }
+    }
+  }
+}
+
+/**
+ * Test-only seam for the budget ledger's record path (round-12): the
+ * concurrency + stale-lock behaviour must be exercised directly, not only
+ * through a full review run.
+ */
+/**
+ * Test seam for the round-17 admission reservation.
+ *
+ * Exposed because the defect it pins — over-admission under concurrency — is
+ * only observable across REAL concurrent processes; an in-process loop runs
+ * sequentially and would pass against the broken code.
+ */
+export function reserveGrokBudgetSlotForTest(): 'ok' | 'corrupt' | 'exhausted' | 'lock-unavailable' {
+  return reserveGrokBudgetSlot(new Date()).verdict;
+}
+
+/** Test seam for the round-18 release path (see releaseGrokReservation). */
+export function reserveAndReleaseGrokSlotForTest(): 'released' | 'not-reserved' {
+  const r = reserveGrokBudgetSlot(new Date());
+  if (r.verdict !== 'ok') return 'not-reserved';
+  releaseGrokReservation(r.id);
+  return 'released';
+}
+
+export function recordGrokBudgetForTest(
+  inputTokens: number,
+  outputTokens: number,
+  anomalies: string[] | null,
+): void {
+  recordGrokBudget(
+    { date: new Date().toISOString().slice(0, 10), runs: 0, totalTokens: 0 },
+    inputTokens,
+    outputTokens,
+    anomalies,
+  );
+}
+
+/**
+ * Admit a run and RESERVE its slot atomically — round-17 (scalability).
+ *
+ * The round-12 lock was justified as protection against "someone later
+ * parallelizes convergence and silently weakens the only live spend brake",
+ * but it only ever guarded the WRITE. Admission stayed an unlocked
+ * check-then-act with no reservation, so N parallel reviewers all read
+ * `runs = 0`, all passed the ceiling, and all spent. The lock serialised
+ * COUNTING while leaving OVER-ADMISSION wide open: the counters were correct
+ * after the fact and the ceiling was not enforced.
+ *
+ * Reserve-then-settle closes it. Admission takes the lock, re-reads, checks
+ * the ceiling, and writes `runs + 1` before releasing — so a concurrent
+ * admission sees the reservation. `recordGrokBudget` then SETTLES the true
+ * token count against that reservation rather than incrementing again.
+ *
+ * A crashed holder would otherwise leak its reservation forever, so each
+ * carries an expiry: reservations older than the TTL are swept on the next
+ * admission. The TTL is deliberately generous — a swept-too-early reservation
+ * over-admits, which is the failure this exists to prevent.
+ *
+ * Returns null when admitted (with the reservation held), or the refusal
+ * reason. Fails toward REFUSAL on a corrupt ledger, matching §8's stated
+ * direction for a spend-bearing family against an invisible pool.
+ */
+const GROK_RESERVATION_TTL_MS = 15 * 60 * 1000;
+
+let reservationCounter = 0;
+
+/**
+ * Release a reservation WITHOUT settling it into `runs` — round-18.
+ *
+ * Round-17 wrote a reservation at admission and settled it in
+ * `recordGrokBudget`. Every exit BETWEEN those two points leaked the slot for
+ * the full TTL, and the worst of them is deliberate: the capacity-shed branch
+ * skips recording precisely so transient HOST load cannot exhaust the grok
+ * family's day — while the reservation it had already written did exactly that.
+ * Measured by executing the path (its first execution ever): 24 sheds with zero
+ * settles closed the ceiling at `runs: 0`.
+ */
+function releaseGrokReservation(id: string): void {
+  try {
+    withGrokBudgetLock(() => {
+      const fresh = readGrokBudget(new Date());
+      if (fresh === CORRUPT_BUDGET) return;
+      writeGrokBudgetUnlocked({
+        ...fresh,
+        reservations: (fresh.reservations ?? []).filter((r) => r.id !== id),
+      });
+    });
+  } catch (err) {
+    // NOT silent, and the ratchet is right to have pushed back on the first
+    // draft, which swallowed this. A failed release leaks a ceiling slot until
+    // the TTL sweeps it — that is precisely the condition whose accumulation
+    // closed the family's day at `0 runs / 0 tokens`, so it is worth knowing
+    // about. Still non-throwing: the caller is already on an error path and
+    // must not be given a second failure to handle.
+    console.warn(
+      `[grok-reviewer] reservation ${id} could not be released (it will expire on TTL): `
+        + `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function reserveGrokBudgetSlot(
+  now: Date,
+): { verdict: 'ok'; id: string } | { verdict: 'corrupt' | 'exhausted' | 'lock-unavailable' } {
+  // A holder rather than a bare `let`: the assignments happen inside the lock
+  // CALLBACK, which TypeScript cannot prove runs, so a plain `let` narrows to
+  // its initializer and the later comparison reads as dead code.
+  const out: { verdict: 'corrupt' | 'exhausted' | 'lock-unavailable' | 'ok'; id: string } = {
+    verdict: 'corrupt',
+    id: '',
+  };
+  withGrokBudgetLock((lockHeld) => {
+    // ROUND-19: admission fails CLOSED on an unacquired lock, and this now
+    // actually fires — the round-18 version branched on a flag set inside this
+    // callback, which the callback cannot use to learn whether it should have
+    // run. Recording deliberately keeps the fail-OPEN variant (never lose a
+    // paid run); only ADMISSION refuses, because over-admitting spends money
+    // while refusing merely delays a review.
+    if (!lockHeld) {
+      out.verdict = 'lock-unavailable';
+      return;
+    }
+    const fresh = readGrokBudget(now);
+    if (fresh === CORRUPT_BUDGET) {
+      out.verdict = 'corrupt';
+      return;
+    }
+    const nowMs = now.getTime();
+    const live = (Array.isArray(fresh.reservations) ? fresh.reservations : []).filter(
+      (r) => Number.isFinite(r.expiresAtMs) && r.expiresAtMs > nowMs,
+    );
+    if (
+      fresh.runs + live.length >= GROK_REVIEWER_DAILY_MAX_RUNS
+      || fresh.totalTokens >= GROK_REVIEWER_DAILY_MAX_TOKENS
+    ) {
+      out.verdict = 'exhausted';
+      // Persist the sweep even on refusal so expired reservations cannot
+      // wedge the ceiling shut.
+      writeGrokBudgetUnlocked({ ...fresh, reservations: live });
+      return;
+    }
+    // Round-18: `${pid}-${ms}` collides for two reservations in the same
+    // millisecond in one process, and the settle needs to drop ITS OWN row.
+    out.id = `${process.pid}-${nowMs}-${reservationCounter++}`;
+    writeGrokBudgetUnlocked({
+      ...fresh,
+      reservations: [...live, { id: out.id, expiresAtMs: nowMs + GROK_RESERVATION_TTL_MS }],
+    });
+    out.verdict = 'ok';
+  });
+  // Round-18: the lock fails OPEN, which is right for RECORDING (never lose a
+  // paid run) and inverted for ADMISSION (never over-admit). Measured: with a
+  // foreign lock held, admission waited the full 2s deadline and then wrote its
+  // reservation anyway — the exact check-then-act the reservation exists to
+  // remove, reappearing precisely when contention exists. Admission now fails
+  // CLOSED: an unacquired lock refuses rather than admits.
+  return out.verdict === 'ok' ? { verdict: 'ok', id: out.id } : { verdict: out.verdict };
+}
+
+/** Write the ledger. Caller MUST already hold the lock. */
+function writeGrokBudgetUnlocked(budget: GrokReviewerBudget): void {
+  const target = grokBudgetPath();
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const tmp = `${target}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(budget), { mode: 0o600 });
+  fs.renameSync(tmp, target);
+}
+
+function recordGrokBudget(
+  _staleBudget: GrokReviewerBudget,
+  inputTokens: number,
+  outputTokens: number,
+  anomalies: string[] | null,
+  settleReservationId?: string,
+): void {
+  // CONCURRENCY-SAFE record (scalability/security round-6): RE-READ the
+  // ledger at record time and merge THIS run into the FRESH state — the
+  // pre-run read is minutes stale by now and last-writer-wins would
+  // undercount the only spend brake this framework has. Write via
+  // tmp+rename so a torn write can never yield an unparseable file (which
+  // would fail the NEXT run closed). All mutation inside the best-effort
+  // try: a broken ledger never discards a completed, paid-for review.
+  try {
+    withGrokBudgetLock(() => {
+    const fresh = readGrokBudget(new Date());
+    const base: GrokReviewerBudget =
+      fresh === CORRUPT_BUDGET
+        ? { date: new Date().toISOString().slice(0, 10), runs: 0, totalTokens: 0 }
+        : fresh;
+    const recent = Array.isArray(base.recentRuns) ? base.recentRuns : [];
+    // Round-17: SETTLE against this run's reservation rather than
+    // incrementing blind — the slot was already counted at admission, so a
+    // second increment here would double-count every run.
+    const nowMs = Date.now();
+    const heldReservations = (Array.isArray(base.reservations) ? base.reservations : []).filter(
+      (r) => Number.isFinite(r.expiresAtMs) && r.expiresAtMs > nowMs,
+    );
+    // Round-18: this was `slice(1)` — positional, so a settle dropped the FIRST
+    // live reservation rather than its own. Correct only while nothing is
+    // TTL-swept: once a run outlives the TTL its own row is gone, so its settle
+    // drops a LIVE FOREIGN reservation while adding +1, silently granting one
+    // extra admission per occurrence. Reachable because the reviewer timeout is
+    // operator-set and unbounded above.
+    const settled = settleReservationId
+      ? heldReservations.filter((r) => r.id !== settleReservationId)
+      : heldReservations.slice(1);
+    const merged: GrokReviewerBudget = {
+      date: base.date,
+      // Always +1: a reservation is a PENDING claim, not a settled run, and
+      // admission checks `runs + live reservations` against the ceiling. So
+      // settling converts one pending claim into one settled run — never
+      // double-counts, and never loses a completed paid-for run whose
+      // reservation the TTL swept.
+      runs: base.runs + 1,
+      totalTokens: base.totalTokens + inputTokens + outputTokens,
+      reservations: settled,
+      recentRuns: [
+        ...recent.slice(-19),
+        { at: new Date().toISOString(), inputTokens, outputTokens, anomalies },
+      ],
+    };
+    const target = grokBudgetPath();
+    // The machine-stable root may not exist yet on a fresh install.
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const tmp = `${target}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(merged), { mode: 0o600 });
+    fs.renameSync(tmp, target);
+    });
+  } catch (e) {
+    // @silent-fallback-ok — NOT silent: this branch warns loudly on stderr with
+    // the failure reason and states that the run was not recorded. The write is
+    // deliberately best-effort so an unwritable ledger never blocks a review;
+    // the ratchet's detector keys on DegradationReporter, which is not wired
+    // into this module's pure-function surface.
+    // Best-effort: an unwritable ledger never blocks the review itself —
+    // but it must not be SILENT either (a permanently-unwritable ledger
+    // would otherwise degrade the family to unbudgeted forever, unseen).
+    console.warn(
+      `[grok-reviewer-budget] ledger write failed (${e instanceof Error ? e.message : String(e)}) — this run was NOT durably recorded`,
+    );
+  }
+}
+
+/** Exposed for tests: is the grok reviewer family within its daily budget?
+ *  A corrupt ledger reads as NOT available (fail closed). */
+export function grokReviewerBudgetAvailable(now: Date = new Date()): boolean {
+  const b = readGrokBudget(now);
+  if (b === CORRUPT_BUDGET) return false;
+  return b.runs < GROK_REVIEWER_DAILY_MAX_RUNS && b.totalTokens < GROK_REVIEWER_DAILY_MAX_TOKENS;
+}
+
+/**
+ * The concrete model the grok reviewer pins. PROBED (grok 1.0.4,
+ * 2026-08-14): `-m grok-4.6` is accepted by the CLI and serves the SAME
+ * model as the default — the envelope's modelUsage key is
+ * `grok-4.6-build`, identical to every run in the §0.2 rate-card evidence
+ * set and returning stopReason end_turn — so the billing/envelope evidence
+ * covers exactly this invocation. A concrete id, never a tier word.
+ */
+export const GROK_REVIEWER_MODEL = 'grok-4.6';
 
 // ── Claude clean-door reviewer (REVIEWER-DOOR-REWIRING §1) ───────────────
 
@@ -966,6 +1628,259 @@ const claudeReviewer: SupportedReviewerFramework = {
 };
 
 /**
+ * The grok reviewer entry (the THIRD cross-model family — grok-build spec §8:
+ * xAI's model line is genuinely independent of GPT and Gemini). Detection
+ * delegates to `detectGrokReviewer`. `review` deliberately routes through the
+ * provider-registry adapter's OneShotCompletion — NOT
+ * `buildIntelligenceProvider` — because grok-build is structurally excluded
+ * from internal background routing (spec §6.1: unobservable weekly pool);
+ * a review is an explicit, bounded, per-call use, which is exactly the lane
+ * the adapter exists for. The adapter's transport enforces the billing gate
+ * (no metered key, live session) and the confinement floor (tools denied,
+ * web search off, prompt via file) on every call.
+ */
+const grokReviewer: SupportedReviewerFramework = {
+  id: 'grok-build',
+  crossFamily: true,
+  detect: (inputs) => detectGrokReviewer(inputs),
+  review: async (args) => {
+    const detection = args.detectionOverride ?? detectGrokReviewer();
+    const model = detection.model ?? GROK_REVIEWER_MODEL;
+    const tag = `cross-model:grok-build:${model}`;
+
+    // Fail-loud model canary: NEVER silently review with a tier-word model.
+    if (!isConcreteReviewerModel(model)) {
+      return {
+        status: 'degraded',
+        framework: 'grok-build',
+        model,
+        reason: 'model-resolution-canary',
+        flag: `cross-model-review: grok-build:${model} (degraded: model-resolution-canary)`,
+        crossFamily: true,
+      };
+    }
+
+    if (!detection.available) {
+      return {
+        status: 'degraded',
+        framework: 'grok-build',
+        model,
+        reason: 'provider-unavailable',
+        flag: `cross-model-review: grok-build:${model} (degraded: provider-unavailable)`,
+        crossFamily: true,
+      };
+    }
+
+    // PER-DAY FAMILY BUDGET (ships WITH the first production use — codex
+    // round-3 f.4): repeated convergence rounds must not accumulate
+    // unbounded invisible burn on a pool no one can read. Ceiling hit ⇒
+    // the family degrades loudly for the rest of the day.
+    const budgetNow = new Date();
+    // Round-17 (scalability): admission RESERVES its slot under the lock, so
+    // the ceiling holds under concurrency. The read below is retained only for
+    // the reporting numbers in the refusal flag — the authoritative decision is
+    // the reservation's verdict.
+    const reservation = reserveGrokBudgetSlot(budgetNow);
+    const reservationId = reservation.verdict === 'ok' ? reservation.id : null;
+    // ROUND-19: STOP PATCHING EXITS. Round-18 released on two of the three
+    // paths between admission and settle; the third (the outer catch) still
+    // leaked, and 24 systematic throws reproduced the exact round-18
+    // signature — exhausted at `0 runs / 0 tokens`. A failure that throws
+    // before the spawn throws the SAME way every call, so 24-in-a-row is the
+    // expected shape, not a worst case.
+    //
+    // One `finally` covers every exit that exists and every exit anyone adds
+    // later, which per-return releases structurally cannot. `settled` is set
+    // only where a run is genuinely counted.
+    let settled = false;
+    const budget = readGrokBudget(budgetNow);
+    if (reservation.verdict === 'corrupt' || budget === CORRUPT_BUDGET) {
+      // Round-18: this early return held a reservation on the corrupt path.
+      if (reservationId) releaseGrokReservation(reservationId);
+      // Fail CLOSED: present-but-unreadable ledger degrades the family
+      // loudly (an unbudgetable spend-bearing family must not run
+      // unbudgeted against an invisible pool).
+      return {
+        status: 'degraded',
+        framework: 'grok-build',
+        model,
+        reason: 'provider-unavailable',
+        flag: `cross-model-review: grok-build:${model} (degraded: budget-ledger-corrupt)`,
+        crossFamily: true,
+      };
+    }
+    if (reservation.verdict === 'exhausted') {
+      return {
+        status: 'degraded',
+        framework: 'grok-build',
+        model,
+        reason: 'daily-budget-exhausted',
+        flag: `cross-model-review: grok-build:${model} (degraded: daily-budget-exhausted ${budget.runs} runs / ${budget.totalTokens} tokens)`,
+        crossFamily: true,
+      };
+    }
+
+    let raw: string;
+    try {
+      const { createGrokBuildAdapter } = await import('../providers/adapters/grok-build/index.js');
+      const { CapabilityFlag: Cap } = await import('../providers/capabilities.js');
+      // Rung 2 must reach the LIVE lane too (round-12): pass the configured
+      // path through so the reviewer spawns the SAME binary every other lane
+      // resolves.
+      const adapter = createGrokBuildAdapter({
+        model,
+        // The DETECTED path is the one detection already resolved through the
+        // §2.1 ladder (including rung 2 when the caller supplied it), so the
+        // reviewer spawns exactly the binary detection approved — never a
+        // second, independently-resolved one.
+        ...(detection.binaryPath ? { grokPath: detection.binaryPath } : {}),
+      });
+      const oneShot = adapter.primitive(Cap.OneShotCompletion) as {
+        evaluate: (
+          prompt: string,
+          options?: { model?: string; timeoutMs?: number },
+        ) => Promise<{ text: string }>;
+      };
+      let result: { text: string };
+      try {
+        result = await oneShot.evaluate(args.promptText, {
+          model,
+          ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
+        });
+      } catch (evalErr) {
+        // EVERY run counts (adversarial/lessons round-6 HIGH): a throw after
+        // a token-burning spawn (timeout, post-spawn quota/auth) must trip
+        // the run-count ceiling even with no envelope to count tokens from —
+        // otherwise a systematic failure loop does unbounded unledgered work.
+        // EXCEPT provably-pre-spawn capacity sheds (scalability round-8):
+        // a shed spawned no child and burned zero tokens; counting it would
+        // let transient HOST load exhaust the grok family's day.
+        // ROUND-19: the exemption is now a PROVABLY-PRE-SPAWN predicate, not a
+        // single boolean. Round-8 exempted capacity sheds because "a shed
+        // spawned no child and burned zero tokens; counting it would let
+        // transient HOST load exhaust the grok family's day". Every auth
+        // refusal has the identical property — no child, no tokens — and had
+        // no exemption. Measured: 25 refusals from a session inside its expiry
+        // margin produced `24 runs / 0 tokens` and closed the family for the
+        // day having spent nothing. That band is the last ~2 minutes of every
+        // session (the call gate uses a 60s margin while detection uses zero),
+        // and it widens with any operator-set timeout, so this is a routine
+        // state rather than an edge case.
+        const preSpawnRefusal =
+          (evalErr as { capacityUnavailable?: unknown }).capacityUnavailable === true
+          || (evalErr instanceof Error
+            && [
+              'GrokApiKeyForbiddenError',
+              // Round-21: refused at the same chokepoint, before any spawn, so
+              // it belongs in the same class. Omitting it would settle a run
+              // that never happened against the daily ceiling.
+              'GrokConfigCredentialForbiddenError',
+              'GrokLoginPolicyUnverifiedError',
+              'GrokSessionExpiredError',
+            ].includes(evalErr.constructor.name));
+        if (!preSpawnRefusal) {
+          recordGrokBudget(budget, 0, 0, ['run-threw: no envelope recovered'], reservationId ?? undefined);
+          settled = true;
+        } else if (reservationId) {
+          // Pre-spawn refusals release rather than settle, for the same reason
+          // capacity sheds do: nothing was spent, so nothing should be counted.
+          // Round-18: the shed path deliberately does NOT record — and the
+          // round-17 reservation it already wrote made that intent backwards,
+          // because the slot stayed held for the full 15-minute TTL. Measured
+          // by executing this path for the first time: 24 sheds with zero
+          // settles closed the ceiling at `runs: 0`, and the resulting refusal
+          // read "daily-budget-exhausted 0 runs / 0 tokens" — self-
+          // contradicting, and exactly the wrong-diagnosis class round 17
+          // fixed elsewhere. Sheds arrive in bursts (they ARE spawn-cap
+          // saturation), so this silenced the family on transient host load,
+          // which is the outcome the no-record rule exists to prevent.
+          releaseGrokReservation(reservationId);
+        }
+        throw evalErr;
+      }
+      // Record BEFORE the stopReason gate (round-6 HIGH): the cancelled-
+      // with-tokens-consumed mode (19/19 on large inputs) is the precise
+      // failure lane the budget exists for — a degraded run that burned
+      // tokens MUST count against the ceiling, and its anomalies MUST reach
+      // the ledger's durable trail.
+      const usage = (result as { usage?: { inputTokens?: number; outputTokens?: number } | null }).usage;
+      const providerMeta = (result as {
+        providerSpecific?: Record<string, { stopReason?: string | null; usageAnomalies?: string[] | null }>;
+      }).providerSpecific?.['grok-build'];
+      recordGrokBudget(
+        budget,
+        usage?.inputTokens ?? 0,
+        usage?.outputTokens ?? 0,
+        providerMeta?.usageAnomalies ?? null,
+        reservationId ?? undefined,
+      );
+      settled = true;
+      // A truncated review must NEVER pass as a complete external opinion
+      // (adversarial round-3 f.4). FAIL CLOSED on absence too (lessons
+      // round-4 / P20): unknown-completeness is not proof of completeness.
+      if (providerMeta?.stopReason !== 'end_turn') {
+        return {
+          status: 'degraded',
+          framework: 'grok-build',
+          model,
+          reason: 'provider-unavailable',
+          flag: `cross-model-review: grok-build:${model} (degraded: stopReason=${classifyStopReason(providerMeta?.stopReason)})`,
+          crossFamily: true,
+        };
+      }
+      raw = result.text;
+    } catch (err) {
+      const reason = classifyReviewFailure(err);
+      return {
+        status: 'degraded',
+        framework: 'grok-build',
+        model,
+        reason,
+        flag: `cross-model-review: grok-build:${model} (degraded: ${reason})`,
+        crossFamily: true,
+      };
+    } finally {
+      // ROUND-19: the structural release. Any exit between admission and a
+      // genuine settle returns its ceiling slot — including exits added by
+      // someone who never reads this file. Round-18 released per-return and
+      // missed the outer catch, which is the failure mode per-return handling
+      // has by construction.
+      //
+      // `settled` is true ONLY where a run was actually counted, so this can
+      // never double-count: release filters by id and never touches `runs`.
+      if (reservationId && !settled) releaseGrokReservation(reservationId);
+    }
+
+    const parsed = parseReviewerReply(raw, tag);
+    // Round-10 (external): route the version-drift canary's signal into the
+    // ARTIFACT a human reads, not only the server log. Prepended so it cannot
+    // be lost at the end of a long reply; SIGNAL-ONLY — the verdict, findings
+    // and flag are untouched, so a drifted CLI never silently invalidates or
+    // upgrades a review, it just tells the reader the evidence base moved.
+    // Round-11 (security): the note embeds `grok --version` STDOUT, and the
+    // binary is env/config-relocatable — so it is not vendor-trusted input.
+    // Unclamped and unstripped, a multi-line version string would land as
+    // top-level content in the artifact the converging agent folds into the
+    // spec, bypassing §8's own "reviewer output is quoted untrusted data" rule
+    // (the `> ` prefix applied to the first line only). First line, clamped,
+    // control chars and backticks stripped, every line prefixed.
+    const safeNote = sanitizeDriftAdvisory(getGrokVersionDriftNote());
+    const finding = safeNote
+      ? { ...parsed, body: `> ⚠ VERSION DRIFT ADVISORY: ${safeNote}\n\n${parsed.body}` }
+      : parsed;
+    return {
+      status: 'ok',
+      framework: 'grok-build',
+      model,
+      verdict: parsed.verdict,
+      findings: [finding],
+      flag: `cross-model-review: grok-build:${model}`,
+      crossFamily: true,
+    };
+  },
+};
+
+/**
  * The supported-reviewer registry. codex first — the order IS the preference
  * order. gemini second (Piece 3). Further frameworks land here as later
  * registry entries. NOTE: the registry only ever carries first-party OAuth
@@ -974,6 +1889,10 @@ const claudeReviewer: SupportedReviewerFramework = {
 export const SUPPORTED_REVIEWER_FRAMEWORKS: SupportedReviewerFramework[] = [
   codexReviewer,
   geminiReviewer,
+  // The grok family (grok-build spec §8) — third cross-model family. In the
+  // registry unconditionally (classification), ACTIVE only when detection
+  // passes (binary + live subscription session + no metered key).
+  grokReviewer,
   // The Anthropic clean-door family (REVIEWER-DOOR-REWIRING §1). ALWAYS in the
   // registry (so `isCrossFamilyReviewerFramework` can classify its id), but the
   // ACTIVE set filters it by the developmentAgent config gate
@@ -1044,7 +1963,16 @@ export function isCrossFamilyReviewerFramework(id: string | undefined): boolean 
  * `isCrossFamilyReviewerFramework` (§5.4), so this addition can NEVER let a
  * claude-only activation satisfy the externals-mandatory baseline.
  */
-export const TRUSTED_REVIEWER_FRAMEWORKS: readonly string[] = ['codex-cli', 'gemini-cli', 'claude-code'];
+export const TRUSTED_REVIEWER_FRAMEWORKS: readonly string[] = [
+  'codex-cli',
+  'gemini-cli',
+  'claude-code',
+  // grok-build (grok-build spec §8): xAI's own first-party CLI, subscription
+  // OAuth only (the adapter's billing gate refuses metered keys), reviews run
+  // with tools denied + web search off + prompt via file. Same first-party
+  // posture as the other three; no third-party aggregator involved.
+  'grok-build',
+];
 
 /** Is `id` on the trusted first-party reviewer allowlist? */
 export function isTrustedReviewerFramework(id: string): boolean {
@@ -1106,8 +2034,37 @@ export function detectAllCrossModelReviewers(
  * rate-limit classifier does.
  */
 export function classifyReviewFailure(err: unknown): string {
+  // ROUND-19: branch on the error TYPE before falling back to its message.
+  //
+  // The grok adapter already types weekly-pool exhaustion as a terminal
+  // QuotaError, and this function then re-derived a class by string-matching
+  // the message — throwing the type away. Measured: the two wordings grok's own
+  // regex was written for ("weekly limit reached for your plan", "you are out
+  // of usage for this week") both round-tripped to `error`, indistinguishable
+  // from a crash or a missing binary, while "rate limit exceeded" correctly
+  // gave `rate-limited` (the control proving this function CAN say something
+  // else). So the one stall class the spec calls unique to grok — the invisible
+  // weekly wall — reached the operator as a generic failure, and nothing marked
+  // the family terminal, so the next review retried straight back into it.
+  const name = err instanceof Error ? err.constructor.name : '';
+  if (name === 'GrokQuotaError' || name === 'QuotaError') return 'weekly-pool-exhausted';
+  if (name === 'GrokRateLimitError' || name === 'RateLimitError') return 'rate-limited';
+
   const msg = err instanceof Error ? err.message : String(err);
   const lower = msg.toLowerCase();
+  if (/weekly.?limit|out of usage/.test(lower)) {
+    // Message-shaped fallback, deliberately NARROW: only the two wordings grok
+    // actually emits for a weekly-pool wall. The first draft also matched
+    // `usage limit`, which reclassified a pre-existing documented behaviour
+    // ("usage limit reached" → rate-limited) that an existing test pins. A
+    // rate limit clears on its own and a weekly wall does not, so widening the
+    // wall's net to swallow an ambiguous phrase trades one misdiagnosis for
+    // another — the exact shape this fix exists to remove.
+    return 'weekly-pool-exhausted';
+  }
+  // `usage limit` stays HERE, where it was: it is ambiguous, the pre-existing
+  // behaviour classified it as rate-limited, and a documented behaviour should
+  // not change as a side effect of adding a narrower class beside it.
   if (/circuit breaker|rate.?limit|usage limit|quota|429|too many requests/.test(lower)) {
     return 'rate-limited';
   }
@@ -1126,6 +2083,38 @@ export function classifyReviewFailure(err: unknown): string {
  * captured as one raw "unstructured external review — read manually" finding
  * (never dropped, never thrown, never zero).
  */
+/**
+ * Clamp the version-drift advisory before it is embedded in a reviewer FINDING
+ * (round-11 security). The note carries `grok --version` stdout, and the binary
+ * is env/config-relocatable, so it is NOT vendor-trusted input: unclamped and
+ * unstripped, a multi-line version string lands as top-level content in the
+ * artifact the converging agent folds into a spec (the `> ` quote prefix
+ * applies to the first line only), bypassing §8's own "reviewer output is
+ * quoted untrusted data" rule. First line only, control characters and
+ * backticks neutralized, length-bounded.
+ */
+/**
+ * Clamp the vendor `stopReason` before it lands in a flag string that is written
+ * into the convergence report and the iteration log (round-12 security). It is
+ * raw envelope JSON from the same untrusted source as the drift advisory, six
+ * lines away from the clamp that one already gets. Closed set in, anything else
+ * out as `unrecognized` — a tag is a machine-readable field, not a place for
+ * arbitrary vendor text.
+ */
+export function classifyStopReason(raw: unknown): string {
+  if (raw === undefined || raw === null) return 'missing';
+  if (raw === 'end_turn' || raw === 'cancelled') return raw;
+  return 'unrecognized';
+}
+
+export function sanitizeDriftAdvisory(note: string | null): string | null {
+  if (!note) return null;
+  const firstLine = note.split(/\r?\n/)[0] ?? '';
+  const cleaned = firstLine.replace(/[\u0000-\u001f\u007f`]/g, ' ').trim();
+  if (!cleaned) return null;
+  return cleaned.length > 200 ? `${cleaned.slice(0, 197)}...` : cleaned;
+}
+
 export function parseReviewerReply(raw: string, reviewerTag: string): ReviewFinding {
   const text = (raw ?? '').trim();
   if (!text) {
@@ -1460,7 +2449,15 @@ export async function runCrossModelReview(args: {
   /** Agent config for the config-gated claude clean-door family (§1.5). */
   config?: ReviewerConfig;
 }): Promise<ReviewerResult> {
-  const detection = detectCrossModelReviewer(args.detectInputs, args.config);
+  // Derive detect inputs from config when the caller omitted them
+  // (round-8: every future caller inherits the enabledFrameworks plumb —
+  // an omitted-inputs call must not silently dark the config-gated family).
+  const effectiveDetectInputs: CrossModelDetectInputs | undefined =
+    args.detectInputs ??
+    (Array.isArray((args.config as { enabledFrameworks?: string[] } | undefined)?.enabledFrameworks)
+      ? { enabledFrameworks: (args.config as { enabledFrameworks: string[] }).enabledFrameworks }
+      : undefined);
+  const detection = detectCrossModelReviewer(effectiveDetectInputs, args.config);
   if (!detection.available) {
     const flag = buildCrossModelFlag('unavailable', detection.reason);
     return {

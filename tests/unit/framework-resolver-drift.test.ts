@@ -27,12 +27,20 @@ import path from 'node:path';
 import type { IntelligenceFramework } from '../../src/core/intelligenceProviderFactory.js';
 import { resolveFrameworkTranscriptPath } from '../../src/core/FrameworkSessionStore.js';
 import { findGeminiSessionFileSync } from '../../src/providers/adapters/gemini-cli/observability/sessionPaths.js';
+import { SUPPORTED_FRAMEWORKS } from '../../src/core/TopicFrameworksStore.js';
 import { findRolloutFileSync } from '../../src/providers/adapters/openai-codex/observability/sessionPaths.js';
 
 // The authoritative union of frameworks. If a new member is added to
 // IntelligenceFramework, add it here too — and the per-framework fixture below
 // will FORCE you to give it a real resolver (the canary's whole point).
-const ALL_FRAMEWORKS: ReadonlyArray<IntelligenceFramework> = ['claude-code', 'codex-cli', 'gemini-cli'];
+// Round-17 (integration): this array was annotated `ReadonlyArray<...>`, which
+// PERMITS A SUBSET — so it covered 3 of 5 members and stayed green, while the
+// two self-guards meant to catch that were both inert (one was a tautology
+// over an array derived from this very list; the other was a `never` check in
+// a file `tsc` never sees, since tsconfig excludes tests/). The canary that
+// should have caught the grok gap could not fail. Deriving it from the
+// canonical list makes omission impossible rather than discouraged.
+const ALL_FRAMEWORKS: ReadonlyArray<IntelligenceFramework> = SUPPORTED_FRAMEWORKS;
 
 interface Fixture {
   /** A synthetic <home> dir laid out for this framework. */
@@ -43,6 +51,18 @@ interface Fixture {
   expectedPath: string;
   /** Project dir (used by the claude cwd-encoded path). */
   projectDir: string;
+  /**
+   * Round-17: whether this framework HAS a known transcript layout.
+   *
+   * grok-build's native transcript location is a DECLARED unknown in the spec
+   * (carried by CMT-1319), and pi-cli's was never mapped. For those, asserting
+   * "resolves to the correct path" would be asserting a fact nobody knows — so
+   * the canary asserts the property that IS knowable and is the one that
+   * matters for safety: the resolver must never hand back some other
+   * framework's file. When the layout is mapped, flip this to 'supported' and
+   * give the fixture a real expectedPath.
+   */
+  transcriptResolution: 'supported' | 'declared-unknown';
   cleanup: () => void;
 }
 
@@ -57,7 +77,7 @@ function mkFixture(framework: IntelligenceFramework): Fixture {
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `${sessionId}.jsonl`);
     fs.writeFileSync(file, '{"type":"user"}\n');
-    return { home, sessionId, expectedPath: file, projectDir, cleanup: () => fs.rmSync(home, { recursive: true, force: true }) };
+    return { home, sessionId, expectedPath: file, projectDir, transcriptResolution: 'supported', cleanup: () => fs.rmSync(home, { recursive: true, force: true }) };
   }
 
   if (framework === 'codex-cli') {
@@ -65,7 +85,7 @@ function mkFixture(framework: IntelligenceFramework): Fixture {
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `rollout-2026-06-02T05-32-00-${sessionId}.jsonl`);
     fs.writeFileSync(file, '{"type":"session_meta"}\n');
-    return { home, sessionId, expectedPath: file, projectDir, cleanup: () => fs.rmSync(home, { recursive: true, force: true }) };
+    return { home, sessionId, expectedPath: file, projectDir, transcriptResolution: 'supported', cleanup: () => fs.rmSync(home, { recursive: true, force: true }) };
   }
 
   if (framework === 'gemini-cli') {
@@ -76,7 +96,28 @@ function mkFixture(framework: IntelligenceFramework): Fixture {
     const short8 = sessionId.replace(/-/g, '').slice(0, 8);
     const file = path.join(dir, `session-2026-06-02T05-32-${short8}.json`);
     fs.writeFileSync(file, JSON.stringify({ sessionId, projectHash, messages: [] }));
-    return { home, sessionId, expectedPath: file, projectDir, cleanup: () => fs.rmSync(home, { recursive: true, force: true }) };
+    return { home, sessionId, expectedPath: file, projectDir, transcriptResolution: 'supported', cleanup: () => fs.rmSync(home, { recursive: true, force: true }) };
+  }
+
+  if (framework === 'pi-cli' || framework === 'grok-build') {
+    // No transcript layout is mapped for these yet (grok's is a declared
+    // unknown in the spec). The fixture is a home with a DECOY file laid out
+    // in another framework's shape, so the assertion below proves the
+    // resolver refuses rather than cross-matching.
+    const decoyDir = path.join(home, '.codex', 'sessions', '2026', '06', '02');
+    fs.mkdirSync(decoyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(decoyDir, `rollout-2026-06-02T05-32-00-${sessionId}.jsonl`),
+      '{"type":"session_meta"}\n',
+    );
+    return {
+      home,
+      sessionId,
+      expectedPath: '',
+      projectDir,
+      transcriptResolution: 'declared-unknown',
+      cleanup: () => fs.rmSync(home, { recursive: true, force: true }),
+    };
   }
 
   // If we reach here, a new framework was added without a fixture — fail LOUD.
@@ -111,6 +152,14 @@ describe('DRIFT CANARY — every IntelligenceFramework resolves to its CORRECT t
         projectDir: fx.projectDir,
         homeDir: fx.home,
       });
+      if (fx.transcriptResolution === 'declared-unknown') {
+        // The safety property: an unmapped framework must resolve to NOTHING,
+        // never to a decoy laid out in a sibling framework's shape. A resolver
+        // that cross-matched would hand a session another framework's
+        // transcript, which is worse than returning nothing.
+        expect(resolved).toBe('');
+        return;
+      }
       expect(resolved).toBe(fx.expectedPath);
     },
   );

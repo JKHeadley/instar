@@ -45,6 +45,11 @@ describe('EnrollmentWizard', () => {
     expect(EnrollmentWizard.defaultKind('openai')).toBe('device-code');
     expect(EnrollmentWizard.defaultKind('anthropic')).toBe('url-code-paste');
     expect(EnrollmentWizard.defaultKind('github-copilot')).toBe('url-code-paste');
+    // Round-12 (grok-build spec §3.3): xAI's login is `grok login --device-auth`
+    // — a flow whose whole point is the CODE. Falling into the url-code-paste
+    // branch handed the operator's phone a verification URL with no code at all,
+    // which is unusable; only the login COMMAND had been wired.
+    expect(EnrollmentWizard.defaultKind('xai')).toBe('device-code');
   });
 
   it('start attaches NO flow notice on any enrollment (the two-codes disclaimer is retired)', async () => {
@@ -460,6 +465,7 @@ describe('EnrollmentWizard', () => {
     it('remoteKind prefers device-code for OpenAI; keeps url-code-paste for Claude', () => {
       expect(EnrollmentWizard.remoteKind('openai')).toBe('device-code');
       expect(EnrollmentWizard.remoteKind('anthropic')).toBe('url-code-paste');
+      expect(EnrollmentWizard.remoteKind('xai')).toBe('device-code');
     });
 
     it('a remote OpenAI start uses device-code (single-code Phase-C default)', async () => {

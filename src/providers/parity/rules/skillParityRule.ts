@@ -598,6 +598,11 @@ const FRAMEWORK_RENDERERS: Record<IntelligenceFramework, FrameworkRenderer> = {
   // rendering (pi's own skill format via `--skill`) is a Phase E refinement;
   // this entry keeps the compiler-forced Record total without overclaiming.
   'pi-cli': codexCliRenderer,
+  // grok-build reads the shared `.agents/skills` layout like the other
+  // non-Claude frameworks (grok's bundled-skill format is a refinement on
+  // the same Phase E track as pi's). Keeps the compiler-forced Record total
+  // without overclaiming a grok-native rendering.
+  'grok-build': codexCliRenderer,
 };
 
 // ─── The exported ParityRule ───────────────────────────────────────────

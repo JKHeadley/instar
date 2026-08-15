@@ -382,7 +382,32 @@ export class PipeSessionSpawner {
     // into the spawned process. Spec 12 Rule 1a (Codex) and the legacy
     // ANTHROPIC_API_KEY hygiene both covered in one block.
     const shellCmd = [
-      'unset ANTHROPIC_API_KEY OPENAI_API_KEY DATABASE_URL;',
+      // ROUND-20: XAI_API_KEY and GROK_DEPLOYMENT_KEY added. This is the SIXTH
+      // spawn site and it was invisible to the round-19 membership test on TWO
+      // independent grounds: that test keys on the literal `'new-session'`
+      // argv token (this site builds a template string) AND on the `'-e',
+      // 'VAR='` scrub form (this site uses shell `unset`). The test's own
+      // comment names the failure class it was built to fix — "a site in
+      // ANOTHER file was structurally invisible to both sides" — while its
+      // detector reintroduced the same blindness one syntax over.
+      //
+      // `framework` here may legitimately be `grok-build`, and `execSync`
+      // below passes no `env:` option, so the parent environment flows
+      // through: without this line a metered grok key reaches the child.
+      'unset ANTHROPIC_API_KEY OPENAI_API_KEY XAI_API_KEY GROK_DEPLOYMENT_KEY DATABASE_URL;',
+      // ROUND-20: the launch builder's OWN env overrides, which this site
+      // computed and then discarded. `buildHeadlessLaunch` returns
+      // `envOverrides` carrying the composed billing invariant for the chosen
+      // framework (for grok: the metered-key blanks plus
+      // GROK_DISABLE_API_KEY_AUTH=1, whose source comment calls it "the
+      // composed billing invariant must hold on every lane that can spawn a
+      // grok process"). This file referenced `envOverrides` zero times, so on
+      // this lane it held nowhere. The hardcoded `unset` above is a floor, not
+      // a substitute: it cannot know what a future framework needs, which is
+      // precisely why the builder computes it.
+      ...Object.entries(launchSpec.envOverrides ?? {}).map(
+        ([k, v]) => `export ${k}=${JSON.stringify(String(v))};`,
+      ),
       `${quotedArgv}${allowedToolsFlag}`,
       `2>>"${path.join(this.config.stateDir, 'logs', 'pipe-sessions.log')}"`,
       `; rm -f "${promptFile}"`,

@@ -20,11 +20,11 @@ Your job: load the canonical Instar lessons catalog, then check this spec agains
 4. **The project's CLAUDE.md** (if reviewing an instar-source spec, this is `CLAUDE.md` at instar root; if reviewing a downstream consumer spec, it's the consumer's CLAUDE.md). For the "Standards" + "Anti-Patterns" + "Key Patterns from Dawn" sections.
 5. **Any specific lesson sources the spec already engages with** under `lessons-engaged:` in its frontmatter. Verify the engagement is real, not just citation.
 
-## Your perspective — three structural questions
+## Your perspective — four structural questions
 
 ### Q1. Contradictions (CRITICAL severity)
 
-For each Part 1 principle (P1-P10) and Part 2 architectural lesson (L1-L17) in the index, ask:
+For each Part 1 principle (P1-P23) and Part 2 architectural lesson (L1-L17) in the index, ask:
 - Does the spec CONTRADICT this principle/lesson?
 - Specifically: does the spec propose something the lesson was written to prevent?
 
@@ -68,6 +68,37 @@ For each Part 3 behavioral lesson (B1-B39), ask:
 
 Behavioral lessons are usually about HOW the agent acts; specs proposing new agent capabilities must respect them.
 
+### Q4. FOUNDATION / SUBSYSTEM AUDIT — one layer BELOW the spec boundary (HIGH severity)
+
+Audit the design the spec TESTS, EXTENDS, or BUILDS ON, not only the spec's own
+surface: does that foundation violate a known standard or repeat a known
+mistake? **The audit MUST reach one layer below the spec boundary**, which
+means you DO read the source files for the subsystems the spec names.
+
+A spec can be internally clean while faithfully extending a flawed foundation —
+a test-harness spec that correctly proves a permission gate which itself holds
+brittle blocking authority in violation of Signal-vs-Authority; an extension
+spec built on a subsystem with an unaddressed gap. Taking the underlying
+subsystem "as given" is exactly how a standards violation survives review: the
+spec passes, the foundation's flaw is never weighed.
+
+When the foundation is flawed, the finding is: "this spec is sound but the
+subsystem it depends on violates standard X / repeats mistake Y — surface it
+before building on or around it."
+
+Two shapes worth hunting specifically, both recurring:
+- **A type predicate that outruns its runtime test** — a widened union or
+  allowlist type whose runtime filter still admits the old set, so the new value
+  can never be produced. It is a silent no-op wearing a green type.
+- **A claim whose carrier does not exist** — a spec bullet asserting a property
+  ("X is never preferred over Y", "this migration delivers Z") that no code
+  implements and no test covers.
+
+(Catches the "Phase 2" anti-pattern, the spec-converge-pre-auth-circular failure
+mode, and the foundation-not-audited gap — the Slack-permission-gate
+brittle-enum-as-authority that a harness convergence cleared because it audited
+only the harness, 2026-06-09.)
+
 ## Output format
 
 Produce a structured finding list. For each finding:
@@ -95,7 +126,7 @@ Convergence is blocked if any critical OR high findings are unresolved.
 ## What this reviewer is NOT
 
 - Not the security/scalability/adversarial/integration reviewers — they cover their own perspectives. You're specifically focused on "what documented Instar lessons does this spec contradict or fail to engage with?"
-- Not a code reviewer — you don't read source files unless the spec references them.
+- Not a general code reviewer — but Q4 REQUIRES reading the source of the subsystems the spec names. "The spec references it" is the boundary, and a foundation audit that never opened a file did not happen.
 - Not an architectural reviewer — you're checking against historical lessons, not first-principles design.
 
 If the spec is structurally fine but doesn't engage with applicable lessons, your finding is "missing engagement" not "missing design rigor."

@@ -143,7 +143,20 @@ export function selectAccount(
 export function poolHeadroom(
   accounts: SubscriptionAccount[],
   opts: SelectionOptions = {},
-): { placeable: boolean; weeklyPercent: number | null; fiveHourPercent: number | null; degraded: boolean } {
+): {
+  placeable: boolean;
+  weeklyPercent: number | null;
+  fiveHourPercent: number | null;
+  degraded: boolean;
+  /**
+   * The framework of the account the percentages describe (round-13 lessons).
+   * Carried so a consumer can tell "this account HAS a usage surface and the
+   * reading is merely absent" from "this framework has no usage surface at
+   * all" — the two cases warrant different shed behaviour, and conflating them
+   * changed job scheduling for agents that never opted into grok.
+   */
+  bestFramework?: SubscriptionFramework;
+} {
   const soft = opts.softThresholdPct ?? DEFAULT_SOFT_THRESHOLD;
   const eligible = accounts.filter(
     (a) =>
@@ -163,7 +176,7 @@ export function poolHeadroom(
   const weeklyPercent = clamp(best.lastQuota?.sevenDay?.utilizationPct);
   const fiveHourPercent = clamp(best.lastQuota?.fiveHour?.utilizationPct);
   const degraded = weeklyPercent === null && fiveHourPercent === null;
-  return { placeable: true, weeklyPercent, fiveHourPercent, degraded };
+  return { placeable: true, weeklyPercent, fiveHourPercent, degraded, bestFramework: best.framework };
 }
 
 /** Is this account at/over the soft pressure threshold on its binding window? */
@@ -242,8 +255,20 @@ export class QuotaAwareScheduler {
     this.cfg = cfg;
   }
 
-  /** Pick the best account for a NEW session (proactive placement). */
-  placeNewSession(nowMs: number, framework?: SubscriptionFramework): SubscriptionAccount | null {
+  /**
+   * Pick the best account for a NEW session (proactive placement).
+   *
+   * `framework` is REQUIRED (grok-build spec §6.1, round-9 lessons). An account
+   * whose framework cannot report quota at all — grok-build, where no usage
+   * command exists — has `lastQuota === null` FOREVER, so `bindingUtilization`
+   * scores it as maximum headroom and it would win every cross-framework draw
+   * permanently. Every live selection path already passes a framework; making
+   * the parameter required closes the one entry point where a caller could
+   * omit it, so an unobservable-quota account only ever competes against other
+   * accounts of the SAME framework rather than out-ranking a Claude account
+   * that has a real reading.
+   */
+  placeNewSession(nowMs: number, framework: SubscriptionFramework): SubscriptionAccount | null {
     return selectAccount(this.cfg.listAccounts(), {
       softThresholdPct: this.cfg.softThresholdPct,
       nowMs,

@@ -47,10 +47,23 @@ describe('renderIdentity', () => {
 
     const result = renderIdentity({ projectDir: tmp });
 
-    expect(result.shadowsWritten.length).toBe(Object.keys(FRAMEWORK_SHADOW_FILES).length);
+    // Round-17: the invariant is one shadow per DISTINCT FILENAME, not per
+    // framework. Several frameworks share a shadow file — codex, grok and pi
+    // all read the `.agents` convention's AGENTS.md — so a per-framework count
+    // would demand the renderer write the same path repeatedly, which is
+    // exactly the clobbering bug this replaced (last writer won, and codex
+    // agents silently lost their banner and continuation appendix).
+    const distinctFilenames = new Set(Object.values(FRAMEWORK_SHADOW_FILES));
+    expect(result.shadowsWritten.length).toBe(distinctFilenames.size);
+    // Still the load-bearing half: EVERY mapped framework's file must exist.
     for (const filename of Object.values(FRAMEWORK_SHADOW_FILES)) {
       expect(fs.existsSync(path.join(tmp, filename))).toBe(true);
     }
+    // And no path may be written twice — a duplicate here IS the clobber.
+    expect(new Set(result.shadowsWritten).size).toBe(result.shadowsWritten.length);
+    // CONTROL: the grouping must not have quietly dropped a framework. Every
+    // requested framework is either written (via its file) or skipped.
+    expect(result.skipped).toEqual([]);
   });
 
   it('prepends an auto-generation banner to every shadow', () => {
@@ -305,5 +318,112 @@ describe('ensureFrameworkIdentityFile', () => {
       const out = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf-8');
       expect(out).not.toContain('Telegram Relay');
     });
+  });
+});
+
+describe('round-18: the PRODUCTION spawn path, not just renderIdentity directly', () => {
+  it('ensureFrameworkIdentityFile preserves a sibling framework\'s appendix', () => {
+    // Round-17 grouped renderIdentity by filename and tested it THERE. But
+    // production reaches it through ensureFrameworkIdentityFile, which passed
+    // `frameworks: [framework]` — and grouping a one-element list is a no-op.
+    // So the codex clobber the round-17 fix was written to stop still happened
+    // on every spawn. A fix verified on a path production does not take is the
+    // same shape as a live proof whose input is narrower than production.
+    fs.mkdirSync(path.join(tmp, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, '.instar', 'AGENT.md'), '# Ident\n\nBody.\n');
+
+    // Establish the codex-owned shared file first.
+    renderIdentity({ projectDir: tmp, frameworks: ['codex-cli'] });
+    const before = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf-8');
+    expect(before).toContain('Framework: codex-cli');
+
+    // Now a grok spawn on the same agent, through the PRODUCTION entry point.
+    // appendTelegramRelayBlock: true mirrors production — server.ts passes it
+    // unconditionally on every Telegram spawn, and it is what makes the
+    // existing-file guard fall through to the re-render (the clobber path).
+    ensureFrameworkIdentityFile(tmp, 'grok-build', {
+      stateDir: path.join(tmp, '.instar'),
+      appendTelegramRelayBlock: true,
+    });
+
+    const after = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf-8');
+    // Both frameworks must be named — the file serves both.
+    expect(after).toContain('codex-cli');
+    expect(after).toContain('grok-build');
+  });
+
+  it('a hookless framework is never told a SessionStart hook covers it', () => {
+    fs.mkdirSync(path.join(tmp, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, '.instar', 'AGENT.md'), '# Ident\n\nBody.\n');
+
+    renderIdentity({
+      projectDir: tmp,
+      frameworks: ['grok-build'],
+      appendTelegramRelayBlock: true,
+    });
+    const grokShadow = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf-8');
+    // The predicate enumerated codex+gemini, so the frameworks added later
+    // rendered the Claude branch and were told they have a hook they lack.
+    expect(grokShadow).not.toContain('the SessionStart hook reinforces this');
+
+    // CONTROL: claude-code, which genuinely HAS the hook, still gets that line.
+    // Without this the assertion above would be satisfied by removing the
+    // branch entirely.
+    renderIdentity({
+      projectDir: tmp,
+      frameworks: ['claude-code'],
+      appendTelegramRelayBlock: true,
+    });
+    expect(fs.readFileSync(path.join(tmp, 'CLAUDE.md'), 'utf-8'))
+      .toContain('the SessionStart hook reinforces this');
+  });
+});
+
+describe('round-19: shadow membership is the AGENT\'s frameworks, not the global map', () => {
+  it('a codex-only agent is never told about frameworks it did not enable', () => {
+    // Round-18 grouped by filename (correct) but drew members from the global
+    // map (wrong), so a codex agent that never opted into anything had
+    // grok-build and pi-cli named in its own identity file — a dark-ship break
+    // against "an agent that does not opt in is byte-identically unaffected".
+    fs.mkdirSync(path.join(tmp, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, '.instar', 'AGENT.md'), '# Ident\n\nBody.\n');
+
+    ensureFrameworkIdentityFile(tmp, 'codex-cli', {
+      stateDir: path.join(tmp, '.instar'),
+      appendTelegramRelayBlock: true,
+    });
+    const shadow = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf-8');
+    expect(shadow).toContain('codex-cli');
+    expect(shadow).not.toContain('grok-build');
+    expect(shadow).not.toContain('pi-cli');
+  });
+
+  it('CONTROL: an agent that DID enable both gets one file naming both', () => {
+    // Without this the assertion above would be satisfied by reverting the
+    // grouping entirely, which is the clobbering bug round 18 fixed.
+    fs.mkdirSync(path.join(tmp, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, '.instar', 'AGENT.md'), '# Ident\n\nBody.\n');
+
+    ensureFrameworkIdentityFile(tmp, 'codex-cli', {
+      stateDir: path.join(tmp, '.instar'),
+      appendTelegramRelayBlock: true,
+      enabledFrameworks: ['codex-cli', 'grok-build'],
+    });
+    const shadow = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf-8');
+    expect(shadow).toContain('codex-cli');
+    expect(shadow).toContain('grok-build');
+  });
+
+  it('a hookless framework is addressed by ITS OWN name, never another\'s', () => {
+    // The predicate was widened in round 18 because "an enumeration is what
+    // went stale"; the enumeration inside the branch was left, defaulting to
+    // "Codex CLI" — so grok agents were addressed as Codex.
+    fs.mkdirSync(path.join(tmp, '.instar'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, '.instar', 'AGENT.md'), '# Ident\n\nBody.\n');
+
+    renderIdentity({ projectDir: tmp, frameworks: ['grok-build'], appendTelegramRelayBlock: true });
+    const shadow = fs.readFileSync(path.join(tmp, 'AGENTS.md'), 'utf-8');
+    expect(shadow).toContain('Grok Build specifically');
+    expect(shadow).not.toContain('Codex CLI specifically');
   });
 });

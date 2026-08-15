@@ -50,6 +50,7 @@ import type { ProfilePatchInput } from './topicProfileValidation.js';
 import { THINKING_MODES, MODEL_TIERS } from './topicProfileValidation.js';
 import { KNOWN_MODEL_IDS } from './ModelTierEscalation.js';
 import { SUPPORTED_FRAMEWORKS } from './TopicFrameworksStore.js';
+import { FRAMEWORK_ALIASES as CANONICAL_FRAMEWORK_ALIASES } from './frameworkFacts.js';
 import { buildBoundedContext, buildStructuredSha256Identity } from './JudgmentProvenanceLog.js';
 import { DP_PROFILE_INTENT_CLASSIFY } from '../data/provenanceCoverage.js';
 
@@ -122,13 +123,24 @@ const DEFAULT_MIN_CONFIDENCE = 0.85;
 const DEFAULT_MAX_CONTEXT_TURNS = 6;
 const DEFAULT_MAX_CONTEXT_CHARS = 400;
 
-/** Friendly → canonical framework aliases the operator types conversationally. */
-const FRAMEWORK_ALIASES: Record<string, string> = {
-  codex: 'codex-cli',
-  claude: 'claude-code',
-  gemini: 'gemini-cli',
-  pi: 'pi-cli',
-};
+/**
+ * Friendly → canonical framework aliases the operator types conversationally.
+ *
+ * DERIVED from the canonical alias table (frameworkFacts.FRAMEWORK_ALIASES), which
+ * holds both the short and full spelling for every framework; the short forms are
+ * the entries whose key differs from their canonical value.
+ *
+ * Round-22: this used to be a hand-written second copy of that table. It was
+ * COMPLETE — round-10 had caught it missing `grok`, which cost the conversational
+ * lane the Topic Profile standard calls PRIMARY ("use grok here" failed while the
+ * literal `grok-build` worked). Correct-today is exactly the state a duplicate
+ * table is in right before it drifts, and this branch found six sites of that
+ * shape in one round, so the copy goes rather than the copy getting another
+ * reminder. Nothing about the accepted spellings changes.
+ */
+const FRAMEWORK_ALIASES: Record<string, string> = Object.fromEntries(
+  Object.entries(CANONICAL_FRAMEWORK_ALIASES).filter(([alias, canonical]) => alias !== canonical),
+);
 
 function passThrough(
   source: ProfileIntentSource,

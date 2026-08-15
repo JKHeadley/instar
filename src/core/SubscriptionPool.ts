@@ -35,27 +35,36 @@
  * entirely unaffected.
  */
 
+import {
+  SUBSCRIPTION_PROVIDERS,
+  SUBSCRIPTION_FRAMEWORKS,
+  SUBSCRIPTION_STATUSES,
+  type SubscriptionProviderValue,
+  type SubscriptionFrameworkValue,
+  type SubscriptionStatusValue,
+  type SubscriptionQuotaSourceValue,
+} from './subscriptionEnums.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ComponentHealth } from './types.js';
 import type { SubscriptionAccountMetaReplicationEmitter } from './SubscriptionAccountMetaReplicatedStore.js';
 import type { IdentityOracle } from './CredentialLocationLedger.js';
+import { frameworkHasNoUsageSurface } from './frameworkFacts.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
 /** Provider behind a subscription (the account's billing identity). */
-export type SubscriptionProvider =
-  | 'anthropic'
-  | 'openai'
-  | 'github-copilot'
-  | 'google';
+/**
+ * Provider behind a subscription (the account's billing identity).
+ * DERIVED from the shared const (round-12): a hand-written union is covariant
+ * with the runtime list — it catches a const value missing from the type, never
+ * a type value missing from the const, which is the direction that actually
+ * failed in rounds 9, 10 and 11.
+ */
+export type SubscriptionProvider = SubscriptionProviderValue;
 
 /** Framework client that drives the account. */
-export type SubscriptionFramework =
-  | 'claude-code'
-  | 'codex-cli'
-  | 'gemini-cli'
-  | 'pi-cli';
+export type SubscriptionFramework = SubscriptionFrameworkValue;
 
 /**
  * Account lifecycle status.
@@ -65,12 +74,7 @@ export type SubscriptionFramework =
  *   needs-reauth  — login genuinely failed (refresh token revoked / pw change)
  *   disabled      — operator-disabled; scheduler never selects it
  */
-export type SubscriptionAccountStatus =
-  | 'active'
-  | 'warming'
-  | 'rate-limited'
-  | 'needs-reauth'
-  | 'disabled';
+export type SubscriptionAccountStatus = SubscriptionStatusValue;
 
 /**
  * Live per-account quota reading (decision C: hybrid read). Populated by the
@@ -92,7 +96,7 @@ export interface AccountQuotaSnapshot {
     monthlyLimit: number;
   };
   /** Which read path produced this snapshot (decision C provenance). */
-  source?: 'claude-code-usage-screen' | 'oauth-usage-endpoint-fallback' | 'codex-rollout';
+  source?: SubscriptionQuotaSourceValue;
   measuredAt?: string;
 }
 
@@ -266,25 +270,9 @@ export interface UpdateAccountInput {
 }
 
 const ID_RE = /^[a-z0-9-]+$/;
-const PROVIDERS: readonly SubscriptionProvider[] = [
-  'anthropic',
-  'openai',
-  'github-copilot',
-  'google',
-];
-const FRAMEWORKS: readonly SubscriptionFramework[] = [
-  'claude-code',
-  'codex-cli',
-  'gemini-cli',
-  'pi-cli',
-];
-const STATUSES: readonly SubscriptionAccountStatus[] = [
-  'active',
-  'warming',
-  'rate-limited',
-  'needs-reauth',
-  'disabled',
-];
+const PROVIDERS: readonly SubscriptionProvider[] = SUBSCRIPTION_PROVIDERS;
+const FRAMEWORKS: readonly SubscriptionFramework[] = SUBSCRIPTION_FRAMEWORKS;
+const STATUSES: readonly SubscriptionAccountStatus[] = SUBSCRIPTION_STATUSES;
 const VERIFIED_EMAIL_COMMIT = Symbol('verified-email-commit');
 const VERIFIED_ACCOUNT_ADD = Symbol('verified-account-add');
 
@@ -533,6 +521,24 @@ export class SubscriptionPool {
       acct.status = patch.status;
     }
     if (patch.lastQuota !== undefined) {
+      // ROUND-21: a quota snapshot for a framework that exposes NO usage
+      // surface is not a reading — there is nothing that could have produced
+      // it. This mattered because "grok quota is always unknown, never
+      // healthy" was a stated guarantee, and it rested entirely on
+      // `lastQuota` staying null: the downstream headroom calculation reads
+      // whatever is here and emits a numeric percentage with `degraded:false`,
+      // skipping the unknown branch entirely. Since this field was accepted
+      // verbatim from an ordinary authenticated write, one PATCH was enough
+      // to make an unmeasurable account report full headroom.
+      //
+      // Refused at the store, not at the route: the route is one caller, and
+      // the guarantee has to hold for all of them.
+      if (frameworkHasNoUsageSurface(acct.framework)) {
+        throw new ValidationError(
+          `lastQuota cannot be set for framework '${acct.framework}': it exposes no usage `
+            + 'surface, so any quota reading for it is fabricated. Quota stays unknown.',
+        );
+      }
       acct.lastQuota = patch.lastQuota;
     }
     if (patch.lastUsedAt !== undefined) {

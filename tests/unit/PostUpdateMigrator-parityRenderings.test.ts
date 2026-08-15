@@ -177,6 +177,92 @@ describe('PostUpdateMigrator — parity-renderings backfill', () => {
     expect(result.errors.some(e => e.includes('disk full'))).toBe(true);
   });
 
+  // ── round-9 (lessons): the enabled-framework filter and the one-shot marker ──
+
+  it('grok-build in enabledFrameworks REACHES the renderer (the predicate used to outrun the filter)', async () => {
+    fs.writeFileSync(configPath, JSON.stringify({ enabledFrameworks: ['claude-code', 'grok-build'] }));
+    const calls: string[] = [];
+    restoreRules = isolateRules([
+      {
+        ...makeStubRule({ primitive: 'skill', instances: ['foo'] }),
+        frameworks: ['claude-code', 'grok-build'],
+        async remediate(_root: string, i: string, f: string) { calls.push(`${i}/${f}`); },
+      } as unknown as ParityRule,
+    ]);
+
+    await newMigrator(projectDir).migrateAsync();
+
+    // Before the fix the runtime filter dropped 'grok-build' silently, so this
+    // was ['foo/claude-code'] while the TYPE said grok-build was possible.
+    expect(calls.sort()).toEqual(['foo/claude-code', 'foo/grok-build']);
+  });
+
+  it('a LATER framework opt-in backfills (the one-shot marker used to lock it out forever)', async () => {
+    fs.writeFileSync(configPath, JSON.stringify({ enabledFrameworks: ['claude-code'] }));
+    const calls: string[] = [];
+    const rule = {
+      ...makeStubRule({ primitive: 'skill', instances: ['foo'] }),
+      frameworks: ['claude-code', 'grok-build'],
+      async remediate(_root: string, i: string, f: string) { calls.push(`${i}/${f}`); },
+    } as unknown as ParityRule;
+    restoreRules = isolateRules([rule]);
+
+    await newMigrator(projectDir).migrateAsync();
+    expect(calls).toEqual(['foo/claude-code']);
+
+    // The operator opts into grok afterwards — the P3 shape this guards:
+    // an existing agent that adopts a framework LATER must still get its
+    // renderings, not be excluded by a marker written before it opted in.
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+    cfg['enabledFrameworks'] = ['claude-code', 'grok-build'];
+    fs.writeFileSync(configPath, JSON.stringify(cfg));
+
+    await newMigrator(projectDir).migrateAsync();
+    expect(calls.sort()).toEqual(['foo/claude-code', 'foo/claude-code', 'foo/grok-build']);
+  });
+
+  it('an agent carrying the LEGACY marker does NOT re-run when its set is legacy-covered', async () => {
+    // Round-10 (lessons): the set-aware marker introduced a dark-ship BREAK —
+    // the recorded legacy string does not `startsWith` the bracketed form, so
+    // EVERY deployed agent (opted in or not) would have re-run a full backfill
+    // pass once, contradicting "an agent that does not opt in is byte-
+    // identically unaffected". The fix for a dark-ship gap must not be one.
+    fs.writeFileSync(configPath, JSON.stringify({
+      enabledFrameworks: ['claude-code', 'codex-cli'],
+      _instar_migrations: ['parity-renderings-backfill-v1-2026-07-01T00:00:00.000Z'],
+    }));
+    const calls: string[] = [];
+    restoreRules = isolateRules([
+      makeStubRule({
+        primitive: 'skill',
+        instances: ['foo'],
+        remediateImpl: async (i, f) => { calls.push(`${i}/${f}`); },
+      }),
+    ]);
+
+    const result = await newMigrator(projectDir).migrateAsync();
+    expect(calls).toEqual([]);
+    expect(result.skipped.some(s => s.includes('legacy marker covers this set'))).toBe(true);
+  });
+
+  it('an agent carrying the LEGACY marker DOES backfill once it opts into a newer framework', async () => {
+    fs.writeFileSync(configPath, JSON.stringify({
+      enabledFrameworks: ['claude-code', 'grok-build'],
+      _instar_migrations: ['parity-renderings-backfill-v1-2026-07-01T00:00:00.000Z'],
+    }));
+    const calls: string[] = [];
+    restoreRules = isolateRules([
+      {
+        ...makeStubRule({ primitive: 'skill', instances: ['foo'] }),
+        frameworks: ['claude-code', 'grok-build'],
+        async remediate(_root: string, i: string, f: string) { calls.push(`${i}/${f}`); },
+      } as unknown as ParityRule,
+    ]);
+
+    await newMigrator(projectDir).migrateAsync();
+    expect(calls.sort()).toEqual(['foo/claude-code', 'foo/grok-build']);
+  });
+
   it('is idempotent — second run is a no-op via the migration marker', async () => {
     const calls1: string[] = [];
     restoreRules = isolateRules([

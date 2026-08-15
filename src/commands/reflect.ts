@@ -17,6 +17,7 @@ import { JobReflector } from '../core/JobReflector.js';
 import { PatternAnalyzer } from '../core/PatternAnalyzer.js';
 import { ReflectionConsolidator } from '../core/ReflectionConsolidator.js';
 import type { IntelligenceProvider } from '../core/types.js';
+import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 import type { DetectedPattern, PatternReport } from '../core/PatternAnalyzer.js';
 import { createRequire } from 'node:module';
 
@@ -355,15 +356,45 @@ interface ReflectRunOptions {
  * binary path when no framework override is set, preserving v0.x
  * behavior.
  */
-function resolveIntelligence(claudePath?: string): IntelligenceProvider | null {
+/**
+ * ROUND-22, seventh and eighth impersonation sites — found by sweeping for the
+ * SHAPE after fixing it in `instar route`, rather than treating that one as the
+ * last of its kind.
+ *
+ * The shape: `framework = frameworkFromEnv() ?? 'claude-code'` paired with
+ * `binaryPath: config.sessions.claudePath`. On a grok-primary agent that field
+ * holds the GROK binary (Config sets it from the configured framework, a
+ * documented back-compat carry), so `instar reflect` labelled the provider
+ * claude-code and pointed it at grok's binary — Claude's argv against grok's CLI,
+ * with none of the grok lane's controls. The unconditional fallback below did the
+ * same thing with no framework check at all.
+ *
+ * Fixed the way invariant 4 requires: the binary comes from
+ * `resolveFrameworkBinaryPath`, the ONE shared fence, which refuses to hand any
+ * framework's label another framework's path. The framework itself falls back to
+ * the agent's OWN configured value before the historical default, so a
+ * grok-primary agent reflects on grok instead of silently on Claude.
+ */
+function resolveIntelligence(
+  claudePath?: string,
+  sessions?: { framework?: IntelligenceFramework; frameworkBinaryPaths?: Partial<Record<IntelligenceFramework, string>> },
+): IntelligenceProvider | null {
   // Lazy require — keeps the unit-test surface focused.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { buildIntelligenceProvider, frameworkFromEnv } = require('../core/intelligenceProviderFactory.js');
   const { createCodexExecJsonConfigResolver } = require('../core/CodexCliIntelligenceProvider.js');
-  const framework = frameworkFromEnv() ?? 'claude-code';
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { resolveFrameworkBinaryPath } = require('../core/frameworkSessionLaunch.js');
+  const framework = frameworkFromEnv() ?? sessions?.framework ?? 'claude-code';
+  const fencedBinary = resolveFrameworkBinaryPath({
+    framework,
+    frameworkBinaryPaths: sessions?.frameworkBinaryPaths,
+    claudePath,
+    configuredFramework: sessions?.framework,
+  });
   const built = buildIntelligenceProvider({
     framework,
-    binaryPath: framework === 'claude-code' ? claudePath : undefined,
+    binaryPath: fencedBinary ?? undefined,
     // codex exec-json kill-switch — `instar reflect` runs in the project dir,
     // so the resolver's default cwd-relative config path is correct here.
     resolveExecJson: createCodexExecJsonConfigResolver(),
@@ -382,7 +413,15 @@ function resolveIntelligence(claudePath?: string): IntelligenceProvider | null {
   // host-wide spawn-cap funnel exactly like every other provider. The factory
   // applies both the spawn cap and the circuit breaker, so no callsite can
   // construct an un-capped ClaudeCliIntelligenceProvider directly.
-  if (claudePath) return buildIntelligenceProvider({ framework: 'claude-code', binaryPath: claudePath });
+  // ROUND-22: this read `binaryPath: claudePath` under a hardcoded claude-code
+  // label, with no framework check whatsoever — so on a grok-primary agent it was
+  // the impersonation in its purest form. It now uses the same fenced binary as
+  // the primary path above, which is null unless a GENUINE claude-code binary
+  // resolves; when nothing qualifies, returning null is the honest answer rather
+  // than running another framework's program under Claude's name.
+  if (fencedBinary && framework === 'claude-code') {
+    return buildIntelligenceProvider({ framework: 'claude-code', binaryPath: fencedBinary });
+  }
   return null;
 }
 
@@ -390,7 +429,7 @@ export async function runReflection(slug: string | undefined, opts: ReflectRunOp
   const config = await loadConfig(opts.dir);
 
   // Resolve intelligence provider
-  const intelligence = resolveIntelligence(config.sessions?.claudePath);
+  const intelligence = resolveIntelligence(config.sessions?.claudePath, config.sessions);
   if (!intelligence) {
     console.log();
     console.log(pc.red('No LLM provider available for reflection.'));

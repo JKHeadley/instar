@@ -34,10 +34,39 @@ import path from 'node:path';
  *
  * Extending: add a new entry here. The renderer picks it up automatically.
  */
+/**
+ * Display names for the relay appendix — round-19.
+ *
+ * The predicate selecting the hookless branch was widened in round 18 with the
+ * rationale "an enumeration is what went stale" — and the enumeration INSIDE
+ * that branch was left untouched: a two-way ternary defaulting to "Codex CLI".
+ * So grok and pi correctly reached the branch and were then addressed as Codex.
+ * Defaults to the raw id, never to another framework's name, so a new framework
+ * can be unlabelled but never MISlabelled.
+ */
+export const FRAMEWORK_DISPLAY_NAMES: Record<string, string> = {
+  'claude-code': 'Claude Code',
+  'codex-cli': 'Codex CLI',
+  'gemini-cli': 'Gemini CLI',
+  'grok-build': 'Grok Build',
+  'pi-cli': 'pi',
+};
+
 export const FRAMEWORK_SHADOW_FILES: Record<string, string> = {
   'claude-code': 'CLAUDE.md',
   'codex-cli': 'AGENTS.md',
   'gemini-cli': 'GEMINI.md',
+  // Round-17 (integration): without this entry a grok-primary agent installed
+  // with NO instruction file at all — CLAUDE.md is gated on claude being
+  // enabled, and the shadow fallback had nothing to render. So the §10
+  // awareness note reached every agent EXCEPT the ones this spec exists to
+  // create, and the migrator could not repair it (migrateClaudeMd early-returns
+  // when the file is absent). grok reads the shared `.agents` layout, same as
+  // codex.
+  'grok-build': 'AGENTS.md',
+  // pi-cli has the same hole — inherited, not introduced by this spec — and is
+  // fixed here rather than left as a known-and-unfixed neighbour.
+  'pi-cli': 'AGENTS.md',
 };
 
 // ---------------------------------------------------------------------------
@@ -133,18 +162,42 @@ export function renderIdentity(options: RenderIdentityOptions): RenderIdentityRe
   const shadowsWritten: string[] = [];
   const skipped: string[] = [];
 
+  // Round-17: GROUP BY TARGET FILENAME before writing.
+  //
+  // Several frameworks legitimately share one shadow file — codex, grok and pi
+  // all read the `.agents` convention's AGENTS.md. The original loop wrote once
+  // PER FRAMEWORK, so the moment a second framework mapped to AGENTS.md the
+  // file was written twice and the last writer won: codex agents silently lost
+  // their codex banner AND their codex continuation appendix. That regression
+  // was introduced by the fix for "a grok-primary agent gets no instruction
+  // file at all" — a fix that broke a working framework is worse than the gap
+  // it closed, and only a full-suite run on a frozen tree surfaced it.
+  //
+  // One file, one write, a banner naming every framework it serves, and the
+  // codex appendix included whenever codex is among them.
+  const byFilename = new Map<string, string[]>();
   for (const framework of requestedFrameworks) {
     const filename = FRAMEWORK_SHADOW_FILES[framework];
     if (!filename) {
       skipped.push(framework);
       continue;
     }
+    const group = byFilename.get(filename);
+    if (group) group.push(framework);
+    else byFilename.set(filename, [framework]);
+  }
+
+  for (const [filename, frameworks] of byFilename) {
     const target = path.join(options.projectDir, filename);
-    const banner = bannerFor(framework, sourceRel);
+    // The FIRST framework leads the banner so an existing single-framework
+    // file keeps its established identity line; the rest are listed after it.
+    const banner = bannerFor(frameworks.join(', '), sourceRel);
+    // The relay appendix is framework-shaped; use the leading framework, which
+    // for a shared file is the one whose convention the file follows.
     const relayAppendix = options.appendTelegramRelayBlock
-      ? '\n\n' + buildPersistentRelayAppendix(framework)
+      ? '\n\n' + buildPersistentRelayAppendix(frameworks[0]!)
       : '';
-    const continuationAppendix = framework === 'codex-cli'
+    const continuationAppendix = frameworks.includes('codex-cli')
       ? '\n\n' + buildCodexContinuationAppendix()
       : '';
     fs.writeFileSync(target, banner + content + relayAppendix + continuationAppendix, 'utf-8');
@@ -182,7 +235,15 @@ function buildPersistentRelayAppendix(framework: string): string {
   // Codex AND Gemini have no SessionStart hook system, so the shadow file
   // (AGENTS.md / GEMINI.md) is the ONLY persistent carrier of the relay
   // convention across every turn — they get the "every turn" wording.
-  const isHooklessFramework = framework === 'codex-cli' || framework === 'gemini-cli';
+  // Round-18 (integration): this tested only codex/gemini, so the frameworks
+  // added in round 17 (grok-build, pi-cli) rendered the CLAUDE branch — their
+  // shadow told them "the SessionStart hook reinforces this", naming a hook
+  // they do not have. The predicate's whole purpose is that a hookless
+  // framework has no other persistent carrier, so the frameworks that most
+  // need the EVERY-turn wording were the ones denied it. claude-code is the
+  // sole framework with a SessionStart hook, so ask THAT question directly
+  // rather than enumerating the others — an enumeration is what went stale.
+  const isHooklessFramework = framework !== 'claude-code';
   return [
     `## Telegram Relay (MANDATORY)`,
     ``,
@@ -202,7 +263,7 @@ function buildPersistentRelayAppendix(framework: string): string {
     `- Relay ONLY conversational text — not tool output, raw logs, or internal reasoning.`,
     `- Send a short ACK first ("Got it, looking into this…"), then do the work, then send the full reply.`,
     isHooklessFramework
-      ? `- ${framework === 'gemini-cli' ? 'Gemini CLI' : 'Codex CLI'} specifically: this convention applies to EVERY turn in a Telegram-spawned session, not just the first one. There's no SessionStart hook reminder beyond this shadow-file section.`
+      ? `- ${FRAMEWORK_DISPLAY_NAMES[framework] ?? framework} specifically: this convention applies to EVERY turn in a Telegram-spawned session, not just the first one. There's no SessionStart hook reminder beyond this shadow-file section.`
       : `- Claude Code specifically: the SessionStart hook reinforces this on session start; this section is the durable backup.`,
   ].join('\n');
 }
@@ -263,7 +324,12 @@ export function detectFrameworkFromShadowFiles(projectDir: string): string | nul
 export function ensureFrameworkIdentityFile(
   projectDir: string,
   framework: string,
-  options: { stateDir?: string; appendTelegramRelayBlock?: boolean } = {},
+  options: {
+    stateDir?: string;
+    appendTelegramRelayBlock?: boolean;
+    /** Frameworks this agent has enabled — see the round-19 membership note. */
+    enabledFrameworks?: readonly string[];
+  } = {},
 ): string | null {
   const filename = FRAMEWORK_SHADOW_FILES[framework];
   if (!filename) return null;
@@ -299,9 +365,82 @@ export function ensureFrameworkIdentityFile(
     if (bootstrapped === null) return null;
   }
 
+  // Round-18 (integration): this passed `frameworks: [framework]`, which
+  // DEFEATED the round-17 grouping fix on the ONE path that actually runs.
+  // `renderIdentity` groups by filename, but grouping a single-element list is
+  // a no-op — so a grok or pi spawn on a codex agent still rewrote the shared
+  // AGENTS.md as a single-framework file and destroyed the codex continuation
+  // appendix. Verified by executing the built path: the appendix did not
+  // survive, and the banner read `Framework: grok-build`.
+  //
+  // This is the sharper version of the round-17 lesson. That round's fix was
+  // real and its test passed — but the test drove `renderIdentity` directly,
+  // while production drives it through HERE. A fix verified on a path
+  // production does not take is the same shape as a live proof whose input is
+  // narrower than production: correct in the case exercised, absent where it
+  // matters.
+  //
+  // Render the WHOLE GROUP that shares this framework's target file, leading
+  // with the requested framework so its identity heads the banner.
+  // ROUND-19: membership comes from the frameworks the agent ACTUALLY has, not
+  // from the global map. Round-18 took every framework mapping to the target
+  // file, which produced two defects measured on the real path:
+  //   - a grok-only agent's AGENTS.md was banner-stamped with three framework
+  //     names and told to rely on a Codex Stop hook it does not have;
+  //   - a CODEX-only agent, which never opted into anything, had `grok-build`
+  //     and `pi-cli` named in its own identity file — a dark-ship break
+  //     against "an agent that does not opt in is byte-identically unaffected".
+  // Writing ONE file per filename was round-18's real fix and is kept; only
+  // MEMBERSHIP changes, because that is a property of the agent, not the map.
+  const targetFile = FRAMEWORK_SHADOW_FILES[framework];
+  // Membership = requested ∪ enabled ∪ ALREADY-EVIDENCED-IN-THE-FILE.
+  //
+  // The third term is load-bearing and was missing from the first draft of this
+  // fix, which promptly reintroduced the round-18 clobber: scoping to the
+  // agent's frameworks alone means a caller that does not pass the list
+  // rewrites a shared file as single-framework and destroys the sibling's
+  // appendix. Existing content is EVIDENCE that a framework is in play on this
+  // agent — stronger evidence than a caller's optional argument — so it counts
+  // as membership. That satisfies both constraints at once: no framework is
+  // invented (dark-ship), and none already present is dropped (clobber).
+  const existing = (() => {
+    try {
+      return targetFile ? fs.readFileSync(path.join(projectDir, targetFile), 'utf-8') : '';
+    } catch (err) {
+      // NOT silent — the ratchet pushed back on the first draft, correctly.
+      // An unreadable shadow means the EVIDENCE term below is empty, so a
+      // framework genuinely in play may be dropped from the group and its
+      // content lost on the rewrite. That is the clobber this term exists to
+      // prevent, so it must be visible rather than absorbed. Non-throwing:
+      // degrading to "no evidence" is still safer than refusing to render an
+      // identity file at all.
+      const code = (err as NodeJS.ErrnoException | null)?.code;
+      if (code !== 'ENOENT') {
+        console.warn(
+          `[identity] could not read ${targetFile} to determine framework membership `
+            + `(${code ?? 'unknown'}) — a sibling framework's section may be dropped on this render.`,
+        );
+      }
+      return '';
+    }
+  })();
+  const inPlay = new Set<string>([
+    framework,
+    ...(options.enabledFrameworks ?? []),
+    ...Object.keys(FRAMEWORK_SHADOW_FILES).filter((fw) => existing.includes(`Framework: ${fw}`) || existing.includes(`, ${fw}`)),
+  ]);
+  const owners = targetFile
+    ? [
+        framework,
+        ...Object.entries(FRAMEWORK_SHADOW_FILES)
+          .filter(([fw, file]) => file === targetFile && fw !== framework && inPlay.has(fw))
+          .map(([fw]) => fw),
+      ]
+    : [framework];
+
   const result = renderIdentity({
     projectDir,
-    frameworks: [framework],
+    frameworks: owners,
     sourcePath: options.stateDir
       ? path.join(options.stateDir, 'AGENT.md')
       : undefined,

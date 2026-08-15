@@ -117,6 +117,26 @@ describe('TopicFrameworksStore', () => {
   });
 
   it('SUPPORTED_FRAMEWORKS exposes all supported values', () => {
-    expect([...SUPPORTED_FRAMEWORKS].sort()).toEqual(['claude-code', 'codex-cli', 'gemini-cli', 'pi-cli']);
+    expect([...SUPPORTED_FRAMEWORKS].sort()).toEqual([
+      'claude-code',
+      'codex-cli',
+      'gemini-cli',
+      'grok-build',
+      'pi-cli',
+    ]);
+  });
+
+  it('a persisted grok-build pin SURVIVES load (round-9: it used to be silently dropped)', () => {
+    // The drop was invisible by construction — the store logs nothing for an
+    // unknown value — so a topic the operator had pinned to grok resolved to
+    // the default framework with no signal at all.
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.writeFileSync(
+      stateFile,
+      JSON.stringify({ topics: { '7': 'grok-build', '8': 'evil-framework' } }),
+    );
+    const store = new TopicFrameworksStore({ stateFilePath: stateFile });
+    expect(store.get(7)).toBe('grok-build');
+    expect(store.get(8)).toBeNull(); // the enum still refuses genuine junk
   });
 });

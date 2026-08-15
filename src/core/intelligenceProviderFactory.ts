@@ -23,6 +23,7 @@ import { PiCliIntelligenceProvider } from './PiCliIntelligenceProvider.js';
 import { wrapIntelligenceWithCircuitBreaker } from './CircuitBreakingIntelligenceProvider.js';
 import { wrapIntelligenceWithSpawnCap } from './SpawnCapIntelligenceProvider.js';
 import type { LlmCircuitBreaker } from './LlmCircuitBreaker.js';
+import { resolveFrameworkAlias } from './frameworkFacts.js';
 import {
   AnthropicSubscriptionRouter,
   type SubscriptionPathMode,
@@ -45,7 +46,7 @@ import type { AgentSdkCreditSnapshot } from '../providers/primitives/observabili
  * related to this type by the compiler; they are a hand-audit checklist
  * (see APPRENTICESHIP-STEP2-GEMINI-RUNTIME-ADAPTER-SPEC §4.3).
  */
-export type IntelligenceFramework = 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
+export type IntelligenceFramework = 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build';
 
 export interface BuildIntelligenceProviderOptions {
   /**
@@ -250,6 +251,22 @@ export function buildIntelligenceProvider(
         return null;
       }
     }
+    case 'grok-build': {
+      // DELIBERATELY not constructible for internal background routing
+      // (grok-build framework integration spec §6.1/§14): the weekly pool is
+      // unobservable in advance (1.3M tokens registered 0% on the usage
+      // meter), so blanket internal calls — sentinels, gates, extractors —
+      // must not drain a pool no brake can see. Explicit, bounded grok use
+      // goes through the provider-registry adapter (deliberate opt-in per
+      // callsite) and the cross-model reviewer family instead. Returning
+      // null routes the caller to the default framework, loudly.
+      console.warn(
+        `[intelligenceProviderFactory] grok-build is not eligible for internal ` +
+        `background routing (unobservable weekly pool — spec §6.1). ` +
+        `Degrading to default framework.`,
+      );
+      return null;
+    }
     default: {
       // Exhaustiveness check — extending IntelligenceFramework without
       // adding a case here is a type error.
@@ -266,10 +283,9 @@ export function buildIntelligenceProvider(
  * the caller to apply the default (`claude-code`) or its own logic.
  */
 export function frameworkFromEnv(env: NodeJS.ProcessEnv = process.env): IntelligenceFramework | null {
-  const raw = env['INSTAR_FRAMEWORK']?.trim().toLowerCase();
-  if (!raw) return null;
-  if (raw === 'claude-code' || raw === 'claude') return 'claude-code';
-  if (raw === 'codex-cli' || raw === 'codex') return 'codex-cli';
-  if (raw === 'gemini-cli' || raw === 'gemini') return 'gemini-cli';
-  return null;
+  // ROUND-21: this used to be its own three-arm chain, which silently
+  // disagreed with Config's resolver on pi-cli and grok-build — the same
+  // variable meaning different things depending on which resolver read it.
+  // Both now share one table.
+  return resolveFrameworkAlias(env['INSTAR_FRAMEWORK']);
 }

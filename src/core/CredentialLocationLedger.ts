@@ -175,7 +175,14 @@ export interface IdentityAuditReport {
 }
 
 const MAX_COMPLETED_JOURNAL = 50;
-const NON_CLAUDE_FRAMEWORKS = new Set(['codex-cli', 'gemini-cli', 'pi-cli']);
+// ROUND-22: `NON_CLAUDE_FRAMEWORKS = new Set(['codex-cli', 'gemini-cli', 'pi-cli'])`
+// stood here, listing three of the four non-Claude frameworks (grok-build absent).
+// It is DELETED rather than corrected because nothing read it — and that is the
+// point worth recording: a stale list with no consumer is harmless right up to the
+// moment it acquires one, and it acquires one by looking authoritative to the next
+// author. Correcting it would have preserved a trap; the honest state of an unused
+// constant is gone. If a non-Claude predicate is needed here later, derive it
+// (`f !== 'claude-code'` over the canonical union), do not re-enumerate.
 
 /** A claude-code account is the implicit default (framework undefined or 'claude-code'). */
 function isClaudeCodeAccount(a: LedgerPoolAccount): boolean {

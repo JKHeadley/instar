@@ -12,8 +12,8 @@ Read these in order:
 
 1. The spec file at {SPEC_PATH}
 2. Any architectural doc the spec references.
-3. `/Users/justin/Documents/Projects/instar/src/core/PostUpdateMigrator.ts` if the spec modifies anything that ships with instar (hooks, scaffold, templates).
-4. `/Users/justin/Documents/Projects/instar/src/core/BackupManager.ts` if the spec adds new persistent state.
+3. `src/core/PostUpdateMigrator.ts` (repo-relative, in the checkout you are reviewing) if the spec modifies anything that ships with instar (hooks, scaffold, templates).
+4. `src/core/BackupManager.ts` (repo-relative) if the spec adds new persistent state.
 
 Your INTEGRATION perspective: what breaks in real-world deployment scenarios?
 

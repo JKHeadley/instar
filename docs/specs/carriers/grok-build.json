@@ -1,0 +1,54 @@
+{
+  "generatedAt": "2026-08-15T13:21:03.438Z",
+  "slug": "grok-build",
+  "carriers": {
+    "CMT-1317": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Carry the grok-build engineering deferrals to closure: the conflicting-conditions CLI-version probe; the scratch-cwd wiring that unblocks the headless lane; the cross-machine cumulative burn rollup (precondition for second-machine enablement); the wall-observed marker; the on-disk login-policy preflight for the session lanes; replacing the per-machine JSON reviewer ledger with append-only run reco"
+    },
+    "CMT-1319": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Second half of the grok-build deferral set (CMT-1317 carries the first): the §0.2 rate-manifest row; the §3.1.1 enrolment idempotent disable_api_key_auth config write; the §4.2 interactive retention probe; the §6.0a per-run ledger wiring; the §7 enrolment-response throttle-source warn; the §8 N-consecutive-degrades signal; the §14.3 shared-lane argv-to-file prompt transport; the §6.1 grok-native t"
+    },
+    "CMT-1321": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Carry the grok-build open unknowns that are observations rather than engineering tasks, each currently held at a conservative default: settle the BILLING SINK (does a run debit the subscription, a credit balance, or nothing?) with billing-side evidence rather than inference; establish whether REMAINING WEEKLY ALLOWANCE can be read at all, or record that it cannot with fresh evidence; make pool ENR"
+    },
+    "CMT-1325": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Two grok-build deferrals that no earlier carrier enumerates: (1) UPGRADE THE CLOSED-LANE DISCLOSURE — when the interactive lane graduates, replace the deduped stderr line that announces a headless-lane substitution with a §5.2-class operator-visible once-per-transition notice (Frontloaded Decision 10(b) records the weaker class as deliberate for this increment); (2) DECLARE OR DOWNGRADE THE AUTH-E"
+    },
+    "CMT-1327": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Obtain a REAL operator ratification, with a machine-verifiable ref, for the two machine-local surfaces this spec holds under `operator-ratified-exception`: the per-day reviewer budget ledger and the per-run token/cost records. Round-14 named the obligation and round-15 caught that the obligation ITSELF was uncarried — a fifth instance of the same class. The current refs point at Frontloaded Decisi"
+    },
+    "CMT-1328": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "The remaining grok-build deferrals that no earlier carrier enumerates, swept into one so the marker table is COMPLETE rather than nearly complete: (1) OPERATOR RATIFICATION of the THIRD machine-local surface — the `enabledFrameworks` divergence row — since CMT-1327's immutable text names only the budget ledger and the per-run token records; (2) PI-CLI's exclusion from PostUpdateMigrator.getEnabled"
+    },
+    "CMT-1330": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Cover the reserve-then-settle admission path with a test using genuinely concurrent PROCESSES behind a start barrier (an in-process loop runs sequentially and passes against the broken code). Run standalone, not alongside a full suite, sized to the operator's tolerance. Until it lands the spec records the concurrency behaviour as ASSERTED, NOT MEASURED, and the no-parallel-reviewer-orchestration l"
+    },
+    "CMT-1331": {
+      "status": "pending",
+      "owner": "user",
+      "blockedOn": "user-input",
+      "excerpt": "Obtain and record a vendor-policy determination for automated spec-review usage of grok-build under the operator's SuperGrok subscription, BEFORE any use beyond this single development agent — no fleet enable, no second machine, no high-cadence use. This is a blocker independent of every technical gate in the spec. Record the determination (and its source) in the spec's evidence base. Distinct fro"
+    }
+  }
+}

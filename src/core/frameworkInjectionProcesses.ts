@@ -44,6 +44,9 @@ export const FRAMEWORK_INJECTION_PROCESS_NAMES: Record<IntelligenceFramework, re
   // runs under node, but `pane_current_command` reports the bin shim name —
   // same shape as the other CLIs (P0.1 eval, pi 0.78.1).
   'pi-cli': ['pi'],
+  // grok's TUI binary is `grok` (Rust; ~/.grok/bin/grok). Probed 1.0.4: the
+  // pane reports the binary name directly (no node shim).
+  'grok-build': ['grok'],
 };
 
 /** Union of every framework's interactive process names (deduped). */

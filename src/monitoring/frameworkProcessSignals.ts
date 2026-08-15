@@ -123,11 +123,34 @@ const PI_CLI_SIGNAL: FrameworkProcessSignal = {
   ],
 };
 
+
+/**
+ * grok-build: a Rust binary named `grok` (~/.grok/bin/grok). NOT node-wrapped.
+ * The sibling `agent` symlink is deliberately NOT matched — it collides with
+ * Cursor's CLI binary of the same name (grok-build spec §2.1); counting it
+ * would misattribute Cursor sessions to grok.
+ */
+const GROK_BUILD_SIGNAL: FrameworkProcessSignal = {
+  framework: 'grok-build',
+  displayName: 'Grok Build',
+  psGrepNeedle: '[g]rok',
+  binaryPattern: /(^|\/)grok(\s|$)/,
+  // Rust binary; never node/npx-wrapped. Unmatchable pattern by design.
+  nodePattern: /grok-build-never-node-wrapped(?!)/,
+  exclusionSubstrings: [
+    // grok-build's own leader/daemon lines are still grok work; nothing to
+    // exclude beyond generic shell noise. Keep the Cursor-collision guard:
+    // any command line invoking the bare `agent` name is NOT counted.
+    '/agent ',
+  ],
+};
+
 const PROCESS_SIGNALS: Record<IntelligenceFramework, FrameworkProcessSignal> = {
   'claude-code': CLAUDE_CODE_SIGNAL,
   'codex-cli': CODEX_CLI_SIGNAL,
   'gemini-cli': GEMINI_CLI_SIGNAL,
   'pi-cli': PI_CLI_SIGNAL,
+  'grok-build': GROK_BUILD_SIGNAL,
 };
 
 /** Process helpers that appear at the START of command lines and are NEVER framework binaries. */

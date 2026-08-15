@@ -56,6 +56,14 @@ export const SUPPORTED_FRAMEWORKS: ReadonlyArray<IntelligenceFramework> = [
   // pi (PI-HARNESS-INTEGRATION-SPEC Phase A) — additive fourth framework;
   // ships dark (only reachable when an agent's enabledFrameworks opts in).
   'pi-cli',
+  // grok-build (grok-build spec §4.3 lane 2) — additive fifth framework.
+  // Round-9 (adversarial): without this entry a persisted `grok-build` pin was
+  // SILENTLY DROPPED at load and a /topic-profile PATCH refused off-enum, so
+  // the interactive lane the dual gate guards had no reachable caller — and an
+  // operator who believed a topic was pinned to grok got a Claude session
+  // instead. Admission is still doubly gated (enabledFrameworks +
+  // sessions.grokInteractiveSessions); this only makes the pin EXPRESSIBLE.
+  'grok-build',
 ];
 
 export class TopicFrameworksStore {

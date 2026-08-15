@@ -28,6 +28,10 @@ import { CircuitBreakingIntelligenceProvider } from '../../src/core/CircuitBreak
 import { SpawnCapIntelligenceProvider } from '../../src/core/SpawnCapIntelligenceProvider.js';
 import { detectGeminiPath } from '../../src/core/Config.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
+import {
+  isUnconfiguredCredentialError,
+  announceCredentialSkip,
+} from '../support/liveCredentialGate.js';
 
 const geminiPath = detectGeminiPath();
 const haveGemini = !!geminiPath;
@@ -60,7 +64,7 @@ describe('Gemini CLI body — feature is alive (E2E)', () => {
 
   it.skipIf(!haveGemini)(
     'a REAL one-shot returns the expected smoke text through the production provider',
-    async () => {
+    async (ctx) => {
       const provider = buildIntelligenceProvider({
         framework: 'gemini-cli',
         binaryPath: geminiPath!,
@@ -69,10 +73,31 @@ describe('Gemini CLI body — feature is alive (E2E)', () => {
 
       // A deterministic known-answer prompt — the gemini analog of the codex
       // Reply-with-PONGXYZ smoke. Run through the ALIVE provider, not a mock.
-      const out = await provider!.evaluate(
-        'Reply with exactly the single word: PONGGEMINI and nothing else.',
-        { model: 'fast', timeoutMs: 45_000 },
-      );
+      let out: string;
+      try {
+        out = await provider!.evaluate(
+          'Reply with exactly the single word: PONGGEMINI and nothing else.',
+          { model: 'fast', timeoutMs: 45_000 },
+        );
+      } catch (err) {
+        // Round-17: `haveGemini` gates on the BINARY EXISTING, which is not the
+        // same as it being usable — this dev box has gemini installed with no
+        // credential, so the gate said "available", the canary ran for real,
+        // and it hard-failed on auth rather than on anything it was written to
+        // catch. A suite that stays red on every machine without a third-party
+        // key trains everyone to ignore red.
+        //
+        // The skip is deliberately NARROW: only the specific unconfigured-
+        // credential signature. A wrong answer, a timeout, a crash, or an auth
+        // REGRESSION (a credential that exists and is rejected) all still fail,
+        // because those are exactly what this canary exists to catch.
+        if (isUnconfiguredCredentialError('gemini', err)) {
+          announceCredentialSkip('gemini-cli', err);
+          ctx.skip();
+          return;
+        }
+        throw err;
+      }
       expect(out.toUpperCase()).toContain('PONGGEMINI');
     },
     60_000,

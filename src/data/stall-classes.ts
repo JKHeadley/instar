@@ -99,6 +99,20 @@ export const STALL_CLASSES: readonly StallClass[] = [
     description: 'compact-in-place first, fresh-respawn fallback',
     sinceVersion: '1.3',
   },
+  {
+    // Found 2026-08-15 by a MENTEE agent reviewing its own framework's matrix
+    // (apprenticeship instance groky-onboarding, cycle 2). Every prior class
+    // was enumerated by observing a framework from OUTSIDE, and this one is
+    // only visible from inside a turn — which is why five matrices missed it.
+    // Framework-agnostic: any framework that can call a tool can hang on one.
+    id: 'in-flight-tool-hang',
+    name: 'In-flight tool hang',
+    description:
+      'live turn blocked on a tool result that never returns (shell, MCP, subagent) — '
+      + 'process UP and unable to emit; neither an approval prompt nor a host death, '
+      + 'so process-liveness checks read it as healthy',
+    sinceVersion: '1.4',
+  },
 ] as const;
 
 /** Classification precedence order for ambiguous tails (spec §2.1). */
@@ -139,6 +153,7 @@ export const REQUIRED_MATRIX_FRAMEWORKS = [
   'codex-cli',
   'gemini-cli',
   'pi-cli',
+  'grok-build',
 ] as const satisfies readonly IntelligenceFramework[];
 
 // Exhaustiveness: if IntelligenceFramework gains a member missing from

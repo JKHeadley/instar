@@ -1821,11 +1821,33 @@ function appliedToResolvedForDisclosure(
   };
 }
 
+/**
+ * Human-readable name for the door driving a topic. This is USER-FACING — it
+ * appears in "Now driving this topic: <X> door".
+ *
+ * ROUND-21: the final `return 'Pi'` was an unguarded fallback, so a grok-driven
+ * topic told the operator it was on the Pi door — and so would any framework
+ * added after pi-cli. An `if`-chain ending in another framework's IDENTITY is
+ * the worst version of the default-branch defect: it does not degrade, it
+ * asserts something false. Exhaustive mapping + a `never` check now makes a
+ * sixth framework a compile error here rather than a wrong sentence to the
+ * operator.
+ */
 function renderDoor(framework: IntelligenceFramework): string {
-  if (framework === 'codex-cli') return 'Codex';
-  if (framework === 'claude-code') return 'Claude';
-  if (framework === 'gemini-cli') return 'Gemini';
-  return 'Pi';
+  switch (framework) {
+    case 'claude-code': return 'Claude';
+    case 'codex-cli': return 'Codex';
+    case 'gemini-cli': return 'Gemini';
+    case 'pi-cli': return 'Pi';
+    case 'grok-build': return 'Grok';
+    default: {
+      const unreachable: never = framework;
+      // A value outside the union can still arrive from persisted state
+      // written by a newer version. Name it plainly rather than claim it is
+      // some other framework's door.
+      return String(unreachable);
+    }
+  }
 }
 
 /** The characteristics a spawn against this resolution applies. */

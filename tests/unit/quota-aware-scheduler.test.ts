@@ -169,7 +169,30 @@ describe('QuotaAwareScheduler — the continuity guarantee', () => {
   it('placeNewSession picks the optimal account for a fresh session', () => {
     const accounts = [acct('a', 70, '2026-06-12T00:00:00Z'), acct('b', 70, '2026-06-07T06:00:00Z')];
     const sched = new QuotaAwareScheduler({ listAccounts: () => accounts, refreshFn: async () => true });
-    expect(sched.placeNewSession(NOW)?.id).toBe('b'); // sooner reset, same headroom
+    expect(sched.placeNewSession(NOW, 'claude-code')?.id).toBe('b'); // sooner reset, same headroom
+  });
+
+  // ── round-9 (lessons): a PERMANENTLY-unknown-quota account must not
+  // out-rank an account that has a real reading. grok-build has no usage
+  // command at all, so `lastQuota` stays null forever and headroom scoring
+  // reads it as 100% empty — the framework scoping is what stops that from
+  // becoming "the unreadable account always wins".
+  it('an unobservable-quota grok account never wins a claude-code placement', () => {
+    const claude = acct('claude-hot', 85, '2026-06-12T00:00:00Z'); // real reading, nearly full
+    const grok: SubscriptionAccount = {
+      ...acct('grok-unknown', null, null),
+      framework: 'grok-build',
+      provider: 'xai',
+      configHome: '/h/.grok',
+    };
+    const sched = new QuotaAwareScheduler({
+      listAccounts: () => [claude, grok],
+      refreshFn: async () => true,
+    });
+    // Scored purely on headroom the grok account looks emptiest — selection
+    // must still be framework-scoped.
+    expect(sched.placeNewSession(NOW, 'claude-code')?.id).toBe('claude-hot');
+    expect(sched.placeNewSession(NOW, 'grok-build')?.id).toBe('grok-unknown');
   });
 });
 

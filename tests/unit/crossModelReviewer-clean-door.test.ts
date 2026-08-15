@@ -323,21 +323,28 @@ describe('crossFamily is a REQUIRED registry field (§5.1 migration guard)', () 
 });
 
 describe('config gate — developmentAgent resolution / fleet-absent byte-identical (§1.5)', () => {
-  it('absent config ⇒ fleet-dark: active set is EXACTLY [codex, gemini]', () => {
+  it('absent config ⇒ fleet-dark: active set is EXACTLY [codex, gemini, grok]', () => {
+    // grok-build joins the CONSIDERED set unconditionally (grok-build spec §8:
+    // "in the registry unconditionally (classification), ACTIVE only when
+    // detection passes"). Its dark-ship guarantee lives in DETECTION, which
+    // refuses with `grok-not-enabled` absent the explicit opt-in — the
+    // observable fleet difference is one honest `inactive` row, never a
+    // reviewer that runs. Claude remains the config-gated entry this suite
+    // tracks.
     const active = resolveActiveReviewerFrameworks(undefined);
-    expect(active.map((f) => f.id)).toEqual(['codex-cli', 'gemini-cli']);
+    expect(active.map((f) => f.id)).toEqual(['codex-cli', 'gemini-cli', 'grok-build']);
     expect(isAnthropicReviewerEnabled(undefined)).toBe(false);
   });
 
   it('explicit enabled:false force-darks even a dev agent', () => {
     const cfg: ReviewerConfig = { developmentAgent: true, specConverge: { reviewers: { anthropic: { enabled: false } } } };
     expect(isAnthropicReviewerEnabled(cfg)).toBe(false);
-    expect(resolveActiveReviewerFrameworks(cfg).map((f) => f.id)).toEqual(['codex-cli', 'gemini-cli']);
+    expect(resolveActiveReviewerFrameworks(cfg).map((f) => f.id)).toEqual(['codex-cli', 'gemini-cli', 'grok-build']);
   });
 
   it('developmentAgent:true (omitted enabled) ⇒ claude active', () => {
     expect(isAnthropicReviewerEnabled(DEV)).toBe(true);
-    expect(resolveActiveReviewerFrameworks(DEV).map((f) => f.id)).toEqual(['codex-cli', 'gemini-cli', 'claude-code']);
+    expect(resolveActiveReviewerFrameworks(DEV).map((f) => f.id)).toEqual(['codex-cli', 'gemini-cli', 'grok-build', 'claude-code']);
   });
 
   it('explicit enabled:true is the fleet-flip (on even without dev flag)', () => {

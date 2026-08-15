@@ -77,6 +77,16 @@ stall-coverage:
       the resolver auto-clears the prompt; a prompt it cannot clear raises
       ONE attention item (never a silent "running" over a wedged approval
       menu)
+  - class: in-flight-tool-hang
+    status: declared-gap
+    reason: >-
+      ADDED 2026-08-15 by a mentee agent reviewing its own framework's matrix 
+      (cycle 2). A live turn blocked on a tool result that never returns. Proc
+      ess UP, cannot emit; neither an approval prompt nor a host death, so liv
+      eness checks read it as healthy.
+    issueRef: stallclass::in-flight-tool-hang::claude-code::gap
+    closePath: CMT-1330
+    liveness-surface: 'DEFECT if enabled: process-up checks read a hung turn as healthy'
   - class: context-window-wall
     status: covered
     detector: src/monitoring/QuotaExhaustionDetector.ts#detectContextExhaustion

@@ -32,6 +32,21 @@ describe('resolveConfiguredFramework', () => {
     expect(resolveConfiguredFramework('codex-cli', 'claude-code')).toBe('codex-cli');
   });
 
+  // Round-11 (adversarial): every arm omitted 'grok-build' while the signature
+  // named it — and this is the instance that mattered most, because a
+  // Grok-PRIMARY agent's own config resolved to claude-code, so the agent built
+  // to run on grok would silently have run on Claude.
+  it('resolves grok-build from the config value, the env, and enabledFrameworks', () => {
+    expect(resolveConfiguredFramework('grok-build', undefined)).toBe('grok-build');
+    expect(resolveConfiguredFramework(undefined, 'grok-build')).toBe('grok-build');
+    expect(resolveConfiguredFramework(undefined, 'grok')).toBe('grok-build');
+    expect(resolveConfiguredFramework(undefined, undefined, ['grok-build'])).toBe('grok-build');
+    // Control: the precedence order still holds, so this cannot pass by
+    // accidentally returning grok everywhere.
+    expect(resolveConfiguredFramework('claude-code', 'grok-build')).toBe('claude-code');
+    expect(resolveConfiguredFramework(undefined, undefined, ['codex-cli', 'grok-build'])).toBe('codex-cli');
+  });
+
   it('defaults to claude-code when both are unset or unknown', () => {
     expect(resolveConfiguredFramework(undefined, undefined)).toBe('claude-code');
     expect(resolveConfiguredFramework(undefined, '')).toBe('claude-code');

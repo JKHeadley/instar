@@ -1230,7 +1230,7 @@ export class PostUpdateMigrator {
    * the parity-renderings backfill and the legacy `.claude/`-specific
    * steps consult this.
    */
-  private getEnabledFrameworks(): ReadonlyArray<'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'> {
+  private getEnabledFrameworks(): ReadonlyArray<'claude-code' | 'codex-cli' | 'gemini-cli' | 'grok-build'> {
     try {
       const configPath = path.join(this.config.stateDir, 'config.json');
       const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as {
@@ -1244,9 +1244,22 @@ export class PostUpdateMigrator {
         // agent — a correctness bug for existing agents, the Migration-Parity
         // heart of this spec (the structural twin of the codex getEnabledFrameworks
         // gating).
+        // Round-9 (lessons): the PREDICATE had been widened to five values
+        // while the runtime test still admitted three — so 'grok-build' could
+        // never be returned and every migration gated on "grok enabled" was
+        // unreachable for the agents it exists to serve. A type predicate that
+        // outruns its own runtime test is a silent no-op wearing a green type.
+        // ('pi-cli' stays excluded DELIBERATELY — widening it is a behaviour
+        // change for deployed pi agents. Carried by CMT-1328 (round-16: this
+        // read "tracked, not silently bundled" with no commitment behind it,
+        // which is the carrier defect this branch keeps finding).)
         const filtered = enabled.filter(
-          (f): f is 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' =>
-            f === 'claude-code' || f === 'codex-cli' || f === 'gemini-cli',
+          // Round-11 (adversarial): the predicate must name EXACTLY what the
+          // filter admits — the previous signature still advertised 'pi-cli',
+          // three lines below a comment calling that shape "a silent no-op
+          // wearing a green type".
+          (f): f is 'claude-code' | 'codex-cli' | 'gemini-cli' | 'grok-build' =>
+            f === 'claude-code' || f === 'codex-cli' || f === 'gemini-cli' || f === 'grok-build',
         );
         if (filtered.length > 0) return filtered;
       }
@@ -1422,11 +1435,88 @@ export class PostUpdateMigrator {
         prior: new Set<string>(),
       },
       {
+        // Round-11 (integration): this entry kept a prior-hash gate while every
+        // sibling moved to alwaysOverwrite, so on a live agent home the
+        // installed copy sat at 7.5KB/Jun-8 against a 19.9KB source, hash not in
+        // the prior set, pushing "customized — left untouched" on every run. The
+        // measured consequence was load-bearing: the installed writer contained
+        // NONE of the decision-point classification the skill advertises as
+        // structural, and rejected its own documented flags as unknown args. A
+        // prior-hash gate over SHIPPED content classifies ordinary drift as
+        // customization and stops refreshing forever.
         label: 'spec-converge maturation WARN wiring',
         bundled: path.join(bundledRoot, 'skills', 'spec-converge', 'scripts', 'write-convergence-tag.mjs'),
         target: path.join(root, '.claude', 'skills', 'spec-converge', 'scripts', 'write-convergence-tag.mjs'),
         prior: priorWriterHashes,
+        alwaysOverwrite: true,
       },
+      {
+        // Round-11 (integration): BOTH phase-5 scripts statically import
+        // `../../../scripts/eli16-overview-check.mjs`, which from the installed
+        // location resolves to `<root>/.claude/scripts/` — where it was never
+        // delivered. Each installed script died ERR_MODULE_NOT_FOUND before
+        // parsing an argument, so the ELI16 refusal the skill calls a structural
+        // prerequisite did not exist where it runs. The sibling of this exact
+        // import line (feature-maturation-plan-gate.mjs) was already delivered
+        // here; one chain was traced and the other was not.
+        label: 'spec-converge eli16 overview check',
+        bundled: path.join(bundledRoot, 'scripts', 'eli16-overview-check.mjs'),
+        target: path.join(root, '.claude', 'scripts', 'eli16-overview-check.mjs'),
+        prior: new Set<string>(),
+        alwaysOverwrite: true,
+      },
+      {
+        // Round-11 (integration): the sanctioned publish path had NO delivery
+        // entry at all — frozen at 6.4KB/Jul-28 against 9.4KB in source, and
+        // `installBuiltinSkills` never overwrites, so the migrator array is its
+        // only carrier (the same argument §11 makes for the wrapper).
+        label: 'spec-converge publish-spec-review',
+        bundled: path.join(bundledRoot, 'skills', 'spec-converge', 'scripts', 'publish-spec-review.mjs'),
+        target: path.join(root, '.claude', 'skills', 'spec-converge', 'scripts', 'publish-spec-review.mjs'),
+        prior: new Set<string>(),
+        alwaysOverwrite: true,
+      },
+      {
+        // grok-build reviewer-door plumbing (grok-build spec §8/§11): the
+        // wrapper must plumb enabledFrameworks into detection on EXISTING
+        // agents too — installBuiltinSkills never overwrites, so this sync
+        // is the ONLY delivery path (Migration Parity: a feature that only
+        // works for new agents is a broken feature). alwaysOverwrite like
+        // shipped-content entries: a prior-hash gate over a shipped script
+        // classifies ordinary drift as customization and stops refreshing
+        // forever (the constitution-mirror lesson).
+        label: 'spec-converge cross-model-review enabledFrameworks plumbing',
+        bundled: path.join(bundledRoot, 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
+        target: path.join(root, '.claude', 'skills', 'spec-converge', 'scripts', 'cross-model-review.mjs'),
+        prior: new Set<string>(),
+        alwaysOverwrite: true,
+      },
+      // spec-converge REVIEWER TEMPLATES (round-10, integration+lessons).
+      // `installBuiltinSkills` writes a skill's files only when the skill is
+      // MISSING, so an existing agent's templates freeze at whatever version
+      // first landed: measured on a live agent home, the wrapper was current
+      // while `reviewer-cross-model.md` was months stale AND
+      // `reviewer-decision-completeness.md` — a reviewer SKILL.md calls
+      // non-optional — was absent entirely, so that reviewer could not run
+      // there at all. Same shipped-content pattern as the wrapper above
+      // (alwaysOverwrite: a prior-hash gate over shipped content classifies
+      // ordinary drift as customization and stops refreshing forever).
+      ...[
+        'reviewer-adversarial.md',
+        'reviewer-cross-model.md',
+        'reviewer-decision-completeness.md',
+        'reviewer-integration.md',
+        'reviewer-lessons-aware.md',
+        'reviewer-scalability.md',
+        'reviewer-security.md',
+        'report.md',
+      ].map((name) => ({
+        label: `spec-converge reviewer template ${name}`,
+        bundled: path.join(bundledRoot, 'skills', 'spec-converge', 'templates', name),
+        target: path.join(root, '.claude', 'skills', 'spec-converge', 'templates', name),
+        prior: new Set<string>(),
+        alwaysOverwrite: true,
+      })),
       {
         // RESTORED 2026-07-28, repointed and un-gated. The previous entry read
         // `<bundledRoot>/docs/STANDARDS-REGISTRY.md` — a path present in NO published
@@ -3515,18 +3605,42 @@ export class PostUpdateMigrator {
     }
 
     const migrations = (config._instar_migrations ?? []) as string[];
-    const marker = 'parity-renderings-backfill-v1';
+
+    // Single source of truth for framework gating (see getEnabledFrameworks).
+    const frameworks = this.getEnabledFrameworks();
+
+    // The marker is FRAMEWORK-SET-AWARE (round-9, lessons). A single one-shot
+    // `parity-renderings-backfill-v1` marker meant an agent that later opted
+    // into a new framework NEVER backfilled its renderings — the P3 shape
+    // ("works only for new agents") with the extra twist that even a fresh
+    // opt-in on an existing agent missed. Keying the marker to the enabled set
+    // makes each new set backfill exactly once; remediation is idempotent and
+    // refuse-on-conflict, so a re-run never clobbers an operator's edits.
+    const marker = `parity-renderings-backfill-v1[${[...frameworks].sort().join('+')}]`;
     if (migrations.some(m => m.startsWith(marker))) {
       result.skipped.push('parity-renderings: already migrated');
+      return;
+    }
+    // LEGACY-MARKER EQUIVALENCE (round-10, lessons) — without this, the
+    // set-aware marker above would re-run a full backfill pass on EVERY
+    // deployed agent, opted-in or not, because the recorded legacy string
+    // (`parity-renderings-backfill-v1-<ISO>`) does not `startsWith` the
+    // bracketed form. That would violate §1's "an agent that does not opt in
+    // is byte-identically unaffected" — a dark-ship break introduced BY the
+    // fix for a dark-ship gap. The legacy pass ran under the old runtime
+    // filter, which admitted exactly these three values, so a legacy marker
+    // already covers any set drawn from them; a set containing anything NEWER
+    // (i.e. grok-build) is genuinely un-backfilled and must run.
+    const LEGACY_COVERED: ReadonlyArray<string> = ['claude-code', 'codex-cli', 'gemini-cli'];
+    const legacyMarkerPresent = migrations.some(m => m.startsWith('parity-renderings-backfill-v1-'));
+    if (legacyMarkerPresent && frameworks.every(f => LEGACY_COVERED.includes(f))) {
+      result.skipped.push('parity-renderings: already migrated (legacy marker covers this set)');
       return;
     }
 
     // Lazy-import registry so PostUpdateMigrator doesn't pull the entire
     // parity graph at startup for agents that never invoke migrate().
     const { listParityRules } = await import('../providers/parity/registry.js');
-
-    // Single source of truth for framework gating (see getEnabledFrameworks).
-    const frameworks = this.getEnabledFrameworks();
 
     const rules = listParityRules();
     let renderedCount = 0;
@@ -8344,6 +8458,22 @@ Run different INTERNAL components on different agentic frameworks to spread LLM 
       content += '\n' + piNote;
       patched = true;
       result.upgraded.push('CLAUDE.md: added pi-cli framework awareness note');
+    }
+
+    // grok-build framework awareness (grok-build framework integration spec
+    // §10/§11, 2026-08-14) — Agent Awareness + Migration Parity: existing
+    // agents must learn that 'grok-build' is a valid fifth framework value.
+    // Ships DARK (requires the grok binary + a subscription login + explicit
+    // enabledFrameworks opt-in). Deliberately does NOT instruct proactive use
+    // and NEVER writes enabledFrameworks (review-2 finding 16: a migrator
+    // must not undark the fleet). Content-sniffed for idempotency.
+    if (content.includes('Per-Component Framework Routing') && !content.includes('grok-build')) {
+      const grokNote = `
+**Grok Build framework (additive, dark)** — \`grok-build\` is a valid fifth framework value wherever frameworks are configured (\`topicFrameworks\`, \`enabledFrameworks\`). It drives xAI's Grok Build CLI (subscription-billed via \`grok login --device-auth\`; the adapter REFUSES metered API keys). UNAVAILABLE unless explicitly enabled: nothing changes without the binary installed, a live subscription session, AND 'grok-build' in \`enabledFrameworks\`. Its weekly usage pool is NOT readable in advance — quota reports as unknown, and grok-build is structurally excluded from internal background routing and the failure-swap chain. When enabled+authed it also becomes a third cross-model spec-review family (GPT, Gemini, Grok). INTERACTIVE sessions need a SECOND, separate opt-in (\`sessions.grokInteractiveSessions\`) — enabling spec review can never open unbudgeted interactive sessions; headless job spawns do NOT run on grok yet: a job resolved to grok runs on another ENABLED framework whose binary is genuinely present and is LABELLED as that framework, and refuses with a named error when none qualifies — so read the session's framework label, not the pin, when asking whose quota ran a job. You can pin a topic to it conversationally (\"use grok here\"); if the binary is missing OR the interactive opt-in is unset, the pin falls back to the default framework WITH a notice naming WHICH of the two it was — it never silently launches another framework's CLI. ENROLMENT NOTE: adding a grok subscription to your account pool also changes how CLAUDE work is throttled on a single-Claude-account agent (the job brake moves onto pool headroom), and removing 'grok-build' from \`enabledFrameworks\` does NOT unenrol the account — unenrol it separately. HONEST COST NOTE: the billing sink is unproven, so budget grok runs as if metered and read your own token accounting rather than any vendor quota display. (Spec: \`docs/specs/grok-build-framework-integration.md\`.)
+`;
+      content += '\n' + grokNote;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added grok-build framework awareness note');
     }
 
     // Provider-Fallback Default Policy (2026-06-16) — Agent Awareness + Migration

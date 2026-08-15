@@ -923,6 +923,7 @@ export function resolveInjectionExposure(component: string | undefined): boolean
  */
 export type RoutingDoor =
   | 'pi-cli'
+  | 'grok-build'
   | 'codex-cli'
   | 'gemini-cli'
   | 'claude-code'

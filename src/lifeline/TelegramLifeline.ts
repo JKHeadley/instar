@@ -2470,6 +2470,14 @@ export class TelegramLifeline {
       // Do blank database credentials (consistent with existing pattern)
       '-e', 'DATABASE_URL=',
       '-e', 'DIRECT_DATABASE_URL=',
+      // ROUND-19: the FIFTH spawn site, and the most exposed one — this pane
+      // is Bash-capable, lives 30 minutes, and is the crash-doctor session.
+      // Round-18 scrubbed four sites and its verifying test read ONE FILE
+      // (SessionManager.ts), so 4-of-4 passed while 4-of-5 was the truth. The
+      // test's own comment claimed the method "needs no knowledge of which
+      // sites exist" — the hardcoded filename WAS that knowledge.
+      '-e', 'XAI_API_KEY=',
+      '-e', 'GROK_DEPLOYMENT_KEY=',
       '-e', 'DATABASE_URL_PROD=',
       '-e', 'DATABASE_URL_DEV=',
       '-e', 'DATABASE_URL_TEST=',

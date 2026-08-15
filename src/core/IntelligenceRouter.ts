@@ -46,6 +46,7 @@ import {
   NATURE_ROUTING_CRITICAL_GATES,
   resolveInjectionExposure,
 } from '../data/llmBenchCoverage.js';
+import { SUPPORTED_FRAMEWORKS } from './TopicFrameworksStore.js';
 import {
   DECISION_CORRELATION_ID,
   DECISION_MINT_MARKER,
@@ -270,7 +271,10 @@ interface DecisionCallContext {
  * surface). The TYPE is the compile-time guard; this set catches a stray key
  * arriving from raw JSON config at runtime (no effect — warn once, ignore).
  */
-const KNOWN_FRAMEWORKS: ReadonlySet<string> = new Set(['claude-code', 'codex-cli', 'gemini-cli', 'pi-cli']);
+// Round-17 (lessons-aware): omitted 'grok-build', so an operator setting a
+// per-framework swap cap for grok got a spurious "ignored (no effect)" warning.
+// Derived from the canonical list rather than hand-maintained.
+const KNOWN_FRAMEWORKS: ReadonlySet<string> = new Set<string>(SUPPORTED_FRAMEWORKS);
 
 /** Default clamp on any single resolved swap-attempt cap (per-target-swap-timeout-spec.md FD7). */
 const DEFAULT_SWAP_ATTEMPT_TIMEOUT_MAX_MS = 120_000;
