@@ -78,6 +78,61 @@ const ALLOW = /lint-allow-sync-spawn:/;
 const FUNNELED = /\bwithSyncOp\s*\(/;
 
 const inScanDir = (p) => SCAN_DIRS.some((d) => p === d || p.startsWith(d + '/'));
+
+/**
+ * Names this file has bound to a raw sync spawn, so `ex(...)` is seen the same
+ * as `execFileSync(...)`. Two forms, both ordinary code rather than evasions:
+ *
+ *   import { execFileSync as run } from 'node:child_process';   // renamed import
+ *   const ex = execFileSync;                                    // local alias
+ *
+ * Measured before this was added: BOTH walked past the check while the plain
+ * form was caught, and NEITHER appears anywhere in the scanned directories
+ * today — so this is a pure forward ratchet with no baseline to grow.
+ *
+ * DELIBERATELY NOT COLLECTED: `const ex = <something>.execFileSync`. The
+ * VIOLATION regex excludes a dot-prefixed name on purpose, and that exclusion
+ * was measured to be RIGHT: all 14 namespace-form occurrences in the scanned
+ * dirs are either calls through `SafeGitExecutor` (the audited git funnel, 13
+ * of them) or sit inside a generated hook script's template literal, which runs
+ * in its own process and cannot block this event loop. Widening to dot-prefixed
+ * names would flag the funnel itself. Recorded here so it is not re-litigated.
+ */
+function collectSyncSpawnAliases(content) {
+  const names = new Set();
+  const SPAWNS = '(?:spawnSync|execSync|execFileSync)';
+
+  // import { execFileSync as run } from 'node:child_process'
+  const importRe = new RegExp(
+    String.raw`import\s*\{([^}]*)\}\s*from\s*['"\`](?:node:)?child_process['"\`]`,
+    'g'
+  );
+  let m;
+  while ((m = importRe.exec(content)) !== null) {
+    for (const part of m[1].split(',')) {
+      const bit = part.trim().match(new RegExp(String.raw`^${SPAWNS}\s+as\s+([A-Za-z_$][\w$]*)$`));
+      if (bit) names.add(bit[1]);
+    }
+  }
+
+  // const ex = execFileSync;   (bare RHS only — see the dot note above)
+  const aliasRe = new RegExp(
+    String.raw`\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*${SPAWNS}\s*(?=[;,\n)])`,
+    'g'
+  );
+  while ((m = aliasRe.exec(content)) !== null) names.add(m[1]);
+
+  return names;
+}
+
+/** A call-shape matcher for the collected names, or null when there are none. */
+function aliasCallRegex(names) {
+  if (!names.size) return null;
+  const alt = [...names].map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  // Same dot-exclusion as VIOLATION: `obj.ex(...)` is a method on something
+  // else, not the bound spawn.
+  return new RegExp(String.raw`(?<![.\w])(?:${alt})\s*\(`);
+}
 const normalize = (p) => p.split(path.sep).join('/');
 
 function listFiles() {
@@ -133,12 +188,15 @@ function collectHits() {
       continue;
     }
     const lines = content.split('\n');
+    // Names this file has bound to a raw sync spawn. Collected up-front so a
+    // binding that appears BELOW the function using it is still resolved.
+    const aliasRe = aliasCallRegex(collectSyncSpawnAliases(content));
     const seenLineText = new Map(); // trimmed-line-text → occurrence count so far
     for (let i = 0; i < lines.length; i++) {
       const raw = lines[i];
       const trimmed = raw.trimStart();
       if (/^(\/\/|\*|\/\*)/.test(trimmed)) continue; // comment-only mention
-      if (!VIOLATION.test(raw)) continue;
+      if (!VIOLATION.test(raw) && !(aliasRe && aliasRe.test(raw))) continue;
       // FUNNELED: a sync spawn wrapped by withSyncOp(...) on the same line is the required
       // pattern (the marker sees it) — allowed unconditionally, never grandfathered/baselined.
       if (FUNNELED.test(raw)) continue;

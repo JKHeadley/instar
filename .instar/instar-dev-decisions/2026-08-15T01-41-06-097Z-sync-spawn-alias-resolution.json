@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-15T01:41:06.097Z",
+  "slug": "sync-spawn-alias-resolution",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 60,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-sync-subprocess-chokepoint.js"
+    ],
+    "addedLines": 59,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
