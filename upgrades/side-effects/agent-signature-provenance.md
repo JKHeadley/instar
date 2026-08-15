@@ -56,6 +56,16 @@ The known gaps, stated rather than implied:
   two as equivalent.
 - **Two local passes do not prove non-flakiness under CI conditions**; the test
   evidence is stated with that limit.
+- **The formatting boundary (found late, tested, unfixed).** The Telegram send
+  path rewrites markdown to HTML, so a signed body containing markdown arrives
+  with different bytes than were signed and a GENUINE message is rejected as
+  `bad-signature`. Measured: 251 → 280 bytes, verdict flips. The original live
+  proof missed it because plain text is a fixed point of the formatter — the
+  control could not have said anything else. Pinned by
+  `tests/unit/asp-formatting-boundary.test.ts`, including a passing test showing
+  the correct fix (sign the already-formatted bytes). This is the concrete reason
+  automatic outbound signing stays off: enabling it now would false-reject
+  ordinary formatted messages.
 
 ## 3. Failure modes
 

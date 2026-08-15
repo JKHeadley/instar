@@ -127,9 +127,42 @@ callers and is explicitly not durable.
 - Mutation check: forcing the signature check to pass kills 5 tests.
 - Live path (topic 29723): signed with the real agent identity (public
   fingerprint `63b1dbb21646e2f5`, matching the published routing fingerprint),
-  sent through the real relay. Sent bytes and recorded bytes are **byte-identical**
+  sent through the real relay. Sent bytes and recorded bytes are byte-identical
   (SHA-256 match), and the recorded copy classifies `agent-verified`. All four
   attacks were then run against those real bytes and all four were rejected.
+
+  **Scope of that proof, corrected.** The body used was PLAIN TEXT, which is a
+  *fixed point* of the Telegram markdown formatter — so the byte-identical result
+  was guaranteed by the choice of input rather than earned by the mechanism. It
+  certifies "a plain-text signed message survives the real path", NOT "signed
+  messages survive the real path". See the formatting boundary below.
+
+## The formatting boundary — a known, tested limitation
+
+**A signature covers BYTES, so any transform between signing and transmission
+breaks it.**
+
+The Telegram send path runs `formatForTelegram`, which rewrites markdown to HTML:
+`**bold**` becomes `<b>bold</b>`, a markdown link becomes an `<a href>`. A signed
+body containing markdown therefore arrives with different bytes than were signed,
+the body hash disagrees, and a **genuine agent message is classified
+`bad-signature`** — a false rejection.
+
+Measured: a 251-byte signed message became 280 bytes through the formatter and
+flipped from `agent-verified` to `rejected`. The tag itself survives intact — the
+damage is confined to the body, which is why the failure is `bad-signature` rather
+than `malformed`.
+
+**The fix is ordering, not cryptography: sign the bytes that will actually be
+sent.** Either sign at the egress boundary (after formatting), or send signed
+messages in a byte-preserving mode. `tests/unit/asp-formatting-boundary.test.ts`
+pins all of this, including a passing test showing that signing the
+already-formatted text verifies — so the fix has a target to satisfy rather than a
+description to follow.
+
+**Until that lands, signed messages must be plain text.** This is the reason
+automatic outbound signing is not enabled: turning it on before the boundary is
+resolved would produce false rejections on ordinary formatted messages.
 
 ## HTTP surface
 

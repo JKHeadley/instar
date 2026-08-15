@@ -61,6 +61,12 @@ with no tag classifies as `human`, which is what every existing message is.
 Agents must call `signMessage` explicitly — outbound signing is not automatic, so
 nothing starts appending tags on its own.
 
+**Signed messages must currently be plain text.** The Telegram send path rewrites
+markdown to HTML, which changes the bytes the signature covers — so a signed body
+containing markdown is rejected as `bad-signature` even though it is genuine. The
+fix is ordering (sign the bytes actually sent), it is pinned by tests, and it is
+the reason automatic outbound signing is not enabled yet.
+
 `GET /provenance` degrades honestly: with no identity on disk it answers `200`
 with `enabled: false` rather than 404, so a probe can tell "off" from "absent". A
 nonce store that fails to open reports `replayDefence: "unavailable"` rather than
@@ -84,6 +90,15 @@ The adversarial battery — unsigned label, altered body, swapped agent, swapped
 topic, exact replay — is rejected in tests and against real signed bytes on the
 live Telegram path, where the sent bytes and the recorded bytes were verified
 byte-identical by SHA-256 and the recorded copy classified `agent-verified`.
+
+**The scope of that live proof, stated rather than left implied:** the body used
+was plain text, which is a *fixed point* of the Telegram markdown formatter. The
+byte-identical result was therefore guaranteed by the choice of input rather than
+earned by the mechanism, and it certifies "a plain-text signed message survives
+the real path", NOT "signed messages survive the real path". A markdown body does
+not survive — see the plain-text constraint above. That gap is now covered by
+`tests/unit/asp-formatting-boundary.test.ts` rather than by a caveat someone has
+to remember.
 
 The checks are shown to be capable of failing: forcing the signature check to
 always pass kills 5 tests, and two dependency controls demonstrate each
