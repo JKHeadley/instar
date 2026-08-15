@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-15T00:41:03.021Z",
+  "slug": "tmux-send-lint-array-scope",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 171,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-no-unfunneled-tmux-literal-send.js"
+    ],
+    "addedLines": 159,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
