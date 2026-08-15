@@ -167,6 +167,26 @@ Worth admitting: I first wrote "three", because a third file mentions that
 function in a comment without ever calling it. The test caught my wrong number
 before it got into the document, which is precisely why counting beats asserting.
 
+And then the count paid for itself again. Tracing exactly *why* another agent's
+message never arrives turned up something worse than "it's blocked": it can never
+work at all. The system tries to hand a message to an already-running session
+first, but it only knows to do that if a session has handled that conversation
+before — and no session can, because starting one is the thing that's shut off.
+So it waits forever for a condition it is itself preventing. The obvious
+workaround — have the Grok agent speak first — doesn't help either, for a
+similar reason one layer down.
+
+That's the same trap as an earlier bug in this work, where a safety check refused
+to run a tool because its login had expired, and running that tool was the only
+thing that would have renewed the login. Two of those in one project is enough to
+call it a pattern rather than bad luck: when something refuses on a condition that
+could fix itself, ask what does the fixing, and whether the refusal is standing in
+its way.
+
+There is a possible way out, and the count is what found it: there's another
+delivery route that keeps a session warm, and it doesn't go through the shut door.
+I haven't run it, so I'm calling it a candidate rather than a fix.
+
 ## What you're deciding
 
 Whether instar ships a fifth, dark-by-default framework whose billing sink is

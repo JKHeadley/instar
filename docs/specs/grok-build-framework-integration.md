@@ -469,6 +469,40 @@ framework is not "wired" on a passing test alone.
   `server/routes.ts` — which names the builder in a comment but does not call it.
   The test caught the wrong number before it reached this document.
 
+  **And it is not merely blocked — it is UNBOOTSTRAPPABLE, by the same
+  self-blocking-recovery shape this spec already fixed once.** Traced through
+  `ThreadlineRouter`:
+
+  1. Inbound on a thread tries live-session injection first, but only
+     `if (existingEntry && this.messageDelivery)` — where `existingEntry` is the
+     per-thread resume record.
+  2. With no record it falls through to spawn → the closed headless lane → refused.
+  3. No session ever handles the thread, so no record is ever written.
+  4. Every later message repeats step 1. Forever.
+
+  The obvious escape does not work either: `TopicLinkageHandler` stamps a resume
+  entry on the OUTBOUND path, so "have the grok agent send first" looks like a
+  bootstrap — but that entry carries `sessionName: ''` ("filled by router on first
+  resume"), and `tryInjectIntoLiveSession` opens with
+  `if (!entry.sessionName) return null`. The field is filled only by a router
+  spawn/resume, which is the thing being refused.
+
+  This is structurally identical to §3.1's session-expiry deadlock — a refusal
+  standing between the system and the only action that would clear it. Two
+  independent instances of one shape in one integration is the honest reason to
+  name it as a CLASS rather than two bugs: **when a guard declines on a
+  recoverable condition, ask what performs the recovery and whether the refusal
+  prevents it from running.**
+
+  **A candidate remedy, deduced from the entrypoint census rather than guessed:**
+  warm-session A2A spawns a tmux keep-alive worker and admits it so follow-ups
+  inject into the live session — and `WarmSessionPool` is NOT one of the two
+  `buildHeadlessLaunch` call sites, so that path never touches the closed lane,
+  while grok's INTERACTIVE lane is open. Enabling it may therefore give
+  grok-primary agents working ingress without the scratch-cwd work. Stated as a
+  candidate, NOT a fix: it ships dark, and nothing here has been run to confirm
+  it end-to-end.
+
   Not fixed here for the same reason as the jobs case: closing the lane properly
   means the scratch-cwd wiring, and leaving it closed while suppressing the
   symptoms would hide a real incapacity. Carrier: CMT-1317. <!-- tracked: CMT-1317 -->

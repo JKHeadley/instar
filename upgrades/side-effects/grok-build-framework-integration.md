@@ -287,6 +287,27 @@ INCOMPLETE rather than extending it with cases I would be guessing at.
 Not fixed here — closing it properly is the scratch-cwd wiring, and suppressing
 the symptoms would hide a real incapacity. Carrier: CMT-1317.
 
+**6b. A2A ingress is not blocked — it is UNBOOTSTRAPPABLE, and it is the SECOND
+instance of a shape this branch already fixed once.** Traced through
+`ThreadlineRouter`: inbound tries live-session injection only
+`if (existingEntry && this.messageDelivery)`; with no per-thread resume record it
+falls to spawn; spawn is the closed lane; so no record is ever written; so every
+later message repeats. The escape fails too — `TopicLinkageHandler` stamps a
+record on the OUTBOUND path, but with `sessionName: ''`, and
+`tryInjectIntoLiveSession` returns early on exactly that.
+
+This is structurally identical to the §3.1 session-expiry deadlock: a refusal
+standing between the system and the only action that would clear it. Two
+independent instances in one integration is the honest reason to name it a CLASS.
+**When a guard declines on a recoverable condition, ask what performs the recovery
+and whether the refusal prevents it from running.**
+
+**The census paid for itself a second time.** `WarmSessionPool` is NOT one of the
+two `buildHeadlessLaunch` call sites, so the warm-session A2A path never touches
+the closed lane — while grok's INTERACTIVE lane is open. That makes enabling it a
+candidate remedy DEDUCED from the enumeration rather than guessed at. Stated as a
+candidate, not a fix: it ships dark and nothing was run to confirm it end-to-end.
+
 **7. So the list was DERIVED instead of left honest-but-unknown.** Recording
 "the scope is incomplete" was truthful and also lazy: finding two consumers by
 accident is a signal nobody ever counted. Every path into the lane goes through
