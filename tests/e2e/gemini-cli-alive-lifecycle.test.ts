@@ -19,9 +19,23 @@
  *      v0.25.2 installed): a real `gemini -m gemini-2.5-flash --approval-mode
  *      default -p "<known-answer>"` returns the expected PONG-style text. A
  *      genuine alive proof, not a mock.
+ *
+ * MEASURED 2026-08-14 (round 10) — WHERE THAT CLAIM CURRENTLY STOPS. On this dev box the smoke
+ * assertion has never actually executed. The binary IS present, so layer 2 runs and the file
+ * reports green — but the CLI cannot authenticate by any path here, so it always reaches the
+ * environmental skip instead of the assertion. Two independent facts, both measured rather than
+ * inferred: the child env is key-free BY DESIGN (the API-key vars are hard-deleted as billing
+ * vars — see tests/helpers/geminiEnvRefusal.ts), and there is no cached `oauth_creds.json` under
+ * ~/.gemini either. Run directly in a shell with no filtering at all, `gemini` still exits 41.
+ *
+ * So "a genuine alive proof, not a mock" describes what this test WOULD prove on a credentialed
+ * box, not what it has proven on this one. The skip is loud, and nothing here is broken — but a
+ * reader counting this file among the green ones should not conclude the gemini body was exercised.
+ * Stated rather than fixed: making it exercisable needs a credential decision that is the operator's.
  */
 
 import { describe, it, expect } from 'vitest';
+import { geminiEnvRefusal } from '../helpers/geminiEnvRefusal.js';
 import { buildIntelligenceProvider } from '../../src/core/intelligenceProviderFactory.js';
 import { GeminiCliIntelligenceProvider } from '../../src/core/GeminiCliIntelligenceProvider.js';
 import { CircuitBreakingIntelligenceProvider } from '../../src/core/CircuitBreakingIntelligenceProvider.js';
@@ -69,10 +83,22 @@ describe('Gemini CLI body — feature is alive (E2E)', () => {
 
       // A deterministic known-answer prompt — the gemini analog of the codex
       // Reply-with-PONGXYZ smoke. Run through the ALIVE provider, not a mock.
-      const out = await provider!.evaluate(
-        'Reply with exactly the single word: PONGGEMINI and nothing else.',
-        { model: 'fast', timeoutMs: 45_000 },
-      );
+      let out: string;
+      try {
+        out = await provider!.evaluate(
+          'Reply with exactly the single word: PONGGEMINI and nothing else.',
+          { model: 'fast', timeoutMs: 45_000 },
+        );
+      } catch (err) {
+        // `haveGemini` proves the binary is INSTALLED, not that it is USABLE. An uncredentialed CLI
+        // exits before it reads our prompt, so there is nothing here to assert about our code — the
+        // provider embeds the CLI's own stderr in this message, and only that named cause is skipped.
+        // Anything else rethrows, because a non-zero exit is also what a genuine break looks like.
+        const refusal = geminiEnvRefusal(err instanceof Error ? err.message : String(err));
+        if (!refusal) throw err;
+        console.warn(`Skipping live Gemini smoke assertion: ${refusal}.`);
+        return;
+      }
       expect(out.toUpperCase()).toContain('PONGGEMINI');
     },
     60_000,
