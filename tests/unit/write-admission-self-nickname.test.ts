@@ -77,6 +77,20 @@ describe('WriteAdmission wiring — selfNickname is supplied at every constructi
       ).toBe(true);
     });
 
+    it(`supplies nicknameOf at server.ts:${site.line}`, () => {
+      // The other half of the same gap, and the more useful one. `refusal()`
+      // builds  `This write belongs to ${ownerNick ? `'${ownerNick}'` : `machine ${ownerId}`}`
+      // so with nicknameOf unsupplied, ownerNick was ALWAYS null and every
+      // refusal fell to the raw-hex branch — the readable branch unreachable.
+      // Naming the owning machine is the entire point of a refusal that tells
+      // you where to re-send.
+      expect(
+        /\bnicknameOf\s*:/.test(site.opts),
+        `WriteAdmission constructed at server.ts:${site.line} without nicknameOf — every refusal ` +
+          `will name the owner by raw machine id instead of nickname`
+      ).toBe(true);
+    });
+
     it(`still supplies thisMachineId at server.ts:${site.line}`, () => {
       // A second required dep, asserted so a future edit that guts the options
       // object fails loudly here rather than only at the nickname.

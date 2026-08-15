@@ -24607,6 +24607,16 @@ export async function startServer(options: StartOptions): Promise<void> {
             (waMachineId
               ? (_listPoolMachines?.() ?? []).find((m) => m.machineId === waMachineId)?.nickname ?? null
               : null),
+          // Same gap, other direction, and the more useful half: `refusal()` builds
+          //   `This write belongs to ${ownerNick ? `'${ownerNick}'` : `machine ${ownerId}`}`
+          // so with nicknameOf unsupplied, ownerNick was ALWAYS null and every
+          // refusal fell to the raw-hex branch. The readable branch was
+          // unreachable — and naming the owning machine is the entire point of a
+          // refusal that tells you where to re-send. Same source and same
+          // null-safety as selfNickname above: both degrade to null, which is
+          // exactly today's value, so this can only ever ADD a name.
+          nicknameOf: (machineId: string) =>
+            (_listPoolMachines?.() ?? []).find((m) => m.machineId === machineId)?.nickname ?? null,
           isReadOnly: () => state.readOnly,
           isPoolActive: () => state.sessionPoolActive,
           registry: regMod.buildWriteDomainRegistry({ machineId: waMachineId }),
