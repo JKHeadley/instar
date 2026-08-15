@@ -147,19 +147,51 @@ with `enabled: false` rather than 404, so a probe can distinguish "off" from
 "absent"; and a nonce store that fails to open reports
 `replayDefence: "unavailable"` rather than running silently without it.
 
+## Inbound classification
+
+`AspInboundClassifier` chains onto the existing `onMessageLogged` seam (the one
+Usher and TopicIntentCapture already use), so every inbound message is
+classified without touching the hot path's control flow. Verdicts append to
+`asp-classifications.jsonl`.
+
+**Signal-only and unable to break delivery.** It never blocks, rewrites or drops
+a message and never throws into the message path — a provenance recorder that
+can break message delivery is a worse problem than the one it solves. Resolver
+failures, an unwritable ledger and malformed entries are counted and swallowed.
+
+The ledger stores the body **hash and length, never the body**: an audit trail
+without copying conversation content into a second file. Untagged operator
+traffic is classified but not recorded by default, so the interesting rows are
+not buried under the overwhelming majority case.
+
+## Key directory and what "verified" is worth
+
+`AspKeyDirectory` resolves peers from the threadline discovery cache, so agents
+other than self are verifiable. Self is authoritative and is never displaced by
+a peer entry — otherwise anyone able to write that cache could impersonate *us*
+to our own verifier.
+
+**A resolved key proves the signer holds that key. It does not prove the key
+belongs to the real peer.** That binding is made by the pairing/SAS layer, where
+a human compares words out of band. The directory therefore reports a `trust`
+source with every resolution: `self`, `mutual-verified`, or `discovery`.
+`discovery` is good enough to tell agents apart and reject forgeries; it is not
+good enough to stake a human-consequential decision on. Conflating the two is
+the failure this field exists to prevent — and note that even `mutual-verified`
+settles identity, never authority.
+
 ## Not yet done
 
-- **Inbound wiring** — classification is not yet applied automatically to every
-  received message, nor is the verdict written to the durable message record.
-  Today the mechanism is available (routes + library) but must be called; it is
-  not yet an automatic property of every inbound message. **This is the largest
-  remaining gap and the one that separates "available" from "in force".**
-- **Peer public-key directory** — the server resolves only itself, so any other
-  agent currently classifies `unknown-agent`. Correct-but-narrow: it fails
-  closed, never trusting an unrecognised signer.
+- **Not deployed.** Everything above is committed on a branch. The running agent
+  does not have it: `GET /provenance` answers 404 there and no classification
+  ledger exists. Between "committed" and "running" sit a merge, a publish and a
+  restart. **"Built" is the honest word until those happen.**
 - **Speaker-label integration** — the `renderSpeakerLabel` seam lives in the
-  uncommitted authorship-provenance worktree at the operator's approval gate,
-  and was deliberately not disturbed.
+  uncommitted authorship-provenance worktree at the operator's approval gate and
+  was deliberately not disturbed.
+- **No outbound auto-signing.** Agents must call `signMessage` explicitly; the
+  relay does not yet sign automatically, so unsigned agent traffic still exists
+  and still relies on the heuristic layer.
 
 ## Test evidence (three tiers, per the Testing Integrity Standard)
 
@@ -167,6 +199,8 @@ with `enabled: false` rather than 404, so a probe can distinguish "off" from
 |---|---|---|
 | Unit | `tests/unit/agent-signature-provenance.test.ts` | 24 |
 | Unit | `tests/unit/asp-nonce-store.test.ts` | 10 |
+| Unit | `tests/unit/asp-inbound-classifier.test.ts` | 11 |
+| Unit | `tests/unit/asp-key-directory.test.ts` | 10 |
 | Integration | `tests/integration/provenance-routes.test.ts` | 14 |
 | E2E (alive) | `tests/e2e/agent-signature-provenance-alive.test.ts` | 8 |
 
