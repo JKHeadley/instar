@@ -98,6 +98,51 @@ entries:
 That is exactly right, and the measurement above shows the pattern did not stop
 at two: 97 files now inherit a batch label as though each had been diagnosed.
 
+## I ran all 97. Every one passes.
+
+Rather than leave "97 excluded" as an unexamined number, I executed every one of
+them — twice, independently:
+
+| pass | files | individual tests | failures |
+|---|---|---|---|
+| 1 | 97 / 97 | 2,307 | **0** |
+| 2 | 97 / 97 | 2,307 | **0** |
+
+4,614 test executions across two full passes. **Not one excluded file failed.**
+
+Split: 31 non-threadline files (707 tests) + the 66 under `tests/unit/threadline/`
+(1,600 tests) that a single glob line excludes.
+
+### What this does and does not establish
+
+- **Establishes:** no excluded file has a *current, local* justification for being
+  excluded. Whatever was true when the batch label was applied is not true now.
+- **Does NOT establish that none is flaky.** Flakiness is intermittent by
+  definition, and two sequential passes on one machine cannot rule it out. CI runs
+  them sharded, in a different environment, under different timing — conditions
+  this measurement does not reproduce.
+- The honest conclusion is therefore not "restore all 97 immediately" but: **the
+  batch label has no evidence behind it today**, and each file deserves an
+  individual verdict rather than inheriting a group judgement made once.
+
+The strongest single case remains `tests/unit/server.test.ts` — core, excluded,
+and passing 18/18 on both runs.
+
+### Two broken probes caught while measuring
+
+Recorded because each would have produced a confident wrong answer:
+
+1. **A 0.49-second "test run" that reported nothing.** Too fast to have executed
+   anything; a shell variable had swallowed the file list. Caught by the *duration*
+   being impossible, not by re-reading the command.
+2. **`EXIT=1` beside zero failing files.** A contradiction, not a result:
+   `xargs -a` is GNU-only and macOS rejects it, so the run never started. The
+   "zero failures" was a plausible zero from a probe that never executed — the
+   exact failure mode this repo's own standards warn about.
+
+Both were caught by a result being *shaped wrong* rather than by inspecting the
+command more carefully. That is the reusable part.
+
 ## Not done here
 
 This is a **measurement**, deliberately. No exclusions were removed — each of the
