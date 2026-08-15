@@ -12,8 +12,9 @@ sections below mark what is IN and what is still PENDING.
 
 1. **IN — `codexSlotIdentity`**: reads which account is signed in at a Codex
    credential slot, offline, from the id_token already in `auth.json`.
-2. **PENDING — enrolment**: wire that resolver into the pool's verified-add path
-   so Codex accounts can be enrolled at all.
+2. **IN — enrolment**: `CompositeCredentialIdentityOracle` composes the Anthropic
+   oracle so the pool's verified-add path accepts a Codex slot. All four
+   production construction sites route through one factory.
 3. **PENDING — latency/error swap trigger**: extend the proactive-swap monitor to
    fire on degradation, not only on quota. Dark + dry-run first.
 4. **PENDING — failure-swap tail**: prefer the sibling Codex account before
@@ -116,7 +117,7 @@ Piece 1 is additive and inert until called. The trigger is behind a config flag
 that ships off. Enrolment is reversible by removing the pool rows. No schema
 change, no migration, no agent state to repair.
 
-## Evidence (piece 1)
+## Evidence (pieces 1-2)
 
 7 unit tests: real-shaped read; the enrolment property (two logins must resolve
 to DIFFERENT identities, else "swap to the other account" could be a swap to
@@ -130,3 +131,25 @@ a measurement rather than a check that could not fail.
 Verified against the REAL credentials, not only fixtures: `~/.codex` and
 `~/.codex-followme-sagemindai` resolve to two distinct accounts, both `pro`, with
 no token material in either result.
+
+### Added by piece 2
+
+6 further unit tests on the composite (Codex slot resolves without touching the
+network; a CONTROL asserting a non-Codex slot still reaches the Anthropic oracle
+verbatim; unavailable passthrough; a broken Codex slot reported honestly rather
+than mislabelled; a throwing probe degrading to Anthropic; two slots resolving
+differently).
+
+5 INTEGRATION tests — the tier that would have caught the real defect, since unit
+tests of a reader pass whether or not it is wired. They drive the REAL registrar
+against a REAL pool and assert BOTH directions: the Anthropic-only oracle REJECTS
+a Codex account (so the fix has something to be a fix of), and the composite
+enrols the same one. The identity guard is shown still biting — a caller-supplied
+email contradicting the slot is refused, and a slot with no credential is refused
+— so a clean pass is not the guard being switched off.
+
+**Tier declared 1, below the gate's suggested 2** (size-driven; risk floor 1). The
+override is recorded with reasoning in the decisions ledger. Rationale: the change
+composes rather than replaces, the pre-existing path is pinned unchanged by a
+control, and it creates no new authority — it widens which accounts may be
+enrolled while every existing guard still gates the add.

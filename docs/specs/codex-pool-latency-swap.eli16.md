@@ -44,6 +44,22 @@ was the wrong shape.
 a signed identity card listing the account's email, a unique account id, and the
 plan — no network call needed. Reading it closes the enrolment gap.
 
+**And the existing check learns to ask the right question.** The identity check is
+handed a folder path and nothing else — it isn't told which kind of account lives
+there — so the folder has to answer for itself. It can: a Codex folder holds that
+identity card, an Anthropic one doesn't. The check now looks for the card first
+(a quick local file read that comes back instantly when there isn't one) and only
+falls back to asking Anthropic's servers otherwise.
+
+Two details worth stating, because both are deliberate:
+
+- **The Anthropic path is untouched.** For any folder that isn't a Codex one, the
+  identical original check runs, with the identical result. A test exists purely
+  to prove that, so "Codex now works" can't quietly mean "Anthropic now doesn't."
+- **A broken Codex folder says so.** If the identity card is present but damaged,
+  that is reported as a Codex problem rather than passed along to Anthropic — who
+  cannot speak for it either — to be mislabelled as an Anthropic failure.
+
 **A slowness trigger, not just a fullness trigger.** The machinery that moves work
 to a healthier account today only reacts to an account being *used up*. Quota is
 not the problem here — the account is at seventeen percent. The trigger is being
