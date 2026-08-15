@@ -71,10 +71,10 @@ stall-coverage:
     liveness-surface: 'DEFECT if enabled: a grok session parked on an approval menu reads as running'
   - class: context-window-wall
     status: declared-gap
-    reason: 'no grok context-exhaustion signature or compact-equivalent recovery is wired'
+    reason: 'CORRECTED 2026-08-15 by the mentee: grok does NOT wall-and-die — it auto-compacts IN PLACE (same session, same process, checkpoints re-injected). The gap is that instar wires no DETECTION of that compaction, not that recovery is absent. The prior text ("no compact-equivalent recovery is wired") described Claude''s failure mode mapped onto grok.'
     issueRef: stallclass::context-window-wall::grok-build::gap
     closePath: CMT-1319
-    liveness-surface: 'DEFECT if enabled: context-walled grok sessions have no honest surface'
+    liveness-surface: 'grok self-heals; the gap is observability. Detectable from OUTSIDE the process: a compaction_checkpoints directory appears while the session id is UNCHANGED; PreCompact/PostCompact hooks fire (grok loads the Claude-compat hook file); the stream emits compact_boundary / auto_compact; token-usage percent drops with NO new session id and NO respawn. Notably absent: Claude''s "conversation too long" idle pane — so a watcher keyed on that signature sees nothing.'
 ---
 
 # grok-build — stall-coverage matrix

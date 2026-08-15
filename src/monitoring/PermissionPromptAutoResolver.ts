@@ -155,6 +155,36 @@ export interface MenuMatch {
 // ─── Pure structural helpers ─────────────────────────────────────────────────────
 
 const NUMBERED_OPTION_RE = /^\s*\d+\.\s/;
+/**
+ * grok-build's approval menu uses RADIO options, not `N. ` — characterized from a
+ * live wedge on 2026-08-15:
+ *
+ *     1 (●) Yes, and don't ask again for anything (always-approve mode)
+ *     2 (○) Yes, proceed
+ *     3 (○) No, reject (type to add feedback)
+ *     1/3:select │ Tab:next option │ Ctrl+c:cancel │ Esc:scrollback
+ *
+ * WHY THIS MATTERS MORE THAN A MISSING PATTERN. Every structural detector here
+ * missed that shape — no `N. ` options, no `❯` selector, no "Esc to cancel", no
+ * "Do you want to proceed". So a grok session sat frozen on its first tool
+ * approval and this resolver, which ships as an ALWAYS-ON floor whose stated
+ * contract is that it "never freezes silently", emitted nothing at all: no
+ * auto-answer AND no attention item. Its escalation fires when it DETECTS a menu
+ * it declines to answer — an UNDETECTED menu is indistinguishable from no menu,
+ * so the alarm is silent exactly where the floor is blind. Found by deploying a
+ * grok agent and driving it, not by reading this file.
+ *
+ * Deliberately narrow: the radio glyphs make it near-impossible to match ordinary
+ * numbered prose, and the caller's conditions (glyph-led, near-bottom, blocking
+ * affordance, not generating) still all apply.
+ */
+const RADIO_OPTION_RE = /^\s*\d+\s*\([●○]\)\s/;
+/** True for either menu shape — `N. label` (claude-code) or `N (●) label` (grok-build). */
+function isOptionLine(text: string): boolean {
+  return NUMBERED_OPTION_RE.test(text) || RADIO_OPTION_RE.test(text);
+}
+/** grok's footer affordance, e.g. `1/3:select` alongside `Esc:scrollback`. */
+const AFFORDANCE_RADIO_SELECT_RE = /\b\d+\/\d+:select\b/i;
 const OPTION_PREFIX_RE = /^\s*\d+\.\s*/;
 const AFFORDANCE_ESC_RE = /Esc to cancel/i;
 const AFFORDANCE_PROCEED_RE = /Do you want to proceed/i;
@@ -182,9 +212,17 @@ function hasAnyLeadGlyph(leadGlyphs: string): boolean {
 /** A line that is part of a menu's bottom structure (option line OR affordance). */
 function isMenuStructureLine(l: PaneTailLine): boolean {
   return (
-    NUMBERED_OPTION_RE.test(l.text) ||
+    // Either menu shape — `N. label` (claude-code) or `N (●) label` (grok-build).
+    // This is the THIRD place the option shape is consulted (with the Layer-3
+    // scan and the affordance test), and it is why the first cut of the grok fix
+    // did not work: I widened two of the three and the detector still declined,
+    // because the LAST line of a grok menu is its `1/3:select` footer, which this
+    // predicate did not recognise as bottom structure. A shape that must be taught
+    // in three places is a shape that gets taught in two.
+    isOptionLine(l.text) ||
     AFFORDANCE_ESC_RE.test(l.text) ||
-    AFFORDANCE_PROCEED_RE.test(l.text)
+    AFFORDANCE_PROCEED_RE.test(l.text) ||
+    AFFORDANCE_RADIO_SELECT_RE.test(l.text)
   );
 }
 
@@ -286,7 +324,7 @@ export function detectPersistingMenu(
   let glyphLedNumberedInWindow = false;
   for (let i = 0; i < tail.length; i++) {
     const l = tail[i];
-    if (!NUMBERED_OPTION_RE.test(l.text)) continue;
+    if (!isOptionLine(l.text)) continue;
     numberedLines.push(l);
     if (hasAnyLeadGlyph(l.leadGlyphs) && withinBottomWindow(tail, i)) {
       glyphLedNumberedInWindow = true;
@@ -300,6 +338,9 @@ export function detectPersistingMenu(
   const hasAffordance =
     AFFORDANCE_ESC_RE.test(joined) ||
     AFFORDANCE_PROCEED_RE.test(joined) ||
+    // grok-build's footer (`1/3:select`). Added with the radio-option shape so a
+    // grok wedge reaches the SAME escalation the claude shapes get.
+    AFFORDANCE_RADIO_SELECT_RE.test(joined) ||
     numberedLines.length >= 2;
   if (!hasAffordance) return null;
 

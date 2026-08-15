@@ -106,6 +106,45 @@ hand-written framework lists now derive from the canonical list.
   a terminal auth expiry. Detection exists; the raise is not built. The operator
   learns of a dead session from the refusal. Carrier: CMT-1325.
 
+## Post-deployment addendum — two defects found by DRIVING it (2026-08-15)
+
+Everything above was verified before deployment. Deploying the build into a real
+grok agent and driving a task through Telegram found two things that no amount of
+reading had:
+
+**1. The always-on permission floor was BLIND to grok's approval menu.** A grok
+session hit its first tool approval and froze. `PermissionPromptAutoResolver` —
+which ships as an unconditional safety floor whose stated contract is that it
+"never freezes silently" — emitted nothing: no auto-answer, and no attention item.
+Its audit file did not exist; the agent's attention queue held zero items.
+
+The mechanism is the sharpest shape in this branch: **the escalation fires when a
+menu is DETECTED and declined, so an UNDETECTED menu is indistinguishable from no
+menu.** The alarm is silent exactly where the floor is blind. Every structural
+detector missed grok — it uses `N (●)` radio options (not `N. `), no `❯` selector,
+and a `1/3:select` footer instead of "Esc to cancel" / "Do you want to proceed".
+
+Fixed for DETECTION only (`tests/unit/permission-prompt-grok-menu.test.ts`, using
+the verbatim pane text from the live wedge, with controls for no-regression on the
+claude shape, silence while generating, and silence on ordinary numbered prose).
+**Auto-ANSWERING grok prompts is deliberately NOT added**: this spec withholds
+`--always-approve` until the interactive lane's confinement is proven to the bar
+the one-shot lane meets, so auto-approving grok tool calls is an operator
+authority decision, not a bug fix. The silent half is closed; the answering half
+stays open and named.
+
+Worth recording that the first cut of this fix did not work: the option shape is
+consulted in THREE places and I widened two. A shape that must be taught in three
+places is a shape that gets taught in two.
+
+**2. The stall-coverage doc's `context-window-wall` row was WRONG**, and the
+mentee found it. It claimed grok has "no compact-equivalent recovery" and that a
+context-walled session has "no honest surface" — Claude's failure mode mapped onto
+grok. Grok auto-compacts IN PLACE (same session, same process) and continues.
+Verified independently before accepting it: the grok binary contains
+`auto_compact`, `compact_boundary` and `compaction_checkpoints`. Row corrected,
+including the outside-observable signature the mentor could not have supplied.
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**
