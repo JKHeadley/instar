@@ -467,6 +467,14 @@ framework is not "wired" on a passing test alone.
   exist. I wrote a reassurance about a guard without checking that the guard was
   armed, and shipped it.
 
+  **And the check was one read away.** `GET /guards` reports this guard's posture
+  directly — `{"key":"monitoring.crashLoopPauser","effective":"on-dry-run",
+  "runtime":{"enabled":true,"dryRun":true}}`. instar has a surface built to answer
+  exactly the question I answered from assumption instead. Note also what it does
+  NOT do: the row carries no `loadBearing` marker, so the load-bearing-gap alarm
+  would not have raised it either — the plain read would have, the alarm would not.
+  **Before writing that any guard bounds anything, read `/guards` for that guard.**
+
   **AND THE CONSEQUENCE THAT BULLET *ALSO* NEVER TRACED — observed live the same
   day, one step further out.** Scheduled jobs are not the only thing that needs a
   headless spawn. **Agent-to-agent ingress does too.** A Threadline message sent
