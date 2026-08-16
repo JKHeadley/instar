@@ -28,6 +28,7 @@ import { CircuitBreakingIntelligenceProvider } from '../../src/core/CircuitBreak
 import { SpawnCapIntelligenceProvider } from '../../src/core/SpawnCapIntelligenceProvider.js';
 import { detectGeminiPath } from '../../src/core/Config.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
+import { skipIfGeminiUnauthenticated } from '../helpers/gemini-usable.js';
 
 const geminiPath = detectGeminiPath();
 const haveGemini = !!geminiPath;
@@ -69,11 +70,19 @@ describe('Gemini CLI body — feature is alive (E2E)', () => {
 
       // A deterministic known-answer prompt — the gemini analog of the codex
       // Reply-with-PONGXYZ smoke. Run through the ALIVE provider, not a mock.
-      const out = await provider!.evaluate(
-        'Reply with exactly the single word: PONGGEMINI and nothing else.',
-        { model: 'fast', timeoutMs: 45_000 },
-      );
-      expect(out.toUpperCase()).toContain('PONGGEMINI');
+      //
+      // `haveGemini` only proves the BINARY exists. On a machine where the account
+      // cannot authenticate, this one-shot can never succeed and the failure says
+      // nothing about the code (2026-07-30, topic 37155). Only the auth-refusal
+      // signatures are treated as environment; every other error still fails, and
+      // the skip prints WHY so it can never read as a passing gemini check.
+      await skipIfGeminiUnauthenticated(async () => {
+        const out = await provider!.evaluate(
+          'Reply with exactly the single word: PONGGEMINI and nothing else.',
+          { model: 'fast', timeoutMs: 45_000 },
+        );
+        expect(out.toUpperCase()).toContain('PONGGEMINI');
+      });
     },
     60_000,
   );

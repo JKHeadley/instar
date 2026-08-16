@@ -217,6 +217,161 @@ describe('SafeGitExecutor.readStream — read-only funnel', () => {
   });
 });
 
+// ── readAsync ─────────────────────────────────────────────────────
+
+/**
+ * Tier 1 — the async read path's AUDIT PARITY and WALL-CLOCK BOUND.
+ *
+ * WHY THESE EXIST. Round-two review found that the worktree reaper's converted
+ * read path consumed `readStream`, which hands back a live child: the funnel
+ * emitted `allowed` at spawn and never learned how the read ENDED. A failed read
+ * — the kind that gates an IRREVERSIBLE worktree delete — was recorded as
+ * `allowed` with NO failure row, while `readSync` records
+ * `denied: subprocess-error`. The spec claimed the two paths audit identically.
+ * These tests are what make that claim checkable rather than asserted.
+ *
+ * Both are DISCRIMINATING: verified by reverting the fix and watching them fail
+ * (the audit case reports no denied row; the wall-clock case never settles and
+ * times out). That check is the point — the adversarial reviewer showed that
+ * seven of nine earlier fixes on this branch could be reverted with the whole
+ * suite still green.
+ */
+describe('SafeGitExecutor.readAsync — non-blocking read with audit parity', () => {
+  let sandbox: string;
+  beforeEach(() => {
+    sandbox = mkSandbox('sge-read-async-');
+    initRepo(sandbox);
+  });
+  afterEach(() => rmrf(sandbox));
+
+  const auditRows = (): Array<Record<string, unknown>> => {
+    const f = path.join(auditDir, 'destructive-ops.jsonl');
+    if (!fs.existsSync(f)) return [];
+    return fs.readFileSync(f, 'utf-8').split('\n').filter(Boolean)
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+  };
+
+  it('resolves with full stdout on a clean read', async () => {
+    const out = await SafeGitExecutor.readAsync(['ls-tree', '-r', '-z', 'HEAD'], {
+      cwd: sandbox,
+      operation: 'test-read-async',
+    });
+    expect(out).toContain('\tseed\0');
+  });
+
+  it('rejects a destructive verb before spawn, with the same denied row as readSync', () => {
+    const before = auditRows().length;
+    expect(() => SafeGitExecutor.readAsync(['reset', '--hard'], {
+      cwd: sandbox,
+      operation: 'test-read-async-block',
+    })).toThrow(SafeGitExecutorError);
+    const added = auditRows().slice(before);
+    expect(added.some((r) => r.outcome === 'denied'
+      && String(r.reason ?? '').includes('destructive-verb-via-readAsync'))).toBe(true);
+  });
+
+  it('AUDITS A FAILED READ as denied — the row readStream could not emit', async () => {
+    // A read-only verb against a path that is not a repo: git exits non-zero. The
+    // blocking path records `denied: subprocess-error`; before this fix the async
+    // path recorded only the spawn-time `allowed` and NOTHING about the failure.
+    const notARepo = mkSandbox('sge-read-async-norepo-');
+    try {
+      const before = auditRows().length;
+      await expect(SafeGitExecutor.readAsync(['rev-parse', '--verify', 'HEAD'], {
+        cwd: notARepo,
+        operation: 'test-read-async-failure-audit',
+      })).rejects.toThrow();
+      const added = auditRows().slice(before)
+        .filter((r) => r.operation === 'test-read-async-failure-audit');
+      expect(added.some((r) => r.outcome === 'denied'
+        && String(r.reason ?? '').startsWith('subprocess-error:'))).toBe(true);
+      // And it must NOT also claim the read was allowed — that is the misleading
+      // row the old path left behind.
+      expect(added.some((r) => r.outcome === 'allowed' && r.reason === undefined)).toBe(false);
+    } finally {
+      rmrf(notARepo);
+    }
+  });
+
+  it("the failure row carries GIT'S OWN reason, not just the exit code", async () => {
+    // Round-four precision finding: the async failure row existed (that was the
+    // round-three fix) but recorded only `exited 128`, while the blocking path
+    // records git's own `fatal: …`. On a read that gates an irreversible delete,
+    // "it failed" without "why" is a materially weaker trail — and the spec
+    // claimed the two paths emit the same evidence.
+    const notARepo = mkSandbox('sge-read-async-stderr-');
+    try {
+      const before = auditRows().length;
+      await expect(SafeGitExecutor.readAsync(['rev-parse', '--verify', 'no-such-ref'], {
+        cwd: notARepo,
+        operation: 'test-read-async-stderr-detail',
+      })).rejects.toThrow();
+      const row = auditRows().slice(before)
+        .find((r) => r.operation === 'test-read-async-stderr-detail' && r.outcome === 'denied');
+      expect(row).toBeDefined();
+      // Not merely the exit code: git's own explanation is present.
+      expect(String(row!.reason ?? '')).toMatch(/fatal:|not a git repository/i);
+    } finally {
+      rmrf(notARepo);
+    }
+  });
+
+  it('rejects rather than truncates when output exceeds maxBuffer', async () => {
+    // A truncated `git status --porcelain` reads as CLEAN, which would authorise a
+    // delete — so the bound must reject, never truncate.
+    await expect(SafeGitExecutor.readAsync(['ls-tree', '-r', '-z', 'HEAD'], {
+      cwd: sandbox,
+      operation: 'test-read-async-maxbuffer',
+      maxBuffer: 4,
+    })).rejects.toThrow(/exceeded 4 bytes/);
+  });
+
+  it('SETTLES when the child exits but a grandchild holds stdout open', async () => {
+    // THE WEDGE, reproduced — and it IS reproducible under the test runner.
+    // The fake git backgrounds a sleeper that inherits stdout, then exits 0. The
+    // child is gone, but `close` waits for every stdio pipe to close, so it never
+    // fires and only the independent wall-clock bound settles this promise.
+    //
+    // ROUND-FOUR CORRECTION. An earlier version of this test was DELETED on the
+    // stated grounds that the wedge "does not reproduce under the test runner,
+    // where `close` still fires". That diagnosis was wrong, and the wrong lesson
+    // went into the spec as durable methodology. The real defect was the deleted
+    // test's own LOOSE assertion (`/exited|wall-clock bound/`), which passed on
+    // either branch. The assertion below names ONLY the deadline, which is what
+    // makes it discriminate: with the timer removed this times out instead.
+    const bin = path.join(sandbox, 'bin');
+    fs.mkdirSync(bin);
+    const fakeGit = path.join(bin, 'git');
+    fs.writeFileSync(fakeGit, '#!/bin/sh\nsleep 120 &\nexit 0\n');
+    fs.chmodSync(fakeGit, 0o755);
+    await expect(SafeGitExecutor.readAsync(['ls-tree', '-z', 'HEAD'], {
+      cwd: sandbox,
+      operation: 'test-read-async-wallclock',
+      timeout: 1_000,
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` },
+    })).rejects.toThrow(/exceeded wall-clock bound/);
+  }, 30_000);
+
+  it('CONTROL: a child killed at its own timeout rejects with the exit-code message', async () => {
+    // NOT evidence for the wall-clock bound — a CONTROL, and now a TIGHT one. Here
+    // git itself is the sleeper, so the child-level SIGKILL closes the pipes and
+    // `close` fires; the deadline never runs. Asserting the exit-code message
+    // (rather than a disjunction that accepts either) is what keeps this test
+    // honest about which mechanism it is exercising.
+    const bin = path.join(sandbox, 'bin');
+    fs.mkdirSync(bin);
+    const fakeGit = path.join(bin, 'git');
+    fs.writeFileSync(fakeGit, '#!/bin/sh\nexec sleep 120\n');
+    fs.chmodSync(fakeGit, 0o755);
+    await expect(SafeGitExecutor.readAsync(['ls-tree', '-z', 'HEAD'], {
+      cwd: sandbox,
+      operation: 'test-read-async-killed',
+      timeout: 20,
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` },
+    })).rejects.toThrow(/exited null \(SIGKILL\)/);
+  }, 20_000);
+});
+
 // ── env handling ──────────────────────────────────────────────────
 
 describe('SafeGitExecutor — env denylist', () => {

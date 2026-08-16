@@ -14,6 +14,7 @@ import {
   buildGeminiOneShotArgv,
   spawnGeminiAndWait,
 } from '../../src/providers/adapters/gemini-cli/transport/geminiSpawn.js';
+import { isGeminiAuthRefusal } from '../helpers/gemini-usable.js';
 
 const geminiPath = detectGeminiPath();
 const haveGemini = !!geminiPath;
@@ -61,6 +62,21 @@ paths, tool names, bullet lists, or questions. Output prose only.
 
       if (result.exitCode !== 0 && /QUOTA_EXHAUSTED|exhausted your capacity|quota/i.test(result.stderr)) {
         console.warn('Skipping live Gemini narrative assertion: Gemini CLI quota is exhausted.');
+        return;
+      }
+
+      // Same shape as the quota skip above, for the OTHER environment state that
+      // makes a live one-shot impossible: the binary is installed but the account
+      // cannot authenticate. `haveGemini` only checks that the binary EXISTS, so
+      // it admitted a run that could never succeed (2026-07-30, topic 37155).
+      // LOUD by design — a silent skip would make "gemini verified working" and
+      // "gemini never ran" indistinguishable.
+      if (result.exitCode !== 0 && isGeminiAuthRefusal(result.stderr)) {
+        console.warn(
+          '[gemini-e2e] SKIPPED — gemini CLI installed but NOT AUTHENTICATED on this ' +
+          'machine, so the live one-shot cannot run. Environment state, not a code ' +
+          'failure. Reason: ' + result.stderr.split('\n')[0],
+        );
         return;
       }
 

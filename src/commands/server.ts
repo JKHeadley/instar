@@ -18941,7 +18941,17 @@ export async function startServer(options: StartOptions): Promise<void> {
             : () => {},
           now: () => Date.now(),
         }),
-        { ...config.monitoring?.orphanedWorkSentinel, enabled: _orphanedWorkEnabled },
+        {
+          ...config.monitoring?.orphanedWorkSentinel,
+          enabled: _orphanedWorkEnabled,
+          // ONE rollback lever for BOTH read routes: the sentinel inherits the reaper's
+          // read-path fan-out width unless it declares its own. Without this the
+          // documented lever (agentWorktreeReaper.snapshotConcurrency) would silently
+          // cover only one of the two routes it claims to serialise.
+          snapshotConcurrency:
+            config.monitoring?.orphanedWorkSentinel?.snapshotConcurrency
+            ?? config.monitoring?.agentWorktreeReaper?.snapshotConcurrency,
+        },
       );
       orphanedWorkSentinel.start();
       if (_orphanedWorkEnabled) {

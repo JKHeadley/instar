@@ -97,6 +97,10 @@ const ALLOWLIST = new Set([
   // Same bootstrap-escape pattern (blocking-process-scan lint, topic 21816
   // post-mortem #3) — read-only `git diff --cached --name-only` only.
   'scripts/lint-no-blocking-process-scans.js',
+  // Same bootstrap-escape pattern (un-awaited-Awaitable lint, topic 37155) —
+  // read-only `git diff --cached --name-only` for --staged. Cannot depend on
+  // the TS funnel because TS is not compiled when the lint runs in pre-push.
+  'scripts/lint-no-unawaited-awaitable-test.js',
   // Same bootstrap-escape pattern (dev-agent dark-gate conformance lint) —
   // read-only `git diff --cached --name-only` for --staged. Cannot depend on
   // the TS funnel because TS is not compiled when the lint runs in pre-push.

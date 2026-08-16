@@ -49,28 +49,28 @@ describe('makeOrphanedWorkSentinelDeps — real git', () => {
     });
   }
 
-  it('lists the worktree under .worktrees/ (excludes the main checkout)', () => {
-    const list = deps().listWorktrees();
+  it('lists the worktree under .worktrees/ (excludes the main checkout)', async () => {
+    const list = await deps().listWorktrees();
     expect(list.map((w) => path.basename(w.path))).toContain('feature');
     expect(list.some((w) => path.basename(w.path) === 'repo')).toBe(false);
   });
 
-  it('detects uncommitted work and produces a stable, change-sensitive signature', () => {
+  it('detects uncommitted work and produces a stable, change-sensitive signature', async () => {
     const d = deps();
-    expect(d.hasUncommittedWork(wt)).toBe(true);
-    const sig1 = d.workSignature(wt);
+    expect(await d.hasUncommittedWork(wt)).toBe(true);
+    const sig1 = await d.workSignature(wt);
     expect(sig1).toMatch(/^[0-9a-f]{12}$/);
     fs.writeFileSync(path.join(wt, 'a.txt'), 'one\ntwo\nthree\n');
-    expect(d.workSignature(wt)).not.toBe(sig1); // new edit ⇒ new signature
+    expect(await d.workSignature(wt)).not.toBe(sig1); // new edit ⇒ new signature
   });
 
-  it('reports a recent lastActivity for actively-edited files', () => {
-    const last = deps().lastActivityMs(wt);
+  it('reports a recent lastActivity for actively-edited files', async () => {
+    const last = await deps().lastActivityMs(wt);
     expect(last).not.toBeNull();
     expect(Date.now() - (last as number)).toBeLessThan(60_000);
   });
 
-  it('preserve() writes a non-destructive patch capturing tracked diff + untracked list', () => {
+  it('preserve() writes a non-destructive patch capturing tracked diff + untracked list', async () => {
     const info = { path: wt, branch: 'feature', headSha: 'x' };
     deps().preserve(info);
     const patchesDir = path.join(stateDir, 'orphaned-work-patches');
@@ -80,6 +80,6 @@ describe('makeOrphanedWorkSentinelDeps — real git', () => {
     expect(content).toMatch(/untracked\.txt/); // untracked file listed
     expect(content).toMatch(/\+two/); // tracked diff present
     // Non-destructive: the worktree still has its uncommitted changes.
-    expect(deps().hasUncommittedWork(wt)).toBe(true);
+    expect(await deps().hasUncommittedWork(wt)).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 {
-  "note": "FROZEN baseline of RAW synchronous subprocess spawns (spawnSync/execSync/execFileSync) outside the InFlightSyncOpMarker funnel, at tmux Event-Loop Resilience Increment 1. These are grandfathered while the (A)/(B) conversion lands incrementally. May only SHRINK — a NEW raw sync spawn outside the funnel fails the lint. Funnel a call through withSyncOp(), or add an inline \"// lint-allow-sync-spawn: <reason>\" for a genuine pre-runtime/CLI-boot call.",
+  "note": "FROZEN baseline of RAW synchronous subprocess spawns (spawnSync/execSync/execFileSync) outside the InFlightSyncOpMarker funnel, at tmux Event-Loop Resilience Increment 1. These are grandfathered while the (A)/(B) conversion lands incrementally. May only SHRINK \u2014 a NEW raw sync spawn outside the funnel fails the lint. Funnel a call through withSyncOp(), or add an inline \"// lint-allow-sync-spawn: <reason>\" for a genuine pre-runtime/CLI-boot call.",
   "frozenAt": "2026-06-22",
   "keys": [
     "src/core/AgentRegistry.ts::execSync(`lsof -iTCP:${port} -sTCP:LISTEN -P -n`, { stdio: 'ignore' });::0",
@@ -87,7 +87,7 @@
     "src/core/SessionManager.ts::execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 });::1",
     "src/core/SessionManager.ts::execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 });::2",
     "src/core/SessionManager.ts::return execFileSync(::0",
-    "src/core/SessionManager.ts::try { execFileSync('/bin/sleep', ['0.15'], { timeout: 1000 }); } catch { /* @silent-fallback-ok — sleep is best-effort */ }::0",
+    "src/core/SessionManager.ts::try { execFileSync('/bin/sleep', ['0.15'], { timeout: 1000 }); } catch { /* @silent-fallback-ok \u2014 sleep is best-effort */ }::0",
     "src/core/SessionManager.ts::try { execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 }); } catch { /* ignore */ }::0",
     "src/core/SessionManager.ts::try { execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 }); } catch { /* ignore */ }::1",
     "src/core/SessionManager.ts::try { execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 }); } catch { /* ignore */ }::2",
@@ -128,7 +128,6 @@
     "src/monitoring/SessionRecovery.ts::const output = execFileSync('lsof', ['-p', String(pid), '-Fn'], {::0",
     "src/monitoring/TelemetryHeartbeat.ts::const output = execFileSync('ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice'], { encoding: 'utf-8' });::0",
     "src/monitoring/WorktreeMonitor.ts::const result = spawnSync('/bin/sh', ['-c', `git ${args}`], {::0",
-    "src/monitoring/agentWorktreeGit.ts::out = execFileSync('lsof', ['-w', '-d', 'cwd', '-Fn'], { encoding: 'utf-8', timeout: 15_000, maxBuffer: 32 * 1024 * 1024 });::0",
     "src/monitoring/mcpProcessReaperDeps.ts::return execFileSync(file, args, { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'ignore'] });::0",
     "src/monitoring/probes/PlatformProbe.ts::execSync('sleep 0.2', { timeout: 1000 });::0",
     "src/monitoring/probes/PlatformProbe.ts::execSync(::0",

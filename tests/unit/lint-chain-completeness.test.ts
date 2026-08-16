@@ -51,6 +51,7 @@ const REQUIRED_LINTS = [
   'lint-no-direct-url-log.js',
   'lint-no-mainthread-cartographer-walk.js',
   'lint-no-opus-claude-cli-gating.js',
+  'lint-no-unawaited-awaitable-test.js',
   'lint-no-unbounded-llm-spawn.js',
   'lint-no-unfunneled-credential-write.js',
   'lint-no-unfunneled-headless-launch.js',

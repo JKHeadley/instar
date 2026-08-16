@@ -1,0 +1,29 @@
+{
+  "ts": "2026-07-30T04:04:46.027Z",
+  "slug": "worktree-read-path-eventloop-safety",
+  "suggestedTier": 2,
+  "declaredTier": 3,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/AgentWorktreeReaper.ts matches session reaper",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 332,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/AgentWorktreeReaper.ts",
+      "src/monitoring/OrphanedWorkSentinel.ts",
+      "src/monitoring/agentWorktreeGit.ts",
+      "src/monitoring/orphanedWorkGit.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 281,
+    "deletedLines": 51
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -8082,6 +8082,29 @@ CLI-created worktrees under \`~/.instar/agents/<agent>/.worktrees/\` accumulate 
       result.upgraded.push('CLAUDE.md: added AgentWorktreeReaper initial-pass bullet');
     }
 
+    // AgentWorktreeReaper read-path concurrency addendum (worktree-read-path-eventloop-
+    // safety): the non-blocking read path's ROLLBACK LEVER. Same treatment as the
+    // initial-pass and githubMergeCheck bullets above — inline-defaulted and
+    // behaviour-preserving when absent, but an incident lever no deployed agent knows
+    // about cannot be reached conversationally, which is the failure the Agent
+    // Awareness Standard names. Idempotent via content-sniffing on the config key.
+    if (content.includes('/worktrees/agent-reaper') && !content.includes('snapshotConcurrency')) {
+      const concurrencyBullet = `- **If either worktree status route is slow:** its read path is non-blocking and fans out a few worktrees at a time. Serialise it with \`{"monitoring": {"agentWorktreeReaper": {"snapshotConcurrency": 1}}}\` — the rollback lever for that path, covering BOTH routes. Default 4.`;
+      const anchorBullet = '- **Initial pass after boot:**';
+      const idx = content.indexOf(anchorBullet);
+      if (idx >= 0) {
+        const eol = content.indexOf('\n', idx);
+        content = eol >= 0
+          ? content.slice(0, eol + 1) + concurrencyBullet + '\n' + content.slice(eol + 1)
+          : content + '\n' + concurrencyBullet + '\n';
+      } else {
+        // Section text drifted — append rather than silently skip; awareness beats placement.
+        content += '\n' + concurrencyBullet + '\n';
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added AgentWorktreeReaper snapshotConcurrency bullet');
+    }
+
     // SessionReaper CPU-aware pressure + decision audit (RESPONSIBLE-RESOURCE-USAGE).
     // Tells the agent (a) the reaper now reaps under CPU strain, not only memory,
     // and (b) a silent, reviewable decision trail + endpoint exists. Without this an

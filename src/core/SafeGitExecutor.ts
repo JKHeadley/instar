@@ -1152,28 +1152,7 @@ export class SafeGitExecutor {
    * leaving stdout consumption and process completion checks to the caller.
    */
   static readStream(args: readonly string[], opts: SafeGitOptions): ChildProcess {
-    const { verb, targets } = extractVerbAndTargets(args, opts.cwd);
-    const verbArgs = sliceAfterVerb(args, verb);
-    const ambiguousReadOnly = isReadOnlyShape(verb, verbArgs);
-    if (ambiguousReadOnly === false) {
-      audit('git', opts.operation, verb, targets[0], 'denied', 'destructive-shape-via-readStream');
-      throw new SafeGitExecutorError(
-        `SafeGitExecutor.readStream called with destructive shape '${verb} ${verbArgs.join(' ')}' — use SafeGitExecutor.spawn instead.`,
-      );
-    }
-    if (ambiguousReadOnly === null && !READONLY_GIT_VERBS.has(verb)) {
-      audit('git', opts.operation, verb, targets[0], 'denied', 'destructive-verb-via-readStream');
-      throw new SafeGitExecutorError(
-        `SafeGitExecutor.readStream called with destructive verb '${verb}' — use SafeGitExecutor.spawn instead.`,
-      );
-    }
-    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts)) {
-      runSourceTreeChecks(targets, opts.operation, 'git', verb);
-    } else {
-      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
-    }
-
-    const env = sanitizeEnv(opts.env, opts.cwd);
+    const { verb, targets, env } = prepareReadOnlySpawn('readStream', args, opts);
     audit('git', opts.operation, verb, targets[0], 'allowed');
     return nodeSpawn('git', args as string[], {
       cwd: opts.cwd,
@@ -1185,43 +1164,170 @@ export class SafeGitExecutor {
   }
 
   /**
+   * Non-blocking whole-output read — the async twin of `readSync`.
+   *
+   * WHY THIS LIVES IN THE FUNNEL RATHER THAN IN THE CALLER. The obvious way to
+   * read git without blocking is `readStream` plus caller-side accumulation, and
+   * that is what the worktree reaper originally did. Round-two review found the
+   * hole: `readStream` hands back a live child and returns, so the funnel emits
+   * its `allowed` row at SPAWN time and never learns how the read ENDED. A read
+   * that failed — non-zero exit, killed on timeout, torn-down pipe — was audited
+   * as `allowed` with no failure row, on a path whose result gates an
+   * IRREVERSIBLE DELETE. `readSync` records `denied: subprocess-error` for
+   * exactly that case. Moving accumulation inside the funnel is what makes the
+   * two paths emit the same evidence instead of merely claiming they do.
+   *
+   * Emission contract, stated exactly (it is NOT byte-identical to `readSync`,
+   * and the spec says so): a refusal or guard failure emits the same single
+   * `denied` row and throws before any spawn; a completed read emits ONE terminal
+   * row — `allowed` on a clean exit, `denied: subprocess-error: …` on every
+   * failure shape. No spawn-time row is emitted, so a caller sees one row per
+   * read, same as `readSync`.
+   *
+   * Resolves only on a CLEAN exit (code 0). Partial stdout is discarded on every
+   * failure shape, so a truncated read can never be mistaken for a successful
+   * one — callers on the reaper path treat a rejection as "cannot determine",
+   * which routes to KEEP.
+   *
+   * `maxBuffer` is enforced by the CONSUMER here (the stream API cannot do it),
+   * and exceeding it REJECTS rather than truncates: a truncated
+   * `git status --porcelain` reads as CLEAN, which would authorise a delete.
+   *
+   * WALL-CLOCK BOUND. `timeout` is passed to the child AND enforced
+   * independently by a timer on this promise. The child-level timeout alone is
+   * not sufficient: it kills the child, but `close` only fires once every stdio
+   * pipe is closed, so a git that spawned a helper holding stdout can leave this
+   * promise pending forever. Round-two review traced the consequence — the
+   * reaper's single-flight markers clear in `.finally()`, which never runs on a
+   * promise that never settles, so ONE wedged read would pin both read routes
+   * and the background pass permanently. The independent timer makes settlement
+   * unconditional.
+   */
+  static readAsync(args: readonly string[], opts: SafeGitOptions): Promise<string> {
+    // Classification + guard run SYNCHRONOUSLY and throw before any spawn, so a
+    // refusal is indistinguishable from readSync's (same row, same throw shape).
+    const { verb, targets, env } = prepareReadOnlySpawn('readAsync', args, opts);
+    const timeoutMs = opts.timeout ?? 30000;
+    const maxBuffer = opts.maxBuffer ?? 10 * 1024 * 1024;
+    const encoding = opts.encoding ?? 'utf-8';
+
+    return new Promise<string>((resolve, reject) => {
+      let child: ChildProcess;
+      try {
+        child = nodeSpawn('git', args as string[], {
+          cwd: opts.cwd,
+          stdio: opts.stdio ?? 'pipe',
+          env,
+          timeout: timeoutMs,
+          killSignal: 'SIGKILL',
+        });
+      } catch (err) {
+        // @silent-fallback-ok: NOT a fallback — this REJECTS. The spawn failure is
+        // audited as denied and the error is propagated to the caller, which treats
+        // any rejection as "cannot determine" (→ KEEP). The bare `return` exits the
+        // executor callback after reject(), it does not return a degraded value.
+        const e = err instanceof Error ? err : new Error(String(err));
+        audit('git', opts.operation, verb, targets[0], 'denied', `subprocess-error: ${e.message}`);
+        reject(e);
+        return;
+      }
+
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      let settled = false;
+      let deadline: ReturnType<typeof setTimeout> | null = null;
+      // A bounded tail of stderr, kept ONLY to enrich the failure audit row.
+      // WHY: round-four review found the async failure row was structurally
+      // present but informationally thinner than the blocking one — `readSync`
+      // records git's own message (`fatal: ambiguous argument 'x': unknown
+      // revision`), while this path recorded only `exited 128`. On a read that
+      // gates an IRREVERSIBLE delete, "it failed" without "why" is a materially
+      // weaker trail, and the spec claimed the two paths emit the same evidence.
+      // Bounded so a chatty git cannot turn the audit into a memory sink.
+      let stderrTail = '';
+
+      const clearDeadline = (): void => {
+        if (deadline !== null) { clearTimeout(deadline); deadline = null; }
+      };
+      const fail = (err: Error): void => {
+        if (settled) return;
+        settled = true;
+        clearDeadline();
+        // Stop accumulating and terminate the child: on the failure paths NOTHING is
+        // awaiting this read, so a live child would keep appending to `chunks`.
+        try { child.stdout?.removeAllListeners('data'); } catch { /* best effort */ }
+        chunks.length = 0;
+        try { child.kill('SIGKILL'); } catch { /* already gone */ }
+        const detail = stderrTail.trim().split('\n').filter(Boolean).slice(-2).join(' | ');
+        audit(
+          'git', opts.operation, verb, targets[0], 'denied',
+          `subprocess-error: ${err.message}${detail ? ` \u2014 ${detail}` : ''}`,
+        );
+        reject(err);
+      };
+
+      // The independent wall-clock bound. Deliberately a little longer than the
+      // child's own timeout: the child-level kill is the preferred exit (it lets
+      // `close` fire and produces the precise exit-code message), and this only
+      // fires when that mechanism failed to settle us at all.
+      deadline = setTimeout(() => {
+        fail(new Error(
+          `git ${verb} exceeded wall-clock bound of ${timeoutMs + WALL_CLOCK_GRACE_MS}ms (child did not close)`,
+        ));
+      }, timeoutMs + WALL_CLOCK_GRACE_MS);
+      // Never hold the process open on this timer alone.
+      deadline.unref?.();
+
+      child.stdout?.on('data', (c: Buffer) => {
+        bytes += c.length;
+        if (bytes > maxBuffer) {
+          fail(new Error(`git ${verb} output exceeded ${maxBuffer} bytes`));
+          return;
+        }
+        chunks.push(c);
+      });
+      // Drain stderr so a chatty git cannot fill the pipe buffer and wedge the child —
+      // keeping only a bounded tail for the failure audit reason (see stderrTail).
+      child.stderr?.on('data', (c: Buffer) => {
+        if (stderrTail.length >= STDERR_AUDIT_TAIL_BYTES) return;
+        stderrTail += c.toString('utf-8');
+        if (stderrTail.length > STDERR_AUDIT_TAIL_BYTES) {
+          stderrTail = stderrTail.slice(0, STDERR_AUDIT_TAIL_BYTES);
+        }
+      });
+      child.stderr?.resume();
+      child.on('error', (err) => fail(err instanceof Error ? err : new Error(String(err))));
+      // A stream-level error (pipe torn down mid-read) is NOT covered by the child's
+      // own 'error' event, and an unhandled 'error' on a stream throws. Route both
+      // through fail() so a partial read can never resolve as a complete one.
+      child.stdout?.on('error', (err) => fail(err instanceof Error ? err : new Error(String(err))));
+      child.stderr?.on('error', () => { /* stderr is drained; its errors are not read-integrity */ });
+      child.on('close', (code, signal) => {
+        if (settled) return;
+        if (code === 0) {
+          settled = true;
+          clearDeadline();
+          audit('git', opts.operation, verb, targets[0], 'allowed');
+          resolve(Buffer.concat(chunks).toString(encoding));
+          return;
+        }
+        // Includes the child's own SIGKILL timeout path: partial output is discarded.
+        fail(new Error(`git ${verb} exited ${code ?? 'null'}${signal ? ` (${signal})` : ''}`));
+      });
+    });
+  }
+
+  /**
    * Read-only escape valve. Runs `git <args>` after verifying:
    *   - Verb is in READONLY_GIT_VERBS (or is an ambiguous verb in read-only shape).
    *   - assertNotInstarSourceTree passes against every target (defense-in-depth
    *     against repo-local aliases that could rebind a "read-only" verb).
    */
   static readSync(args: readonly string[], opts: SafeGitOptions): string {
-    const { verb, targets } = extractVerbAndTargets(args, opts.cwd);
-
     // Verb classification first, BEFORE source-tree check, so callers
     // misusing this method get a clear "use execSync" error rather than
     // a guard error first.
-    const verbArgs = sliceAfterVerb(args, verb);
-    const ambiguousReadOnly = isReadOnlyShape(verb, verbArgs);
-    if (ambiguousReadOnly === false) {
-      audit('git', opts.operation, verb, targets[0], 'denied', 'destructive-shape-via-readSync');
-      throw new SafeGitExecutorError(
-        `SafeGitExecutor.readSync called with destructive shape '${verb} ${verbArgs.join(' ')}' — use SafeGitExecutor.execSync instead.`,
-      );
-    }
-    if (ambiguousReadOnly === null && !READONLY_GIT_VERBS.has(verb)) {
-      audit('git', opts.operation, verb, targets[0], 'denied', 'destructive-verb-via-readSync');
-      throw new SafeGitExecutorError(
-        `SafeGitExecutor.readSync called with destructive verb '${verb}' — use SafeGitExecutor.execSync instead.`,
-      );
-    }
-
-    // Defense-in-depth: source-tree check on the read path too — UNLESS the
-    // caller opted into the narrow read-tier allowlist (the LAYER B/C
-    // canonical-ref read path that legitimately operates against the agent's
-    // own instar checkout). See SafeGitOptions.sourceTreeReadOk.
-    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts)) {
-      runSourceTreeChecks(targets, opts.operation, 'git', verb);
-    } else {
-      audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
-    }
-
-    const env = sanitizeEnv(opts.env, opts.cwd);
+    const { verb, targets, env } = prepareReadOnlySpawn('readSync', args, opts);
     let stdout: string;
     try {
       stdout = execFileSync('git', args as string[], {
@@ -1263,6 +1369,69 @@ export class SafeGitExecutor {
     }
     return SafeGitExecutor.execSync(args, opts);
   }
+}
+
+/**
+ * Grace added to the child-level timeout before the independent wall-clock bound
+ * in `readAsync` fires. The child's own timeout is the PREFERRED exit — it kills
+ * git and lets `close` deliver a precise exit-code message. This margin exists so
+ * the fallback only fires when that mechanism failed to settle the promise at all
+ * (a helper process holding stdout open past the kill), not as a competing racer.
+ */
+const WALL_CLOCK_GRACE_MS = 5_000;
+
+/**
+ * How much of a failing read's stderr is retained for its audit reason. Enough to
+ * carry git's own explanation (`fatal: ...`), small enough that it can never become
+ * a memory sink on a pathologically chatty failure.
+ */
+const STDERR_AUDIT_TAIL_BYTES = 2_000;
+
+/**
+ * Shared preamble for every READ-ONLY entry point (`readSync`, `readStream`,
+ * `readAsync`): verb classification, destructive-shape refusal, source-tree
+ * guard, and env scrubbing — each with its own audit row, throwing before any
+ * spawn on refusal.
+ *
+ * WHY IT IS EXTRACTED. These three methods must apply an IDENTICAL admission
+ * decision; three hand-copied preambles are three chances for them to drift, and
+ * a read path that quietly admits more than its siblings is a hole in the funnel
+ * rather than a style problem. `method` only selects the wording of the refusal
+ * (which sibling to use instead) — never the decision.
+ */
+function prepareReadOnlySpawn(
+  method: 'readSync' | 'readStream' | 'readAsync',
+  args: readonly string[],
+  opts: SafeGitOptions,
+): { verb: string; targets: string[]; env: NodeJS.ProcessEnv } {
+  const alternative = method === 'readSync' ? 'execSync' : 'spawn';
+  const { verb, targets } = extractVerbAndTargets(args, opts.cwd);
+  const verbArgs = sliceAfterVerb(args, verb);
+  const ambiguousReadOnly = isReadOnlyShape(verb, verbArgs);
+  if (ambiguousReadOnly === false) {
+    audit('git', opts.operation, verb, targets[0], 'denied', `destructive-shape-via-${method}`);
+    throw new SafeGitExecutorError(
+      `SafeGitExecutor.${method} called with destructive shape '${verb} ${verbArgs.join(' ')}' — use SafeGitExecutor.${alternative} instead.`,
+    );
+  }
+  if (ambiguousReadOnly === null && !READONLY_GIT_VERBS.has(verb)) {
+    audit('git', opts.operation, verb, targets[0], 'denied', `destructive-verb-via-${method}`);
+    throw new SafeGitExecutorError(
+      `SafeGitExecutor.${method} called with destructive verb '${verb}' — use SafeGitExecutor.${alternative} instead.`,
+    );
+  }
+
+  // Defense-in-depth: source-tree check on the read path too — UNLESS the
+  // caller opted into the narrow read-tier allowlist (the LAYER B/C
+  // canonical-ref read path that legitimately operates against the agent's
+  // own instar checkout). See SafeGitOptions.sourceTreeReadOk.
+  if (!isSourceTreeCheckBypassed(verb, verbArgs, opts)) {
+    runSourceTreeChecks(targets, opts.operation, 'git', verb);
+  } else {
+    audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
+  }
+
+  return { verb, targets, env: sanitizeEnv(opts.env, opts.cwd) };
 }
 
 function isSourceTreeCheckBypassed(

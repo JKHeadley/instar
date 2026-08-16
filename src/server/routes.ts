@@ -7943,12 +7943,23 @@ export function createRoutes(ctx: RouteContext): Router {
   // each kept?": every `.worktrees/` worktree's verdict (active-lock /
   // uncommitted-changes / not-stale / unmerged / reap-eligible) + the reclaimable
   // count + whether reaping is armed (enabled, dryRun). Read-only, Bearer-auth.
-  router.get('/worktrees/agent-reaper', (_req, res) => {
+  // ASYNC since the event-loop fix: `snapshot()` fans git reads out per worktree,
+  // and as a synchronous handler this froze the whole server loop for 10.6s per
+  // request on a 48-worktree agent (measured 2026-07-29). The handler is now async
+  // and the snapshot is non-blocking + bounded + single-flighted.
+  router.get('/worktrees/agent-reaper', async (_req, res) => {
     if (!ctx.agentWorktreeReaper) {
       res.status(503).json({ error: 'agent worktree reaper unavailable' });
       return;
     }
-    res.json(ctx.agentWorktreeReaper.snapshot());
+    try {
+      res.json(await ctx.agentWorktreeReaper.snapshot());
+    } catch {
+      // snapshot() already absorbs per-worktree and listing failures; this is the
+      // last-resort guard so a rejected promise can never become an unhandled
+      // rejection that takes the server down.
+      res.status(500).json({ error: 'agent worktree reaper snapshot failed' });
+    }
   });
 
   // ── External-Hog zombie auto-kill sentinel (CMT-1901) ──
@@ -8017,12 +8028,19 @@ export function createRoutes(ctx: RouteContext): Router {
   // snapshot: one classifier pass over the agent's worktrees (skip / orphaned +
   // reason) + the orphaned count + whether the sentinel is armed + whether the
   // optional preservation patch is on. 503 when dark (not wired). Bearer-auth.
-  router.get('/orphaned-work', (_req, res) => {
+  // ASYNC since the event-loop fix — same hazard shape as the reaper route above:
+  // this ran one classifier pass over every worktree synchronously, measured at
+  // 3.7s of frozen event loop per request on a 48-worktree agent (2026-07-29).
+  router.get('/orphaned-work', async (_req, res) => {
     if (!ctx.orphanedWorkSentinel) {
       res.status(503).json({ error: 'orphaned-work sentinel unavailable (dark)' });
       return;
     }
-    res.json(ctx.orphanedWorkSentinel.snapshot());
+    try {
+      res.json(await ctx.orphanedWorkSentinel.snapshot());
+    } catch {
+      res.status(500).json({ error: 'orphaned-work snapshot failed' });
+    }
   });
 
   // McpProcessReaper (RESPONSIBLE-RESOURCE-USAGE — MCP-leak fix, Option B). The

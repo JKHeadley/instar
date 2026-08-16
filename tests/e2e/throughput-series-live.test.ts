@@ -5,12 +5,19 @@ import { createThroughputRoutes } from '../../src/server/throughputRoutes.js';
 
 describe('Throughput series route is alive', () => {
   it('serves the real route contract through Express', async () => {
+    // Dates are RELATIVE to now, deliberately. They were hardcoded to
+    // 2026-07-22/23, which sat inside the 7-day window when the test was written
+    // and silently fell out of it on 2026-07-30 — the route then returned an
+    // empty series and the test failed for a reason that had nothing to do with
+    // the code. A fixture that expires is a test with a hidden clock in it.
+    const daysAgo = (n: number): string =>
+      new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
     const graphql = async () => ({
       search: {
         issueCount: 1,
         nodes: [{
             number: 42, title: 'Feature', author: { login: 'JKHeadley' },
-            createdAt: '2026-07-22T12:00:00Z', mergedAt: '2026-07-23T12:00:00Z',
+            createdAt: daysAgo(3), mergedAt: daysAgo(2),
             additions: 70, deletions: 30,
             reviews: { nodes: [] }, commits: { totalCount: 2 },
           }],

@@ -6229,6 +6229,11 @@ export interface MonitoringConfig {
     /** Catch multi-commit squash-merges via GitHub merged-PR state (default true;
      *  fail-safe to git-cherry-only). Set false to disable the network call. */
     githubMergeCheck?: boolean;
+      /** Max concurrent per-worktree evaluations in a READ snapshot (default 4).
+       *  THE ROLLBACK LEVER for the non-blocking read path: set to 1 to serialise the
+       *  fan-out (slowest, gentlest) without reverting anything. Applies to BOTH read
+       *  routes. Inline-defaulted, so absence preserves shipped behaviour. */
+      snapshotConcurrency?: number;
   };
   /**
    * SingleInstanceLock — the server-boot fork-bomb guard (docs/specs/
@@ -6263,6 +6268,10 @@ export interface MonitoringConfig {
     settleMs?: number;
     preserveWork?: boolean;
     maxFlagsPerPass?: number;
+      /** Max concurrent per-worktree evaluations in a READ snapshot. Inherits
+       *  monitoring.agentWorktreeReaper.snapshotConcurrency when unset, so ONE lever
+       *  serialises both read routes. */
+      snapshotConcurrency?: number;
   };
   /**
    * ExternalHogSentinel (CMT-1901, docs/specs/external-hog-zombie-autokill-sentinel.md)
