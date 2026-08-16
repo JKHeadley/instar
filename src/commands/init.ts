@@ -1204,6 +1204,29 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
 // ── Cloud Backup Setup ──────────────────────────────────────────────
 
 /**
+ * True when this process is an automated test run.
+ *
+ * `initProject` is called by seven test files, and its cloud-backup step ends in
+ * `gh repo create` against whatever GitHub account the ambient CLI is authenticated
+ * as. Tests isolate the FILESYSTEM (they redirect HOME to a temp dir) but nothing
+ * isolated the NETWORK, so every run of those tests created real private repos on
+ * the operator's account and the temp-dir cleanup never knew they existed. That is
+ * how 377 empty `instar-*-test-<random>` repos accumulated on one account between
+ * 2026-06-14 and 2026-08-15 — three per run of a single unit test.
+ *
+ * The guard lives here rather than in the tests deliberately (Structure > Willpower):
+ * fixing the one test that happened to be noticed leaves the other six, and any test
+ * written later, free to do it again.
+ *
+ * Vitest sets `VITEST`; `NODE_ENV=test` covers other runners. `CI` is deliberately
+ * NOT a signal — a genuine `instar init` in someone's automation should still get
+ * its backup.
+ */
+export function isAutomatedTestRun(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !!env.VITEST || env.NODE_ENV === 'test';
+}
+
+/**
  * Set up cloud backup for a standalone agent.
  *
  * Philosophy: Users expect their data to be backed up. If the machine crashes,
@@ -1218,6 +1241,16 @@ async function initStandaloneAgent(agentName: string, options: InitOptions): Pro
  * 5. Create private repo automatically
  */
 async function setupCloudBackup(projectDir: string, stateDir: string, agentName: string): Promise<void> {
+  // A test run gets no cloud backup at all. Returning before the local git work as
+  // well as the remote call keeps the skip on one obvious line — no test asserts on
+  // backup artifacts, and a half-configured local repo with no remote would be a
+  // stranger state to reason about than none.
+  if (isAutomatedTestRun()) {
+    console.log();
+    console.log(pc.dim('  Cloud backup skipped — automated test run (no GitHub repository is created).'));
+    return;
+  }
+
   console.log();
   console.log(pc.bold('  Cloud Backup (recommended)'));
   console.log(pc.dim('  Backs up your agent data to the cloud so nothing is lost if this machine crashes.'));
