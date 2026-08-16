@@ -91,12 +91,19 @@ operator is looking at; and plan rendering must recompute because the state choo
 `money-layer-disable` and `money-layer-disable-store-only`. `GET /caps` is gated and cannot
 be relied on as a recomputation point.
 
-**Audited on TRANSITION, not on observation.** Since the state is recomputed on every read,
-auditing "we saw `config-enabled`" would spam the log in proportion to dashboard polling and
-would also *miss* nothing useful. The store therefore persists `lastObservedSourceState`, and
-an audit row is appended only when the recomputed state differs from it, keyed
-`enable-source-transition:<from>-><to>`. A transition that recurs after a genuine change back
-and forth is audited each time; a thousand identical reads produce one row.
+**Audited on TRANSITION, and only from paths that already write.** The state is recomputed
+on every read, but **a read never writes** — `GET /routing-spend/enable-status` is genuinely
+read-only, with no audit append and no `lastObservedSourceState` update. Making a polled GET
+capable of audit writes would both contradict its contract and let dashboard polling drive
+log volume.
+
+So `lastObservedSourceState` is compared and updated only on paths that are already mutating:
+**money-layer construction (boot), `config-adopt`, and each commit's post-verify step.** An
+audit row keyed `enable-source-transition:<from>-><to>` is appended when the recomputed state
+differs from the stored one. The cost of this choice, stated: a config edit adopted by
+nothing is noticed at the next boot or adopt rather than at the next poll — acceptable,
+because the operator-facing surface shows the current state and its `configSnapshotAt`
+regardless of whether a row was written.
 
 **MLE-2 — intent is not permission to spend.**
 
@@ -113,6 +120,15 @@ and forth is audited each time; a thousand identical reads produce one row.
   the layer is off, so a process that lost the lock could otherwise still write. A lost lock
   fails closed: spend refuses, authority writes refuse, and authoritative audit appends
   refuse.
+
+  **Freeze is the ONE exception, and it must be**, or the emergency stop would be the thing
+  the lock takes away. A freeze under a lost lock is accepted and applied, because its effect
+  is to REFUSE spend — and the spend path independently fails closed under a lost lock
+  anyway, so freeze can only ever agree with it, never widen authority. It is recorded to
+  the server log marked non-authoritative if the audit append cannot be trusted, and the
+  operator is told the freeze applied but its audit row is provisional. **Unfreeze is NOT
+  exempt**: resuming spend under a lost lock is refused, so the exemption strictly cannot be
+  used to turn spending back on.
 
   **The lost-lock case needs its own reporting path, or the refusal would be unrecordable** —
   a refusal that cannot be audited because auditing is what is refused. So: when the lock is
@@ -147,8 +163,19 @@ and forth is audited each time; a thousand identical reads produce one row.
       channel) with its before/after — it changes what may spend, so it is an authority
       event regardless of which direction it moved.
 
-    **`config-adopt` re-reads ONE key, not the whole config.** It adopts
-    `routingSpend.money.*` into the process snapshot and nothing else. A general config
+    **`config-adopt` adopts an enumerated field list, not a subtree.** `routingSpend.money.*`
+    was too loose — it could sweep in limits and provider knobs, so a `wouldIncreaseAuthority:
+    false` adoption could still change operational money behaviour under Bearer alone. The
+    adopted set is exactly:
+
+    | Field | Authority-bearing? |
+    |---|---|
+    | `routingSpend.money.enabled` | yes |
+    | `routingSpend.money.limits.*` | yes — a raised cap increases authority |
+
+    `wouldIncreaseAuthority` is computed over **every** field in that list, not `enabled`
+    alone: any cap raised, or the layer moving toward on, requires the PIN. Nothing outside
+    the list is adopted. A general config
     reload would be a far broader authority than a money control — it could change session,
     messaging or guard settings through a money route — so the scope is pinned to the keys
     this spec owns. The earlier phrasing "changes no state" was wrong and is withdrawn: it
@@ -193,7 +220,7 @@ because they are the door to turning it on. Six mutate or act; `GET
 |---|---|---|---|
 | `POST /routing-spend/plan` | Bearer | `{ action: <member of MONEY_LAYER_PREGATE_ACTIONS> }` | `{ planId, nonce, renderedText, action, sourceStateAtRender, machineId, machineNickname, expiresAt }` |
 | `POST /routing-spend/money-layer/commit` | Bearer **+** PIN | `{ pin, planId, nonce }` | `{ lifecycleState, enforcementReady, enableSources, storeCleared, probe, message }` |
-| `POST /routing-spend/money-layer/restart` | Bearer **+** PIN | `{ nonce }` | `{ accepted, message }` |
+| `POST /routing-spend/money-layer/restart` | Bearer **+** PIN | `{ pin, nonce }` | `{ accepted, message }` |
 | `POST /routing-spend/config-inspect` | Bearer | `{}` | `{ onDiskEnabled, snapshotEnabled, differs, wouldIncreaseAuthority, configSnapshotAt }` — READ ONLY, adopts nothing |
 | `POST /routing-spend/config-adopt` | Bearer **+** PIN when `wouldIncreaseAuthority`, else Bearer | `{ pin? }` | same shape as `enable-status`, after adopting the on-disk config |
 | `POST /routing-spend/money-layer/restart-nonce` | Bearer | `{}` | `{ nonce, expiresAt, confirmationText }` — refused (409) outside the three restartable states |
@@ -264,10 +291,20 @@ merged history Bearer-readable pre-gate would hand the agent caps, arming state,
 history, spend figures and operational timing while the money layer is off, which quietly
 weakens the requester ≠ authorizer boundary the rest of this spec defends.
 
-So the log is **split by sensitivity, not by availability**: enable/disable/restart/status
-rows are pre-gate readable (they are the record of the operator's own switch actions, and
-the agent already initiates those plans); caps, arming, freeze and spend rows require
-`servingReady || settlingCount > 0` exactly like the other money views. Both remain one
+So the log is **split by sensitivity, not by availability**, with the row types enumerated
+rather than described by category:
+
+| Row type | Pre-gate readable? |
+|---|---|
+| enable/disable plan rendered, enable/disable committed | yes |
+| enable-source transition, lifecycle transition | yes |
+| restart requested / initiated / observed-ready | yes |
+| config-inspect, config-adopt | yes |
+| **PIN attempt failed** | **no** — attempt timing is an attack signal |
+| caps adjusted, door armed | no |
+| freeze / unfreeze | no |
+| probe result | no — it reveals enforcement timing |
+| spend rows | no | Both remain one
 merged, time-ordered view for an operator whose read satisfies both conditions.
 
 **Sensitivity filtering happens BEFORE pagination**, and cursors are opaque — they encode no
@@ -297,8 +334,8 @@ money state — it restarts a process — so binding it to a rendered plan would
 without adding a decision for the operator to read. It is therefore PIN-gated and audited
 but not plan-bound, and the difference is stated rather than left as an inconsistency with
 §7's "authority writes are plan-bound". To close the gaps that plan-binding would otherwise
-have covered: the route takes a **single-use nonce** issued by `GET
-/routing-spend/enable-status` (replay/CSRF protection), the nonce expires on a short window
+have covered: the route takes a **single-use nonce** minted by `POST
+/routing-spend/money-layer/restart-nonce` (replay/CSRF protection), the nonce expires on a short window
 (stale-PIN replay), and it is accepted only in `enable-pending-restart`, `probe-failed` or
 `construction-failed`.
 
@@ -655,6 +692,8 @@ satisfy an external auditor, that is a different requirement and needs its own d
 | T12 | Boot with a stored failure and no successful enable since yields that failure state, not `enable-pending-restart`. |
 | T12b | An enable commit in `construction-failed` returns `construction-failed` with a restart-required message and does NOT claim to have probed. |
 | T13 | Freeze is reachable in every state, including both failure states and `config-enabled`. |
+| T32 | `GET /routing-spend/enable-status` performs NO writes: repeated polling appends no audit rows and does not update `lastObservedSourceState`. |
+| T33 | In `config-enabled` + frozen, the surface states that freeze is active but the layer is still enabled by config — it must not read as a durable disable. |
 | T29 | `config-inspect` is Bearer-only, adopts nothing, and reports `wouldIncreaseAuthority` correctly. |
 | T30 | `config-adopt` is REFUSED without a PIN when `wouldIncreaseAuthority` is true, and accepted with Bearer alone when it is false. |
 | T31 | Restart is accepted in all three restartable states and refused in `disabled` and `probed`. |
@@ -777,6 +816,12 @@ route here writes `.instar/config.json`, deliberately.
 What a remote operator CAN do: **freeze**, which stops spend immediately and completely, and
 is always reachable. That is a real stop, not a consolation — but it is a different control
 from "off", and the surface says so instead of implying parity.
+
+**A frozen-but-config-enabled state must never read as "off".** The surface says both facts
+together — *spending is frozen; the layer is still enabled by a config-file setting* — with
+the freeze presented as active-and-holding rather than as a completed disable, because an
+operator who believes they durably disabled and later unfreezes would resume spending they
+thought was off. T33 covers the displayed state.
 
 To genuinely disable, the config key must be removed on the machine. The Spend tab therefore
 shows, in the `config-enabled` state, **the exact file path and key to remove** — so the
