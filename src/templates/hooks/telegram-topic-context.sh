@@ -9,8 +9,23 @@
 # or session restart — where the agent receives a message without
 # conversation context and responds with a generic greeting.
 #
+# Time injection: fires on every UserPromptSubmit regardless of [telegram:N]
+# prefix so the agent always sees current wall-clock time. Addresses the
+# Claude Code "harness injects date, not time of day" blind spot that caused
+# agents to hallucinate clock times in long sessions.
+#
 # Exit codes:
 # - 0: Success (context injected or no telegram prefix found)
+
+# Current wall-clock time — always emitted, BEFORE the [telegram:N] early-exit.
+NOW=$(date +'%Y-%m-%d %H:%M:%S %z (%Z)' 2>/dev/null)
+if [ -n "$NOW" ]; then
+  echo "--- CURRENT TIME ---"
+  echo "$NOW"
+  echo "Wall-clock at user-prompt submit. Quote this — do not carry stale clock times from prior context."
+  echo "--- END CURRENT TIME ---"
+  echo ""
+fi
 
 # Read the user prompt from stdin (Claude Code pipes JSON with { prompt: "..." })
 USER_PROMPT=$(python3 -c "

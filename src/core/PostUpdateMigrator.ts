@@ -1727,7 +1727,7 @@ export class PostUpdateMigrator {
 
     try {
       fs.writeFileSync(path.join(instarHooksDir, 'telegram-topic-context.sh'), this.getTelegramTopicContextHook(), { mode: 0o755 });
-      result.upgraded.push('hooks/instar/telegram-topic-context.sh (per-message unanswered detection)');
+      result.upgraded.push('hooks/instar/telegram-topic-context.sh (briefing + per-message unanswered detection)');
     } catch (err) {
       result.errors.push(`telegram-topic-context.sh: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -5538,19 +5538,22 @@ fi
 # prefix so the agent always sees current wall-clock time. Addresses the
 # Claude Code "harness injects date, not time of day" blind spot that caused
 # agents to hallucinate clock times in long sessions.
+#
+# Exit codes:
+# - 0: Success (context injected or no telegram prefix found)
 
 # Current wall-clock time — always emitted, BEFORE the [telegram:N] early-exit.
-NOW=\$(date +'%Y-%m-%d %H:%M:%S %z (%Z)' 2>/dev/null)
-if [ -n "\$NOW" ]; then
+NOW=$(date +'%Y-%m-%d %H:%M:%S %z (%Z)' 2>/dev/null)
+if [ -n "$NOW" ]; then
   echo "--- CURRENT TIME ---"
-  echo "\$NOW"
+  echo "$NOW"
   echo "Wall-clock at user-prompt submit. Quote this — do not carry stale clock times from prior context."
   echo "--- END CURRENT TIME ---"
   echo ""
 fi
 
 # Read the user prompt from stdin (Claude Code pipes JSON with { prompt: "..." })
-USER_PROMPT=\$(python3 -c "
+USER_PROMPT=$(python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -5560,50 +5563,69 @@ except:
 " 2>/dev/null)
 
 # Check for [telegram:N] prefix
-TOPIC_ID=\$(echo "\$USER_PROMPT" | python3 -c "
+TOPIC_ID=$(echo "$USER_PROMPT" | python3 -c "
 import sys, re
 line = sys.stdin.read()
-m = re.search(r'\\\\[telegram:(\\\\d+)', line)
+m = re.search(r'\\[telegram:(\\d+)', line)
 if m:
     print(m.group(1))
 " 2>/dev/null)
 
-if [ -z "\$TOPIC_ID" ]; then
+if [ -z "$TOPIC_ID" ]; then
   exit 0
 fi
 
 # Get server port from config
 INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
-CONFIG_FILE="\$INSTAR_DIR/config.json"
+CONFIG_FILE="$INSTAR_DIR/config.json"
 
-if [ ! -f "\$CONFIG_FILE" ]; then
+if [ ! -f "$CONFIG_FILE" ]; then
   exit 0
 fi
 
-PORT=\$(grep -o '"port":[0-9]*' "\$CONFIG_FILE" | head -1 | cut -d':' -f2)
-if [ -z "\$PORT" ]; then
+PORT=$(grep -o '"port":[0-9]*' "$CONFIG_FILE" | head -1 | cut -d':' -f2)
+if [ -z "$PORT" ]; then
   exit 0
 fi
 
 # Check server health
-HEALTH=\$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
-if [ "\$HEALTH" != "200" ]; then
+HEALTH=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:\${PORT}/health" 2>/dev/null)
+if [ "$HEALTH" != "200" ]; then
   exit 0
 fi
 
 # Fetch recent messages for this topic
-AUTH_TOKEN=\$(python3 -c "import json; print(json.load(open('\$CONFIG_FILE')).get('authToken',''))" 2>/dev/null)
-if [ -n "\$AUTH_TOKEN" ]; then
-  RECENT_MSGS=\$(curl -s \\
+AUTH_TOKEN=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('authToken',''))" 2>/dev/null)
+if [ -n "$AUTH_TOKEN" ]; then
+  RECENT_MSGS=$(curl -s \\
     -H "Authorization: Bearer \${AUTH_TOKEN}" \\
-    "http://localhost:\${PORT}/telegram/topics/\${TOPIC_ID}/messages?limit=15" 2>/dev/null)
+    "http://localhost:\${PORT}/telegram/topics/\${TOPIC_ID}/messages?limit=30" 2>/dev/null)
 else
-  RECENT_MSGS=\$(curl -s \\
-    "http://localhost:\${PORT}/telegram/topics/\${TOPIC_ID}/messages?limit=15" 2>/dev/null)
+  RECENT_MSGS=$(curl -s \\
+    "http://localhost:\${PORT}/telegram/topics/\${TOPIC_ID}/messages?limit=30" 2>/dev/null)
+fi
+
+# Layer 2: prepend the topic intent briefing if anything has accumulated.
+# Returns empty body when nothing tracked yet — we silently skip injection.
+# Degrades open: any failure here (server down, route 503'd, network blip)
+# leaves recent-history-only output unchanged.
+TOPIC_BRIEFING=""
+if [ -n "$AUTH_TOKEN" ]; then
+  TOPIC_BRIEFING=$(curl -s --max-time 2 \\
+    -H "Authorization: Bearer \${AUTH_TOKEN}" \\
+    "http://localhost:\${PORT}/topic-intent/\${TOPIC_ID}/briefing" 2>/dev/null)
+else
+  TOPIC_BRIEFING=$(curl -s --max-time 2 \\
+    "http://localhost:\${PORT}/topic-intent/\${TOPIC_ID}/briefing" 2>/dev/null)
+fi
+
+if [ -n "$TOPIC_BRIEFING" ]; then
+  echo "$TOPIC_BRIEFING"
+  echo ""
 fi
 
 # Format and output context with unanswered message detection
-echo "\$RECENT_MSGS" | python3 -c "
+echo "$RECENT_MSGS" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -5611,15 +5633,15 @@ try:
     if not msgs:
         sys.exit(0)
 
-    print('TOPIC \${TOPIC_ID} RECENT HISTORY (auto-injected):')
+    print('TOPIC \${TOPIC_ID} RECENT HISTORY (auto-injected — read this before responding):')
 
     for m in msgs:
         ts = m.get('timestamp', '')[:16].replace('T', ' ')
         from_user = m.get('fromUser', m.get('direction', 'in') == 'in')
         text = m.get('text', '').strip()
         sender = 'User' if from_user else 'Agent'
-        if len(text) > 300:
-            text = text[:297] + '...'
+        if len(text) > 2000:
+            text = text[:1997] + '...'
         print(f'  [{ts}] {sender}: {text}')
 
     # Detect unanswered user messages
@@ -5640,12 +5662,12 @@ try:
         for pm in pending_user:
             pm_text = pm.get('text', '')[:200]
             pm_ts = pm.get('timestamp', '')[:16].replace('T', ' ')
-            print(f'  [{pm_ts}] \\\\\\\"{pm_text}\\\\\\\"')
+            print(f'  [{pm_ts}] \\"{pm_text}\\"')
         print()
         print('You MUST address these messages substantively. Do NOT respond with just')
         print('a greeting or generic reply. Read the conversation history above and')
         print('respond to what the user actually said. If the current message is a')
-        print('follow-up like \\\\\\\"hello?\\\\\\\" or \\\\\\\"please respond\\\\\\\", address the EARLIER')
+        print('follow-up like \\"hello?\\" or \\"please respond\\", address the EARLIER')
         print('unanswered message — that is what the user is waiting for.')
 except Exception:
     pass
