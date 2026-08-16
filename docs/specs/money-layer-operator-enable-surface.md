@@ -4,7 +4,8 @@ slug: "money-layer-operator-enable-surface"
 author: "echo"
 status: "draft"
 parent-principle: "Mobile-Complete Operator Actions — A PIN-Gated Route With No Human Surface Is An Incomplete Feature"
-approved: false
+approved: true
+approved-by: "operator (Justin), conversational approval in topic 46473, 2026-08-16 14:26 PDT"
 ---
 
 # Routing Spend — an operator surface for the money-layer master switch
@@ -65,16 +66,47 @@ Two new plan actions on the existing endpoints, not new endpoints:
   land.
 
 The enable state must live **outside** `.instar/config.json`'s patchable surface. Two
-candidates, and this spec must pick one before build:
+candidates were considered:
 
 1. **In the existing `RoutingSpendCapsStore`** — already outside `PATCHABLE_CONFIG_KEYS`,
    already PIN-authored, already audited by `caps/log`. `moneyOn()` becomes
    "config says true **or** the store's operator-enabled flag is set".
 2. **A dedicated store.** Cleaner separation, one more file to keep coherent.
 
-Option 1 is the current recommendation: it reuses a store whose write-discipline is
-already money-grade, and it keeps the whole money authority answerable from one audit
-log. The config key remains honored so no existing install changes behavior.
+**DECIDED: Option 1.** It reuses a store whose write-discipline is already money-grade,
+and it keeps the whole money authority answerable from one audit log. The config key
+remains honored so no existing install changes behavior.
+
+### The construction problem — an enable that only pretends
+
+`moneyOn()` gates the routes, but the money layer's components (the booking ledger, the
+O(1) fail-closed gate, the caps store) are **constructed at server start** and only when
+the layer was already enabled. So flipping the flag alone yields a surface that reports
+`enabled: true` over machinery that is not running — every route behind it still refuses.
+An enable button that ignores this is a button that lies.
+
+The commit path therefore MUST, in order:
+
+1. Persist the operator-enabled flag (PIN-committed, plan-bound, audited).
+2. **Verify the money layer is genuinely constructed and serving** — not that the flag
+   reads true, but that the layer's own components answer. The readiness probe must
+   include the **enforcing gate**, not merely the record-keeping parts; a readiness check
+   that omits the component which refuses overspend can report ready over a control room
+   with no guard on the door.
+3. If it is not up, bring it up and say so plainly to the operator ("enabling — restarting
+   to bring the money layer up"), rather than returning a success that is not one.
+4. Re-verify after, and report the honest end state.
+
+**Re-pressing enable when the flag already reads true must NOT be a no-op.** "Switch says
+on, machinery is down" is precisely the broken state this control exists to rescue the
+operator from; a no-op would leave them with a switch reading on, nothing working, and a
+button that politely does nothing. Enable is therefore idempotent in *intent* (it never
+double-enables) but always re-verifies and re-repairs.
+
+**Disable is not symmetric.** It closes the doors immediately by clearing the flag, and
+does **not** restart the server: a restart is a heavy, disruptive action to leave behind a
+credential the agent holds, and halting money must stay cheap. Doors shut instantly; the
+machinery is torn down on the next natural restart.
 
 ### The surface
 
@@ -93,7 +125,7 @@ arming flow unchanged. Disabling is the quieter, secondary action.
   money must always be cheap — that asymmetry is preserved exactly.
 - **It does not change `PATCHABLE_CONFIG_KEYS`.**
 
-## Open decision — the operator's monthly intent
+## Resolved decision — the operator's monthly intent
 
 Separately reported by the operator: they want "$100/month". The cap model has a
 **lifetime total** and a **daily rate**, and no calendar-month concept. The three
@@ -106,8 +138,17 @@ honest options, none of which is free:
 3. **A real monthly cap**: a new cap dimension through the ledger, the gate, the plan
    renderer and the caps view. Correct, and the largest change of the three.
 
-This spec does not decide it — the choice is the operator's and it is tracked
-separately (CMT-2024). Option 3, if chosen, is its own spec.
+**DECIDED: Option 1 (daily-rate approximation), operator, 2026-08-16 14:26 PDT — "daily
+is fine for now".** This keeps the present build to the enable surface only; the cap
+model is untouched.
+
+**The honesty obligation this creates.** A daily rate is not a monthly cap and the surface
+must not imply otherwise. The plan text the operator reads before committing a daily cap
+must state plainly what it does and does not guarantee: a $3.30/day cap bounds any single
+day, and over a 30-day month bounds the worst case near $100 — but it does **not** cap a
+calendar month, and it does not prevent a heavy fortnight. The operator explicitly chose
+this shape "for now"; option 3 remains available as its own spec, and choosing it later
+changes only the cap dimension, not this enable surface. Nothing here forecloses it.
 
 ## Decision points touched
 
@@ -132,8 +173,13 @@ separately (CMT-2024). Option 3, if chosen, is its own spec.
 
 ## Status
 
-Draft, authored 2026-08-16 against live state on the operator's laptop
-(`routingSpend.money` absent from config; `/routing-spend/plan` returning 503;
-`routingSpend` verified absent from `PATCHABLE_CONFIG_KEYS`). Not converged, not
-approved — this is a proposal for the operator, and the money layer's own rules mean
-no code lands against it until it is both.
+Authored 2026-08-16 against live state on the operator's laptop (`routingSpend.money`
+absent from config; `/routing-spend/plan` returning 503; `routingSpend` verified absent
+from `PATCHABLE_CONFIG_KEYS`).
+
+**Approved by the operator 2026-08-16 14:26 PDT** (topic 46473): build it, with the
+daily-rate cap shape. Both previously-open decisions are now closed — storage is Option 1
+(`RoutingSpendCapsStore`), cap shape is the daily-rate approximation.
+
+Convergence review still outstanding; per the money layer's own rules no code lands
+against this spec until it carries the `review-convergence` tag as well as this approval.
