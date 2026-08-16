@@ -554,6 +554,36 @@ a framework hands one over, so it still proves delivery instead of proving
 placement. The new assertions read the file back — a path that merely looks right
 is not evidence a prompt was delivered.
 
+### The whole suite was green while the docs told agents the feature does not exist
+
+After opening the headless lane, the agent-awareness paragraph shipped to every
+agent still read:
+
+    "headless job spawns do NOT run on grok yet: a job resolved to grok runs on
+     another ENABLED framework … so read the session's framework label, not the
+     pin, when asking whose quota ran a job."
+
+Every test passed. Typecheck passed. Nothing in the suite could see that the text
+which IS an agent's knowledge of this feature described the opposite behaviour —
+and worse, handed agents a rule ("a grok job never runs on grok") that makes them
+answer "whose quota ran this job?" exactly backwards. Both shipped copies were
+stale: `templates.ts`, which new agents read, and `PostUpdateMigrator.ts`, which is
+how existing agents receive it.
+
+This is the Agent Awareness Standard failing in the precise way it exists to
+prevent. It is also the fourth instance in one evening of the same root cause: I
+changed behaviour and reasoned that the surrounding material still held, instead
+of reading it.
+
+The structural fix is `tests/unit/grok-awareness-matches-behaviour.test.ts`, which
+COUPLES the paragraph to the runtime predicate: if `headlessLaneIsClosed`
+disagrees with what the text claims, the build fails. A test merely asserting "the
+paragraph mentions grok" would not have caught this — the paragraph mentioned grok
+at length and was still wrong — so the assertion keys on the CLAIM, and a reworded
+version of the same false claim fails too. Parity between the two copies is
+asserted in the same file, since this paragraph has now been edited in place
+twice. Both new assertions were shown red against the stale sentence.
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**
