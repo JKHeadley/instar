@@ -506,15 +506,26 @@ framework is not "wired" on a passing test alone.
   recoverable condition, ask what performs the recovery and whether the refusal
   prevents it from running.**
 
-  **A candidate remedy, deduced from the entrypoint census rather than guessed:**
-  warm-session A2A spawns a tmux keep-alive worker and admits it so later
-  messages on the thread inject into the live session — and `WarmSessionPool` is NOT among the
-  `buildHeadlessLaunch` call sites enumerated by the entrypoint census, so that
-  path never touches the closed lane,
-  while grok's INTERACTIVE lane is open. Enabling it may therefore give
-  grok-primary agents working ingress without the scratch-cwd work. Stated as a
-  candidate, NOT a fix: it ships dark, and nothing here has been run to confirm
-  it end-to-end.
+  **RESOLVED BY EXPERIMENT — and the answer refuted my own hypothesis.** A2A
+  ingress to this grok-only agent now WORKS: a message returns
+  `{handled: true, delivered: true}`. Two changes had landed close together, so a
+  success proved nothing about which mattered; a control isolated it.
+
+  I proposed warm-session A2A as the remedy (deduced from the entrypoint census:
+  `WarmSessionPool` is not among the `buildHeadlessLaunch` call sites, and grok's
+  INTERACTIVE lane is open). **That was wrong.** Turning warm-session A2A back OFF
+  and re-sending still delivered, so the setting was never load-bearing. What
+  unblocked it was the peer being granted `verified` TRUST.
+
+  A second hypothesis — that trust opened the listener-inbox branch
+  (`shouldUseListener` is trust-gated and needs no spawn) — is refuted too: the
+  `Routed to listener inbox` line never appears in the log.
+
+  **So the honest state is: delivery works, gated on peer trust, by a path I have
+  not isolated.** Two mechanism guesses, both killed by evidence. That is recorded
+  rather than resolved into a third guess, because a plausible mechanism written
+  into a spec is exactly the "claim whose carrier does not exist" defect this
+  document catalogues as its own recurring failure.
 
   Not fixed here for the same reason as the jobs case: closing the lane properly
   means the scratch-cwd wiring, and leaving it closed while suppressing the

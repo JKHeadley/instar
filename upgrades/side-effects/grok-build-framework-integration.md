@@ -302,11 +302,23 @@ independent instances in one integration is the honest reason to name it a CLASS
 **When a guard declines on a recoverable condition, ask what performs the recovery
 and whether the refusal prevents it from running.**
 
-**The census paid for itself a second time.** `WarmSessionPool` is NOT one of the
-two `buildHeadlessLaunch` call sites, so the warm-session A2A path never touches
-the closed lane — while grok's INTERACTIVE lane is open. That makes enabling it a
-candidate remedy DEDUCED from the enumeration rather than guessed at. Stated as a
-candidate, not a fix: it ships dark and nothing was run to confirm it end-to-end.
+**The census produced a candidate — and the experiment killed it.** I deduced
+that warm-session A2A would be the remedy (`WarmSessionPool` is not among the
+`buildHeadlessLaunch` call sites, and grok's INTERACTIVE lane is open), enabled
+it, and delivery started working. But the peer had ALSO been granted `verified`
+trust minutes earlier, so a success proved nothing about which change mattered.
+
+Turning warm-session A2A back OFF and re-sending still delivered. **The setting
+was never load-bearing; the trust grant was.** A second hypothesis — that trust
+opened the spawn-free listener-inbox branch — is refuted too: its log line never
+appears.
+
+So: ingress works, gated on peer trust, by a path NOT yet isolated. Two mechanism
+guesses, both killed by evidence, recorded as such rather than resolved into a
+third. The deduction was sound and still wrong, which is the argument for running
+the control even when the reasoning feels tight — I would otherwise have written
+a confident mechanism into the spec, which is the exact "claim whose carrier does
+not exist" defect this branch keeps catching.
 
 **7. So the list was DERIVED instead of left honest-but-unknown.** Recording
 "the scope is incomplete" was truthful and also lazy: finding two consumers by

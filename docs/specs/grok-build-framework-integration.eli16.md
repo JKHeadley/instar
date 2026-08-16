@@ -183,9 +183,24 @@ call it a pattern rather than bad luck: when something refuses on a condition th
 could fix itself, ask what does the fixing, and whether the refusal is standing in
 its way.
 
-There is a possible way out, and the count is what found it: there's another
-delivery route that keeps a session warm, and it doesn't go through the shut door.
-I haven't run it, so I'm calling it a candidate rather than a fix.
+There was a possible way out, and I got it wrong — which is worth more than if I'd
+got it right, because of how it came out.
+
+I proposed a specific fix: a second delivery route that keeps a session warm and
+doesn't go through the shut door. Then two changes landed close together — that
+setting, and the Grok agent being marked as a trusted peer — and messages started
+arriving. A success after two changes tells you nothing about which one did it, so
+I turned my own proposed fix back OFF and sent another message. It still arrived.
+My fix was never the thing that mattered; the trust grant was.
+
+I had a second theory about why trust would help, and checked that too. Also wrong
+— the log line it predicts never appears.
+
+So: messages now get through, it depends on the peer being trusted, and I cannot
+yet tell you by what route. Two theories, both killed by evidence. I'm writing
+that down rather than inventing a third, because a confident-sounding explanation
+nobody checked is precisely the kind of thing this project keeps finding and
+having to retract.
 
 ## The one the tests finally caught
 
