@@ -103,6 +103,34 @@ export interface ApprovalSignature {
   prosePatterns: ProsePattern[];
   /** Anchored at the start of the post-`N.` option label — an APPROVE verb. */
   approveLabels: RegExp;
+  /**
+   * OPTIONAL intent-based answering (grok-build and any future TUI whose menu
+   * offers more than one kind of "yes").
+   *
+   * When present the resolver does NOT answer whatever the cursor happens to be
+   * on. It reads the option LABELS, positively identifies the one meaning
+   * "approve THIS call", positively excludes any meaning "stop asking"/"always",
+   * and sends that option's DIGIT.
+   *
+   * Why this exists: on grok the pre-selected row is
+   * `1 (●) Yes, and don't ask again for anything (always-approve mode)` — a
+   * USER-GLOBAL, persisted grant across every future session on the machine.
+   * Pressing the selected key there is not "approve this call", it is
+   * "disable approval for this machine". Position is not safe either: the grok
+   * agent's own account of its menu warns the row order changes when optional
+   * rows appear. Only the LABEL carries the meaning, so only the label is read.
+   */
+  intent?: {
+    /** Label meaning "allow just this one call". The row we WILL press. */
+    approveOnce: RegExp;
+    /** Label meaning "always / don't ask again". Never pressed; its presence
+     *  must not be mistaken for an approve row. */
+    alwaysApprove: RegExp;
+    /** Selection marker for TUIs that show it in the option text rather than a
+     *  leading selector glyph (grok: `1 (●)`). Used ONLY to parse the option
+     *  list; the marker never decides which row is answered. */
+    optionPrefix: RegExp;
+  };
 }
 
 /**
@@ -128,6 +156,36 @@ export const APPROVAL_PROMPT_SIGNATURES: Record<string, ApprovalSignature> = {
     ],
     approveLabels: /^(yes|proceed|allow|continue)\b/i,
   },
+  // grok-build — VERIFIED against the live wedge captured 2026-08-15, and
+  // answered in INTENT mode (see ApprovalSignature.intent). Its menu:
+  //
+  //     1 (●) Yes, and don't ask again for anything (always-approve mode)
+  //     2 (○) Yes, proceed
+  //     3 (○) No, reject (type to add feedback)
+  //     1/3:select │ Tab:next option │ Ctrl+c:cancel │ Esc:scrollback
+  //
+  // The row we press is 2, chosen BY LABEL. Never Enter: the grok agent's own
+  // account of its keyboard contract is that Enter commits whatever row the dot
+  // rests on, the dot starts on row 1 on a session's first prompt, and it is
+  // STICKY afterwards — so an Enter floor would, on a fresh session, flip the
+  // machine into always-approve and persist it to user-global config. Never by
+  // position either: it warned the order shifts when optional rows appear, which
+  // is why `approveOnce` is a label test and an ambiguous menu declines.
+  'grok-build': {
+    prosePatterns: [
+      { name: 'grok-always-approve-row', pattern: /don'?t ask again for anything/i },
+      { name: 'grok-proceed-row', pattern: /^\s*\d+\s*\([●○]\)\s*Yes,\s*proceed\b/im },
+      { name: 'grok-reject-row', pattern: /No,\s*reject\b/i },
+      { name: 'grok-select-affordance', pattern: /\b\d+\/\d+:select\b/i },
+    ],
+    // Unused in intent mode (kept so the shape stays uniform across signatures).
+    approveLabels: /^(yes|proceed|allow|continue)\b/i,
+    intent: {
+      approveOnce: /^Yes,\s*proceed\b/i,
+      alwaysApprove: /don'?t ask again|always[- ]approve|all sessions/i,
+      optionPrefix: /^\s*\d+\s*\([●○]\)\s*/,
+    },
+  },
   // 'codex-cli':  { prosePatterns: [ /* off until a live prompt is characterized */ ], approveLabels: /…/ },
   // 'gemini-cli': { prosePatterns: [ /* off until a live prompt is characterized */ ], approveLabels: /…/ },
 };
@@ -139,8 +197,9 @@ export interface ApprovalMatch {
   framework: string;
   /** The STATIC registry names that matched, sorted. Never tail text. */
   matchedPatternNames: string[];
-  /** The only key the resolver ever sends. */
-  approveKey: 'Enter';
+  /** The key the resolver will send: 'Enter' for cursor-on-approve TUIs, or a
+   *  single DIGIT for intent-answered menus (see ApprovalSignature.intent). */
+  approveKey: string;
   /** hash(framework + sorted matchedPatternNames) — invariant across redraws,
    *  carries NO tail-derived bytes. */
   stableFingerprint: string;
@@ -316,17 +375,64 @@ export function detectApprovalPrompt(
   }
   if (matched.size < 2) return null;
 
-  // (2) ❯ selector cursor on an approve option.
+  // (2) Locate the row to answer.
   let approveIndex = -1;
-  for (let i = 0; i < tail.length; i++) {
-    const l = tail[i];
-    if (!hasSelectorGlyph(l.leadGlyphs)) continue;
-    const m = OPTION_PREFIX_RE.exec(l.text);
-    if (!m) continue;
-    const rest = l.text.slice(m[0].length);
-    if (sig.approveLabels.test(rest)) {
-      approveIndex = i;
-      break;
+  let approveKey = 'Enter';
+
+  if (sig.intent) {
+    // INTENT MODE (grok-build). Read every option row, classify it by LABEL, and
+    // answer the allow-once row by its DIGIT. Deliberately ignores which row the
+    // TUI has selected: on grok the selected row is the machine-wide
+    // always-approve grant, so "press the highlighted default" is the one thing
+    // that must never happen here.
+    let onceIndex = -1;
+    let onceDigit = '';
+    let sawAlways = false;
+    let onceCount = 0;
+
+    for (let i = 0; i < tail.length; i++) {
+      const m = sig.intent.optionPrefix.exec(tail[i].text);
+      if (!m) continue;
+      const digit = /(\d+)/.exec(m[0])?.[1] ?? '';
+      const label = tail[i].text.slice(m[0].length);
+
+      // An always/don't-ask-again row is never answerable, and is checked FIRST
+      // so a label that satisfies both readings can never be taken as allow-once.
+      if (sig.intent.alwaysApprove.test(label)) {
+        sawAlways = true;
+        continue;
+      }
+      if (sig.intent.approveOnce.test(label)) {
+        onceCount += 1;
+        if (onceIndex < 0) {
+          onceIndex = i;
+          onceDigit = digit;
+        }
+      }
+    }
+
+    // Fail CLOSED on anything unexpected: no allow-once row, an ambiguous menu
+    // with more than one, or a digit we could not read. Layer 3 then reports the
+    // un-cleared menu rather than the resolver guessing at a keystroke.
+    if (onceIndex < 0 || onceCount !== 1 || !/^[1-9]$/.test(onceDigit)) return null;
+    // A menu offering allow-once but NO always row is not the shape this
+    // signature was characterized against; decline rather than extrapolate.
+    if (!sawAlways) return null;
+
+    approveIndex = onceIndex;
+    approveKey = onceDigit;
+  } else {
+    // CURSOR MODE (claude-code) — unchanged: ❯ selector sitting on an approve row.
+    for (let i = 0; i < tail.length; i++) {
+      const l = tail[i];
+      if (!hasSelectorGlyph(l.leadGlyphs)) continue;
+      const m = OPTION_PREFIX_RE.exec(l.text);
+      if (!m) continue;
+      const rest = l.text.slice(m[0].length);
+      if (sig.approveLabels.test(rest)) {
+        approveIndex = i;
+        break;
+      }
     }
   }
   if (approveIndex < 0) return null;
@@ -337,7 +443,7 @@ export function detectApprovalPrompt(
 
   const matchedPatternNames = [...matched].sort();
   const stableFingerprint = sha256(framework + '|' + matchedPatternNames.join(','));
-  return { framework, matchedPatternNames, approveKey: 'Enter', stableFingerprint };
+  return { framework, matchedPatternNames, approveKey, stableFingerprint };
 }
 
 // ─── Layer 3 — prose-AGNOSTIC persisting-menu detector ───────────────────────────
@@ -420,7 +526,7 @@ export interface ResolverAuditRow {
   sessionName: string;
   framework: string;
   matchedPatternNames: string[];
-  keySent: 'Enter' | null;
+  keySent: string | null;
   fingerprint: string;
   attempt: number;
   outcome: ResolverOutcome;
@@ -646,7 +752,7 @@ export class PermissionPromptAutoResolver {
     // Send the (only) approve key.
     let ok = false;
     try {
-      ok = await Promise.resolve(this.deps.sendKey(session, 'Enter'));
+      ok = await Promise.resolve(this.deps.sendKey(session, approval.approveKey));
     } catch {
       ok = false;
     }
@@ -656,7 +762,7 @@ export class PermissionPromptAutoResolver {
         session,
         approval.framework,
         approval.matchedPatternNames,
-        'Enter',
+        approval.approveKey,
         approval.stableFingerprint,
         st.consecutiveUnclearedSends,
         'send-failed',
@@ -670,7 +776,7 @@ export class PermissionPromptAutoResolver {
       session,
       approval.framework,
       approval.matchedPatternNames,
-      'Enter',
+      approval.approveKey,
       approval.stableFingerprint,
       st.consecutiveUnclearedSends,
       outcome,
@@ -766,7 +872,7 @@ export class PermissionPromptAutoResolver {
     sessionName: string,
     framework: string,
     matchedPatternNames: string[],
-    keySent: 'Enter' | null,
+    keySent: string | null,
     fingerprint: string,
     attempt: number,
     outcome: ResolverOutcome,

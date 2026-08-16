@@ -14,16 +14,27 @@
  * detector missed grok — no `N. ` options (it uses `N (●)` radios), no `❯` selector,
  * no "Esc to cancel", no "Do you want to proceed".
  *
- * SCOPE, deliberately narrow: this covers DETECTION only (Layer 3 — raise one
- * notice), NOT auto-answering. Auto-approving grok tool calls is a real authority
- * change: the grok-build spec deliberately withholds `--always-approve` until the
- * interactive lane's confinement is proven to the bar the one-shot lane meets. So
- * the silent half is closed here; the answering half stays an operator decision.
+ * SCOPE — WIDENED 2026-08-16 on an explicit operator decision. This originally
+ * covered DETECTION only, because auto-approving grok tool calls is a real
+ * authority change and the answering half was left to the operator. Justin made
+ * that call: "yes we need the auto-answering feature on and working. It should be
+ * intelligent enough to select the correct answer."
+ *
+ * "Intelligent" is the load-bearing word, and it rules out both obvious
+ * implementations. Pressing Enter is wrong: Enter commits whatever row the dot
+ * rests on, the dot starts on grok's row 1, and row 1 is a USER-GLOBAL persisted
+ * always-approve grant — so an Enter floor would disable approval for the whole
+ * machine on a session's first prompt. Hardcoding "press 2" is also wrong: the
+ * grok agent's own account of its menu warns the order shifts when optional rows
+ * appear. So the floor reads the option LABELS, presses the row meaning "approve
+ * THIS call", positively excludes any row meaning "always", and DECLINES rather
+ * than guesses when the menu is ambiguous or an unfamiliar shape.
  */
 
 import { describe, it, expect } from 'vitest';
 import {
   detectPersistingMenu,
+  detectApprovalPrompt,
   toPaneTailLines,
   APPROVAL_PROMPT_SIGNATURES,
 } from '../../src/monitoring/PermissionPromptAutoResolver.js';
@@ -75,41 +86,80 @@ describe('permission floor — grok-build approval menu is DETECTED', () => {
     expect(detectPersistingMenu(toPaneTailLines(GROK_APPROVAL_TAIL), true)).toBeNull();
   });
 
-  it('grok-build is NOT registered for auto-ANSWER — the same keystroke is a different act', () => {
-    // This is the guard that makes the comment in the resolver load-bearing
-    // instead of advisory. Registering a grok-build signature in this table is
-    // the ONE-LINE change that turns auto-answering on, and it looks like the
-    // obvious completion of the detection fix.
-    //
-    // It is not. The resolver answers by sending Enter. On claude-code that is
-    // option 1 = "Yes", approving THE CALL IN FRONT OF IT. On grok, the
-    // pre-selected option 1 is "Yes, and don't ask again for ANYTHING" — the
-    // approve-once equivalent is option 2, which is not where the cursor starts.
-    //
-    // And the scope is worse than "this session". The grok agent, asked directly
-    // and answering from its own docs and config, corrected an earlier version of
-    // this comment: the mode is USER-GLOBAL, persisted to ~/.grok/config.toml as
-    // `permission_mode = "always-approve"`. Not per-session, not per-tool, not
-    // per-directory — every future grok session for that user on that machine.
-    // Corroborated independently: that file carries exactly that key.
-    //
-    // So one mistaken Enter would not degrade a session's posture; it would write
-    // a persistent flag disabling approval prompting for all grok work on the
-    // box, silently.
-    //
-    // Whoever removes this test must first decide, WITH THE OPERATOR, that the
-    // floor may hand out standing tool approval — and must fix the keystroke,
-    // because Enter cannot be the answer for grok whichever way the TUI commits.
-    expect(Object.keys(APPROVAL_PROMPT_SIGNATURES)).not.toContain('grok-build');
+  it('ANSWERS grok by the allow-once DIGIT — never Enter, never the always row', () => {
+    // Operator decision (Justin, 2026-08-16): auto-answering must be on for grok,
+    // "intelligent enough to select the correct answer". So the floor no longer
+    // declines — but what it presses is chosen by LABEL.
+    const m = detectApprovalPrompt(toPaneTailLines(GROK_APPROVAL_TAIL), 'grok-build', false);
+    expect(m).not.toBeNull();
+    // Row 2 is "Yes, proceed" — approve THIS call.
+    expect(m!.approveKey).toBe('2');
+    // The two answers that must never be sent: Enter follows the dot, which
+    // starts on row 1; row 1 is the machine-wide, persisted always-approve grant.
+    expect(m!.approveKey).not.toBe('Enter');
+    expect(m!.approveKey).not.toBe('1');
   });
 
-  it('CONTROL: the table is real and populated (so the assertion above is not vacuous)', () => {
-    // Without this, an empty or renamed table would satisfy the negative check
-    // while proving nothing — the "passing condition narrower than what it
-    // certifies" shape. At least one framework must genuinely be registered.
-    const keys = Object.keys(APPROVAL_PROMPT_SIGNATURES);
-    expect(keys.length).toBeGreaterThan(0);
-    expect(keys).toContain('claude-code');
+  it('is NOT positional — a reordered menu still answers the allow-once row', () => {
+    // THE point of intent mode. The grok agent warned that the row order changes
+    // when optional rows appear, so a floor hardcoded to "press 2" would be a
+    // slower way of being wrong. Here allow-once sits at 3 and always-approve at
+    // 2; a positional implementation would press 2 and disable approval globally.
+    const reordered = [
+      '  ┃  Some tool call',
+      '  ┃',
+      '  ┃  1 (●) No, reject (type to add feedback)',
+      "  ┃  2 (○) Yes, and don't ask again for anything (always-approve mode)",
+      '  ┃  3 (○) Yes, proceed',
+      '  ┃',
+      '  1/3:select  │  Tab:next option  │  Ctrl+c:cancel',
+    ].join('\n');
+    const m = detectApprovalPrompt(toPaneTailLines(reordered), 'grok-build', false);
+    expect(m).not.toBeNull();
+    expect(m!.approveKey).toBe('3');
+  });
+
+  it('CONTROL: declines an AMBIGUOUS menu rather than guessing', () => {
+    // Two rows readable as allow-once. Failing closed hands it to Layer 3, which
+    // reports an un-cleared menu — strictly better than a coin flip on a
+    // permission prompt.
+    const ambiguous = [
+      '  ┃  Some tool call',
+      "  ┃  1 (●) Yes, and don't ask again for anything (always-approve mode)",
+      '  ┃  2 (○) Yes, proceed',
+      '  ┃  3 (○) Yes, proceed with edits',
+      '  1/3:select  │  Ctrl+c:cancel',
+    ].join('\n');
+    expect(detectApprovalPrompt(toPaneTailLines(ambiguous), 'grok-build', false)).toBeNull();
+  });
+
+  it('CONTROL: declines a menu with NO always-approve row (uncharacterized shape)', () => {
+    // The signature was characterized against a menu that HAS the always row. A
+    // menu without it is a different shape; extrapolating is how a detector comes
+    // to answer something it was never verified against.
+    const noAlways = [
+      '  ┃  Some tool call',
+      '  ┃  1 (●) Yes, proceed',
+      '  ┃  2 (○) No, reject',
+      '  1/2:select  │  Ctrl+c:cancel',
+    ].join('\n');
+    expect(detectApprovalPrompt(toPaneTailLines(noAlways), 'grok-build', false)).toBeNull();
+  });
+
+  it('CONTROL: claude-code still answers with Enter (cursor mode unchanged)', () => {
+    // Intent mode is additive. The framework that already worked must be
+    // byte-identical, or this change traded one framework's safety for another's.
+    const m = detectApprovalPrompt(toPaneTailLines(CLAUDE_APPROVAL_TAIL), 'claude-code', false);
+    expect(m).not.toBeNull();
+    expect(m!.approveKey).toBe('Enter');
+  });
+
+  it('CONTROL: grok is registered, and registered WITH an intent block', () => {
+    // Guards the lazy regression: registering grok without `intent` would fall
+    // through to cursor mode and press Enter — the exact catastrophe this exists
+    // to prevent.
+    expect(Object.keys(APPROVAL_PROMPT_SIGNATURES)).toContain('grok-build');
+    expect(APPROVAL_PROMPT_SIGNATURES['grok-build']!.intent).toBeDefined();
   });
 
   it('CONTROL: does not fire on ordinary numbered prose', () => {

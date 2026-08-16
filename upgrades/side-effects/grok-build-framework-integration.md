@@ -374,6 +374,37 @@ reproduced the CI failure locally first (one case, exactly the one that resolves
 to grok), then passed 8/8 after. Passing on a host that HAS the binaries would
 have proved nothing, since that is what it did before.
 
+## Auto-answering grok prompts — the withheld half, now built (operator decision)
+
+The detection fix deliberately withheld auto-ANSWER and routed it to the operator.
+Justin decided it on 2026-08-16: *"yes we need the auto-answering feature on and
+working. It should be intelligent enough to select the correct answer."*
+
+**"Intelligent" rules out both obvious implementations**, which is the whole design.
+Pressing **Enter** is wrong — Enter commits whatever row the dot rests on, the dot
+starts on grok's row 1, and row 1 is a USER-GLOBAL persisted always-approve grant,
+so an Enter floor would disable approval for the entire machine on a session's
+first prompt. Hardcoding **"press 2"** is also wrong — the grok agent's own account
+of its keyboard contract warns the row order shifts when optional rows appear.
+
+So the signature gained an optional `intent` block and the detector an INTENT mode:
+read every option row, classify by LABEL, press the digit of the row meaning
+"approve THIS call", and positively exclude any row meaning always/don't-ask-again
+(checked FIRST, so a label satisfying both readings can never be taken as
+allow-once). `approveKey` widened from the literal `'Enter'` to a string.
+
+**It fails CLOSED on every uncertainty** — no allow-once row, more than one, an
+unreadable digit, or a menu with no always row (an uncharacterized shape) all
+return null, which hands the menu to Layer 3 to report rather than letting the
+floor guess at a keystroke on a permission prompt.
+
+Six tests, and the load-bearing one is `is NOT positional`: a REORDERED menu with
+allow-once at row 3 and always-approve at row 2 — a positional implementation
+presses 2 and disables approval globally; this presses 3. Verified capable of
+failing: restoring the naive `Enter` answer turns exactly those two tests red.
+claude-code is asserted byte-identical (still cursor mode, still Enter), so this
+did not trade one framework's safety for another's.
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**
