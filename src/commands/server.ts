@@ -13949,7 +13949,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // a 2nd account never clobbers the 1st.
     const { PendingLoginStore } = await import('../core/PendingLoginStore.js');
     const { EnrollmentWizard } = await import('../core/EnrollmentWizard.js');
-    const { FrameworkLoginDriver, enrollPaneSessionName, enrollmentBrowserEnv } = await import('../core/FrameworkLoginDriver.js');
+    const { FrameworkLoginDriver, enrollPaneSessionName, enrollmentBrowserEnv, enrollmentIsolationEnv, enrollmentCredentialPath } = await import('../core/FrameworkLoginDriver.js');
     const DEFAULT_ENROLL_LOGIN_COMMANDS: Record<string, string> = {
       'claude-code': 'claude auth login',
       'codex-cli': 'codex login',
@@ -13988,6 +13988,27 @@ export async function startServer(options: StartOptions): Promise<void> {
               sourceContext: 'account-follow-me-email-gate',
             })
         : undefined,
+      // A device-code sign-in (Codex, grok) completes inside the CLI and never
+      // tells instar, so the reissue sweep used to kill a SUCCEEDED login and
+      // mint a fresh code forever. Witness it on disk instead: the credential's
+      // mtime, which the wizard compares against the login's own start time.
+      // Any unreadable/absent slot answers null → the wizard re-drives exactly
+      // as before.
+      credentialWitness: (login) => {
+        const credentialPath = enrollmentCredentialPath(
+          login.framework,
+          login.configHome,
+          process.env,
+          os.homedir(),
+        );
+        if (!credentialPath) return null;
+        try {
+          return fs.statSync(credentialPath).mtimeMs;
+        } catch {
+          // @silent-fallback-ok: absent/unreadable credential is not success.
+          return null;
+        }
+      },
       driveLogin: new FrameworkLoginDriver({
         // Capture with `tmux capture-pane -J` so a hard-WRAPPED verification URL is
         // joined back into one line (the 2026-06-18 "code=t" truncation bug). Falls
@@ -14009,21 +14030,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           // env-prefix sets the per-account config home for the login process so
           // the credential lands in its own slot.
           //
-          // Round-12 (security): the isolation var is PER-FRAMEWORK, and this
-          // set `CLAUDE_CONFIG_DIR` unconditionally — a variable grok ignores.
-          // With `xai` now an accepted pool provider that meant a grok login
-          // would land in the AMBIENT `~/.grok` while the account record claimed
-          // an isolated `configHome`: a second grok enrolment would silently
-          // overwrite the first account's session while the pool showed both
-          // active. grok reads `GROK_HOME`; a framework with no known isolation
-          // var gets NONE rather than a misleading one.
-          const isolationEnv = configHome
-            ? (framework === 'grok-build'
-                ? { GROK_HOME: configHome }
-                : framework === 'claude-code'
-                  ? { CLAUDE_CONFIG_DIR: configHome }
-                  : { CLAUDE_CONFIG_DIR: configHome })
-            : {};
+          // Round-12 (security): the isolation var is PER-FRAMEWORK. The mapping
+          // lives in `enrollmentIsolationEnv` (FrameworkLoginDriver) as the single
+          // source of truth — see there for why a framework with no verified
+          // isolation var gets NONE rather than a misleading one.
+          const isolationEnv = enrollmentIsolationEnv(framework, configHome);
           const env = { ...isolationEnv, ...enrollmentBrowserEnv(openBrowser) };
           const prefix = Object.entries(env).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ');
           const cmd = prefix ? `env ${prefix} ${baseCmd}` : baseCmd;

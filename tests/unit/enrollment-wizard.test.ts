@@ -528,3 +528,134 @@ describe('EnrollmentWizard', () => {
     });
   });
 });
+
+/**
+ * A device-code sign-in (Codex, grok) completes INSIDE the CLI: the operator
+ * approves at the provider, the CLI writes its credential and exits, and nothing
+ * tells instar. Before the credential witness, that login stayed `pending`, its
+ * TTL elapsed, and the reissue sweep killed the pane and minted a new code — so a
+ * SUCCESSFUL sign-in was destroyed and re-asked forever (33 reissues over 8h,
+ * observed live 2026-08-16).
+ */
+describe('EnrollmentWizard — a login that succeeded without telling instar', () => {
+  const T0 = Date.parse('2026-08-16T00:00:00Z');
+  let dir: string;
+  let clock: number;
+  let store: PendingLoginStore;
+
+  function wizard(opts: {
+    credentialWitness?: (login: { framework: string; configHome?: string; createdAt: string; kind: string }) => number | null;
+    onDrive?: () => void;
+  } = {}) {
+    return new EnrollmentWizard({
+      store,
+      now: () => clock,
+      driveLogin: async () => {
+        opts.onDrive?.();
+        return { verificationUrl: 'https://auth.openai.com/codex/device', userCode: 'NEW-CODE1', ttlMs: 15 * 60_000 };
+      },
+      credentialWitness: opts.credentialWitness as never,
+    });
+  }
+
+  async function startCodexLogin(w: EnrollmentWizard) {
+    return w.start({
+      id: 'codex-justin', label: 'Codex', provider: 'openai',
+      framework: 'codex-cli', kind: 'device-code', configHome: '/slot/codex',
+    });
+  }
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'enroll-witness-'));
+    clock = T0;
+    store = new PendingLoginStore({ stateDir: dir, now: () => clock });
+  });
+  afterEach(() => {
+    try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/enrollment-wizard.test.ts:witness-cleanup' }); } catch { /* @silent-fallback-ok */ }
+  });
+
+  it('completes the login instead of killing its pane and minting a new code', async () => {
+    let drives = 0;
+    // The credential appears five minutes into the flow — the operator approved.
+    const w = wizard({ credentialWitness: () => T0 + 5 * 60_000, onDrive: () => { drives++; } });
+    await startCodexLogin(w);
+    drives = 0; // discount the initial drive; count only re-drives
+
+    clock = T0 + 16 * 60_000; // TTL elapsed
+    const reissued = await w.reissueExpired();
+
+    expect(reissued).toEqual([]);
+    expect(drives).toBe(0); // the succeeded pane was never destroyed
+    expect(store.get('codex-justin')!.status).toBe('completed');
+  });
+
+  it('does not mistake a credential that was already in the slot for this sign-in', async () => {
+    // Re-enrolling a slot that still holds the PREVIOUS account's credential must
+    // not read as instant success — otherwise the pool records an account that
+    // never signed in.
+    let drives = 0;
+    const w = wizard({ credentialWitness: () => T0 - 60 * 60_000, onDrive: () => { drives++; } });
+    await startCodexLogin(w);
+    drives = 0;
+
+    clock = T0 + 16 * 60_000;
+    const reissued = await w.reissueExpired();
+
+    expect(drives).toBe(1);
+    expect(reissued).toHaveLength(1);
+    expect(store.get('codex-justin')!.status).toBe('pending');
+  });
+
+  it('leaves a url-code-paste flow entirely alone', async () => {
+    // Claude completes through the dashboard paste-back route, and its slot's
+    // credential is rewritten by ordinary token refresh — witnessing it would risk
+    // marking a live re-enrolment "done" on an mtime bump that was never this flow.
+    let drives = 0;
+    const w = wizard({ credentialWitness: () => clock, onDrive: () => { drives++; } });
+    await w.start({
+      id: 'claude-1', label: 'Claude', provider: 'anthropic',
+      framework: 'claude-code', kind: 'url-code-paste', configHome: '/slot/claude',
+    });
+    drives = 0;
+
+    clock = T0 + 16 * 60_000;
+    await w.reissueExpired();
+
+    expect(drives).toBe(1);
+    expect(store.get('claude-1')!.status).toBe('pending');
+  });
+
+  it.each([
+    ['no witness is wired at all', undefined],
+    ['the slot holds no credential', () => null],
+    ['the probe throws', () => { throw new Error('EACCES'); }],
+  ])('re-drives exactly as before when %s', async (_label, witness) => {
+    let drives = 0;
+    const w = wizard({ credentialWitness: witness as never, onDrive: () => { drives++; } });
+    await startCodexLogin(w);
+    drives = 0;
+
+    clock = T0 + 16 * 60_000;
+    const reissued = await w.reissueExpired();
+
+    // Every uncertainty answers "not succeeded", so the witness can only ever
+    // PREVENT a destructive re-ask — never strand the operator on a dead code.
+    expect(drives).toBe(1);
+    expect(reissued).toHaveLength(1);
+  });
+
+  it('protects the restart-recovery and dead-pane paths too, not just TTL expiry', async () => {
+    let drives = 0;
+    const w = wizard({ credentialWitness: () => T0 + 5 * 60_000, onDrive: () => { drives++; } });
+    await startCodexLogin(w);
+    drives = 0;
+
+    // recoverAfterRestart() re-drives every non-terminal record at boot; a server
+    // bounce must not destroy a sign-in that already succeeded.
+    const recovered = await w.recoverAfterRestart();
+
+    expect(recovered).toEqual([]);
+    expect(drives).toBe(0);
+    expect(store.get('codex-justin')!.status).toBe('completed');
+  });
+});

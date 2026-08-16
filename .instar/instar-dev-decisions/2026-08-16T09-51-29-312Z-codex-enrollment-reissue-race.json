@@ -1,0 +1,24 @@
+{
+  "ts": "2026-08-16T09:51:29.312Z",
+  "slug": "codex-enrollment-reissue-race",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 177,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/EnrollmentWizard.ts",
+      "src/core/FrameworkLoginDriver.ts"
+    ],
+    "addedLines": 161,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
