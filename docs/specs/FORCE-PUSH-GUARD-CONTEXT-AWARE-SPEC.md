@@ -9,6 +9,7 @@ approved: false
 ships-staged: false
 supervision: tier0
 eli16-overview: docs/specs/FORCE-PUSH-GUARD-CONTEXT-AWARE-SPEC.eli16.md
+amends-spec: []   # standalone fix — no prior spec amended
 ---
 
 # Context-aware force-push guard — stop interrupting the user for the routine, safe case
