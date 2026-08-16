@@ -323,6 +323,36 @@ test failed and the wrong number never reached the spec. An honest unknown is
 better than a confident guess — but a measurement is better than both, and this
 one was roughly ten minutes of work.
 
+**8. CI finally ran, and found a defect the whole branch had been hiding — plus a
+real operator gap behind it.** Three unit shards went red on
+`grok-build-config-loadpath.test.ts`, all with one cause: the suite called
+`loadConfig`, which runs the framework-prerequisite check, and CI has neither the
+claude nor the grok binary. Green on a dev box with both installed; red anywhere
+else. A test whose verdict depends on the machine it runs on is not testing what
+its name says — and it had been broken since it was written, invisible because
+the conflicted PR meant CI never ran.
+
+**Behind it, a genuine defect.** The operator's `frameworkBinaryPaths` lever was
+merged into the SPAWN map ~50 lines below the prerequisite check and never fed
+INTO it. So `claude-code` had an escape hatch for a relocated install
+(`sessions.claudePath` seeds its detection) and the other FOUR frameworks had
+none: an operator whose grok/codex/gemini/pi binary lives outside the detection
+paths could configure the correct path, watch it be honoured for spawning, and
+still be refused at boot. Same "a lever with no load path is not a lever" shape
+round-11 fixed for the spawn map — one layer earlier. Fixed by feeding the merged
+paths into the check, and the spawn map now REUSES that same value rather than
+recomputing it, because two resolutions of one question is how they drift.
+
+Safety preserved, not weakened: the merge keeps its asymmetric existence guard, so
+a configured path that is provably absent is still dropped and cannot fake a
+prerequisite for a binary that is not there.
+
+**Verified the way the failure demanded.** The fix was checked by re-running the
+suite with `HOME` and `PATH` stripped so neither binary is discoverable — which
+reproduced the CI failure locally first (one case, exactly the one that resolves
+to grok), then passed 8/8 after. Passing on a host that HAS the binaries would
+have proved nothing, since that is what it did before.
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**

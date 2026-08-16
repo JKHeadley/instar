@@ -20,10 +20,28 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 describe('grok-build config file load path (the fourth load-path-gap lift)', () => {
   let dir: string;
+  /**
+   * A REAL file standing in for a framework CLI.
+   *
+   * WHY: `loadConfig` runs the framework-prerequisite check, which refuses boot
+   * when the configured framework's binary cannot be found. This suite is about
+   * config LOAD-PATH semantics, not about what happens to be installed on the
+   * host — and it was green on a dev box with claude + grok present and RED on
+   * CI, which has neither. Three shards, one cause. A test whose verdict depends
+   * on the machine it runs on is not testing what its name says.
+   *
+   * It must be a real file on disk, not a plausible-looking string:
+   * `mergeOperatorBinaryPaths` drops a configured path it can POSITIVELY show is
+   * absent, which is exactly the guard that stops a stale entry faking a
+   * prerequisite. The stub satisfies it honestly instead of dodging it.
+   */
+  let stubBinary: string;
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-loadpath-'));
     fs.mkdirSync(path.join(dir, '.instar'), { recursive: true });
+    stubBinary = path.join(dir, 'stub-framework-cli');
+    fs.writeFileSync(stubBinary, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   });
   afterEach(() => {
     try {
@@ -36,9 +54,27 @@ describe('grok-build config file load path (the fourth load-path-gap lift)', () 
   });
 
   function writeConfig(cfg: Record<string, unknown>): void {
+    const caseSessions = (cfg.sessions ?? {}) as Record<string, unknown>;
+    const casePaths = (caseSessions.frameworkBinaryPaths ?? {}) as Record<string, string>;
+    const sessions = {
+      ...caseSessions,
+      // Per-KEY merge, not object replacement: a case that pins one framework's
+      // path (the operator-wins assertion) keeps its own value AND keeps the
+      // others satisfied, so pinning one binary cannot accidentally un-boot the
+      // agent for another.
+      // ONLY claude-code by default. A grok entry here would be indistinguishable
+      // from an operator-set one, which would silently defeat the control that
+      // asserts an ABSENT operator value never erases a DETECTED grok path — the
+      // test would still pass while measuring nothing. Cases that resolve to
+      // grok-build supply their own grok path explicitly.
+      frameworkBinaryPaths: {
+        'claude-code': stubBinary,
+        ...casePaths,
+      },
+    };
     fs.writeFileSync(
       path.join(dir, '.instar', 'config.json'),
-      JSON.stringify({ projectName: 'loadpath-test', authToken: 't', ...cfg }),
+      JSON.stringify({ projectName: 'loadpath-test', authToken: 't', ...cfg, sessions }),
     );
   }
 
@@ -122,7 +158,15 @@ describe('grok-build config file load path (the fourth load-path-gap lift)', () 
     const prevEnv = process.env['INSTAR_FRAMEWORK'];
     delete process.env['INSTAR_FRAMEWORK'];
     try {
-      writeConfig({ enabledFrameworks: ['grok-build'] });
+      // This case RESOLVES to grok-build, so it must supply grok's binary path
+      // itself — the shared default deliberately covers claude-code only. Without
+      // it the case passes on a dev box with grok installed and fails on any host
+      // without it, which is the exact split that made three CI shards red while
+      // the suite was green locally.
+      writeConfig({
+        enabledFrameworks: ['grok-build'],
+        sessions: { frameworkBinaryPaths: { 'grok-build': stubBinary } },
+      });
       const config = loadConfig(dir);
       expect(config.sessions.framework).toBe('grok-build');
     } finally {

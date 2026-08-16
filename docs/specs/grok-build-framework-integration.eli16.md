@@ -187,6 +187,34 @@ There is a possible way out, and the count is what found it: there's another
 delivery route that keeps a session warm, and it doesn't go through the shut door.
 I haven't run it, so I'm calling it a candidate rather than a fix.
 
+## The one the tests finally caught
+
+For most of this work the automated tests were never running on the change, because
+the branch had drifted into conflict and the test system needs a clean combined
+version to build. Once that was fixed, they immediately found something.
+
+Three test batches failed, all for one reason: they were checking behaviour that
+depends on which programs happen to be installed on the computer running them. On
+my machine both tools are installed, so they passed. On the test servers neither
+is, so they failed. A test whose answer depends on the machine it runs on isn't
+really testing the thing its name claims.
+
+Behind that sat a real problem for anyone using this. If you install one of these
+tools somewhere unusual, there's a setting to say where it lives. That setting was
+being respected when actually running the tool — but not when deciding at startup
+whether the tool exists. So you could point at exactly the right place, watch it
+work for running things, and still be told at startup that the tool isn't
+installed. Claude happened to have a second, older way of being told where it
+lives, so it escaped this; the other four tools didn't.
+
+Now the startup check reads the same setting everything else reads. Nothing got
+looser: if you point at a location that genuinely doesn't exist, it's still
+ignored, so a stale setting can't fake its way past the check.
+
+I verified the fix by running the tests with the tools deliberately hidden, which
+first reproduced the failure and then passed. Checking on a machine that has them
+installed would have proved nothing — that's exactly what it had been doing.
+
 ## What you're deciding
 
 Whether instar ships a fifth, dark-by-default framework whose billing sink is

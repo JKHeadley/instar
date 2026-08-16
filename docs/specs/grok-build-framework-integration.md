@@ -507,8 +507,8 @@ framework is not "wired" on a passing test alone.
   prevents it from running.**
 
   **A candidate remedy, deduced from the entrypoint census rather than guessed:**
-  warm-session A2A spawns a tmux keep-alive worker and admits it so follow-ups
-  inject into the live session — and `WarmSessionPool` is NOT among the
+  warm-session A2A spawns a tmux keep-alive worker and admits it so later
+  messages on the thread inject into the live session — and `WarmSessionPool` is NOT among the
   `buildHeadlessLaunch` call sites enumerated by the entrypoint census, so that
   path never touches the closed lane,
   while grok's INTERACTIVE lane is open. Enabling it may therefore give

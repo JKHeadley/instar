@@ -940,13 +940,39 @@ export function loadConfig(projectDir?: string): InstarConfig {
   if (!tmuxPath) {
     throw new Error('tmux not found. Install with: brew install tmux (macOS) or apt install tmux (Linux)');
   }
+
+  // ROUND-23 — the operator's binary-path lever did not reach the PREREQUISITE
+  // check, only the spawn map built ~50 lines below. So `claude-code` had an
+  // escape hatch for a relocated install (`sessions.claudePath` seeds its
+  // detection above) and the other FOUR frameworks had none: an operator whose
+  // grok/codex/gemini/pi binary lives somewhere detection does not look could
+  // configure the correct path, watch it be honoured for spawning, and still be
+  // refused at boot. Same "a lever with no load path is not a lever" shape that
+  // round-11 fixed for the spawn map — one layer earlier, and unnoticed because
+  // the two levers look identical from config.json.
+  //
+  // The merge keeps its asymmetric existence guard, which is what makes this
+  // safe: a configured path we can POSITIVELY show is absent is dropped, so a
+  // stale or hand-written entry cannot fake a prerequisite for a binary that
+  // is not there. It can only rescue a path that genuinely exists.
+  const operatorMergedPaths = mergeOperatorBinaryPaths(
+    {
+      ...(claudePathDetected ? { 'claude-code': claudePathDetected } : {}),
+      ...(codexPathDetected ? { 'codex-cli': codexPathDetected } : {}),
+      ...(geminiPathDetected ? { 'gemini-cli': geminiPathDetected } : {}),
+      ...(piPathDetected ? { 'pi-cli': piPathDetected } : {}),
+      ...(grokPathDetected ? { 'grok-build': grokPathDetected } : {}),
+    },
+    fileConfig.sessions?.frameworkBinaryPaths as Record<string, string> | undefined,
+  );
+
   const prereq = checkFrameworkPrerequisite({
     configuredFramework,
-    claudePathDetected,
-    codexPathDetected,
-    geminiPathDetected,
-    piPathDetected,
-    grokPathDetected,
+    claudePathDetected: operatorMergedPaths['claude-code'] ?? claudePathDetected,
+    codexPathDetected: operatorMergedPaths['codex-cli'] ?? codexPathDetected,
+    geminiPathDetected: operatorMergedPaths['gemini-cli'] ?? geminiPathDetected,
+    piPathDetected: operatorMergedPaths['pi-cli'] ?? piPathDetected,
+    grokPathDetected: operatorMergedPaths['grok-build'] ?? grokPathDetected,
   });
   if (!prereq.satisfied) {
     throw new Error(prereq.error!);
@@ -988,16 +1014,11 @@ export function loadConfig(projectDir?: string): InstarConfig {
     // as rung 2 of the normative order, i.e. a lever with no load path — the
     // same defect the spec catalogues elsewhere, in its own carrier. The
     // operator's explicit values WIN over detection; detection fills the rest.
-    frameworkBinaryPaths: mergeOperatorBinaryPaths(
-      {
-        ...(claudePathDetected ? { 'claude-code': claudePathDetected } : {}),
-        ...(codexPathDetected ? { 'codex-cli': codexPathDetected } : {}),
-        ...(geminiPathDetected ? { 'gemini-cli': geminiPathDetected } : {}),
-        ...(piPathDetected ? { 'pi-cli': piPathDetected } : {}),
-        ...(grokPathDetected ? { 'grok-build': grokPathDetected } : {}),
-      },
-      fileConfig.sessions?.frameworkBinaryPaths,
-    ),
+    // ROUND-23: reuse the SAME merged value the prerequisite check consumed.
+    // Computing it twice is how the two answers drift — a boot that refuses on
+    // one resolution while spawning on another is the worst of both, and the
+    // divergence would be invisible because each site looks correct alone.
+    frameworkBinaryPaths: operatorMergedPaths,
     // The resolved runtime framework. Both spawn paths read this as
     // the default when no per-call framework override is given, so a
     // codex-cli agent spawns Codex on EVERY path (jobs + messages).
