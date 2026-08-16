@@ -1,6 +1,0 @@
-❯ Translate 'hello' to French.
-
-⏺ bonjour
-
-✻ Crunched for 1s
-

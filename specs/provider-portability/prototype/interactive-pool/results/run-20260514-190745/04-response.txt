@@ -1,7 +1,0 @@
-❯ Output a JSON object with keys 'a' and 'b' set to integers 1 and 2.
-
-⏺ {"a": 1, "b": 2}
-
-✻ Brewed for 1s
-
-  ⏵⏵ bypass permissions on (shift+tab to cycle)

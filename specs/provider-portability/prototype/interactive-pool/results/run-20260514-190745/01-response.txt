@@ -1,9 +1,0 @@
-❯ List three primary colors, one per line, no other text.
-
-⏺ Red
-  Blue
-  Yellow
-
-✻ Cogitated for 1s
-
-  ⏵⏵ bypass permissions on (shift+tab to cycle)                                                                               You've used 93% of your weekly limit · resets 12pm (America/Los_Angeles)
