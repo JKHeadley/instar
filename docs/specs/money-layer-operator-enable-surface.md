@@ -191,10 +191,17 @@ regardless of whether a row was written.
     false` adoption could still change operational money behaviour under Bearer alone. The
     adopted set is exactly:
 
-    | Field | Authority-bearing? |
-    |---|---|
-    | `routingSpend.money.enabled` | yes |
-    | `routingSpend.money.limits.*` | yes — a raised cap increases authority |
+    | Field | Authority-bearing? | `direction` when it differs |
+    |---|---|---|
+    | `routingSpend.money.enabled` | yes | false→true `increases`; true→false `reduces` |
+    | `routingSpend.money.limits.*` (each cap) | yes | raised `increases`; lowered `reduces` |
+
+    `config-inspect` returns that per-field diff — path, current, on-disk, direction — and the
+    **same field list is embedded verbatim in the rendered plan** for an authority-increasing
+    adopt, so what the operator reads is exactly what commits. `wouldIncreaseAuthority` is
+    true iff ANY field's direction is `increases`. No value in this set is a secret, so no
+    redaction applies; a future authority-bearing field that IS sensitive must declare its
+    redaction before joining the list.
 
     `wouldIncreaseAuthority` is computed over **every** field in that list, not `enabled`
     alone: any cap raised, or the layer moving toward on, requires the PIN. Nothing outside
@@ -220,6 +227,31 @@ regardless of whether a row was written.
     no way to make their change visible — a bounded-staleness display with no refresh is a
     dead end. `config-inspect` changes no state; `config-adopt` changes only the
     process money-config snapshot.
+
+    **The overlay is NOT a third enable source.** MLE-1 has exactly two inputs — the store
+    flag and *the config value as the process sees it* — and the overlay is simply how that
+    second input gets its value. It never appears in `enableSources.state`, which keeps its
+    four states. What it adds is **provenance**, reported as
+    `enableSources.configProvenance: "file" | "adopted-by-operator"` with the adopting plan
+    id, so the operator can tell a value that came straight off disk from one they approved.
+    A third state would have meant a third authority; a provenance tag does not.
+
+    **Overlay lifecycle, specified rather than implied:**
+
+    | Question | Answer |
+    |---|---|
+    | Representation | a small record per adopted field: `{ path, value, adoptedAt, planId? }` |
+    | Persistence | durable in the caps store — an adoption is an operator decision and must survive restart |
+    | Boot ordering | config snapshot loads first, then the overlay is applied over it, before the money layer constructs |
+    | Later disk edit that MATCHES the overlay | overlay is dropped as redundant; provenance returns to `file` |
+    | Later disk edit that DIVERGES | overlay WINS and `config-inspect` reports `differs: true` — the operator is shown the divergence rather than having their approved value silently replaced |
+    | Cleared by | another adopt covering the same field, or a disk edit that matches it |
+
+    **Scope discipline, because this is close to becoming a general config-overlay system:**
+    the overlay applies to the enumerated authority-bearing field list above and nothing else.
+    It is deliberately NOT a reusable mechanism, has no general API, and any proposal to
+    extend it beyond `routingSpend.money.*` needs its own spec — a local overlay for one
+    feature is a contained decision; a second configuration system is not.
 
     **Precedence, so a later global reload cannot silently undo it:** the adopted money-config
     values are held as an explicit overlay with a stamped source (`adopted-by-operator`,
@@ -258,7 +290,7 @@ because they are the door to turning it on. Six mutate or act; `GET
 | `POST /routing-spend/plan` | Bearer | `{ action: <member of MONEY_LAYER_PREGATE_ACTIONS> }` | `{ planId, nonce, renderedText, action, sourceStateAtRender, machineId, machineNickname, expiresAt }` |
 | `POST /routing-spend/money-layer/commit` | Bearer **+** PIN | `{ pin, planId, nonce }` | `{ lifecycleState, enforcementReady, enableSources, storeCleared, probe, message }` |
 | `POST /routing-spend/money-layer/restart` | Bearer **+** PIN | `{ pin, nonce }` | `{ accepted, message }` |
-| `POST /routing-spend/config-inspect` | Bearer | `{}` | `{ onDiskEnabled, snapshotEnabled, differs, wouldIncreaseAuthority, configSnapshotAt }` — non-adopting inspection (see below) |
+| `POST /routing-spend/config-inspect` | Bearer | `{}` | `{ differs, wouldIncreaseAuthority, configSnapshotAt, configProvenance, fields: [{ path, current, onDisk, direction: "increases"|"reduces"|"neutral" }] }` — non-adopting inspection (see below) |
 | `POST /routing-spend/config-adopt` | Bearer (authority-REDUCING adoption only) | `{}` | same shape as `enable-status`, after adopting the on-disk config |
 | `POST /routing-spend/money-layer/restart-nonce` | Bearer | `{}` | `{ nonce, expiresAt, confirmationText }` — refused (409) outside the three restartable states |
 | `GET /routing-spend/enable-status` | Bearer | — | `{ lifecycleState, enforcementReady, enableSources, configSnapshotAt, machineId, lastTransitionAt, failingComponent?, settlingCount, restartEligible, anyKeyFrozen, freezeRecordProvisional }` — read-only, `Cache-Control: no-store`, mints nothing |
@@ -303,8 +335,17 @@ the restart route got. It is accepted because the asymmetry is deliberate and lo
 spend (worst case: a denial-of-service on the agent's own paid capability, visible, audited,
 and reversible by the operator); a Bearer holder can NOT resume it — **unfreeze is
 PIN-gated**, unchanged from Increment B. Freeze calls are audited on the authority channel
-with the caller and reason, and rate-limited only to bound log volume, never to delay a
-stop. The failure this ordering prevents — an agent that cannot stop its own overspend
+with the caller and reason, and rate-limited only to bound log volume, never to delay a stop.
+
+**The residual risk is durable denial-of-service, and it is handled by visibility, not by
+gating.** A Bearer holder can freeze every key and leave the operator's paid workflows dead
+until they notice and PIN-unfreeze. Gating freeze would be the wrong cure — it would trade a
+visible, reversible outage for an unstoppable overspend. Instead: freeze is **per-keyRef**
+(never a single global switch), each freeze raises **one attention item naming the keyRef,
+caller and reason**, `enable-status.anyKeyFrozen` makes the state visible pre-gate, and the
+freeze reason and caller ARE readable pre-gate in the filtered log — a stop the operator
+cannot see the cause of is worse than one they can. Only freeze *timing history* stays
+withheld. The failure this ordering prevents — an agent that cannot stop its own overspend
 because the stop was gated — is far worse than the one it permits.
 
 An earlier draft made it conditional (`intentEnabled || constructedSpendMachineryExists ||
@@ -424,7 +465,16 @@ The nonce is issued by a Bearer-only read and the Bearer token is agent-held, so
 is replay/CSRF protection, **not** a second authority — an attacker holding both Bearer and
 PIN can restart the server, bounded only by the cooldown. That is accepted deliberately: a
 restart moves no money, books no spend and changes no cap, so its worst case is availability
-damage the cooldown bounds, and the PIN-holder is the operator.
+damage the cooldown bounds.
+
+**The money PIN is intentionally also server-restart authority here, and that is stated
+rather than assumed.** The PIN is the operator's credential for this machine, not a
+money-scoped one; there is no separate operational credential in the system to bind to, and
+inventing one for a single button would be a new authority surface with its own lifecycle.
+The restart is additionally narrowed so it cannot be a general lever: accepted only in the
+three restartable states, single-use nonce, cooldown, refused while money work is settling
+without `force: true`, and gated behind a server-rendered confirmation naming the blast
+radius.
 
 **There is NO caller-identity binding on the nonce, and claiming one would be false.**
 An earlier draft said the nonce was bound to "the Bearer-token identity". Checked against
@@ -660,14 +710,23 @@ running. It is removed, and the risk with it.
 |---|---|
 | keyRef | `__probe__` — reserved; refused as a user-supplied keyRef everywhere |
 | provider | `null-provider` — a built-in no-op that performs NO network call and returns a fixed synthetic response |
-| price | fixed `$0` per unit, in the price manifest, not operator-editable |
+| **evaluation price** | fixed **positive** synthetic price (`$1.00`), in the price manifest, not operator-editable — used ONLY for cap evaluation |
 | `goLiveState` | **live** — deliberately, so the go-live check PASSES |
 | dailyCap / lifetimeCap | `$0` |
+| actual booked spend | always `$0` — the gate refuses before execution, and the provider cannot bill in any case |
 
 The probe is then an **ordinary metered call on the ordinary path**: go-live passes because
-the door really is live; the cap check refuses because any usage exceeds a `$0` cap. Nothing
-is skipped, nothing is privileged, and the thing being proven — *the cap gate refuses on the
+the door really is live; the cap check evaluates the request at its **positive** synthetic
+price of `$1.00` against a `$0` cap and therefore refuses with `cap-exceeded`. Nothing is
+skipped, nothing is privileged, and the thing being proven — *the cap gate refuses on the
 path that spends* — is proven by the path that spends.
+
+**The positive price is load-bearing and an earlier draft got this wrong.** With a `$0`
+price, `$0` usage does not exceed a `$0` cap, so the probe would never trip the gate and
+readiness could never pass — the check would have been permanently broken in a way that
+reads as "not ready" rather than as a defect. The price is what the gate *evaluates*; it is
+never what the ledger *books*, because the gate refuses before execution and the provider
+cannot bill regardless. Both facts are asserted (T7).
 
 **Why this is safe where a bypass was not.** The bypass's risk was that a privileged branch
 inside metered execution could be reached by something other than the prober — through a
@@ -699,7 +758,15 @@ conditional in the code path that moves money.
 
 Two channels sharing one file, distinguished by **interface**, not convention:
 
-- **Authority writes** (enable flag, caps, arm/freeze state): PIN-committed, plan-bound.
+- **Authority writes — split by direction, because they do not share one discipline:**
+  - *Authority-increasing / non-monotonic* (enable, caps raised, arming, **unfreeze**,
+    authority-increasing config adopt): **PIN-committed and plan-bound.**
+  - *Monotonic-restricting* (**freeze**, authority-reducing config adopt, clearing the store
+    flag): **Bearer-only, no plan** — halting money stays cheap — but still recorded on the
+    **authority channel**, not the audit-only channel, because they change what may spend.
+
+  A single "PIN-committed, plan-bound" line covering both contradicted freeze being
+  Bearer-cheap everywhere else in this spec.
 - **Audit-only appends** (plan rendered, PIN attempt failed, probe result, state
   transition, restart requested/observed): a **distinct handle offering only `append` and
   `read`** — no update, no delete, no rewrite, structurally absent from the type rather
@@ -729,7 +796,11 @@ best-effort — written to the server log marked provisional when the authority 
 be trusted (lost lock, fsync failure). The operator is told the freeze applied and its record
 is provisional. **Unfreeze is NOT excepted** and follows the normal coupling: no record, no
 resumption. T36 covers an audit failure during freeze. If a non-authority audit append fails, the operation proceeds and
-the failure is reported to the caller and the server log. If the pre-handoff fsync fails, the
+the failure is reported to the caller and the server log. **This covers the lock case too:**
+a pre-gate audit-only route (`config-inspect`, plan render, status transitions) whose append
+is refused because the lock is absent still SERVES — it changes no money state, so refusing
+the read would be a self-inflicted outage for no safety gain. Only AUTHORITY writes are
+coupled to a trusted append, and freeze is the named exception to even that. If the pre-handoff fsync fails, the
 restart is **not** initiated and returns `503`: an unrecorded restart is precisely the case
 the ordering exists to prevent. There is an explicit **flush/fsync before the
 supervisor handoff**
