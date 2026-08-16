@@ -446,8 +446,34 @@ framework is not "wired" on a passing test alone.
   scheduled jobs**. Each one fails, and failure alerting is per job, so the
   operator's group fills with "Job Alert: … 2 consecutive failures … last error:
   grok-headless-cwd-ungated" — two were already delivered before this was
-  noticed. The crash-loop pauser bounds it (jobs pause rather than retry
-  forever), so it is finite, not endless.
+  noticed.
+
+  **CORRECTION (2026-08-16, post-merge) — this bullet's reassurance was FALSE and
+  is retracted.** It read: *"The crash-loop pauser bounds it (jobs pause rather
+  than retry forever), so it is finite, not endless."* The pauser defaults to
+  DRY-RUN (`CrashLoopPauser.ts`: `const dryRun = opts.dryRun ?? true`), so unless
+  an operator explicitly sets `dryRun: false` it only LOGS the pause it would have
+  made and the job keeps failing on its schedule. Measured on the live grok agent:
+  `CrashLoopPauser: wired at boot (DRY-RUN — logs intended pauses only)`, then
+  `WOULD pause 1 job(s) — commitment-detection (6 failures)` and, 36 minutes later,
+  the same job at 8 failures. Nothing was paused.
+
+  So the honest bound is the SCHEDULE, not the pauser: two of the 33 jobs run every
+  five minutes, so a grok-only agent with the headless lane closed retries
+  indefinitely rather than converging. Carrier: CMT-1317.
+
+  Recorded rather than quietly amended, because this is the exact defect class this
+  document names as its own most-repeated failure — a claim whose carrier does not
+  exist. I wrote a reassurance about a guard without checking that the guard was
+  armed, and shipped it.
+
+  **And the check was one read away.** `GET /guards` reports this guard's posture
+  directly — `{"key":"monitoring.crashLoopPauser","effective":"on-dry-run",
+  "runtime":{"enabled":true,"dryRun":true}}`. instar has a surface built to answer
+  exactly the question I answered from assumption instead. Note also what it does
+  NOT do: the row carries no `loadBearing` marker, so the load-bearing-gap alarm
+  would not have raised it either — the plain read would have, the alarm would not.
+  **Before writing that any guard bounds anything, read `/guards` for that guard.**
 
   **AND THE CONSEQUENCE THAT BULLET *ALSO* NEVER TRACED — observed live the same
   day, one step further out.** Scheduled jobs are not the only thing that needs a
