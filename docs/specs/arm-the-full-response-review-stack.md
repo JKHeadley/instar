@@ -198,7 +198,13 @@ three layers green:
 
 1. **Host hook state.** Codex: slot present, trusted, and `enabled != false`,
    with execution observably *attempted* (not just installed). Claude: present in
-   `settings.json` `Stop[]`.
+   `settings.json` `Stop[]`. **The Codex health source reuses the
+   `codexHookArm` / `armCodexHooks` readback path (codey, msg 4) — the verifier
+   does not reimplement `config.toml` parsing.** The normalized health object MUST
+   carry the **raw reason category** the readback derived from `config.toml` —
+   one of `missing-state`, `untrusted-hash`, `enabled-false`, `trusted-enabled` —
+   so that future drift in the arm-path parser is observable in tests (§4.1)
+   rather than silently collapsing distinct dark causes into one verdict.
 2. **Config state.** `responseReview.enabled === true` so `response-review.js`
    does not `exit(0)` before calling the server (`response-review.js:37`).
 3. **Runtime gate state.** `ctx.responseReviewGate` actually constructed —
