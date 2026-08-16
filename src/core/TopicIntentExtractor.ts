@@ -23,6 +23,7 @@ import {
   type EstablishedRef,
   type TopicIntentFile,
 } from './TopicIntent.js';
+import type { IntelligenceProvider } from './types.js';
 
 export interface ExtractorInput {
   topicId: number;
@@ -183,6 +184,39 @@ ${refsBlock}
 Return JSON array of signal proposals.`;
 
   return { systemPrompt, userPrompt };
+}
+
+/**
+ * Production ExtractFn factory: wires buildExtractorPrompt → an injected
+ * IntelligenceProvider (fast tier) → parseExtractorResponse.
+ *
+ * Degrade-safe by design (the heart of the Topic-Intent Layer's Layer-1
+ * contract): if no provider is configured, OR the call throws/times out,
+ * it returns [] — capture becomes a silent no-op rather than breaking the
+ * conversation path it's attached to. The provider itself is responsible
+ * for rate-limiting / daily-cap enforcement (production wires it to the
+ * shared LlmQueue-backed provider).
+ *
+ * Framework-agnostic: the provider is injected, never a Claude/Codex import.
+ */
+export function createLlmExtractFn(intelligence?: IntelligenceProvider): ExtractFn {
+  return async (input: ExtractorInput): Promise<SignalProposal[]> => {
+    if (!intelligence) return [];
+    const { systemPrompt, userPrompt } = buildExtractorPrompt(input);
+    let raw: string;
+    try {
+      raw = await intelligence.evaluate(`${systemPrompt}\n\n${userPrompt}`, {
+        model: 'fast',
+        temperature: 0,
+        maxTokens: 600,
+        attribution: { component: 'TopicIntentExtractor' },
+      });
+    } catch {
+      // Network/timeout/provider failure → degrade to no capture for this turn.
+      return [];
+    }
+    return parseExtractorResponse(raw);
+  };
 }
 
 /**

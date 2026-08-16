@@ -15,10 +15,12 @@ import {
   TopicIntentExtractor,
   parseExtractorResponse,
   buildExtractorPrompt,
+  createLlmExtractFn,
   type ExtractFn,
   type SignalProposal,
   type ExtractorInput,
 } from '../../src/core/TopicIntentExtractor.js';
+import type { IntelligenceProvider } from '../../src/core/types.js';
 
 let tempDir: string;
 let store: TopicIntentStore;
@@ -209,5 +211,44 @@ describe('buildExtractorPrompt', () => {
     expect(userPrompt).toContain('ref-A');
     expect(userPrompt).toContain('use Path A OAuth');
     expect(systemPrompt).toContain('JSON array');
+  });
+});
+
+describe('createLlmExtractFn — production extractFn wiring', () => {
+  it('returns [] (degrade-safe no-op) when no intelligence provider is configured', async () => {
+    const fn = createLlmExtractFn(undefined);
+    const out = await fn(makeInput({ topicId: 700 }));
+    expect(out).toEqual([]);
+  });
+
+  it('calls the provider at the fast tier with attribution and parses the JSON response', async () => {
+    let seenPrompt = '';
+    let seenOpts: { model?: string; attribution?: { component?: string } } | undefined;
+    const provider: IntelligenceProvider = {
+      async evaluate(prompt, options) {
+        seenPrompt = prompt;
+        seenOpts = options;
+        return '```json\n[{"kind":"new-ref","propositionText":"use Path B","refKind":"decision"}]\n```';
+      },
+    };
+    const fn = createLlmExtractFn(provider);
+    const out = await fn(makeInput({
+      topicId: 701,
+      message: { id: 'm1', text: 'we should use Path B', fromUser: true, turn: 1, at: '2026-01-01T00:00:00.000Z' },
+    }));
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ kind: 'new-ref', refKind: 'decision' });
+    expect(seenOpts?.model).toBe('fast');
+    expect(seenOpts?.attribution?.component).toBe('TopicIntentExtractor');
+    expect(seenPrompt).toContain('use Path B');
+  });
+
+  it('returns [] when the provider throws (degrade-safe on failure)', async () => {
+    const provider: IntelligenceProvider = {
+      async evaluate() { throw new Error('network down'); },
+    };
+    const fn = createLlmExtractFn(provider);
+    const out = await fn(makeInput({ topicId: 702 }));
+    expect(out).toEqual([]);
   });
 });
