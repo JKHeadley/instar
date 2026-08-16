@@ -98,7 +98,7 @@ capable of audit writes would both contradict its contract and let dashboard pol
 log volume.
 
 So `lastObservedSourceState` is compared and updated only on paths that are already mutating:
-**money-layer construction (boot), `config-adopt`, and each commit's post-verify step.** An
+**money-layer construction (boot) and each commit's post-verify step.** An
 audit row keyed `enable-source-transition:<from>-><to>` is appended when the recomputed state
 differs from the stored one. The cost of this choice, stated: a config edit adopted by
 nothing is noticed at the next boot or adopt rather than at the next poll — acceptable,
@@ -162,104 +162,35 @@ regardless of whether a row was written.
     *a config-file edit is not an immediate control; use freeze for immediate effect.*
     Every surface that shows `config-enabled` state renders it as **"as of `configSnapshotAt`"**,
     so the operator is never shown a config-derived claim without its age, **and offers a
-    refresh action — split into INSPECT and ADOPT**, because collapsing them opens a hole:
+    refresh action — `POST /routing-spend/config-inspect`**, which REPORTS and adopts
+    nothing. It returns `{ differs, configSnapshotAt, fields: [{ path, current, onDisk }] }`
+    over the enumerated authority-bearing fields (`routingSpend.money.enabled` and each
+    `routingSpend.money.limits.*`), so an operator who hand-edited the file can see that the
+    edit has not taken effect, and exactly which values differ.
 
-    - **`POST /routing-spend/config-inspect`** (Bearer) reports what is on disk versus what
-      the process holds, and whether adopting it **would increase money authority**. It
-      adopts nothing and changes no state.
-    - **`POST /routing-spend/config-adopt`** applies the on-disk config to the process. When
-      adoption would move the layer from off toward on (`wouldIncreaseAuthority`), it
-      **requires the full plan-then-commit flow, exactly like enable** — a rendered plan
-      naming the exact before/after fields, machine-bound, TTL'd, nonce'd, and rejected if the
-      on-disk state changed since rendering. It is the same class of authority as enable and
-      caps-adjust, so it takes the same discipline; a PIN alone would have made it the one
-      authority-increasing path with no server-rendered text for the operator to read. The
-      enum gains `money-layer-config-adopt` for this, and it commits through the SAME
-      `POST /routing-spend/money-layer/commit` route as every other plan-bound action — there
-      is one commit path, not two. `POST /routing-spend/config-adopt` therefore handles ONLY
-      the authority-reducing case, and refuses (`409`) when `wouldIncreaseAuthority` is true,
-      naming the plan flow. The rendered plan carries the exact before/after fields and the
-      on-disk snapshot hash; commit rejects it if either moved — the halting direction stays cheap, exactly as freeze does, and for the same
-      reason: an agent that cannot stop its own overspend is the worse failure. A
-      Bearer-only adoption that turns config-enabled spend OFF is deliberately equivalent in
-      authority to disable, and is audited on the AUTHORITY channel (not the audit-only
-      channel) with its before/after — it changes what may spend, so it is an authority
-      event regardless of which direction it moved.
+    It is **non-adopting inspection**: it mutates no authority, config or process state. It
+    does append an audit row and advance rate-limit state, which is why it is a POST and why
+    it is not called "read-only" — that term is reserved for `GET /enable-status`, which
+    writes nothing at all (T32).
 
-    **`config-adopt` adopts an enumerated field list, not a subtree.** `routingSpend.money.*`
-    was too loose — it could sweep in limits and provider knobs, so a `wouldIncreaseAuthority:
-    false` adoption could still change operational money behaviour under Bearer alone. The
-    adopted set is exactly:
+    **There is deliberately NO route that adopts on-disk config into the running process.**
+    An earlier draft had one, plus a durable per-field overlay to stop a later global reload
+    undoing it — with precedence rules, provenance tags, divergence handling and clearing
+    semantics. Two successive convergence checks named that mechanism as the largest
+    remaining architectural risk: it was a second configuration system growing inside a money
+    feature, and it produced an effective-authority value that was neither the file nor the
+    store.
 
-    | Field | Authority-bearing? | `direction` when it differs |
-    |---|---|---|
-    | `routingSpend.money.enabled` | yes | false→true `increases`; true→false `reduces` |
-    | `routingSpend.money.limits.*` (each cap) | yes | raised `increases`; lowered `reduces` |
+    It is removed, because the problem it solved already has two better answers:
 
-    `config-inspect` returns that per-field diff — path, current, on-disk, direction — and the
-    **same field list is embedded verbatim in the rendered plan** for an authority-increasing
-    adopt, so what the operator reads is exactly what commits. `wouldIncreaseAuthority` is
-    true iff ANY field's direction is `increases`. No value in this set is a secret, so no
-    redaction applies; a future authority-bearing field that IS sensitive must declare its
-    redaction before joining the list.
-
-    `wouldIncreaseAuthority` is computed over **every** field in that list, not `enabled`
-    alone: any cap raised, or the layer moving toward on, requires the PIN. Nothing outside
-    the list is adopted. A general config
-    reload would be a far broader authority than a money control — it could change session,
-    messaging or guard settings through a money route — so the scope is pinned to the keys
-    this spec owns. The earlier phrasing "changes no state" was wrong and is withdrawn: it
-    changes the process's money-config snapshot, which is precisely its purpose.
-
-    **Two different words, deliberately.** `config-inspect` is **non-adopting inspection**:
-    it mutates no authority, config or process state, but it DOES append an audit row and
-    advance rate-limit state, so it is not called read-only. **`GET /enable-status` is
-    read-only** in the strict sense — it writes nothing at all, not even an audit row (T32).
-    Reserving "read-only" for genuinely no-write routes keeps the word worth something.
-
-    **Why the split is not ceremony:** `intentEnabled` reads partly from the process config
-    snapshot, so a Bearer-only "just re-read the file" would let the agent adopt a
-    `routingSpend.money.enabled: true` sitting on disk and move itself to `servingReady`
-    without a PIN — Bearer reaching money state through the back door, which is the exact
-    boundary this whole spec defends. Both are POSTs (they audit and rate-limit; a GET with
-    side effects gets fired by prefetch, caches and monitoring probes), pre-gate, and
-    rate-limited to once per 10s per machine. Without it, an operator who edits config while trying to recover has
-    no way to make their change visible — a bounded-staleness display with no refresh is a
-    dead end. `config-inspect` changes no state; `config-adopt` changes only the
-    process money-config snapshot.
-
-    **The overlay is NOT a third enable source.** MLE-1 has exactly two inputs — the store
-    flag and *the config value as the process sees it* — and the overlay is simply how that
-    second input gets its value. It never appears in `enableSources.state`, which keeps its
-    four states. What it adds is **provenance**, reported as
-    `enableSources.configProvenance: "file" | "adopted-by-operator"` with the adopting plan
-    id, so the operator can tell a value that came straight off disk from one they approved.
-    A third state would have meant a third authority; a provenance tag does not.
-
-    **Overlay lifecycle, specified rather than implied:**
-
-    | Question | Answer |
+    | The operator wants… | The answer |
     |---|---|
-    | Representation | a small record per adopted field: `{ path, value, adoptedAt, planId? }` |
-    | Persistence | durable in the caps store — an adoption is an operator decision and must survive restart |
-    | Boot ordering | config snapshot loads first, then the overlay is applied over it, before the money layer constructs |
-    | Later disk edit that MATCHES the overlay | overlay is dropped as redundant; provenance returns to `file` |
-    | Later disk edit that DIVERGES | overlay WINS and `config-inspect` reports `differs: true` — the operator is shown the divergence rather than having their approved value silently replaced |
-    | Cleared by | another adopt covering the same field, or a disk edit that matches it |
+    | to change money authority now | use the store flag — `money-layer-enable` or the disable actions. PIN-gated, plan-bound, effective immediately, no restart. This is the intended path. |
+    | their hand-edit of `config.json` to take effect | **restart** — already specified here (§4), PIN-gated, and completable from a phone. |
 
-    **Scope discipline, because this is close to becoming a general config-overlay system:**
-    the overlay applies to the enumerated authority-bearing field list above and nothing else.
-    It is deliberately NOT a reusable mechanism, has no general API, and any proposal to
-    extend it beyond `routingSpend.money.*` needs its own spec — a local overlay for one
-    feature is a contained decision; a second configuration system is not.
-
-    **Precedence, so a later global reload cannot silently undo it:** the adopted money-config
-    values are held as an explicit overlay with a stamped source (`adopted-by-operator`,
-    with its plan id where one applies). A subsequent global config reload refreshes
-    everything else and **does not clear the overlay**; it is cleared only by another adopt,
-    or by an operator action that says so. Without this an ordinary reload elsewhere in the
-    server could revert an authority decision the operator made deliberately — a silent
-    authority change, which is the class of failure this spec exists to close.
+    So a config edit is picked up the way every other config value is picked up: by the
+    process reading it at start. No overlay, no precedence rules, no third value. MLE-1's two
+    inputs stay the store flag (read live) and the config value as loaded at boot.
   - **This is stated to the operator rather than hidden:** the `config-enabled` surface says
     a config-file edit is not an immediate control, and points at **freeze** for anything
     that must take effect now. Freeze reads live, unconditionally.
@@ -281,8 +212,8 @@ copy says *"spending controls are up and enforcing"* and never the bare word "re
 
 ## 2. Routes
 
-All **seven** are **pre-gate** (the allowlist): they must work while the money layer is off,
-because they are the door to turning it on. Six mutate or act; `GET
+All **six** are **pre-gate** (the allowlist): they must work while the money layer is off,
+because they are the door to turning it on. Five mutate or act; `GET
 /routing-spend/enable-status` is a read and is allowlisted by the same mechanism.
 
 | Route | Auth | Body | Returns |
@@ -290,8 +221,7 @@ because they are the door to turning it on. Six mutate or act; `GET
 | `POST /routing-spend/plan` | Bearer | `{ action: <member of MONEY_LAYER_PREGATE_ACTIONS> }` | `{ planId, nonce, renderedText, action, sourceStateAtRender, machineId, machineNickname, expiresAt }` |
 | `POST /routing-spend/money-layer/commit` | Bearer **+** PIN | `{ pin, planId, nonce }` | `{ lifecycleState, enforcementReady, enableSources, storeCleared, probe, message }` |
 | `POST /routing-spend/money-layer/restart` | Bearer **+** PIN | `{ pin, nonce }` | `{ accepted, message }` |
-| `POST /routing-spend/config-inspect` | Bearer | `{}` | `{ differs, wouldIncreaseAuthority, configSnapshotAt, configProvenance, fields: [{ path, current, onDisk, direction: "increases"|"reduces"|"neutral" }] }` — non-adopting inspection (see below) |
-| `POST /routing-spend/config-adopt` | Bearer (authority-REDUCING adoption only) | `{}` | same shape as `enable-status`, after adopting the on-disk config |
+| `POST /routing-spend/config-inspect` | Bearer | `{}` | `{ differs, configSnapshotAt, fields: [{ path, current, onDisk }] }` — non-adopting inspection |
 | `POST /routing-spend/money-layer/restart-nonce` | Bearer | `{}` | `{ nonce, expiresAt, confirmationText }` — refused (409) outside the three restartable states |
 | `GET /routing-spend/enable-status` | Bearer | — | `{ lifecycleState, enforcementReady, enableSources, configSnapshotAt, machineId, lastTransitionAt, failingComponent?, settlingCount, restartEligible, anyKeyFrozen, freezeRecordProvisional }` — read-only, `Cache-Control: no-store`, mints nothing |
 
@@ -304,11 +234,10 @@ MONEY_LAYER_PREGATE_ACTIONS = [
                                     // yielding both-enabled; does NOT clear the config key
   "money-layer-disable",             // refused by the renderer while the config key is set
   "money-layer-disable-store-only",  // the acknowledged variant, rendered in its place
-  "money-layer-config-adopt",        // authority-INCREASING config adoption only
 ]
 ```
 
-**Five** public actions. Any statement of a count elsewhere refers to this enum; the commit
+**Four** public actions. Any statement of a count elsewhere refers to this enum; the commit
 route accepts a signed action **iff** it is a member of it. There is no internal-only
 variant — `money-layer-disable-store-only` is a public action precisely so that what the
 operator approved is visible in the signed plan and the audit log.
@@ -357,7 +286,7 @@ anything; when there is nothing to freeze it is a harmless no-op that says so.
 
 | Route group | Visible when |
 |---|---|
-| `plan` (allowlisted actions), `money-layer/commit`, `money-layer/restart`, `money-layer/restart-nonce`, `config-inspect`, `config-adopt`, `enable-status` | **always** (pre-gate) |
+| `plan` (allowlisted actions), `money-layer/commit`, `money-layer/restart`, `money-layer/restart-nonce`, `config-inspect`, `enable-status` | **always** (pre-gate) |
 | `freeze` | **always** (pre-gate, unconditional) |
 | `caps/log` — enable/disable/status rows only | **always** (pre-gate), Bearer |
 | `caps/log` — caps, arming, freeze, spend rows | `servingReady \|\| settlingCount > 0` |
@@ -378,10 +307,11 @@ rather than described by category:
 | enable/disable plan rendered, enable/disable committed | yes |
 | enable-source transition, lifecycle transition | yes |
 | restart requested / initiated / observed-ready | yes |
-| config-inspect, config-adopt | yes |
+| config-inspect | yes |
+| freeze / unfreeze — keyRef, caller and reason (NO timestamp) | yes — an operator must be able to see WHY spending stopped |
 | **PIN attempt failed** | **no** — attempt timing is an attack signal |
 | caps adjusted, door armed | no |
-| freeze / unfreeze | no |
+| freeze / unfreeze — full rows WITH timing history | no |
 | probe result | no — it reveals enforcement timing |
 | spend rows | no | Both remain one
 merged, time-ordered view for an operator whose read satisfies both conditions.
@@ -449,8 +379,11 @@ a restart the route would refuse. **The nonce is minted by `POST /routing-spend/
 An earlier draft had `enable-status` issue it — a read-only, cacheable, prefetchable route
 minting security-relevant state, which is the same mistake this spec rejected for
 `config-refresh` two sections earlier. `enable-status` now reports only `restartEligible`
-(a boolean) and carries `Cache-Control: no-store`. The mint route returns, alongside the
-nonce, a **canonical server-rendered confirmation string bound to that nonce**, which the UI must display verbatim before the restart is
+(a boolean) and carries `Cache-Control: no-store`. The mint route **stores the hash of the confirmation text against the nonce**, and the
+restart route recomputes and verifies it — so "the UI must display it" is enforceable rather
+than aspirational, and the audit records which words the operator was shown. The mint route
+returns, alongside the nonce, a **canonical server-rendered confirmation string bound to
+that nonce**, which the UI must display verbatim before the restart is
 submitted — naming the machine and that the whole agent server restarts. This is the same
 discipline as plan-binding, minus the durable plan record: an accidental mobile tap has to
 pass a server-authored sentence describing what it actually does. It is single-use and
@@ -759,10 +692,8 @@ conditional in the code path that moves money.
 Two channels sharing one file, distinguished by **interface**, not convention:
 
 - **Authority writes — split by direction, because they do not share one discipline:**
-  - *Authority-increasing / non-monotonic* (enable, caps raised, arming, **unfreeze**,
-    authority-increasing config adopt): **PIN-committed and plan-bound.**
-  - *Monotonic-restricting* (**freeze**, authority-reducing config adopt, clearing the store
-    flag): **Bearer-only, no plan** — halting money stays cheap — but still recorded on the
+  - *Authority-increasing / non-monotonic* (enable, caps raised, arming, **unfreeze**): **PIN-committed and plan-bound.**
+  - *Monotonic-restricting* (**freeze**, clearing the store flag): **Bearer-only, no plan** — halting money stays cheap — but still recorded on the
     **authority channel**, not the audit-only channel, because they change what may spend.
 
   A single "PIN-committed, plan-bound" line covering both contradicted freeze being
@@ -797,8 +728,8 @@ be trusted (lost lock, fsync failure). The operator is told the freeze applied a
 is provisional. **Unfreeze is NOT excepted** and follows the normal coupling: no record, no
 resumption. T36 covers an audit failure during freeze. If a non-authority audit append fails, the operation proceeds and
 the failure is reported to the caller and the server log. **This covers the lock case too:**
-a pre-gate audit-only route (`config-inspect`, plan render, status transitions) whose append
-is refused because the lock is absent still SERVES — it changes no money state, so refusing
+a pre-gate audit-only route (`config-inspect`, status transitions) whose append is refused
+because the lock is absent still SERVES — it changes no money state, so refusing
 the read would be a self-inflicted outage for no safety gain. Only AUTHORITY writes are
 coupled to a trusted append, and freeze is the named exception to even that. If the pre-handoff fsync fails, the
 restart is **not** initiated and returns `503`: an unrecorded restart is precisely the case
@@ -840,9 +771,8 @@ satisfy an external auditor, that is a different requirement and needs its own d
 | T34 | A freeze written by a process NOT holding the single-instance lock stops spend in the process that DOES hold it. |
 | T35 | Repeated `config-inspect` calls mutate no authority, config or process state (audit + rate-limit only). |
 | T36 | A freeze whose audit append fails still applies, and is reported as applied-with-provisional-record; an unfreeze whose append fails is REFUSED. |
-| T37 | An authority-increasing `config-adopt` without a rendered plan is refused; an authority-reducing one succeeds with Bearer alone. |
-| T29 | `config-inspect` is Bearer-only, adopts nothing, and reports `wouldIncreaseAuthority` correctly. |
-| T30 | `config-adopt` is REFUSED without a PIN when `wouldIncreaseAuthority` is true, and accepted with Bearer alone when it is false. |
+| T29 | `config-inspect` is Bearer-only, adopts nothing, and reports the per-field disk-vs-process diff correctly. |
+| T30 | No route adopts on-disk config into the running process; `config-inspect` leaves the process snapshot unchanged. |
 | T31 | Restart is accepted in all three restartable states and refused in `disabled` and `probed`. |
 | T14 | The audit handle cannot write authority fields; the authority handle cannot append audit rows. |
 | T15 | The metered path re-reads enable state per call (constructed-but-disabled layer refuses). |
