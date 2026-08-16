@@ -1,0 +1,12 @@
+{
+  "id": "5668f1d6-742c-4ad2-a72c-a22c1bf2b1b3",
+  "title": "State Integrity Check Report",
+  "markdown": "# State Integrity Check — 2026-05-06\n\n## Summary\n\n✅ **Status: HEALTHY** (with 1 auto-repair performed)\n\nCross-validation of agent state completed. One orphaned topic mapping detected and auto-repaired.\n\n---\n\n## Checks Performed\n\n### 1. Active Job Verification\n**Status: ✅ PASS**\n- Current job `job-state-integrity-check-motpm0h6` is valid and running\n- No orphaned active-job entries detected\n\n### 2. Job-Topic Mappings\n**Status: ✅ PASS** (with repair)\n- **Found and fixed**: Job mapping `threadline-sync → 845` referenced a deleted topic\n  - Action: Removed stale entry from `.instar/state/job-topic-mappings.json`\n  - Remaining valid mapping: `ci-monitor → 843` ✓\n\n### 3. State File Bloat\n**Status: ✅ PASS**\n- Largest file: `commitments.json` at 264K (well below 1MB threshold)\n- No files >1MB detected\n- All state files are lean and healthy\n\n### 4. Server Health\n**Status: ⚠️ DEGRADED** (unrelated to state integrity)\n- Server is operational with 3 known degradations\n- Degradations are Lifeline-related, not state-file issues\n- Telegram messaging: functional\n- No config-reality mismatches detected\n\n### 5. Handoff Note Staleness\n**Status: ✅ PASS**\n- All 10 handoff notes are recent (most <1 day old)\n- Oldest: `job-handoff-overseer-guardian.md` and `job-handoff-state-integrity-check.md` at 4 days\n- None exceed 7-day staleness threshold\n\n---\n\n## Actions Taken\n\n1. **Deleted orphaned mapping**: `threadline-sync → 845` from job-topic-mappings.json\n   - Reason: Topic 845 was deleted from the Telegram group but the mapping persisted\n   - This prevents spurious lookup attempts in future job runs\n\n---\n\n## Health Snapshot\n\n- **Uptime**: 11h 35m (stable)\n- **State directories**: All accessible and healthy\n- **Config**: Consistent with runtime behavior\n- **Messaging**: All channels connected (Telegram, Slack, iMessage)\n\n---\n\n## Next Steps\n\nNo action required. State is clean and ready for operation. Monitor Lifeline degradation via health checks if it persists beyond next restart.",
+  "createdAt": "2026-05-06T07:02:58.623Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "state-integrity-check"
+    }
+  }
+}

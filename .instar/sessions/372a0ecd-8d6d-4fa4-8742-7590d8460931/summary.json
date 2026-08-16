@@ -1,0 +1,25 @@
+{
+  "sessionId": "372a0ecd-8d6d-4fa4-8742-7590d8460931",
+  "tmuxSession": "echo-exploring-slack-integration",
+  "task": "[telegram:3079] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1774972290967",
+  "phase": "testing",
+  "files": [
+    "tests/unit/JobReflector.test.ts",
+    "tests/unit/JobScheduler.test.ts",
+    "tests/unit/SlackWorkspaceMode.test.ts",
+    "tests/unit/slack-message-dedup.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-31T16:22:49.685Z",
+  "updatedAt": "2026-03-31T16:22:49.685Z",
+  "stale": true,
+  "outputHash": "62d7cac540e7363efd5bf141575449e3"
+}

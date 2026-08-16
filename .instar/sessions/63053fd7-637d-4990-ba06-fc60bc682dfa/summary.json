@@ -1,0 +1,20 @@
+{
+  "sessionId": "63053fd7-637d-4990-ba06-fc60bc682dfa",
+  "tmuxSession": "echo-openclaw",
+  "task": "[telegram:9003] OK, thank you now please help me understand where we’re at in simple terms (IMPORTAN",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-11T01:47:20.344Z",
+  "updatedAt": "2026-05-11T01:47:20.344Z",
+  "stale": true,
+  "outputHash": "4ae96a9b57e32e971c579fb174bea012"
+}

@@ -1,0 +1,15 @@
+{
+  "sessionId": "017d7686-edfa-46a1-8b78-8309b442399b",
+  "tmuxSession": "echo-instar-agent-robustness",
+  "task": "[telegram:5447] here's a report from an agent:\n\n—-\n\n  Root Cause: The Bob agent's lifeline process (",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-20T00:28:15.357Z",
+  "updatedAt": "2026-04-20T00:28:15.357Z",
+  "stale": true,
+  "outputHash": "8bfa96ef3603378d1dca27a0b34d8d35"
+}

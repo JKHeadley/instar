@@ -1,0 +1,10 @@
+{
+  "slug": "insight-harvest",
+  "origin": "user",
+  "schedule": "0 */8 * * *",
+  "enabled": true,
+  "execute": {
+    "type": "agentmd"
+  },
+  "manifestVersion": 1
+}

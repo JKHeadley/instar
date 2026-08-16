@@ -1,0 +1,20 @@
+{
+  "sessionId": "7cefffb3-1e61-4046-992c-98896478dd0e",
+  "tmuxSession": "echo-topic-3079",
+  "task": "[telegram:3079] can you pit the review teams agains this? (IMPORTANT: Read /tmp/instar-telegram/ctx-",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T00:15:20.141Z",
+  "updatedAt": "2026-03-28T00:15:20.141Z",
+  "stale": true,
+  "outputHash": "fc475cbfec2c2fd46567cfd0d751164d"
+}

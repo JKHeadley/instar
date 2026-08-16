@@ -1,0 +1,20 @@
+{
+  "sessionId": "275fa17f-9d99-46ec-9ebc-7d77b7bcb6dc",
+  "tmuxSession": "echo-server-side-process-review",
+  "task": "[telegram:1882] one at a time. For SessionMonitor: how does it determine the session state/status ex",
+  "phase": "testing",
+  "files": [
+    "builtin-manifest.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-26T01:35:22.386Z",
+  "updatedAt": "2026-03-26T01:35:22.386Z",
+  "stale": true,
+  "outputHash": "c15227a92a3df804b2aa9f56b0308459"
+}

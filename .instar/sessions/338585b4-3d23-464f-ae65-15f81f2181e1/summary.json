@@ -1,0 +1,22 @@
+{
+  "sessionId": "338585b4-3d23-464f-ae65-15f81f2181e1",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] testing again (IMPORTANT: Read /tmp/instar-telegram/ctx-1490-1774328169635.txt for t",
+  "phase": "testing",
+  "files": [
+    "init.ts",
+    "/Users/justin/Documents/Projects/instar/dist/data/http-hook-templates.js",
+    "settings.json"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-24T05:05:21.743Z",
+  "updatedAt": "2026-03-24T05:05:21.743Z",
+  "stale": false,
+  "outputHash": "ba6270287cc87cc1c75e6a0be529e5e6"
+}

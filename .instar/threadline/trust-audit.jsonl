@@ -1,0 +1,4 @@
+{"timestamp":"2026-03-17T04:55:59.517Z","agent":"sagemind","previousLevel":"untrusted","newLevel":"trusted","source":"user-granted","reason":"Local agent, same machine, testing threadline communication","userInitiated":true}
+{"timestamp":"2026-03-17T04:55:59.813Z","agent":"deep-signal","previousLevel":"untrusted","newLevel":"trusted","source":"user-granted","reason":"Local agent, same machine, testing threadline communication","userInitiated":true}
+{"timestamp":"2026-03-29T06:59:33.768Z","agent":"8c7928aa9f04fbda947172a2f9b2d81a","previousLevel":"untrusted","newLevel":"trusted","source":"user-granted","reason":"Dawn's agent, user-approved for full threadline communication","userInitiated":true}
+{"timestamp":"2026-04-06T02:48:55.294Z","agent":"e69ee27193f3cf899fceef5a0487c28b","previousLevel":"untrusted","newLevel":"trusted","source":"user-granted","reason":"Testing threadline with b2lead/scout agent per user request","userInitiated":true}

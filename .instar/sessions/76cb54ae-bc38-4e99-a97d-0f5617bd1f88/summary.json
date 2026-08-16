@@ -1,0 +1,25 @@
+{
+  "sessionId": "76cb54ae-bc38-4e99-a97d-0f5617bd1f88",
+  "tmuxSession": "echo-compaction-bug-continued",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-6795-1776443389921-n18899rq.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "../../../Documents/Projects/instar/upgrades/side-effects/0.28.52.md",
+    "tests/unit/isSystemOrProxyMessage.test.ts",
+    "upgrades/0.28.52.md",
+    "upgrades/side-effects/0.28.52.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T16:49:05.185Z",
+  "updatedAt": "2026-04-17T16:49:05.185Z",
+  "stale": true,
+  "outputHash": "0d1af35b1a1b6da5fb60a99907d5ee63"
+}

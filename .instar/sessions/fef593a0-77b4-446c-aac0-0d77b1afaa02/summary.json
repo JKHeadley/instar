@@ -1,0 +1,24 @@
+{
+  "sessionId": "fef593a0-77b4-446c-aac0-0d77b1afaa02",
+  "tmuxSession": "echo-claude-agent-sdk",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-9984-1779052816492-dyy6jwgn.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "routes.ts",
+    "SELF-HEALING-REMEDIATOR-V2-SPEC.md",
+    "init.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-20T17:13:37.886Z",
+  "updatedAt": "2026-05-20T17:13:37.886Z",
+  "stale": false,
+  "outputHash": "8ff9f19cf8305af416d79446d93a8691"
+}

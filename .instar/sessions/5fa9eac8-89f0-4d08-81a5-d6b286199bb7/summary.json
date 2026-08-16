@@ -1,0 +1,13 @@
+{
+  "sessionId": "5fa9eac8-89f0-4d08-81a5-d6b286199bb7",
+  "tmuxSession": "echo-job-capability-audit-mo3mtbn6",
+  "task": "[NOTIFICATION PROTOCOL: This job runs in quiet mode. The user will NOT see your output unless you ex",
+  "phase": "debugging",
+  "files": [],
+  "topics": [],
+  "blockers": null,
+  "lastActivity": "2026-04-18T01:01:59.181Z",
+  "updatedAt": "2026-04-18T01:01:59.181Z",
+  "stale": false,
+  "outputHash": "ebff4e73139b3d8fca32512db49d95ee"
+}

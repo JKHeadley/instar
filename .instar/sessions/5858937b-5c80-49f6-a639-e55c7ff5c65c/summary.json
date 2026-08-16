@@ -1,0 +1,20 @@
+{
+  "sessionId": "5858937b-5c80-49f6-a639-e55c7ff5c65c",
+  "tmuxSession": "echo-bug-zombie-cleanup-kills-active-sessions",
+  "task": "[telegram:1565] what do you think? (IMPORTANT: Read /tmp/instar-telegram/ctx-1565-1774058828544.txt ",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/Documents/Projects/instar/dashboard/index.html"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-21T02:08:09.675Z",
+  "updatedAt": "2026-03-21T02:08:09.675Z",
+  "stale": true,
+  "outputHash": "669dac8dda952dd7c60fe5e5c82ae88b"
+}

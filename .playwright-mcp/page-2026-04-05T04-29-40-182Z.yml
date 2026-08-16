@@ -1,0 +1,479 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - img "Instar" [ref=e5]
+      - heading "Instar Dashboard" [level=1] [ref=e6]
+      - navigation [ref=e7]:
+        - button "Sessions 3" [ref=e45] [cursor=pointer]
+        - button "Files" [ref=e9] [cursor=pointer]
+        - button "Send Content" [ref=e10] [cursor=pointer]
+        - button "Jobs 29" [ref=e11] [cursor=pointer]
+        - button "Features" [ref=e12] [cursor=pointer]
+        - button "Health" [ref=e13] [cursor=pointer]
+    - generic [ref=e14]:
+      - generic "Server status" [ref=e15] [cursor=pointer]:
+        - generic [ref=e17]: 1h 37m
+      - generic "Active sessions" [ref=e19] [cursor=pointer]:
+        - generic [ref=e20]: ○
+        - generic [ref=e21]: 3/10 sessions
+      - generic "Memory pressure" [ref=e23] [cursor=pointer]:
+        - generic [ref=e24]: Mem 77%
+    - generic [ref=e30]: Connected
+  - generic [ref=e121]:
+    - generic [ref=e122]:
+      - generic [ref=e123]:
+        - heading "Jobs" [level=2] [ref=e124]
+        - combobox [ref=e125]:
+          - 'option "Sort: Status" [selected]'
+          - 'option "Sort: Priority"'
+          - 'option "Sort: Name"'
+          - 'option "Sort: Last Run"'
+      - generic [ref=e126]: Monitor and control your scheduled tasks
+      - generic [ref=e127]:
+        - generic [ref=e128]:
+          - generic [ref=e129]: "29"
+          - generic [ref=e130]: Total
+        - generic [ref=e131]:
+          - generic [ref=e132]: "1"
+          - generic [ref=e133]: Running
+        - generic [ref=e134]:
+          - generic [ref=e135]: "0"
+          - generic [ref=e136]: Failing
+        - generic [ref=e137]:
+          - generic [ref=e138]: "0"
+          - generic [ref=e139]: Disabled
+      - generic [ref=e140]:
+        - button "All" [ref=e141] [cursor=pointer]
+        - button "Running" [ref=e142] [cursor=pointer]
+        - button "Failing" [ref=e143] [cursor=pointer]
+        - button "Disabled" [ref=e144] [cursor=pointer]
+      - generic [ref=e145]:
+        - generic [ref=e419] [cursor=pointer]:
+          - generic [ref=e422]: Health Check
+          - generic [ref=e423]: Monitor server health, session status, and system resources.
+          - generic [ref=e424]:
+            - generic [ref=e425]: Every 5 min
+            - generic [ref=e426]: haiku
+            - generic [ref=e427]: critical
+          - generic [ref=e428]: success · 4m ago
+        - generic [ref=e429] [cursor=pointer]:
+          - generic [ref=e432]: Evolution Overdue Check
+          - generic [ref=e433]: Monitor overdue evolution actions and stale commitments. Report only — no autonomous completing or cancelling.
+          - generic [ref=e434]:
+            - generic [ref=e435]: Every 4h
+            - generic [ref=e436]: haiku
+            - generic [ref=e437]: high
+          - generic [ref=e438]: — · never
+        - generic [ref=e439] [cursor=pointer]:
+          - generic [ref=e442]: Commitment Detection
+          - generic [ref=e443]: Scan recent messages for promises and commitments, register them as evolution actions. Replaces CommitmentSentinel server process.
+          - generic [ref=e444]:
+            - generic [ref=e445]: Every 5 min
+            - generic [ref=e446]: haiku
+            - generic [ref=e447]: high
+          - generic [ref=e448]: success · 1h ago
+        - generic [ref=e449] [cursor=pointer]:
+          - generic [ref=e452]: Memory Hygiene
+          - generic [ref=e453]: Review MEMORY.md for stale entries, duplicates, and quality issues. Propose cleanup.
+          - generic [ref=e454]:
+            - generic [ref=e455]: Every 12h
+            - generic [ref=e456]: opus
+            - generic [ref=e457]: high
+          - generic [ref=e458]: success · 6h ago
+        - generic [ref=e459] [cursor=pointer]:
+          - generic [ref=e462]: Guardian Pulse
+          - generic [ref=e463]: "Meta-monitor: verify other jobs are running, healthy, and not silently failing."
+          - generic [ref=e464]:
+            - generic [ref=e465]: Every 8h
+            - generic [ref=e466]: haiku
+            - generic [ref=e467]: high
+          - generic [ref=e468]: success · 1h ago
+        - generic [ref=e469] [cursor=pointer]:
+          - generic [ref=e472]: Git Sync
+          - generic [ref=e473]: "Intelligent multi-machine git synchronization. Pulls remote changes, merges with conflict resolution, commits local changes, and pushes. Uses tiered model selection: haiku for clean syncs, sonnet for state file conflicts, opus for code conflicts."
+          - generic [ref=e474]:
+            - generic [ref=e475]: Every hour
+            - generic [ref=e476]: haiku
+            - generic [ref=e477]: high
+          - generic [ref=e478]: success · 4h ago
+        - generic [ref=e479] [cursor=pointer]:
+          - generic [ref=e482]: CI Monitor
+          - generic [ref=e483]: Monitor instar CI health on GitHub Actions. When tests fail, investigate root causes and fix them in source code. Never applies band-aids to tests.
+          - generic [ref=e484]:
+            - generic [ref=e485]: Every 3h
+            - generic [ref=e486]: opus
+            - generic [ref=e487]: high
+          - generic [ref=e488]: success · 2d ago
+        - generic [ref=e489] [cursor=pointer]:
+          - generic [ref=e492]: Reflection Trigger
+          - generic [ref=e493]: Review recent work and update MEMORY.md if any learnings exist.
+          - generic [ref=e494]:
+            - generic [ref=e495]: Every 4h
+            - generic [ref=e496]: opus
+          - generic [ref=e497]: success · 1h ago
+        - generic [ref=e498] [cursor=pointer]:
+          - generic [ref=e501]: Evolution Proposal Evaluate
+          - generic [ref=e502]: "Phase A: Read pending evolution proposals, evaluate their merit, accept or reject. Paired with evolution-proposal-implement."
+          - generic [ref=e503]:
+            - generic [ref=e504]: Every 6h
+            - generic [ref=e505]: sonnet
+          - generic [ref=e506]: — · never
+        - generic [ref=e507] [cursor=pointer]:
+          - generic [ref=e510]: Evolution Proposal Implement
+          - generic [ref=e511]: "Phase B: Pick up approved evolution proposals and implement them with full context. Paired with evolution-proposal-evaluate."
+          - generic [ref=e512]:
+            - generic [ref=e513]: 0 1,7,13,19 * * *
+            - generic [ref=e514]: opus
+          - generic [ref=e515]: — · never
+        - generic [ref=e516] [cursor=pointer]:
+          - generic [ref=e519]: Project Map Refresh
+          - generic [ref=e520]: Regenerate the project territory map to keep spatial awareness current.
+          - generic [ref=e521]:
+            - generic [ref=e522]: Every 12h
+            - generic [ref=e523]: haiku
+          - generic [ref=e524]: — · never
+        - generic [ref=e525] [cursor=pointer]:
+          - generic [ref=e528]: Coherence Audit
+          - generic [ref=e529]: Verify topic-project bindings are still valid, state files are healthy, and no drift has occurred.
+          - generic [ref=e530]:
+            - generic [ref=e531]: Every 8h
+            - generic [ref=e532]: haiku
+          - generic [ref=e533]: — · never
+        - generic [ref=e534] [cursor=pointer]:
+          - generic [ref=e537]: Degradation Digest
+          - generic [ref=e538]: Read DegradationReporter events, group repeated patterns, and escalate trends that need attention.
+          - generic [ref=e539]:
+            - generic [ref=e540]: Every 4h
+            - generic [ref=e541]: haiku
+          - generic [ref=e542]: — · never
+        - generic [ref=e543] [cursor=pointer]:
+          - generic [ref=e546]: State Integrity Check
+          - generic [ref=e547]: Cross-validate state file consistency, detect orphaned references and bloat.
+          - generic [ref=e548]:
+            - generic [ref=e549]: Every 6h
+            - generic [ref=e550]: haiku
+          - generic [ref=e551]: — · never
+        - generic [ref=e552] [cursor=pointer]:
+          - generic [ref=e555]: Session Continuity Check
+          - generic [ref=e556]: "Verify that sessions produce lasting artifacts: handoff notes, memory updates, learnings."
+          - generic [ref=e557]:
+            - generic [ref=e558]: Every 4h
+            - generic [ref=e559]: haiku
+          - generic [ref=e560]: — · never
+        - generic [ref=e561] [cursor=pointer]:
+          - generic [ref=e564]: Memory Export
+          - generic [ref=e565]: Regenerate MEMORY.md from SemanticMemory knowledge graph. Keeps the human-readable memory snapshot fresh without manual intervention.
+          - generic [ref=e566]:
+            - generic [ref=e567]: Every 6h
+            - generic [ref=e568]: haiku
+          - generic [ref=e569]: — · never
+        - generic [ref=e570] [cursor=pointer]:
+          - generic [ref=e573]: Capability Audit
+          - generic [ref=e574]: "Refresh the capability map and detect drift. Compute-first: only spawns LLM if changes detected."
+          - generic [ref=e575]:
+            - generic [ref=e576]: Every 6h
+            - generic [ref=e577]: haiku
+          - generic [ref=e578]: — · never
+        - generic [ref=e579] [cursor=pointer]:
+          - generic [ref=e582]: Threadline Implementation Sync
+          - generic [ref=e583]: Compare the standalone threadline-mcp package (packages/threadline-mcp/) against the built-in Threadline (src/threadline/) and sync relational features. The standalone package evolves independently on npm — this job ensures the built-in version adopts new capabilities.
+          - generic [ref=e584]:
+            - generic [ref=e585]: Mon at 8 AM
+            - generic [ref=e586]: opus
+          - generic [ref=e587]: — · never
+        - generic [ref=e588] [cursor=pointer]:
+          - generic [ref=e591]: Dashboard Link Refresh
+          - generic [ref=e592]: Refresh the pinned dashboard link in Telegram so it never goes stale.
+          - generic [ref=e593]:
+            - generic [ref=e594]: Every 15 min
+            - generic [ref=e595]: haiku
+          - generic [ref=e596]: — · never
+        - generic [ref=e597] [cursor=pointer]:
+          - generic [ref=e600]: Guardian Overseer
+          - generic [ref=e601]: "Reviews all guardian/monitoring jobs: health-check, guardian-pulse, degradation-digest, state-integrity-check, session-continuity-check. Spots cross-job patterns, flags contradictions, recommends schedule/priority/model changes."
+          - generic [ref=e602]:
+            - generic [ref=e603]: Every 6h
+            - generic [ref=e604]: sonnet
+          - generic [ref=e605]: success · 5h ago
+        - generic [ref=e606] [cursor=pointer]:
+          - generic [ref=e609]: Learning Overseer
+          - generic [ref=e610]: "Reviews all evolution/learning jobs: evolution-review, insight-harvest, commitment-check, reflection-trigger. Assesses whether the learning pipeline is producing value."
+          - generic [ref=e611]:
+            - generic [ref=e612]: 0 3 */2 * *
+            - generic [ref=e613]: sonnet
+          - generic [ref=e614]: success · 1d ago
+        - generic [ref=e615] [cursor=pointer]:
+          - generic [ref=e618]: Maintenance Overseer
+          - generic [ref=e619]: "Reviews all maintenance jobs: project-map-refresh, coherence-audit, capability-audit, memory-hygiene, memory-export. Ensures housekeeping is effective."
+          - generic [ref=e620]:
+            - generic [ref=e621]: Daily at 2 AM
+            - generic [ref=e622]: sonnet
+          - generic [ref=e623]: success · 19h ago
+        - generic [ref=e624] [cursor=pointer]:
+          - generic [ref=e627]: Infrastructure Overseer
+          - generic [ref=e628]: "Reviews infrastructure jobs: git-sync, dashboard-link-refresh, feedback-retry. Ensures plumbing is solid."
+          - generic [ref=e629]:
+            - generic [ref=e630]: Daily at 6 AM
+            - generic [ref=e631]: haiku
+          - generic [ref=e632]: success · 13h ago
+        - generic [ref=e633] [cursor=pointer]:
+          - generic [ref=e636]: Docs-Code Sync
+          - generic [ref=e637]: Detect documentation drift from code changes and apply targeted updates
+          - generic [ref=e638]:
+            - generic [ref=e639]: Every 4h
+            - generic [ref=e640]: sonnet
+          - generic [ref=e641]: success · 7h ago
+        - generic [ref=e642] [cursor=pointer]:
+          - generic [ref=e645]: GitHub Collaboration Monitor
+          - generic [ref=e646]: Scan and review GitHub PRs, forks, and collaboration activity. Stage 1 (Haiku) classifies activity, Stage 2 (Opus) reviews items needing attention.
+          - generic [ref=e647]:
+            - generic [ref=e648]: 0 8,20 * * *
+            - generic [ref=e649]: haiku
+          - generic [ref=e650]: success · 1h ago
+        - generic [ref=e651] [cursor=pointer]:
+          - generic [ref=e654]: Relationship Maintenance
+          - generic [ref=e655]: Review tracked relationships and surface observations about stale contacts.
+          - generic [ref=e656]:
+            - generic [ref=e657]: Daily at 9 AM
+            - generic [ref=e658]: haiku
+          - generic [ref=e659]: pending · 12h ago
+        - generic [ref=e660] [cursor=pointer]:
+          - generic [ref=e663]: Feedback Retry
+          - generic [ref=e664]: Retry forwarding any feedback that failed to reach upstream.
+          - generic [ref=e665]:
+            - generic [ref=e666]: Every 6h
+            - generic [ref=e667]: haiku
+          - generic [ref=e668]: — · never
+        - generic [ref=e669] [cursor=pointer]:
+          - generic [ref=e672]: Insight Harvest
+          - generic [ref=e673]: Synthesize learnings from the learning registry, detect patterns, and generate evolution proposals from high-confidence insights.
+          - generic [ref=e674]:
+            - generic [ref=e675]: Every 8h
+            - generic [ref=e676]: opus
+          - generic [ref=e677]: — · never
+        - generic [ref=e678] [cursor=pointer]:
+          - generic [ref=e681]: Development Overseer
+          - generic [ref=e682]: "Reviews development jobs: ci-monitor, threadline-sync. Ensures development tooling is functional."
+          - generic [ref=e683]:
+            - generic [ref=e684]: Daily at 8 AM
+            - generic [ref=e685]: haiku
+          - generic [ref=e686]: success · 13h ago
+    - generic [ref=e687]:
+      - generic [ref=e688]:
+        - generic [ref=e689]:
+          - heading "Memory Hygiene" [level=3] [ref=e690]
+          - generic [ref=e691]: Review MEMORY.md for stale entries, duplicates, and quality issues. Propose cleanup.
+        - generic [ref=e692]:
+          - button "Run Now" [ref=e693] [cursor=pointer]
+          - button "Disable" [ref=e694] [cursor=pointer]
+      - generic [ref=e695]:
+        - generic [ref=e696]:
+          - generic [ref=e697]: Status
+          - generic [ref=e698]: Healthy
+        - generic [ref=e699]:
+          - generic [ref=e700]: Last Run
+          - generic [ref=e701]: Apr 4, 03:00 PM (6h ago)
+        - generic [ref=e702]:
+          - generic [ref=e703]: Last Result
+          - generic [ref=e704]: success
+        - generic [ref=e705]:
+          - generic [ref=e706]: Next Run
+          - generic [ref=e707]: Apr 5, 12:00 AM
+      - generic [ref=e708]:
+        - generic "success — 12:01:00 PM" [ref=e709]
+        - generic "spawn-error — 12:01:30 AM" [ref=e710]
+        - generic "spawn-error — 12:00:31 PM" [ref=e711]
+        - generic "success — 10:33:36 AM" [ref=e712]
+        - generic "pending — 6:00:26 AM" [ref=e713]
+        - generic "success — 12:00:37 AM" [ref=e714]
+        - generic "spawn-error — 7:06:24 PM" [ref=e715]
+        - generic "pending — 1:08:12 PM" [ref=e716]
+        - generic "success — 12:00:50 AM" [ref=e717]
+        - generic "success — 12:02:17 PM" [ref=e718]
+        - generic "success — 7:00:32 AM" [ref=e719]
+        - generic "success — 12:00:50 AM" [ref=e720]
+        - generic "success — 12:00:20 PM" [ref=e721]
+        - generic "success — 12:01:30 AM" [ref=e722]
+        - generic "success — 6:04:06 PM" [ref=e723]
+        - generic "spawn-error — 12:15:41 PM" [ref=e724]
+        - generic "pending — 6:30:23 AM" [ref=e725]
+        - generic "success — 12:01:20 PM" [ref=e726]
+        - generic "success — 6:16:03 AM" [ref=e727]
+        - generic "success — 12:30:34 AM" [ref=e728]
+        - generic "timeout — 6:45:34 PM" [ref=e729]
+        - generic "pending — 1:00:40 PM" [ref=e730]
+        - generic "pending — 7:15:26 AM" [ref=e731]
+        - generic "success — 1:30:34 AM" [ref=e732]
+        - generic "success — 8:00:40 PM" [ref=e733]
+        - generic "success — 3:00:31 PM" [ref=e734]
+      - generic [ref=e735]:
+        - generic [ref=e736]: Success
+        - generic [ref=e738]: Failure
+        - generic [ref=e740]: Skipped
+      - generic [ref=e742]:
+        - heading "Run History" [level=4] [ref=e743]
+        - table [ref=e745]:
+          - rowgroup [ref=e746]:
+            - row "Time Result Duration Error" [ref=e747]:
+              - columnheader "Time" [ref=e748]
+              - columnheader "Result" [ref=e749]
+              - columnheader "Duration" [ref=e750]
+              - columnheader "Error" [ref=e751]
+          - rowgroup [ref=e752]:
+            - row "3:00:31 PM success 88s —" [ref=e753]:
+              - cell "3:00:31 PM" [ref=e754]
+              - cell "success" [ref=e755]:
+                - generic [ref=e756]: success
+              - cell "88s" [ref=e757]
+              - cell "—" [ref=e758]
+            - row "8:00:40 PM success 81s —" [ref=e759]:
+              - cell "8:00:40 PM" [ref=e760]
+              - cell "success" [ref=e761]:
+                - generic [ref=e762]: success
+              - cell "81s" [ref=e763]
+              - cell "—" [ref=e764]
+            - row "1:30:34 AM success 72s —" [ref=e765]:
+              - cell "1:30:34 AM" [ref=e766]
+              - cell "success" [ref=e767]:
+                - generic [ref=e768]: success
+              - cell "72s" [ref=e769]
+              - cell "—" [ref=e770]
+            - row "7:15:26 AM pending — —" [ref=e771]:
+              - cell "7:15:26 AM" [ref=e772]
+              - cell "pending" [ref=e773]:
+                - generic [ref=e774]: pending
+              - cell "—" [ref=e775]
+              - cell "—" [ref=e776]
+            - row "1:00:40 PM pending — —" [ref=e777]:
+              - cell "1:00:40 PM" [ref=e778]
+              - cell "pending" [ref=e779]:
+                - generic [ref=e780]: pending
+              - cell "—" [ref=e781]
+              - cell "—" [ref=e782]
+            - row "6:45:34 PM timeout 362s Session killed (job-memory-hygiene-mnfdw7bd)" [ref=e783]:
+              - cell "6:45:34 PM" [ref=e784]
+              - cell "timeout" [ref=e785]:
+                - generic [ref=e786]: timeout
+              - cell "362s" [ref=e787]
+              - cell "Session killed (job-memory-hygiene-mnfdw7bd)" [ref=e788]
+            - row "12:30:34 AM success 96s —" [ref=e789]:
+              - cell "12:30:34 AM" [ref=e790]
+              - cell "success" [ref=e791]:
+                - generic [ref=e792]: success
+              - cell "96s" [ref=e793]
+              - cell "—" [ref=e794]
+            - row "6:16:03 AM success 81s —" [ref=e795]:
+              - cell "6:16:03 AM" [ref=e796]
+              - cell "success" [ref=e797]:
+                - generic [ref=e798]: success
+              - cell "81s" [ref=e799]
+              - cell "—" [ref=e800]
+            - row "12:01:20 PM success 111s —" [ref=e801]:
+              - cell "12:01:20 PM" [ref=e802]
+              - cell "success" [ref=e803]:
+                - generic [ref=e804]: success
+              - cell "111s" [ref=e805]
+              - cell "—" [ref=e806]
+            - row "6:30:23 AM pending — —" [ref=e807]:
+              - cell "6:30:23 AM" [ref=e808]
+              - cell "pending" [ref=e809]:
+                - generic [ref=e810]: pending
+              - cell "—" [ref=e811]
+              - cell "—" [ref=e812]
+            - 'row "12:15:41 PM spawn-error 0s Max sessions (5) reached. Running: topic-3079, Server-Side Process Review, Job System Meta-Review, job-ci-monitor-mnap4wgk, topic-3849" [ref=e813]':
+              - cell "12:15:41 PM" [ref=e814]
+              - cell "spawn-error" [ref=e815]:
+                - generic [ref=e816]: spawn-error
+              - cell "0s" [ref=e817]
+              - 'cell "Max sessions (5) reached. Running: topic-3079, Server-Side Process Review, Job System Meta-Review, job-ci-monitor-mnap4wgk, topic-3849" [ref=e818]'
+            - row "6:04:06 PM success 84s —" [ref=e819]:
+              - cell "6:04:06 PM" [ref=e820]
+              - cell "success" [ref=e821]:
+                - generic [ref=e822]: success
+              - cell "84s" [ref=e823]
+              - cell "—" [ref=e824]
+            - row "12:01:30 AM success 161s —" [ref=e825]:
+              - cell "12:01:30 AM" [ref=e826]
+              - cell "success" [ref=e827]:
+                - generic [ref=e828]: success
+              - cell "161s" [ref=e829]
+              - cell "—" [ref=e830]
+            - row "12:00:20 PM success 121s —" [ref=e831]:
+              - cell "12:00:20 PM" [ref=e832]
+              - cell "success" [ref=e833]:
+                - generic [ref=e834]: success
+              - cell "121s" [ref=e835]
+              - cell "—" [ref=e836]
+            - row "12:00:50 AM success 136s —" [ref=e837]:
+              - cell "12:00:50 AM" [ref=e838]
+              - cell "success" [ref=e839]:
+                - generic [ref=e840]: success
+              - cell "136s" [ref=e841]
+              - cell "—" [ref=e842]
+            - row "7:00:32 AM success 25s —" [ref=e843]:
+              - cell "7:00:32 AM" [ref=e844]
+              - cell "success" [ref=e845]:
+                - generic [ref=e846]: success
+              - cell "25s" [ref=e847]
+              - cell "—" [ref=e848]
+            - row "12:02:17 PM success 112s —" [ref=e849]:
+              - cell "12:02:17 PM" [ref=e850]
+              - cell "success" [ref=e851]:
+                - generic [ref=e852]: success
+              - cell "112s" [ref=e853]
+              - cell "—" [ref=e854]
+            - row "12:00:50 AM success 142s —" [ref=e855]:
+              - cell "12:00:50 AM" [ref=e856]
+              - cell "success" [ref=e857]:
+                - generic [ref=e858]: success
+              - cell "142s" [ref=e859]
+              - cell "—" [ref=e860]
+            - row "1:08:12 PM pending — —" [ref=e861]:
+              - cell "1:08:12 PM" [ref=e862]
+              - cell "pending" [ref=e863]:
+                - generic [ref=e864]: pending
+              - cell "—" [ref=e865]
+              - cell "—" [ref=e866]
+            - 'row "7:06:24 PM spawn-error 0s Max sessions (5) reached. Running: Semantic DB Resilience, session-robustness, Job System Meta-Review, Server-Side Process Review, Consent & Discovery Framework" [ref=e867]':
+              - cell "7:06:24 PM" [ref=e868]
+              - cell "spawn-error" [ref=e869]:
+                - generic [ref=e870]: spawn-error
+              - cell "0s" [ref=e871]
+              - 'cell "Max sessions (5) reached. Running: Semantic DB Resilience, session-robustness, Job System Meta-Review, Server-Side Process Review, Consent & Discovery Framework" [ref=e872]'
+            - row "12:00:37 AM success 115s —" [ref=e873]:
+              - cell "12:00:37 AM" [ref=e874]
+              - cell "success" [ref=e875]:
+                - generic [ref=e876]: success
+              - cell "115s" [ref=e877]
+              - cell "—" [ref=e878]
+            - row "6:00:26 AM pending — —" [ref=e879]:
+              - cell "6:00:26 AM" [ref=e880]
+              - cell "pending" [ref=e881]:
+                - generic [ref=e882]: pending
+              - cell "—" [ref=e883]
+              - cell "—" [ref=e884]
+            - row "10:33:36 AM success 65s —" [ref=e885]:
+              - cell "10:33:36 AM" [ref=e886]
+              - cell "success" [ref=e887]:
+                - generic [ref=e888]: success
+              - cell "65s" [ref=e889]
+              - cell "—" [ref=e890]
+            - 'row "12:00:31 PM spawn-error 0s Max sessions (3) reached. Running: job-health-check-mmuz8psp, 💬 duplicate-messages, threadline-test" [ref=e891]':
+              - cell "12:00:31 PM" [ref=e892]
+              - cell "spawn-error" [ref=e893]:
+                - generic [ref=e894]: spawn-error
+              - cell "0s" [ref=e895]
+              - 'cell "Max sessions (3) reached. Running: job-health-check-mmuz8psp, 💬 duplicate-messages, threadline-test" [ref=e896]'
+            - 'row "12:01:30 AM spawn-error 0s Max sessions (3) reached. Running: job-health-check-mmu9ishc, ⚙️ Job: CI Monitor, threadline-test" [ref=e897]':
+              - cell "12:01:30 AM" [ref=e898]
+              - cell "spawn-error" [ref=e899]:
+                - generic [ref=e900]: spawn-error
+              - cell "0s" [ref=e901]
+              - 'cell "Max sessions (3) reached. Running: job-health-check-mmu9ishc, ⚙️ Job: CI Monitor, threadline-test" [ref=e902]'
+            - row "12:01:00 PM success 106s —" [ref=e903]:
+              - cell "12:01:00 PM" [ref=e904]
+              - cell "success" [ref=e905]:
+                - generic [ref=e906]: success
+              - cell "106s" [ref=e907]
+              - cell "—" [ref=e908]
+      - generic [ref=e910] [cursor=pointer]: ▶ Configuration

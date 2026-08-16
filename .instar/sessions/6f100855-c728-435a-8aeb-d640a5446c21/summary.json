@@ -1,0 +1,22 @@
+{
+  "sessionId": "6f100855-c728-435a-8aeb-d640a5446c21",
+  "tmuxSession": "echo-session-compaction-bug-update",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-5290-1776299926557-cwi6df9c.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js",
+    "../../../Documents/Projects/instar/docs/specs/integrated-being-ledger-v1.md",
+    "../../../Documents/Projects/instar/docs/specs/reports/integrated-being-ledger-v1-convergence.md",
+    "../../../Documents/Projects/instar/skills/instar-dev/SKILL.md",
+    "../../../Documents/Projects/instar/scripts/instar-dev-precommit.js"
+  ],
+  "topics": [
+    "testing",
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-16T00:41:48.970Z",
+  "updatedAt": "2026-04-16T00:41:48.970Z",
+  "stale": true,
+  "outputHash": "6cf72450b20f5874663298eefc746fd9"
+}

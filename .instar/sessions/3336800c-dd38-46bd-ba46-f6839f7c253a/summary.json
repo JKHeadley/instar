@@ -1,0 +1,25 @@
+{
+  "sessionId": "3336800c-dd38-46bd-ba46-f6839f7c253a",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] hmm, that doesn't make sense. I DID kill the session. Are you sure it didn't resume?",
+  "phase": "testing",
+  "files": [
+    "tests/unit/http-hook-templates.test.ts",
+    "/Users/justin/Documents/Projects/instar/dist/data/http-hook-templates.js",
+    ".instar/shadow-install/node_modules/instar/dist/data/http-hook-templates.js",
+    ".instar/topic-resume-map.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-24T06:02:02.064Z",
+  "updatedAt": "2026-03-24T06:02:02.064Z",
+  "stale": true,
+  "outputHash": "d3ad5772e7c31dffe254d2c66d7bbe51"
+}

@@ -1,0 +1,20 @@
+{
+  "sessionId": "c7555a15-31c1-4846-a8a8-1c76b4dc7f9b",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] checking in here (IMPORTANT: Read /tmp/instar-telegram/ctx-2317-1776380947694.txt fo",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-16T23:11:11.657Z",
+  "updatedAt": "2026-04-16T23:11:11.657Z",
+  "stale": true,
+  "outputHash": "2ba1bc9fd6f73c55e9f66b782da4b2f3"
+}

@@ -1,0 +1,21 @@
+{
+  "sessionId": "7e52c288-4826-4dfa-8d0c-1697a58154b2",
+  "tmuxSession": "echo-file-upload",
+  "task": "[telegram:605] OK, I wanna brainstorm a feature here. We have currently a pretty big limitation in t",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/Documents/Projects/instar/src/messaging/TelegramAdapter.ts"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-13T18:18:37.531Z",
+  "updatedAt": "2026-03-13T18:18:37.531Z",
+  "stale": false,
+  "outputHash": "9e41b1832d08e94b04f8e9c0077d6aad"
+}

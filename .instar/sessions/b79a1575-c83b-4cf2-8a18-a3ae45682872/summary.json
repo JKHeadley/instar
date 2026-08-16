@@ -1,0 +1,16 @@
+{
+  "sessionId": "b79a1575-c83b-4cf2-8a18-a3ae45682872",
+  "tmuxSession": "echo-bug-zombie-cleanup-kills-active-sessions",
+  "task": "[telegram:1565] hmm, we might be close to dozens of sessions on this machine. What would be the affe",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T21:20:43.988Z",
+  "updatedAt": "2026-03-20T21:20:43.988Z",
+  "stale": true,
+  "outputHash": "2d461e99a91134125c01c2ad60451ded"
+}

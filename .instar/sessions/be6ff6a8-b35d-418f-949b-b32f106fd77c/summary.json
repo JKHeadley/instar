@@ -1,0 +1,23 @@
+{
+  "sessionId": "be6ff6a8-b35d-418f-949b-b32f106fd77c",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] i agree with option 1, so please \"go\" (IMPORTANT: Read /tmp/instar-telegram/ctx-2317",
+  "phase": "testing",
+  "files": [
+    "tests/unit/routes-initiatives.test.ts",
+    "tests/unit/InitiativeTracker.test.ts",
+    "tests/unit/backup-manager.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-18T17:19:42.307Z",
+  "updatedAt": "2026-04-18T17:19:42.307Z",
+  "stale": false,
+  "outputHash": "c5698dda48ef1807be6459b4cd09ca0f"
+}

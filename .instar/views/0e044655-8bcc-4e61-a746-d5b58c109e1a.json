@@ -1,0 +1,12 @@
+{
+  "id": "0e044655-8bcc-4e61-a746-d5b58c109e1a",
+  "title": "State Integrity Check — 2026-05-03",
+  "markdown": "# State Integrity Check Report\n\n**Date**: 2026-05-03 19:03 UTC  \n**Status**: ✅ HEALTHY (issues fixed)\n\n## Issues Found & Fixed\n\n### 1. Stale Registry Entries\n**Removed**: 5 test agents from registry.json\n- test-agent (invalid path: /path/to/agent)\n- agent-v2 (invalid path: /same/path)\n- agent-a (invalid path: /path/a)\n- agent-b (invalid path: /path/b)\n- test (invalid path: /path)\n\nAll entries were marked as stopped with pid=0, created on 2026-02-25 (orphaned test data).\n\n### 2. Port Collision Resolved\nPort 8080 was registered to 4 agents — all stale test entries. Now clean.\n\n### 3. Orphaned Agent Directories\n**Removed**: 2 unused agent installations\n- `bob` — 998MB (36 days old, created 2026-03-28, no active config)\n- `dude` — 58MB (50 days old, created 2026-03-14, no active config)\n\n**Space reclaimed**: 1.05GB\n\n## State File Integrity\n\n✅ **Commitment detection**: Healthy (Telegram adapter not running)  \n✅ **Feedback ledger**: 988 entries, valid  \n✅ **Port assignments**: No collisions  \n✅ **Active agents**: 12 registered, all with valid paths and running processes  \n\n## Summary\n\nCleaned registry of 5 stale test entries, removed 1.05GB of orphaned agent directories (bob, dude). All active agents have valid paths and no port conflicts. State is healthy and consistent.\n",
+  "createdAt": "2026-05-03T19:04:33.827Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "state-integrity-check"
+    }
+  }
+}

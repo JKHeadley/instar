@@ -1,0 +1,18 @@
+{
+  "sessionId": "f670b7bf-36c7-4022-b656-d0436e739637",
+  "tmuxSession": "echo-context-death-trap",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-6931-1776470161192-0qvxc8rw.txt — it contains your f",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-18T00:30:58.883Z",
+  "updatedAt": "2026-04-18T00:30:58.883Z",
+  "stale": true,
+  "outputHash": "caeb166a3148bd046c09ccf9d6719a41"
+}

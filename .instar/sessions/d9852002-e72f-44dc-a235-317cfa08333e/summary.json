@@ -1,0 +1,27 @@
+{
+  "sessionId": "d9852002-e72f-44dc-a235-317cfa08333e",
+  "tmuxSession": "echo-commitment-backing-gap-infra-research",
+  "task": "[telegram:6484] please explain whats going on here in ELI10 style (IMPORTANT: Read /tmp/instar-teleg",
+  "phase": "testing",
+  "files": [
+    "SKILL.md",
+    "context-death-pitfall-prevention.md",
+    "AGENT.md",
+    "DISPATCH.md",
+    "messaging-platform-parity.md",
+    "docs/specs/integrated-being-ledger-v2.md",
+    "docs/specs/plans/integrated-being-ledger-v2-implementation-plan.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-18T08:16:16.703Z",
+  "updatedAt": "2026-04-18T08:16:16.703Z",
+  "stale": true,
+  "outputHash": "8dba0afb49ce3f8c5d9f5e0819396522"
+}

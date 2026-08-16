@@ -1,0 +1,21 @@
+{
+  "sessionId": "a8222331-fa65-426e-9928-7e2b5cf08c8d",
+  "tmuxSession": "echo-jobs-not-running",
+  "task": "[telegram:1767] interesting. Question: how does this compare to Dawn/Portal cartography agent? (IMPO",
+  "phase": "testing",
+  "files": [
+    "MEMORY.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-22T07:01:07.546Z",
+  "updatedAt": "2026-03-22T07:01:07.546Z",
+  "stale": true,
+  "outputHash": "9fd59e5d94b8a6976f4cc7fc96b539e9"
+}

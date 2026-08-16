@@ -1,0 +1,23 @@
+{
+  "sessionId": "fefbd8f3-2448-4693-961f-f7e9a93cb1c1",
+  "tmuxSession": "echo-context-death-trap",
+  "task": "[telegram:6931] keep going, finish this out and merge and deploy (IMPORTANT: Read /tmp/instar-telegr",
+  "phase": "testing",
+  "files": [
+    "de_modules/instar/dist/cli.js"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-18T09:42:17.398Z",
+  "updatedAt": "2026-04-18T09:42:17.398Z",
+  "stale": true,
+  "outputHash": "967115707f29090d3fc3ad7409116ce5"
+}

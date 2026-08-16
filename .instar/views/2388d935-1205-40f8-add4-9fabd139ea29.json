@@ -1,0 +1,12 @@
+{
+  "id": "2388d935-1205-40f8-add4-9fabd139ea29",
+  "title": "Capability Audit Report — 2026-04-14",
+  "markdown": "# Capability Audit Report\n\n**Date:** 2026-04-14  \n**Job:** capability-audit  \n\n## Summary\n\n84 unmapped capabilities detected in the capability map. These are existing, functional capabilities that lack explicit registry entries.\n\n### Breakdown by Category\n\n- **Skills** (23): autonomous, build, ci-fix, coherence-audit, commit-action, crossreview, degradation-digest, docs-code-sync, evolve, feedback, fork-and-fix, gaps, git-sync, guardian-pulse, learn, memory-hygiene, reflect, session-continuity-check, specreview, state-integrity-check, threadline-sync, triage-findings\n- **Scripts** (10): git-sync-gate.sh, github-monitor-scan.sh, health-watchdog.sh, imessage-reply.sh, post-update.sh, slack-reply.sh, smart-fetch.py, telegram-reply.sh, test-coverage-reminder.js\n- **Jobs** (30): health-check, reflection-trigger, relationship-maintenance, feedback-retry, evolution-proposal-evaluate, evolution-proposal-implement, insight-harvest, evolution-overdue-check, commitment-detection, project-map-refresh, coherence-audit, degradation-digest, state-integrity-check, memory-hygiene, guardian-pulse, session-continuity-check, memory-export, git-sync, ci-monitor, threadline-sync, dashboard-link-refresh, overseer-*, docs-code-sync, github-collab-monitor\n- **Subsystems** (12): telegram, scheduler, evolution, session-manager, state-manager, relationships, topic-memory, monitoring, publishing, auto-updates, playbook, feedback, tunnel\n- **Context Files** (9): DISPATCH.md, architecture.md, communication.md, deployment.md, development.md, identity.md, project.md, relationships.md, research-navigation.md, safety.md, session.md\n\n## Status\n\nNo drift detected (no new/removed/changed mappings). The 84 items have been unmapped since the last scan.\n\n## Action Required\n\nThe capability registry should be updated to include these items so the system has a complete view of available capabilities.\n",
+  "createdAt": "2026-04-14T19:08:56.798Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "capability-audit"
+    }
+  }
+}

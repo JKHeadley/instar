@@ -1,0 +1,22 @@
+{
+  "sessionId": "bc641aa4-4a90-4baf-b329-5edf6f35a278",
+  "tmuxSession": "echo-topic-1776",
+  "task": "[telegram:1776] Hi echo! (IMPORTANT: Read /tmp/instar-telegram/ctx-1776-1774114505784.txt for thread",
+  "phase": "testing",
+  "files": [
+    "AGENT.md",
+    "USER.md",
+    "CLAUDE.md",
+    "MEMORY.md"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-21T17:36:22.670Z",
+  "updatedAt": "2026-03-21T17:36:22.670Z",
+  "stale": true,
+  "outputHash": "f57d20ec92cbcfa63e33885c073dd5ff"
+}

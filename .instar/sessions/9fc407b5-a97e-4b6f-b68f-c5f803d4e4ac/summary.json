@@ -1,0 +1,19 @@
+{
+  "sessionId": "9fc407b5-a97e-4b6f-b68f-c5f803d4e4ac",
+  "tmuxSession": "echo-jobs-not-running",
+  "task": "[telegram:1767] lets look at the thresholds (IMPORTANT: Read /tmp/instar-telegram/ctx-1767-177429273",
+  "phase": "testing",
+  "files": [
+    ".instar/quota-state.json"
+  ],
+  "topics": [
+    "security",
+    "messaging",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T19:09:10.351Z",
+  "updatedAt": "2026-03-23T19:09:10.351Z",
+  "stale": true,
+  "outputHash": "64180346995103d9bdfb113b5f7178fd"
+}

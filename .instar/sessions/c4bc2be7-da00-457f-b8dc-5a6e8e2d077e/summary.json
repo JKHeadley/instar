@@ -1,0 +1,22 @@
+{
+  "sessionId": "c4bc2be7-da00-457f-b8dc-5a6e8e2d077e",
+  "tmuxSession": "echo-dashboard-development",
+  "task": "[telegram:5348] can I test these features? (IMPORTANT: Read /tmp/instar-telegram/ctx-5348-1775451122",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js",
+    "../../../Documents/Projects/instar/dashboard/index.html",
+    ".instar/dashboard-revamp-spec.md",
+    ".claude/settings.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-06T09:16:31.751Z",
+  "updatedAt": "2026-04-06T09:16:31.751Z",
+  "stale": true,
+  "outputHash": "b14ef0cfe5378c5a595fb48995cd8006"
+}

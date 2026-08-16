@@ -1,0 +1,22 @@
+{
+  "sessionId": "8526b3af-5286-435e-9521-679f6a73e76c",
+  "tmuxSession": "echo-topic-1250",
+  "task": "[telegram:1250] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1773862913457",
+  "phase": "testing",
+  "files": [
+    "CLAUDE.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-18T19:49:52.409Z",
+  "updatedAt": "2026-03-18T19:49:52.409Z",
+  "stale": false,
+  "outputHash": "4d973d03a1e72c6b1cc7497e36b5f242"
+}

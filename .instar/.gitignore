@@ -1,0 +1,7 @@
+
+
+# Machine secrets (NEVER commit)
+.instar/machine/signing-key.pem
+.instar/machine/encryption-key.pem
+.instar/secrets/
+.instar/pairing/

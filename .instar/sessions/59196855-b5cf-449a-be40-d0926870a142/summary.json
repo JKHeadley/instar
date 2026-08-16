@@ -1,0 +1,25 @@
+{
+  "sessionId": "59196855-b5cf-449a-be40-d0926870a142",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] please proceed here (IMPORTANT: Read /tmp/instar-telegram/ctx-2317-1776499995566.txt",
+  "phase": "testing",
+  "files": [
+    "src/server/routes.ts",
+    "src/server/AgentServer.ts",
+    "dashboard/index.html",
+    "scripts/instar-dev-precommit.js",
+    "instar-dev-precommit.js"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-18T08:17:16.683Z",
+  "updatedAt": "2026-04-18T08:17:16.683Z",
+  "stale": true,
+  "outputHash": "1a75728a3abffd728dc480ea6f9911ac"
+}

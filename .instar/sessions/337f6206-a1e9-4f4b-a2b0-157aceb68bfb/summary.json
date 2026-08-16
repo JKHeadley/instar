@@ -1,0 +1,17 @@
+{
+  "sessionId": "337f6206-a1e9-4f4b-a2b0-157aceb68bfb",
+  "tmuxSession": "echo-consent-discovery-framework",
+  "task": "[telegram:1895] please fully spec this out (IMPORTANT: Read /tmp/instar-telegram/ctx-1895-1774160151",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-22T06:51:11.953Z",
+  "updatedAt": "2026-03-22T06:51:11.953Z",
+  "stale": false,
+  "outputHash": "fbb42aeb0526d656773f299c4b478f0a"
+}

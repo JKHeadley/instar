@@ -1,0 +1,19 @@
+{
+  "sessionId": "9707bffa-3d96-43d6-9db0-d82de068a683",
+  "tmuxSession": "echo-follow-through-heartbeat-infrastructure",
+  "task": "[telegram:7383] lets finish this out (IMPORTANT: Read /tmp/instar-telegram/ctx-7383-1776619437684.tx",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T17:48:20.506Z",
+  "updatedAt": "2026-04-19T17:48:20.506Z",
+  "stale": true,
+  "outputHash": "1747958ef9eb5e26e389d6151aae1579"
+}

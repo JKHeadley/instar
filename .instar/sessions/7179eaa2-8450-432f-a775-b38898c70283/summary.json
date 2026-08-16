@@ -1,0 +1,24 @@
+{
+  "sessionId": "7179eaa2-8450-432f-a775-b38898c70283",
+  "tmuxSession": "echo-threadline-dev",
+  "task": "[telegram:9210] We really need to get threadline to be more robust and useful. We've got enough agen",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/Documents/Projects/instar/src/threadline/ThreadResumeMap.ts",
+    "topic-resume-map.json"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-11T20:26:25.554Z",
+  "updatedAt": "2026-05-11T20:26:25.554Z",
+  "stale": true,
+  "outputHash": "5bd843b7d640b0a2933d67d6d81dd50b"
+}

@@ -1,0 +1,22 @@
+{
+  "sessionId": "8d3727ac-307f-4c61-b6fd-c23887fced59",
+  "tmuxSession": "echo-instar-update-messages",
+  "task": "[telegram:7675] OK, we need to lock down how the update announcements are sent out when an instar ag",
+  "phase": "testing",
+  "files": [
+    "src/core/AutoDispatcher.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-20T16:20:38.448Z",
+  "updatedAt": "2026-04-20T16:20:38.448Z",
+  "stale": true,
+  "outputHash": "3bb1bb389a4ec4862e981f788df6505a"
+}

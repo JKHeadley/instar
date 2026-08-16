@@ -1,0 +1,17 @@
+{
+  "sessionId": "24930666-5ba3-4263-940b-754feb5383ef",
+  "tmuxSession": "echo-resume-live-input-bug",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-6309-1776203811473-nchrw5ss.txt — it contains your f",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-14T21:57:47.984Z",
+  "updatedAt": "2026-04-14T21:57:47.984Z",
+  "stale": true,
+  "outputHash": "3b0e370cd677be29ce82414c693ec65a"
+}

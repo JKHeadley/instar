@@ -1,0 +1,24 @@
+{
+  "sessionId": "b7c42ad2-acaf-455c-ba1f-ca58a60942df",
+  "tmuxSession": "echo-instar-agent-robustness",
+  "task": "[telegram:5447] Please proceed as your best see fit (IMPORTANT: Read /tmp/instar-telegram/ctx-5447-1",
+  "phase": "testing",
+  "files": [
+    "src/data/builtin-manifest.json",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/lifeline/droppedMessages.ts",
+    "../../../Documents/Projects/instar/.instar/worktrees/build-stage-a--lifeline-message-drop-robustnes/docs/specs/LIFELINE-MESSAGE-DROP-ROBUSTNESS-SPEC.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-20T03:04:41.477Z",
+  "updatedAt": "2026-04-20T03:04:41.477Z",
+  "stale": true,
+  "outputHash": "8e9b4061f815f7cbfd2aaaef575c1ef3"
+}

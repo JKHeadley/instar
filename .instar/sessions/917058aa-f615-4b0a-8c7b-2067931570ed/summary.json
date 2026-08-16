@@ -1,0 +1,15 @@
+{
+  "sessionId": "917058aa-f615-4b0a-8c7b-2067931570ed",
+  "tmuxSession": "echo-v1-0-0-testing",
+  "task": "[telegram:10306] great! If at all possible, please make sure the session tied to that topic is resum",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-16T15:56:58.528Z",
+  "updatedAt": "2026-05-16T15:56:58.528Z",
+  "stale": false,
+  "outputHash": "992c55233c177c6a599d0a491494ff4b"
+}

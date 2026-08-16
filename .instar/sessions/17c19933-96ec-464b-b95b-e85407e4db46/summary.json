@@ -1,0 +1,22 @@
+{
+  "sessionId": "17c19933-96ec-464b-b95b-e85407e4db46",
+  "tmuxSession": "echo-dashboard-features",
+  "task": "[telegram:1419] hi! we need better session managment in the dashboard. The user should be able to cr",
+  "phase": "testing",
+  "files": [
+    ".instar/shadow-install/node_modules/instar/dist/cli.js"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-19T22:38:56.279Z",
+  "updatedAt": "2026-03-19T22:38:56.279Z",
+  "stale": true,
+  "outputHash": "afe70ac971277bf6724f12e0cd9713c3"
+}

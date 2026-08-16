@@ -1,0 +1,27 @@
+{
+  "sessionId": "79b73b35-4a14-4d4a-8be5-96a8d2214c17",
+  "tmuxSession": "echo-seed-infra-test",
+  "task": "[telegram:996] can you tell me about instar's features/capabilities? (IMPORTANT: Read /tmp/instar-te",
+  "phase": "testing",
+  "files": [
+    "Soul.md",
+    "0.21.2.md",
+    "seed-migration.md",
+    "NEXT.md",
+    "INTENT-ENGINEERING-SPEC.md",
+    "dawn-audit-report.md",
+    "soul.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-15T00:34:42.296Z",
+  "updatedAt": "2026-03-15T00:34:42.296Z",
+  "stale": true,
+  "outputHash": "31ee98094b0feecc47cf49e9f8926557"
+}

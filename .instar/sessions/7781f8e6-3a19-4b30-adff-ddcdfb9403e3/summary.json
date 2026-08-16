@@ -1,0 +1,20 @@
+{
+  "sessionId": "7781f8e6-3a19-4b30-adff-ddcdfb9403e3",
+  "tmuxSession": "echo-conversational-only-agent-communication",
+  "task": "[telegram:116] Once you’re done, please make sure all the tests pass the docs, including the landing",
+  "phase": "testing",
+  "files": [
+    "upgrades/0.17.0.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-10T00:44:40.078Z",
+  "updatedAt": "2026-03-10T00:44:40.078Z",
+  "stale": true,
+  "outputHash": "1291d446b40416bbd42097a4d6823387"
+}

@@ -1,0 +1,29 @@
+{
+  "sessionId": "bd05445a-21ea-47b5-84d3-3318649f64af",
+  "tmuxSession": "echo-session-robustness",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-2169-1775515541289-ek26rxi3.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "SessionManager.ts",
+    "SlackAdapter.ts",
+    "src/data/builtin-manifest.json",
+    "tests/unit/threadline-fixes.test.ts",
+    "dashboard/index.html",
+    "src/threadline/AgentTrustManager.ts",
+    "src/core/SessionManager.ts",
+    "src/messaging/slack/SlackAdapter.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-07T01:16:52.134Z",
+  "updatedAt": "2026-04-07T01:16:52.134Z",
+  "stale": true,
+  "outputHash": "0995a6ae904738b75b8dbfa32b2cfff8"
+}

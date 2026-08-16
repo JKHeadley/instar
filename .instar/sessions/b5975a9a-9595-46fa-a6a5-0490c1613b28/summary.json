@@ -1,0 +1,21 @@
+{
+  "sessionId": "b5975a9a-9595-46fa-a6a5-0490c1613b28",
+  "tmuxSession": "echo-jobs-not-running",
+  "task": "[telegram:1767] i agree except I think it should stay opus. Writing proposals requires critical thin",
+  "phase": "testing",
+  "files": [
+    ".instar/jobs.json"
+  ],
+  "topics": [
+    "database",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-22T01:04:53.418Z",
+  "updatedAt": "2026-03-22T01:04:53.418Z",
+  "stale": true,
+  "outputHash": "efeb1a466ee111829c7a34431e922cc6"
+}

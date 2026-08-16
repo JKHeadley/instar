@@ -1,0 +1,22 @@
+{
+  "sessionId": "0dd19b8f-6850-4732-a881-49007859b3e1",
+  "tmuxSession": "echo-exploring-slack-integration",
+  "task": "[telegram:3079] please continue (IMPORTANT: Read /tmp/instar-telegram/ctx-3079-1775144474381.txt for",
+  "phase": "testing",
+  "files": [
+    "src/data/builtin-manifest.json",
+    "tests/unit/context-exhaustion-recovery.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-02T20:16:30.704Z",
+  "updatedAt": "2026-04-02T20:16:30.704Z",
+  "stale": true,
+  "outputHash": "4f6029b775f5d1d463037ffc6935352f"
+}

@@ -1,0 +1,19 @@
+{
+  "sessionId": "2d965691-072d-48a5-b9da-bcb89f753c09",
+  "tmuxSession": "echo-dashboard-scroll-history",
+  "task": "[telegram:1541] yeah this still doesn't feel like its loading all of the history. I really want to b",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/Documents/Projects/instar/dashboard/index.html"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T23:12:43.220Z",
+  "updatedAt": "2026-03-20T23:12:43.220Z",
+  "stale": true,
+  "outputHash": "c3d66b290c96d06c5cf858e8f548da45"
+}

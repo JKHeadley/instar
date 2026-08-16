@@ -1,0 +1,58 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - img "Instar" [ref=e5]
+      - heading "Instar Dashboard" [level=1] [ref=e6]
+      - navigation [ref=e7]:
+        - button "Sessions 3" [ref=e8] [cursor=pointer]
+        - button "Files" [ref=e9] [cursor=pointer]
+        - button "Send Content" [ref=e10] [cursor=pointer]
+        - button "Secret Drop" [active] [ref=e11] [cursor=pointer]
+        - button "Jobs 29" [ref=e12] [cursor=pointer]
+        - button "Features" [ref=e13] [cursor=pointer]
+        - button "Health" [ref=e14] [cursor=pointer]
+    - generic [ref=e15]:
+      - generic "Server status" [ref=e16] [cursor=pointer]:
+        - generic [ref=e18]: 8m 3s
+      - generic "Active sessions" [ref=e20] [cursor=pointer]:
+        - generic [ref=e21]: ○
+        - generic [ref=e22]: 3/10 sessions
+      - generic "Memory pressure" [ref=e24] [cursor=pointer]:
+        - generic [ref=e25]: Mem 60%
+      - generic "Attention items" [ref=e30] [cursor=pointer]:
+        - generic [ref=e31]: 🔔
+        - generic [ref=e32]: "1"
+    - generic [ref=e35]: Connected
+  - generic [ref=e122]:
+    - generic [ref=e123]:
+      - heading "Secret Drop" [level=2] [ref=e124]
+      - paragraph [ref=e125]: Create one-time secure links to collect secrets, tokens, or credentials
+    - generic [ref=e126]:
+      - heading "Create Secret Request" [level=3] [ref=e127]
+      - generic [ref=e128]:
+        - generic [ref=e129]: Label
+        - textbox "e.g. API Key, Database Password" [ref=e130]
+      - generic [ref=e131]:
+        - generic [ref=e132]: Description (optional)
+        - textbox "Brief context for the person submitting the secret" [ref=e133]
+      - generic [ref=e134]:
+        - generic [ref=e135]: Fields to collect
+        - generic [ref=e137]:
+          - textbox "Field name (e.g. token)" [ref=e138]
+          - button "✕" [ref=e139] [cursor=pointer]
+        - button "+ Add field" [ref=e140] [cursor=pointer]
+      - generic [ref=e141]:
+        - generic [ref=e142]: Expires after
+        - combobox [ref=e143]:
+          - option "5 minutes"
+          - option "15 minutes"
+          - option "30 minutes" [selected]
+          - option "1 hour"
+          - option "24 hours"
+      - button "Create Link" [ref=e145] [cursor=pointer]
+    - generic [ref=e146]:
+      - heading "Pending Requests" [level=3] [ref=e147]
+      - generic [ref=e149]:
+        - generic [ref=e150]: 🔒
+        - generic [ref=e151]: No pending requests
+        - generic [ref=e152]: Create a secret request above to generate a secure link

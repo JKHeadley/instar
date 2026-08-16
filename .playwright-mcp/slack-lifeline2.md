@@ -1,0 +1,519 @@
+- generic [ref=e1]:
+  - generic [ref=e4]:
+    - application [ref=e6]
+    - toolbar "History Navigation" [ref=e8]:
+      - generic [ref=e10]:
+        - generic [ref=e13]:
+          - generic [ref=e14]:
+            - button "Back in history" [disabled] [ref=e15]:
+              - img [ref=e16]
+            - button "Forward in history" [disabled] [ref=e18]:
+              - img [ref=e19]
+          - button "Show history" [ref=e22] [cursor=pointer]:
+            - img [ref=e23]
+        - button "Search" [ref=e27] [cursor=pointer]:
+          - img [ref=e29]
+          - generic [ref=e31]: Search Echo Agent
+        - generic [ref=e32]:
+          - button "Chat with Slackbot AI" [ref=e38] [cursor=pointer]:
+            - img [ref=e40]
+          - button "Help" [ref=e44] [cursor=pointer]:
+            - img [ref=e45]
+    - tabpanel "Echo Agent" [ref=e48]:
+      - generic [ref=e49]:
+        - button "Switch workspaces… (Echo Agent)" [ref=e52] [cursor=pointer]:
+          - img "Echo Agent" [ref=e53]: EA
+        - tablist "Echo Agent" [ref=e56]:
+          - tab "Home" [selected] [ref=e782] [cursor=pointer]:
+            - generic [ref=e783]:
+              - img [ref=e787]
+              - generic [ref=e790]: Home
+              - generic: "1"
+          - tab "DMs" [ref=e791] [cursor=pointer]:
+            - generic [ref=e792]:
+              - img [ref=e795]
+              - generic [ref=e797]: DMs
+              - generic: "2"
+          - tab "Activity" [ref=e798] [cursor=pointer]:
+            - generic [ref=e799]:
+              - img [ref=e804]
+              - generic [ref=e806]: "4"
+              - generic [ref=e807]: Activity
+              - generic: "3"
+          - tab "Files" [ref=e808] [cursor=pointer]:
+            - generic [ref=e809]:
+              - img [ref=e812]
+              - generic [ref=e815]: Files
+              - generic: "4"
+          - tab "More…" [ref=e816] [cursor=pointer]:
+            - generic [ref=e817]:
+              - img [ref=e820]
+              - generic [ref=e823]: More
+              - generic: "0"
+          - separator [ref=e99]
+          - tab "Admin" [ref=e824] [cursor=pointer]:
+            - generic [ref=e825]:
+              - img [ref=e828]
+              - generic [ref=e830]: Admin
+      - generic [ref=e110]:
+        - tabpanel "Home" [ref=e111]:
+          - generic [ref=e113]:
+            - group "Home" [ref=e114]:
+              - generic [ref=e116]:
+                - toolbar "Actions" [ref=e117]:
+                  - button "Echo Agent Actions" [ref=e120] [cursor=pointer]:
+                    - generic [ref=e121]: Echo Agent
+                    - img "caret-down" [ref=e122]
+                  - generic [ref=e124]:
+                    - button "Manage my sidebar" [ref=e125] [cursor=pointer]:
+                      - img [ref=e126]
+                    - button "New message" [ref=e129] [cursor=pointer]:
+                      - img [ref=e130]
+                - button "Get 50% off Pro 6 days left on this offer" [ref=e835] [cursor=pointer]:
+                  - img [ref=e837]
+                  - generic [ref=e839]:
+                    - generic [ref=e840]: Get 50% off Pro
+                    - generic [ref=e841]: 6 days left on this offer
+                - generic [ref=e132]:
+                  - tree "Channels and direct messages" [ref=e134]:
+                    - treeitem "Huddles" [level=1] [ref=e135] [cursor=pointer]:
+                      - generic [ref=e138]:
+                        - generic [ref=e139]: 
+                        - generic [ref=e140]: Huddles
+                    - treeitem "Drafts & sent" [level=1] [ref=e141] [cursor=pointer]:
+                      - generic [ref=e143]:
+                        - img [ref=e145]
+                        - generic [ref=e147]: Drafts & sent
+                    - treeitem "Directories" [level=1] [ref=e148] [cursor=pointer]:
+                      - generic [ref=e149]:
+                        - img [ref=e151]
+                        - generic [ref=e154]: Directories
+                    - treeitem "Starred" [expanded] [level=1] [ref=e157]:
+                      - button [ref=e161] [cursor=pointer]:
+                        - generic [ref=e162]:
+                          - img [ref=e164]
+                          - img [ref=e167]
+                        - generic [ref=e171]: Starred
+                      - group
+                    - treeitem [ref=e172] [cursor=pointer]:
+                      - generic [ref=e177]: Drag and drop important stuff here
+                    - treeitem "Channels" [expanded] [level=1] [ref=e178]:
+                      - button [ref=e182] [cursor=pointer]:
+                        - generic [ref=e183]:
+                          - img [ref=e185]
+                          - img [ref=e188]
+                        - generic [ref=e192]: Channels
+                      - group:
+                        - treeitem "echo-agent-sess-api-slack-test" [level=2] [ref=e193] [cursor=pointer]:
+                          - generic [ref=e194]:
+                            - img [ref=e196]
+                            - generic [ref=e198]: echo-agent-sess-api-slack-test
+                            - generic [ref=e200]: "1"
+                        - treeitem "echo-agent-sess-playwright-slack-test" [level=2] [ref=e842] [cursor=pointer]:
+                          - generic [ref=e843]:
+                            - img [ref=e845]
+                            - generic [ref=e847]: echo-agent-sess-playwright-slack-test
+                            - generic [ref=e849]: "1"
+                        - treeitem "echo-agent-sess-test-slack" [level=2] [ref=e201] [cursor=pointer]:
+                          - generic [ref=e202]:
+                            - img [ref=e204]
+                            - generic [ref=e206]: echo-agent-sess-test-slack
+                            - generic [ref=e208]: "1"
+                        - treeitem "all-echo-agent" [level=2] [ref=e209] [cursor=pointer]:
+                          - generic [ref=e210]:
+                            - img [ref=e212]
+                            - generic [ref=e214]: all-echo-agent
+                        - treeitem "echo-agent-sys-attention" [level=2] [ref=e215] [cursor=pointer]:
+                          - generic [ref=e216]:
+                            - img [ref=e850]
+                            - generic [ref=e220]: echo-agent-sys-attention
+                        - treeitem "echo-sys-dashboard" [level=2] [ref=e221] [cursor=pointer]:
+                          - generic [ref=e222]:
+                            - img [ref=e852]
+                            - generic [ref=e226]: echo-sys-dashboard
+                        - treeitem "echo-sys-lifeline" [level=2] [ref=e227] [cursor=pointer]:
+                          - generic [ref=e228]:
+                            - img [ref=e854]
+                            - generic [ref=e232]: echo-sys-lifeline
+                        - treeitem "new-channel" [level=2] [ref=e233] [cursor=pointer]:
+                          - generic [ref=e234]:
+                            - img [ref=e236]
+                            - generic [ref=e238]: new-channel
+                        - treeitem "social" [level=2] [ref=e239] [cursor=pointer]:
+                          - generic [ref=e240]:
+                            - img [ref=e242]
+                            - generic [ref=e244]: social
+                        - treeitem "Add channels" [level=2] [ref=e245] [cursor=pointer]:
+                          - button "Add channels" [ref=e247]:
+                            - generic [ref=e248]:
+                              - generic [ref=e249]: 
+                              - generic [ref=e250]: Add channels
+                    - treeitem "Direct Messages" [level=1] [ref=e251]:
+                      - generic [ref=e254] [cursor=pointer]:
+                        - button [ref=e255]:
+                          - generic [ref=e256]:
+                            - img [ref=e258]
+                            - img [ref=e261]
+                          - generic [ref=e265]: Direct messages
+                        - generic [ref=e856]:
+                          - button [ref=e857]:
+                            - img [ref=e858]
+                          - button "More actions" [ref=e860]:
+                            - img [ref=e861]
+                      - group
+                    - treeitem "Apps" [expanded] [level=1] [ref=e266]:
+                      - button [ref=e270] [cursor=pointer]:
+                        - generic [ref=e271]:
+                          - img [ref=e273]
+                          - img [ref=e276]
+                        - generic [ref=e280]: Apps
+                      - group:
+                        - treeitem "Slackbot" [level=2] [ref=e281] [cursor=pointer]:
+                          - generic [ref=e282]:
+                            - img [ref=e286]
+                            - generic [ref=e287]: Slackbot
+                        - treeitem "echo" [level=2] [ref=e288] [cursor=pointer]:
+                          - generic [ref=e289]:
+                            - img [ref=e293]
+                            - generic [ref=e294]: echo
+                  - generic [ref=e299]:
+                    - generic [ref=e300]: Slack works better when you use it together.
+                    - button "Invite teammates" [ref=e301] [cursor=pointer]:
+                      - img [ref=e303]
+                      - text: Invite teammates
+            - slider "Sidebar width" [ref=e305]: "270"
+          - group "Channel echo-sys-lifeline" [ref=e309]:
+            - generic [ref=e310]:
+              - toolbar "Primary view actions" [ref=e311]:
+                - button "Move channel" [ref=e314] [cursor=pointer]:
+                  - img [ref=e315]
+                - button "#echo-sys-lifeline" [ref=e318] [cursor=pointer]:
+                  - generic [ref=e319]:
+                    - img [ref=e321]
+                    - generic [ref=e323]: echo-sys-lifeline
+                - generic [ref=e324]:
+                  - button "Invite teammates" [ref=e326] [cursor=pointer]:
+                    - img [ref=e328]
+                    - text: Invite teammates
+                  - generic [ref=e332]:
+                    - img [ref=e333]
+                    - button "Start huddle in echo-sys-lifeline" [ref=e334] [cursor=pointer]:
+                      - img [ref=e335]
+                      - generic [ref=e337]: Huddle
+                    - button "More Huddles options" [ref=e339] [cursor=pointer]:
+                      - img [ref=e340]
+                  - button "All new posts" [ref=e342] [cursor=pointer]:
+                    - img [ref=e344]
+                  - button "Search in channel" [ref=e348] [cursor=pointer]:
+                    - img [ref=e349]
+                  - button "More channel actions" [ref=e351] [cursor=pointer]:
+                    - img [ref=e352]
+              - tablist "echo-sys-lifeline views" [ref=e357]:
+                - tab "Messages" [selected] [ref=e358] [cursor=pointer]:
+                  - generic [ref=e361]:
+                    - img [ref=e363]
+                    - generic [ref=e365]: Messages
+                - tab "Add canvas" [ref=e368] [cursor=pointer]:
+                  - generic [ref=e371]:
+                    - img [ref=e373]
+                    - generic [ref=e375]: Add canvas
+                - button "Add and Edit Channel Tabs" [ref=e377] [cursor=pointer]:
+                  - img [ref=e381]
+              - generic [ref=e383]: Canvas
+              - generic [ref=e384]: List
+              - generic [ref=e385]: Folder
+              - generic [ref=e387]:
+                - generic [ref=e389]:
+                  - generic:
+                    - listitem [ref=e864]:
+                      - button "Jump to date" [ref=e865] [cursor=pointer]:
+                        - text: Yesterday
+                        - img [ref=e867]
+                    - listitem [ref=e425]:
+                      - document [ref=e426]:
+                        - generic [ref=e428]:
+                          - link [ref=e429] [cursor=pointer]:
+                            - /url: /team/U0AP01NAGK1
+                            - img [ref=e431]
+                          - generic [ref=e432]:
+                            - button "echo" [ref=e433] [cursor=pointer]
+                            - generic [ref=e435]: APP
+                          - link "Yesterday at 11:26:01 PM" [ref=e436] [cursor=pointer]:
+                            - /url: https://echo-agent.slack.com/archives/C0AQ9P1CN00/p1774679161889999
+                            - text: 11:26 PM
+                          - generic [ref=e442]:
+                            - text: Hey! Loud and clear
+                            - img "wave emoji" [ref=e444]
+                            - text: I'm here. What's up?
+                    - listitem [ref=e445]:
+                      - document [ref=e446]:
+                        - generic [ref=e448]:
+                          - button [ref=e449] [cursor=pointer]:
+                            - img [ref=e451]
+                          - button "Justin Headley" [ref=e453] [cursor=pointer]
+                          - link "Yesterday at 11:29:40 PM" [ref=e454] [cursor=pointer]:
+                            - /url: https://echo-agent.slack.com/archives/C0AQ9P1CN00/p1774679380559719
+                            - text: 11:29 PM
+                          - generic [ref=e460]: testing this system, how you doin?
+                          - group "Reactions" [ref=e461]:
+                            - generic [ref=e462]:
+                              - button "1 reaction, react with white check mark emoji" [ref=e463] [cursor=pointer]:
+                                - img "white check mark emoji" [ref=e464]
+                                - generic [ref=e465]: "1"
+                              - button "Add reaction…" [ref=e466] [cursor=pointer]:
+                                - img [ref=e467]
+                    - listitem [ref=e470]:
+                      - document [ref=e471]:
+                        - generic [ref=e473]:
+                          - link [ref=e474] [cursor=pointer]:
+                            - /url: /team/U0AP01NAGK1
+                            - img [ref=e476]
+                          - generic [ref=e477]:
+                            - button "echo" [ref=e478] [cursor=pointer]
+                            - generic [ref=e480]: APP
+                          - link "Yesterday at 11:29:53 PM" [ref=e481] [cursor=pointer]:
+                            - /url: https://echo-agent.slack.com/archives/C0AQ9P1CN00/p1774679393886829
+                            - text: 11:29 PM
+                          - generic [ref=e487]: Doing great! Loud and clear on both messages. The Slack relay is working. What's up?
+                    - listitem [ref=e869]:
+                      - button "Jump to date" [ref=e870] [cursor=pointer]:
+                        - text: Today
+                        - img [ref=e872]
+                    - listitem [ref=e493]
+                    - listitem [ref=e496]:
+                      - document [ref=e497]:
+                        - generic [ref=e499]:
+                          - button [ref=e500] [cursor=pointer]:
+                            - img [ref=e502]
+                          - button "Justin Headley" [ref=e504] [cursor=pointer]
+                          - link "Today at 12:40:34 AM" [ref=e505] [cursor=pointer]:
+                            - /url: https://echo-agent.slack.com/archives/C0AQ9P1CN00/p1774683634089009
+                            - text: 12:40 AM
+                          - generic [ref=e511]: Testing from mobile
+                          - group "Reactions" [ref=e512]:
+                            - generic [ref=e513]:
+                              - button "1 reaction, react with white check mark emoji" [ref=e514] [cursor=pointer]:
+                                - img "white check mark emoji" [ref=e515]
+                                - generic [ref=e516]: "1"
+                              - button "Add reaction…" [ref=e517] [cursor=pointer]:
+                                - img [ref=e518]
+                    - listitem [ref=e521]:
+                      - document [ref=e522]:
+                        - generic [ref=e524]:
+                          - link [ref=e525] [cursor=pointer]:
+                            - /url: /team/U0AP01NAGK1
+                            - img [ref=e527]
+                          - generic [ref=e528]:
+                            - button "echo" [ref=e529] [cursor=pointer]
+                            - generic [ref=e531]: APP
+                          - link "Today at 12:40:45 AM" [ref=e532] [cursor=pointer]:
+                            - /url: https://echo-agent.slack.com/archives/C0AQ9P1CN00/p1774683645105989
+                            - text: 12:40 AM
+                          - generic [ref=e538]:
+                            - text: Got it — Slack relay is working from mobile!
+                            - img "+1 emoji" [ref=e540]
+                    - listitem [ref=e541]:
+                      - document [ref=e542]:
+                        - generic [ref=e544]:
+                          - button [ref=e545] [cursor=pointer]:
+                            - img [ref=e547]
+                          - button "Justin Headley" [ref=e549] [cursor=pointer]
+                          - link "Today at 12:41:12 AM" [ref=e550] [cursor=pointer]:
+                            - /url: https://echo-agent.slack.com/archives/C0AQ9P1CN00/p1774683672177429
+                            - text: 12:41 AM
+                          - generic [ref=e556]: Can you see what the telegram sessions are working on?
+                          - group "Reactions" [ref=e557]:
+                            - generic [ref=e558]:
+                              - button "1 reaction, react with white check mark emoji" [ref=e559] [cursor=pointer]:
+                                - img "white check mark emoji" [ref=e560]
+                                - generic [ref=e561]: "1"
+                              - button "Add reaction…" [ref=e562] [cursor=pointer]:
+                                - img [ref=e563]
+                    - listitem [ref=e566]:
+                      - document [ref=e567]:
+                        - generic [ref=e569]:
+                          - link "Today at 12:42:23 AM" [ref=e571] [cursor=pointer]:
+                            - /url: https://echo-agent.slack.com/archives/C0AQ9P1CN00/p1774683743649219
+                            - text: 12:42
+                          - generic [ref=e577]: Any news?
+                          - group "Reactions" [ref=e578]:
+                            - generic [ref=e579]:
+                              - button "1 reaction, react with white check mark emoji" [ref=e580] [cursor=pointer]:
+                                - img "white check mark emoji" [ref=e581]
+                                - generic [ref=e582]: "1"
+                              - button "Add reaction…" [ref=e583] [cursor=pointer]:
+                                - img [ref=e584]
+                    - listitem [ref=e587]:
+                      - document [ref=e588]:
+                        - generic [ref=e590]:
+                          - button [ref=e591] [cursor=pointer]:
+                            - img [ref=e593]
+                          - button "Justin Headley" [ref=e595] [cursor=pointer]
+                          - link "Today at 12:48:36 AM" [ref=e596] [cursor=pointer]:
+                            - /url: https://echo-agent.slack.com/archives/C0AQ9P1CN00/p1774684116676039
+                            - text: 12:48 AM
+                          - generic [ref=e602]: Hello?
+                          - group "Reactions" [ref=e603]:
+                            - generic [ref=e604]:
+                              - button "1 reaction, react with white check mark emoji" [ref=e605] [cursor=pointer]:
+                                - img "white check mark emoji" [ref=e606]
+                                - generic [ref=e607]: "1"
+                              - button "Add reaction…" [ref=e608] [cursor=pointer]:
+                                - img [ref=e609]
+                    - listitem [ref=e612]:
+                      - document [ref=e613]:
+                        - generic [ref=e615]:
+                          - button [ref=e616] [cursor=pointer]:
+                            - img [ref=e618]
+                          - button "Justin Headley" [ref=e620] [cursor=pointer]
+                          - link "Today at 1:34:05 AM" [ref=e621] [cursor=pointer]:
+                            - /url: https://echo-agent.slack.com/archives/C0AQ9P1CN00/p1774686845444789
+                            - text: 1:34 AM
+                          - generic [ref=e627]: Test
+                          - group "Reactions" [ref=e628]:
+                            - generic [ref=e629]:
+                              - button "1 reaction, react with white check mark emoji" [ref=e630] [cursor=pointer]:
+                                - img "white check mark emoji" [ref=e631]
+                                - generic [ref=e632]: "1"
+                              - button "Add reaction…" [ref=e633] [cursor=pointer]:
+                                - img [ref=e634]
+                    - listitem [ref=e637]:
+                      - document [ref=e638]:
+                        - generic [ref=e640]:
+                          - link [ref=e641] [cursor=pointer]:
+                            - /url: /team/U0AP01NAGK1
+                            - img [ref=e643]
+                          - generic [ref=e644]:
+                            - button "echo" [ref=e645] [cursor=pointer]
+                            - generic [ref=e647]: APP
+                          - link "Today at 1:34:18 AM" [ref=e648] [cursor=pointer]:
+                            - /url: https://echo-agent.slack.com/archives/C0AQ9P1CN00/p1774686858918439
+                            - text: 1:34 AM
+                          - generic [ref=e654]:
+                            - text: Hey! Test received. I'm here and working.
+                            - img "wave emoji" [ref=e656]
+                    - listitem [ref=e657]:
+                      - document [ref=e658]:
+                        - generic [ref=e660]:
+                          - button [ref=e661] [cursor=pointer]:
+                            - img [ref=e663]
+                          - button "Justin Headley" [ref=e665] [cursor=pointer]
+                          - link "Today at 9:30:46 AM" [ref=e666] [cursor=pointer]:
+                            - /url: https://echo-agent.slack.com/archives/C0AQ9P1CN00/p1774715446590809
+                            - text: 9:30 AM
+                          - generic [ref=e672]: Automated test from Playwright - can you confirm this message was received via Socket Mode?
+                          - group "Reactions" [ref=e673]:
+                            - generic [ref=e674]:
+                              - button "1 reaction, react with white check mark emoji" [ref=e675] [cursor=pointer]:
+                                - img "white check mark emoji" [ref=e676]
+                                - generic [ref=e677]: "1"
+                              - button "Add reaction…" [ref=e678] [cursor=pointer]:
+                                - img [ref=e679]
+                    - 'listitem "echo: Confirmed! Message received via Socket Mode. The Slack integration is working — your automated Playwright test came through successfully. 9:31 AM." [ref=e682]':
+                      - document [ref=e683]:
+                        - generic [ref=e685]:
+                          - link [ref=e686] [cursor=pointer]:
+                            - /url: /team/U0AP01NAGK1
+                            - img [ref=e688]
+                          - generic [ref=e689]:
+                            - button "echo" [ref=e690] [cursor=pointer]
+                            - generic [ref=e692]: APP
+                          - link "Today at 9:31:12 AM" [ref=e693] [cursor=pointer]:
+                            - /url: https://echo-agent.slack.com/archives/C0AQ9P1CN00/p1774715472260779
+                            - text: 9:31 AM
+                          - generic [ref=e699]: Confirmed! Message received via Socket Mode. The Slack integration is working — your automated Playwright test came through successfully.
+                    - listitem [ref=e874]
+                    - list "echo-sys-lifeline (channel)" [ref=e876]
+                - generic [ref=e706]:
+                  - group "composer" [ref=e708]:
+                    - generic [ref=e710]:
+                      - toolbar "Formatting" [ref=e711]:
+                        - generic [ref=e712]:
+                          - generic:
+                            - generic:
+                              - button "Bold" [ref=e877] [cursor=pointer]:
+                                - img [ref=e878]
+                              - button "Italic" [ref=e880] [cursor=pointer]:
+                                - img [ref=e881]
+                              - button "Underline" [ref=e883] [cursor=pointer]:
+                                - img [ref=e884]
+                              - button "Strikethrough" [ref=e886] [cursor=pointer]:
+                                - img [ref=e887]
+                              - button "Link" [ref=e889] [cursor=pointer]:
+                                - img [ref=e890]
+                              - button "Ordered list" [ref=e892] [cursor=pointer]:
+                                - img [ref=e893]
+                              - button "Bulleted list" [ref=e895] [cursor=pointer]:
+                                - img [ref=e896]
+                              - button "Blockquote" [ref=e898] [cursor=pointer]:
+                                - img [ref=e899]
+                              - button "Code" [ref=e901] [cursor=pointer]:
+                                - img [ref=e902]
+                              - button "Code block" [ref=e904] [cursor=pointer]:
+                                - img [ref=e905]
+                      - generic [ref=e716]:
+                        - textbox "Message to echo-sys-lifeline" [active] [ref=e717]:
+                          - paragraph [ref=e718]
+                        - generic:
+                          - generic:
+                            - generic:
+                              - text: Message
+                              - generic: 
+                              - text: echo-sys-lifeline
+                      - toolbar "Composer actions" [ref=e719]:
+                        - generic [ref=e721]:
+                          - button "Attach" [ref=e722] [cursor=pointer]:
+                            - img [ref=e723]
+                          - button [ref=e725]
+                        - generic [ref=e727]:
+                          - button "Show formatting" [pressed] [ref=e728] [cursor=pointer]:
+                            - img [ref=e729]
+                          - button "Emoji" [ref=e731] [cursor=pointer]:
+                            - img [ref=e733]
+                          - button "Mention someone" [ref=e735] [cursor=pointer]:
+                            - img [ref=e736]
+                          - button "Record video clip" [ref=e739] [cursor=pointer]:
+                            - img [ref=e740]
+                          - button "Record audio clip" [ref=e742] [cursor=pointer]:
+                            - img [ref=e743]
+                          - button "Run shortcut" [ref=e746] [cursor=pointer]:
+                            - img [ref=e747]
+                        - generic [ref=e750]:
+                          - button "Send now" [disabled]:
+                            - img
+                          - button "Schedule for later" [disabled]:
+                            - img
+                  - generic [ref=e751]:
+                    - generic:
+                      - generic:
+                        - button: Shift + Return to add a new line
+        - toolbar "Control strip" [ref=e757]:
+          - button "Create new" [ref=e758] [cursor=pointer]:
+            - img [ref=e760]
+          - 'button "User: Justin Headley" [ref=e762] [cursor=pointer]':
+            - generic [ref=e764]:
+              - img [ref=e765]
+              - img [ref=e767]
+              - img "Active, notifications snoozed" [ref=e907]
+      - dialog "Information" [ref=e911]:
+        - generic [ref=e912]:
+          - generic [ref=e913]: 
+          - text: Stop juggling tabs, download the Slack app.
+          - link "Get Slack for macOS" [ref=e914] [cursor=pointer]:
+            - /url: https://slack.com/downloads?t=T0AQ9MLRHEC
+          - generic [ref=e915]:
+            - text: (Already have the app?
+            - link "Open Slack" [ref=e916] [cursor=pointer]:
+              - /url: https://echo-agent.slack.com/ssb/redirect
+            - text: .)
+        - button "Close" [ref=e917] [cursor=pointer]:
+          - img [ref=e918]
+      - generic:
+        - generic:
+          - img
+  - generic [ref=e776]:
+    - alert [ref=e777]
+    - log [ref=e778]
+  - generic:
+    - generic:
+      - tooltip

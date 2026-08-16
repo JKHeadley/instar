@@ -1,0 +1,11 @@
+{
+  "id": "06-route-decision-unknown-credit",
+  "description": "Routing decision when SDK credit state is unknown falls to the subscription floor. Exercises the conservative-unknown branch of the cost-aware policy via the fakeUnknown=1 test override.",
+  "topic": 2525,
+  "steps": [
+    { "action": "assert-http",
+      "endpoint": "/providers/routing/decide?task=baseline-anthropic&fakeUnknown=1",
+      "status": 200,
+      "bodyMatch": "sdk-credit-state-unknown" }
+  ]
+}

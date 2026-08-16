@@ -1,0 +1,23 @@
+{
+  "sessionId": "edbdb5ab-252d-412f-905d-31735f43d98b",
+  "tmuxSession": "echo-bug-zombie-cleanup-kills-active-sessions",
+  "task": "[telegram:1565] please start investigating this issue and designing a spec for the fix (IMPORTANT: R",
+  "phase": "testing",
+  "files": [
+    "tests/unit/migration-parity.test.ts",
+    "tests/unit/http-hook-templates.test.ts",
+    "CLAUDE.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T18:16:28.700Z",
+  "updatedAt": "2026-03-20T18:16:28.700Z",
+  "stale": true,
+  "outputHash": "26640c21e39e498ce3a6725af40a4726"
+}

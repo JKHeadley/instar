@@ -1,0 +1,23 @@
+{
+  "sessionId": "838412a5-4bf4-4cbe-8627-9ad22c03aaad",
+  "tmuxSession": "echo-server-side-process-review",
+  "task": "[telegram:1882] yes, lets look at the next category now (IMPORTANT: Read /tmp/instar-telegram/ctx-18",
+  "phase": "testing",
+  "files": [
+    "tests/unit/SessionMonitor.test.ts",
+    "tests/unit/SessionRecovery.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-27T03:28:08.746Z",
+  "updatedAt": "2026-03-27T03:28:08.746Z",
+  "stale": true,
+  "outputHash": "1aba563ba82691c292f53002dc202e53"
+}

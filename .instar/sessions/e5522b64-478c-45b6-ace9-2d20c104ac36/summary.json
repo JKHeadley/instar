@@ -1,0 +1,19 @@
+{
+  "sessionId": "e5522b64-478c-45b6-ace9-2d20c104ac36",
+  "tmuxSession": "echo-dashboard-session-names",
+  "task": "[telegram:4055] hello? (IMPORTANT: Read /tmp/instar-telegram/ctx-4055-1774754284216.txt for thread h",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T04:20:47.209Z",
+  "updatedAt": "2026-03-29T04:20:47.209Z",
+  "stale": true,
+  "outputHash": "27e7acc94543d2f3711b8c978fb13afb"
+}

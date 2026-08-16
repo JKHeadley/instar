@@ -1,0 +1,24 @@
+{
+  "sessionId": "e99badb0-c8cb-4d06-861b-98a8db8e3cdb",
+  "tmuxSession": "echo-job-system-meta-review",
+  "task": "[telegram:1839] please continue (IMPORTANT: Read /tmp/instar-telegram/ctx-1839-1774217225843.txt for",
+  "phase": "testing",
+  "files": [
+    "scripts/telemetry-worker/worker.js",
+    "src/monitoring/TelemetryHeartbeat.ts",
+    "src/server/routes.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-22T22:19:11.596Z",
+  "updatedAt": "2026-03-22T22:19:11.596Z",
+  "stale": true,
+  "outputHash": "6a5d394316f8907986ebc0167cb3c406"
+}

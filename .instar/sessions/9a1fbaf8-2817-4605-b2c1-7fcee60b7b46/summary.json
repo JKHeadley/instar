@@ -1,0 +1,24 @@
+{
+  "sessionId": "9a1fbaf8-2817-4605-b2c1-7fcee60b7b46",
+  "tmuxSession": "echo-session-compaction-bug-update",
+  "task": "[telegram:5290] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1776216659399",
+  "phase": "testing",
+  "files": [
+    "package.json",
+    "package-lock.json",
+    "upgrades/0.28.36.md",
+    "upgrades/NEXT.md",
+    "dashboard/index.html"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-15T01:42:56.074Z",
+  "updatedAt": "2026-04-15T01:42:56.074Z",
+  "stale": true,
+  "outputHash": "496ab0c4b7e7944ed644785ee84e32a4"
+}

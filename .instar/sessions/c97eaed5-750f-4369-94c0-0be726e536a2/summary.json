@@ -1,0 +1,21 @@
+{
+  "sessionId": "c97eaed5-750f-4369-94c0-0be726e536a2",
+  "tmuxSession": "echo-indra-assistance",
+  "task": "[telegram:3995] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1775328076092",
+  "phase": "testing",
+  "files": [
+    "server.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-04T19:31:36.005Z",
+  "updatedAt": "2026-04-04T19:31:36.005Z",
+  "stale": true,
+  "outputHash": "8d35bdea10ac45c44c904f5789ab394d"
+}

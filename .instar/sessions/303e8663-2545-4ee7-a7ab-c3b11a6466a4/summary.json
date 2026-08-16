@@ -1,0 +1,15 @@
+{
+  "sessionId": "303e8663-2545-4ee7-a7ab-c3b11a6466a4",
+  "tmuxSession": "echo-job-docs-code-sync-mnibfuiu",
+  "task": "[NOTIFICATION PROTOCOL: This job runs in quiet mode. The user will NOT see your output unless you ex",
+  "phase": "building",
+  "files": [
+    "ging-platform-parity.md"
+  ],
+  "topics": [],
+  "blockers": null,
+  "lastActivity": "2026-04-03T03:04:36.373Z",
+  "updatedAt": "2026-04-03T03:04:36.373Z",
+  "stale": false,
+  "outputHash": "98e06b657eb6bdc8be8cc4d2ea81e681"
+}

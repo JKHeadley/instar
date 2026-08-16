@@ -1,0 +1,82 @@
+{
+  "3079": {
+    "uuid": "2986a621-be0d-41ed-a26c-f8e0647fb096",
+    "savedAt": "2026-05-19T17:02:14.820Z",
+    "sessionName": "echo-exploring-slack-integration"
+  },
+  "5447": {
+    "uuid": "a8fbf536-8380-4c42-a144-e13b66135325",
+    "savedAt": "2026-05-20T15:37:16.413Z",
+    "sessionName": "echo-instar-agent-robustness"
+  },
+  "8615": {
+    "uuid": "fb63ccb9-b8ab-4b63-8f49-55d3d6427255",
+    "savedAt": "2026-05-20T15:29:57.565Z",
+    "sessionName": "echo-token-management"
+  },
+  "8882": {
+    "uuid": "edfc61f5-186f-4f72-a90b-ac68e9590aef",
+    "savedAt": "2026-05-19T17:02:24.631Z",
+    "sessionName": "echo-standby-mode-edits"
+  },
+  "9003": {
+    "uuid": "a644a77c-3a08-4a2e-ae3f-719059045acc",
+    "savedAt": "2026-05-20T15:29:57.565Z",
+    "sessionName": "echo-openclaw"
+  },
+  "9029": {
+    "uuid": "04c8e0ae-15b7-4fd9-bedd-2b00f1de1629",
+    "savedAt": "2026-05-20T15:45:07.319Z",
+    "sessionName": "echo-prompt-gate"
+  },
+  "9235": {
+    "uuid": "94fb0ca8-219e-4f78-befb-81d89bf9dc1c",
+    "savedAt": "2026-05-20T15:29:57.565Z",
+    "sessionName": "echo-qalatra"
+  },
+  "9529": {
+    "uuid": "f91c956c-3cf6-45a0-88b3-93344aa24cae",
+    "savedAt": "2026-05-20T15:29:57.565Z",
+    "sessionName": "echo-instar-jobs-as-agentmd"
+  },
+  "9976": {
+    "uuid": "d381e978-15bd-4ac3-bb36-9c107935287d",
+    "savedAt": "2026-05-20T15:29:57.565Z",
+    "sessionName": "echo-topic-intent-layer"
+  },
+  "9984": {
+    "uuid": "890d1101-1c28-4ebe-8bdd-bb0ab9acd715",
+    "savedAt": "2026-05-20T15:37:16.418Z",
+    "sessionName": "echo-claude-agent-sdk"
+  },
+  "10571": {
+    "uuid": "dc4aba32-0d65-45df-932f-b3b5297eb740",
+    "savedAt": "2026-05-20T16:07:00.878Z",
+    "sessionName": "echo-worktree-convention"
+  },
+  "10775": {
+    "uuid": "c55deb40-b684-4666-b320-ed1479ec0216",
+    "savedAt": "2026-05-20T16:58:58.641Z",
+    "sessionName": "echo-little-bird-ai"
+  },
+  "10873": {
+    "uuid": "9c4dc196-2561-4298-9d66-e079c1c4384d",
+    "savedAt": "2026-05-20T16:07:00.879Z",
+    "sessionName": "echo-deployment-lockdown"
+  },
+  "10927": {
+    "uuid": "bcfc5051-c015-4530-940b-6bd7b3975bc3",
+    "savedAt": "2026-05-20T15:55:46.183Z",
+    "sessionName": "echo-telegram-testing"
+  },
+  "11013": {
+    "uuid": "7cce523c-1376-4ff3-bc56-98a4cc19f4db",
+    "savedAt": "2026-05-20T16:17:57.445Z",
+    "sessionName": "echo-native-module-self-heal-robust-fix-for-s"
+  },
+  "11078": {
+    "uuid": "12d0a974-5969-4b49-9f9e-c845714448ae",
+    "savedAt": "2026-05-20T15:53:40.385Z",
+    "sessionName": "echo-npm-tokens"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "sessionId": "cbd80e6f-573b-4e08-bef1-621334599b74",
+  "tmuxSession": "echo-dashboard-development",
+  "task": "[telegram:5348] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1777768049834",
+  "phase": "testing",
+  "files": [
+    "/tmp/instar-dash-grouped-nav/dashboard/index.html",
+    "/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/instar/dashboard/index.html",
+    "dashboard/index.html"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-03T00:54:52.563Z",
+  "updatedAt": "2026-05-03T00:54:52.563Z",
+  "stale": true,
+  "outputHash": "651bb343bc9845141dcf4dce841732cb"
+}

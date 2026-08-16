@@ -1,0 +1,18 @@
+{
+  "sessionId": "16d6c38b-7737-4353-a807-760819174fbe",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] /new robust-dashboard-link (IMPORTANT: Read /tmp/instar-telegram/ctx-2-1773943385495.tx",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-19T18:04:21.648Z",
+  "updatedAt": "2026-03-19T18:04:21.648Z",
+  "stale": true,
+  "outputHash": "d4ee7aefaaf043b0bd0e3ed4836d9495"
+}

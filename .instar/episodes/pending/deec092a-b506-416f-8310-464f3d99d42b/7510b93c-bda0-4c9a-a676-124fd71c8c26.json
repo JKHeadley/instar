@@ -1,0 +1,7 @@
+{
+  "id": "7510b93c-bda0-4c9a-a676-124fd71c8c26",
+  "sessionId": "deec092a-b506-416f-8310-464f3d99d42b",
+  "content": "You are analyzing a chunk of an AI agent's work session to create a concise activity digest.\n\nSession: 🔔 Attention\nActivity period: 2026-03-08T21:31:52.165Z to 2026-03-09T23:50:36.051Z\nBoundary signal: time_threshold\n\n=== CONVERSATION (human + agent) ===\n[Agent] This is your agent's direct line to you — for things that genuinely need your attention.\n\nBlocked tasks, critical errors, memory pressure, quota alerts, and anything where your agent can't proceed without you.\n[Agent] Found 37 Claude processes running outside your agent (using 11189MB of memory). This is usually from VS Code or a terminal session you have open — no action needed if that's the case.\n\nIf you're not actively using Claude elsewhere, reply \"clean processes\" to free up the memory.\n\nRespond in this EXACT JSON format (no other text):\n{\n  \"summary\": \"2-3 sentence overview of what happened in this activity unit\",\n  \"actions\": [\"key action 1\", \"key action 2\"],\n  \"learnings\": [\"insight or lesson learned\"],\n  \"significance\": 5,\n  \"themes\": [\"topic1\", \"topic2\"]\n}\n\nRULES:\n- significance is 1-10 (1=trivial, 5=normal, 8+=major milestone)\n- themes are 1-3 word topic tags\n- actions are specific: \"committed migration engine\", not \"wrote code\"\n- learnings are insights, not descriptions: \"FTS5 requires sync triggers\", not \"worked on FTS5\"",
+  "createdAt": "2026-03-11T08:32:49.149Z",
+  "retryCount": 0
+}

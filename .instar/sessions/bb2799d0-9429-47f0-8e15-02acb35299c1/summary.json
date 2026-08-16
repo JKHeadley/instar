@@ -1,0 +1,25 @@
+{
+  "sessionId": "bb2799d0-9429-47f0-8e15-02acb35299c1",
+  "tmuxSession": "echo-exploring-slack-integration",
+  "task": "[telegram:3079] Question currently with the Slack integration if the agent is invited into a channel",
+  "phase": "testing",
+  "files": [
+    "adversarial.md",
+    "dx.md",
+    "marketing.md",
+    "config-defaults-spec.md"
+  ],
+  "topics": [
+    "database",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-01T06:31:39.062Z",
+  "updatedAt": "2026-04-01T06:31:39.062Z",
+  "stale": false,
+  "outputHash": "6ddf950469231a40b1d02f8ca82583b7"
+}

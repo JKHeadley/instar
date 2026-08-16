@@ -1,0 +1,22 @@
+{
+  "sessionId": "e0e7cc29-8c8e-4980-944b-153c14d7a914",
+  "tmuxSession": "echo-server-side-process-review",
+  "task": "[telegram:1882] I just want to make sure this is robust and that \"unsticking\" doesn't mean killing a",
+  "phase": "testing",
+  "files": [
+    "builtin-manifest.json",
+    "/Users/justin/Documents/Projects/instar/scripts/telemetry-worker/worker.js"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T02:01:40.373Z",
+  "updatedAt": "2026-03-23T02:01:40.373Z",
+  "stale": false,
+  "outputHash": "f5ac7a767b903b25d0525f1556c2e777"
+}

@@ -1,0 +1,21 @@
+{
+  "sessionId": "6d9c64bd-0a67-4a4d-b0e9-807db0cc65ff",
+  "tmuxSession": "echo-topic-3080",
+  "task": "[telegram:3080] yes please (IMPORTANT: Read /tmp/instar-telegram/ctx-3080-1774844546387.txt for thre",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/custom/plan-prompt-relay.js",
+    "SlackAdapter.ts"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-30T04:33:35.514Z",
+  "updatedAt": "2026-03-30T04:33:35.514Z",
+  "stale": true,
+  "outputHash": "9db95afe57990ca92376060f79400e8f"
+}

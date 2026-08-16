@@ -1,0 +1,16 @@
+{
+  "sessionId": "f0b81fb6-2e5a-4917-b986-a169747b8f2a",
+  "tmuxSession": "echo-test-topic",
+  "task": "[telegram:1467] what did you just say? (IMPORTANT: Read /tmp/instar-telegram/ctx-1467-1773988701098.",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T06:38:41.058Z",
+  "updatedAt": "2026-03-20T06:38:41.058Z",
+  "stale": false,
+  "outputHash": "356b3074604b5eece6fc6250cc7875b6"
+}

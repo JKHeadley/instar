@@ -1,0 +1,20 @@
+{
+  "sessionId": "c1346926-8984-4b35-bef2-51c1812181b7",
+  "tmuxSession": "echo-attention",
+  "task": "[telegram:3] yes (IMPORTANT: Read /tmp/instar-telegram/ctx-3-1773253906743.txt for thread history an",
+  "phase": "testing",
+  "files": [
+    "tests/unit/degradation-reporter.test.ts"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-11T18:52:16.530Z",
+  "updatedAt": "2026-03-11T18:52:16.530Z",
+  "stale": true,
+  "outputHash": "8c4f409e3db64191fe43be996af5d51e"
+}

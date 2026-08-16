@@ -1,0 +1,19 @@
+{
+  "sessionId": "d34389e5-0b4c-4268-8892-0b032411ac5d",
+  "tmuxSession": "echo-parallel-dev-infra",
+  "task": "[telegram:7000] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1776618214430",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T17:29:16.920Z",
+  "updatedAt": "2026-04-19T17:29:16.920Z",
+  "stale": true,
+  "outputHash": "920886a75c8474e57060940c2a8ed346"
+}

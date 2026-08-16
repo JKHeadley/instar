@@ -1,0 +1,23 @@
+{
+  "sessionId": "df54f9e6-5d3a-44ba-a1cb-cd33d55b3478",
+  "tmuxSession": "echo-jobs-not-running",
+  "task": "[telegram:1767] yes I agree. One thing I will want us to do once we're done reviewing the jobs: we n",
+  "phase": "testing",
+  "files": [
+    "adversarial.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-22T19:27:18.046Z",
+  "updatedAt": "2026-03-22T19:27:18.046Z",
+  "stale": true,
+  "outputHash": "58a5c7cda42dfd6f0aa1a02d5626dcbd"
+}

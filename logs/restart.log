@@ -1,0 +1,2 @@
+Cannot 'server start' from inside a session (session 278b83e9-39e9-4256-995f-b2b52120cd58).
+The server is managed by the supervisor. Sessions should not start, stop, or restart it.

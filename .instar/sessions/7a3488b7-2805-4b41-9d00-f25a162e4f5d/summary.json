@@ -1,0 +1,23 @@
+{
+  "sessionId": "7a3488b7-2805-4b41-9d00-f25a162e4f5d",
+  "tmuxSession": "echo-job-health-check-mnoh3b7c",
+  "task": "[NOTIFICATION PROTOCOL: This job runs in quiet mode. The user will NOT see your output unless you ex",
+  "phase": "testing",
+  "files": [
+    "CRASH-RECOVERY-UX-SPEC.md",
+    "README.md",
+    "configuration.md",
+    "messaging-platform-parity.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-07T10:25:41.331Z",
+  "updatedAt": "2026-04-07T10:25:41.331Z",
+  "stale": false,
+  "outputHash": "067d33374eb9037bb49bf5a3b5d40fe0"
+}

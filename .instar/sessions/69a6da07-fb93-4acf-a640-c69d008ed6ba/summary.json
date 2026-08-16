@@ -1,0 +1,22 @@
+{
+  "sessionId": "69a6da07-fb93-4acf-a640-c69d008ed6ba",
+  "tmuxSession": "echo-exploring-slack-integration",
+  "task": "[telegram:3079] yes please (IMPORTANT: Read /tmp/instar-telegram/ctx-3079-1775761428219.txt for thre",
+  "phase": "testing",
+  "files": [
+    "NEXT.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-09T20:05:24.029Z",
+  "updatedAt": "2026-04-09T20:05:24.029Z",
+  "stale": true,
+  "outputHash": "57f330eae8547ca2cc4f6c5cb2fcf1b0"
+}

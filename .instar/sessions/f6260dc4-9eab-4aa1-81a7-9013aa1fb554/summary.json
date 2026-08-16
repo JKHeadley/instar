@@ -1,0 +1,29 @@
+{
+  "sessionId": "f6260dc4-9eab-4aa1-81a7-9013aa1fb554",
+  "tmuxSession": "echo-watchdog-issues",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-6269-1776197128585-88v745ee.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/.instar/agents/echo/.instar/instar-boot.js",
+    "/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/instar/dist/cli.js",
+    "src/monitoring/SessionWatchdog.ts",
+    "tests/unit/SessionWatchdog-pipeline.test.ts",
+    "src/data/builtin-manifest.js",
+    "scripts/collect-metrics.py",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/builtin-manifest.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-14T20:11:26.740Z",
+  "updatedAt": "2026-04-14T20:11:26.740Z",
+  "stale": true,
+  "outputHash": "9385b2add3f9af54d62861677b8ff32c"
+}

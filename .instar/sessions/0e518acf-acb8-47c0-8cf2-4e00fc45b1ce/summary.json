@@ -1,0 +1,17 @@
+{
+  "sessionId": "0e518acf-acb8-47c0-8cf2-4e00fc45b1ce",
+  "tmuxSession": "echo-interactive-1774679382109",
+  "task": "[slack:C0AQ9P1CN00] testing this system, how you doin? (IMPORTANT: Read /tmp/instar-slack/ctx-C0AQ9P",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T06:38:56.895Z",
+  "updatedAt": "2026-03-28T06:38:56.895Z",
+  "stale": false,
+  "outputHash": "b0f42bf2a1109f3cbab3346b35820607"
+}

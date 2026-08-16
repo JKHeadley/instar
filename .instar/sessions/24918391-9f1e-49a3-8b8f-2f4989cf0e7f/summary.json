@@ -1,0 +1,22 @@
+{
+  "sessionId": "24918391-9f1e-49a3-8b8f-2f4989cf0e7f",
+  "tmuxSession": "echo-instar-agent-robustness",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-5447-1776281560025-49vy07gt.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "jobs.json",
+    "config.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-15T20:01:05.796Z",
+  "updatedAt": "2026-04-15T20:01:05.796Z",
+  "stale": true,
+  "outputHash": "eb5ae7885ebb79c218171ad9b13b82cc"
+}

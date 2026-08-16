@@ -1,0 +1,21 @@
+{
+  "sessionId": "025a325f-9b62-4fda-9de7-d409874e9a9d",
+  "tmuxSession": "echo-interactive-1775187656583",
+  "task": "[slack:C0APW9UHFJ5 from U0AP927E2R1 (uid:U0AP927E2R1)] Yes please (IMPORTANT: Read /tmp/instar-slack",
+  "phase": "testing",
+  "files": [
+    ".claude/skills/specreview/output/20260402-212600/synthesis.md"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-03T04:33:34.883Z",
+  "updatedAt": "2026-04-03T04:33:34.883Z",
+  "stale": true,
+  "outputHash": "ef4ef4b5b41fc392f5ca84f243556224"
+}

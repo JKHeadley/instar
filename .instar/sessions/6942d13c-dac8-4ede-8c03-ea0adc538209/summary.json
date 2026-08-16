@@ -1,0 +1,17 @@
+{
+  "sessionId": "6942d13c-dac8-4ede-8c03-ea0adc538209",
+  "tmuxSession": "echo-resume-live-input-bug",
+  "task": "[telegram:6309] Hi echo. The \"resume live input\" dashboard button for sessions still doesn't auto-sc",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "security",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-14T21:55:40.866Z",
+  "updatedAt": "2026-04-14T21:55:40.866Z",
+  "stale": false,
+  "outputHash": "242d49871b6815fcaab766a0dcc504e5"
+}

@@ -1,0 +1,24 @@
+{
+  "sessionId": "ed92b48e-2a63-4ad9-bab1-3cd9b9e1670c",
+  "tmuxSession": "echo-indra-assistance",
+  "task": "[telegram:3995] indra seems to be down again. can you look into why? (IMPORTANT: Read /tmp/instar-te",
+  "phase": "testing",
+  "files": [
+    "DISPATCH.md",
+    "MEMORY.md",
+    "USER-AGENT-TOPOLOGY-SPEC.md",
+    "dashboard-revamp-spec.md",
+    "job-review-spec.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-08T20:26:41.991Z",
+  "updatedAt": "2026-04-08T20:26:41.991Z",
+  "stale": true,
+  "outputHash": "a9e9411a81d27e01b35352ce8c9d57c1"
+}

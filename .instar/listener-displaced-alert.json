@@ -1,0 +1,6 @@
+{
+  "type": "listener-displaced",
+  "timestamp": "2026-04-06T00:30:26.334Z",
+  "reason": "Another device connected with the same identity key",
+  "pid": 35419
+}

@@ -1,0 +1,21 @@
+{
+  "sessionId": "35abd5db-99c5-4bcd-bda5-766d369f30a5",
+  "tmuxSession": "echo-job-system-meta-review",
+  "task": "[telegram:1839] Please proceed as you best see fit (IMPORTANT: Read /tmp/instar-telegram/ctx-1839-17",
+  "phase": "testing",
+  "files": [
+    "specs/cross-agent-telemetry.md"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-22T17:17:52.271Z",
+  "updatedAt": "2026-03-22T17:17:52.271Z",
+  "stale": true,
+  "outputHash": "cccda1e7c44d1a072bfb6378462d5661"
+}

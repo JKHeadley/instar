@@ -1,0 +1,25 @@
+{
+  "sessionId": "236b184a-b9f8-430f-b118-e75b7cf32fcd",
+  "tmuxSession": "echo-semantic-db-resilience",
+  "task": "[telegram:2104] pleas look into this (IMPORTANT: Read /tmp/instar-telegram/ctx-2104-1774230409459.tx",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/Documents/Projects/instar/tsconfig.json",
+    ".instar/semantic-snapshot.json",
+    "MEMORY.md",
+    "src/memory/SemanticMemory.ts",
+    "src/server/routes.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T02:07:21.543Z",
+  "updatedAt": "2026-03-23T02:07:21.543Z",
+  "stale": true,
+  "outputHash": "c967ba2f962d5086af207f5beaabb6ef"
+}

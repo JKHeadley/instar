@@ -1,0 +1,26 @@
+{
+  "sessionId": "e3f07b93-5ab2-4864-ad27-9990b8903bd8",
+  "tmuxSession": "echo-threadline-test",
+  "task": "CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.\n",
+  "phase": "testing",
+  "files": [
+    "publish.yml",
+    "publish-threadline-mcp.yml",
+    "soul-md-identity-exploration.md",
+    "USER.md",
+    "0.23.7.md",
+    "MEMORY.md",
+    "discovery-protocol.md"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-17T18:28:52.355Z",
+  "updatedAt": "2026-03-17T18:28:52.355Z",
+  "stale": true,
+  "outputHash": "9a04c7fd96bfd92a2d1055639ca346a6"
+}

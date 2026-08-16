@@ -1,0 +1,19 @@
+{
+  "sessionId": "33cd76eb-a0e0-4fc5-9780-b5275065ab35",
+  "tmuxSession": "echo-token-management",
+  "task": "[telegram:8615] how is this looking? (IMPORTANT: Read /tmp/instar-telegram/ctx-8615-1777731744833.tx",
+  "phase": "testing",
+  "files": [
+    "/tmp/token-audit.md"
+  ],
+  "topics": [
+    "database",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-02T15:20:08.309Z",
+  "updatedAt": "2026-05-02T15:20:08.309Z",
+  "stale": true,
+  "outputHash": "70910ccd4ed75314196e570baffffe54"
+}

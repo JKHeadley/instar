@@ -1,0 +1,18 @@
+{
+  "sessionId": "3f0113bc-c51d-43a3-9fb7-569779a43a94",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] please give me a summary of what you need my input on (IMPORTANT: Read /tmp/instar-t",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-02T18:52:20.735Z",
+  "updatedAt": "2026-05-02T18:52:20.735Z",
+  "stale": true,
+  "outputHash": "5e408cb20ca6953b8d8c066311023309"
+}

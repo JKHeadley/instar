@@ -1,0 +1,32 @@
+{
+  "sessionId": "5d90d14d-012d-4b54-a1a0-aa76429677aa",
+  "tmuxSession": "echo-telegram-markdown",
+  "task": "[telegram:8183] approved (IMPORTANT: Read /tmp/instar-telegram/ctx-8183-1777064029822.txt for thread",
+  "phase": "testing",
+  "files": [
+    "src/core/types.ts",
+    "src/commands/server.ts",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/types.ts",
+    "tests/integration/imessage-review-blockers.test.ts",
+    "tests/unit/imessage-native-backend.test.ts",
+    "ci.yml",
+    "publish-threadline-mcp.yml",
+    "worktree-trailer-sig-check.yml",
+    "package.json",
+    "scripts/analyze-release.js"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-24T22:04:02.175Z",
+  "updatedAt": "2026-04-24T22:04:02.175Z",
+  "stale": true,
+  "outputHash": "3a9dca48d341a560dfd858b877c5394e"
+}

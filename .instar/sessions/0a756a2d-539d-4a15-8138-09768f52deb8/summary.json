@@ -1,0 +1,18 @@
+{
+  "sessionId": "0a756a2d-539d-4a15-8138-09768f52deb8",
+  "tmuxSession": "echo-server-side-process-review",
+  "task": "[telegram:1882] are the site changes deployed? (IMPORTANT: Read /tmp/instar-telegram/ctx-1882-177465",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T00:54:53.594Z",
+  "updatedAt": "2026-03-28T00:54:53.594Z",
+  "stale": false,
+  "outputHash": "2a065d975acac551497c51caee9813a3"
+}

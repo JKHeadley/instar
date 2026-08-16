@@ -1,0 +1,10 @@
+{
+  "slug": "overseer-learning",
+  "origin": "user",
+  "schedule": "0 3 */2 * *",
+  "enabled": true,
+  "execute": {
+    "type": "agentmd"
+  },
+  "manifestVersion": 1
+}

@@ -1,0 +1,27 @@
+{
+  "sessionId": "e201a8d4-99a9-4ac0-bd43-3a2e3f7096d0",
+  "tmuxSession": "echo-instar-claude-me",
+  "task": "[telegram:894] okay, I created a new topic: \"seed-infra-test\" can you review the session logs and se",
+  "phase": "testing",
+  "files": [
+    "marketing.md",
+    "synthesis.md",
+    "default-jobs.md",
+    "evolution.md",
+    "0.21.3.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-15T01:44:13.570Z",
+  "updatedAt": "2026-03-15T01:44:13.570Z",
+  "stale": true,
+  "outputHash": "9fda536cacde0af3ce509d9456786501"
+}

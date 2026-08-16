@@ -1,0 +1,21 @@
+{
+  "sessionId": "75e17cf3-a32e-47a3-81c9-4d7072611a74",
+  "tmuxSession": "echo-bug-cross-topic-context-injection",
+  "task": "[telegram:360] great! is the next step to deploy? (IMPORTANT: Read /tmp/instar-telegram/ctx-360-1773",
+  "phase": "testing",
+  "files": [
+    "sync-lifecycle.test.ts",
+    "vitest.push.config.ts"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-10T22:36:57.331Z",
+  "updatedAt": "2026-03-10T22:36:57.331Z",
+  "stale": false,
+  "outputHash": "11c09d6ccc2af156587a19dd63a93139"
+}

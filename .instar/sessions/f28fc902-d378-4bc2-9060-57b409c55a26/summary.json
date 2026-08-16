@@ -1,0 +1,20 @@
+{
+  "sessionId": "f28fc902-d378-4bc2-9060-57b409c55a26",
+  "tmuxSession": "echo-instar-agent-robustness",
+  "task": "[telegram:5447] you never got back to me here (IMPORTANT: Read /tmp/instar-telegram/ctx-5447-1776705",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-20T17:51:47.197Z",
+  "updatedAt": "2026-04-20T17:51:47.197Z",
+  "stale": true,
+  "outputHash": "f0891f38550b99276bda47fcc813189c"
+}

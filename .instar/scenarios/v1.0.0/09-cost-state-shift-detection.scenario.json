@@ -1,0 +1,11 @@
+{
+  "id": "09-cost-state-shift-detection",
+  "description": "CostStateTracker.isMaterialShift endpoint reports a material shift when the SDK credit pot crosses the safety margin. Exercises the tracker's most-load-bearing decision via two fake snapshots (above margin → below margin).",
+  "topic": 2525,
+  "steps": [
+    { "action": "assert-http",
+      "endpoint": "/providers/cost-state/diff?priorRemainingUsd=80&priorTotalUsd=100&currentRemainingUsd=5&currentTotalUsd=100",
+      "status": 200,
+      "bodyMatch": "sdk-credit-crossed-below-safety-margin" }
+  ]
+}

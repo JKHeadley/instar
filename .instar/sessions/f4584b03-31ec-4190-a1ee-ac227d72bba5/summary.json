@@ -1,0 +1,20 @@
+{
+  "sessionId": "f4584b03-31ec-4190-a1ee-ac227d72bba5",
+  "tmuxSession": "echo-indra-assistance",
+  "task": "[telegram:3995] please make sure these are all published (IMPORTANT: Read /tmp/instar-telegram/ctx-3",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-31T16:20:49.693Z",
+  "updatedAt": "2026-03-31T16:20:49.693Z",
+  "stale": true,
+  "outputHash": "9e5c1814a713df267004105da0082e72"
+}

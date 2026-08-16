@@ -1,0 +1,18 @@
+{
+  "sessionId": "8d0ed4be-c4fb-4368-8646-ffcf58abd8ea",
+  "tmuxSession": "echo-topic-session-command-trap",
+  "task": "[telegram:1427] yes please! (IMPORTANT: Read /tmp/instar-telegram/ctx-1427-1774058562797.txt for thr",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security",
+    "messaging",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-21T02:04:39.220Z",
+  "updatedAt": "2026-03-21T02:04:39.220Z",
+  "stale": true,
+  "outputHash": "ff117be541bca74de018a929f2ba1c5a"
+}

@@ -1,0 +1,27 @@
+{
+  "sessionId": "cacb6723-941b-45a6-b468-69270e5e1b9e",
+  "tmuxSession": "echo-job-system-meta-review",
+  "task": "CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.\n",
+  "phase": "testing",
+  "files": [
+    "MEMORY.md",
+    "README.md",
+    "CLAUDE.md",
+    "under-the-hood.md",
+    "default-jobs.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T19:46:56.711Z",
+  "updatedAt": "2026-03-28T19:46:56.711Z",
+  "stale": true,
+  "outputHash": "c36372f48e319f56bc836c8fe563f4d6"
+}

@@ -1,0 +1,23 @@
+{
+  "sessionId": "0ff25a9a-ded2-4a1a-a419-d52d015dca2b",
+  "tmuxSession": "echo-follow-through-heartbeat-infrastructure",
+  "task": "[telegram:7383] Let’s continue (IMPORTANT: Read /tmp/instar-telegram/ctx-7383-1776617305236.txt for ",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js",
+    "../../../Documents/Projects/instar/docs/specs/PROMISE-BEACON-SPEC.md",
+    "../../../Documents/Projects/instar/docs/specs/reports/promise-beacon-convergence.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T17:04:05.712Z",
+  "updatedAt": "2026-04-19T17:04:05.712Z",
+  "stale": true,
+  "outputHash": "24634161198176507949228ce748bcaa"
+}

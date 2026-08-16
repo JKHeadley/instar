@@ -1,0 +1,76 @@
+{
+  "agents": [
+    {
+      "name": "ai-guy",
+      "port": 4040,
+      "path": "/Users/justin/Documents/Projects/ai-guy",
+      "status": "active",
+      "capabilities": [],
+      "threadlineEnabled": true,
+      "threadlineVersion": "1.0",
+      "publicKey": "",
+      "framework": "instar",
+      "lastVerified": "2026-05-20T15:36:00.063Z"
+    },
+    {
+      "name": "inspec",
+      "port": 4041,
+      "path": "/Users/justin/Documents/Projects/monroe-workspace",
+      "status": "active",
+      "capabilities": [],
+      "threadlineEnabled": true,
+      "threadlineVersion": "1.0",
+      "publicKey": "fdb589ad7dc3ae66e098cb3c69215b946dd4bdc025c812e45df687c68e564865",
+      "framework": "instar",
+      "lastVerified": "2026-05-19T19:10:15.603Z"
+    },
+    {
+      "name": "indra-instar",
+      "port": 4043,
+      "path": "/Users/justin/Documents/Projects/indra-instar",
+      "status": "active",
+      "capabilities": [],
+      "threadlineEnabled": true,
+      "threadlineVersion": "1.0",
+      "publicKey": "91",
+      "framework": "instar",
+      "lastVerified": "2026-05-12T21:11:25.391Z"
+    },
+    {
+      "name": "echo",
+      "port": 4042,
+      "path": "/Users/justin/.instar/agents/echo",
+      "status": "unverified",
+      "capabilities": [],
+      "threadlineEnabled": true,
+      "threadlineVersion": "1.0",
+      "publicKey": "",
+      "framework": "instar"
+    },
+    {
+      "name": "deep-signal",
+      "port": 5050,
+      "path": "/Users/justin/Documents/Projects/deep-signal",
+      "status": "active",
+      "capabilities": [],
+      "threadlineEnabled": true,
+      "threadlineVersion": "1.0",
+      "publicKey": "",
+      "framework": "instar",
+      "lastVerified": "2026-05-16T00:04:09.614Z"
+    },
+    {
+      "name": "sagemind",
+      "port": 6060,
+      "path": "/Users/justin/Documents/Projects/sagemind",
+      "status": "active",
+      "capabilities": [],
+      "threadlineEnabled": true,
+      "threadlineVersion": "1.0",
+      "publicKey": "1db85f",
+      "framework": "instar",
+      "lastVerified": "2026-05-16T00:04:09.618Z"
+    }
+  ],
+  "updatedAt": "2026-05-20T17:16:27.022Z"
+}

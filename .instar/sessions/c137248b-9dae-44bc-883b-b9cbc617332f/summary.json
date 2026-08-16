@@ -1,0 +1,22 @@
+{
+  "sessionId": "c137248b-9dae-44bc-883b-b9cbc617332f",
+  "tmuxSession": "echo-deployment-lockdown",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-10873-1779249602385-7pe5dwsc.txt — it contains your ",
+  "phase": "testing",
+  "files": [
+    "yment-lockdown/.instar/hooks/instar/post-action-reflection.js",
+    "release-tier.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-20T17:13:37.869Z",
+  "updatedAt": "2026-05-20T17:13:37.869Z",
+  "stale": false,
+  "outputHash": "215584f93c17e1496c365b00c1569ab7"
+}

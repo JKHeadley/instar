@@ -1,0 +1,25 @@
+{
+  "sessionId": "25a1271b-16fe-4762-aad0-5e9d97c39fe2",
+  "tmuxSession": "echo-topic-3080",
+  "task": "[telegram:3080] yes please! (IMPORTANT: Read /tmp/instar-telegram/ctx-3080-1774649510600.txt for thr",
+  "phase": "testing",
+  "files": [
+    "builtin-manifest.json",
+    "src/monitoring/PresenceProxy.ts",
+    "src/server/routes.ts",
+    "src/commands/server.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-27T22:18:50.173Z",
+  "updatedAt": "2026-03-27T22:18:50.173Z",
+  "stale": true,
+  "outputHash": "a8be922ee146205ceca12cfa3e038495"
+}

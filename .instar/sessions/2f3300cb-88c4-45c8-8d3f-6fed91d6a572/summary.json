@@ -1,0 +1,26 @@
+{
+  "sessionId": "2f3300cb-88c4-45c8-8d3f-6fed91d6a572",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1773271213676-52",
+  "phase": "testing",
+  "files": [
+    "NEXT.md",
+    "0.9.36.md",
+    "README.md",
+    "installation.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-12T03:09:51.818Z",
+  "updatedAt": "2026-03-12T03:09:51.818Z",
+  "stale": true,
+  "outputHash": "dda0ad0180ef3238cab9a8eb38d4446a"
+}

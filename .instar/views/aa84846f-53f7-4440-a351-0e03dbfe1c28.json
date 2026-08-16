@@ -1,0 +1,12 @@
+{
+  "id": "aa84846f-53f7-4440-a351-0e03dbfe1c28",
+  "title": "Capability Audit Report",
+  "markdown": "# Capability Audit Report\n**Date**: 2026-04-12  \n**Status**: Unmapped capabilities detected\n\n## Summary\nThe capability map refresh detected 83 unmapped capabilities. These are functional components that exist in the system but have not been classified or linked to topics in the capability map.\n\n## System Health\n- **Added capabilities**: 0 (stable)\n- **Removed capabilities**: 0 (stable)  \n- **Changed capabilities**: 0 (stable)\n- **Unmapped**: 83 (organizational work)\n- **Scan errors**: 0\n\n**Conclusion**: System is stable. All components are functional. The unmapped entries represent capabilities that need documentation/classification in the capability map.\n",
+  "createdAt": "2026-04-12T01:02:00.747Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "capability-audit"
+    }
+  }
+}

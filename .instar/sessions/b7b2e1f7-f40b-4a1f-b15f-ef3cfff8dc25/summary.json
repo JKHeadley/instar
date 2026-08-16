@@ -1,0 +1,25 @@
+{
+  "sessionId": "b7b2e1f7-f40b-4a1f-b15f-ef3cfff8dc25",
+  "tmuxSession": "echo-git-syncing",
+  "task": "[telegram:8122] approved, as LONG as none of this drops off the map and is never picked up again (IM",
+  "phase": "testing",
+  "files": [
+    "listener-daemon.js",
+    "src/threadline/ThreadlineRouter.ts",
+    "InboundMessageGate.ts",
+    "SpawnLedger.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-29T05:42:40.100Z",
+  "updatedAt": "2026-04-29T05:42:40.100Z",
+  "stale": true,
+  "outputHash": "5819cf235fa824b6d293396f7b953280"
+}

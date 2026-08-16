@@ -1,0 +1,21 @@
+{
+  "sessionId": "df9af6c3-597a-4653-aa0d-539fa2936e13",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] Dawn did this for you 🙂\n\n—-\n\nEcho's GitHub account is fully set up! Here's the summ",
+  "phase": "testing",
+  "files": [
+    "settings.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-26T03:36:51.461Z",
+  "updatedAt": "2026-03-26T03:36:51.461Z",
+  "stale": true,
+  "outputHash": "50833ea1e8829f11149efa5753f47bd0"
+}

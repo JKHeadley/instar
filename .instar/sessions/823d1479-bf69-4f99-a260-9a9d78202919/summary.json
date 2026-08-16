@@ -1,0 +1,25 @@
+{
+  "sessionId": "823d1479-bf69-4f99-a260-9a9d78202919",
+  "tmuxSession": "echo-topic-5653",
+  "task": "[telegram:5653] echo's server keeps restarting, and I'm not sure if its due to updates or a bug, but",
+  "phase": "testing",
+  "files": [
+    "config.json",
+    "src/lifeline/ServerSupervisor.ts",
+    "tests/unit/supervisor-health-check.test.ts",
+    "/Users/justin/Documents/Projects/instar/dist/lifeline/ServerSupervisor.js"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-07T01:16:52.122Z",
+  "updatedAt": "2026-04-07T01:16:52.122Z",
+  "stale": true,
+  "outputHash": "8411dbf3724ec7c63fd1fdccf16107e7"
+}

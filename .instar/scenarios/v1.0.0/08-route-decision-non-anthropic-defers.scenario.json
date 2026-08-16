@@ -1,0 +1,11 @@
+{
+  "id": "08-route-decision-non-anthropic-defers",
+  "description": "Routing decision for a task that has no Anthropic candidate in scope defers to the next policy in the chain (FirstAvailable). The endpoint should return the first available non-Anthropic adapter rather than throwing.",
+  "topic": 2525,
+  "steps": [
+    { "action": "assert-http",
+      "endpoint": "/providers/routing/decide?task=baseline-codex-only&candidates=openai-codex",
+      "status": 200,
+      "bodyMatch": "openai-codex" }
+  ]
+}

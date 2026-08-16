@@ -1,0 +1,11 @@
+{
+  "id": "04-route-decision-baseline",
+  "description": "Routing decision endpoint /providers/routing/decide returns a structured RoutingDecision for an Anthropic-class task. This is the Phase 5 wiring smoke — the endpoint must exist (Phase 5 cycle), respond 200, and include a chosen adapter + reason field. Fails on any target where Phase 5 wiring hasn't landed.",
+  "topic": 2525,
+  "steps": [
+    { "action": "assert-http", "endpoint": "/providers/routing/decide?task=baseline-anthropic",
+      "status": 200, "bodyMatch": "\"chosen\"" },
+    { "action": "assert-http", "endpoint": "/providers/routing/decide?task=baseline-anthropic",
+      "status": 200, "bodyMatch": "\"reason\"" }
+  ]
+}

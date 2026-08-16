@@ -1,0 +1,25 @@
+{
+  "sessionId": "6e5ba724-b754-4c81-846a-d10dc3386a3e",
+  "tmuxSession": "echo-worktree-convention",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-10571-1779249492545-nc2doiv0.txt — it contains your ",
+  "phase": "testing",
+  "files": [
+    "agent-worktree-convention-layer-3-4/.instar/hooks/instar/post-action-reflection.js",
+    "SYBIL-PROTECTION-SPEC.md",
+    "MEMORY.md",
+    "SKILL.md",
+    "SELF-HEALING-REMEDIATOR-V2-SPEC.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-20T17:13:37.847Z",
+  "updatedAt": "2026-05-20T17:13:37.847Z",
+  "stale": false,
+  "outputHash": "92639b385e2c3dfb95afe0e1c44108bb"
+}

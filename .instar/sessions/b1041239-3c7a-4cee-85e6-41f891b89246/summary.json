@@ -1,0 +1,22 @@
+{
+  "sessionId": "b1041239-3c7a-4cee-85e6-41f891b89246",
+  "tmuxSession": "echo-telegram-messages-pausing-in-input",
+  "task": "[telegram:7195] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1778525867546",
+  "phase": "testing",
+  "files": [
+    "src/core/AutoUpdater.ts",
+    "src/server/routes.ts",
+    "README.md"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-11T23:09:30.367Z",
+  "updatedAt": "2026-05-11T23:09:30.367Z",
+  "stale": true,
+  "outputHash": "825de513d12b4ddf8a442557e3986bcc"
+}

@@ -1,0 +1,21 @@
+{
+  "sessionId": "e704003b-5223-462b-b1c1-2705946f7da2",
+  "tmuxSession": "echo-session-compaction-bug-update",
+  "task": "[telegram:5290] I'm confused. The instar feedback infrastructure is currently a part of Dawn and the",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T01:29:35.582Z",
+  "updatedAt": "2026-04-17T01:29:35.582Z",
+  "stale": true,
+  "outputHash": "0bc316477bb4fc773285e523b0963243"
+}

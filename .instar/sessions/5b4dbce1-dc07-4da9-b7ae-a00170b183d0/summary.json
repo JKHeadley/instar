@@ -1,0 +1,29 @@
+{
+  "sessionId": "5b4dbce1-dc07-4da9-b7ae-a00170b183d0",
+  "tmuxSession": "echo-job-system-meta-review",
+  "task": "[telegram:1839] yes please (IMPORTANT: Read /tmp/instar-telegram/ctx-1839-1774230439189.txt for thre",
+  "phase": "testing",
+  "files": [
+    "telemetry-worker-validation.test.ts",
+    "MEMORY.md",
+    "CLAUDE.md",
+    "architecture.md",
+    "PROP-memory-architecture.md",
+    "SKILL.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T02:07:52.115Z",
+  "updatedAt": "2026-03-23T02:07:52.115Z",
+  "stale": true,
+  "outputHash": "85db4ee861960f10658e973a5473a706"
+}

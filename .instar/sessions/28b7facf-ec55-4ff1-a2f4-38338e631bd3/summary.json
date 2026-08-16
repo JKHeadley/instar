@@ -1,0 +1,31 @@
+{
+  "sessionId": "28b7facf-ec55-4ff1-a2f4-38338e631bd3",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] hows this looking? (IMPORTANT: Read /tmp/instar-telegram/ctx-1490-1774028853146.txt ",
+  "phase": "testing",
+  "files": [
+    "src/data/builtin-manifest.json",
+    "src/monitoring/SessionRecovery.ts",
+    "src/monitoring/crash-detector.ts",
+    "package.json",
+    "SessionRecovery.ts",
+    "crash-detector.ts",
+    "stall-detector.ts",
+    "no-silent-fallbacks.test.ts",
+    "builtin-manifest.json",
+    "events-bounds.test.ts",
+    "system-reviewer-e2e.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T17:54:58.533Z",
+  "updatedAt": "2026-03-20T17:54:58.533Z",
+  "stale": false,
+  "outputHash": "e25127028356cececbedd3fcfca65826"
+}

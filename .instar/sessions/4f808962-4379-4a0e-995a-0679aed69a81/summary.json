@@ -1,0 +1,21 @@
+{
+  "sessionId": "4f808962-4379-4a0e-995a-0679aed69a81",
+  "tmuxSession": "echo-git-syncing",
+  "task": "[telegram:8122] The spec looks great, however I still don't have the claude cli file path:\n\n—-\n\nThe ",
+  "phase": "testing",
+  "files": [
+    "../../../../../private/tmp/instar-relay-ghost-spec/docs/specs/reports/relay-spawn-ghost-reply-containment-convergence.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-29T05:15:39.522Z",
+  "updatedAt": "2026-04-29T05:15:39.522Z",
+  "stale": true,
+  "outputHash": "7dc3cd67b3611ffb5aad9cdd5a98b69d"
+}

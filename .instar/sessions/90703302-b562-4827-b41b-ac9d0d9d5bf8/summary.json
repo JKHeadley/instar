@@ -1,0 +1,21 @@
+{
+  "sessionId": "90703302-b562-4827-b41b-ac9d0d9d5bf8",
+  "tmuxSession": "echo-bug-zombie-cleanup-kills-active-sessions",
+  "task": "[telegram:1565] hello? (IMPORTANT: Read /tmp/instar-telegram/ctx-1565-1774047007699.txt for thread h",
+  "phase": "testing",
+  "files": [
+    ".../instar/dist/cli.js"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T23:12:43.225Z",
+  "updatedAt": "2026-03-20T23:12:43.225Z",
+  "stale": true,
+  "outputHash": "acb4df76dc477e4ebd0a9dcfcf6cc0bf"
+}

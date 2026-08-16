@@ -1,0 +1,21 @@
+{
+  "sessionId": "b537def5-cf3e-4ce4-ab37-ec9dd25ad481",
+  "tmuxSession": "echo-topic-3080",
+  "task": "[telegram:3080] hi! (IMPORTANT: Read /tmp/instar-telegram/ctx-3080-1774667319221.txt for thread hist",
+  "phase": "testing",
+  "files": [
+    "server.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T03:55:26.953Z",
+  "updatedAt": "2026-03-28T03:55:26.953Z",
+  "stale": false,
+  "outputHash": "91c0d14eff368470098988b6e9a45117"
+}

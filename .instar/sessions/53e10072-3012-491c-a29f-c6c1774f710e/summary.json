@@ -1,0 +1,26 @@
+{
+  "sessionId": "53e10072-3012-491c-a29f-c6c1774f710e",
+  "tmuxSession": "echo-instar-claude-me",
+  "task": "CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.\n",
+  "phase": "testing",
+  "files": [
+    "CLAUDE.md",
+    "PLAYBOOK-GETTING-STARTED.md",
+    "PROP-contextual-dispatch-integration.md",
+    "0.19.0.md",
+    "CAPABILITY-MAP-SPEC.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-14T06:03:13.204Z",
+  "updatedAt": "2026-03-14T06:03:13.204Z",
+  "stale": true,
+  "outputHash": "a042ad0d55e3c8ee304323030ac927db"
+}

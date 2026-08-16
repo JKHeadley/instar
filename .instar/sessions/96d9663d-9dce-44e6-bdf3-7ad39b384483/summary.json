@@ -1,0 +1,20 @@
+{
+  "sessionId": "96d9663d-9dce-44e6-bdf3-7ad39b384483",
+  "tmuxSession": "echo-jobs-not-running",
+  "task": "[telegram:1767] hello? (IMPORTANT: Read /tmp/instar-telegram/ctx-1767-1774243126053.txt for thread h",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T05:39:11.245Z",
+  "updatedAt": "2026-03-23T05:39:11.245Z",
+  "stale": true,
+  "outputHash": "ebe598ce0004e66bd1b1ffd3bb0d6ccc"
+}

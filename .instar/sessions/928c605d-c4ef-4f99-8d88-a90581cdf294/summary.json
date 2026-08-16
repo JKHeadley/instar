@@ -1,0 +1,27 @@
+{
+  "sessionId": "928c605d-c4ef-4f99-8d88-a90581cdf294",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] is there anything left that needs to be done here? (IMPORTANT: Read /tmp/instar-tele",
+  "phase": "testing",
+  "files": [
+    "../../../Documents/Projects/instar/.instar/instar-dev-traces/2026-04-17T23-58-00-000Z-initiative-tracker-digest-job.json",
+    "tests/unit/InitiativeTracker.test.ts",
+    "tests/unit/routes-initiatives.test.ts",
+    "tests/unit/InitiativeDigestJob.test.ts",
+    "tests/unit/routes-prGatePhaseGate.test.ts",
+    "tests/unit/PostUpdateMigrator-gitignore.test.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T23:57:58.841Z",
+  "updatedAt": "2026-04-17T23:57:58.841Z",
+  "stale": true,
+  "outputHash": "ad551552f31ea3d7568e4b2528a79589"
+}

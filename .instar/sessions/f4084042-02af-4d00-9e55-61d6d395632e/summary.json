@@ -1,0 +1,24 @@
+{
+  "sessionId": "f4084042-02af-4d00-9e55-61d6d395632e",
+  "tmuxSession": "echo-job-system-meta-review",
+  "task": "CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.\n",
+  "phase": "testing",
+  "files": [
+    "NEXT.md",
+    "upgrades/0.9.36.md",
+    "../../../Documents/Projects/instar/upgrades/NEXT.md",
+    "upgrades/NEXT.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T06:07:10.263Z",
+  "updatedAt": "2026-03-23T06:07:10.263Z",
+  "stale": true,
+  "outputHash": "0627d8423cb295993352b20e724a1107"
+}

@@ -1,0 +1,22 @@
+{
+  "sessionId": "ee2b1c9e-9708-4b16-9174-cd5a0d3e0b5c",
+  "tmuxSession": "echo-topic-session-command-trap",
+  "task": "[telegram:1427] please run the review teams against this (IMPORTANT: Read /tmp/instar-telegram/ctx-1",
+  "phase": "testing",
+  "files": [
+    "security.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-19T23:00:55.144Z",
+  "updatedAt": "2026-03-19T23:00:55.144Z",
+  "stale": true,
+  "outputHash": "ff0be4fde2252351aa7ae863742a1bc4"
+}

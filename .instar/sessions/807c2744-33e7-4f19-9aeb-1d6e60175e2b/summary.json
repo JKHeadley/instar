@@ -1,0 +1,23 @@
+{
+  "sessionId": "807c2744-33e7-4f19-9aeb-1d6e60175e2b",
+  "tmuxSession": "echo-dashboard-development",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-5348-1778205743325-fx87t5nr.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "INITIATIVE-TRACKER-SPEC.md",
+    "docs/specs/INITIATIVE-TRACKER-SPEC.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-08T03:35:42.309Z",
+  "updatedAt": "2026-05-08T03:35:42.309Z",
+  "stale": true,
+  "outputHash": "9b6b595bfb20efe4c35bab804c19c5ac"
+}

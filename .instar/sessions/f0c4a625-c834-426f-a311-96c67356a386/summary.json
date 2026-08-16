@@ -1,0 +1,20 @@
+{
+  "sessionId": "f0c4a625-c834-426f-a311-96c67356a386",
+  "tmuxSession": "echo-session-robustness",
+  "task": "[telegram:2169] so what should we do next? (IMPORTANT: Read /tmp/instar-telegram/ctx-2169-1774243094",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T05:39:11.247Z",
+  "updatedAt": "2026-03-23T05:39:11.247Z",
+  "stale": true,
+  "outputHash": "b1c78d093d1da62082dc628bf4ad0628"
+}

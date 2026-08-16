@@ -1,0 +1,20 @@
+{
+  "sessionId": "9c08a001-7a60-43b5-8246-542f5637edeb",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] hwllo? (IMPORTANT: Read /tmp/instar-telegram/ctx-2-1775512438687.txt for thread history",
+  "phase": "testing",
+  "files": [
+    "settings.json"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-07T02:01:47.779Z",
+  "updatedAt": "2026-04-07T02:01:47.779Z",
+  "stale": true,
+  "outputHash": "680ed821ca80db5fa32d8475f171a36f"
+}

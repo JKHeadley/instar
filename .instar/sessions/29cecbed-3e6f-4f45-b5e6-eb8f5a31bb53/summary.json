@@ -1,0 +1,21 @@
+{
+  "sessionId": "29cecbed-3e6f-4f45-b5e6-eb8f5a31bb53",
+  "tmuxSession": "echo-interactive-1774817129008",
+  "task": "[slack:C0APW9UHFJ5] These are great points. Let’s update the spec based on these recommendations and",
+  "phase": "testing",
+  "files": [
+    ".claude/skills/crossreview/output/20260329-134738/synthesis.md",
+    "unified-threadline-moltbridge-instar.md",
+    "specs/unified-threadline-moltbridge-instar.md"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T21:03:36.914Z",
+  "updatedAt": "2026-03-29T21:03:36.914Z",
+  "stale": true,
+  "outputHash": "9d951113f0b453284339e557c283c81c"
+}

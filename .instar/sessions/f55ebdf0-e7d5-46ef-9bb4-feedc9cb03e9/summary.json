@@ -1,0 +1,18 @@
+{
+  "sessionId": "f55ebdf0-e7d5-46ef-9bb4-feedc9cb03e9",
+  "tmuxSession": "echo-persistent-job-history",
+  "task": "[telegram:290] this is fundamental job. History is memory and memory should never be lost. Please lo",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-10T01:00:44.421Z",
+  "updatedAt": "2026-03-10T01:00:44.421Z",
+  "stale": true,
+  "outputHash": "d08bb40d3ea21e587e5908a583a79ac1"
+}

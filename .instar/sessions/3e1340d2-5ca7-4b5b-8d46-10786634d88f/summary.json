@@ -1,0 +1,19 @@
+{
+  "sessionId": "3e1340d2-5ca7-4b5b-8d46-10786634d88f",
+  "tmuxSession": "echo-threadline-telegram-bridge",
+  "task": "[telegram:8686] please move forward with this (IMPORTANT: Read /tmp/instar-telegram/ctx-8686-1777750",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-02T19:35:44.301Z",
+  "updatedAt": "2026-05-02T19:35:44.301Z",
+  "stale": true,
+  "outputHash": "7d38aff30740ff32a4bec6c7ee2810e5"
+}

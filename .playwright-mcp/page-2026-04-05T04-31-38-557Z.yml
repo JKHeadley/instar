@@ -1,0 +1,41 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - img "Instar" [ref=e5]
+      - heading "Instar Dashboard" [level=1] [ref=e6]
+      - navigation [ref=e7]:
+        - button "Sessions 3" [ref=e45] [cursor=pointer]
+        - button "Files" [ref=e9] [cursor=pointer]
+        - button "Send Content" [ref=e10] [cursor=pointer]
+        - button "Jobs 29" [ref=e11] [cursor=pointer]
+        - button "Features" [ref=e12] [cursor=pointer]
+        - button "Health" [ref=e13] [cursor=pointer]
+    - generic [ref=e14]:
+      - generic "Server status" [ref=e15] [cursor=pointer]:
+        - generic [ref=e17]: 1h 39m
+      - generic "Active sessions" [ref=e19] [cursor=pointer]:
+        - generic [ref=e20]: ○
+        - generic [ref=e21]: 3/10 sessions
+      - generic "Memory pressure" [ref=e23] [cursor=pointer]:
+        - generic [ref=e24]: Mem 77%
+    - generic [ref=e30]: Connected
+  - generic [ref=e300]:
+    - generic [ref=e301]:
+      - heading "Send Content" [level=2] [ref=e302]
+      - paragraph [ref=e303]: Paste text content to send directly to a running session
+    - generic [ref=e304]:
+      - textbox "What is this? (optional)" [ref=e305]
+      - generic [ref=e306]:
+        - textbox "Paste your content here..." [active] [ref=e307]
+        - generic: 0 chars · ~0 tokens
+      - generic [ref=e308]:
+        - combobox [ref=e309]:
+          - option "Auto (most recent session)" [selected]
+          - option "dashboard development"
+          - option "echo-interactive-1775359914580"
+          - option "exploring slack integration"
+        - button "Send" [ref=e310] [cursor=pointer]
+      - generic [ref=e311]: Stored locally for up to 7 days. Avoid pasting secrets or credentials.
+    - generic [ref=e312]:
+      - heading "Recent Pastes" [level=3] [ref=e313]
+      - generic [ref=e315]: No pastes yet

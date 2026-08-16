@@ -1,0 +1,22 @@
+{
+  "sessionId": "029d7160-f7ab-49f1-84ab-83efed34891a",
+  "tmuxSession": "echo-message-grounding",
+  "task": "[telegram:623] what are your thoughts here? (IMPORTANT: Read /tmp/instar-telegram/ctx-623-1773427787",
+  "phase": "testing",
+  "files": [
+    "tests/unit/convergence-checker.test.ts",
+    "tests/unit/send-gateway.test.ts",
+    "tests/integration/send-gateway-channels.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-13T20:24:55.318Z",
+  "updatedAt": "2026-03-13T20:24:55.318Z",
+  "stale": true,
+  "outputHash": "21912672cbe5b33cedfabc31b6a2e8b9"
+}

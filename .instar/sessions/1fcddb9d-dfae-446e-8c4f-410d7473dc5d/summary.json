@@ -1,0 +1,22 @@
+{
+  "sessionId": "1fcddb9d-dfae-446e-8c4f-410d7473dc5d",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "Session 1fcddb9d-dfae-446e-8c4f-410d7473dc5d (testing)",
+  "phase": "testing",
+  "files": [
+    "tests/e2e/session-resume-e2e.test.ts",
+    "tests/unit/TopicResumeMap.test.ts",
+    "tests/integration/session-resume-flow.test.ts"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T07:25:37.982Z",
+  "updatedAt": "2026-03-20T07:25:37.982Z",
+  "stale": false,
+  "outputHash": "b68595c2e3622e446d93ded9b7d8ea7c"
+}

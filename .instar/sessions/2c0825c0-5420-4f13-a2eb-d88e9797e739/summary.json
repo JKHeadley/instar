@@ -1,0 +1,19 @@
+{
+  "sessionId": "2c0825c0-5420-4f13-a2eb-d88e9797e739",
+  "tmuxSession": "echo-git-syncing",
+  "task": "[telegram:8122] approved (IMPORTANT: Read /tmp/instar-telegram/ctx-8122-1777064098455.txt for thread",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-24T22:15:02.223Z",
+  "updatedAt": "2026-04-24T22:15:02.224Z",
+  "stale": true,
+  "outputHash": "84e7204f5c5d4282f98f483840d46087"
+}

@@ -1,0 +1,137 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - img "Instar" [ref=e5]
+      - heading "Instar Dashboard" [level=1] [ref=e6]
+      - navigation [ref=e7]:
+        - button "Sessions 3" [ref=e45] [cursor=pointer]
+        - button "Files" [ref=e9] [cursor=pointer]
+        - button "Send Content" [ref=e10] [cursor=pointer]
+        - button "Jobs 29" [ref=e11] [cursor=pointer]
+        - button "Features" [active] [ref=e12] [cursor=pointer]
+        - button "Health" [ref=e13] [cursor=pointer]
+    - generic [ref=e14]:
+      - generic "Server status" [ref=e15] [cursor=pointer]:
+        - generic [ref=e17]: 1h 38m
+      - generic "Active sessions" [ref=e19] [cursor=pointer]:
+        - generic [ref=e20]: ○
+        - generic [ref=e21]: 3/10 sessions
+      - generic "Memory pressure" [ref=e23] [cursor=pointer]:
+        - generic [ref=e24]: Mem 77%
+    - generic [ref=e30]: Connected
+  - generic [ref=e74]:
+    - generic [ref=e75]:
+      - heading "Features" [level=2] [ref=e76]
+      - button "Refresh" [ref=e77] [cursor=pointer]
+    - generic [ref=e78]: Browse and configure your agent's capabilities. Features are opt-in and can be enabled or disabled at any time.
+    - generic [ref=e79]:
+      - generic [ref=e80]: 🤝
+      - generic [ref=e81]:
+        - generic [ref=e82]: Autonomy Profile
+        - generic [ref=e83]: collaborative
+        - generic [ref=e84]: Agent handles most decisions independently. Keeps you informed of what it does.
+      - button "Change" [ref=e85] [cursor=pointer]
+    - generic [ref=e86]:
+      - generic [ref=e87]:
+        - generic [ref=e88]: Safety & Trust
+        - generic [ref=e89]:
+          - generic [ref=e90] [cursor=pointer]:
+            - generic [ref=e91]:
+              - generic [ref=e92]: External Operation Safety
+              - generic [ref=e93]:
+                - checkbox [checked]
+              - generic [ref=e95]: ▶
+            - generic [ref=e96]: Classify and gate external operations (email, Slack, GitHub) by risk level.
+          - generic [ref=e97] [cursor=pointer]:
+            - generic [ref=e98]:
+              - generic [ref=e99]: Response Review Pipeline
+              - generic [ref=e100]:
+                - checkbox
+              - generic [ref=e102]: ▶
+            - generic [ref=e103]: Review agent responses before delivery for coherence and safety.
+          - generic [ref=e104] [cursor=pointer]:
+            - generic [ref=e105]:
+              - generic [ref=e106]: Input Guard
+              - generic [ref=e107]:
+                - checkbox
+              - generic [ref=e109]: ▶
+            - generic [ref=e110]: Defend against cross-topic prompt injection in incoming messages.
+      - generic [ref=e111]:
+        - generic [ref=e112]: Communication
+        - generic [ref=e113]:
+          - generic [ref=e114] [cursor=pointer]:
+            - generic [ref=e115]:
+              - generic [ref=e116]: Agent Network (Threadline)
+              - generic [ref=e117]:
+                - checkbox [checked]
+              - generic [ref=e119]: ▶
+            - generic [ref=e120]: Connect to other agents for cross-machine collaboration and messaging.
+          - generic [ref=e121] [cursor=pointer]:
+            - generic [ref=e122]:
+              - generic [ref=e123]: Public Publishing (Telegraph)
+              - generic [ref=e124]:
+                - checkbox
+              - generic [ref=e126]: ▶
+            - generic [ref=e127]: Share content as public web pages via Telegraph.
+          - generic [ref=e128] [cursor=pointer]:
+            - generic [ref=e129]:
+              - generic [ref=e130]: Feedback System
+              - generic [ref=e131]:
+                - checkbox [checked]
+              - generic [ref=e133]: ▶
+            - generic [ref=e134]: Report bugs and request features to the instar maintainer.
+      - generic [ref=e135]:
+        - generic [ref=e136]: Infrastructure
+        - generic [ref=e137]:
+          - generic [ref=e138] [cursor=pointer]:
+            - generic [ref=e139]:
+              - generic [ref=e140]: Cloudflare Tunnel
+              - generic [ref=e141]:
+                - checkbox [checked]
+              - generic [ref=e143]: ▶
+            - generic [ref=e144]: Expose your agent server to the internet for remote access.
+          - generic [ref=e145] [cursor=pointer]:
+            - generic [ref=e146]:
+              - generic [ref=e147]: Git Backup & Sync
+              - generic [ref=e148]:
+                - checkbox [checked]
+              - generic [ref=e150]: ▶
+            - generic [ref=e151]: Automatically version-control and sync agent state via git.
+          - generic [ref=e152] [cursor=pointer]:
+            - generic [ref=e153]:
+              - generic [ref=e154]: Dashboard File Viewer
+              - generic [ref=e155]:
+                - checkbox
+              - generic [ref=e157]: ▶
+            - generic [ref=e158]: Browse and edit project files from the web dashboard.
+          - generic [ref=e159] [cursor=pointer]:
+            - generic [ref=e160]:
+              - generic [ref=e161]: Baseline Telemetry
+              - generic [ref=e162]:
+                - checkbox
+              - generic [ref=e164]: ▶
+            - generic [ref=e165]: See how your agent compares to the population — anonymously.
+      - generic [ref=e166]:
+        - generic [ref=e167]: Intelligence
+        - generic [ref=e168]:
+          - generic [ref=e169] [cursor=pointer]:
+            - generic [ref=e170]:
+              - generic [ref=e171]: Evolution System
+              - generic [ref=e172]:
+                - checkbox
+              - generic [ref=e174]: ▶
+            - generic [ref=e175]: Staged self-improvement through proposals, learnings, and gap analysis.
+          - generic [ref=e176] [cursor=pointer]:
+            - generic [ref=e177]:
+              - generic [ref=e178]: Autonomous Evolution
+              - generic [ref=e179]:
+                - checkbox
+              - generic [ref=e181]: ▶
+            - generic [ref=e182]: Allow the agent to implement approved evolution proposals without asking.
+          - generic [ref=e183] [cursor=pointer]:
+            - generic [ref=e184]:
+              - generic [ref=e185]: Dispatch System
+              - generic [ref=e186]:
+                - checkbox
+              - generic [ref=e188]: ▶
+            - generic [ref=e189]: Receive behavioral instructions and updates from the instar maintainer.

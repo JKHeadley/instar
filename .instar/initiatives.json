@@ -1,0 +1,1277 @@
+{
+  "initiatives": [
+    {
+      "id": "pr-review-hardening",
+      "title": "PR Review Hardening (phased rollout)",
+      "description": "Multi-phase rollout of the PR review gate: scaffolding → shadow → layer 1+2 enforcement → layer 3 required branch-protection. Built to prevent bad PRs from reaching main via human-reviewer fatigue. Phase A landed as 9 commits on main (0.28.57); Phase B flip requires Phase B handlers to be built first.",
+      "status": "active",
+      "phases": [
+        {
+          "id": "phase-a",
+          "name": "Phase A — Scaffolding",
+          "summary": "BackupManager guards, PostUpdateMigrator, pipeline artifacts, dashboard tab, kill-switch middleware — all inert",
+          "status": "done",
+          "startedAt": "2026-04-17T00:00:00Z",
+          "completedAt": "2026-04-17T21:17:00Z"
+        },
+        {
+          "id": "phase-b",
+          "name": "Phase B — Shadow handlers",
+          "summary": "Build the gate handlers (observe-only; logs verdicts without blocking)",
+          "status": "pending"
+        },
+        {
+          "id": "phase-c",
+          "name": "Phase C — Layer 1+2 enforce",
+          "summary": "Gate starts turning away PRs for basic violations",
+          "status": "pending"
+        },
+        {
+          "id": "phase-d",
+          "name": "Phase D — Layer 3 required check",
+          "summary": "Full enforcement with GitHub branch-protection binding",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 1,
+      "lastTouchedAt": "2026-04-17T21:17:00Z",
+      "needsUser": true,
+      "needsUserReason": "Phase B scope call: do we build the gate handlers now, or pause and validate Phase A in production first?",
+      "blockers": [
+        "Phase B handlers not yet implemented"
+      ],
+      "links": [
+        {
+          "type": "spec",
+          "label": "PR-REVIEW-HARDENING-SPEC.md",
+          "ref": "docs/specs/PR-REVIEW-HARDENING-SPEC.md"
+        },
+        {
+          "type": "topic",
+          "label": "Telegram: github-prs",
+          "ref": "2317"
+        }
+      ],
+      "createdAt": "2026-04-19T02:30:00Z",
+      "updatedAt": "2026-04-19T02:30:00Z",
+      "userExplanation": {
+        "summary": "This initiative is building multiple layers of automated safeguards to catch problems in code before they become part of the main codebase. Because human reviewers can make mistakes when tired or overloaded, these safeguards act as a second line of defense. The team has completed the first layer and is now deciding whether to continue building the remaining layers or first confirm that the initial layer is working properly in real production.",
+        "signalText": "Should the team build the next set of automated checks now, or should they pause first to verify that the current checks are working correctly in live production? Moving forward sooner means faster protection but less validation of what's already in place; pausing gives more confidence in the foundation but takes longer. This decision will determine what the team should prioritize next.",
+        "generatedAt": "2026-05-08T02:24:41.596Z",
+        "sourceHash": "ef0308a846761ab3"
+      },
+      "comments": [
+        {
+          "id": "c_mowal57l_o4cfvz",
+          "text": "Test comment from echo backend smoke test",
+          "author": "agent",
+          "source": "smoke-test",
+          "ts": "2026-05-08T02:24:46.497Z"
+        }
+      ],
+      "kind": "task",
+      "schemaVersion": 1
+    },
+    {
+      "id": "initiative-tracker",
+      "title": "Initiative Tracker (meta — this very system)",
+      "description": "Persisted multi-phase initiative state + dashboard tab + digest scan. Built to fix the 'things fall through the cracks' problem. First release: v0.28.58 carrying core + routes + dashboard. Phase 2 pending: daily digest job that pushes awaiting-user cards to Telegram so the user sees them without opening the dashboard.",
+      "status": "active",
+      "phases": [
+        {
+          "id": "phase-1",
+          "name": "Phase 1 — Core + routes + dashboard tab",
+          "summary": "Tracker class, 7 endpoints, read-only tab, 52 tests",
+          "status": "done",
+          "startedAt": "2026-04-17T23:30:00Z",
+          "completedAt": "2026-04-19T02:14:36Z"
+        },
+        {
+          "id": "phase-2",
+          "name": "Phase 2 — Daily digest → Telegram",
+          "summary": "Job that scans /initiatives/digest and posts awaiting-user cards to user",
+          "status": "pending"
+        },
+        {
+          "id": "phase-3",
+          "name": "Phase 3 — Dashboard edit",
+          "summary": "Allow creating/updating initiatives from the dashboard, not just via API",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 1,
+      "lastTouchedAt": "2026-04-19T02:14:36Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [
+        {
+          "type": "spec",
+          "label": "INITIATIVE-TRACKER-SPEC.md",
+          "ref": "docs/specs/INITIATIVE-TRACKER-SPEC.md"
+        },
+        {
+          "type": "pr",
+          "label": "PR #68 (recovery merge)",
+          "url": "https://github.com/JKHeadley/instar/pull/68"
+        },
+        {
+          "type": "topic",
+          "label": "Telegram: github-prs",
+          "ref": "2317"
+        }
+      ],
+      "createdAt": "2026-04-19T02:30:00Z",
+      "updatedAt": "2026-04-19T02:30:00Z",
+      "userExplanation": {
+        "summary": "The Initiative Tracker is a system that keeps important projects from being forgotten. It organizes work into phases and shows their progress on a dashboard. The first version is now live with core tracking and the dashboard where the user can see what needs attention.",
+        "signalText": "The first phase is complete. The next step is to begin the second phase: creating a daily digest that sends Telegram notifications about initiatives waiting for the user's attention. This feature will automatically remind the user about pending work instead of requiring them to check the dashboard.",
+        "generatedAt": "2026-05-08T02:23:28.407Z",
+        "sourceHash": "08ba610472cc7113"
+      },
+      "kind": "task",
+      "schemaVersion": 1
+    },
+    {
+      "id": "context-death-hardening",
+      "title": "Context-Death Hardening (PRs 0a, 0d, 1, 2, 3, 4)",
+      "description": "Structural defenses against premature session termination and context-window edge cases. PR0a–PR2 merged; PR3+PR4 currently at PR #56 (gate authority, DB, evaluate route, CLI — large diff, my own authorship so needs Justin's merge call).",
+      "status": "active",
+      "phases": [
+        {
+          "id": "pr0a-compaction-harness",
+          "name": "PR0a/0d — Compaction harness",
+          "summary": "E2E test infra for compaction-recovery assertions",
+          "status": "done"
+        },
+        {
+          "id": "pr1-identity-marker",
+          "name": "PR1 — Identity marker + migration",
+          "summary": "Anti-pattern marker surface",
+          "status": "done"
+        },
+        {
+          "id": "pr2-e2e-assertions",
+          "name": "PR2 — Compaction-recovery E2E assertions",
+          "summary": "On top of PR0d harness",
+          "status": "done"
+        },
+        {
+          "id": "pr3-pr4-gate",
+          "name": "PR3+PR4 — Gate authority + DB + CLI",
+          "summary": "Bundled at PR #56; 2553-line diff; my own authorship so self-review is a conflict",
+          "status": "in-progress",
+          "startedAt": "2026-04-17T00:00:00Z"
+        }
+      ],
+      "currentPhaseIndex": 3,
+      "lastTouchedAt": "2026-04-18T15:07:00Z",
+      "needsUser": true,
+      "needsUserReason": "PR #56 merge call — self-review is a conflict, needs Justin's eyes for final merge approval.",
+      "blockers": [
+        "PR #56 awaiting user review/merge"
+      ],
+      "links": [
+        {
+          "type": "pr",
+          "label": "PR #56 (PR3+PR4 bundle)",
+          "url": "https://github.com/JKHeadley/instar/pull/56"
+        }
+      ],
+      "createdAt": "2026-04-19T02:30:00Z",
+      "updatedAt": "2026-04-19T02:30:00Z",
+      "userExplanation": {
+        "summary": "This work protects conversations from being cut off unexpectedly or losing track of earlier messages when they get very long. It's implemented across four stages: compressing old messages to save space, marking each conversation with a unique identifier, testing the recovery system end-to-end, and finally building the control logic and database that decide when these protections activate. Once deployed, all conversations will automatically stay safe from truncation and data loss.",
+        "signalText": "Pull request #56 contains the final control logic and database system and is ready to merge. Because the developer built this piece, they can't approve their own work—your review and merge decision are required to move forward. Once this merges, the complete protection system goes live for all conversations.",
+        "generatedAt": "2026-05-08T02:24:01.409Z",
+        "sourceHash": "120a8ea950a7b5a7"
+      },
+      "kind": "task",
+      "schemaVersion": 1
+    },
+    {
+      "id": "fix-worktree-monitor-test-isolation",
+      "title": "Fix worktree-monitor test isolation bug",
+      "description": "tests/unit/worktree-monitor.test.ts and possibly other tests using createWorktree-style helpers create branches like worktree-tracked, worktree-work, worktree-active in the parent repo (.git) rather than their isolated temp repo. This pollutes the actual feat/dashboard-grouped-nav branch with phantom commits during pre-push runs and triggers branch-already-exists collisions on every retry. Full pre-push test:smoke gate has been wedged on this for at least three sessions. Workaround used: INSTAR_PRE_PUSH_SKIP=1 + CI authority. Real fix: tests should use unique branch names per test (e.g. include a random suffix from mkdtemp), or createWorktree should be repo-isolation-verified before adding the branch.",
+      "status": "active",
+      "phases": [
+        {
+          "id": "investigate",
+          "name": "Reproduce + isolate the leak path",
+          "status": "pending"
+        },
+        {
+          "id": "fix",
+          "name": "Patch test helpers for branch-name uniqueness",
+          "status": "pending"
+        },
+        {
+          "id": "verify",
+          "name": "Run full test:push twice in a row without pollution",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-08T17:03:56.794Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [
+        {
+          "type": "topic",
+          "ref": "5348",
+          "label": "Discovered while pushing dashboard polish"
+        }
+      ],
+      "createdAt": "2026-05-08T17:03:56.794Z",
+      "updatedAt": "2026-05-08T17:03:56.794Z",
+      "userExplanation": {
+        "summary": "Tests for the worktree-monitor feature are creating temporary branches in the real project repository instead of keeping them contained within isolated test environments. This pollutes the main codebase with leftover test data and causes errors when tests run multiple times (duplicate branches). The real fix is to give each test unique branch names so they don't interfere with each other or the actual development work.",
+        "signalText": "",
+        "generatedAt": "2026-05-08T17:13:59.925Z",
+        "sourceHash": "700c92e7ca47d26c"
+      },
+      "kind": "task",
+      "schemaVersion": 1
+    },
+    {
+      "id": "gate-1a-fixture",
+      "title": "Phase 1a Gate Fixture",
+      "description": "Synthetic fixture for the Phase 1a → 1b autonomous verification gate. Exercises the plan-doc parser, project creation, list/fetch round-trip, and stage-transition validator without producing any real ledger noise.",
+      "status": "archived",
+      "phases": [
+        {
+          "id": "overview",
+          "name": "overview",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:41:37.918Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-11T23:39:30.428Z",
+      "updatedAt": "2026-05-12T00:41:37.918Z",
+      "kind": "project",
+      "schemaVersion": 1,
+      "version": 2,
+      "rounds": [
+        {
+          "name": "Tier 1 — gate items",
+          "itemIds": [
+            "gate-1a-fixture-1",
+            "gate-1a-fixture-2",
+            "gate-1a-fixture-3"
+          ],
+          "status": "pending"
+        }
+      ],
+      "sourceDocs": [
+        "docs/specs/PROJECT-SCOPE-SPEC.md"
+      ],
+      "autoAdvance": false,
+      "targetRepoPath": "/Users/justin/Documents/Projects/instar"
+    },
+    {
+      "id": "gate-1a-fixture-1",
+      "title": "gate-check-a",
+      "description": "Source: echo-audit; effort: s",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-11T23:40:12.856Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-11T23:39:30.429Z",
+      "updatedAt": "2026-05-11T23:40:12.856Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 3,
+      "parentProjectId": "gate-1a-fixture",
+      "pipelineStage": "spec-converged",
+      "specPath": "docs/specs/PROJECT-SCOPE-SPEC.md"
+    },
+    {
+      "id": "gate-1a-fixture-2",
+      "title": "gate-check-b",
+      "description": "Source: echo-audit; effort: s",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-11T23:39:30.429Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-11T23:39:30.429Z",
+      "updatedAt": "2026-05-11T23:39:30.429Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "gate-1a-fixture",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "gate-1a-fixture-3",
+      "title": "gate-check-c",
+      "description": "Source: echo-audit; effort: s",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-11T23:39:30.429Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-11T23:39:30.429Z",
+      "updatedAt": "2026-05-11T23:39:30.429Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "gate-1a-fixture",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate",
+      "title": "OpenClaw Imports (Gate Verification)",
+      "description": "80/20 OpenClaw + Echo-Dawn imports",
+      "status": "archived",
+      "phases": [
+        {
+          "id": "overview",
+          "name": "overview",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:41:37.894Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.309Z",
+      "updatedAt": "2026-05-12T00:41:37.894Z",
+      "kind": "project",
+      "schemaVersion": 1,
+      "version": 2,
+      "rounds": [
+        {
+          "name": "Tier 1 — Ship next (small, high value)",
+          "itemIds": [
+            "openclaw-imports-gate-1",
+            "openclaw-imports-gate-2",
+            "openclaw-imports-gate-3"
+          ],
+          "status": "pending"
+        },
+        {
+          "name": "Tier 2 — Foundation",
+          "itemIds": [
+            "openclaw-imports-gate-4",
+            "openclaw-imports-gate-5"
+          ],
+          "status": "pending"
+        },
+        {
+          "name": "Tier 3 — Behavior upgrades",
+          "itemIds": [
+            "openclaw-imports-gate-6",
+            "openclaw-imports-gate-7",
+            "openclaw-imports-gate-8",
+            "openclaw-imports-gate-9",
+            "openclaw-imports-gate-10",
+            "openclaw-imports-gate-11",
+            "openclaw-imports-gate-12",
+            "openclaw-imports-gate-13",
+            "openclaw-imports-gate-14",
+            "openclaw-imports-gate-15",
+            "openclaw-imports-gate-16",
+            "openclaw-imports-gate-17",
+            "openclaw-imports-gate-18",
+            "openclaw-imports-gate-19"
+          ],
+          "status": "pending"
+        }
+      ],
+      "sourceDocs": [
+        "docs/specs/openclaw-imports.md"
+      ],
+      "autoAdvance": true,
+      "targetRepoPath": "/tmp/gate-1a-target"
+    },
+    {
+      "id": "openclaw-imports-gate-1",
+      "title": "Pre-compaction flush",
+      "description": "Source: Dawn-ADOPT; effort: s",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.315Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.315Z",
+      "updatedAt": "2026-05-12T00:32:53.315Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-2",
+      "title": "Cold-start grace knob",
+      "description": "Source: Echo #9; effort: s",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.323Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.323Z",
+      "updatedAt": "2026-05-12T00:32:53.323Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-3",
+      "title": "FallbackSummaryError shape",
+      "description": "Source: Echo #8; effort: s",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.324Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.324Z",
+      "updatedAt": "2026-05-12T00:32:53.324Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-4",
+      "title": "llm-task primitive",
+      "description": "Source: Echo #4 / Dawn #06; effort: m",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.325Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.325Z",
+      "updatedAt": "2026-05-12T00:32:53.325Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-5",
+      "title": "before_prompt_build hook",
+      "description": "Source: Echo #5 / Dawn #22; effort: m",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.326Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.326Z",
+      "updatedAt": "2026-05-12T00:32:53.326Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-6",
+      "title": "Session pruning",
+      "description": "Source: Echo #12; effort: m",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.332Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.332Z",
+      "updatedAt": "2026-05-12T00:32:53.332Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-7",
+      "title": "Diagnostics state machine",
+      "description": "Source: Echo #10; effort: m",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.338Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.338Z",
+      "updatedAt": "2026-05-12T00:32:53.338Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-8",
+      "title": "Queue modes",
+      "description": "Source: Echo #6; effort: m",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.347Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.347Z",
+      "updatedAt": "2026-05-12T00:32:53.347Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-9",
+      "title": "Channel docking",
+      "description": "Source: Echo #7; effort: m",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.370Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.370Z",
+      "updatedAt": "2026-05-12T00:32:53.370Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-10",
+      "title": "Sub-agent transcript persistence",
+      "description": "Source: Echo #11; effort: m",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.373Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.373Z",
+      "updatedAt": "2026-05-12T00:32:53.373Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-11",
+      "title": "Parallel specialist lanes",
+      "description": "Source: Echo #13; effort: l",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.376Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.376Z",
+      "updatedAt": "2026-05-12T00:32:53.376Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-12",
+      "title": "OpenClaw spec — ADOPT batch",
+      "description": "Source: Dawn ADOPT; effort: m",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.378Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.378Z",
+      "updatedAt": "2026-05-12T00:32:53.378Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-13",
+      "title": "OpenClaw spec — ADAPT batch",
+      "description": "Source: Dawn ADAPT; effort: m",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.379Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.379Z",
+      "updatedAt": "2026-05-12T00:32:53.379Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-14",
+      "title": "OpenClaw spec — BIDIRECTIONAL batch",
+      "description": "Source: Dawn BIDIR; effort: m",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.382Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.382Z",
+      "updatedAt": "2026-05-12T00:32:53.382Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-15",
+      "title": "Diagnostics taxonomy",
+      "description": "Source: Echo #10b; effort: m",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.385Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.385Z",
+      "updatedAt": "2026-05-12T00:32:53.385Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-16",
+      "title": "Identity/memory after compaction",
+      "description": "Source: Echo extra; effort: s",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.392Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.392Z",
+      "updatedAt": "2026-05-12T00:32:53.392Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-17",
+      "title": "LLM-task migrations",
+      "description": "Source: followup of #4; effort: m",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.399Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.399Z",
+      "updatedAt": "2026-05-12T00:32:53.399Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-18",
+      "title": "Per-channel queue policies",
+      "description": "Source: followup of #6; effort: m",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.401Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.401Z",
+      "updatedAt": "2026-05-12T00:32:53.401Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-gate-19",
+      "title": "Round-trip transcript review",
+      "description": "Source: followup of #11; effort: s",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:32:53.405Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:32:53.405Z",
+      "updatedAt": "2026-05-12T00:32:53.405Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports-gate",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "gate-digest-probe",
+      "title": "Digest probe",
+      "description": "probe digest cache hot path",
+      "status": "archived",
+      "phases": [
+        {
+          "id": "overview",
+          "name": "overview",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:41:37.836Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:37:10.801Z",
+      "updatedAt": "2026-05-12T00:41:37.836Z",
+      "kind": "project",
+      "schemaVersion": 1,
+      "version": 2,
+      "rounds": [],
+      "sourceDocs": [
+        "docs/specs/openclaw-imports.md"
+      ],
+      "targetRepoPath": "/tmp/gate-1a-target"
+    },
+    {
+      "id": "gate-digest-probe-2",
+      "title": "Digest probe 2",
+      "description": "probe again",
+      "status": "archived",
+      "phases": [
+        {
+          "id": "overview",
+          "name": "overview",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T00:41:37.870Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T00:38:01.624Z",
+      "updatedAt": "2026-05-12T00:41:37.870Z",
+      "kind": "project",
+      "schemaVersion": 1,
+      "version": 2,
+      "rounds": [],
+      "sourceDocs": [
+        "docs/specs/openclaw-imports.md"
+      ],
+      "targetRepoPath": "/tmp/gate-1a-target"
+    },
+    {
+      "id": "gate-verify-2892",
+      "title": "Gate Verification — 0.28.92",
+      "description": "Synthetic plan doc for Phase 1a → 1b autonomous gate verification.",
+      "status": "archived",
+      "phases": [
+        {
+          "id": "overview",
+          "name": "overview",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T02:21:23.677Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T02:18:04.753Z",
+      "updatedAt": "2026-05-12T02:21:23.677Z",
+      "kind": "project",
+      "schemaVersion": 1,
+      "version": 2,
+      "rounds": [
+        {
+          "name": "Tier 1 — Verification",
+          "itemIds": [
+            "gate-verify-2892-1",
+            "gate-verify-2892-2"
+          ],
+          "status": "pending"
+        }
+      ],
+      "sourceDocs": [
+        "plan.md"
+      ],
+      "autoAdvance": false,
+      "targetRepoPath": "/tmp/gate-verify"
+    },
+    {
+      "id": "gate-verify-2892-1",
+      "title": "First gate item",
+      "description": "Source: local; effort: 1h",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T02:18:04.754Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T02:18:04.754Z",
+      "updatedAt": "2026-05-12T02:18:04.754Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "gate-verify-2892",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "gate-verify-2892-2",
+      "title": "Second gate item",
+      "description": "Source: local; effort: 1h",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-12T02:18:04.754Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-12T02:18:04.754Z",
+      "updatedAt": "2026-05-12T02:18:04.754Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "gate-verify-2892",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports",
+      "title": "OpenClaw → Instar imports",
+      "description": "Import every primitive worth keeping from OpenClaw into Instar/Echo, using the prioritized 80/20 build order. Avoid the \"first few done, then forgotten\" failure mode the original pass hit.",
+      "status": "active",
+      "phases": [
+        {
+          "id": "overview",
+          "name": "overview",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-13T18:32:24.479Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-13T18:32:24.479Z",
+      "updatedAt": "2026-05-13T18:32:24.479Z",
+      "kind": "project",
+      "schemaVersion": 1,
+      "version": 1,
+      "rounds": [
+        {
+          "name": "Tier 1 — Ship next (small, high value)",
+          "itemIds": [
+            "openclaw-imports-pre-compaction-flush",
+            "openclaw-imports-cold-start-grace-knob",
+            "openclaw-imports-fallbacksummaryerror-shape"
+          ],
+          "status": "pending"
+        },
+        {
+          "name": "Tier 2 — Foundation (unlocks future work)",
+          "itemIds": [
+            "openclaw-imports-llm-task-typed-primitive",
+            "openclaw-imports-before-prompt-build-hook"
+          ],
+          "status": "pending"
+        },
+        {
+          "name": "Tier 3 — Behavior upgrades",
+          "itemIds": [
+            "openclaw-imports-session-pruning",
+            "openclaw-imports-diagnostics-state-machine"
+          ],
+          "status": "pending"
+        }
+      ],
+      "sourceDocs": [
+        "docs/openclaw/audit-2026-05-07.md"
+      ],
+      "telegramTopicId": "9003",
+      "targetRepoPath": "/tmp/instar-openclaw-tier1"
+    },
+    {
+      "id": "openclaw-imports-pre-compaction-flush",
+      "title": "Pre-compaction flush",
+      "description": "Source: Dawn #16 ADOPT; effort: 1-2 PRs",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-13T18:32:24.480Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-13T18:32:24.480Z",
+      "updatedAt": "2026-05-13T18:32:24.480Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-cold-start-grace-knob",
+      "title": "Cold-start grace knob",
+      "description": "Source: Echo audit #9; effort: 1 PR",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-14T03:55:35.700Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-13T18:32:24.480Z",
+      "updatedAt": "2026-05-14T03:55:35.700Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 2,
+      "parentProjectId": "openclaw-imports",
+      "pipelineStage": "skipped",
+      "skippedBy": "echo (per Justin)",
+      "skippedReason": "Dropped by user 2026-05-13 in topic 9003 — not worth time/tokens right now"
+    },
+    {
+      "id": "openclaw-imports-fallbacksummaryerror-shape",
+      "title": "FallbackSummaryError shape",
+      "description": "Source: Echo audit #8; effort: 1 PR",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-14T03:55:35.734Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-13T18:32:24.481Z",
+      "updatedAt": "2026-05-14T03:55:35.734Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 2,
+      "parentProjectId": "openclaw-imports",
+      "pipelineStage": "skipped",
+      "skippedBy": "echo (per Justin)",
+      "skippedReason": "Dropped by user 2026-05-13; concern about API-fallback infrastructure addressed by PR #198 (subscription-by-default safety guard)"
+    },
+    {
+      "id": "openclaw-imports-llm-task-typed-primitive",
+      "title": "llm-task typed primitive",
+      "description": "Source: Echo #4 = Dawn #06 ADOPT; effort: 1 PR + ~5 migrations",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-14T03:55:35.832Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-13T18:32:24.481Z",
+      "updatedAt": "2026-05-14T03:55:35.832Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 2,
+      "parentProjectId": "openclaw-imports",
+      "pipelineStage": "skipped",
+      "skippedBy": "echo (per Justin)",
+      "skippedReason": "Lifted out as separate initiative — ~5 migrations make it bigger than a round burst"
+    },
+    {
+      "id": "openclaw-imports-before-prompt-build-hook",
+      "title": "before_prompt_build hook",
+      "description": "Source: Echo #5 + Dawn #22 BIDIRECTIONAL; effort: small primitive + first consumer",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-13T18:32:24.482Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-13T18:32:24.482Z",
+      "updatedAt": "2026-05-13T18:32:24.482Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 1,
+      "parentProjectId": "openclaw-imports",
+      "pipelineStage": "outline"
+    },
+    {
+      "id": "openclaw-imports-session-pruning",
+      "title": "Session pruning",
+      "description": "Source: Echo audit #12; effort: modest",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-14T03:55:35.765Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-13T18:32:24.482Z",
+      "updatedAt": "2026-05-14T03:55:35.765Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 2,
+      "parentProjectId": "openclaw-imports",
+      "pipelineStage": "skipped",
+      "skippedBy": "echo (per Justin)",
+      "skippedReason": "Architecturally mismatched — cache-TTL trim happens inside Claude Code call path; instar cant intercept"
+    },
+    {
+      "id": "openclaw-imports-diagnostics-state-machine",
+      "title": "Diagnostics state machine",
+      "description": "Source: Echo #10 = Dawn #21 ADOPT; effort: 2 PRs",
+      "status": "active",
+      "phases": [
+        {
+          "id": "outline",
+          "name": "outline",
+          "status": "pending"
+        }
+      ],
+      "currentPhaseIndex": 0,
+      "lastTouchedAt": "2026-05-14T03:55:35.799Z",
+      "needsUser": false,
+      "blockers": [],
+      "links": [],
+      "createdAt": "2026-05-13T18:32:24.482Z",
+      "updatedAt": "2026-05-14T03:55:35.799Z",
+      "kind": "task",
+      "schemaVersion": 1,
+      "version": 2,
+      "parentProjectId": "openclaw-imports",
+      "pipelineStage": "skipped",
+      "skippedBy": "echo (per Justin)",
+      "skippedReason": "Already covered in spirit by SessionWatchdog + StallTriageNurse + CompactionSentinel + OrphanProcessReaper cluster"
+    }
+  ]
+}

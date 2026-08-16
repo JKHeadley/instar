@@ -1,0 +1,29 @@
+{
+  "sessionId": "00e0573c-27a7-4a33-bedb-66f62585b55e",
+  "tmuxSession": "echo-consent-discovery-framework",
+  "task": "[telegram:1895] please continue (IMPORTANT: Read /tmp/instar-telegram/ctx-1895-1774207152347.txt for",
+  "phase": "testing",
+  "files": [
+    "src/core/types.ts",
+    "src/monitoring/TelemetryAuth.ts",
+    "src/monitoring/TelemetryCollector.ts",
+    "src/monitoring/TelemetryHeartbeat.ts",
+    "src/server/routes.ts",
+    "src/cli.ts",
+    "src/commands/server.ts",
+    "src/core/FeatureDefinitions.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-22T19:35:18.212Z",
+  "updatedAt": "2026-03-22T19:35:18.212Z",
+  "stale": true,
+  "outputHash": "20ec5adf85f79961eea67084d4675de3"
+}

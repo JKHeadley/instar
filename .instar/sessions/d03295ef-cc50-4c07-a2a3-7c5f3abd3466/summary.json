@@ -1,0 +1,23 @@
+{
+  "sessionId": "d03295ef-cc50-4c07-a2a3-7c5f3abd3466",
+  "tmuxSession": "echo-commitment-follow-through",
+  "task": "[telegram:7794] Please continue (IMPORTANT: Read /tmp/instar-telegram/ctx-7794-1776746168541.txt for",
+  "phase": "testing",
+  "files": [
+    "src/commands/init.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-21T04:42:20.567Z",
+  "updatedAt": "2026-04-21T04:42:20.567Z",
+  "stale": true,
+  "outputHash": "600f6214f6fb02d44c6cd796035bb967"
+}

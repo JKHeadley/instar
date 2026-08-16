@@ -1,0 +1,24 @@
+{
+  "sessionId": "2dad5fb4-68bf-4a72-a76b-12cbcf7a3e35",
+  "tmuxSession": "echo-dashboard-development",
+  "task": "[telegram:5348] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1775771063659",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js",
+    "../../../Documents/Projects/instar/src/server/fileRoutes.ts",
+    "../../../Documents/Projects/instar/.instar/worktrees/build-dashboard-revamp-v2--modularize-monolith/dashboard/index.html",
+    "../../../Documents/Projects/instar/src/core/PostUpdateMigrator.ts",
+    "../../../Documents/Projects/instar/CLAUDE.md"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-09T21:45:25.973Z",
+  "updatedAt": "2026-04-09T21:45:25.973Z",
+  "stale": true,
+  "outputHash": "8114ef0cd74a0779a0fda9790302b860"
+}

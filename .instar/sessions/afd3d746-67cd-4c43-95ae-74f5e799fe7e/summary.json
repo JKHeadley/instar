@@ -1,0 +1,27 @@
+{
+  "sessionId": "afd3d746-67cd-4c43-95ae-74f5e799fe7e",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] unstick (IMPORTANT: Read /tmp/instar-telegram/ctx-2317-1774822399170.txt for thread ",
+  "phase": "testing",
+  "files": [
+    "adversarial.md",
+    "security.md",
+    "scalability.md",
+    "business.md",
+    "architecture.md",
+    "privacy.md",
+    "dx.md",
+    "marketing.md",
+    "synthesis.md"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T22:42:41.804Z",
+  "updatedAt": "2026-03-29T22:42:41.804Z",
+  "stale": true,
+  "outputHash": "600aacb784280eefa8bc1a57e9d80516"
+}

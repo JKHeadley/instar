@@ -1,0 +1,19 @@
+{
+  "sessionId": "50f18ff9-f923-4f2f-a775-d725a39c9122",
+  "tmuxSession": "echo-job-ci-monitor",
+  "task": "[telegram:843] Is this job still running? (IMPORTANT: Read /tmp/instar-telegram/ctx-843-177372201487",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-17T07:20:09.977Z",
+  "updatedAt": "2026-03-17T07:20:09.977Z",
+  "stale": true,
+  "outputHash": "3e73270efe46eaf983f99409a30a86d9"
+}

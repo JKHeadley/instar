@@ -1,0 +1,23 @@
+{
+  "sessionId": "65cb90a5-9dfe-4d33-8b92-a5dc3951d41e",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] lets finish this out once and for all in ALL aspects, completely and correctly. Plea",
+  "phase": "testing",
+  "files": [
+    ".instar/initiatives.json",
+    "feedback_verify_commit_actually_landed.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T02:31:20.183Z",
+  "updatedAt": "2026-04-19T02:31:20.183Z",
+  "stale": true,
+  "outputHash": "83748a38e2332175ac9da6a6ad54cea9"
+}

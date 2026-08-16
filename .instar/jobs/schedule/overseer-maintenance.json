@@ -1,0 +1,10 @@
+{
+  "slug": "overseer-maintenance",
+  "origin": "user",
+  "schedule": "0 2 * * *",
+  "enabled": true,
+  "execute": {
+    "type": "agentmd"
+  },
+  "manifestVersion": 1
+}

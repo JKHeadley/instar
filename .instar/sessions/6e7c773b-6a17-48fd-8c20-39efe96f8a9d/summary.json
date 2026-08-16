@@ -1,0 +1,19 @@
+{
+  "sessionId": "6e7c773b-6a17-48fd-8c20-39efe96f8a9d",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] Merge whatever you feel needs merging (IMPORTANT: Read /tmp/instar-telegram/ctx-2317",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-28T18:10:58.297Z",
+  "updatedAt": "2026-04-28T18:10:58.297Z",
+  "stale": true,
+  "outputHash": "a70e1646ca4aeb8abfa079a14b42be33"
+}

@@ -1,0 +1,26 @@
+{
+  "sessionId": "3bb784f0-d34f-41c0-b911-f37bfee5e2ee",
+  "tmuxSession": "echo-qalatra",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-9235-1778548994135-rrxd97kd.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "signal-vs-authority.md",
+    "PROMISE-BEACON-SPEC.md",
+    "NEXT.md",
+    "AGENT.md",
+    "USER.md",
+    "jobloader-per-entry-resilience.md",
+    "agent.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-12T05:45:38.811Z",
+  "updatedAt": "2026-05-12T05:45:38.811Z",
+  "stale": true,
+  "outputHash": "123eb7b44d168e3bf7818c7407e61e5d"
+}

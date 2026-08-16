@@ -1,0 +1,23 @@
+{
+  "sessionId": "c5c7f8a9-15cf-4c87-82bb-0d7b80be8487",
+  "tmuxSession": "echo-server-robustness",
+  "task": "[telegram:1303] hello? (IMPORTANT: Read /tmp/instar-telegram/ctx-1303-1773879513460.txt for thread h",
+  "phase": "testing",
+  "files": [
+    "../../../Documents/Projects/instar/tests/e2e/tunnel-force-stop.test.ts",
+    "../../../Documents/Projects/instar/tests/e2e/lifeline-lock-robustness.test.ts",
+    "../../../Documents/Projects/instar/tests/e2e/stale-connection-flush.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-19T02:23:10.498Z",
+  "updatedAt": "2026-03-19T02:23:10.498Z",
+  "stale": false,
+  "outputHash": "0e33a6f40e05300fac44955cb41f3ca4"
+}

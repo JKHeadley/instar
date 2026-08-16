@@ -1,0 +1,17 @@
+{
+  "sessionId": "356dc5a0-9ce5-4f62-9369-39fbfc44ea54",
+  "tmuxSession": "echo-jobs-not-running",
+  "task": "[telegram:1767] Great! Now, you and I need to go through each job, one by one, and discuss whether a",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-21T19:25:01.894Z",
+  "updatedAt": "2026-03-21T19:25:01.894Z",
+  "stale": true,
+  "outputHash": "8747a56e3432f1ec261cac6a84b036ab"
+}

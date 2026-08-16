@@ -1,0 +1,22 @@
+{
+  "sessionId": "86f10fb2-54d9-4c80-a5c3-7e6b7f63a73f",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] okay, I just manually closed the previous session here in the dashboard. Lets see if",
+  "phase": "testing",
+  "files": [
+    "tests/e2e/session-resume-e2e.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T07:49:39.079Z",
+  "updatedAt": "2026-03-20T07:49:39.079Z",
+  "stale": false,
+  "outputHash": "90b2736a622fcfdc6ffad240d1eb5d7f"
+}

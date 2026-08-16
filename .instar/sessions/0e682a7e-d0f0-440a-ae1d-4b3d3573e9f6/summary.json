@@ -1,0 +1,19 @@
+{
+  "sessionId": "0e682a7e-d0f0-440a-ae1d-4b3d3573e9f6",
+  "tmuxSession": "echo-telegram-issues",
+  "task": "[telegram:7158] How’s it coming here? Sagemind is still broken (IMPORTANT: Read /tmp/instar-telegram",
+  "phase": "testing",
+  "files": [
+    ".instar/threadline/thread-resume-map.json"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T17:05:14.304Z",
+  "updatedAt": "2026-04-19T17:05:14.304Z",
+  "stale": true,
+  "outputHash": "476b09fcc9b2b745d7a402e763252848"
+}

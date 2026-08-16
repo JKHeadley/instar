@@ -1,0 +1,23 @@
+{
+  "sessionId": "d547f231-96de-4a06-9039-4dddad345396",
+  "tmuxSession": "echo-job-ci-monitor",
+  "task": "[telegram:843] we need to expand the session slots from 3 to 10:10 should be the default for all age",
+  "phase": "testing",
+  "files": [
+    "CLAUDE.md",
+    "/Users/justin/Documents/Projects/instar/src/core/Config.ts",
+    "Config.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-14T19:22:02.409Z",
+  "updatedAt": "2026-03-14T19:22:02.409Z",
+  "stale": false,
+  "outputHash": "85009ee453f0977c9daeaff380648dfc"
+}

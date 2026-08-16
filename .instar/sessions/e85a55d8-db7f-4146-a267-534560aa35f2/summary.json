@@ -1,0 +1,24 @@
+{
+  "sessionId": "e85a55d8-db7f-4146-a267-534560aa35f2",
+  "tmuxSession": "echo-dashboard-job-reports-and-metrics",
+  "task": "[telegram:1532] Instar is a system that claims to have lots of jobs and infra for coherence, mainten",
+  "phase": "testing",
+  "files": [
+    "privacy.md",
+    "adversarial.md",
+    "dx.md",
+    "marketing.md",
+    "synthesis.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T19:06:29.143Z",
+  "updatedAt": "2026-03-20T19:06:29.143Z",
+  "stale": false,
+  "outputHash": "6207eec40ca7e9f6c4733472710b8fa4"
+}

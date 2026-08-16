@@ -1,0 +1,10 @@
+{
+  "slug": "commitment-detection",
+  "origin": "user",
+  "schedule": "*/15 * * * *",
+  "enabled": true,
+  "execute": {
+    "type": "agentmd"
+  },
+  "manifestVersion": 1
+}

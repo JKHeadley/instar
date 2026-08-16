@@ -1,0 +1,24 @@
+{
+  "sessionId": "1dc04d80-bb6d-4325-9de8-a757ca647cf4",
+  "tmuxSession": "echo-topic-session-command-trap",
+  "task": "[telegram:1427] hows this looking? (IMPORTANT: Read /tmp/instar-telegram/ctx-1427-1774047019928.txt ",
+  "phase": "testing",
+  "files": [
+    "tests/unit/PromptGate.test.ts",
+    "tests/unit/InputClassifier.test.ts",
+    "tests/unit/AutoApprover.test.ts"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T23:15:13.560Z",
+  "updatedAt": "2026-03-20T23:15:13.560Z",
+  "stale": true,
+  "outputHash": "1a03145c37a8f3ad13198b5e04ae6a72"
+}

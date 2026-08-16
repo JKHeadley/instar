@@ -1,0 +1,26 @@
+{
+  "sessionId": "b42f3221-907b-46cd-a976-d2cdfa3500d8",
+  "tmuxSession": "echo-session-robustness",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-2169-1775338835292-ts5w8lue.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "src/commands/server.ts",
+    "src/data/builtin-manifest.json",
+    "a/src/commands/server.ts",
+    "b/src/commands/server.ts",
+    "builtin-manifest.json",
+    "tests/unit/slack-context-exhaustion-recovery.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-04T21:47:33.427Z",
+  "updatedAt": "2026-04-04T21:47:33.427Z",
+  "stale": true,
+  "outputHash": "85b3366cb0cf0801da24230a62ae9e38"
+}

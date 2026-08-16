@@ -1,0 +1,10 @@
+{
+  "slug": "reflection-trigger",
+  "origin": "user",
+  "schedule": "0 */4 * * *",
+  "enabled": true,
+  "execute": {
+    "type": "agentmd"
+  },
+  "manifestVersion": 1
+}

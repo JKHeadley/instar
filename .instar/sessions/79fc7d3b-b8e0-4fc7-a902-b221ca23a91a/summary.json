@@ -1,0 +1,26 @@
+{
+  "sessionId": "79fc7d3b-b8e0-4fc7-a902-b221ca23a91a",
+  "tmuxSession": "echo-server-robustness",
+  "task": "[telegram:1303] hows it coming? (IMPORTANT: Read /tmp/instar-telegram/ctx-1303-1773890002032.txt for",
+  "phase": "testing",
+  "files": [
+    "src/knowledge/TreeTriage.ts",
+    "src/tunnel/TunnelManager.ts",
+    "a/src/tunnel/TunnelManager.ts",
+    "b/src/tunnel/TunnelManager.ts",
+    "src/data/builtin-manifest.json",
+    "src/knowledge/TreeGenerator.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-19T03:17:32.727Z",
+  "updatedAt": "2026-03-19T03:17:32.727Z",
+  "stale": true,
+  "outputHash": "9eb878be6e34b374b2fb77f23908ee23"
+}

@@ -1,0 +1,22 @@
+{
+  "sessionId": "9149b383-4785-4d4e-a025-23d46445de07",
+  "tmuxSession": "echo-topic-4683",
+  "task": "[telegram:4683] There's a few updates we need to make to the dashboard number one the resume live ou",
+  "phase": "testing",
+  "files": [
+    "scheduler-claim-integration.test.ts",
+    "dashboard/index.html"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-01T07:31:38.640Z",
+  "updatedAt": "2026-04-01T07:31:38.640Z",
+  "stale": false,
+  "outputHash": "bbb1fbeb55d1e41e111cf0b3c1b9d3c2"
+}

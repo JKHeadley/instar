@@ -1,0 +1,17 @@
+{
+  "sessionId": "687a8118-7dbf-4a7c-9568-77b8d2adc4ae",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] Thanks, lets tackle these one at a time. Please explore in a worktree, to a full aud",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security",
+    "messaging",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-05T23:54:10.326Z",
+  "updatedAt": "2026-04-05T23:54:10.326Z",
+  "stale": false,
+  "outputHash": "3b8582fef3eec95ef3c87664a560074f"
+}

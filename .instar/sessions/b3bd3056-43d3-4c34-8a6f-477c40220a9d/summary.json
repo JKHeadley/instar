@@ -1,0 +1,25 @@
+{
+  "sessionId": "b3bd3056-43d3-4c34-8a6f-477c40220a9d",
+  "tmuxSession": "echo-instar-agent-robustness",
+  "task": "[telegram:5447] now the inspec agent is down on this machine. Please investigate this (IMPORTANT: Re",
+  "phase": "testing",
+  "files": [
+    "src/commands/server.ts",
+    "src/data/builtin-manifest.json",
+    "slack-stall-active-gate.test.ts",
+    "/tmp/slack-stall-active-gate.test.ts",
+    "tests/unit/slack-stall-active-gate.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-09T18:15:17.061Z",
+  "updatedAt": "2026-04-09T18:15:17.061Z",
+  "stale": true,
+  "outputHash": "d30f5979e1ef05ad95b88b30ee769f1f"
+}

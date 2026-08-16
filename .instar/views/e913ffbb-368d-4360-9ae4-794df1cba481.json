@@ -1,0 +1,12 @@
+{
+  "id": "e913ffbb-368d-4360-9ae4-794df1cba481",
+  "title": "Guardian Overseer Handoff 2026-04-23",
+  "markdown": "[HANDOFF 2026-04-23T07:04] GUARDIAN CATEGORY OVERSEER REPORT\n\nOVERALL: 5/5 jobs enabled, no consecutive failures, no quota skips, avg 99.3% success rate. Monitoring layer is functional.\n\nKEY FINDINGS:\n\n1. ZERO HANDOFF NOTES FROM ANY GUARDIAN JOB — health-check, degradation-digest, state-integrity-check, guardian-pulse, and session-continuity-check write no handoff notes between runs. The overseer cannot see what any job found last cycle. This is the most significant structural gap: cross-run correlation is impossible without it.\n\n2. STUCK PENDING LEDGER RECORDS — Sessions that started but never wrote a terminal status row:\n   - degradation-digest: 3 stuck (2026-04-16, 2026-04-22T19:01 [12h stale], current 07:02 [may still be in-flight])\n   - guardian-pulse: 4 stuck  \n   - session-continuity-check: 1 stuck\n   These are likely crashes before final ledger write. Not affecting success-rate stats but creates orphaned records.\n\n3. HEALTH-CHECK 96.7% (9 failures in 24h) — Ledger shows zero result=failure; misses are spawn-errors and timeouts. No consecutive failures, not worsening.\n\n4. MODEL ALLOCATION — All 5 jobs appropriately use haiku. No over-allocation.\n\n5. SCHEDULES — Reasonable: health-check 5min (critical), degradation-digest 4h, state-integrity 6h, guardian-pulse 8h, session-continuity 4h.\n\nNEXT OVERSEER: Check if degradation-digest run mob4wgdo-7 (started 07:02) ever completed. Watch for increasing stuck-pending counts in guardian-pulse.\n",
+  "createdAt": "2026-04-23T07:05:44.515Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "overseer-guardian"
+    }
+  }
+}

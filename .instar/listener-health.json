@@ -1,0 +1,11 @@
+{
+  "pid": 35419,
+  "uptime": 533,
+  "state": "stopped",
+  "disconnects10m": 0,
+  "msgsIn": 0,
+  "msgsOut": 0,
+  "reconnectDelay": 0,
+  "lastMessage": null,
+  "snapshotAge": 0
+}

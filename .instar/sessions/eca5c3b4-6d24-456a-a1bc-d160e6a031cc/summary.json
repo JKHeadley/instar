@@ -1,0 +1,20 @@
+{
+  "sessionId": "eca5c3b4-6d24-456a-a1bc-d160e6a031cc",
+  "tmuxSession": "echo-indra-assistance",
+  "task": "CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.\n",
+  "phase": "testing",
+  "files": [
+    "src/foo.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-30T22:35:45.936Z",
+  "updatedAt": "2026-03-30T22:35:45.936Z",
+  "stale": true,
+  "outputHash": "6d5f4e0e762f5c192b72c43e2b504b7c"
+}

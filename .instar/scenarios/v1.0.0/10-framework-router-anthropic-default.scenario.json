@@ -1,0 +1,15 @@
+{
+  "id": "10-framework-router-anthropic-default",
+  "description": "FrameworkModelRouter, when asked to route a task with no user preference, returns the catalog default (Anthropic / claude-4.x or whatever the static catalog says). Exercises Phase 5b composition via the /providers/framework-router/route endpoint.",
+  "topic": 2525,
+  "steps": [
+    { "action": "assert-http",
+      "endpoint": "/providers/framework-router/route?taskPrompt=summarize+this+paragraph&userId=v1-scenario",
+      "status": 200,
+      "bodyMatch": "\"framework\"" },
+    { "action": "assert-http",
+      "endpoint": "/providers/framework-router/route?taskPrompt=summarize+this+paragraph&userId=v1-scenario",
+      "status": 200,
+      "bodyMatch": "\"model\"" }
+  ]
+}

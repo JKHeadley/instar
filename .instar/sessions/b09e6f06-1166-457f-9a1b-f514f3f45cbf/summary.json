@@ -1,0 +1,25 @@
+{
+  "sessionId": "b09e6f06-1166-457f-9a1b-f514f3f45cbf",
+  "tmuxSession": "echo-exploring-slack-integration",
+  "task": "[telegram:3079] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1775754721967",
+  "phase": "testing",
+  "files": [
+    "tests/unit/slack-stall-active-gate.test.ts",
+    "tests/unit/messaging-shared/StallDetector.test.ts",
+    "server.ts",
+    "src/messaging/slack/SlackAdapter.ts",
+    "src/commands/server.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-09T17:28:16.587Z",
+  "updatedAt": "2026-04-09T17:28:16.587Z",
+  "stale": true,
+  "outputHash": "e46423f300920568bac60b66777084a6"
+}

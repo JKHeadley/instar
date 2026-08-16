@@ -1,0 +1,7 @@
+tunnel: da3d4208-d8f7-42ba-80ad-94c37ce35bbb
+credentials-file: /Users/justin/.cloudflared/da3d4208-d8f7-42ba-80ad-94c37ce35bbb.json
+
+ingress:
+  - hostname: echo.dawn-tunnel.dev
+    service: http://localhost:4042
+  - service: http_status:404

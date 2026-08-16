@@ -1,0 +1,12 @@
+{
+  "id": "db554155-5567-46f8-aea3-1a06e08f3174",
+  "title": "Git Sync Report — 2026-05-02",
+  "markdown": "# Git Sync: Complete\n\n## Summary\nClean state sync completed successfully.\n\n## Changes\n- **15 files changed**: state ledgers, audit logs, machine registry, session data, telemetry\n- **1 new file**: private view registry entry\n- **0 conflicts**: all changes were local state updates\n\n## Details\n\n| Category | Files |\n|----------|-------|\n| Audit & Feedback | destructive-ops.jsonl, feedback.json, degradations.json |\n| Ledgers | job-runs.jsonl, skipped-runs.jsonl |\n| Registry & State | machines/registry.json, sessions/summary.json, topic-resume-map.json |\n| Telemetry | skill-telemetry.jsonl, telegram-messages.jsonl |\n| Other | lifeline-poll-offset.json, topic-memory.db-wal, views/new-entry.json, logs/server.log |\n\n## Commit\n- **SHA**: bab7b90ad\n- **Message**: \"sync: state updates from running sessions\"\n- **Status**: ✓ Pushed to main, verified on branch\n\n## Next Sync\nExpect similar state-only syncs as the server continues to run. No blockers or conflicts anticipated.",
+  "createdAt": "2026-05-02T16:00:51.625Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "git-sync"
+    }
+  }
+}

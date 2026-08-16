@@ -1,0 +1,27 @@
+{
+  "sessionId": "f149f98b-3a0c-4d2a-8461-903a4144f8ee",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] yes please continue and stop stopping and pausing for my permission to continue. The",
+  "phase": "testing",
+  "files": [
+    "docs/specs/PR-REVIEW-HARDENING-SPEC.md",
+    "docs/specs/reports/pr-review-hardening-convergence.md",
+    "tests/unit/backup-manager.test.ts",
+    "tests/unit/BackupManager-sharedState.test.ts",
+    "tests/unit/PostUpdateMigrator-backupManifest.test.ts",
+    "tests/unit/PostUpdateMigrator-gitignore.test.ts",
+    "tests/unit/routes-prGatePhaseGate.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T21:18:53.700Z",
+  "updatedAt": "2026-04-17T21:18:53.700Z",
+  "stale": true,
+  "outputHash": "23b23dfc95945bbd262251ba4c1ac88d"
+}

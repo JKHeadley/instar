@@ -1,0 +1,12 @@
+{
+  "id": "d1322d40-eabf-4882-b52c-7988ded99dd1",
+  "title": "Learning Pipeline Overseer - 2026-04-17",
+  "markdown": "# Learning Pipeline Overseer Report\n**Generated**: 2026-04-17 | **Window**: Last 48h\n\n## Summary\n\nThe learning pipeline has a **critical systemic failure**: 4 of 5 jobs have never executed. The evolution system is permanently gate-blocked.\n\n## Job Status\n\n**reflection-trigger** — Working. 12 runs/48h, 174 total, 100% success. Opus every 4h, avg 72-157s. Git diffs confirm real MEMORY.md updates (Slack regression notes, version changelog). 25 quota skips total.\n\n**insight-harvest** — Broken. 0 runs, 99 gate skips. Gate calls /evolution/learnings?applied=false without auth. Server returns 401, empty body, JSON parse fails, exit 1. 7 unapplied learnings exist but are invisible to this job.\n\n**evolution-proposal-evaluate** — Broken. 0 runs, 109 gate skips. Same auth problem. Also circular: no proposals exist because insight-harvest never ran.\n\n**evolution-proposal-implement** — Broken. 0 runs, 105 gate skips.\n\n**evolution-overdue-check** — Broken. 0 runs, 129 gate skips. Haiku model, cheapest job, never runs.\n\n## Root Cause\n\nGate commands run without auth token. The pattern `curl -sf http://localhost:4042/evolution/learnings?applied=false` hits an auth-protected endpoint, gets a 401, produces empty stdout, Python JSONDecodeError, exit 1. Verified fix: same call with Authorization header returns 7 unapplied learnings.\n\n## Impact\n\n- 7 learnings (LRN-001 through LRN-007) queued unapplied since March-April 2026\n- Zero evolution proposals ever generated\n- Agent does not self-evolve via the structured pipeline\n- Looks healthy in job dashboards (0 failures) — silent failure\n\n## Fix Required\n\nJob scheduler should inject INSTAR_AUTH_TOKEN into gate execution environment. Quick patch: prepend auth token read to gate commands in jobs.json.\n\nAfter fix: manually trigger insight-harvest to flush 7 queued learnings.\n\n## Reflection-Trigger Opus Cost\n\nJustified. Task requires judgment about novelty of insights. Short durations (59s min) suggest most runs correctly identify nothing to write. Optional optimization: Haiku pre-screen to gate opus call.",
+  "createdAt": "2026-04-17T10:03:16.077Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "overseer-learning"
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "sessionId": "5cb692d1-f3f3-423f-b33e-e0e1d183f8e8",
+  "tmuxSession": "echo-job-git-sync-mp1e1kd3",
+  "task": "[VIEW METADATA]\nWhen creating private views (POST /view), include metadata to link the report to thi",
+  "phase": "building",
+  "files": [],
+  "topics": [
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-11T16:01:26.499Z",
+  "updatedAt": "2026-05-11T16:01:26.499Z",
+  "stale": false,
+  "outputHash": "9c2b9f9e8662f0477aa90d1b1b9ff0de"
+}

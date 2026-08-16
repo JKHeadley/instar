@@ -1,0 +1,26 @@
+{
+  "sessionId": "285872f3-fef7-4b90-b6fd-b2f2f0156739",
+  "tmuxSession": "echo-server-restarts",
+  "task": "[telegram:2922] did we add tests for these? (IMPORTANT: Read /tmp/instar-telegram/ctx-2922-177463417",
+  "phase": "testing",
+  "files": [
+    "tests/unit/AutoUpdater.test.ts",
+    "tests/unit/TunnelManager.test.ts",
+    "tests/unit/restart-window.test.ts",
+    "tests/unit/death-spiral-fixes.test.ts",
+    "death-spiral-fixes.test.ts",
+    "restart-window.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-27T18:03:32.697Z",
+  "updatedAt": "2026-03-27T18:03:32.697Z",
+  "stale": true,
+  "outputHash": "c8d04f904333bd789d1d8614e02e844e"
+}

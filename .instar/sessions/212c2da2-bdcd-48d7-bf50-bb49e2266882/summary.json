@@ -1,0 +1,27 @@
+{
+  "sessionId": "212c2da2-bdcd-48d7-bf50-bb49e2266882",
+  "tmuxSession": "echo-topic-5002",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-5002-1775325157150-9904oha4.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "src/monitoring/SessionMonitor.ts",
+    "a/src/monitoring/SessionMonitor.ts",
+    "b/src/monitoring/SessionMonitor.ts",
+    "tests/unit/presence-proxy-context-exhaustion.test.ts",
+    "src/monitoring/PresenceProxy.ts",
+    "src/commands/server.ts"
+  ],
+  "topics": [
+    "database",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-04T18:01:31.582Z",
+  "updatedAt": "2026-04-04T18:01:31.582Z",
+  "stale": false,
+  "outputHash": "a5607fb581db69c099f56f61b4ceba89"
+}

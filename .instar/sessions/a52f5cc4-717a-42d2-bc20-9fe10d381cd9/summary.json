@@ -1,0 +1,19 @@
+{
+  "sessionId": "a52f5cc4-717a-42d2-bc20-9fe10d381cd9",
+  "tmuxSession": "echo-exploring-slack-integration",
+  "task": "[telegram:3079] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1778534119901",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-11T22:54:31.844Z",
+  "updatedAt": "2026-05-11T22:54:31.844Z",
+  "stale": false,
+  "outputHash": "8ecf72105cfeb3e0f27453530ead4efe"
+}

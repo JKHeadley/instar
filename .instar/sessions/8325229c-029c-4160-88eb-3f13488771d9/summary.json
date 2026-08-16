@@ -1,0 +1,25 @@
+{
+  "sessionId": "8325229c-029c-4160-88eb-3f13488771d9",
+  "tmuxSession": "echo-telegram-testing",
+  "task": "Session 8325229c-029c-4160-88eb-3f13488771d9 (testing)",
+  "phase": "testing",
+  "files": [
+    "feedback_supervised_env_required_for_restart_loop_fix.md",
+    "setup.js"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-20T17:13:37.852Z",
+  "updatedAt": "2026-05-20T17:13:37.852Z",
+  "stale": false,
+  "outputHash": "ac9be997d8b837748429436620095fea"
+}

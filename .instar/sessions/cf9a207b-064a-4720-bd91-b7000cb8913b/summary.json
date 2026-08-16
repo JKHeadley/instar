@@ -1,0 +1,25 @@
+{
+  "sessionId": "cf9a207b-064a-4720-bd91-b7000cb8913b",
+  "tmuxSession": "echo-update-messages",
+  "task": "[telegram:6176] Next here: update messages are often sent in random topics (or maybe the most recent",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/.instar/agents/echo/.instar/config.json",
+    "/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/instar/dist/cli.js",
+    "/Users/justin/.instar/agents/echo/.instar/state/pending-upgrade-guide.md",
+    "PostUpdateMigrator.ts",
+    "upgrade-guide-check.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-14T17:51:38.072Z",
+  "updatedAt": "2026-04-14T17:51:38.072Z",
+  "stale": true,
+  "outputHash": "95c59634f4f5c0d4d7c632553c7327a0"
+}

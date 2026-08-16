@@ -1,0 +1,23 @@
+{
+  "sessionId": "7660ebb4-318e-4721-a83a-9783358bffd9",
+  "tmuxSession": "echo-topic-5447",
+  "task": "[telegram:5447] please check on the luna/sagemind agent on this machine and see why I can't get a re",
+  "phase": "testing",
+  "files": [
+    ".claude/settings.json",
+    "Settings.json",
+    "settings.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-07T01:16:52.117Z",
+  "updatedAt": "2026-04-07T01:16:52.117Z",
+  "stale": true,
+  "outputHash": "40e39775fd9b238cb02f557b99333877"
+}

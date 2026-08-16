@@ -1,0 +1,453 @@
+- generic [active] [ref=e1]:
+  - img [ref=e2]
+  - generic [ref=e27]:
+    - generic [ref=e30]:
+      - generic [ref=e31]:
+        - button [ref=e34] [cursor=pointer]
+        - generic [ref=e36]:
+          - textbox [ref=e37]:
+            - /placeholder: " "
+          - generic: 
+          - generic: Search
+      - generic [ref=e38]:
+        - generic [ref=e40]:
+          - generic [ref=e43] [cursor=pointer]:
+            - button "" [ref=e45]:
+              - generic: 
+            - generic:
+              - generic:
+                - generic: Never miss a message! 🔔
+            - generic:
+              - generic: Enable notifications to stay updated.
+          - list [ref=e50]:
+            - generic [ref=e51] [cursor=pointer]:
+              - generic:
+                - generic:
+                  - generic: 
+              - generic:
+                - generic: Archived Chats
+              - generic:
+                - generic: Deleted Account
+            - 'link "Echo Agent: ✓ Delivered 7 Echo 02:03 PM E" [ref=e817] [cursor=pointer]':
+              - /url: "#-3742343280"
+              - generic:
+                - generic:
+                  - generic:
+                    - generic: "Echo Agent:"
+                  - generic: ✓ Delivered
+                - generic: "7"
+              - generic:
+                - generic:
+                  - generic: Echo
+                - generic:
+                  - generic: 02:03 PM
+              - generic: E
+            - 'link "Dawn Portal: 🔴 Watchdog CRITICAL: spawn-queue-stale 10 PENDING spawn request(s) older than 15m. Oldest: 2027m ... 10 Dawn Agent 02:01 PM DA" [ref=e623] [cursor=pointer]':
+              - /url: "#-3813736172"
+              - generic:
+                - generic:
+                  - generic:
+                    - generic: "Dawn Portal:"
+                  - generic: "🔴 Watchdog CRITICAL: spawn-queue-stale 10 PENDING spawn request(s) older than 15m. Oldest: 2027m ..."
+                - generic: "10"
+              - generic:
+                - generic:
+                  - generic: Dawn Agent
+                - generic:
+                  - generic: 02:01 PM
+              - generic: DA
+            - 'link "Token for the bot Дешёвый и надёжный VPN: @bow_vpn_bot. @luna_sagemind_bot has been revoked. New tok... BotFather 02:01 PM" [ref=e818] [cursor=pointer]':
+              - /url: "#93372553"
+              - generic:
+                - generic:
+                  - generic: "Token for the bot Дешёвый и надёжный VPN: @bow_vpn_bot. @luna_sagemind_bot has been revoked. New tok..."
+              - generic:
+                - generic:
+                  - generic:
+                    - generic: BotFather
+                    - generic:
+                      - img
+                - generic:
+                  - generic: 02:01 PM
+              - generic:
+                - img
+            - 'link "Dawn Portal: 🛡️ **Job Sentinel Alert** 🔴 sentry-auto-fixer: 4 skips in 6h (mcp-auth-blocked:4), last success 4... 15 Dawn Jobs 02:00 PM DJ" [ref=e157] [cursor=pointer]':
+              - /url: "#-3885471986"
+              - generic:
+                - generic:
+                  - generic:
+                    - generic: "Dawn Portal:"
+                  - generic: "🛡️ **Job Sentinel Alert** 🔴 sentry-auto-fixer: 4 skips in 6h (mcp-auth-blocked:4), last success 4..."
+                - generic: "15"
+              - generic:
+                - generic:
+                  - generic: Dawn Jobs
+                - generic:
+                  - generic: 02:00 PM
+              - generic: DJ
+            - 'link "Дешёвый и надёжный VPN: @bow_vpn_bot.: ⚠️ Tunnel failed after all retries. Dashboard link is unavailable until the server is restarted. 2 Sagemind 01:35 PM S" [ref=e57] [cursor=pointer]':
+              - /url: "#-3735990473"
+              - generic:
+                - generic:
+                  - generic:
+                    - generic: "Дешёвый и надёжный VPN: @bow_vpn_bot.:"
+                  - generic: ⚠️ Tunnel failed after all retries. Dashboard link is unavailable until the server is restarted.
+                - generic: "2"
+              - generic:
+                - generic:
+                  - generic: Sagemind
+                - generic:
+                  - generic: 01:35 PM
+              - generic: S
+            - 'link "DeepSignal Agent: ⚠️ Tunnel failed after all retries. Dashboard link is unavailable until the server is restarted. 4 DeepSignal 01:34 PM D" [ref=e59] [cursor=pointer]':
+              - /url: "#-3704219664"
+              - generic:
+                - generic:
+                  - generic:
+                    - generic: "DeepSignal Agent:"
+                  - generic: ⚠️ Tunnel failed after all retries. Dashboard link is unavailable until the server is restarted.
+                - generic: "4"
+              - generic:
+                - generic:
+                  - generic: DeepSignal
+                - generic:
+                  - generic: 01:34 PM
+              - generic: D
+            - 'link "Sonny: All green: • theaisle.app → 200 ✓ • theaisle.app/sign-in → 200 ✓ • accounts.theaisle.app → respond... 2 Sonny 01:19 PM S" [ref=e63] [cursor=pointer]':
+              - /url: "#-3737980095"
+              - generic:
+                - generic:
+                  - generic:
+                    - generic: "Sonny:"
+                  - generic: "All green: • theaisle.app → 200 ✓ • theaisle.app/sign-in → 200 ✓ • accounts.theaisle.app → respond..."
+                - generic: "2"
+              - generic:
+                - generic:
+                  - generic: Sonny
+                - generic:
+                  - generic: 01:19 PM
+              - generic: S
+            - 'link "Inspec: Something on my end stopped working and I haven''t been able to fix it on my own. Want me to dig in? 4 Inspec 01:07 PM I" [ref=e65] [cursor=pointer]':
+              - /url: "#-3896333015"
+              - generic:
+                - generic:
+                  - generic:
+                    - generic: "Inspec:"
+                  - generic: Something on my end stopped working and I haven't been able to fix it on my own. Want me to dig in?
+                - generic: "4"
+              - generic:
+                - generic:
+                  - generic: Inspec
+                - generic:
+                  - generic: 01:07 PM
+              - generic: I
+            - 'link "AI Guy Agent: ⏳ Your agent is waiting — approve or decline: \"Claude Code is asking to bypass permissions for the ... 11 AI Guy 11:51 AM AG" [ref=e67] [cursor=pointer]':
+              - /url: "#-3792152597"
+              - generic:
+                - generic:
+                  - generic:
+                    - generic: "AI Guy Agent:"
+                  - generic: "⏳ Your agent is waiting — approve or decline: \"Claude Code is asking to bypass permissions for the ..."
+                - generic: "11"
+              - generic:
+                - generic:
+                  - generic: AI Guy
+                - generic:
+                  - generic: 11:51 AM
+              - generic: AG
+            - 'link "Scout Agent: Done — Netlify deploy complete, bundle hash on b2lead-netline-tool.netlify.app matches the local bui... 5 B2Lead Insights 11:42 AM BI" [ref=e69] [cursor=pointer]':
+              - /url: "#-3560351136"
+              - generic:
+                - generic:
+                  - generic:
+                    - generic: "Scout Agent:"
+                  - generic: Done — Netlify deploy complete, bundle hash on b2lead-netline-tool.netlify.app matches the local bui...
+                - generic: "5"
+              - generic:
+                - generic:
+                  - generic: B2Lead Insights
+                - generic:
+                  - generic: 11:42 AM
+              - generic: BI
+            - link "https://us05web.zoom.us/j/8282873664?pwd=WHRtd2V4cHY2Y1ZWYXg4UHlWRDZXQT09 Matthew Headley 10:04 AM" [ref=e71] [cursor=pointer]:
+              - /url: "#7789251744"
+              - generic:
+                - generic:
+                  - generic:
+                    - generic:
+                      - img
+                  - generic: https://us05web.zoom.us/j/8282873664?pwd=WHRtd2V4cHY2Y1ZWYXg4UHlWRDZXQT09
+              - generic:
+                - generic:
+                  - generic: Matthew Headley
+                - generic:
+                  - generic: 10:04 AM
+              - generic:
+                - img
+            - link "📒Good afternoon 1 Aazad Rajputana 07:42 AM AR" [ref=e73] [cursor=pointer]:
+              - /url: "#7169277880"
+              - generic:
+                - generic:
+                  - generic: 📒Good afternoon
+                - generic: "1"
+              - generic:
+                - generic:
+                  - generic: Aazad Rajputana
+                - generic:
+                  - generic: 07:42 AM
+              - generic: AR
+        - button " " [ref=e77] [cursor=pointer]:
+          - generic: 
+          - generic: 
+        - generic [ref=e81] [cursor=pointer]: UPDATE
+    - generic [ref=e85]:
+      - generic [ref=e159] [cursor=pointer]:
+        - generic [ref=e161]:
+          - img [ref=e163]
+          - generic [ref=e164]:
+            - generic [ref=e167]:
+              - generic [ref=e168]: BotFather
+              - img [ref=e170]
+            - generic [ref=e174]: 9 713 734 users
+        - generic [ref=e175]:
+          - text: "#"
+          - button "" [ref=e176]:
+            - generic: 
+          - button "" [ref=e178]:
+            - generic: 
+      - generic [ref=e182]:
+        - generic [ref=e183]:
+          - generic [ref=e186] [cursor=pointer]: March 11
+          - generic [ref=e190]:
+            - generic [ref=e191]:
+              - text: OK. Send me the new profile photo for the bot.
+              - generic "11 March 2026, 14:38:14" [ref=e192] [cursor=pointer]:
+                - generic [ref=e193]: 02:38 PM
+            - img [ref=e194]
+          - generic [ref=e199]:
+            - img [ref=e201] [cursor=pointer]
+            - generic "11 March 2026, 14:38:37" [ref=e202] [cursor=pointer]:
+              - generic: 
+              - generic [ref=e203]: 02:38 PM
+            - img [ref=e204]
+          - generic [ref=e209]:
+            - generic [ref=e210]:
+              - generic [ref=e211]:
+                - text: Success! Profile photo updated.
+                - link "/help" [ref=e212] [cursor=pointer]:
+                  - /url: tg://bot_command?command=help
+              - generic "11 March 2026, 14:38:37" [ref=e213] [cursor=pointer]:
+                - generic [ref=e214]: 02:38 PM
+            - img [ref=e215]
+        - generic [ref=e217]:
+          - generic [ref=e220]: March 27
+          - generic [ref=e224]:
+            - generic [ref=e225]:
+              - link "/newbot" [ref=e226] [cursor=pointer]:
+                - /url: tg://bot_command?command=newbot
+              - generic "27 March 2026, 17:33:39" [ref=e227] [cursor=pointer]:
+                - generic: 
+                - generic [ref=e228]: 05:33 PM
+            - img [ref=e229]
+          - generic [ref=e234]:
+            - generic [ref=e235]:
+              - text: Alright, a new bot. How are we going to call it? Please choose a name for your bot.
+              - generic "27 March 2026, 17:33:39" [ref=e236] [cursor=pointer]:
+                - generic [ref=e237]: 05:33 PM
+            - img [ref=e238]
+          - generic [ref=e243]:
+            - generic [ref=e244]:
+              - text: Inspec
+              - generic "27 March 2026, 17:33:45" [ref=e245] [cursor=pointer]:
+                - generic: 
+                - generic [ref=e246]: 05:33 PM
+            - img [ref=e247]
+          - generic [ref=e252]:
+            - generic [ref=e253]:
+              - text: "Good. Now let's choose a username for your bot. It must end in `bot`. Like this, for example: TetrisBot or tetris_bot."
+              - generic "27 March 2026, 17:33:45" [ref=e254] [cursor=pointer]:
+                - generic [ref=e255]: 05:33 PM
+            - img [ref=e256]
+          - generic [ref=e261]:
+            - generic [ref=e262]:
+              - text: inspec_agent_bot
+              - generic "27 March 2026, 17:33:51" [ref=e263] [cursor=pointer]:
+                - generic: 
+                - generic [ref=e264]: 05:33 PM
+            - img [ref=e265]
+          - generic [ref=e270]:
+            - generic [ref=e271]:
+              - generic [ref=e272]:
+                - text: Done! Congratulations on your new bot. You will find it at
+                - link "t.me/inspec_agent_bot" [ref=e273] [cursor=pointer]:
+                  - /url: https://t.me/inspec_agent_bot
+                - text: . You can now add a description, about section and profile picture for your bot, see
+                - link "/help" [ref=e274] [cursor=pointer]:
+                  - /url: tg://bot_command?command=help
+                - text: "for a list of commands. By the way, when you've finished creating your cool bot, ping our Bot Support if you want a better username for it. Just make sure the bot is fully operational before you do this. Use this token to access the HTTP API:"
+                - code [ref=e275] [cursor=pointer]: 8561400462:AAF0aiqYxPKRm5jm9VF9I0RlUMQXPePlwVI
+                - text: Keep your token
+                - strong [ref=e276]: secure
+                - text: and
+                - strong [ref=e277]: store it safely
+                - text: ", it can be used by anyone to control your bot. For a description of the Bot API, see this page:"
+                - link "https://core.telegram.org/bots/api" [ref=e278] [cursor=pointer]:
+                  - /url: https://core.telegram.org/bots/api
+              - generic "27 March 2026, 17:33:51" [ref=e279] [cursor=pointer]:
+                - generic [ref=e280]: 05:33 PM
+            - img [ref=e281]
+          - generic [ref=e286]:
+            - generic [ref=e287]:
+              - link "/setprivacy" [ref=e288] [cursor=pointer]:
+                - /url: tg://bot_command?command=setprivacy
+              - generic "27 March 2026, 17:34:10" [ref=e289] [cursor=pointer]:
+                - generic: 
+                - generic [ref=e290]: 05:34 PM
+            - img [ref=e291]
+          - generic [ref=e296]:
+            - generic [ref=e297]:
+              - text: Choose a bot to change group messages settings.
+              - generic "27 March 2026, 17:34:10" [ref=e298] [cursor=pointer]:
+                - generic [ref=e299]: 05:34 PM
+            - img [ref=e300]
+          - generic [ref=e305]:
+            - generic [ref=e306]:
+              - link "@inspec_agent_bot" [ref=e307] [cursor=pointer]:
+                - /url: https://t.me/inspec_agent_bot
+              - generic "27 March 2026, 17:34:15" [ref=e308] [cursor=pointer]:
+                - generic: 
+                - generic [ref=e309]: 05:34 PM
+            - img [ref=e310]
+          - generic [ref=e315]:
+            - generic [ref=e316]:
+              - text: "'Enable' - your bot will only receive messages that either start with the '/' symbol or mention the bot by username. 'Disable' - your bot will receive all messages that people send to groups. Current status is: ENABLED"
+              - generic "27 March 2026, 17:34:15" [ref=e317] [cursor=pointer]:
+                - generic [ref=e318]: 05:34 PM
+            - img [ref=e319]
+          - generic [ref=e324]:
+            - generic [ref=e325]:
+              - text: Disable
+              - generic "27 March 2026, 17:34:20" [ref=e326] [cursor=pointer]:
+                - generic: 
+                - generic [ref=e327]: 05:34 PM
+            - img [ref=e328]
+          - generic [ref=e333]:
+            - generic [ref=e334]:
+              - generic [ref=e335]:
+                - text: "Success! The new status is: DISABLED."
+                - link "/help" [ref=e336] [cursor=pointer]:
+                  - /url: tg://bot_command?command=help
+              - generic "27 March 2026, 17:34:20" [ref=e337] [cursor=pointer]:
+                - generic [ref=e338]: 05:34 PM
+            - img [ref=e339]
+        - generic [ref=e341]:
+          - generic [ref=e344]: April 9
+          - generic [ref=e348]:
+            - generic [ref=e349]:
+              - link "/newbot" [ref=e350] [cursor=pointer]:
+                - /url: tg://bot_command?command=newbot
+              - generic "9 April 2026, 17:33:17" [ref=e351] [cursor=pointer]:
+                - generic: 
+                - generic [ref=e352]: 05:33 PM
+            - img [ref=e353]
+          - generic [ref=e358]:
+            - generic [ref=e359]:
+              - text: Alright, a new bot. How are we going to call it? Please choose a name for your bot.
+              - generic "9 April 2026, 17:33:17" [ref=e360] [cursor=pointer]:
+                - generic [ref=e361]: 05:33 PM
+            - img [ref=e362]
+          - generic [ref=e367]:
+            - generic [ref=e368]:
+              - text: Bob Agent
+              - generic "9 April 2026, 17:33:27" [ref=e369] [cursor=pointer]:
+                - generic: 
+                - generic [ref=e370]: 05:33 PM
+            - img [ref=e371]
+          - generic [ref=e376]:
+            - generic [ref=e377]:
+              - text: "Good. Now let's choose a username for your bot. It must end in `bot`. Like this, for example: TetrisBot or tetris_bot."
+              - generic "9 April 2026, 17:33:27" [ref=e378] [cursor=pointer]:
+                - generic [ref=e379]: 05:33 PM
+            - img [ref=e380]
+          - generic [ref=e385]:
+            - generic [ref=e386]:
+              - text: bob_teagan_8308_bot
+              - generic "9 April 2026, 17:34:15" [ref=e387] [cursor=pointer]:
+                - generic: 
+                - generic [ref=e388]: 05:34 PM
+            - img [ref=e389]
+          - generic [ref=e394]:
+            - generic [ref=e395]:
+              - generic [ref=e396]:
+                - text: Done! Congratulations on your new bot. You will find it at
+                - link "t.me/bob_teagan_8308_bot" [ref=e397] [cursor=pointer]:
+                  - /url: https://t.me/bob_teagan_8308_bot
+                - text: . You can now add a description, about section and profile picture for your bot, see
+                - link "/help" [ref=e398] [cursor=pointer]:
+                  - /url: tg://bot_command?command=help
+                - text: "for a list of commands. By the way, when you've finished creating your cool bot, ping our Bot Support if you want a better username for it. Just make sure the bot is fully operational before you do this. Use this token to access the HTTP API:"
+                - code [ref=e399] [cursor=pointer]: 8721422092:AAE-wXdqczYrp1Cz4fZRE9CVioDlxXATW4g
+                - text: Keep your token
+                - strong [ref=e400]: secure
+                - text: and
+                - strong [ref=e401]: store it safely
+                - text: ", it can be used by anyone to control your bot. For a description of the Bot API, see this page:"
+                - link "https://core.telegram.org/bots/api" [ref=e402] [cursor=pointer]:
+                  - /url: https://core.telegram.org/bots/api
+              - generic "9 April 2026, 17:34:15" [ref=e403] [cursor=pointer]:
+                - generic [ref=e404]: 05:34 PM
+            - img [ref=e405]
+        - generic [ref=e579]:
+          - generic [ref=e582] [cursor=pointer]: Today
+          - generic [ref=e586]:
+            - generic [ref=e587]:
+              - link "/mybots" [ref=e588] [cursor=pointer]:
+                - /url: tg://bot_command?command=mybots
+              - generic "12 May 2026, 14:01:20" [ref=e589] [cursor=pointer]:
+                - generic: 
+                - generic [ref=e590]: 02:01 PM
+            - img [ref=e591]
+          - generic [ref=e820]:
+            - generic [ref=e821]:
+              - generic [ref=e822]:
+                - generic [ref=e823]:
+                  - text: "Token for the bot Дешёвый и надёжный VPN:"
+                  - link "@bow_vpn_bot" [ref=e824] [cursor=pointer]:
+                    - /url: https://t.me/bow_vpn_bot
+                  - text: .
+                  - link "@luna_sagemind_bot" [ref=e825] [cursor=pointer]:
+                    - /url: https://t.me/luna_sagemind_bot
+                  - text: "has been revoked. New token is:"
+                  - code [ref=e826] [cursor=pointer]: 8743013473:AAFGrEmgC1cbNI_UVdpvfKM1H9HhIEM1gjg
+                - generic "12 May 2026, 14:01:20" [ref=e827] [cursor=pointer]:
+                  - generic [ref=e828]: 02:01 PM
+              - img [ref=e829]
+            - button "« Back to Bot" [ref=e833] [cursor=pointer]:
+              - generic: « Back to Bot
+      - generic [ref=e408]:
+        - generic [ref=e410]:
+          - img [ref=e411]
+          - generic:
+            - button
+            - button "":
+              - generic: 
+          - generic [ref=e413]:
+            - generic [ref=e414] [cursor=pointer]:
+              - generic: 
+              - generic [ref=e621]: Open
+            - button "" [ref=e415] [cursor=pointer]:
+              - generic: 
+            - generic [ref=e416]:
+              - generic: Message
+            - generic [ref=e418] [cursor=pointer]:
+              - generic: 
+        - generic [ref=e420]:
+          - generic:
+            - generic: 
+            - generic: NaN
+          - button "    " [ref=e421] [cursor=pointer]:
+            - generic: 
+            - generic: 
+            - generic: 
+            - generic: 
+            - generic: 

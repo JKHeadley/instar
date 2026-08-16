@@ -1,0 +1,25 @@
+{
+  "sessionId": "273b88de-54cc-472e-8843-7890f7b16ca3",
+  "tmuxSession": "echo-dashboard-development",
+  "task": "[telegram:5348] please check back in and responde to my previous message (IMPORTANT: Read /tmp/insta",
+  "phase": "testing",
+  "files": [
+    ".instar/shadow-install/node_modules/instar/dist/cli.js",
+    "MEMORY.md",
+    "settings.json",
+    "config.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-08T19:07:54.990Z",
+  "updatedAt": "2026-04-08T19:07:54.990Z",
+  "stale": true,
+  "outputHash": "4f3a5080856cb99ae98017dc4a5560df"
+}

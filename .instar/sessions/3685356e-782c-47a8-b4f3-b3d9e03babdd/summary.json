@@ -1,0 +1,20 @@
+{
+  "sessionId": "3685356e-782c-47a8-b4f3-b3d9e03babdd",
+  "tmuxSession": "echo-exploring-slack-integration",
+  "task": "[telegram:3079] Gaps being explored in a separate session:\n\n—-\n\nCompleted the full audit. Found 6 ga",
+  "phase": "testing",
+  "files": [
+    "upgrades/0.25.4.md"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-30T19:23:32.826Z",
+  "updatedAt": "2026-03-30T19:23:32.826Z",
+  "stale": true,
+  "outputHash": "d95ca9008c76b326863a6d0eced7fafc"
+}

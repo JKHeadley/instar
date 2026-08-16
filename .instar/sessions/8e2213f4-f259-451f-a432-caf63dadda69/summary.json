@@ -1,0 +1,23 @@
+{
+  "sessionId": "8e2213f4-f259-451f-a432-caf63dadda69",
+  "tmuxSession": "echo-server-robustness",
+  "task": "[telegram:1303] make sure the tests are re-created and passing first (IMPORTANT: Read /tmp/instar-te",
+  "phase": "testing",
+  "files": [
+    "tests/unit/TunnelManager.test.ts",
+    "tests/unit/TelegramAdapter.test.ts",
+    "tests/unit/semantic-memory.test.ts"
+  ],
+  "topics": [
+    "database",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-19T03:42:07.578Z",
+  "updatedAt": "2026-03-19T03:42:07.578Z",
+  "stale": true,
+  "outputHash": "3aeec7540908bd23231de7e97d0b268f"
+}

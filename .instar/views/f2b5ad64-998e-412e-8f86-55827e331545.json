@@ -1,0 +1,12 @@
+{
+  "id": "f2b5ad64-998e-412e-8f86-55827e331545",
+  "title": "Degradation Digest — 2026-05-05",
+  "markdown": "# Degradation Digest\n\n**Run time**: 2026-05-05T02:13:00Z\n**Last digest**: 2026-05-04T21:42:35Z\n\n## Executive Summary\n\n⚠️ **2 active degradations requiring attention**\n\nRecurring Telegram Lifeline version skew is firing at 2.3 events/hour. Manual restart recommended.\n\n## Active Degradations (New Events)\n\n### 🔴 TelegramLifeline.versionSkewInfo\n\n**Status**: Escalating (repeating pattern)\n- **New events**: 3 in last 3.5 hours\n- **Frequency**: 2.33 events/hour\n- **Inter-event interval**: 38 minutes avg (min: 23m, max: 54m)\n- **Latest**: 2026-05-05T02:12:48Z\n\n**Root cause**: Patch drift 11 between lifeline and server\n\n**Impact**: Lifeline hasn't restarted in a while; consider manual kick.\n\n**Recommended action**:\n- Check if lifeline process is stuck or hung\n- Manual restart may be needed to clear version skew\n- Consider adding auto-restart capability if manual kicks become too frequent\n\n### 🟡 GitSync.pull\n\n**Status**: Isolated (low frequency)\n- **New events**: 1\n- **Latest**: 2026-05-05T00:54:11Z\n\n**Root cause**: spawnSync git ETIMEDOUT\n\n**Impact**: Conflicts may not auto-resolve correctly\n\n**Recommended action**: Monitor for escalation; may be transient network timeout\n\n## Summary\n\n| Feature | Count | Frequency | Status |\n|---------|-------|-----------|--------|\n| TelegramLifeline.versionSkewInfo | 3 | 2.33/hr | ⚠️ Escalating |\n| GitSync.pull | 1 | isolated | 🟡 Watch |\n\n**Total degradation events tracked**: 100\n\n**Previous patterns (no new events)**:\n- TopicMemory (25 total, stale)\n- iMessage (25 total, stale)\n- SemanticMemory (25 total, stale)\n- FeatureRegistry (25 total, stale)\n\nThese are tracked and have feedback tickets; no escalation needed unless frequency increases.",
+  "createdAt": "2026-05-05T03:02:01.689Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "degradation-digest"
+    }
+  }
+}

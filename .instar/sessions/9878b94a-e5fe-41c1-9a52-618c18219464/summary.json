@@ -1,0 +1,18 @@
+{
+  "sessionId": "9878b94a-e5fe-41c1-9a52-618c18219464",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] was it merged without your changes? (IMPORTANT: Read /tmp/instar-telegram/ctx-2317-1",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-26T02:10:11.801Z",
+  "updatedAt": "2026-03-26T02:10:11.801Z",
+  "stale": true,
+  "outputHash": "511c5d3151300b5505f5a3f54d3a6a05"
+}

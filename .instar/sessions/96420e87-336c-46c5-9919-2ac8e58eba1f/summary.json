@@ -1,0 +1,22 @@
+{
+  "sessionId": "96420e87-336c-46c5-9919-2ac8e58eba1f",
+  "tmuxSession": "echo-topic-4699",
+  "task": "[telegram:4699] Great! So can you give me the marketing pitch on what this features provides to inst",
+  "phase": "testing",
+  "files": [
+    ".instar/config.json"
+  ],
+  "topics": [
+    "database",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-02T03:01:58.096Z",
+  "updatedAt": "2026-04-02T03:01:58.096Z",
+  "stale": true,
+  "outputHash": "954c634f4df09533f6b21f0e66fcc27b"
+}

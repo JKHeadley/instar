@@ -1,0 +1,21 @@
+{
+  "sessionId": "8bc7dd4a-21a9-41c1-a879-c991987cd7a3",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] Great! How can we proceed with this? Is it possible to pull this branch into a workt",
+  "phase": "testing",
+  "files": [
+    "docs/review/granular-config-synthesis.md",
+    "docs/review/synthesis-and-recommendation.md",
+    "docs/review/track1-session-lifecycle.md"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T19:04:35.937Z",
+  "updatedAt": "2026-03-23T19:04:35.937Z",
+  "stale": true,
+  "outputHash": "646bcb793b61a629e62c0a7cc69a0d93"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "56d03518-bdf1-4c06-a5b7-cd1b2af4f37f",
+  "title": "Guardian Overseer Report 2026-04-10",
+  "markdown": "# Guardian Category Overseer Report\n**Generated:** 2026-04-10 13:01 UTC\n\n## Summary\n\nPartially functional. 3/5 jobs healthy. Two persistent coverage gaps and two stuck jobs flagged but unresolved.\n\n## Critical Issues\n\n### 1. degradation-digest — Never Run (Permanent Gate Failure)\n272 all-time gate skips, 0 actual runs. Gate requires non-empty `.instar/state/degradation-events.json` — file exists but contains `[]`. Gate permanently fails. Degradation pattern analysis is completely bypassed.\n\n### 2. ci-monitor — Stuck Failed (43h)\nLast run 2026-04-08 22:00, result: failure. guardian-pulse flagged this at 07:00 today. Still unresolved 6h later. Root cause: scheduler rescheduling bug — failed jobs do not advance `nextScheduled`.\n\n### 3. overseer-learning — 3 Days Behind Schedule\nLast ran 2026-04-07 10:00. Scheduled slot 2026-04-09 10:00 passed without execution. Same rescheduling bug.\n\n## Notable Findings\n\n**guardian-pulse gate skips:** 266 all-time skips with no gate configured. Caused by maxParallelJobs=2 throttling during busy periods — misleading label, not a real problem. Clears after contention resolves.\n\n**session-continuity-check timeout:** One isolated 145s timeout on 2026-04-10 07:03. Before/after runs normal. Monitor only.\n\n**Handoff API broken:** `/jobs/{slug}/handoff` returns empty for all jobs. State files exist on disk (e.g. `job-handoff-guardian-pulse.md`) but are not served by API. Cross-job data sharing is blind.\n\n**Findings not escalated:** guardian-pulse detected the scheduler bug + 2 stuck jobs at 07:00. 6 hours later, nothing fixed. No escalation path from monitoring findings to human attention.\n\n## Recommendations\n\n1. Fix degradation-digest gate: check file existence only, not content\n2. Fix scheduler rescheduling bug in instar source (nextScheduled not advancing on failure)\n3. Fix handoff API to read from state directory files\n4. Add escalation: guardian-pulse DEGRADED state should trigger attention item or Telegram\n",
+  "createdAt": "2026-04-10T13:05:04.579Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "overseer-guardian"
+    }
+  }
+}

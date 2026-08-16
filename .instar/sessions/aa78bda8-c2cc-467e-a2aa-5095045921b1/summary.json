@@ -1,0 +1,21 @@
+{
+  "sessionId": "aa78bda8-c2cc-467e-a2aa-5095045921b1",
+  "tmuxSession": "echo-commitment-follow-through-patterns-failu",
+  "task": "[telegram:7535] How’s this looking? (IMPORTANT: Read /tmp/instar-telegram/ctx-7535-1776635581075.txt",
+  "phase": "testing",
+  "files": [
+    ".claude/autonomous-state.local.md",
+    "src/data/builtin-manifest.json",
+    "upgrades/0.28.62.md"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T21:57:55.591Z",
+  "updatedAt": "2026-04-19T21:57:55.591Z",
+  "stale": true,
+  "outputHash": "16f2f31c23865c24d0ff3da9a271d567"
+}

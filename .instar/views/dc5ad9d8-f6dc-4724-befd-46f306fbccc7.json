@@ -1,0 +1,12 @@
+{
+  "id": "dc5ad9d8-f6dc-4724-befd-46f306fbccc7",
+  "title": "Job Scheduler Pulse — 2026-04-10",
+  "markdown": "# Guardian Pulse Report\n\n## Status: PARTIALLY DEGRADED ⚠️\n\n### Current State\n\n- **Scheduler Core**: Active and functioning ✓\n- **Recent Job Batch**: All successful (health-check, reflection-trigger, state-integrity) ✓\n- **Config**: Correct (maxParallelJobs: 2) ✓\n\n### Critical Issues\n\n**1. Stuck Job: ci-monitor**\n- Schedule: Every 3 hours\n- Last run: 2026-04-08 22:00 (2+ days ago)\n- Status: FAILED (\"Session killed\")\n- nextScheduled: 2026-04-09 01:00 (expired)\n- Issue: Failed job never rescheduled to next cron slot\n\n**2. Behind Schedule: overseer-learning**\n- Schedule: Every 2 days at 3 AM\n- Last run: 2026-04-07 10:00 (3+ days ago)\n- Status: Success, but nextScheduled timestamp is stale\n- nextScheduled: 2026-04-09 10:00 (now in the past)\n- Issue: Timestamp not refreshed after completion\n\n### Root Cause\n\nThe scheduler has a **state mutation bug**: When a job completes or fails, the `nextScheduled` timestamp should be recalculated based on the cron expression. Instead, it remains frozen at the old value, causing jobs to become stuck once that window expires.\n\n### Recommendation\n\nRestart the instar server to reset scheduler state:\n```\ninstar server restart\n```\n\nThen monitor for successful execution of ci-monitor (every 3h) and overseer-learning (every 2d at 3 AM).\n\nIf the issue recurs, the job-scheduler rescheduling logic in the instar source needs fixes.\n\n### System Health Summary\n\n- **Job execution**: Mostly healthy (3 jobs just ran successfully)\n- **Queue**: Empty (no backlog)\n- **Skip ledger**: All zeros (no gate issues)\n- **Degradation reporter**: Ready (no events to report)\n- **Active sessions**: 2 running (normal)\n\n---\nGenerated: 2026-04-10 07:00 UTC",
+  "createdAt": "2026-04-10T07:02:28.398Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "guardian-pulse"
+    }
+  }
+}

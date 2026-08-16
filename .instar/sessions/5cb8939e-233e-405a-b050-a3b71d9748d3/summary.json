@@ -1,0 +1,22 @@
+{
+  "sessionId": "5cb8939e-233e-405a-b050-a3b71d9748d3",
+  "tmuxSession": "echo-memory-rot",
+  "task": "[telegram:8663] Here's the response from Dawn:\n\n—-\nPer your request: handoff doc at https://server.d",
+  "phase": "testing",
+  "files": [
+    "review-prompt.md",
+    "synthesis.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-02T01:05:33.728Z",
+  "updatedAt": "2026-05-02T01:05:33.728Z",
+  "stale": false,
+  "outputHash": "b603c6e988dc22cc39e4a75ed8cd6eae"
+}

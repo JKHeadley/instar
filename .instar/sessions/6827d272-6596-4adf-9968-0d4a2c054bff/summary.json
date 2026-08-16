@@ -1,0 +1,25 @@
+{
+  "sessionId": "6827d272-6596-4adf-9968-0d4a2c054bff",
+  "tmuxSession": "echo-git-syncing",
+  "task": "[telegram:8122] It’s frustrating to come back and see that you stopped prematurely. I would expect y",
+  "phase": "testing",
+  "files": [
+    "tests/unit/threadline/RelaySpawnFailureHandler.test.ts",
+    "tests/unit/threadline/SpawnLedger.test.ts",
+    "tests/unit/threadline/SpawnNonce.test.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-29T16:06:22.464Z",
+  "updatedAt": "2026-04-29T16:06:22.464Z",
+  "stale": true,
+  "outputHash": "e551b22be322e06bf27704cac2a4fc8d"
+}

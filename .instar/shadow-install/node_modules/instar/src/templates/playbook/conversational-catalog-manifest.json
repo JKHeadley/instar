@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "name": "instar-conversational-catalog",
+  "description": "Conversational-action catalog pointer for Playbook (Instar v1.0 built-in)",
+  "items": [
+    {
+      "id": "/instar/conversational-catalog",
+      "category": "infrastructure",
+      "memory_type": "procedural",
+      "path": ".instar/context/conversational-actions.md",
+      "tags": {
+        "domains": ["conversational-action", "intent-interpretation", "capability"],
+        "qualifiers": ["on-demand", "structural", "bloat-aware"]
+      },
+      "freshness": "2026-05-19T00:00:00Z",
+      "tokens_est": 800,
+      "usefulness": { "helpful": 0, "misleading": 0 },
+      "load_triggers": [
+        "interpreting-user-intent",
+        "matching-to-skill",
+        "translating-conversation-to-action",
+        "user-said-switch-to-X",
+        "user-said-lets-do-Y"
+      ],
+      "dependencies": [],
+      "provenance": [
+        {
+          "source_session": "GENESIS",
+          "created_at": "2026-05-19",
+          "provenance_type": "instar-builtin",
+          "spec": "specs/instar-concepts/conversational-action.md (v0.2)",
+          "context_segment": ".instar/context/conversational-actions.md",
+          "probe_name": "conversational-catalog",
+          "rationale": "On-demand load of the invocable action catalog. Per Instar Design Principle P1 (Structure>Willpower) and the AGENT.md bloat lesson (L1), the catalog is NEVER inlined into AGENT.md. Playbook scoring decides when this pointer is relevant; SelfKnowledgeTree probe materializes the live catalog when fetched."
+        }
+      ],
+      "retirement_policy": "auto",
+      "access_scope": "global",
+      "inheritance_eligible": true,
+      "status": "active"
+    }
+  ]
+}

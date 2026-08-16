@@ -1,0 +1,20 @@
+{
+  "sessionId": "b4d45b00-2423-44dc-a9d7-85fd0125383a",
+  "tmuxSession": "echo-standby-mode-edits",
+  "task": "[telegram:8882] standby mode seems to have downgraded recently:\n\n• the descriptions of what the agen",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-19T16:58:50.718Z",
+  "updatedAt": "2026-05-19T16:58:50.718Z",
+  "stale": false,
+  "outputHash": "1b58a1f6bfcb081cb6ee5d664a14e9bb"
+}

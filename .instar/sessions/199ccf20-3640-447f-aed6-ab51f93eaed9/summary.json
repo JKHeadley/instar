@@ -1,0 +1,22 @@
+{
+  "sessionId": "199ccf20-3640-447f-aed6-ab51f93eaed9",
+  "tmuxSession": "echo-commitment-backing-gap-infra-research",
+  "task": "[telegram:6484] please write the spec and run the skill to converge (IMPORTANT: Read /tmp/instar-tel",
+  "phase": "testing",
+  "files": [
+    "../../../Documents/Projects/instar/docs/specs/reports/integrated-being-ledger-v2-convergence.md",
+    "docs/specs/reports/integrated-being-ledger-v2-convergence.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-16T05:46:56.932Z",
+  "updatedAt": "2026-04-16T05:46:56.932Z",
+  "stale": true,
+  "outputHash": "c0d2a25232626adc7ffa332e1a744c3c"
+}

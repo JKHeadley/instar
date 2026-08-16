@@ -1,0 +1,12 @@
+{
+  "id": "d73fb976-7a83-4e54-b897-2bd253f8cf39",
+  "title": "Git Sync Report",
+  "markdown": "# Git Sync — Success\n\n**Timestamp:** 2026-04-30T21:00:54Z\n\n## Summary\n\nLocal machine synced with remote. 9 state file changes committed and pushed.\n\n**Commit:** `b6b4b45b`\n\n## Changes\n\n- `.instar/imessage/chat.db` — iMessage database\n- `.instar/ledger/job-runs.jsonl` — Job execution log\n- `.instar/ledger/skipped-runs.jsonl` — Skipped job log\n- `.instar/machines/registry.json` — Machine registry\n- `.instar/skill-telemetry.jsonl` — Skill usage telemetry\n- `.instar/worktree-monitor/last-report.json` — Worktree monitor state\n- `logs/server.log` — Server logs\n\n## Status\n\n✅ **No conflicts** — Clean sync completed.\n✅ **Remote updated** — All changes pushed to main branch.\n✅ **Machines in sync** — Repository is consistent across all machines.",
+  "createdAt": "2026-04-30T21:00:54.699Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "git-sync"
+    }
+  }
+}

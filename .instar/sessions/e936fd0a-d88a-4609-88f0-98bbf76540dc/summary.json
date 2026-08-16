@@ -1,0 +1,26 @@
+{
+  "sessionId": "e936fd0a-d88a-4609-88f0-98bbf76540dc",
+  "tmuxSession": "echo-subscription-first-intelligence",
+  "task": "[telegram:6655] where are we at here? (IMPORTANT: Read /tmp/instar-telegram/ctx-6655-1776388271658.t",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js",
+    "messaging-platform-parity.md",
+    "server.ts",
+    "src/core/InputGuard.ts",
+    "src/commands/server.ts",
+    "tests/unit/InputGuard.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T01:27:18.835Z",
+  "updatedAt": "2026-04-17T01:27:18.835Z",
+  "stale": true,
+  "outputHash": "d044fd958aa8f26d761aa69a13d98df2"
+}

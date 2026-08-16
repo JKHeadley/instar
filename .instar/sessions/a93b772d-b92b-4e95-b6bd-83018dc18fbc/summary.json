@@ -1,0 +1,19 @@
+{
+  "sessionId": "a93b772d-b92b-4e95-b6bd-83018dc18fbc",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] can you tell me what the best free remote desktop option is for mac to mac? I need to r",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-19T19:38:20.949Z",
+  "updatedAt": "2026-03-19T19:38:20.949Z",
+  "stale": true,
+  "outputHash": "5e96cf15d897bb2f5e152b0b4c0d48af"
+}

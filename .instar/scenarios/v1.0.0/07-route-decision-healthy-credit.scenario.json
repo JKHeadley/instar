@@ -1,0 +1,11 @@
+{
+  "id": "07-route-decision-healthy-credit",
+  "description": "Routing decision when SDK credit is well above the safety margin returns the SDK adapter (drain-first). Exercises the preferred-path branch of the cost-aware policy.",
+  "topic": 2525,
+  "steps": [
+    { "action": "assert-http",
+      "endpoint": "/providers/routing/decide?task=baseline-anthropic&fakeRemainingUsd=80&fakeTotalUsd=100",
+      "status": 200,
+      "bodyMatch": "sdk-credit-preferred" }
+  ]
+}

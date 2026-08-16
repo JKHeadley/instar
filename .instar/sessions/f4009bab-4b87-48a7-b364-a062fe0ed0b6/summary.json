@@ -1,0 +1,22 @@
+{
+  "sessionId": "f4009bab-4b87-48a7-b364-a062fe0ed0b6",
+  "tmuxSession": "echo-consent-discovery-framework",
+  "task": "[telegram:1895] yes please (IMPORTANT: Read /tmp/instar-telegram/ctx-1895-1774227108890.txt for thre",
+  "phase": "testing",
+  "files": [
+    "tests/e2e/feature-registry-lifecycle.test.ts",
+    "tests/e2e/feature-discovery-state-machine.test.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T02:20:52.329Z",
+  "updatedAt": "2026-03-23T02:20:52.329Z",
+  "stale": true,
+  "outputHash": "1334396461779592146bc3442d824d32"
+}

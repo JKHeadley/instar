@@ -1,0 +1,17 @@
+{
+  "id": "12-codex-telegram-roundtrip",
+  "description": "Full Telegram round-trip with the target on Codex framework. Switches topic 2525 to codex-cli via /route, sends a conversational question, asserts the AGENT itself (not a sentinel/standby) replies within 90s. This is the scenario that catches the v1.0.0 bug where Codex sessions never called telegram-reply.sh because they never saw a relay instruction.",
+  "topic": 2525,
+  "steps": [
+    { "action": "send-telegram",
+      "text": "/route codex-cli",
+      "fromFirstName": "Echo Test Driver" },
+    { "action": "sleep", "ms": 12000 },
+    { "action": "send-telegram",
+      "text": "test-driver-probe-PONG12: please reply with exactly the word PONG12 followed by the name of the framework you are running on. Keep it under 20 words. Do not run any tools.",
+      "fromFirstName": "Echo Test Driver" },
+    { "action": "wait-for-response",
+      "timeoutMs": 120000,
+      "matcher": "PONG12" }
+  ]
+}

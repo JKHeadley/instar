@@ -1,0 +1,17 @@
+{
+  "sessionId": "b11c7fcb-0826-487d-8003-cd4c90ec0fa6",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] hows this looking? (IMPORTANT: Read /tmp/instar-telegram/ctx-2317-1774834842455.txt ",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-30T01:42:22.321Z",
+  "updatedAt": "2026-03-30T01:42:22.321Z",
+  "stale": true,
+  "outputHash": "9fdc456b2d7316b949b48bbd411271f6"
+}

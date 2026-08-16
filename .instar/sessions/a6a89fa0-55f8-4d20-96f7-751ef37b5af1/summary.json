@@ -1,0 +1,30 @@
+{
+  "sessionId": "a6a89fa0-55f8-4d20-96f7-751ef37b5af1",
+  "tmuxSession": "echo-session-compaction-bug-update",
+  "task": "[telegram:5290] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1775772560138",
+  "phase": "testing",
+  "files": [
+    "/tmp/full-theirs-mine.ts",
+    "src/commands/server.ts",
+    "package-lock.json",
+    "src/core/Prerequisites.ts",
+    "builtin-manifest.json",
+    "tests/unit/SessionWatchdog-compaction.test.ts",
+    "tests/unit/ConfigDefaults.test.ts",
+    "tests/unit/config-loadconfig.test.ts",
+    "tests/unit/Config.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-09T22:32:32.245Z",
+  "updatedAt": "2026-04-09T22:32:32.245Z",
+  "stale": true,
+  "outputHash": "e33ff396484923e8d8f8a72a4d1d3bb2"
+}

@@ -1,0 +1,25 @@
+{
+  "sessionId": "703443dc-f6ad-4328-a4b9-50d8fc713cf4",
+  "tmuxSession": "echo-soul-md-self-authored-identity",
+  "task": "[telegram:1014] Since INSTAR agents are meant to allow agents to explore their own evolution just li",
+  "phase": "testing",
+  "files": [
+    "../../../Documents/Projects/instar/upgrades/0.23.0.md",
+    "package.json",
+    "package-lock.json",
+    "upgrades/0.23.0.md",
+    "soul.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-15T03:10:27.150Z",
+  "updatedAt": "2026-03-15T03:10:27.150Z",
+  "stale": true,
+  "outputHash": "5adb160b8049139e2dd50aeafd13ee51"
+}

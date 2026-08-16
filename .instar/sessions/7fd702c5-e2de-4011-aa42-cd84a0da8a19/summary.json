@@ -1,0 +1,25 @@
+{
+  "sessionId": "7fd702c5-e2de-4011-aa42-cd84a0da8a19",
+  "tmuxSession": "echo-commitment-follow-through",
+  "task": "[telegram:7794] please give me the eli10 overview (IMPORTANT: Read /tmp/instar-telegram/ctx-7794-177",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js",
+    "../../../../../private/tmp/instar-commitment-ledger/docs/specs/COMMITMENT-FOLLOWTHROUGH-SPEC.md",
+    "../../../../../private/tmp/instar-commitment-ledger/docs/specs/reports/commitment-followthrough-convergence.md",
+    "../../../../../private/tmp/instar-commitment-ledger/skills/spec-converge/templates/reviewer-security.md",
+    "../../../../../private/tmp/instar-commitment-ledger/skills/spec-converge/templates/reviewer-cross-model.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-22T07:39:28.189Z",
+  "updatedAt": "2026-04-22T07:39:28.189Z",
+  "stale": true,
+  "outputHash": "1f6fc1e407dfb2ff373c06d5746f322a"
+}

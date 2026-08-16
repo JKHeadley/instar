@@ -1,0 +1,20 @@
+{
+  "sessionId": "51e45fdb-17c2-4c7e-bef4-4ccad013ab48",
+  "tmuxSession": "echo-streamline-publishing",
+  "task": "[telegram:7187] How’s this looking? (IMPORTANT: Read /tmp/instar-telegram/ctx-7187-1776575090853.txt",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T05:39:16.595Z",
+  "updatedAt": "2026-04-19T05:39:16.595Z",
+  "stale": true,
+  "outputHash": "19d1d25d4950a0c8058f18cfafbfa955"
+}

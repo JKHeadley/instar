@@ -1,0 +1,19 @@
+{
+  "sessionId": "6ea8a2eb-63ee-4477-bf79-908641213b54",
+  "tmuxSession": "echo-updates",
+  "task": "[telegram:4] /new file-upload (IMPORTANT: Read /tmp/instar-telegram/ctx-4-1773425087827.txt for thre",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-13T20:15:54.811Z",
+  "updatedAt": "2026-03-13T20:15:54.811Z",
+  "stale": true,
+  "outputHash": "e41d5ff98e629d05e92c39bebd93ab16"
+}

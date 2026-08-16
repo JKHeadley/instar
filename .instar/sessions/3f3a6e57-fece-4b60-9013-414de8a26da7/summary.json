@@ -1,0 +1,23 @@
+{
+  "sessionId": "3f3a6e57-fece-4b60-9013-414de8a26da7",
+  "tmuxSession": "echo-interactive-1775513040607",
+  "task": "[slack:C0APW9UHFJ5] [RECOVERY] Context exhaustion — session restarted fresh. (IMPORTANT: Read /tmp/i",
+  "phase": "testing",
+  "files": [
+    ".instar/config.json",
+    "/Users/justin/.instar/agents/echo/.instar/cloudflared-named.yml"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-07T02:01:47.774Z",
+  "updatedAt": "2026-04-07T02:01:47.774Z",
+  "stale": true,
+  "outputHash": "85f91dcaf35dd6bfdeb1597a253d9391"
+}

@@ -1,0 +1,22 @@
+{
+  "sessionId": "b2d76c45-69fb-4ae5-8712-53c79d995886",
+  "tmuxSession": "echo-parallel-dev-infra",
+  "task": "[telegram:7000] please proceed (IMPORTANT: Read /tmp/instar-telegram/ctx-7000-1776532331036.txt for ",
+  "phase": "testing",
+  "files": [
+    "/private/tmp/instar-regkey/tests/unit/WorktreeKeyVault.test.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-18T21:59:32.681Z",
+  "updatedAt": "2026-04-18T21:59:32.681Z",
+  "stale": false,
+  "outputHash": "f91a9c6de890d915724cc14b0be40b00"
+}

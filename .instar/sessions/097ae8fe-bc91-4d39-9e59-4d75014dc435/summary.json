@@ -1,0 +1,15 @@
+{
+  "sessionId": "097ae8fe-bc91-4d39-9e59-4d75014dc435",
+  "tmuxSession": "echo-dashboard-job-reports-and-metrics",
+  "task": "Session 097ae8fe-bc91-4d39-9e59-4d75014dc435 (testing)",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T08:11:26.871Z",
+  "updatedAt": "2026-03-20T08:11:26.871Z",
+  "stale": true,
+  "outputHash": "6d72bec5ad3f172dc9976d032d91669a"
+}

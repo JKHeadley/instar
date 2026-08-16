@@ -1,0 +1,22 @@
+{
+  "sessionId": "367265f1-0150-4927-a895-5db8b6098e4d",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] testing it here first (IMPORTANT: Read /tmp/instar-telegram/ctx-1490-1774281934360.t",
+  "phase": "testing",
+  "files": [
+    ".claude/settings.json",
+    ".instar/hooks/instar/external-operation-gate.js"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T16:09:21.266Z",
+  "updatedAt": "2026-03-23T16:09:21.266Z",
+  "stale": true,
+  "outputHash": "5c0a0f90869fef8f75f78f32b1d93cd8"
+}

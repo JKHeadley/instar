@@ -1,0 +1,14 @@
+{
+  "name": "echo",
+  "port": 4042,
+  "path": "/Users/justin/.instar/agents/echo",
+  "capabilities": [
+    "threadline",
+    "mcp"
+  ],
+  "description": "echo Instar agent",
+  "threadlineVersion": "1.0",
+  "publicKey": "7ae298556b01b474cf58d952911ae9f97444c886c9a14d884771d07158c31b4f",
+  "framework": "instar",
+  "updatedAt": "2026-05-20T17:11:44.906Z"
+}

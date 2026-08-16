@@ -1,0 +1,24 @@
+{
+  "sessionId": "be588a0b-e9a2-47f0-8039-ef9f8b1af3c3",
+  "tmuxSession": "echo-bug-zombie-cleanup-kills-active-sessions",
+  "task": "[telegram:1565] I'm not so sure about this. The 15 minute idle is fine...AS LONG AS ITS ACTUALLY IDL",
+  "phase": "testing",
+  "files": [
+    "src/messaging/TelegramAdapter.ts",
+    "a/src/messaging/TelegramAdapter.ts",
+    "b/src/messaging/TelegramAdapter.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T20:37:43.204Z",
+  "updatedAt": "2026-03-20T20:37:43.204Z",
+  "stale": true,
+  "outputHash": "0015fdd642f87a6b3a43ae7db78ffe72"
+}

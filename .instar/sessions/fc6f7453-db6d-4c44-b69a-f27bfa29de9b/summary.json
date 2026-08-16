@@ -1,0 +1,18 @@
+{
+  "sessionId": "fc6f7453-db6d-4c44-b69a-f27bfa29de9b",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] please update the max sessions to 10 (IMPORTANT: Read /tmp/instar-telegram/ctx-2-177475",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security",
+    "messaging",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T03:01:44.376Z",
+  "updatedAt": "2026-03-29T03:01:44.376Z",
+  "stale": true,
+  "outputHash": "e6bd3e2699e5f662a591fdde4a720fc0"
+}

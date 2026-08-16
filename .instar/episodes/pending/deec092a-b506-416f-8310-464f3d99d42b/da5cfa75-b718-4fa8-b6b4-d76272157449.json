@@ -1,0 +1,7 @@
+{
+  "id": "da5cfa75-b718-4fa8-b6b4-d76272157449",
+  "sessionId": "deec092a-b506-416f-8310-464f3d99d42b",
+  "content": "You are analyzing a chunk of an AI agent's work session to create a concise activity digest.\n\nSession: 🔔 Attention\nActivity period: 2026-03-10T02:21:28.522Z to 2026-03-10T05:19:27.628Z\nBoundary signal: time_threshold\n\n=== CONVERSATION (human + agent) ===\n[Agent] Wake detected after ~9s sleep. Sessions re-validated.\n\nRespond in this EXACT JSON format (no other text):\n{\n  \"summary\": \"2-3 sentence overview of what happened in this activity unit\",\n  \"actions\": [\"key action 1\", \"key action 2\"],\n  \"learnings\": [\"insight or lesson learned\"],\n  \"significance\": 5,\n  \"themes\": [\"topic1\", \"topic2\"]\n}\n\nRULES:\n- significance is 1-10 (1=trivial, 5=normal, 8+=major milestone)\n- themes are 1-3 word topic tags\n- actions are specific: \"committed migration engine\", not \"wrote code\"\n- learnings are insights, not descriptions: \"FTS5 requires sync triggers\", not \"worked on FTS5\"",
+  "createdAt": "2026-03-11T08:32:49.908Z",
+  "retryCount": 0
+}

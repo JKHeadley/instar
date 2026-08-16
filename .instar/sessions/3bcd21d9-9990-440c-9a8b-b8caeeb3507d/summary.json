@@ -1,0 +1,23 @@
+{
+  "sessionId": "3bcd21d9-9990-440c-9a8b-b8caeeb3507d",
+  "tmuxSession": "echo-robust-dashboard-link",
+  "task": "[telegram:1359] yes please (IMPORTANT: Read /tmp/instar-telegram/ctx-1359-1773955562437.txt for thre",
+  "phase": "testing",
+  "files": [
+    "package.json",
+    "NEXT.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-19T21:48:40.800Z",
+  "updatedAt": "2026-03-19T21:48:40.800Z",
+  "stale": false,
+  "outputHash": "c5a3089999769c44c755255f05c5fffa"
+}

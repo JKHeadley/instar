@@ -1,0 +1,25 @@
+{
+  "sessionId": "f3a884fd-4c23-457e-abe2-8dd09e785272",
+  "tmuxSession": "echo-instar-agent-robustness",
+  "task": "[telegram:5447] the inspec agent seems to have crashed. can you diagnose the issue, fix the immediat",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/Documents/Projects/monroe-workspace/.instar/instar-boot.js",
+    "/Users/justin/Documents/Projects/monroe-workspace/.instar/shadow-install/node_modules/instar/dist/cli.js"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-29T17:29:26.907Z",
+  "updatedAt": "2026-04-29T17:29:26.907Z",
+  "stale": true,
+  "outputHash": "c670db69b4218923f6d5e70ff9904629"
+}

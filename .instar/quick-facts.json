@@ -1,0 +1,8 @@
+[
+  {
+    "question": "What project am I working on?",
+    "answer": "echo at /Users/justin/.instar/agents/echo",
+    "lastVerified": "2026-04-14T23:04:27.111667Z",
+    "source": "instar init"
+  }
+]

@@ -1,0 +1,20 @@
+{
+  "sessionId": "15bcd72f-3bca-402f-b659-8cfd7e941601",
+  "tmuxSession": "echo-standby-mode-edits",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-8882-1777953620183-jrw4hao1.txt — it contains your f",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-05T04:59:17.227Z",
+  "updatedAt": "2026-05-05T04:59:17.227Z",
+  "stale": true,
+  "outputHash": "79564dfa7863196fc1dc41b3fa88b0ab"
+}

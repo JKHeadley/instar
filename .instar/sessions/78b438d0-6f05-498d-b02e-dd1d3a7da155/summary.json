@@ -1,0 +1,23 @@
+{
+  "sessionId": "78b438d0-6f05-498d-b02e-dd1d3a7da155",
+  "tmuxSession": "echo-watchdog-issues",
+  "task": "[telegram:6269] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1776626783456",
+  "phase": "testing",
+  "files": [
+    "kspace/.instar/shadow-install/node_modules/instar/dist/cli.js",
+    "/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/instar/dist/monitoring/watchdog-notifications.js"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T20:03:49.250Z",
+  "updatedAt": "2026-04-19T20:03:49.250Z",
+  "stale": true,
+  "outputHash": "ba5d98a8cefd824f4cf6b1ff06bfa5a9"
+}

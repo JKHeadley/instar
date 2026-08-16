@@ -1,0 +1,19 @@
+{
+  "sessionId": "fa4b93ae-71cd-4b75-9f1e-d9ce731071d1",
+  "tmuxSession": "echo-instar-jobs-as-agentmd",
+  "task": "[telegram:9529] This session looks to be gone.  please find out why and see if its something we can ",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-13T01:47:31.598Z",
+  "updatedAt": "2026-05-13T01:47:31.598Z",
+  "stale": false,
+  "outputHash": "e86bdacb7075209c29df7fa28aa16f79"
+}

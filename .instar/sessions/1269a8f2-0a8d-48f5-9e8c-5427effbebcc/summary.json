@@ -1,0 +1,20 @@
+{
+  "sessionId": "1269a8f2-0a8d-48f5-9e8c-5427effbebcc",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] the ai-guy agent is down, can you fix it? (IMPORTANT: Read /tmp/instar-telegram/ctx-2-1",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-10T00:11:36.650Z",
+  "updatedAt": "2026-04-10T00:11:36.650Z",
+  "stale": true,
+  "outputHash": "bc3a5459cbefc26ac6f21e872a9855b9"
+}

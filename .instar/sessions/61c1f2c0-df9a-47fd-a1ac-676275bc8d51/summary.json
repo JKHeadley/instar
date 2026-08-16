@@ -1,0 +1,22 @@
+{
+  "sessionId": "61c1f2c0-df9a-47fd-a1ac-676275bc8d51",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] please proceed as you best see fit with all of these to merge or close. Just make su",
+  "phase": "testing",
+  "files": [
+    "integrated-being-ledger-v2.md",
+    "evolution-gate-auth-injection.md",
+    "MEMORY.md",
+    "configuration.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-02T20:16:45.480Z",
+  "updatedAt": "2026-05-02T20:16:45.480Z",
+  "stale": true,
+  "outputHash": "f1453d04489014cf10e31d046dc7b6a1"
+}

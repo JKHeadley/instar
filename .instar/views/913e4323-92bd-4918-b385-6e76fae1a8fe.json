@@ -1,0 +1,12 @@
+{
+  "id": "913e4323-92bd-4918-b385-6e76fae1a8fe",
+  "title": "State Integrity Check — 2026-04-28",
+  "markdown": "# State Integrity Check Results\n\n**Date**: 2026-04-28 07:04:15 UTC  \n**Duration**: Comprehensive cross-validation\n\n## Summary\n\n✓ **All checks passed. Agent state is healthy.**\n\n## Detailed Results\n\n| Check | Status | Details |\n|-------|--------|----------|\n| **Active Job** | ✓ PASS | Session `job-state-integrity-check-moia61p1` is running and referenced correctly |\n| **Handoff Notes** | ✓ PASS | All 11 job-handoff files are fresh (0-3 days old, well under 7-day threshold) |\n| **File Bloat** | ✓ PASS | No files exceed 500KB limit. Largest: 247KB (commitments.json with expected content) |\n| **Server Responsiveness** | ✓ PASS | Instar server responding normally (status: degraded but operational) |\n| **State Consistency** | ✓ PASS | All job references map to valid sessions; no orphaned state |\n\n## State Directory Summary\n\n- **Total size**: 25MB (healthy)\n- **Largest directory**: instructions-tracking (23MB, expected for long-running agent)\n- **Session files**: 41 on disk (39 in server history — 2 recent cleanups, normal)\n- **Temporary files**: Cleaned (removed 1 orphaned .tmp file)\n\n## Degradations Noted\n\nServer reports 4 minor feature degradations (unrelated to state integrity):\n- Sessions start without conversation summaries\n- iMessage messaging unavailable\n- Knowledge graph unavailable\n- Feature discovery state not persisted\n\n**Impact**: None on state integrity or core operations.\n\n## Actions Taken\n\n✓ Cleaned: `.claim-intercept-last.tmp` (orphaned temporary file)\n\n## Conclusion\n\nNo integrity issues detected. State files are consistent, fresh, and properly sized. All active job references are valid. Agent is operating normally.\n",
+  "createdAt": "2026-04-28T07:07:47.461Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "state-integrity-check"
+    }
+  }
+}

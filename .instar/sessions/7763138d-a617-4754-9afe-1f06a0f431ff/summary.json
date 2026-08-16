@@ -1,0 +1,27 @@
+{
+  "sessionId": "7763138d-a617-4754-9afe-1f06a0f431ff",
+  "tmuxSession": "echo-compaction-bug-continued",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-6795-1776446599058-w29a62dv.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "tests/unit/queue-cap.test.ts",
+    "tests/unit/junk-payload.test.ts",
+    "tests/unit/session-async-monitor.test.ts",
+    "0.28.51.md",
+    "0.28.52.md",
+    "NEXT.md",
+    "package.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T19:10:47.491Z",
+  "updatedAt": "2026-04-17T19:10:47.491Z",
+  "stale": true,
+  "outputHash": "3ea85518b2c22bd75096e6e74f287c0f"
+}

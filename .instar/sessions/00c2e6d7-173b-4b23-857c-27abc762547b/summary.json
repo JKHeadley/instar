@@ -1,0 +1,22 @@
+{
+  "sessionId": "00c2e6d7-173b-4b23-857c-27abc762547b",
+  "tmuxSession": "echo-topic-3769",
+  "task": "[telegram:3769] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1774721159422",
+  "phase": "testing",
+  "files": [
+    "node_modules/instar/dist/cli.js",
+    "/Users/justin/.instar/agents/echo/.instar/instar-boot.js"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T18:45:22.438Z",
+  "updatedAt": "2026-03-28T18:45:22.438Z",
+  "stale": true,
+  "outputHash": "a7446729cc4b61200f62939cd9a73079"
+}

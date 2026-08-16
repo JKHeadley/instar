@@ -1,0 +1,10 @@
+{
+  "slug": "relationship-maintenance",
+  "origin": "instar",
+  "schedule": "0 9 * * *",
+  "enabled": true,
+  "execute": {
+    "type": "agentmd"
+  },
+  "manifestVersion": 1
+}

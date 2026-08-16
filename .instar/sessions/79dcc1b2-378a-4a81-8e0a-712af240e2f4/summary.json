@@ -1,0 +1,26 @@
+{
+  "sessionId": "79dcc1b2-378a-4a81-8e0a-712af240e2f4",
+  "tmuxSession": "echo-jobs-not-running",
+  "task": "[telegram:1767] keep your recommendations, next (IMPORTANT: Read /tmp/instar-telegram/ctx-1767-17742",
+  "phase": "testing",
+  "files": [
+    "MEMORY.md",
+    "AGENT.md",
+    "USER.md",
+    "jobs.json"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-22T22:17:11.569Z",
+  "updatedAt": "2026-03-22T22:17:11.569Z",
+  "stale": true,
+  "outputHash": "69ad26f2d7993680ead2539ef35e05f6"
+}

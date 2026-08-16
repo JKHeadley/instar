@@ -1,0 +1,27 @@
+{
+  "sessionId": "99e77d6f-3537-4977-9dde-7b408a8b6410",
+  "tmuxSession": "echo-topic-5002",
+  "task": "[telegram:5002] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1775157801129",
+  "phase": "testing",
+  "files": [
+    "SessionMonitor.test.ts",
+    "builtin-manifest.json",
+    "tests/unit/SessionMonitor.test.ts",
+    "a/tests/unit/SessionMonitor.test.ts",
+    "b/tests/unit/SessionMonitor.test.ts",
+    "src/data/builtin-manifest.json",
+    "server.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-02T20:16:30.713Z",
+  "updatedAt": "2026-04-02T20:16:30.713Z",
+  "stale": true,
+  "outputHash": "91921f11d34c6d31a518274f33290a2c"
+}

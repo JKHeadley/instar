@@ -1,0 +1,50 @@
+{
+  "thread-1778515213401-t1irju": {
+    "uuid": "9dcbeb89-4a37-4c61-bba0-d57fb8df3b82",
+    "sessionName": "thread-thread-1",
+    "createdAt": "2026-05-17T07:38:50.510Z",
+    "savedAt": "2026-05-17T07:38:50.510Z",
+    "lastAccessedAt": "2026-05-17T07:38:50.510Z",
+    "remoteAgent": "8c7928aa9f04fbda947172a2f9b2d81a",
+    "subject": "Relay message",
+    "state": "active",
+    "pinned": false,
+    "messageCount": 1
+  },
+  "18f8c91e-b786-49fa-8d39-257cf377e131": {
+    "uuid": "38902577-d1f6-402d-bdab-dc9a70ed3846",
+    "sessionName": "thread-18f8c91e",
+    "createdAt": "2026-05-12T21:37:45.546Z",
+    "savedAt": "2026-05-12T21:37:45.546Z",
+    "lastAccessedAt": "2026-05-12T21:37:45.546Z",
+    "remoteAgent": "d5d07ce5f9b199abac3a90ea3c90d269",
+    "subject": "Relay message",
+    "state": "active",
+    "pinned": false,
+    "messageCount": 1
+  },
+  "cef5ba96-db2a-4d4f-a56b-41ee9365d48e": {
+    "uuid": "520b8704-b2f8-4453-abd7-0f22b0d57ba0",
+    "sessionName": "thread-cef5ba96",
+    "createdAt": "2026-05-19T17:07:07.758Z",
+    "savedAt": "2026-05-19T17:07:07.758Z",
+    "lastAccessedAt": "2026-05-19T17:07:07.758Z",
+    "remoteAgent": "d5d07ce5f9b199abac3a90ea3c90d269",
+    "subject": "Relay message",
+    "state": "active",
+    "pinned": false,
+    "messageCount": 1
+  },
+  "thread-1779210230758-0f1nui": {
+    "uuid": "c3cfec0b-67b2-4bbd-b54d-bb4e3a8c3bf8",
+    "sessionName": "thread-thread-1",
+    "createdAt": "2026-05-19T17:25:22.467Z",
+    "savedAt": "2026-05-19T17:25:22.467Z",
+    "lastAccessedAt": "2026-05-19T17:25:22.467Z",
+    "remoteAgent": "d5d07ce5f9b199abac3a90ea3c90d269",
+    "subject": "Relay message",
+    "state": "active",
+    "pinned": false,
+    "messageCount": 1
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "sessionId": "c9a49e5c-d245-4824-bbf5-51b7f9e442c6",
+  "tmuxSession": "echo-jobs-not-running",
+  "task": "[telegram:1767] i'm very confused. we need to be extra careful here. I was under the impression that",
+  "phase": "testing",
+  "files": [
+    "NEXT.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-24T02:16:04.391Z",
+  "updatedAt": "2026-03-24T02:16:04.391Z",
+  "stale": true,
+  "outputHash": "39ca6554e729d275e9c74e003810e181"
+}

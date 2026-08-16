@@ -1,0 +1,31 @@
+{
+  "sessionId": "459b892e-621a-4547-b496-96a25f1addef",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] How’s this looking? (IMPORTANT: Read /tmp/instar-telegram/ctx-2317-1776478943576.txt",
+  "phase": "testing",
+  "files": [
+    "tests/unit/InitiativeTracker.test.ts",
+    "tests/unit/routes-initiatives.test.ts",
+    "tests/unit/routes-prGatePhaseGate.test.ts",
+    "tests/unit/PostUpdateMigrator-gitignore.test.ts",
+    "tests/unit/backup-manager.test.ts",
+    "src/commands/server.ts",
+    "a/src/commands/server.ts",
+    "b/src/commands/server.ts",
+    "src/data/builtin-manifest.json",
+    "a/src/data/builtin-manifest.json",
+    "b/src/data/builtin-manifest.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-18T02:23:07.217Z",
+  "updatedAt": "2026-04-18T02:23:07.217Z",
+  "stale": true,
+  "outputHash": "e8e6595b2e21c2a87ce7d6041c621edf"
+}

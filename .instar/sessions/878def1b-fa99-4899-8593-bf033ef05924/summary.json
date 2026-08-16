@@ -1,0 +1,16 @@
+{
+  "sessionId": "878def1b-fa99-4899-8593-bf033ef05924",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] Please look into fixing what you need to fix here (IMPORTANT: Read /tmp/instar-teleg",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-21T22:15:51.224Z",
+  "updatedAt": "2026-04-21T22:15:51.224Z",
+  "stale": true,
+  "outputHash": "f88f256dfff6ee8accee52b22e25ab7d"
+}

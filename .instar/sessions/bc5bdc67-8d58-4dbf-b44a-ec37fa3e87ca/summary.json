@@ -1,0 +1,18 @@
+{
+  "sessionId": "bc5bdc67-8d58-4dbf-b44a-ec37fa3e87ca",
+  "tmuxSession": "echo-compaction-bug-continued",
+  "task": "[telegram:6795] i already said approved. this is ironic because hopefully the plan I'm approving wou",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-20T23:05:49.607Z",
+  "updatedAt": "2026-04-20T23:05:49.607Z",
+  "stale": true,
+  "outputHash": "0ab81d2a4e94a1e0978f2c9908ec38db"
+}

@@ -1,0 +1,20 @@
+{
+  "sessionId": "41d67e0a-54a0-4e6b-8487-90d00b22ac9f",
+  "tmuxSession": "echo-commitment-backing-gap-infra-research",
+  "task": "[telegram:6484] Great two things here number one I need a link to the convergence report and number ",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js",
+    "../../../Documents/Projects/instar/docs/signal-vs-authority.md",
+    "../../../Documents/Projects/instar/src/core/registerLedgerEmitters.ts",
+    "../../../Documents/Projects/instar/src/core/LedgerAuth.ts"
+  ],
+  "topics": [
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-16T16:47:11.956Z",
+  "updatedAt": "2026-04-16T16:47:11.956Z",
+  "stale": true,
+  "outputHash": "77b87871b0355cf87f9a46d54147b838"
+}

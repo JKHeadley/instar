@@ -1,0 +1,20 @@
+{
+  "sessionId": "3c6c1d7a-1b0f-4683-b615-e93d125fb03c",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] Please look into why the sagemind Instar agent on this machine is down and let’s make c",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-01T10:16:39.184Z",
+  "updatedAt": "2026-04-01T10:16:39.184Z",
+  "stale": true,
+  "outputHash": "14fdf7408816b7db51760d756ab6fab7"
+}

@@ -1,0 +1,24 @@
+{
+  "sessionId": "d7c5750c-7c60-4d75-aa28-556bfac3be4e",
+  "tmuxSession": "echo-lifeline",
+  "task": "CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.\n",
+  "phase": "testing",
+  "files": [
+    ".instar/AGENT.md",
+    ".instar/USER.md",
+    ".instar/MEMORY.md",
+    ".instar/config.json",
+    ".instar/jobs.json"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-16T18:31:26.611Z",
+  "updatedAt": "2026-03-16T18:31:26.611Z",
+  "stale": true,
+  "outputHash": "fd81abd0a0861a8c72d19609e41d5d00"
+}

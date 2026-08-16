@@ -1,0 +1,23 @@
+{
+  "sessionId": "0d8dc4e8-44b5-4d2b-b6d8-f4460ff73240",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] please proceed with this (IMPORTANT: Read /tmp/instar-telegram/ctx-2317-177559907985",
+  "phase": "testing",
+  "files": [
+    "tests/unit/slack-prompt-response.test.ts",
+    "tests/integration/unified-trust-system.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-08T02:48:07.186Z",
+  "updatedAt": "2026-04-08T02:48:07.186Z",
+  "stale": false,
+  "outputHash": "acea8a75e82386dd27372a4597ca9cc3"
+}

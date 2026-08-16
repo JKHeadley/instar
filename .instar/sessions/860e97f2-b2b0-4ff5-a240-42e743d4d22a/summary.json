@@ -1,0 +1,23 @@
+{
+  "sessionId": "860e97f2-b2b0-4ff5-a240-42e743d4d22a",
+  "tmuxSession": "echo-qalatra",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-9235-1778530375554-mwi8uldh.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "package.json",
+    "tests/unit/index-exports.test.ts",
+    "server.ts",
+    "builtin-manifest.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-11T23:02:41.283Z",
+  "updatedAt": "2026-05-11T23:02:41.283Z",
+  "stale": false,
+  "outputHash": "9908dc86dfec699521065fa501a235c5"
+}

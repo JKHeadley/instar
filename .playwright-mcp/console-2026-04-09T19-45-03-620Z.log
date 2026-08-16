@@ -1,0 +1,48 @@
+[      77ms] TypeError: Cannot read properties of null (reading 'onmessage')
+    at http://localhost:4042/dashboard?pin=ed02ebe3-5e6e-4e57-ba1d-a8a0338063ea&tab=files:7213:32
+[      77ms] [VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ http://localhost:4042/dashboard?pin=ed02ebe3-5e6e-4e57-ba1d-a8a0338063ea&tab=files:0
+[      82ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[    3092ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[    6086ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[    9085ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   12085ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   15129ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   18085ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   23886ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   25120ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   27085ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   30086ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   33085ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   36086ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   39086ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   42086ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   45085ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   48086ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   51089ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   53536ms] [ERROR] WebSocket connection to 'ws://localhost:4042/ws?token=ed02ebe3-5e6e-4e57-ba1d-a8a0338063ea' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/dashboard?pin=ed02ebe3-5e6e-4e57-ba1d-a8a0338063ea&tab=files:3361
+[   54157ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/whatsapp/qr:0
+[   55553ms] [ERROR] WebSocket connection to 'ws://localhost:4042/ws?token=ed02ebe3-5e6e-4e57-ba1d-a8a0338063ea' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/dashboard?pin=ed02ebe3-5e6e-4e57-ba1d-a8a0338063ea&tab=files:3361
+[   57087ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/whatsapp/qr:0
+[   59601ms] [ERROR] WebSocket connection to 'ws://localhost:4042/ws?token=ed02ebe3-5e6e-4e57-ba1d-a8a0338063ea' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/dashboard?pin=ed02ebe3-5e6e-4e57-ba1d-a8a0338063ea&tab=files:3361
+[   60114ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/whatsapp/qr:0
+[   60114ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/health:0
+[   60115ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/attention:0
+[   63107ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/whatsapp/qr:0
+[   66156ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/whatsapp/qr:0
+[   67676ms] [ERROR] WebSocket connection to 'ws://localhost:4042/ws?token=ed02ebe3-5e6e-4e57-ba1d-a8a0338063ea' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/dashboard?pin=ed02ebe3-5e6e-4e57-ba1d-a8a0338063ea&tab=files:3361
+[   69100ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/whatsapp/qr:0
+[   72155ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/whatsapp/qr:0
+[   75113ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/whatsapp/qr:0
+[   78156ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/whatsapp/qr:0
+[   81153ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/whatsapp/qr:0
+[   83683ms] [ERROR] WebSocket connection to 'ws://localhost:4042/ws?token=ed02ebe3-5e6e-4e57-ba1d-a8a0338063ea' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/dashboard?pin=ed02ebe3-5e6e-4e57-ba1d-a8a0338063ea&tab=files:3361
+[   84091ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/whatsapp/qr:0
+[   87085ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/whatsapp/qr:0
+[   90156ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/whatsapp/qr:0
+[   90157ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/health:0
+[   90158ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:4042/attention:0
+[   93088ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   96152ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   99157ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[  102607ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[  105086ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0

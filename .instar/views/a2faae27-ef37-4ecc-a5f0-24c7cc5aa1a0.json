@@ -1,0 +1,12 @@
+{
+  "id": "a2faae27-ef37-4ecc-a5f0-24c7cc5aa1a0",
+  "title": "State Integrity Check Report",
+  "markdown": "# State Integrity Check Report\n**Date**: 2026-04-15  \n**Status**: 3 Issues Found (1 critical, 2 warnings, 1 info)\n\n## 🔴 Critical Issues\n\n### 1. Corrupted Telemetry Entry (FIXED)\n- **File**: `.instar/skill-telemetry.jsonl` line 190\n- **Issue**: Unescaped quote in JSON string value\n- **Cause**: The `args` field contains \"Evidence\" which wasn't properly escaped\n- **Impact**: Single telemetry entry lost due to JSON parse failure\n- **Resolution**: ✅ Removed corrupted line, backup saved to `.instar/skill-telemetry.jsonl.backup`\n\n## 🟠 Warnings\n\n### 2. Global Registry Port Conflicts\n- **Issue**: Port 8080 is shared by 4 test agents in the global registry\n- **Agents Affected**: test-agent, agent-v2, agent-a, test\n- **Cause**: Test agents were created with identical port configuration\n- **Risk**: Startup race conditions if agents try to bind simultaneously\n- **Recommendation**: Remove test agent entries from `/Users/justin/.instar/registry.json`\n\n### 3. Stale Agent Registry Entry\n- **Entry**: `inspec` (last heartbeat 2026-04-15T12:57:12.920Z)\n- **Status**: Marked as stale in registry\n- **Cause**: Agent at `/Users/justin/Documents/Projects/monroe-workspace` port 4041 hasn't reported recently\n- **Action**: Restart the agent or remove the stale entry\n\n## ℹ️ Information & Observations\n\n### Job Ledger Size\n- **Current Entries**: 10,956 job run records\n- **Growth**: Permanent retention configured\n- **Recommendation**: Implement monthly archival when ledger exceeds 20K entries\n\n## 📊 Validation Summary\n\n| Category | Status |\n|----------|--------|\n| JSON Syntax | ✅ Valid (except 1 fixed) |\n| Cross-references | ✅ Healthy |\n| Port Assignments | ⚠️ Test conflicts only |\n| Agent Heartbeats | ⚠️ 1 stale entry |\n| State Files | ✅ Consistent |\n\n## 🔧 Actions Taken\n\n1. ✅ Fixed: Removed corrupted telemetry entry (line 190)\n2. ✅ Validated: All JSON state files are parseable\n3. 📋 Flagged: Port conflicts and stale entries for review\n\n## Next Steps\n\n1. Review test agent entries in global registry\n2. Investigate stale `inspec` agent\n3. Monitor job ledger growth",
+  "createdAt": "2026-04-15T13:01:48.483Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "state-integrity-check"
+    }
+  }
+}

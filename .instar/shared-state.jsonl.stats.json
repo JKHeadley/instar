@@ -1,0 +1,14 @@
+{
+  "counts": {
+    "commitment": 0,
+    "agreement": 0,
+    "thread-opened": 4,
+    "thread-closed": 0,
+    "thread-abandoned": 0,
+    "decision": 0,
+    "note": 0
+  },
+  "classifierFired": 0,
+  "rotationCount": 0,
+  "unclosedThreadsOverTtl": 0
+}

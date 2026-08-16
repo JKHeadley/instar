@@ -1,0 +1,24 @@
+{
+  "sessionId": "485660af-ec8d-49c2-b018-7123056338f0",
+  "tmuxSession": "echo-disk-space-low",
+  "task": "Session 485660af-ec8d-49c2-b018-7123056338f0 (testing)",
+  "phase": "testing",
+  "files": [
+    "adversarial.md",
+    "dx.md",
+    "marketing.md",
+    "synthesis.md",
+    "zombie-cleanup-subagent-awareness.md"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T18:02:28.598Z",
+  "updatedAt": "2026-03-20T18:02:28.598Z",
+  "stale": true,
+  "outputHash": "6b6115cbe7fb6c8895e149e169be67a8"
+}

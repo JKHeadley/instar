@@ -1,0 +1,19 @@
+{
+  "sessionId": "a0b60f2b-ab81-4882-9003-4a690e7a80b6",
+  "tmuxSession": "echo-instar-jobs-as-agentmd",
+  "task": "[telegram:9529] What are you talking about? This was literally your last message to me:\n\n—-\n\nSeeding",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-12T20:43:33.727Z",
+  "updatedAt": "2026-05-12T20:43:33.727Z",
+  "stale": false,
+  "outputHash": "62b3d3d1e4d475c92dbfcd14e8e758b4"
+}

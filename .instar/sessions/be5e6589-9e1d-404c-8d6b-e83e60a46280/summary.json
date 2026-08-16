@@ -1,0 +1,19 @@
+{
+  "sessionId": "be5e6589-9e1d-404c-8d6b-e83e60a46280",
+  "tmuxSession": "echo-topic-2",
+  "task": "[telegram:2] hows the server now? (IMPORTANT: Read /tmp/instar-telegram/ctx-2-1773094672331.txt for ",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-10T00:50:11.158Z",
+  "updatedAt": "2026-03-10T00:50:11.158Z",
+  "stale": true,
+  "outputHash": "34cdbca4a6932ba95bc267b556cdfd2b"
+}

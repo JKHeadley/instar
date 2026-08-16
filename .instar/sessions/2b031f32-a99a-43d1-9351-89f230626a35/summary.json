@@ -1,0 +1,20 @@
+{
+  "sessionId": "2b031f32-a99a-43d1-9351-89f230626a35",
+  "tmuxSession": "echo-telegram-issues",
+  "task": "[telegram:7158] yet again, this got dropped. You promised something and never got back to me (IMPORT",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js",
+    "../../../Documents/Projects/instar/docs/signal-vs-authority.md"
+  ],
+  "topics": [
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T18:35:20.726Z",
+  "updatedAt": "2026-04-19T18:35:20.726Z",
+  "stale": false,
+  "outputHash": "6d89b0daf2f64993edf49afa153b6355"
+}

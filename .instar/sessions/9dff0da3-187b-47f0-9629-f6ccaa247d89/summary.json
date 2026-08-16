@@ -1,0 +1,23 @@
+{
+  "sessionId": "9dff0da3-187b-47f0-9629-f6ccaa247d89",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] killed the session. testing resume now (IMPORTANT: Read /tmp/instar-telegram/ctx-149",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/Documents/Projects/instar/dist/core/TopicResumeMap.js",
+    ".instar/shadow-install/node_modules/instar/dist/core/TopicResumeMap.js",
+    "TopicResumeMap.js"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-24T05:13:22.001Z",
+  "updatedAt": "2026-03-24T05:13:22.001Z",
+  "stale": true,
+  "outputHash": "1f154a9eac3865dd5ace18080ad32a90"
+}

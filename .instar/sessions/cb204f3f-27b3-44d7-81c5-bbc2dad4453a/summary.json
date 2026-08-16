@@ -1,0 +1,18 @@
+{
+  "sessionId": "cb204f3f-27b3-44d7-81c5-bbc2dad4453a",
+  "tmuxSession": "echo-file-upload",
+  "task": "[telegram:605] How's it coming? (IMPORTANT: Read /tmp/instar-telegram/ctx-605-1773426758063.txt for ",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-13T20:16:25.116Z",
+  "updatedAt": "2026-03-13T20:16:25.116Z",
+  "stale": true,
+  "outputHash": "3f2f685c62f4716a795a6280c72e2e67"
+}

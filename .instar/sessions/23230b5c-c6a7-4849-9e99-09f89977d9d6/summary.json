@@ -1,0 +1,15 @@
+{
+  "sessionId": "23230b5c-c6a7-4849-9e99-09f89977d9d6",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.\n",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-30T23:01:23.478Z",
+  "updatedAt": "2026-03-30T23:01:23.478Z",
+  "stale": true,
+  "outputHash": "0694981aa60da5400e25426a4bbde34f"
+}

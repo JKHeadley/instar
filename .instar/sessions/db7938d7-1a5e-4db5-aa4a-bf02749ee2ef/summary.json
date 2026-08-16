@@ -1,0 +1,24 @@
+{
+  "sessionId": "db7938d7-1a5e-4db5-aa4a-bf02749ee2ef",
+  "tmuxSession": "echo-topic-5290",
+  "task": "[telegram:5290] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1775329321190",
+  "phase": "testing",
+  "files": [
+    "tests/unit/TriageOrchestrator.test.ts",
+    "TriageOrchestrator.ts",
+    "server.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-04T19:16:35.361Z",
+  "updatedAt": "2026-04-04T19:16:35.361Z",
+  "stale": false,
+  "outputHash": "d51acc07a501d647c75058af0870e938"
+}

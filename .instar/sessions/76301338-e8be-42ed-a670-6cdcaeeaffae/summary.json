@@ -1,0 +1,17 @@
+{
+  "sessionId": "76301338-e8be-42ed-a670-6cdcaeeaffae",
+  "tmuxSession": "echo-conversational-only-agent-communication",
+  "task": "[telegram:116] OK, please keep me posted on this. (IMPORTANT: Read /tmp/instar-telegram/ctx-116-1773",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-09T22:24:09.904Z",
+  "updatedAt": "2026-03-09T22:24:09.904Z",
+  "stale": false,
+  "outputHash": "1f8e407dd6d5f949b59925fca2fd5db4"
+}

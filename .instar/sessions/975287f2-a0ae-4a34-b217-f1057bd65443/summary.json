@@ -1,0 +1,29 @@
+{
+  "sessionId": "975287f2-a0ae-4a34-b217-f1057bd65443",
+  "tmuxSession": "echo-topic-4659",
+  "task": "[telegram:4659] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1774972562454",
+  "phase": "testing",
+  "files": [
+    "tests/unit/presence-proxy-cancel-race.test.ts",
+    "tests/unit/session-manager-behavioral.test.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "PostUpdateMigrator.ts",
+    "server.ts",
+    "SessionManager.ts",
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "tests/unit/paste-stuck-detection.test.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-31T16:07:49.806Z",
+  "updatedAt": "2026-03-31T16:07:49.806Z",
+  "stale": true,
+  "outputHash": "fa1407522d0cc21c90930ca35d59ad82"
+}

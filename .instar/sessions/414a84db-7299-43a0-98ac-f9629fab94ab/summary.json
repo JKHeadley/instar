@@ -1,0 +1,16 @@
+{
+  "sessionId": "414a84db-7299-43a0-98ac-f9629fab94ab",
+  "tmuxSession": "echo-topic-1",
+  "task": "[telegram:1] /start (IMPORTANT: Read /tmp/instar-telegram/ctx-1-1776894578779.txt for thread history",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-22T23:13:16.138Z",
+  "updatedAt": "2026-04-22T23:13:16.138Z",
+  "stale": false,
+  "outputHash": "0bac54e4d79a5ded3c21945a23d7b4f6"
+}

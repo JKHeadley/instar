@@ -1,0 +1,21 @@
+{
+  "sessionId": "ce12e7dc-525c-479a-bc2f-d6d4e9823319",
+  "tmuxSession": "echo-streamline-publishing",
+  "task": "[telegram:7187] getting things published/deployed seems to take FOR EVER these days and is becoming ",
+  "phase": "testing",
+  "files": [
+    "upgrades/side-effects/0.28.58.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T02:47:30.004Z",
+  "updatedAt": "2026-04-19T02:47:30.004Z",
+  "stale": true,
+  "outputHash": "64fb6ba99d22c173271432a6c3616787"
+}

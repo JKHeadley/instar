@@ -1,0 +1,24 @@
+{
+  "sessionId": "d3f01170-6a5f-4ac1-8732-3914976f479a",
+  "tmuxSession": "echo-prompt-gate",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-9029-1779291841277-b5lsmo6l.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "t-gate-survey-fix/.instar/hooks/instar/scope-coherence-collector.js",
+    "t-gate-survey-fix/.instar/hooks/instar/claim-intercept.js",
+    "t-gate-survey-fix/.instar/hooks/instar/post-action-reflection.js"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-20T17:13:37.880Z",
+  "updatedAt": "2026-05-20T17:13:37.880Z",
+  "stale": false,
+  "outputHash": "75d6ef5f25801b6a7c69f61482e00a37"
+}

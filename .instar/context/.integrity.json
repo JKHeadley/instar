@@ -1,0 +1,260 @@
+{
+  "version": "1.0",
+  "signatures": {
+    "communication.md": {
+      "hmac": "6d6510a9bbb6a6974d01ad7dc4b4f1cdcb3caf94303dafb905bdde2e6b762183",
+      "signedAt": "2026-03-14T21:01:46.026030Z",
+      "size": 604
+    },
+    "architecture.md": {
+      "hmac": "e03f554da5893076264109843f0251ea2524f858865407a5c8448750ea27100b",
+      "signedAt": "2026-03-14T21:01:46.026412Z",
+      "size": 1456
+    },
+    "identity.md": {
+      "hmac": "3efd0113e3901dcb4586387f1d8d8f61f0f8b642dcdd4b27e5dc9aca518a477e",
+      "signedAt": "2026-03-14T21:01:46.026622Z",
+      "size": 540
+    },
+    "project.md": {
+      "hmac": "91413ca99c8e9dee6515e2143de44fe3143fb542c704a4d01ea55602e0cf947f",
+      "signedAt": "2026-03-14T21:01:46.026851Z",
+      "size": 271
+    },
+    "relationships.md": {
+      "hmac": "60f9add0abe91c122f53c8b029d5891270ccfeee95f42e3045f6dfdab5a894d2",
+      "signedAt": "2026-03-14T21:01:46.028079Z",
+      "size": 579
+    },
+    "safety.md": {
+      "hmac": "34d99b6999a18ad62fcaeb619ba31592b75ab8ff63fa447bbe6703f3ff5ef7e6",
+      "signedAt": "2026-03-14T21:01:46.028230Z",
+      "size": 913
+    },
+    "deployment.md": {
+      "hmac": "16e80c60abbb8de2b2424643af44de02572933fc94d877490b593150a3912f43",
+      "signedAt": "2026-03-14T21:01:46.028313Z",
+      "size": 743
+    },
+    "session.md": {
+      "hmac": "5a3f12aa389498b928d87c230eba8d1338301bc06187640eb011da579cf14adc",
+      "signedAt": "2026-03-14T21:01:46.028403Z",
+      "size": 730
+    },
+    "development.md": {
+      "hmac": "8be538bbd719d4446971c283b510e79391c63acb1937cda2cc7cb0b13acb8e14",
+      "signedAt": "2026-03-14T21:01:46.028488Z",
+      "size": 626
+    },
+    "DISPATCH.md": {
+      "hmac": "7fa064771c8cb2fbfd1db14f4ca40cab2a44a58423de80dbda2b0a7379d2f37c",
+      "signedAt": "2026-03-14T21:01:46.028520Z",
+      "size": 2834
+    },
+    "experience/principles.md": {
+      "hmac": "71f08078b2ae0d3a85c864e0c21d41ad6616c47c5323a968d256eda75273497d",
+      "signedAt": "2026-03-14T21:01:46.028590Z",
+      "size": 2733
+    },
+    "experience/proactivity.md": {
+      "hmac": "e30af5af6a45b2b79c086437b1e44daf6115fefdde95f63babee44ea2f2569a4",
+      "signedAt": "2026-03-14T21:01:46.028916Z",
+      "size": 2860
+    },
+    "experience/anti-patterns.md": {
+      "hmac": "d16a5140d7f1176b45ab7c63f9bb68e10fd62c5bc4c8d310ada983d6aaf708cc",
+      "signedAt": "2026-03-14T21:01:46.028952Z",
+      "size": 7745
+    },
+    "experience/tone.md": {
+      "hmac": "cf5e9ff71c1f6b548d2984c2e4e6abd5d6a2dac9cc0cada1f859b216f9c0f900",
+      "signedAt": "2026-03-14T21:01:46.028981Z",
+      "size": 1191
+    },
+    "capabilities/registry-first.md": {
+      "hmac": "37919ff2f7f2e7be6c6a3cf2cc080703ff3c09b0870f41754f8fd80eece5863d",
+      "signedAt": "2026-03-14T21:01:46.029325Z",
+      "size": 2029
+    },
+    "capabilities/memory-search.md": {
+      "hmac": "4d2121570f951e889e2ee922ad4e3ff5cd160fb0a09087b7728c83525973ab5c",
+      "signedAt": "2026-03-14T21:01:46.029622Z",
+      "size": 855
+    },
+    "capabilities/telegram-api.md": {
+      "hmac": "d0b07dc6c246a243931e684a04023f08888e3540b12c7f259fd473925478af1d",
+      "signedAt": "2026-03-14T21:01:46.029796Z",
+      "size": 1059
+    },
+    "capabilities/architecture.md": {
+      "hmac": "ec5a741616eed7fdec89b269d98fb5c4bbe53f01913152a10b4f6ee288bc0389",
+      "signedAt": "2026-03-14T21:01:46.029969Z",
+      "size": 2428
+    },
+    "capabilities/publishing.md": {
+      "hmac": "a6112c17dadc2d8e2ccca7121cb956b2fbd21cc862c6dd827ec7f259e6ace289",
+      "signedAt": "2026-03-14T21:01:46.030233Z",
+      "size": 1888
+    },
+    "capabilities/dashboard.md": {
+      "hmac": "d7479c57c531bc78bdc659256c7d3a2630c1a0b62e65f6951479d9254fa97154",
+      "signedAt": "2026-03-14T21:01:46.030380Z",
+      "size": 2586
+    },
+    "capabilities/jobs.md": {
+      "hmac": "b1f3e0b64d78fd5b94bccbffbf90072aa096c9b664d611516f9ad81a031a467e",
+      "signedAt": "2026-03-14T21:01:46.030541Z",
+      "size": 291
+    },
+    "capabilities/browser.md": {
+      "hmac": "25f469961aa576019546af1325619c1b43acd20f8a2e1eaa39c76795e1cd4f51",
+      "signedAt": "2026-03-14T21:01:46.030706Z",
+      "size": 969
+    },
+    "capabilities/secrets.md": {
+      "hmac": "3b545eb9a4c9d98bdc13a326a9037cbf9679651b0f966043feaebe32c1cad6af",
+      "signedAt": "2026-03-14T21:01:46.030994Z",
+      "size": 2705
+    },
+    "capabilities/git-sync.md": {
+      "hmac": "78ad3a2207a541ab21e086e8c1314afa2beab0d337112c05363f30941a600fa1",
+      "signedAt": "2026-03-14T21:01:46.031155Z",
+      "size": 1641
+    },
+    "capabilities/triage.md": {
+      "hmac": "5206f1b792bf9191801446c6ab2ccf81f71c977fadd72eafc5fcfea464b91fcf",
+      "signedAt": "2026-03-14T21:01:46.031317Z",
+      "size": 497
+    },
+    "capabilities/agent-registry.md": {
+      "hmac": "8f9855f4ea664ee3dfc913b0eee5e6c0e1792ede006a05ad0255420b364ae6e0",
+      "signedAt": "2026-03-14T21:01:46.031475Z",
+      "size": 358
+    },
+    "capabilities/scripts.md": {
+      "hmac": "a7d6c942a85525422162da014b4ffd83999e7d5dd70dc7f7b80d3533203dd76a",
+      "signedAt": "2026-03-14T21:01:46.031625Z",
+      "size": 259
+    },
+    "capabilities/web-fetch.md": {
+      "hmac": "4e23558a8235e07fc86f09dcc958b6d7735a0d468f9d404328322789f318ab43",
+      "signedAt": "2026-03-14T21:01:46.031793Z",
+      "size": 1071
+    },
+    "capabilities/backups.md": {
+      "hmac": "50ab11af08793d0eefbe167a95743bee4d72363ecca1ee1edaaea2ec2c0af562",
+      "signedAt": "2026-03-14T21:01:46.031957Z",
+      "size": 714
+    },
+    "capabilities/skills.md": {
+      "hmac": "9ff56ff936328cf2119639b1f068ac3fe3839cf401496e1ac49935a9c46b24db",
+      "signedAt": "2026-03-14T21:01:46.032116Z",
+      "size": 2062
+    },
+    "capabilities/dispatches.md": {
+      "hmac": "b3b9b0e615e2ab34489c472acb83bcfbcf96ab87db0acc05df9f5ecfc17d4dca",
+      "signedAt": "2026-03-14T21:01:46.032269Z",
+      "size": 891
+    },
+    "capabilities/skip-ledger.md": {
+      "hmac": "12eacebc74a0f09ee7f9e2110c66d1dd3d5717b7c48b726892ed12c1d8faee48",
+      "signedAt": "2026-03-14T21:01:46.032425Z",
+      "size": 800
+    },
+    "capabilities/sessions.md": {
+      "hmac": "eb6e20ee9ad79ce064e7c7f8391dba42b9629e480ddea409ca097d99667d2e49",
+      "signedAt": "2026-03-14T21:01:46.032579Z",
+      "size": 311
+    },
+    "capabilities/attention.md": {
+      "hmac": "194f06a29cb0f4b1681ae47c33bb7dff5535a285a1caf96d51ac0245fa9e734e",
+      "signedAt": "2026-03-14T21:01:46.032744Z",
+      "size": 902
+    },
+    "capabilities/self-discovery.md": {
+      "hmac": "5bd9a7ecc363e79f0bcf2c4eaa7bcb4f9b2a216ff5caaa02e7098cf5c51d6c05",
+      "signedAt": "2026-03-14T21:01:46.032920Z",
+      "size": 767
+    },
+    "capabilities/tunnel.md": {
+      "hmac": "0336f183c97ca292c5bd43f0b92a18120100464b46bdeced8195c16482c3a2bf",
+      "signedAt": "2026-03-14T21:01:46.033080Z",
+      "size": 677
+    },
+    "capabilities/updates.md": {
+      "hmac": "0da5862c0863be7721574f2bf16c6fd24ebf3a3c2e6e602a3864c9f2b80c275f",
+      "signedAt": "2026-03-14T21:01:46.033243Z",
+      "size": 646
+    },
+    "capabilities/events.md": {
+      "hmac": "4d769444281b94c8878c8d498244f4a4fdb61156c5b3cdef9dea6a8cc306e9a8",
+      "signedAt": "2026-03-14T21:01:46.033389Z",
+      "size": 214
+    },
+    "capabilities/ci.md": {
+      "hmac": "10075f4d8e7e7082939b19b673c52bf50a05647dec7534f61ed39d2b733b12da",
+      "signedAt": "2026-03-14T21:01:46.033546Z",
+      "size": 304
+    },
+    "capabilities/feedback.md": {
+      "hmac": "276a5b7c841b9671fdf804dbdd6289a0afe9fedb05bfca483b0d7f324214d9ca",
+      "signedAt": "2026-03-14T21:01:46.033709Z",
+      "size": 739
+    },
+    "capabilities/building.md": {
+      "hmac": "21eede596b4c0337afc573aa24b20263891a8ef0c925de082bf67169caf5183e",
+      "signedAt": "2026-03-14T21:01:46.033866Z",
+      "size": 692
+    },
+    "capabilities/handoff.md": {
+      "hmac": "ab4125261f4b65fc6074a93b414a169d645fd66ba7b9861e2068cce8bfa68ad9",
+      "signedAt": "2026-03-14T21:01:46.034016Z",
+      "size": 777
+    },
+    "capabilities/quota.md": {
+      "hmac": "f202bf9c444d71c4f336eddf6fe91305ae7ce6082cdd23bea5598f3d102cfceb",
+      "signedAt": "2026-03-14T21:01:46.034186Z",
+      "size": 162
+    },
+    "identity/execution-context.md": {
+      "hmac": "3520f80e3b79359bad3b9d95b0f4add2ca5fab0a4c34fc4e62ab37d355e3bb0d",
+      "signedAt": "2026-03-14T21:01:46.034502Z",
+      "size": 1513
+    },
+    "identity/remote-control.md": {
+      "hmac": "bfb1ca36f6d062ad61357c16afa18ec7c7eafc4b75670ac6ad0fc50f3a39e6de",
+      "signedAt": "2026-03-14T21:01:46.034806Z",
+      "size": 990
+    },
+    "evolution/feedback-loop.md": {
+      "hmac": "2941ecd2c017c2c83d3d1ab9363c935f2fc00bf6e5f22324d576ce5a635613c0",
+      "signedAt": "2026-03-14T21:01:46.034986Z",
+      "size": 1223
+    },
+    "evolution/innovation.md": {
+      "hmac": "89260747d204a861d404b22deada4914cbcb58d2139880e23ec14655edc8d2b4",
+      "signedAt": "2026-03-14T21:01:46.035275Z",
+      "size": 2494
+    },
+    "evolution/playbook.md": {
+      "hmac": "703066d2a99f53242f8f857c5f4572d8535a1c2765ba4091724aaba62bf5e36c",
+      "signedAt": "2026-03-14T21:01:46.035556Z",
+      "size": 3266
+    },
+    "evolution/self-diagnosis.md": {
+      "hmac": "526184c9f655d2f7bf14e3a1def5079282ee08ee4dcc2234497c1b232d0d6375",
+      "signedAt": "2026-03-14T21:01:46.035701Z",
+      "size": 1670
+    },
+    "evolution/intent.md": {
+      "hmac": "f078965f6ca423267096d71cb07ec1d2e85cc3750e69bce357ed2ef3ad2b7833",
+      "signedAt": "2026-03-14T21:01:46.035844Z",
+      "size": 1040
+    },
+    "evolution/system.md": {
+      "hmac": "def5a4f5b42e2e2122e0cd4b4bc149cbca25f3c0678a565cb4d9c69c2fde4e0a",
+      "signedAt": "2026-03-14T21:01:46.035986Z",
+      "size": 1803
+    }
+  }
+}

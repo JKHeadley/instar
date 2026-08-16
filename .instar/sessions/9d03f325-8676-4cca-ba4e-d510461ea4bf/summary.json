@@ -1,0 +1,16 @@
+{
+  "sessionId": "9d03f325-8676-4cca-ba4e-d510461ea4bf",
+  "tmuxSession": "echo-interactive-1774749424968",
+  "task": "[slack:C0APW9UHFJ5] hi echo! can you hear me? (IMPORTANT: Read /tmp/instar-slack/ctx-C0APW9UHFJ5-177",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T02:03:23.709Z",
+  "updatedAt": "2026-03-29T02:03:23.709Z",
+  "stale": true,
+  "outputHash": "f07342a4a4008913d12ec3f70e9d46ca"
+}

@@ -1,0 +1,56 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - img "Instar" [ref=e5]
+      - heading "Instar Dashboard" [level=1] [ref=e6]
+      - navigation [ref=e7]:
+        - button "Sessions 2" [ref=e48] [cursor=pointer]
+        - button "Files" [ref=e9] [cursor=pointer]
+        - button "Send Content" [ref=e10] [cursor=pointer]
+        - button "Secret Drop" [ref=e11] [cursor=pointer]
+        - button "Jobs 2" [ref=e12] [cursor=pointer]
+        - button "Features" [ref=e13] [cursor=pointer]
+        - button "Activity 1" [ref=e49] [cursor=pointer]
+        - button "Health" [ref=e15] [cursor=pointer]
+    - generic [ref=e16]:
+      - generic "Server status" [ref=e17] [cursor=pointer]:
+        - generic [ref=e19]: 1m 45s
+      - generic "Active sessions" [ref=e21] [cursor=pointer]:
+        - generic [ref=e22]: ○
+        - generic [ref=e23]: 2/10 sessions
+      - generic "Memory pressure" [ref=e25] [cursor=pointer]:
+        - generic [ref=e26]: Mem 57%
+      - generic "Failing jobs" [ref=e30] [cursor=pointer]:
+        - generic [ref=e31]: ⚠
+        - generic [ref=e32]: 2 failing
+      - generic "Attention items" [ref=e51] [cursor=pointer]:
+        - generic [ref=e52]: 🔔
+        - generic [ref=e53]: "1"
+    - generic [ref=e35]: Connected
+  - generic [ref=e36]:
+    - generic [ref=e37]:
+      - generic [ref=e38]:
+        - heading "Files" [level=2] [ref=e39]
+        - button "⚙" [ref=e40] [cursor=pointer]
+      - generic [ref=e58]:
+        - heading "Browsable Paths" [level=3] [ref=e72]
+        - generic [ref=e73]:
+          - generic [ref=e74]:
+            - generic [ref=e75]: .claude/
+            - button "Editable" [ref=e76] [cursor=pointer]
+            - button "×" [ref=e77] [cursor=pointer]
+          - generic [ref=e78]:
+            - generic [ref=e79]: docs/
+            - button "Read-only" [ref=e80] [cursor=pointer]
+            - button "×" [ref=e81] [cursor=pointer]
+        - generic [ref=e82]:
+          - textbox "src/" [ref=e83]
+          - button "Add" [ref=e84] [cursor=pointer]
+      - generic [ref=e54] [cursor=pointer]:
+        - generic [ref=e55]: 📁
+        - generic [ref=e56]: .claude
+        - generic [ref=e57]: ▶
+    - generic [ref=e45]:
+      - generic [ref=e46]: 📂
+      - paragraph [ref=e47]: Select a file to view its contents
+  - generic [ref=e86]: File paths updated

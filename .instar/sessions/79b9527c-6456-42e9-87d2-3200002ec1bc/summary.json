@@ -1,0 +1,22 @@
+{
+  "sessionId": "79b9527c-6456-42e9-87d2-3200002ec1bc",
+  "tmuxSession": "echo-telegram-messages-pausing-in-input",
+  "task": "[telegram:7195] There seems to be a bug where I send a message in telegram, and I get a response say",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/.instar/agents/echo/.instar/config.json",
+    "hadow-install/node_modules/instar/dist/cli.js"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T01:19:32.377Z",
+  "updatedAt": "2026-04-19T01:19:32.377Z",
+  "stale": false,
+  "outputHash": "388d42a3b0f81ad1b586db351cc91243"
+}

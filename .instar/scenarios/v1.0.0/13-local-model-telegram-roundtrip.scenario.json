@@ -1,0 +1,17 @@
+{
+  "id": "13-local-model-telegram-roundtrip",
+  "description": "Full Telegram round-trip with the target on Codex CLI driving a local model via --oss --local-provider ollama. Switches topic 2525 to codex-cli, then asserts the agent replies via telegram-reply.sh. Note: this scenario only passes when the target has Ollama installed locally AND topicCodexLocalProvider is configured for topic 2525; otherwise it falls back to Codex's normal cloud path and we lose the local-model assertion. The scenario itself does NOT install Ollama or flip the local-provider config — that's an operator pre-condition documented in docs/local-model-recipe.md.",
+  "topic": 2525,
+  "steps": [
+    { "action": "send-telegram",
+      "text": "/route codex-cli",
+      "fromFirstName": "Echo Test Driver" },
+    { "action": "sleep", "ms": 12000 },
+    { "action": "send-telegram",
+      "text": "test-driver-probe-PING13: please reply with exactly the token PING13 followed by the model name you are running on. Under 30 words. Do not run any tools.",
+      "fromFirstName": "Echo Test Driver" },
+    { "action": "wait-for-response",
+      "timeoutMs": 180000,
+      "matcher": "PING13" }
+  ]
+}

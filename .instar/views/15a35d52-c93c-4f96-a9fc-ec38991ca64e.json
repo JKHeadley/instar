@@ -1,0 +1,12 @@
+{
+  "id": "15a35d52-c93c-4f96-a9fc-ec38991ca64e",
+  "title": "Guardian Overseer Report — 2026-04-12",
+  "markdown": "# Guardian Overseer Report\n**Generated**: 2026-04-12 01:02 UTC\n\n## System State: DEGRADED\n\n---\n\n## Critical Issues\n\n### 1. Scheduler Stuck-nextScheduled Bug — 7 Jobs Affected\n\nPrevious report flagged 2 jobs. Now 7 jobs have stale `nextScheduled` and will not run:\n\n| Job | Overdue |\n|-----|--------|\n| ci-monitor | 24h |\n| docs-code-sync | 22h |\n| overseer-maintenance | 16h |\n| overseer-learning | 15h |\n| overseer-infrastructure | 12h |\n| overseer-development | 10h |\n| relationship-maintenance | 9h |\n\nThe entire overseer tier is non-functional. Root cause: scheduler doesn't advance `nextScheduled` on failed/stale jobs.\n\n### 2. degradation-digest Permanently Gated\n- `degradation-events.json` = `[]` (empty, unchanged)\n- 19 gate skips in 24h, **0 lifetime runs**\n- Degradation monitoring is completely blind\n\n### 3. state-integrity-check Timeout Pattern\n- 3 of 5 recent runs timed out at ~75s\n- `expectedDurationMinutes=1` (60s) is too tight\n- 1 consecutive failure currently\n- Timeouts cluster at: Apr 10 19:00, Apr 11 01:00, Apr 12 01:00 UTC\n\n---\n\n## Healthy\n- **health-check**: 96.8% success, 95 runs/24h ✓\n- **guardian-pulse**: 100% last 2 runs ✓\n- **session-continuity-check**: 100% last 3 runs ✓\n\n---\n\n## Recommended Actions\n1. Fix scheduler stale-nextScheduled bug (systemic, growing)\n2. Fix degradation-digest gate or populate events file\n3. Increase state-integrity-check timeout to 3 minutes",
+  "createdAt": "2026-04-12T01:03:03.237Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "overseer-guardian"
+    }
+  }
+}

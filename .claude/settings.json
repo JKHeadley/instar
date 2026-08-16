@@ -1,0 +1,388 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .instar/hooks/instar/dangerous-command-guard.sh \"$TOOL_INPUT\"",
+            "blocking": true
+          },
+          {
+            "type": "command",
+            "command": "bash .instar/hooks/instar/grounding-before-messaging.sh \"$TOOL_INPUT\"",
+            "blocking": false
+          },
+          {
+            "type": "command",
+            "command": "bash .instar/hooks/custom/gh-identity-guard.sh \"$TOOL_INPUT\"",
+            "blocking": true,
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/deferral-detector.js",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/external-communication-guard.js",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/post-action-reflection.js",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/external-operation-gate.js",
+            "blocking": true,
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "EnterPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/custom/plan-prompt-relay.js",
+            "timeout": 130000
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .instar/hooks/instar/session-start.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .instar/hooks/instar/session-start.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .instar/hooks/instar/session-start.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/scope-coherence-collector.js",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/claim-intercept.js",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node .claude/scripts/test-coverage-reminder.js",
+            "timeout": 3000
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/scope-coherence-collector.js",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/claim-intercept.js",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node .claude/scripts/test-coverage-reminder.js",
+            "timeout": 3000
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/scope-coherence-collector.js",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/claim-intercept.js",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/scope-coherence-collector.js",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/scope-coherence-collector.js",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "timeout": 3000
+          }
+        ],
+        "matcher": ""
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .instar/hooks/instar/skill-usage-telemetry.sh",
+            "timeout": 3000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/claim-intercept-response.js",
+            "timeout": 10000
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/scope-coherence-checkpoint.js",
+            "timeout": 10000
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "timeout": 3000
+          }
+        ],
+        "matcher": ""
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .instar/hooks/instar/build-stop-hook.sh",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "InstructionsLoaded": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/instructions-loaded-tracker.js",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/subagent-start-tracker.js",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "timeout": 3000
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .instar/hooks/instar/telegram-topic-context.sh",
+            "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/before-prompt-recall.js",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .instar/hooks/instar/slack-channel-context.sh",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "timeout": 3000
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "timeout": 3000
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "timeout": 3000
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "timeout": 3000
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "timeout": 3000
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/hook-event-reporter.js",
+            "timeout": 3000
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .instar/hooks/instar/auto-approve-permissions.js",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  },
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest"
+      ]
+    }
+  }
+}

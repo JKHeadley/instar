@@ -1,0 +1,18 @@
+{
+  "sessionId": "a7f5ff68-0848-47c1-b186-bdea078578ea",
+  "tmuxSession": "echo-topic-1250",
+  "task": "[telegram:1250] Send again? (IMPORTANT: Read /tmp/instar-telegram/ctx-1250-1773867543467.txt for thr",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-18T21:24:20.624Z",
+  "updatedAt": "2026-03-18T21:24:20.624Z",
+  "stale": false,
+  "outputHash": "bb3b4ff9957bf7f1ef6afabead2bf33e"
+}

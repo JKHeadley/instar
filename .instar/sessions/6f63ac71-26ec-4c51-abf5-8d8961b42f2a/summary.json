@@ -1,0 +1,17 @@
+{
+  "sessionId": "6f63ac71-26ec-4c51-abf5-8d8961b42f2a",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] th server keeps going down. Can you look into why its doing this so frequently lately? ",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T08:01:52.181Z",
+  "updatedAt": "2026-03-28T08:01:52.181Z",
+  "stale": true,
+  "outputHash": "ef627e805e2769cd87d3b0a5490bcbd0"
+}

@@ -1,0 +1,17 @@
+{
+  "sessionId": "8ce5a810-a60e-4430-9126-37104e82629d",
+  "tmuxSession": "echo-testing-new-dash",
+  "task": "Session 8ce5a810-a60e-4430-9126-37104e82629d (testing)",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-19T22:38:25.927Z",
+  "updatedAt": "2026-03-19T22:38:25.927Z",
+  "stale": true,
+  "outputHash": "c826944988c096db53b1e3d16926060e"
+}

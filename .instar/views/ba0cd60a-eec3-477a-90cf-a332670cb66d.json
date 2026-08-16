@@ -1,0 +1,15 @@
+{
+  "id": "ba0cd60a-eec3-477a-90cf-a332670cb66d",
+  "title": "Degradation Digest: better-sqlite3 Build Failure",
+  "markdown": "# Degradation Digest: Critical Infrastructure Failure\n\n**Status**: CRITICAL — 100 cascading degradation events over 13+ hours\n\n**Root Cause**: better-sqlite3 native module build failure in shadow-install. Compiled binary missing.\n\n## Timeline\n\n- **First event**: 2026-04-22 17:13:03Z\n- **Latest event**: 2026-04-23 06:57:04Z\n- **Frequency**: ~5-7 events per minute\n\n## Features Affected (Hard Fallback Mode)\n\n| Feature | Failures | Impact |\n|---------|----------|--------|\n| **TopicMemory** | 25 | Sessions without summaries, no search, last 20 msgs only |\n| **SemanticMemory** | 25 | Knowledge graph offline, semantic search disabled |\n| **iMessage** | 25 | Messaging adapter fully offline |\n| **FeatureRegistry** | 24 | No persistent feature discovery state |\n| **ProcessIntegrity** | 1 | Version mismatch alert |\n\n## Root Cause\n\nThe shadow-install at `~/.instar/agents/echo/.instar/shadow-install/` has an incomplete better-sqlite3 build. The .node binary is missing from:\n```\nnode_modules/better-sqlite3/build/Release/\n```\n\nBuild artifacts exist but compilation failed. Occurred 2026-04-22 17:54 during npm dependency update or Node version change.\n\n## Cascading Failure Pattern\n\n1. Server init → TopicMemory load → better-sqlite3 import fails\n2. Graceful degradation activates → features use fallbacks\n3. DegradationReporter logs event\n4. Server continues in degraded mode\n5. Every restart repeats (lifeline cycles server)\n\n## Immediate Fix\n\nRebuild shadow-install bindings:\n\n```bash\ncd ~/.instar/agents/echo/.instar/shadow-install\nnpm rebuild better-sqlite3\n```\n\nOr reinstall entirely:\n\n```bash\nrm -rf ~/.instar/agents/echo/.instar/shadow-install\ninstar install-shadow\n```\n\nVerify:\n\n```bash\nls ~/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node\n```\n\n## Impact Assessment\n\n- **Conversational memory**: Last 20 messages only (no summaries/search)\n- **Knowledge graph**: Completely offline\n- **iMessage**: Offline (fallback to Slack/Telegram)\n- **Feature discovery**: Resets per session\n- **Overall**: Server functional but significantly degraded\n\n## Structural Improvements Needed\n\n1. Native module build status in health check\n2. Auto-rebuild on Node version change detection\n3. Missing .node binary alerts during startup\n4. Stale shadow-install detection (>7 days)\n",
+  "createdAt": "2026-04-23T07:04:26.428Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "degradation-digest"
+    },
+    "severity": "critical",
+    "affectedFeatures": 5,
+    "totalEvents": 100
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "sessionId": "2c30b53b-3b5c-4b87-a0f3-ce8071855006",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1774310455498-24",
+  "phase": "testing",
+  "files": [
+    "src/commands/discovery.ts",
+    "/Users/justin/Documents/Projects/instar/src/lifeline/TelegramLifeline.ts"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-24T00:18:20.456Z",
+  "updatedAt": "2026-03-24T00:18:20.456Z",
+  "stale": true,
+  "outputHash": "916cce707db95f68cc8369f223d296f1"
+}

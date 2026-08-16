@@ -1,0 +1,17 @@
+{
+  "sessionId": "8f74df9d-54d0-4375-b521-6065b4dce022",
+  "tmuxSession": "echo-dashboard-scroll-history",
+  "task": "[telegram:1541] currently it looks like the scroll history for the sessions feature in the dashboard",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T18:30:58.791Z",
+  "updatedAt": "2026-03-20T18:30:58.791Z",
+  "stale": false,
+  "outputHash": "4889d5b93f75c82dc82d22a44af81320"
+}

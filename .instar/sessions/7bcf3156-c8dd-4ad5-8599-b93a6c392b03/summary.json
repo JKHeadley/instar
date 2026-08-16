@@ -1,0 +1,22 @@
+{
+  "sessionId": "7bcf3156-c8dd-4ad5-8599-b93a6c392b03",
+  "tmuxSession": "echo-tmux-access-data-permission-popup",
+  "task": "[telegram:169] what's the status here? (IMPORTANT: Read /tmp/instar-telegram/ctx-169-1773094671785.t",
+  "phase": "testing",
+  "files": [
+    "Node.js",
+    "/Users/justin/.instar/agents/echo/.instar/state/pending-upgrade-guide.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-10T00:21:35.799Z",
+  "updatedAt": "2026-03-10T00:21:35.799Z",
+  "stale": true,
+  "outputHash": "78a4ef07fabd03c31cf5cf0efae9f487"
+}

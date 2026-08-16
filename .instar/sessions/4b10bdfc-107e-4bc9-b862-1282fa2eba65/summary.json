@@ -1,0 +1,29 @@
+{
+  "sessionId": "4b10bdfc-107e-4bc9-b862-1282fa2eba65",
+  "tmuxSession": "echo-compaction-bug-continued",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-6795-1776445198681-apdtn4iw.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "upgrades/NEXT.md",
+    "0.28.51.md",
+    "upgrades/0.28.51.md",
+    "src/data/builtin-manifest.json",
+    "a/src/data/builtin-manifest.json",
+    "b/src/data/builtin-manifest.json",
+    "tests/unit/isSystemOrProxyMessage.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T17:22:13.083Z",
+  "updatedAt": "2026-04-17T17:22:13.083Z",
+  "stale": false,
+  "outputHash": "5f0b5aa75fbb6a0cb88dffd55b594dc8"
+}

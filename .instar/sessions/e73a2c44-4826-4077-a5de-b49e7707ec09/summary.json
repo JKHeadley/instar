@@ -1,0 +1,29 @@
+{
+  "sessionId": "e73a2c44-4826-4077-a5de-b49e7707ec09",
+  "tmuxSession": "echo-topic-3849",
+  "task": "[telegram:3849] Hi Echo! We need a new job that can efficiently compare our docs to the evolving cod",
+  "phase": "testing",
+  "files": [
+    "specs/docs-code-sync.md",
+    ".claude/skills/docs-code-sync/SKILL.md",
+    ".instar/jobs.json",
+    "dx.md",
+    "marketing.md",
+    "synthesis.md",
+    "MEMORY.md",
+    "NEXT.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T19:46:56.715Z",
+  "updatedAt": "2026-03-28T19:46:56.715Z",
+  "stale": true,
+  "outputHash": "712aa27f299f05da799e68d7fe14179a"
+}

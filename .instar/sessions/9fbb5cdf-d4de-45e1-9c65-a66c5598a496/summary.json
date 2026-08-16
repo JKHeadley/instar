@@ -1,0 +1,21 @@
+{
+  "sessionId": "9fbb5cdf-d4de-45e1-9c65-a66c5598a496",
+  "tmuxSession": "echo-jobs-not-running",
+  "task": "Session 9fbb5cdf-d4de-45e1-9c65-a66c5598a496 (testing)",
+  "phase": "testing",
+  "files": [
+    "jobs.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-21T05:32:23.782Z",
+  "updatedAt": "2026-03-21T05:32:23.782Z",
+  "stale": true,
+  "outputHash": "93651561faf316b718bc3e4a7ac32717"
+}

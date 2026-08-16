@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "machines": {
+    "m_cc2ec651a91f03f85abb19bfe5e7e8f7": {
+      "name": "echo",
+      "status": "active",
+      "role": "awake",
+      "pairedAt": "2026-03-08T21:25:18.066Z",
+      "lastSeen": "2026-05-20T17:15:41.597Z"
+    }
+  }
+}

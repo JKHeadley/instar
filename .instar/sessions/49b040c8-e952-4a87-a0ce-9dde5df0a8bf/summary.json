@@ -1,0 +1,17 @@
+{
+  "sessionId": "49b040c8-e952-4a87-a0ce-9dde5df0a8bf",
+  "tmuxSession": "echo-im-29006112",
+  "task": "[IMPORTANT: Read /tmp/instar-imessage/bootstrap-62833341-1775095809879-zbhqrq.txt — it contains your",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-02T03:01:58.090Z",
+  "updatedAt": "2026-04-02T03:01:58.090Z",
+  "stale": true,
+  "outputHash": "e6c6320df8098a097b7331afa3ad366d"
+}

@@ -1,0 +1,23 @@
+{
+  "sessionId": "fa05d931-e650-486c-a2f1-5d1108b2f6aa",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.\n",
+  "phase": "testing",
+  "files": [
+    "tests/unit/context-no-truncation.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T20:32:24.824Z",
+  "updatedAt": "2026-03-29T20:32:24.824Z",
+  "stale": true,
+  "outputHash": "8a4a5eedbe1008a287656d50e6393450"
+}

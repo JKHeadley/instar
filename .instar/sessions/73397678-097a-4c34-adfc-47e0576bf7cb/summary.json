@@ -1,0 +1,20 @@
+{
+  "sessionId": "73397678-097a-4c34-adfc-47e0576bf7cb",
+  "tmuxSession": "echo-instar-setup-dev",
+  "task": "[telegram:6012] ➜  ~ find ~/.claude -name '.json' | xargs grep -l \"hook-event-reporter\" 2>/dev/null\n",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/Documents/Projects/instar/upgrades/NEXT.md",
+    "/Users/justin/Documents/Projects/instar/upgrades/0.28.20.md"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-10T00:16:37.289Z",
+  "updatedAt": "2026-04-10T00:16:37.289Z",
+  "stale": true,
+  "outputHash": "db1482d45b1bf7a3f48818f95cbbf6b7"
+}

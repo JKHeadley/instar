@@ -1,0 +1,23 @@
+{
+  "sessionId": "696239f9-8b2a-47b5-9c13-f60798700923",
+  "tmuxSession": "echo-instar-agent-robustness",
+  "task": "[telegram:5447] Keep going (IMPORTANT: Read /tmp/instar-telegram/ctx-5447-1776734769488.txt for thre",
+  "phase": "testing",
+  "files": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/scheduler/JobScheduler.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-21T04:02:49.296Z",
+  "updatedAt": "2026-04-21T04:02:49.296Z",
+  "stale": true,
+  "outputHash": "9e2434d11295010616adf9aac123b47a"
+}

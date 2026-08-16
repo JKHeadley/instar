@@ -1,0 +1,21 @@
+{
+  "sessionId": "b59808c5-29fa-4164-a0cc-00af156a3579",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] the inspec instar agent server is down, please see why (IMPORTANT: Read /tmp/instar-tel",
+  "phase": "testing",
+  "files": [
+    "NEXT.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T05:02:14.006Z",
+  "updatedAt": "2026-03-28T05:02:14.006Z",
+  "stale": true,
+  "outputHash": "6ca6e74e92c19820db73657d7e75e850"
+}

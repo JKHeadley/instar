@@ -1,0 +1,17 @@
+{
+  "sessionId": "03e5fa73-39d0-40ea-a3d3-785976832900",
+  "tmuxSession": "echo-jobs-not-running",
+  "task": "[telegram:1767] could you help me understand the puprose of this? 'commitment' is a very broad term ",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-22T01:44:54.108Z",
+  "updatedAt": "2026-03-22T01:44:54.108Z",
+  "stale": true,
+  "outputHash": "218a7e1c70b7657c804f45fcc07ed7c5"
+}

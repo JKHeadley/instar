@@ -1,0 +1,24 @@
+{
+  "sessionId": "d09adfe2-f85a-4ade-b141-a07b83a49bee",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] yes, please fix those failures (IMPORTANT: Read /tmp/instar-telegram/ctx-1490-177402",
+  "phase": "testing",
+  "files": [
+    "tests/e2e/compaction-telegram-context.test.ts",
+    "tests/e2e/messaging-multi-agent.test.ts",
+    "tests/unit/rate-limiter.test.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T17:40:28.395Z",
+  "updatedAt": "2026-03-20T17:40:28.395Z",
+  "stale": false,
+  "outputHash": "22f4d52a3333ad4208780f22f8672bd0"
+}
