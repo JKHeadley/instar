@@ -1,9 +1,0 @@
-❯ Write a haiku about provider portability.
-
-⏺ Models come and go,
-  Bridges built between their tongues—
-  Code outlives the API.
-
-✻ Baked for 2s
-
-  ⏵⏵ bypass permissions on (shift+tab to cycle)                                                                                                                             1 MCP server failed · /mcp

@@ -1,7 +1,0 @@
-❯ Give me the capital of France. Just the name.
-
-⏺ Paris
-
-✻ Brewed for 7s
-
-  ⏵⏵ bypass permissions on (shift+tab to cycle)                                                                                                                     Claude in Chrome enabled · /chrome
