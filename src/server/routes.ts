@@ -119,6 +119,16 @@ import { runDecisionGradingPass } from '../core/decisionGradingPass.js';
 import { annotateDecisionOutcome, getDecisionAnnotationRejectionCounters } from '../core/DecisionQualityRecorderImpl.js';
 import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
 import { DP_COMPLETION_EVALUATE, PROVENANCE_COVERAGE, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
+import {
+  TONE_OVERRIDE_WRONG_RULE_ID,
+  TONE_GATE_COMPONENT,
+  mintToneDecisionToken,
+  verifyToneDecisionToken,
+  bumpToneTokenMinted,
+  bumpToneGradedViaToken,
+  bumpToneOverrideWithoutToken,
+  bumpToneTokenRejected,
+} from '../core/toneDecisionToken.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
 import { RemoteAckStore } from '../core/RemoteAckStore.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
@@ -2024,6 +2034,67 @@ export function createRoutes(ctx: RouteContext): Router {
     new SqliteOutboundDedupStore(SqliteOutboundDedupStore.defaultPath(ctx.config.stateDir)),
   );
 
+  // ── Tone-gate contestation evidence (tone-gate-contestation-evidence) ──
+  //
+  // What makes `messaging-tone-gate` gradeable at all. The gate is ~99% of graded
+  // decision volume and every settled verdict was `unknown`: the only rule against
+  // it was a window CLOSER, and nothing carried a decision's identity from the
+  // HOLD to the sender's override of it.
+  //
+  // The join is a SIGNED TOKEN handed to the sender in the advisory 422 and echoed
+  // back on the re-send — stateless, exact, and it travels with the retry across
+  // machines. (An earlier build fingerprinted the message text and looked it up in
+  // a durable store; review correctly called that an elaborate local cache
+  // rebuilding a link that can just be handed over.)
+  //
+  // Observe-only: nothing here can alter, delay, or block a message.
+
+  /** Is the decision-quality seam live on this agent? (dev-live / fleet-dark.) */
+  function toneEvidenceLive(): boolean {
+    try {
+      return resolveDevAgentGate(ctx.config.provenance?.uniformSeam?.enabled, ctx.config);
+    } catch {
+      // @silent-fallback-ok: observability must never break what it observes.
+      return false;
+    }
+  }
+
+  /**
+   * Grade a held decision `wrong` from the sender's explicit, token-bound
+   * override. Total: any throw is swallowed — an evidence failure must never
+   * affect message delivery.
+   *
+   * The grade is `wrong` at `self-report` strength. An override establishes the
+   * sender CHOSE TO BYPASS the hold, never that the gate was objectively wrong;
+   * rung precedence therefore lets any independent grader outrank it.
+   */
+  function recordToneContestation(entry: { token: unknown; rule: string }): void {
+    try {
+      if (!toneEvidenceLive()) return;
+      if (entry.token === undefined || entry.token === null) {
+        // The override happened but its decision is unidentifiable here (a caller
+        // that did not echo the token, or a hold issued on another machine). It
+        // settles `unknown` — and the miss is COUNTED so the override tally is a
+        // lower bound of knowable looseness rather than unknowable looseness.
+        bumpToneOverrideWithoutToken();
+        return;
+      }
+      const verdict = verifyToneDecisionToken(entry.token, entry.rule);
+      if (verdict.rejected !== null || verdict.correlationId === null) {
+        if (verdict.rejected !== null) bumpToneTokenRejected(verdict.rejected);
+        return; // fail-closed: a rejected token never grades anything
+      }
+      const applied = annotateDecisionOutcome({
+        correlationId: verdict.correlationId,
+        ruleId: TONE_OVERRIDE_WRONG_RULE_ID,
+        gradedBy: { component: TONE_GATE_COMPONENT },
+        grade: 'wrong',
+        evidence: { rule: TONE_OVERRIDE_WRONG_RULE_ID, explicitAck: true, tokenBound: true },
+      });
+      if (applied.applied) bumpToneGradedViaToken();
+    } catch { /* @silent-fallback-ok: never break delivery for observability */ }
+  }
+
   // ── Messaging tone gate ──────────────────────────────────────────
   //
   // Invoked before forwarding agent-authored messages to a user. Runs the
@@ -2095,6 +2166,15 @@ export function createRoutes(ctx: RouteContext): Router {
        * decision-quality meter, never authority. Never overrides a blocking rule.
        */
       toneAdvisoryAck?: string;
+      /**
+       * The opaque token issued with the advisory 422, echoed back on the
+       * re-send (tone-gate-contestation-evidence). ADDITIVE and optional: the
+       * override semantics the operator set on 2026-07-18 are unchanged — the
+       * token only identifies WHICH held decision this override answers, so the
+       * contestation can be recorded against it. A missing/invalid token never
+       * blocks the send; the decision simply settles `unknown`.
+       */
+      toneDecisionToken?: string;
     },
   ): Promise<OutboundEvaluation> {
     // ── Localhost-link guard (operator-mandated HARD rule, 2026-06-05) ──
@@ -2465,8 +2545,22 @@ export function createRoutes(ctx: RouteContext): Router {
               signals,
               result: overridden,
             });
+            // The sender explicitly acknowledged the cited rule and re-sent. The
+            // token they echoed identifies exactly which held decision this
+            // answers — graded immediately, because the override IS the event.
+            recordToneContestation({ token: options.toneDecisionToken, rule: result.rule });
             return { ok: true };
           }
+          // Mint the contestation token (tone-gate-contestation-evidence). ADDITIVE:
+          // an existing caller that ignores it keeps working exactly as before —
+          // its override still delivers, it just settles `unknown` instead of
+          // recording which decision was contested. Null when the decision never
+          // reached the router (the deterministic degrade arms), in which case the
+          // field is simply absent.
+          const contestToken = toneEvidenceLive()
+            ? mintToneDecisionToken(result.correlationId, result.rule)
+            : null;
+          if (contestToken) bumpToneTokenMinted();
           return {
             ok: false,
             status: 422,
@@ -2477,7 +2571,8 @@ export function createRoutes(ctx: RouteContext): Router {
               rule: result.rule,
               issue: result.issue,
               suggestion: result.suggestion,
-              howToProceed: `ADVISORY — the message was NOT sent, and the decision is yours: revise and re-send, or re-send unchanged with metadata.toneAdvisoryAck set to "${result.rule}" to acknowledge and deliver (the override is recorded).`,
+              ...(contestToken ? { decisionToken: contestToken } : {}),
+              howToProceed: `ADVISORY — the message was NOT sent, and the decision is yours: revise and re-send, or re-send unchanged with metadata.toneAdvisoryAck set to "${result.rule}" to acknowledge and deliver (the override is recorded)${contestToken ? ', echoing metadata.toneDecisionToken from this response so the record names which decision you contested' : ''}.`,
               latencyMs: result.latencyMs,
             },
           };
@@ -2519,6 +2614,15 @@ export function createRoutes(ctx: RouteContext): Router {
       messageKind?: MessageKind;
       failClosedOnBudgetTimeout?: boolean;
       toneAdvisoryAck?: string;
+      /**
+       * The opaque token issued with the advisory 422, echoed back on the
+       * re-send (tone-gate-contestation-evidence). ADDITIVE and optional: the
+       * override semantics the operator set on 2026-07-18 are unchanged — the
+       * token only identifies WHICH held decision this override answers, so the
+       * contestation can be recorded against it. A missing/invalid token never
+       * blocks the send; the decision simply settles `unknown`.
+       */
+      toneDecisionToken?: string;
     },
   ): Promise<boolean> {
     // ── Self-Violation Signal (OBSERVE-ONLY) ──────────────────────────
@@ -13261,6 +13365,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       typeof metadata?.toneAdvisoryAck === 'string'
         ? metadata.toneAdvisoryAck.slice(0, 64)
         : undefined;
+    // The opaque token issued with the advisory 422, echoed back so the
+    // contestation is recorded against the decision it actually answers
+    // (tone-gate-contestation-evidence). Length-clamped; verified (signature,
+    // expiry, rule binding) at the seam — an absent or invalid token never blocks
+    // the send, it only means the decision settles `unknown`.
+    const toneDecisionToken =
+      typeof metadata?.toneDecisionToken === 'string'
+        ? metadata.toneDecisionToken.slice(0, 512)
+        : undefined;
     const metadataJobSlug = typeof metadata?.jobSlug === 'string' ? metadata.jobSlug.slice(0, 128) : '';
 
     // ── Observability breadcrumbs (§2.1 — visibility on the named dodge
@@ -13346,6 +13459,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         allowLocalhostLink,
         messageKind,
         toneAdvisoryAck,
+        toneDecisionToken,
       }))
     )
       return;

@@ -253,6 +253,15 @@ export interface ToneReviewResult {
   /** True if the LLM call failed and we fail-opened */
   failedOpen?: boolean;
   /**
+   * The router-minted correlation id for THIS decision
+   * (tone-gate-outcome-evidence-source). Present whenever the decision reached
+   * the router; absent on a path that never called it (the deterministic-floor
+   * degrade arms). The route seam uses it to join this verdict to its outcome —
+   * an explicit advisory override, or a revision — which is what makes the gate
+   * gradeable. Observability only: never read by any block/allow branch.
+   */
+  correlationId?: string;
+  /**
    * True when the cited rule's DISPOSITION is `advisory` (RULE_DISPOSITIONS):
    * the verdict is a NUDGE returned to the agent, never a terminal block. The
    * route seam maps it to a not-sent-yet advisory response with a deterministic
@@ -779,7 +788,30 @@ export class MessagingToneGate {
     }
   }
 
+  /**
+   * Review one outbound candidate.
+   *
+   * Thin wrapper over `reviewImpl` whose ONLY job is to surface the decision's
+   * correlation id on the result (tone-gate-outcome-evidence-source): the route
+   * seam needs it to join this verdict to what happens next — an explicit advisory
+   * override, or a revision — which is what makes the gate gradeable at all.
+   *
+   * The id is attached on EVERY exit, including the degrade/fail-closed arms, so a
+   * held-then-overridden degraded decision is still identifiable (the grading rules
+   * themselves refuse to grade a degraded decision). Purely
+   * additive: no branch here can change `pass`.
+   */
   async review(text: string, context: ToneReviewContext): Promise<ToneReviewResult> {
+    let captured: string | null = null;
+    const result = await this.reviewImpl(text, context, (id) => { captured = id; });
+    return captured === null ? result : { ...result, correlationId: captured };
+  }
+
+  private async reviewImpl(
+    text: string,
+    context: ToneReviewContext,
+    onCorrelationId: (id: string) => void,
+  ): Promise<ToneReviewResult> {
     const start = Date.now();
     const prompt = this.buildPrompt(
       text,
@@ -820,6 +852,16 @@ export class MessagingToneGate {
         context: buildToneDecisionContext(text, context),
         optionsPresented: [...TONE_OPTIONS_PRESENTED],
         promptId: TONE_GATE_PROMPT_ID,
+        // tone-gate-outcome-evidence-source: capture the decision's correlation
+        // id so the route seam can join this verdict to what happened NEXT (an
+        // explicit advisory override, or a revision). Without it the gate's own
+        // decisions were ungradeable — every settled verdict read `unknown`.
+        //
+        // The router fires this synchronously at MINT, exactly once, including
+        // for decisions that go on to throw, and contains a throwing callback
+        // itself (bumpOnCorrelationIdThrow). Assignment only — it can never
+        // alter the block/allow verdict.
+        onCorrelationId,
       },
     };
     const cfg = this.getConfig();

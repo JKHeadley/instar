@@ -853,6 +853,39 @@ export const RULE_REGISTRY: Readonly<Record<string, EvidenceRule>> = {
     evidenceStrength: 'self-report',
     owningComponent: 'CompletionChokepoint',
   },
+  // ── messaging-tone-gate right/wrong evidence (tone-gate-outcome-evidence-source)
+  //
+  // The tone gate is ~99% of graded volume and had NO right/wrong producer — only
+  // the window-close terminalizer below, so every settled verdict read `unknown`.
+  // These two rules grade it from events that already happen in production. They
+  // are deliberately kept SEPARATE with different evidence strengths: an explicit
+  // override is proof, an inferred revision is not, and §5.4.2 exists precisely so
+  // aggregates cannot imply stronger correctness than the evidence supports.
+  //
+  // NOTE what is absent by design: a PASS that drew no complaint NEVER grades
+  // `right`. Silence is not evidence — a gate that approved everything would look
+  // identical — so it stays `unknown` via the terminalizer. Honest unknowns beat a
+  // ~99% accuracy figure that measures nothing (spec G2/FD-A).
+  //
+  // An advisory HOLD explicitly overridden (`metadata.toneAdvisoryAck`) and
+  // delivered unchanged.
+  //
+  // RUNG/STRENGTH ARE `self-report` DELIBERATELY (cross-model review r1, codex
+  // gpt-5.5 finding 2). An override proves the SENDER CHOSE TO BYPASS the hold —
+  // it does NOT prove the gate was objectively wrong. A sender may override for
+  // urgency, for a policy tradeoff, or because a valid rule is inconvenient.
+  // Grading that `deterministic-proof` would replace "all unknown" with
+  // confidently mislabeled data — the same fabrication G2 refuses on the silence
+  // side, arriving through the other door. It is the judged party reporting on its
+  // own judgment, which is exactly what the `self-report` rung means; precedence
+  // (§5.4.3) therefore correctly lets any independent grader outrank it.
+  'tone-advisory-override-wrong-v1': {
+    ruleId: 'tone-advisory-override-wrong-v1',
+    decisionPoint: DP_MESSAGING_TONE_GATE,
+    rung: 'self-report',
+    evidenceStrength: 'self-report',
+    owningComponent: 'MessagingToneGate',
+  },
   // Phase B terminalizers. These rules do not manufacture a right/wrong
   // verdict from silence: once the bounded evidence window closes without an
   // independent outcome, they record the honest `unknown` grade so old rows

@@ -23,7 +23,13 @@ import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { DP_COMPLETION_EVALUATE, DP_EXTERNAL_HOG_KILL_LEAVE } from '../../src/data/provenanceCoverage.js';
+import {
+  DP_COMPLETION_EVALUATE,
+  DP_EXTERNAL_HOG_KILL_LEAVE,
+  DP_MESSAGING_TONE_GATE,
+  RULE_REGISTRY,
+} from '../../src/data/provenanceCoverage.js';
+import { TONE_OVERRIDE_WRONG_RULE_ID } from '../../src/core/toneDecisionToken.js';
 import { getDecisionQualityRecorder } from '../../src/core/decisionQualityTypes.js';
 import type { DecisionQualityRecorderImpl } from '../../src/core/DecisionQualityRecorderImpl.js';
 import { AutonomousRunStore } from '../../src/core/AutonomousRunStore.js';
@@ -89,6 +95,29 @@ describe('Decision-Quality E2E lifecycle (feature is alive)', () => {
     // The three first-customer WIRED points are present in the census surface.
     const wiredPoints = (res.body.points as Array<any>).map((p) => p.decisionPoint);
     expect(wiredPoints).toContain(DP_EXTERNAL_HOG_KILL_LEAVE);
+  });
+
+  it('the messaging-tone-gate right/wrong evidence source is ALIVE on the production init path', async () => {
+    // tone-gate-outcome-evidence-source. Before it, the highest-volume decision
+    // point had NO right/wrong producer — only a window closer — so every settled
+    // verdict was `unknown`. The point must no longer read as grader-less.
+    const res = await request(app).get('/decision-quality?sinceHours=24').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.censusDebt.wiredButNoGrader).not.toContain(DP_MESSAGING_TONE_GATE);
+
+    // The override rule resolves in the registry the annotate chokepoint consults,
+    // at SELF-REPORT strength — an override is the judged party's own account, so
+    // it must never be quotable as proof (FD-H).
+    expect(RULE_REGISTRY[TONE_OVERRIDE_WRONG_RULE_ID]).toMatchObject({
+      decisionPoint: DP_MESSAGING_TONE_GATE,
+      rung: 'self-report',
+      evidenceStrength: 'self-report',
+    });
+
+    // Wiring integrity: the grade pass accepts the carrier and still answers 200
+    // on a real boot (a null store degrades to the terminalizer, never a throw).
+    const graded = await request(app).post('/decision-quality/grade-pass').set(auth()).send({});
+    expect(graded.status).toBe(200);
   });
 
   it('POST /decision-quality/grade-pass is alive (200, not 503) and returns the { graded, byRule, cursors } contract', async () => {
