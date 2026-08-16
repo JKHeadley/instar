@@ -69,6 +69,8 @@ import path from 'node:path';
 import type { SessionManager, SessionTerminateAuthority } from '../core/SessionManager.js';
 import {
   KNOWN_CLAUDE_MODEL_IDS,
+  KNOWN_MODEL_IDS,
+  type EscalationFramework,
   escalatedModelIds,
   normalizeTierEscalationConfig,
 } from '../core/ModelTierEscalation.js';
@@ -438,6 +440,7 @@ import { buildAllCapabilityBlocks } from './CapabilityIndex.js';
 import { matchesSystemTemplate } from '../messaging/system-templates.js';
 import { resolvePendingRelayPath } from '../messaging/pending-relay-store.js';
 import Database from 'better-sqlite3';
+import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 
 /**
  * Build the /whoami request handler.
@@ -2139,6 +2142,30 @@ function readLiveEvolutionActs(stateDir: string): LiveEvolutionActs | null {
     return null;
   }
 }
+
+/**
+ * Session config keys an API caller may NOT patch — they must be set on the
+ * machine, in `.instar/config.json` or via the per-framework env lever.
+ *
+ * Round-13 fenced the executable-selection keys (a Bearer token must not choose
+ * which binary a session spawns). Round-17 (security) widened it: this set is
+ * no longer only about executables. `grokInteractiveSessions` is the SECOND of
+ * two gates that together admit tool-enabled interactive grok sessions — the
+ * first, `enabledFrameworks`, is not API-patchable at all — and it lived under
+ * `sessions`, which IS patchable. So one Bearer PATCH durably opened the lane
+ * the second gate exists to keep closed: an unbudgeted, tool-enabled session
+ * drawing on a weekly pool nobody can read. Same authority class as the binary
+ * path, so it belongs behind the same fence.
+ *
+ * Exported so the fence is ASSERTABLE. It was previously a bare array inline in
+ * the handler, which is why a security fence shipped with no test over its
+ * membership at all.
+ */
+export const OPERATOR_ONLY_SESSION_KEYS: ReadonlyArray<string> = [
+  'frameworkBinaryPaths',
+  'claudePath',
+  'grokInteractiveSessions',
+];
 
 export function createRoutes(ctx: RouteContext): Router {
   const router = Router();
@@ -9779,9 +9806,17 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(400).json({ error: '"prompt" must be a string under 500KB' });
       return;
     }
-    const SUPPORTED_SPAWN_FRAMEWORKS = ['claude-code', 'codex-cli', 'gemini-cli'];
-    if (framework !== undefined && !SUPPORTED_SPAWN_FRAMEWORKS.includes(framework)) {
-      res.status(400).json({ error: `"framework" must be one of: ${SUPPORTED_SPAWN_FRAMEWORKS.join(', ')}` });
+    // Round-17 (integration): this hand-written allowlist rejected `grok-build`
+    // and `pi-cli` with "must be one of: …", telling the operator grok is not a
+    // framework AT ALL. It is — its headless lane is deliberately closed, and
+    // the builder throws a legible `grok-headless-cwd-ungated` naming exactly
+    // that, a message engineered on purpose because it "beats a mystery ENOENT".
+    // The allowlist rejected first, so the engineered refusal never rendered.
+    // pi-cli was silently refused here too despite having an OPEN headless lane.
+    // Validate against the canonical set and let the builder produce the real
+    // refusal for a lane that is closed.
+    if (framework !== undefined && !(SUPPORTED_FRAMEWORKS as readonly string[]).includes(framework)) {
+      res.status(400).json({ error: `"framework" must be one of: ${SUPPORTED_FRAMEWORKS.join(', ')}` });
       return;
     }
     // Provider-portability v1.0.0: model whitelist is framework-aware.
@@ -9807,11 +9842,16 @@ export function createRoutes(ctx: RouteContext): Router {
         return;
       }
       const requestedFramework = framework ?? 'claude-code';
+      // ROUND-21: this was a ternary chain whose final arm was Claude's model
+      // list, so a `grok-build` spawn naming grok's OWN model (grok-4.6) was
+      // rejected with an enumeration of CLAUDE ids — and, inversely, a Claude
+      // model id was ACCEPTED into a grok spawn. codex keeps its narrower
+      // subscription-only list; every other framework now reads the canonical
+      // per-framework map, which is an exhaustive Record over the union and so
+      // cannot silently omit the next framework the way a chain does.
       const allowed = requestedFramework === 'codex-cli'
         ? [...GENERIC_TIERS, ...CODEX_MODELS_SUBSCRIPTION]
-        : requestedFramework === 'gemini-cli'
-          ? [...GENERIC_TIERS, ...KNOWN_GEMINI_MODELS]
-          : [...GENERIC_TIERS, ...KNOWN_CLAUDE_MODEL_IDS];
+        : [...GENERIC_TIERS, ...(KNOWN_MODEL_IDS[requestedFramework as EscalationFramework] ?? KNOWN_CLAUDE_MODEL_IDS)];
       if (!allowed.includes(model)) {
         res.status(400).json({
           error: `"model" must be one of: ${allowed.join(', ')} (framework: ${requestedFramework})`,
@@ -26996,6 +27036,46 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // dashboard-PIN-gated (ADV9-4 — two verifier-independent valves remain:
     // the conversational config edit and the raw file edit, so this costs no
     // emergency availability); re-enable is Bearer-OK.
+    // ── EXECUTABLE-SELECTION FENCE (round-12 security, grok-build spec §2.1).
+    // `sessions` is Bearer-patchable, and round-11 gave
+    // `sessions.frameworkBinaryPaths` its first load path — which silently made
+    // "which binary does a session spawn" an HTTP-writable value for every
+    // framework. One Bearer call could point `grok-build` at any executable on
+    // the box (and at the CLAUDE binary specifically, defeating §2.0's
+    // impersonation fence, which guards the FALLBACK and not a configured
+    // value). The lever stays real; its authority boundary is the config file
+    // and the environment, which is where the other two rungs already live.
+    if (patch && typeof patch === 'object' && 'sessions' in patch) {
+      const sess = (patch as Record<string, unknown>).sessions;
+      // Round-14 (adversarial): the fence matched ONE key name, and there is a
+      // THIRD path to the same authority — `sessions.claudePath` is a live load
+      // path that populates `frameworkBinaryPaths['claude-code']` AND is the
+      // deliberate fallback for codex-cli/gemini-cli, so a single Bearer PATCH
+      // could still redirect which executable three of the four frameworks
+      // spawn. Fence the executable-selection SET, not a key name; a future
+      // per-framework path key must be added here too.
+      // Round-17 (security): renamed from EXECUTABLE_SELECTION_KEYS — the set is no
+// longer only about which binary runs. `grokInteractiveSessions` is the SECOND
+// of the two gates that together admit tool-enabled interactive grok sessions
+// (the first, `enabledFrameworks`, is not API-patchable at all). It lived
+// under `sessions`, which IS patchable, so one Bearer PATCH durably opened the
+// lane the second gate exists to keep closed — an unbudgeted, tool-enabled
+// session drawing on an invisible shared weekly pool. Same authority class as
+// the binary path, so it belongs behind the same fence: file and env only.
+      const offending = sess && typeof sess === 'object' && !Array.isArray(sess)
+        ? OPERATOR_ONLY_SESSION_KEYS.filter((k) => k in (sess as Record<string, unknown>))
+        : [];
+      if (offending.length > 0) {
+        res.status(400).json({
+          error: `sessions.${offending.join(', sessions.')} is not patchable via the API — these `
+            + 'select which executable a session spawns, or admit a session lane that spends '
+            + 'against an unmetered pool. Set them in .instar/config.json (or via the '
+            + 'per-framework env lever) so the change is an operator act on the machine.',
+        });
+        return;
+      }
+    }
+
     let sagPatch: Record<string, unknown> | null = null;
     if ('intelligence' in patch) {
       const intel = (patch as Record<string, unknown>).intelligence;
@@ -34745,7 +34825,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         },
       };
 
-      const KNOWN_FRAMEWORKS = ['claude-code', 'codex-cli', 'gemini-cli'];
+      // Round-22: was the literal three-name list — the same unannotated shape as
+      // src/commands/route.ts, and the sibling found by grepping for it. It feeds
+      // OverrideDetector, so a request naming grok or pi was not recognised as
+      // naming a framework. Derived from the canonical list, which this file
+      // already imports and validates against elsewhere.
+      const KNOWN_FRAMEWORKS: ReadonlyArray<string> = SUPPORTED_FRAMEWORKS;
       const KNOWN_MODELS = [
         'opus-4.7', 'sonnet-4.6', 'haiku-4.5',
         'gpt-5.3-codex', 'gemini-2.5-flash', 'gemini-2.5-pro', 'deepseek-v4',

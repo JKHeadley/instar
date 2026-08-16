@@ -168,11 +168,33 @@ const PI_CLI_SIGNAL: FrameworkActivitySignal = {
     'executed-command lines ("$ <cmd>") with "Took N.Ns" completion stamps, spinner characters (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏). IDLE (NOT work): the status line "<cwd> … <model>" and the static banner "escape interrupt · ctrl+c/ctrl+d clear/exit".',
 };
 
+
+/**
+ * grok-build (probed grok 1.0.4): the fullscreen TUI shows a spinner and an
+ * "esc to interrupt" hint while a turn runs; idle shows the input box with
+ * the model tag (e.g. "grok-4.6"). CONSERVATIVE like pi's entry: does NOT
+ * match the bare word "grok" or the static model tag — both linger in idle
+ * scrollback and would recreate the codex idle-status false positive.
+ */
+const GROK_BUILD_SIGNAL: FrameworkActivitySignal = {
+  displayName: 'Grok Build',
+  toolCallOrSpinner: /⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|\b(thinking|working|generating|streaming)\b/i,
+  // Live-only: spinner + working words; excludes scrollback-persistent lines.
+  liveActivity: /⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|\b(thinking|working|generating|streaming)\b/i,
+  // grok's "esc to interrupt" hint is turn-scoped (probed 1.0.4) — it appears
+  // while a turn runs and clears at idle, unlike pi's always-visible banner.
+  escapeToInterrupt: /esc to interrupt/i,
+  runningIndicator: /\((running|executing|streaming)\)/i,
+  promptSignaturesLine:
+    'spinner characters (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏) and the turn-scoped "esc to interrupt" hint. IDLE (NOT work): the input box with the static model tag (e.g. "grok-4.6").',
+};
+
 const ACTIVITY_SIGNALS: Record<IntelligenceFramework, FrameworkActivitySignal> = {
   'claude-code': CLAUDE_CODE_SIGNAL,
   'codex-cli': CODEX_CLI_SIGNAL,
   'gemini-cli': GEMINI_CLI_SIGNAL,
   'pi-cli': PI_CLI_SIGNAL,
+  'grok-build': GROK_BUILD_SIGNAL,
 };
 
 /**

@@ -28,6 +28,11 @@ import type { ComponentFrameworksConfig } from './IntelligenceRouter.js';
  * documented, inspectable place. Order: Codex first (operator directive), Claude
  * last (the true last resort for background work). A unit test validates every
  * entry against the real `IntelligenceFramework` enum so an unknown name never ships.
+ *
+ * framework-list-subset-ok: grok-build is EXCLUDED on purpose (grok-build spec §4.4).
+ * Its usage pool is unreadable, so it can never report quota-healthy and must not be
+ * reachable by automatic internal routing — an operator opts into it explicitly or
+ * not at all. This omission is the design, not drift.
  */
 export const INTERNAL_FRAMEWORK_PREFERENCE: readonly IntelligenceFramework[] = [
   'codex-cli',
@@ -51,6 +56,11 @@ export const INTERNAL_FRAMEWORK_PREFERENCE: readonly IntelligenceFramework[] = [
  * This does NOT override the codex-first directive for the BACKGROUND categories
  * (`sentinel` / `reflector`) — their latency does not block a human, so they keep
  * the load-spreading order. Only `gate` (where a user waits) goes fastest-first.
+ *
+ * framework-list-subset-ok: grok-build is EXCLUDED for the same reason as the chain
+ * above (grok-build spec §4.4 — unreadable usage pool, never automatically routed),
+ * and additionally because its latency is unmeasured, which is disqualifying for the
+ * one chain whose whole purpose is a bounded response time.
  */
 export const LATENCY_SENSITIVE_FRAMEWORK_PREFERENCE: readonly IntelligenceFramework[] = [
   'pi-cli',

@@ -72,7 +72,11 @@ instar-*.tgz
 
 # Secrets & credentials
 data/relay-signing-key.json
-data/registry.db
+# SQLite writes -shm and -wal BESIDE the db, and the WAL holds real database
+# pages. Ignoring only `data/registry.db` covered the instance and not the class:
+# a `git add -A` on 2026-08-15 committed 4MB of registry WAL (e2e fixture rows —
+# alice/charlie/dave) and pushed it. The glob covers the whole family.
+data/registry.db*
 .mcpregistry_*
 demo.tape
 house-consciousness-framework/

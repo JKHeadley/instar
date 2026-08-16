@@ -13,8 +13,11 @@
  * forces a compile error if a case is missed.
  */
 
+import fs from 'node:fs';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import { codexSupportsHookTrustBypass } from './codexCapabilities.js';
+import { GROK_ONESHOT_DENIED_TOOLS } from '../providers/adapters/grok-build/transport/grokSpawn.js';
+import { resolveGrokBinaryPath } from '../providers/adapters/grok-build/config.js';
 import { EFFORT_LEVELS, type EffortLevel, type ThinkingMode } from './topicProfileValidation.js';
 
 /**
@@ -186,6 +189,13 @@ export interface InteractiveLaunchOptions {
    * No effect on non-pi frameworks.
    */
   piSessionDir?: string;
+  /**
+   * grok-build interactive opt-in (grok-build spec §7 round-8): the SAME
+   * enabledFrameworks flag that opens the reviewer would otherwise open
+   * interactive sessions too — a reviewer-only agent must be expressible.
+   * Threaded from `sessions.grokInteractiveSessions`; absent ⇒ refused.
+   */
+  grokInteractiveOptIn?: boolean;
   /**
    * Subscription & Auth Standard P1.3 (claude-code only): the per-account config
    * home for this session. When set, the builder injects
@@ -473,11 +483,83 @@ const piCliBuilder: Builder = (options) => {
   };
 };
 
+
+/**
+ * The grok interactive DUAL-GATE conjunction (grok-build spec §7 step 3),
+ * extracted as a pure function so the seam between "the levers reach the
+ * sessions slice" (the file-load test) and "a pre-computed flag opens the
+ * builder" (the builder test) is itself testable (lessons-aware round-8):
+ * an ||-for-&& regression here would open interactive grok on the reviewer
+ * lever alone with every flanking test green. BOTH levers required:
+ * enabledFrameworks admits the framework at all; grokInteractiveSessions
+ * is the DISTINCT interactive opt-in (strict === true — absent is refuse).
+ */
+export function computeGrokInteractiveOptIn(cfg: {
+  enabledFrameworks?: string[];
+  grokInteractiveSessions?: boolean;
+}): boolean {
+  return (
+    (cfg.enabledFrameworks ?? []).includes('grok-build') &&
+    cfg.grokInteractiveSessions === true
+  );
+}
+
+const grokBuildBuilder: Builder = (options) => {
+  // grok interactive launch (grok-build framework integration spec §4.2).
+  // FRESH-SPAWN-ONLY until the resume probe lands (decision-completeness
+  // round-3 finding 5): grok's -r/--resume semantics are UNVERIFIED (wrong
+  // resume can attach to the wrong session or lose history while claiming
+  // continuity), so resumeSessionId is deliberately IGNORED — every launch
+  // is a new session, pinned to a fresh deterministic id when given.
+  // `--always-approve` is NOT passed — tool approval stays interactive
+  // until the ACP permission contract is probed (capabilities.ts note).
+  // STRUCTURAL step-3 gate (integration round-8): enabledFrameworks alone
+  // must not open interactive sessions — that flag is the reviewer lever,
+  // and a reviewer-only opt-in must stay reviewer-only. Interactive grok
+  // requires the DISTINCT `sessions.grokInteractiveSessions` opt-in
+  // (Groky-class agents set it deliberately, accepting the named
+  // residuals: retention probe pending, no per-session budget brake).
+  if (!options.grokInteractiveOptIn) {
+    throw new Error(
+      'grok-interactive-ungated: interactive grok-build sessions require the ' +
+      'sessions.grokInteractiveSessions opt-in (grok-build spec §7/§4.2; CMT-1317)',
+    );
+  }
+  // NO --session-id either (adversarial round-6): the flag's create-vs-
+  // resume semantics are UNVERIFIED, and a reused deterministic id could
+  // silently RESUME a stored transcript — the same false-continuity hazard
+  // fresh-spawn-only exists to prevent. Grok mints its own session id;
+  // both sessionId and resumeSessionId are deliberately ignored until the
+  // §4.2 probe lands.
+  const argv: string[] = [options.binaryPath];
+  const resolvedModel = resolveModelForFramework('grok-build', options.defaultModel);
+  if (resolvedModel) {
+    argv.push('-m', resolvedModel);
+  }
+  return {
+    argv,
+    envOverrides: {
+      // Defense-in-depth: clear CLAUDECODE so a grok session can't be
+      // mis-detected as a Claude one by env-grepping tooling.
+      CLAUDECODE: '',
+      // BILLING LOCKDOWN ON THE SESSION LANE TOO (adversarial round-5 HIGH):
+      // tmux sessions inherit the operator's full shell env, so the vendor
+      // kill switch is FORCED and the metered keys are scrubbed here exactly
+      // as the adapter lane does — the composed billing invariant must hold
+      // on every lane that can spawn a grok process.
+      GROK_DISABLE_API_KEY_AUTH: '1',
+      XAI_API_KEY: '',
+      GROK_DEPLOYMENT_KEY: '',
+    },
+  };
+};
+
 const BUILDERS: Record<IntelligenceFramework, Builder> = {
   'claude-code': claudeCodeBuilder,
   'codex-cli': codexCliBuilder,
   'gemini-cli': geminiCliBuilder,
   'pi-cli': piCliBuilder,
+  'grok-build': grokBuildBuilder,
 };
 
 /**
@@ -512,6 +594,222 @@ export function resolveInteractiveFramework(input: {
   envFramework?: IntelligenceFramework | null;
 }): IntelligenceFramework {
   return input.perCall ?? input.configFramework ?? input.envFramework ?? 'claude-code';
+}
+
+/**
+ * Resolve a framework's launch binary, with the NON-CLAUDE IMPERSONATION FENCE
+ * (grok-build spec §2.0; PI-HARNESS-INTEGRATION-SPEC §0.1).
+ *
+ * `config.claudePath` holds a CLAUDE binary on a claude-code install, so a bare
+ * `frameworkBinaryPaths[fw] ?? claudePath` silently launches Claude with another
+ * framework's argv when that framework's binary is missing — a mislabelled
+ * session spending the WRONG account's quota. Every non-Claude framework must
+ * therefore fall back to its OWN conventional binary and fail loudly in the pane
+ * instead.
+ *
+ * Round-9 (adversarial): this exists as ONE function precisely because the fence
+ * had been applied at two sites and MISSED at the third (the headless resolution
+ * in SessionManager.spawnSession), which the `grok-headless-cwd-ungated` throw
+ * masked only incidentally — lifting that unrelated gate would have re-opened
+ * impersonation with nothing testing the path. A shared resolver makes a FOURTH
+ * divergence impossible by construction rather than by review vigilance.
+ */
+/**
+ * Is this framework's HEADLESS lane structurally closed (its builder refuses
+ * unconditionally)? Callers use this to fall back BEFORE constructing a launch,
+ * so a framework whose interactive lane works can still be an agent's default
+ * without breaking every job spawn. Kept beside the builders so the two cannot
+ * drift: a lane that opens must be removed here in the same edit.
+ */
+export function headlessLaneIsClosed(framework: IntelligenceFramework): boolean {
+  // grok-build: refuses with `grok-headless-cwd-ungated` until the scratch-cwd
+  // wiring lands (grok-build spec §4.3 lane 3).
+  return framework === 'grok-build';
+}
+
+/**
+ * Pick the framework a CLOSED headless lane should fall back to — or null when
+ * there is no honest choice, in which case the caller must let the lane's own
+ * refusal stand.
+ *
+ * Round-13 (adversarial): the first version of this fallback hardcoded
+ * `claude-code` with no check of `enabledFrameworks` and no launchability
+ * probe, which is the opposite of the §5.2 pattern its own comment claimed to
+ * mirror. On the operator's actual deliverable — a Grok-primary agent that may
+ * never have enabled claude-code — every job would have spawned `claudePath`
+ * (always populated) pointing at a binary that can be absent or unauthed. A
+ * fallback that swaps one failure for a less legible one is not a fallback.
+ */
+export function resolveHeadlessFallbackFramework(input: {
+  requested: IntelligenceFramework;
+  enabledFrameworks?: ReadonlyArray<string>;
+  frameworkBinaryPaths?: Partial<Record<IntelligenceFramework, string>>;
+  claudePath?: string;
+  binaryExists: (candidatePath: string) => boolean;
+  env?: NodeJS.ProcessEnv;
+}): IntelligenceFramework | null {
+  if (!headlessLaneIsClosed(input.requested)) return input.requested;
+  // Prefer the agent's own enabled frameworks, in their declared order, and
+  // only ever a framework whose headless lane is OPEN and whose binary is
+  // actually present. claude-code is the last resort, not the assumption.
+  // Round-14 (adversarial): `enabledFrameworks` is cast straight from JSON with
+  // no membership filter, so a typo'd value arrived here verbatim, was returned
+  // as the chosen framework, and turned a legible `grok-headless-cwd-ungated`
+  // refusal into an unrelated "no builder registered" throw plus a disclosure
+  // line naming a framework that does not exist. No impersonating spawn — the
+  // builder lookup fails — but the failure stops naming itself.
+  const KNOWN: ReadonlyArray<IntelligenceFramework> = [
+    'claude-code', 'codex-cli', 'gemini-cli', 'pi-cli', 'grok-build',
+  ];
+  // Round-17 (adversarial): `'claude-code'` was appended UNCONDITIONALLY, so
+  // the normative contract's "runs on an ENABLED framework" was false on
+  // exactly this spec's deliverable shape — a grok-only agent that
+  // deliberately did NOT enable claude-code still had its scheduled job
+  // spawns land on the Claude account. That is a billing consequence chosen
+  // by a fallback, not by the operator. claude-code is now a candidate only
+  // when it is genuinely enabled (or when no list is configured at all, which
+  // is the pre-existing single-framework default shape and must keep working).
+  // When nothing qualifies the lane's own named refusal stands, which the
+  // spec already calls the honest outcome on a single-framework machine.
+  const enabled = ((input.enabledFrameworks ?? []) as IntelligenceFramework[]).filter((f) =>
+    KNOWN.includes(f),
+  );
+  const noListConfigured = (input.enabledFrameworks ?? []).length === 0;
+  const candidates: IntelligenceFramework[] = [
+    ...enabled,
+    ...(noListConfigured || enabled.includes('claude-code') ? (['claude-code'] as const) : []),
+  ];
+  for (const candidate of candidates) {
+    if (headlessLaneIsClosed(candidate)) continue;
+    // EXPLICIT FRAMEWORK-KEYED BINARY ONLY (round-15 adversarial + security).
+    // Round-14's guard closed the direction it was written for and left the
+    // INVERSE open, which is worse: on a grok-primary agent `config.claudePath`
+    // holds the GROK binary (Config sets it from the configured framework), and
+    // the guard exempted `claude-code` — so the fallback resolved label
+    // claude-code onto the grok binary and spawned it through the CLAUDE
+    // builder, which supplies none of the grok lane's controls: no forced
+    // GROK_DISABLE_API_KEY_AUTH, no metered-key scrub, no auth preflight, no
+    // tool deny-list, no scratch cwd, no budget record. That defeats invariant 1
+    // on the exact shape this spec calls its deliverable. A bare command name
+    // (pi's `pi`) was likewise accepted with NO presence evidence, pre-empting a
+    // working framework.
+    //
+    // The rule that closes both: a fallback candidate must have its OWN
+    // explicitly-keyed binary path, present on disk. Nothing inferred, nothing
+    // compat-shared. When no candidate qualifies the function returns null and
+    // the closed lane's own named refusal stands — which is the honest outcome
+    // on a single-framework machine, not a regression.
+    const bin = input.frameworkBinaryPaths?.[candidate];
+    if (!bin || !bin.includes('/')) continue;
+    // Round-14 (lessons) found the first half of this: a candidate that looked
+    // "present" only because the CLAUDE binary exists. The explicit-keyed rule
+    // above subsumes it — an entry in `frameworkBinaryPaths[candidate]` is only
+    // written when THAT framework's CLI was detected or the operator set it.
+    if (input.binaryExists(bin)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Does a resolved framework binary actually exist on disk?
+ *
+ * Round-17 (security) found the grok "binary present" gates were DEAD CODE:
+ * `resolveGrokBinaryPath` is TOTAL — it always falls through to a
+ * $GROK_HOME-relative path — so `if (!grokPath)` could never fire, and an
+ * operator who enabled grok-build without installing the CLI got a green
+ * "registered" line instead of the install prompt. That is the round-11 fix's
+ * inverse: routing every caller through one canonical resolver was right, and
+ * it silently removed the resolver's ability to report ABSENCE.
+ *
+ * Keeping the resolver total is correct (a session lane WANTS a path so the
+ * pane fails loudly and visibly). Absence belongs at the GATE sites, which is
+ * what this is for.
+ *
+ * Tri-state on purpose. `false` means "looked, genuinely not there" — the only
+ * value a gate should act on. `'unknown'` means the probe itself could not
+ * answer (unreadable PATH, fs error); a gate must NOT refuse on that, because
+ * refusing on a broken prober turns a diagnostic into an outage. Only an
+ * explicit `false` earns the refusal.
+ */
+export function frameworkBinaryExists(bin: string | undefined): boolean | 'unknown' {
+  if (!bin) return false;
+  try {
+    if (bin.includes('/')) return fs.existsSync(bin);
+    const pathEntries = (process.env.PATH ?? '').split(':').filter(Boolean);
+    if (pathEntries.length === 0) return 'unknown';
+    return pathEntries.some((dir) => fs.existsSync(`${dir}/${bin}`));
+  } catch {
+    // @silent-fallback-ok: a prober failure is not evidence of absence.
+    return 'unknown';
+  }
+}
+
+export function resolveFrameworkBinaryPath(input: {
+  framework: IntelligenceFramework;
+  frameworkBinaryPaths?: Partial<Record<IntelligenceFramework, string>>;
+  claudePath?: string;
+  /**
+   * The agent's RESOLVED runtime framework (round-16 security). `claudePath` is
+   * only the Claude binary when the agent is claude-primary — `Config` sets it
+   * from the CONFIGURED framework, so on a grok-primary agent it holds the GROK
+   * binary. Without this input the `claude-code` arm returned grok's binary
+   * under Claude's label, and `TopicProfileResolver.isLaunchable` (which calls
+   * this same resolver) then reported the pin LAUNCHABLE, fired no § 5.2 notice,
+   * and spawned grok through the Claude builder — the round-15 inverse, one
+   * label over. Absent ⇒ the historical behaviour, so existing callers are
+   * unchanged.
+   */
+  configuredFramework?: IntelligenceFramework;
+  env?: NodeJS.ProcessEnv;
+}): string | undefined {
+  const env = input.env ?? process.env;
+  // Round-10 (decision-completeness): grok has TWO operator levers and each
+  // consumer used to honour only ONE — the adapter read `GROK_BUILD_PATH` and
+  // never `frameworkBinaryPaths`; this fence read `frameworkBinaryPaths` and
+  // never `GROK_BUILD_PATH`. Setting either lever therefore relocated one lane
+  // while the other resolved elsewhere: precisely the split-roots failure
+  // § 2.1's normative order exists to make impossible. Grok now delegates to
+  // the ONE canonical resolver rather than reimplementing the ladder here.
+  if (input.framework === 'grok-build') {
+    return resolveGrokBinaryPath({
+      env,
+      configuredPath: input.frameworkBinaryPaths?.['grok-build'],
+    });
+  }
+  const configured = input.frameworkBinaryPaths?.[input.framework];
+  if (configured) return configured;
+  switch (input.framework) {
+    case 'pi-cli':
+      // A bare name lets PATH resolution work when detection missed an install.
+      return 'pi';
+    case 'codex-cli':
+    case 'gemini-cli':
+      // FENCED (round-16 lessons). These kept the historical `claudePath`
+      // fallback for two rounds on the reasoning that fencing them was another
+      // spec's scope. Round 15 produced the evidence that overturns it: on a
+      // grok-primary agent `config.claudePath` is set to the GROK binary, so
+      // this arm was not "fall back to Claude" at all — a codex- or
+      // gemini-pinned topic on that machine resolved to grok, was reported
+      // LAUNCHABLE by the §5.2 probe, and would have spawned grok under another
+      // framework's builder with none of the grok lane's billing or confinement
+      // controls. Fencing therefore CLOSES an impersonation rather than
+      // introducing a behaviour change, which is the opposite of the earlier
+      // rationale. A bare name lets PATH resolution work where the CLI is
+      // installed but undetected; a missing binary then fails loudly in the
+      // pane instead of running someone else's.
+      return input.framework === 'codex-cli' ? 'codex' : 'gemini';
+    default:
+      // claude-code: `claudePath` is trustworthy ONLY on a claude-primary
+      // agent. When the agent runs another framework and Claude was never
+      // detected (so there is no keyed entry above), returning claudePath hands
+      // back THAT framework's binary under the claude-code label. A bare
+      // `claude` lets PATH resolution work where Claude is installed but
+      // undetected, and fails loudly in the pane otherwise.
+      if (input.configuredFramework && input.configuredFramework !== 'claude-code') {
+        return 'claude';
+      }
+      return input.claudePath;
+  }
 }
 
 /**
@@ -739,11 +1037,32 @@ const piCliHeadlessBuilder: HeadlessBuilder = (options) => {
   };
 };
 
+
+const grokBuildHeadlessBuilder: HeadlessBuilder = (options) => {
+  // grok headless one-shot (spec §4.1). NOTE: this legacy spawn path passes
+  // the prompt as the -p argv value — acceptable ONLY for internal
+  // scheduler-authored prompts. The provider-registry adapter (the preferred
+  // path) uses --prompt-file; new callers should go through it. The prompt is
+  // exactly one argv element following `-p`, so a leading-dash prompt can't
+  // be re-parsed as a flag.
+  // STRUCTURAL GATE, not prose (adversarial round-7): the headless lane
+  // runs in the session's project cwd, so the §4.1 deny-list residual
+  // acceptance (which leans on the scratch-cwd bound) does NOT cover it.
+  // Until a scratch cwd lands at the SessionManager grok spawn site
+  // (CMT-1317), a grok headless job REFUSES loudly rather than running a
+  // self-updating CLI with the repo as its working tree.
+  throw new Error(
+    'grok-headless-cwd-ungated: grok-build headless job spawns are refused until ' +
+    'the SessionManager spawn site provides a scratch cwd (grok-build spec §8; CMT-1317)',
+  );
+};
+
 const HEADLESS_BUILDERS: Record<IntelligenceFramework, HeadlessBuilder> = {
   'claude-code': claudeCodeHeadlessBuilder,
   'codex-cli': codexCliHeadlessBuilder,
   'gemini-cli': geminiCliHeadlessBuilder,
   'pi-cli': piCliHeadlessBuilder,
+  'grok-build': grokBuildHeadlessBuilder,
 };
 
 /**

@@ -163,6 +163,16 @@ describe('renderAccounts', () => {
     const t = el();
     renderAccounts(doc, t, [{ id: 'a', nickname: 'n', provider: 'anthropic', framework: 'claude-code', status: 'warming' }], NOW);
     expect(t.querySelector('.sub-account-noquota')).toBeTruthy();
+    expect(t.querySelector('.sub-account-noquota')!.textContent).toContain('yet');
+  });
+  it('a grok account names the PERMANENT condition instead of implying a pending read', () => {
+    // grok-build has no usage surface at all, so no poll will ever produce a
+    // snapshot — "yet" would promise a reading that cannot arrive (round-11).
+    const t = el();
+    renderAccounts(doc, t, [{ id: 'g', nickname: 'grok', provider: 'xai', framework: 'grok-build', status: 'active' }], NOW);
+    const text = t.querySelector('.sub-account-noquota')!.textContent!;
+    expect(text).toContain('not readable');
+    expect(text).not.toContain('yet');
   });
   it('shows a token-health line when the account was auto-refreshed', () => {
     const t = el();

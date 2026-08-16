@@ -118,7 +118,7 @@ describe('frameworkActivitySignals', () => {
     it('enumerates every supported framework', () => {
       const signals = listActivitySignals();
       const frameworks = signals.map(s => s.framework).sort();
-      expect(frameworks).toEqual(['claude-code', 'codex-cli', 'gemini-cli', 'pi-cli']);
+      expect(frameworks).toEqual(['claude-code', 'codex-cli', 'gemini-cli', 'grok-build', 'pi-cli']);
     });
 
     it('each entry exposes the full signal shape', () => {

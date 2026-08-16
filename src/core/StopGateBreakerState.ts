@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { SUPPORTED_FRAMEWORKS } from './TopicFrameworksStore.js';
 
 export interface StopGateBreakerState {
   breakerKey: string;
@@ -78,7 +79,14 @@ export interface StopGateRoutingIdentity {
 
 /** Stable route identity: excludes release, machine, credential and request data by construction. */
 export function stopGateBreakerKey(identity: StopGateRoutingIdentity): string {
-  const frameworks = new Set(['claude-code', 'codex-cli', 'gemini-cli', 'pi-cli']);
+  // Round-17 (integration): this hand-written set omitted 'grok-build', so a
+  // grok-primary agent's route identity collapsed onto the SAME key as an
+  // agent with no framework configured at all — an agent switching its
+  // default to grok-build inherited the prior route's durable breaker state,
+  // and a still-open breaker kept the Stop gate suppressed on what is
+  // genuinely a different route. Derived from the canonical list so the next
+  // framework cannot reintroduce the gap by omission.
+  const frameworks = new Set<string>(SUPPORTED_FRAMEWORKS);
   const framework = (value: string | undefined): string | null =>
     value && frameworks.has(value) ? value : null;
   const failureSwap = [...new Set(identity.failureSwap ?? [])]

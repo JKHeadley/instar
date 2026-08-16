@@ -11,7 +11,7 @@ You are the security reviewer for an instar spec under convergence review.
 Read these in order:
 
 1. The spec file at {SPEC_PATH}
-2. `/Users/justin/Documents/Projects/instar/docs/signal-vs-authority.md` — the architectural principle every instar spec must comply with.
+2. `docs/STANDARDS-REGISTRY.md` — the Signal vs Authority standard lives there. Repo-relative ON PURPOSE: the previous absolute path pointed into one author's machine, and this template is delivered to every agent, so on every other machine it named a file that could not exist. The constitution IS mirrored into an agent's own tree by the update path; in a checkout, `docs/signal-vs-authority.md` carries the longer treatment. If neither is present where you are running, say so rather than inventing a source. — the architectural principle every instar spec must comply with.
 3. Any architectural doc the spec references (typically under `docs/`).
 
 Your SECURITY perspective: what attack surfaces, leaks, or abuse paths could this design open?

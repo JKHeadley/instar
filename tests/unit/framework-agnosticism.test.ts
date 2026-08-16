@@ -42,7 +42,14 @@ describe('framework-agnosticism: warm-session live-inject covers ALL frameworks'
   it('every supported framework has an interactive launch builder (warm worker can be spawned)', () => {
     for (const fw of SUPPORTED_FRAMEWORKS) {
       expect(
-        () => buildInteractiveLaunch(fw, { binaryPath: `/usr/local/bin/${fw}` }),
+        () => buildInteractiveLaunch(fw, {
+          binaryPath: `/usr/local/bin/${fw}`,
+          // grok's interactive lane is DELIBERATELY dual-gated (grok-build spec
+          // §4.3). The property under test is "a builder exists so a warm
+          // worker CAN be launched", not "every lane is ungated" — so satisfy
+          // the opt-in here rather than deleting the framework from the sweep.
+          ...(fw === 'grok-build' ? { grokInteractiveOptIn: true } : {}),
+        }),
         `framework "${fw}" has no interactive launch builder — a warm A2A worker in ${fw} cannot be launched`,
       ).not.toThrow();
     }

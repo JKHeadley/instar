@@ -23,7 +23,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { findGeminiSessionFileSync } from '../providers/adapters/gemini-cli/observability/sessionPaths.js';
 
-export type SessionFramework = 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
+export type SessionFramework = 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build';
 
 export interface ResolveTranscriptOptions {
   framework: SessionFramework;
@@ -118,8 +118,51 @@ export function resolveFrameworkTranscriptPath(opts: ResolveTranscriptOptions): 
       return codexTranscriptPath(opts);
     case 'gemini-cli':
       return geminiTranscriptPath(opts);
+    // Round-11 (lessons): grok-build fell through `default` to the CLAUDE
+    // transcript path — a file that never exists for a grok session. Read-only
+    // consumers fail safe (an unprobeable transcript → ambiguous → KEEP), but
+    // `SessionManager.isTranscriptRecentlyActive` returns FALSE on an
+    // unprobeable path, so the age-kill liveness protection added after the
+    // 2026-06-13 "killed mid-work while doing tool work outside the pane's
+    // process tree" incident was a structural no-op for grok while APPEARING
+    // wired. Returning '' is the honest answer — the caller already treats an
+    // empty path as "no transcript evidence", which is true here, rather than
+    // silently probing another framework's file. A grok-native transcript
+    // location is a real follow-up once one is identified.
+    case 'grok-build':
+      return '';
+    // Round-17 (integration): pi-cli had the SAME defect round-11 fixed for
+    // grok — it fell through `default` to the CLAUDE transcript path, so a pi
+    // session probed a file belonging to another framework. Found by widening
+    // the drift canary to cover every union member instead of the three it
+    // had been hand-listing; the fix above had been applied to grok only, and
+    // the neighbour it shared a root with was never swept. Same honest answer:
+    // no mapped layout means no transcript evidence, not another framework's
+    // file. A pi-native location is the same open follow-up as grok's.
+    case 'pi-cli':
+      return '';
     case 'claude-code':
+      return claudeTranscriptPath(opts);
     default:
+      // NOT dead code, and NOT the same case as the two above.
+      //
+      // Round-17 correction to my own round-17 change: I first made this
+      // branch return '' with a `never` exhaustiveness guard, which broke the
+      // documented behaviour for a genuinely-UNKNOWN framework string — a
+      // typo or legacy value arriving from raw JSON config. Those two cases
+      // are different and must not be conflated:
+      //
+      //   KNOWN but unmapped (grok-build, pi-cli): we know it is NOT claude,
+      //     so returning a claude path would probe another framework's file.
+      //     '' is the honest answer — handled explicitly above.
+      //   UNKNOWN string: we know nothing. On the overwhelmingly common
+      //     claude-primary agent the claude layout is the right guess, and
+      //     returning '' instead would silently disable the age-kill liveness
+      //     protection for a session whose framework name is merely misspelled.
+      //
+      // The union is covered by the explicit cases above, so a NEW framework
+      // still cannot reach here by accident — it fails typecheck at every
+      // OTHER exhaustive switch over IntelligenceFramework first.
       return claudeTranscriptPath(opts);
   }
 }

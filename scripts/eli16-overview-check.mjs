@@ -37,11 +37,28 @@ export function resolveEli16Path(specPath, specFm) {
   const fmMatch = specFm.match(/^\s*eli16-overview\s*:\s*["']?([^"'\n]+)/m);
   if (fmMatch) {
     const declared = fmMatch[1].trim().replace(/["']/g, '');
-    return {
-      resolvedPath: path.resolve(specDir, declared),
-      source: 'frontmatter',
-      siblingPath,
-    };
+    // A declared value is resolved SPEC-DIR-RELATIVE (the documented shape).
+    // Round-12 (integration): 17 specs — including the one that surfaced this —
+    // declare a REPO-ROOT-relative value instead, which resolved to
+    // `docs/specs/docs/specs/…` and made the gate refuse a spec whose companion
+    // sat right beside it. The gate had been undeliverable to agents, so the
+    // class stayed invisible until the delivery fix landed. Try the declared
+    // path, then the same value from the repo root, then the sibling that
+    // actually exists — a companion that IS there must not read as missing.
+    const candidates = [
+      path.resolve(specDir, declared),
+      path.resolve(process.cwd(), declared),
+    ];
+    const hit = candidates.find((c) => fs.existsSync(c));
+    if (hit) {
+      return { resolvedPath: hit, source: 'frontmatter', siblingPath };
+    }
+    if (fs.existsSync(siblingPath)) {
+      return { resolvedPath: siblingPath, source: 'sibling', siblingPath };
+    }
+    // Nothing exists anywhere — report the DECLARED resolution so the refusal
+    // names what the author asked for.
+    return { resolvedPath: candidates[0], source: 'frontmatter', siblingPath };
   }
   if (fs.existsSync(siblingPath)) {
     return { resolvedPath: siblingPath, source: 'sibling', siblingPath };

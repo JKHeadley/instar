@@ -114,6 +114,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        # ROUND-20: the deferral-carrier lint scopes its ratchet to the PR's
+        # diff against the merge base. At the default fetch-depth a
+        # pull_request checkout has neither origin/main nor main, so the
+        # gate cannot determine scope and — correctly refusing to report
+        # clean on an uninspected run — fails EVERY PR regardless of marker
+        # quality. Round 19 traded a vacuous pass for an unconditional red;
+        # history is what the check actually needs. Other jobs here already
+        # set this for the same reason.
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 20

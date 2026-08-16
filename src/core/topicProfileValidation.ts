@@ -71,6 +71,17 @@ export const PER_TOKEN_LANE_MODEL_IDS: Partial<Record<IntelligenceFramework, rea
   'gemini-cli': [],
   // pi-cli's enum is closed-empty — nothing to classify.
   'pi-cli': [],
+  // ROUND-22: grok-build was the only framework absent from this table, which
+  // matters more here than anywhere else — it is the one framework whose billing
+  // sink is UNKNOWN (spec §0.0), so a reader looking for "what does grok cost per
+  // token" found silence where every sibling had a stated reason. Empty for a
+  // reason that is NOT "it is free": grok's ids (grok-4.6, grok-4.5) ride the
+  // subscription-authed CLI with no per-token id to name, so there is nothing this
+  // table CAN refuse. The control that actually holds the billing line for grok is
+  // the auth policy — metered API keys refused, `disable_api_key_auth` verified —
+  // not this deny-set. Absent and empty behave identically; the difference is that
+  // an entry states which of the two this is.
+  'grok-build': [],
 };
 
 /**

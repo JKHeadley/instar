@@ -24,6 +24,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import { initProject } from './commands/init.js';
+import { SUPPORTED_FRAMEWORKS } from './core/TopicFrameworksStore.js';
 import { SafeFsExecutor } from './core/SafeFsExecutor.js';
 // setup.ts is imported dynamically — it depends on @inquirer/prompts which requires Node 20.12+
 import { startServer, stopServer, restartServer } from './commands/server.js';
@@ -356,9 +357,15 @@ program
   .option('--scenario <number>', 'Scenario number 1-8 (non-interactive)')
   .option(
     '--framework <name>',
-    'AI runtime to host the setup wizard: claude-code (default), codex-cli, or gemini-cli',
+    `AI runtime to host the setup wizard: ${SUPPORTED_FRAMEWORKS.join(', ')} (claude-code default)`,
     (v: string) => {
-      const allowed = ['claude-code', 'codex-cli', 'gemini-cli'];
+      // ROUND-21: this was a hand-written list, stale since pi-cli landed, so
+      // `setup --framework grok-build` exited 1 while `init --framework
+      // grok-build` (35 lines below, fixed by hand) worked. Fixing one
+      // sibling and not the other is the whole failure mode — so both now
+      // DERIVE, and the help text derives too rather than being a second
+      // copy that can rot on its own.
+      const allowed: readonly string[] = SUPPORTED_FRAMEWORKS;
       if (!allowed.includes(v)) {
         console.error(`\n  --framework must be one of: ${allowed.join(', ')}\n`);
         process.exit(1);
@@ -391,9 +398,12 @@ program
   .option('--standalone', 'Create a standalone agent at ~/.instar/agents/<name>/')
   .option(
     '--framework <name>',
-    'AI runtime to target: claude-code (default), codex-cli, gemini-cli, or both',
+    `AI runtime to target: ${SUPPORTED_FRAMEWORKS.join(', ')}, or both (claude-code default)`,
     (v: string) => {
-      const allowed = ['claude-code', 'codex-cli', 'gemini-cli', 'both'];
+      // Round-21: was kept "in lockstep" by hand — which is how it went stale
+      // when pi-cli landed and stayed stale until grok-build tripped it
+      // (2026-08-14). Derived now, so a sixth framework needs no edit here.
+      const allowed = [...SUPPORTED_FRAMEWORKS, 'both'];
       if (!allowed.includes(v)) {
         console.error(`\n  --framework must be one of: ${allowed.join(', ')}\n`);
         process.exit(1);

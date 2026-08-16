@@ -155,6 +155,75 @@ export interface MenuMatch {
 // ─── Pure structural helpers ─────────────────────────────────────────────────────
 
 const NUMBERED_OPTION_RE = /^\s*\d+\.\s/;
+/**
+ * grok-build's approval menu uses RADIO options, not `N. ` — characterized from a
+ * live wedge on 2026-08-15:
+ *
+ *     1 (●) Yes, and don't ask again for anything (always-approve mode)
+ *     2 (○) Yes, proceed
+ *     3 (○) No, reject (type to add feedback)
+ *     1/3:select │ Tab:next option │ Ctrl+c:cancel │ Esc:scrollback
+ *
+ * WHY THIS MATTERS MORE THAN A MISSING PATTERN. Every structural detector here
+ * missed that shape — no `N. ` options, no `❯` selector, no "Esc to cancel", no
+ * "Do you want to proceed". So a grok session sat frozen on its first tool
+ * approval and this resolver, which ships as an ALWAYS-ON floor whose stated
+ * contract is that it "never freezes silently", emitted nothing at all: no
+ * auto-answer AND no attention item. Its escalation fires when it DETECTS a menu
+ * it declines to answer — an UNDETECTED menu is indistinguishable from no menu,
+ * so the alarm is silent exactly where the floor is blind. Found by deploying a
+ * grok agent and driving it, not by reading this file.
+ *
+ * Deliberately narrow: the radio glyphs make it near-impossible to match ordinary
+ * numbered prose, and the caller's conditions (glyph-led, near-bottom, blocking
+ * affordance, not generating) still all apply.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * READ THIS BEFORE WIRING AUTO-ANSWER FOR grok-build.
+ *
+ * This resolver answers by sending `Enter` (see `approveKey`). On claude-code
+ * that presses option 1 = "Yes", approving THE CALL IN FRONT OF IT. On grok,
+ * option 1 — the one carrying the `●`, i.e. pre-selected — is "Yes, and don't
+ * ask again for ANYTHING (always-approve mode)". The approve-ONCE equivalent is
+ * option 2, which is not where the cursor starts.
+ *
+ * So the same keystroke means two different things. Extending Layer 2 to grok by
+ * adding it to the framework list — the obvious completion of this fix — would
+ * not auto-approve a tool call; it would silently convert grok to standing
+ * approval, from a floor the operator never opted into. That is an authority
+ * change wearing the costume of a bug fix, and it is why the answering half is
+ * deliberately withheld and routed to the operator instead.
+ *
+ * SCOPE, CORRECTED — it is worse than "for this session". This comment first
+ * said option 1 grants standing approval for the rest of the SESSION. The grok
+ * agent, asked directly and answering from its own docs and config, corrected
+ * that: the mode is USER-GLOBAL. It is persisted to `~/.grok/config.toml`
+ * (`permission_mode = "always-approve"`), so it is not per-session, per-tool or
+ * per-directory — it governs every future grok session for that user on that
+ * machine. Corroborated independently: that file carries exactly that key, and
+ * its mtime sits ~50s after the wedged session started.
+ *
+ * So a single mistaken `Enter` does not degrade one session's safety posture. It
+ * writes a persistent config flag that disables approval prompting for all grok
+ * work on the machine, and nothing in this resolver would ever surface that it
+ * had happened.
+ *
+ * NOT MEASURED, and it must be before anything is wired: whether `Enter` commits
+ * the `●` option, or whether grok requires the digit (the footer reads
+ * `1/3:select │ Tab:next option`). The grok agent says Enter commits the focused
+ * option; that is its report, not a measurement of ours. Either way the safe
+ * answer is the DIGIT `2`, never `Enter` — an answer whose meaning depends on
+ * where a cursor happens to rest is not a safe default, and here the cursor
+ * rests on the irreversible one.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+const RADIO_OPTION_RE = /^\s*\d+\s*\([●○]\)\s/;
+/** True for either menu shape — `N. label` (claude-code) or `N (●) label` (grok-build). */
+function isOptionLine(text: string): boolean {
+  return NUMBERED_OPTION_RE.test(text) || RADIO_OPTION_RE.test(text);
+}
+/** grok's footer affordance, e.g. `1/3:select` alongside `Esc:scrollback`. */
+const AFFORDANCE_RADIO_SELECT_RE = /\b\d+\/\d+:select\b/i;
 const OPTION_PREFIX_RE = /^\s*\d+\.\s*/;
 const AFFORDANCE_ESC_RE = /Esc to cancel/i;
 const AFFORDANCE_PROCEED_RE = /Do you want to proceed/i;
@@ -182,9 +251,17 @@ function hasAnyLeadGlyph(leadGlyphs: string): boolean {
 /** A line that is part of a menu's bottom structure (option line OR affordance). */
 function isMenuStructureLine(l: PaneTailLine): boolean {
   return (
-    NUMBERED_OPTION_RE.test(l.text) ||
+    // Either menu shape — `N. label` (claude-code) or `N (●) label` (grok-build).
+    // This is the THIRD place the option shape is consulted (with the Layer-3
+    // scan and the affordance test), and it is why the first cut of the grok fix
+    // did not work: I widened two of the three and the detector still declined,
+    // because the LAST line of a grok menu is its `1/3:select` footer, which this
+    // predicate did not recognise as bottom structure. A shape that must be taught
+    // in three places is a shape that gets taught in two.
+    isOptionLine(l.text) ||
     AFFORDANCE_ESC_RE.test(l.text) ||
-    AFFORDANCE_PROCEED_RE.test(l.text)
+    AFFORDANCE_PROCEED_RE.test(l.text) ||
+    AFFORDANCE_RADIO_SELECT_RE.test(l.text)
   );
 }
 
@@ -286,7 +363,7 @@ export function detectPersistingMenu(
   let glyphLedNumberedInWindow = false;
   for (let i = 0; i < tail.length; i++) {
     const l = tail[i];
-    if (!NUMBERED_OPTION_RE.test(l.text)) continue;
+    if (!isOptionLine(l.text)) continue;
     numberedLines.push(l);
     if (hasAnyLeadGlyph(l.leadGlyphs) && withinBottomWindow(tail, i)) {
       glyphLedNumberedInWindow = true;
@@ -300,6 +377,9 @@ export function detectPersistingMenu(
   const hasAffordance =
     AFFORDANCE_ESC_RE.test(joined) ||
     AFFORDANCE_PROCEED_RE.test(joined) ||
+    // grok-build's footer (`1/3:select`). Added with the radio-option shape so a
+    // grok wedge reaches the SAME escalation the claude shapes get.
+    AFFORDANCE_RADIO_SELECT_RE.test(joined) ||
     numberedLines.length >= 2;
   if (!hasAffordance) return null;
 
@@ -621,8 +701,18 @@ export class PermissionPromptAutoResolver {
         layer: 'layer3',
         dedupKey: session + '|' + menuStructureKey,
         menuStructureKey,
+        // WORDING, deliberately: the old text said "an unrecognized or drifted
+        // prompt", which names only the BROKEN causes. There is a third, and
+        // after grok it is the common one: a menu this floor recognizes fine and
+        // deliberately does not answer, because no auto-answer policy is
+        // registered for that framework. An operator reads these two situations
+        // differently — "the UI changed, investigate" versus "this is expected,
+        // answer it yourself" — so asserting the first when it is the second
+        // sends them looking for a fault that does not exist.
         reason:
-          'a session is wedged on a menu I could not auto-clear (an unrecognized or drifted prompt) — it needs a look',
+          'a session is wedged on a menu I did not auto-clear — either the prompt is ' +
+          'unrecognized or drifted, or it is a framework whose menu I deliberately do ' +
+          'not answer. Either way it needs a person.',
       });
     }
   }

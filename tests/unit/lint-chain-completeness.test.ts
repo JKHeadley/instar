@@ -30,6 +30,18 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
  * order — order is `package.json`'s business, presence is this test's.
  */
 const REQUIRED_LINTS = [
+  // Round-18: added in the same commit that put this lint in the chain, which
+  // is what this ratchet exists to force. Worth noting WHY it fired: the lint
+  // in question is itself a gate against deferrals losing their carrier — and
+  // it shipped unprotected from being silently dropped by a merge. A guard
+  // against dropped obligations that could itself be dropped is the same shape
+  // one level up, caught here rather than by me.
+  'lint-deferral-carrier-resolvable.mjs',
+  // Round-21 (grok-build): flags a framework list narrower than its own type
+  // annotation. Registered here in the SAME change that put it in the chain —
+  // the inverse check caught that I had not, which is the ratchet working on
+  // the author who wrote the previous entry's note about exactly this.
+  'lint-framework-list-completeness.mjs',
   // Not a `lint-*` name — which is exactly why the first version of the inverse check
   // could not see it, and why it was unprotected.
   'check-codex-rule1-drift.js',

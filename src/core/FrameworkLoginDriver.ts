@@ -42,7 +42,7 @@ export function enrollPaneSessionName(framework: string, configHome?: string): s
 /** A login flow we know how to launch + scrape. */
 export interface FrameworkLoginRequest {
   provider: LoginProvider;
-  framework: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
+  framework: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build';
   kind: LoginFlowKind;
   /** The account's CLAUDE_CONFIG_DIR — isolates this login to its own slot. */
   configHome?: string;

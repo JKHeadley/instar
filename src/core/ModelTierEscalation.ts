@@ -21,11 +21,43 @@
  * EscalationGovernor.ts / ModelSwapService.ts.
  */
 
-/** The frameworks the escalation policy knows. Closed enum — anything else
- *  resolves to null (spec §5.1 line 1). Kept as a literal union to avoid an
- *  import cycle with core/types.ts (matches the inline pattern used there). */
-export type EscalationFramework = 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
+/**
+ * The frameworks the escalation policy knows. Closed enum — anything else
+ * resolves to null (spec §5.1 line 1).
+ *
+ * ROUND-22: this was a SECOND literal union spelling out the same five members,
+ * kept separate "to avoid an import cycle". It is now an alias of the canonical
+ * union, because the duplicate silently re-armed the exact defect round-21 fixed.
+ *
+ * How the drift stayed invisible: three call sites reach this union through an
+ * `as EscalationFramework` cast (routes.ts spawn validation, ModelSwapService,
+ * and resolveEscalatedModelId below), so a sixth framework added to
+ * `IntelligenceFramework` and forgotten here compiled clean and then, at the
+ * spawn route, hit `KNOWN_MODEL_IDS[fw] ?? KNOWN_CLAUDE_MODEL_IDS` and validated
+ * the new framework's model against CLAUDE's list — round-21's defect, restored
+ * by the copy. The comment above `KNOWN_MODEL_IDS` claimed exhaustiveness "over
+ * the union"; that was true of THIS union, which was not the one the callers were
+ * using. An `as` cast is what let two unions look like one.
+ *
+ * Scoped honestly: `resolveTierModel` was NOT exposed to that, because it gates on
+ * `ESCALATION_FRAMEWORKS` membership first and fails closed to null on a name it
+ * does not know. The reachable consequence was the spawn-route fallback.
+ *
+ * The cycle concern does not apply to a TYPE-only import: `import type` is erased
+ * at compile time and adds no runtime edge. With the alias, `KNOWN_MODEL_IDS`
+ * becomes exhaustive over the REAL union, so the next framework cannot be added
+ * without giving it model ids — a compile error instead of a silent Claude
+ * fallback.
+ */
+export type EscalationFramework = IntelligenceFramework;
 
+/**
+ * framework-list-subset-ok: grok-build is EXCLUDED deliberately. It has no
+ * escalated model and its billing sink is unknown (grok-build spec §0.0/§4.4), so
+ * `resolveTierModel` must answer `unknown-framework` → null → the session stays on
+ * its default rather than resolve a tier for it. Verified round-22 as intent, not
+ * drift: this list is the fail-closed gate that runs BEFORE the model-id lookup.
+ */
 export const ESCALATION_FRAMEWORKS: readonly EscalationFramework[] = [
   'claude-code',
   'codex-cli',
@@ -154,6 +186,7 @@ export const DEFAULT_TIER_ESCALATION_CONFIG: TierEscalationConfig = {
  * regex — two independent fail-closed layers.
  */
 import { KNOWN_GEMINI_MODELS } from '../providers/adapters/gemini-cli/models.js';
+import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 
 export const KNOWN_CLAUDE_MODEL_IDS = [
   'claude-fable-5',
@@ -188,6 +221,8 @@ export const KNOWN_MODEL_IDS: Record<EscalationFramework, readonly string[]> = {
   'codex-cli': KNOWN_CODEX_MODEL_IDS,
   'gemini-cli': KNOWN_GEMINI_MODELS,
   'pi-cli': [],
+  // Probed grok 1.0.4 `grok models`: grok-4.6 (default) + grok-4.5.
+  'grok-build': ['grok-4.6', 'grok-4.5'],
 };
 
 /**
@@ -203,6 +238,7 @@ export const SWAP_CAPABILITY: Record<EscalationFramework, SwapCapability> = {
   'codex-cli': 'launch-time-only',
   'gemini-cli': 'launch-time-only',
   'pi-cli': 'launch-time-only',
+  'grok-build': 'launch-time-only',
 };
 
 /** §5.1 injection-safe id shape. Anything else is audit+reject. */

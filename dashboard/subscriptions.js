@@ -225,7 +225,18 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
       if (q.sevenDay) card.appendChild(quotaBar(doc, 'Weekly', q.sevenDay.utilizationPct, q.sevenDay.resetsAt, now));
       if (q.fable) card.appendChild(quotaBar(doc, 'Fable 5', q.fable.utilizationPct, q.fable.resetsAt, now));
     } else {
-      card.appendChild(el(doc, 'div', 'sub-account-noquota', 'No quota reading yet.'));
+      // Round-11 (security, grok-build spec §6.1): "yet" reads as PENDING, but
+      // for a framework with no usage surface at all (grok-build) unknown is
+      // the permanent steady state and no poll will ever produce a snapshot —
+      // so name the condition instead of implying a wait.
+      card.appendChild(el(
+        doc,
+        'div',
+        'sub-account-noquota',
+        a && a.framework === 'grok-build'
+          ? 'Quota is not readable for this framework.'
+          : 'No quota reading yet.',
+      ));
     }
     // Token health: when the poller silently refreshed the access token from the
     // refresh token, show it — so a routine access-token expiry reads as healthy

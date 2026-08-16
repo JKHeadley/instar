@@ -119,9 +119,17 @@ describe('ProfileIntentClassifier — grounding guard (valueGroundedInLatestMess
     expect(valueGroundedInLatestMessage('framework', 'codex-cli', 'use codex here')).toBe(true);
     expect(valueGroundedInLatestMessage('framework', 'gemini-cli', 'yeah, gemini please')).toBe(true);
   });
+  it('accepts the friendly word "grok" (round-10: the conversational lane is PRIMARY)', () => {
+    // grok-build became an expressible pin in the store, the validator and the
+    // spawn whitelist, but not in the alias table — so the one surface the
+    // Topic Profile standard calls primary still could not say it.
+    expect(valueGroundedInLatestMessage('framework', 'grok-build', 'use grok here')).toBe(true);
+    expect(valueGroundedInLatestMessage('framework', 'grok-build', 'pin this topic to grok-build')).toBe(true);
+  });
   it('false when the value is absent from the latest message (context-only)', () => {
     expect(valueGroundedInLatestMessage('framework', 'gemini-cli', 'yeah go with that')).toBe(false);
     expect(valueGroundedInLatestMessage('model', 'opus', 'do it')).toBe(false);
+    expect(valueGroundedInLatestMessage('framework', 'grok-build', 'yeah go with that')).toBe(false);
   });
 });
 

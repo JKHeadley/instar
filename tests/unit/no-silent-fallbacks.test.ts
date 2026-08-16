@@ -406,7 +406,19 @@ describe('No Silent Fallbacks', () => {
     // Raised 494 -> 495 for proactive default-account swap (#1558): failure to resolve the
     // current default yields null and HOLDS the swap, so no session is killed or rebound on
     // uncertain identity; this is the deliberate fail-safe direction, not a hidden heuristic.
-    const BASELINE = 495;
+    //
+    // 495 -> 496 by grok-build round-19: ONE parser-counted defensive catch in
+    // this slice. Verified from the diff rather than from memory — `git diff
+    // -U0 -- src/ | grep -cE '^\+.*\} catch'` reports exactly 2 added catches,
+    // and BOTH log with context: `releaseGrokReservation` warns that a failed
+    // release leaks a ceiling slot until TTL (the accumulation that closed the
+    // family's day at `0 runs / 0 tokens`), and the identity-shadow evidence
+    // read warns that a sibling framework's section may be dropped on the
+    // render, suppressing only ENOENT since "file absent" is the normal case.
+    // Neither swallows. The first drafts of both DID, and this ratchet is what
+    // pushed back — which is the gate working, so the bump records that rather
+    // than papering over it. Zero unjustified silent swallows added.
+    const BASELINE = 496;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>

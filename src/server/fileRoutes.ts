@@ -110,13 +110,26 @@ export const NEVER_SERVED_PREFIXES = [
   '.instar/state/external-hog-decisions.json',
   'state/claim-verification/',
   '.instar/state/claim-verification/',
+  // The agent's own config: round-13 fenced it as never-EDITABLE because it
+  // selects which executable a session spawns. Round-17 (security) found the
+  // read half open — the same Bearer token that cannot write this file could
+  // GET it and read `dashboardPin` and `authToken` verbatim. Every PIN-gated
+  // lever deliberately reserved for an operator act on the machine was then
+  // one HTTP GET away, which makes the write fence worth nothing. Serve-deny
+  // implies edit-deny via isNeverEditable, so this one entry closes read,
+  // download, link, list AND edit. A redacted read surface, if ever wanted,
+  // belongs behind a route that strips the credentials — not the raw file.
+  '.instar/config.json',
 ];
 
 export function isNeverServed(relativePath: string): boolean {
-  const normalized = path.normalize(relativePath);
-  return NEVER_SERVED_PREFIXES.some(prefix =>
-    normalized.startsWith(prefix) || normalized === prefix.replace(/\/$/, ''),
-  );
+  // Case-folded for the same reason as isNeverEditable (round-14 security): on
+  // a case-insensitive filesystem a capitalised request reaches the same file.
+  const normalized = path.normalize(relativePath).toLowerCase();
+  return NEVER_SERVED_PREFIXES.some(prefix => {
+    const p = prefix.toLowerCase();
+    return normalized.startsWith(p) || normalized === p.replace(/\/$/, '');
+  });
 }
 
 // ── Path validation (6-layer defense) ────────────────────────────────
@@ -126,6 +139,18 @@ interface PathValidationResult {
   error?: string;
   status?: number;
   resolvedPath?: string; // absolute path after validation
+  /**
+   * Project-relative path AFTER symlink resolution (round-14 security). The
+   * edit chokepoints must deny on THIS, not on the requested path: a symlink
+   * inside an allowed directory pointing at `.instar/config.json` (or into
+   * `.claude/hooks/`) was accepted, because `isNeverEditable` saw only the
+   * alias while the write went to the resolved target. Verified end-to-end
+   * against the real route before the fix: 200, and the real file rewritten.
+   * `isNeverServed` already had this post-realpath re-check and says in its own
+   * comment that it exists so "a symlink cannot evade it" — the edit list
+   * simply never got the same treatment.
+   */
+  relativeAfterResolve?: string;
 }
 
 /**
@@ -225,7 +250,7 @@ async function validatePath(
     if (isNeverServed(relativAfterResolve)) {
       return { valid: false, error: 'Access to this path is not permitted', status: 403 };
     }
-    return { valid: true, resolvedPath: realPath };
+    return { valid: true, resolvedPath: realPath, relativeAfterResolve: relativAfterResolve };
   } catch (err: unknown) {
     if (err && typeof err === 'object' && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
       return { valid: false, error: 'Path not found', status: 404 };
@@ -273,16 +298,40 @@ const NEVER_EDITABLE_PREFIXES = [
   // direct edits to instar/ would be overwritten on next update and risk
   // breaking the signed lock-file's body-hash verification.
   '.instar/jobs/instar/',
+  // Round-13 (security, grok-build spec §2.1): `.instar/config.json` selects
+  // WHICH EXECUTABLE a session spawns (`sessions.frameworkBinaryPaths`), which
+  // credentials a lane uses, and which features are enabled. `PATCH /config`
+  // was fenced against the executable key — and that fence was incomplete
+  // while the same Bearer token could write the whole file through the editor,
+  // so the stated boundary ("an operator act on the machine") was not held. It
+  // is a machine-local operator surface, not a document to edit from a phone;
+  // the conversational config path and a raw file edit remain.
+  '.instar/config.json',
 ];
 
-function isNeverEditable(relativePath: string): boolean {
-  const normalized = path.normalize(relativePath);
+/**
+ * Exported for the round-14 bypass tests: the case-folding and resolved-path
+ * behaviour must be asserted against THIS predicate, not a sibling that merely
+ * shares the fix — a proxy assertion is the "narrower than what it certifies"
+ * class this branch has been catching all night.
+ */
+export function isNeverEditable(relativePath: string): boolean {
+  // CASE-FOLDED (round-14 security). macOS APFS and Windows are
+  // case-INSENSITIVE, so a case-sensitive comparison here was bypassable by
+  // asking for `.instar/Config.json` — verified end-to-end against the real
+  // route: 403 for the exact case, 200 (and the real file rewritten) for a
+  // capitalised one. The sibling `isBlockedFilename` in this same file already
+  // lower-cases both sides; this list did not, and the entries it guards are
+  // the ones whose invariant is "a PIN compromise must never result in
+  // arbitrary code execution" (`.claude/hooks/`, `.claude/scripts/`).
+  const normalized = path.normalize(relativePath).toLowerCase();
   // A never-served path is never-editable by construction (spec §3.5): the
   // serve-deny implies the edit-deny at every chokepoint that consults this.
   if (isNeverServed(normalized)) return true;
-  return NEVER_EDITABLE_PREFIXES.some(prefix =>
-    normalized.startsWith(prefix) || normalized === prefix.replace(/\/$/, ''),
-  );
+  return NEVER_EDITABLE_PREFIXES.some(prefix => {
+    const p = prefix.toLowerCase();
+    return normalized.startsWith(p) || normalized === p.replace(/\/$/, '');
+  });
 }
 
 // ── Audit log ────────────────────────────────────────────────────────
@@ -516,7 +565,16 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       }
 
       const content = buffer.toString('utf-8');
-      const editable = isEditable(requestedPath, config);
+      // Round-17 (security): `isEditable` alone answers "is this in an allowed
+      // path", not "may this be written". A never-editable file was advertised
+      // as editable=true, so the dashboard rendered an editor whose every save
+      // then 403'd. Consult BOTH the requested and the post-realpath path, for
+      // the same reason the save route does — a symlink is otherwise editable
+      // in the listing and refused on write.
+      const editable =
+        isEditable(requestedPath, config) &&
+        !isNeverEditable(requestedPath) &&
+        !(validation.relativeAfterResolve && isNeverEditable(validation.relativeAfterResolve));
 
       res.json({
         path: path.normalize(requestedPath),
@@ -579,8 +637,16 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
       return;
     }
 
-    // Never-editable enforcement (security invariant)
-    if (isNeverEditable(requestedPath)) {
+    // Never-editable enforcement (security invariant).
+    // Round-14 (security): deny on the RESOLVED path as well as the requested
+    // one. A symlink inside an allowed directory pointing at a never-editable
+    // target was accepted, because this saw only the alias while the write went
+    // to `validation.resolvedPath`. Verified end-to-end before the fix: 200,
+    // and the real file rewritten — including a `.claude/hooks/` body, which
+    // breaks that list's stated invariant that a PIN compromise must never
+    // yield arbitrary code execution.
+    if (isNeverEditable(requestedPath)
+        || (validation.relativeAfterResolve && isNeverEditable(validation.relativeAfterResolve))) {
       res.status(403).json({ error: 'This path is never editable for security reasons' });
       return;
     }
@@ -855,7 +921,9 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
     res.json({
       path: normalized,
       relative: relativePath,
-      editable: isEditable(normalized, config),
+      // Round-17 (security): same conjunction as the read route — a link must
+      // not advertise an editor for a path whose save is fenced.
+      editable: isEditable(normalized, config) && !isNeverEditable(normalized),
     });
   });
 

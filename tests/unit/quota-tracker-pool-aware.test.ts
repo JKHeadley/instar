@@ -86,9 +86,37 @@ describe('QuotaTracker — pool-aware throttle (provider design)', () => {
     expect(t.shouldSpawnSession('medium').allowed).toBe(false);
   });
 
-  it('treats a null weekly percent as unknown-but-placeable (⇒ allowed)', () => {
+  it('treats a null weekly percent as unknown-but-placeable (⇒ allowed for medium)', () => {
     const t = tracker(() => ({ placeable: true, weeklyPercent: null, fiveHourPercent: null }));
     expect(t.shouldSpawnSession('medium').allowed).toBe(true);
+  });
+
+  it('null weekly on a framework with NO usage surface is UNKNOWN, not 0%: low-priority sheds (grok-build spec §6.1)', () => {
+    const t = tracker(() => ({
+      placeable: true, weeklyPercent: null, fiveHourPercent: null, bestFramework: 'grok-build',
+    }));
+    // The bounded degraded-mode cap: never phantom "0% fresh" headroom, so
+    // low-priority background work sheds while medium+ still runs.
+    expect(t.shouldSpawnSession('low').allowed).toBe(false);
+    expect(t.shouldSpawnSession('medium').allowed).toBe(true);
+  });
+
+  it('CONTROL: null weekly on a framework that HAS a usage surface keeps the historical allow', () => {
+    // Round-13/14: the first version of the fix routed EVERY null weekly to the
+    // bounded-degraded cap, which changed job scheduling for agents that never
+    // opted into grok — a fleet-wide behaviour change inside an additive spec,
+    // with no knob and no rollback. For claude/codex the reading is merely not
+    // in yet, which is not the same thing as unreadable.
+    for (const fw of ['claude-code', 'codex-cli', 'gemini-cli'] as const) {
+      const t = tracker(() => ({
+        placeable: true, weeklyPercent: null, fiveHourPercent: null, bestFramework: fw,
+      }));
+      expect(t.shouldSpawnSession('low').allowed, `${fw} low-priority must still run`).toBe(true);
+    }
+    // And with no framework reported at all, the safe direction is the
+    // historical allow rather than a shed nobody asked for.
+    const unknown = tracker(() => ({ placeable: true, weeklyPercent: null, fiveHourPercent: null }));
+    expect(unknown.shouldSpawnSession('low').allowed).toBe(true);
   });
 
   it('falls through to file-based logic when the provider throws', () => {

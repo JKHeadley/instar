@@ -41,6 +41,8 @@ import { CANONICAL_FEEDBACK_URL } from '../core/canonicalFeedback.js';
 import { recordInstallProvenanceIfAbsent } from '../core/ApprenticeshipStallGate.js';
 import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
 import { ensurePrerequisites } from '../core/Prerequisites.js';
+import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
+import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS } from '../core/instarSettingsHooks.js';
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
@@ -103,7 +105,7 @@ interface InitOptions {
    * a Codex-only install with no `.claude/` writes. `'both'` enables
    * dual-runtime use.
    */
-  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'both';
+  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build' | 'both';
 }
 
 /**
@@ -114,13 +116,20 @@ interface InitOptions {
  * users and the historical `npx instar` flow.
  */
 export function resolveEnabledFrameworks(
-  choice: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'both' | undefined,
-): ReadonlyArray<'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'> {
+  choice: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build' | 'both' | undefined,
+): ReadonlyArray<'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build'> {
   switch (choice) {
     case 'codex-cli':
       return ['codex-cli'];
     case 'gemini-cli':
       return ['gemini-cli'];
+    case 'pi-cli':
+      // pi + grok fell through the default arm to ['claude-code'] before
+      // 2026-08-14 — an init that silently ignored the operator's explicit
+      // framework choice (found standing up the first grok-build agent).
+      return ['pi-cli'];
+    case 'grok-build':
+      return ['grok-build'];
     case 'both':
       return ['claude-code', 'codex-cli'];
     case 'claude-code':
@@ -137,16 +146,25 @@ export function resolveEnabledFrameworks(
  * filter silently DROPPED `gemini-cli`, so a gemini-only config produced an empty
  * filtered list and fell through to the `['claude-code']` default — which made
  * refreshHooksAndSettings scaffold a Claude `.claude/settings.json` into a
- * gemini-only agent (framework-issue: gemini-cli scaffold leak). Using a complete
- * known-framework guard makes this drift-proof as new frameworks are added.
+ * gemini-only agent (framework-issue: gemini-cli scaffold leak).
+ *
+ * ROUND-21: the sentence that used to end this comment — "makes this
+ * drift-proof as new frameworks are added" — was false, and this constant was
+ * itself the drift. The TYPE was widened for pi-cli and grok-build; the ARRAY
+ * was not. TypeScript accepts a subset of a union, so nothing complained, and
+ * `isKnownFramework('grok-build')` returned false. Both refresh sites filter
+ * on it and fall back to `['claude-code']` when the result is empty, so a
+ * grok-only or pi-only agent had a Claude `settings.json` scaffolded into it
+ * on EVERY update — the exact gemini-cli leak described above, reintroduced
+ * for the two frameworks added after the fix.
+ *
+ * The lesson is that a hand-written list cannot be kept in sync by intent.
+ * This is now DERIVED from the canonical union, so a sixth framework is
+ * covered the moment it is added there and cannot be silently omitted here.
  */
-export const KNOWN_FRAMEWORKS: ReadonlyArray<'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'> = [
-  'claude-code',
-  'codex-cli',
-  'gemini-cli',
-];
+export const KNOWN_FRAMEWORKS: ReadonlyArray<IntelligenceFramework> = SUPPORTED_FRAMEWORKS;
 
-export function isKnownFramework(f: unknown): f is 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' {
+export function isKnownFramework(f: unknown): f is IntelligenceFramework {
   return typeof f === 'string' && (KNOWN_FRAMEWORKS as readonly string[]).includes(f);
 }
 

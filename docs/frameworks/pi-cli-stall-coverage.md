@@ -48,6 +48,16 @@ stall-coverage:
     issueRef: stallclass::approval-prompt-wedge::pi-cli::gap
     closePath: CMT-891
     liveness-surface: 'DEFECT if enabled: a pi session parked on an approval menu reads as running'
+  - class: in-flight-tool-hang
+    status: declared-gap
+    reason: >-
+      ADDED 2026-08-15 by a mentee agent reviewing its own framework's matrix 
+      (cycle 2). A live turn blocked on a tool result that never returns. Proc
+      ess UP, cannot emit; neither an approval prompt nor a host death, so liv
+      eness checks read it as healthy.
+    issueRef: stallclass::in-flight-tool-hang::pi-cli::gap
+    closePath: CMT-1330
+    liveness-surface: 'DEFECT if enabled: process-up checks read a hung turn as healthy'
   - class: context-window-wall
     status: declared-gap
     reason: 'no pi context-exhaustion signature or compact-equivalent recovery is wired'

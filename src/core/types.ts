@@ -65,7 +65,7 @@ export interface Session {
   /** The AI framework/engine powering this session. Carried so the dashboard
    *  renders engine-aware (a Codex session must not display as a Claude one).
    *  Populated at spawn from the resolved framework; undefined on legacy records. */
-  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
+  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build';
   /** The initial prompt/instruction sent to the framework's CLI */
   prompt?: string;
   /** Maximum duration in minutes before the session is killed */
@@ -201,7 +201,7 @@ export interface SessionManagerConfig {
    * without re-running detection. Missing keys mean that framework
    * isn't installed.
    */
-  frameworkBinaryPaths?: { 'claude-code'?: string; 'codex-cli'?: string; 'gemini-cli'?: string; 'pi-cli'?: string };
+  frameworkBinaryPaths?: { 'claude-code'?: string; 'codex-cli'?: string; 'gemini-cli'?: string; 'pi-cli'?: string; 'grok-build'?: string };
   /**
    * Per-framework default model override. Lets the agent's
    * `instar.config.json` choose a specific Codex / Claude model id
@@ -210,7 +210,22 @@ export interface SessionManagerConfig {
    * raw model ids. Missing keys fall back to each builder's hardcoded
    * subscription-safe default.
    */
-  frameworkDefaultModels?: { 'claude-code'?: string; 'codex-cli'?: string; 'gemini-cli'?: string; 'pi-cli'?: string };
+  frameworkDefaultModels?: { 'claude-code'?: string; 'codex-cli'?: string; 'gemini-cli'?: string; 'pi-cli'?: string; 'grok-build'?: string };
+  /**
+   * grok-build interactive step-3 opt-in (grok-build spec §7): DISTINCT
+   * from enabledFrameworks (the reviewer/registration lever) so a
+   * reviewer-only opt-in stays reviewer-only. Absent ⇒ interactive grok
+   * launches refuse with grok-interactive-ungated. Lifted from
+   * `fileConfig.sessions.grokInteractiveSessions` in loadConfig — the
+   * fourth documented load-path-gap lift.
+   */
+  grokInteractiveSessions?: boolean;
+  /**
+   * Copy of the top-level enabledFrameworks (loadConfig lifts it into this
+   * slice because SessionManager's grok interactive gate reads it here —
+   * the slice is all SessionManager receives).
+   */
+  enabledFrameworks?: ('claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build')[];
   /**
    * pi-cli only (PI-HARNESS-INTEGRATION-SPEC §4.3): explicit opt-in for
    * Anthropic-routed pi model patterns. Sourced from `.instar/config.json`
@@ -233,9 +248,9 @@ export interface SessionManagerConfig {
    * topicFrameworks/resolveTopicFramework.
    */
   componentFrameworks?: {
-    default?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
-    categories?: Partial<Record<'sentinel' | 'gate' | 'job' | 'reflector' | 'other', 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'>>;
-    overrides?: Record<string, 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'>;
+    default?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build';
+    categories?: Partial<Record<'sentinel' | 'gate' | 'job' | 'reflector' | 'other', 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build'>>;
+    overrides?: Record<string, 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build'>;
     fallback?: 'default' | 'none';
     /**
      * Ordered fallback frameworks a SAFETY-GATING call tries when its primary
@@ -244,7 +259,7 @@ export interface SessionManagerConfig {
      * set (sentinel/gate/reflector → first active off-Claude, remaining active as the
      * tail) when this whole block is unset; an operator who sets the block supplies it.
      */
-    failureSwap?: Array<'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'>;
+    failureSwap?: Array<'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build'>;
   };
   /**
    * The agent's resolved runtime framework — the single source of
@@ -256,7 +271,7 @@ export interface SessionManagerConfig {
    * EVERY path — scheduled jobs AND user messages. Before this
    * field existed, spawnInteractiveSession hardcoded 'claude-code',
    * so messaging a Codex-only agent spawned a Claude session. */
-  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
+  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build';
   /**
    * Dynamic MCP Lifecycle (DYNAMIC-MCP-LIFECYCLE-SPEC). When enabled, a
    * claude-code interactive session launches with a lean MCP subset
@@ -300,6 +315,7 @@ export interface SessionManagerConfig {
         Array<{
           door:
             | 'pi-cli'
+            | 'grok-build'
             | 'codex-cli'
             | 'gemini-cli'
             | 'claude-code'
@@ -3615,7 +3631,7 @@ export interface InstarConfig {
    * Lets you flip a single topic to Codex without changing the whole
    * agent's framework.
    */
-  topicFrameworks?: Record<string, 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli'>;
+  topicFrameworks?: Record<string, 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build'>;
   /**
    * Topic Profile — per-topic model / thinking-mode / framework pins
    * (docs/specs/TOPIC-PROFILE-SPEC.md §12.5). The conversational surface
@@ -3816,7 +3832,7 @@ export interface InstarConfig {
      * so a chronically-slow target still trips the breaker.
      */
     swapAttemptTimeoutMsByFramework?: Partial<
-      Record<'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli', number>
+      Record<'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build', number>
     >;
     /**
      * Clamp (ms) on any single resolved swap-attempt cap, so a huge/typo'd
@@ -4073,7 +4089,7 @@ export interface InstarConfig {
    * `enabledFrameworks`; this is the persisted, operator-settable
    * source of truth the migrator reads.)
    */
-  enabledFrameworks?: ('claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli')[];
+  enabledFrameworks?: ('claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build')[];
   /** Job scheduler config */
   scheduler: JobSchedulerConfig;
   /** Registered users */

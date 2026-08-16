@@ -60,7 +60,7 @@ export interface ResumeValidatorDeps {
    * path resolution via FrameworkSessionStore (portability audit Gap 3).
    * Defaults to 'claude-code' — historical behavior, Claude unchanged.
    */
-  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
+  framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build';
 }
 
 /**

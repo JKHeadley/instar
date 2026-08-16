@@ -82,6 +82,7 @@ import { gapBEligibleForTopic, recentUserMessageFromHistory, recentUserMessageAt
 import { TopicProfileTransferCarrier, createTopicProfilePullHandler } from '../core/TopicProfileTransferCarrier.js';
 import type { SendPullOutcome, TopicProfilePullResponse } from '../core/TopicProfileTransferCarrier.js';
 import type { ResolvedTopicProfile } from '../core/TopicProfileResolver.js';
+import { resolveFrameworkBinaryPath, computeGrokInteractiveOptIn } from '../core/frameworkSessionLaunch.js';
 import type { TopicProfileStore } from '../core/TopicProfileStore.js';
 import type { TopicResumeMap } from '../core/TopicResumeMap.js';
 import type { IdleReading } from '../core/classifyProfileChange.js';
@@ -106,6 +107,8 @@ import { wrapIntelligenceWithCircuitBreaker, getFeatureMetricsRecorder } from '.
 import { configureLlmCircuitBreaker, llmCircuitAvailable } from '../core/LlmCircuitBreaker.js';
 import { computeSelfQuotaState } from '../core/selfQuotaState.js';
 import { isClaudeForbidden } from '../core/claudeForbiddenGuard.js';
+import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
+import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 import { FeedbackManager } from '../core/FeedbackManager.js';
 import { FeedbackAnomalyDetector } from '../monitoring/FeedbackAnomalyDetector.js';
 import { lifelineOwnsPoll as lifelineOwnsTelegramPoll } from '../lifeline/TelegramPollOwnerLease.js';
@@ -733,7 +736,11 @@ let _tryNicknameRelocation: ((topicId: number, text: string) => Promise<{ handle
  *  `config.topicFrameworks` at server boot. Boot-immutable; runtime
  *  mutations go through `_topicFrameworksStore` instead so they persist
  *  across restarts and don't race with operator-edited config.json. */
-let _topicFrameworks: Record<string, 'claude-code' | 'codex-cli'> = {};
+// Round-21: widened with resolveTopicFramework. This map is loaded from
+// persisted config, which can already hold any framework the operator
+// pinned — so the narrow type was a claim about the data that the data
+// did not honour.
+let _topicFrameworks: Record<string, IntelligenceFramework> = {};
 /** Runtime-mutable, atomically-persisted per-topic framework store.
  *  Initialized in startServer(); consulted by resolveTopicFramework on every spawn. */
 let _topicFrameworksStore: import('../core/TopicFrameworksStore.js').TopicFrameworksStore | null = null;
@@ -790,20 +797,37 @@ const _orchestratorSpawnInFlight = new Set<string>();
 /** §5.3 "possibly stale" read disclosure — once per (topic, process). */
 const _pendingPullStaleDisclosed = new Set<string>();
 /** Default framework for sessions when no per-topic override is set. */
-let _defaultFramework: 'claude-code' | 'codex-cli' = 'claude-code';
+let _defaultFramework: IntelligenceFramework = 'claude-code';
 
-function resolveTopicFramework(topicId: number | undefined): 'claude-code' | 'codex-cli' {
+/**
+ * The per-topic framework, across the WHOLE union.
+ *
+ * ROUND-21: this used to be typed `'claude-code' | 'codex-cli'` and DROPPED
+ * every other framework, silently returning the default instead. The spawn
+ * path worked around it with its own five-arm chain, so a grok-pinned topic
+ * SPAWNED grok while `/route` and `/local-model` told the operator it was on
+ * claude-code. Two readers of one fact, disagreeing — and the workaround's own
+ * comment asserted they "agree by construction".
+ *
+ * Widened rather than given a third arm: an allowlist of two was the defect,
+ * and a chain of five is the same defect one framework later. Membership is
+ * tested against the canonical union so a sixth framework needs no edit here.
+ */
+function resolveTopicFramework(topicId: number | undefined): IntelligenceFramework {
+  const known = (fw: unknown): fw is IntelligenceFramework =>
+    typeof fw === 'string' && (SUPPORTED_FRAMEWORKS as readonly string[]).includes(fw);
+
   // Topic Profile §5.1 rewire: the profile store's framework field is the
   // authoritative per-topic layer (it was seeded one-directionally from the
   // legacy store at first load). The resolver adds the §5.2 launchability
   // fallback. Legacy layers remain below for the not-yet-wired boot window.
   if (topicId !== undefined && _topicProfileResolver) {
     const fw = _topicProfileResolver.resolve(topicId).framework;
-    if (fw === 'claude-code' || fw === 'codex-cli') return fw;
+    if (known(fw)) return fw;
   }
   if (topicId !== undefined && _topicFrameworksStore) {
     const stored = _topicFrameworksStore.get(topicId);
-    if (stored === 'claude-code' || stored === 'codex-cli') return stored;
+    if (known(stored)) return stored;
   }
   if (topicId !== undefined && _topicFrameworks[String(topicId)]) {
     return _topicFrameworks[String(topicId)]!;
@@ -1185,10 +1209,15 @@ async function spawnSessionForTopic(
   // clamp + launchability fallback already applied). resolveTopicFramework
   // delegates to the same resolver, so both reads agree by construction.
   const resolvedProfile = _topicProfileResolver?.resolve(topicId) ?? null;
-  const framework = (resolvedProfile?.framework === 'claude-code' || resolvedProfile?.framework === 'codex-cli'
-    || resolvedProfile?.framework === 'gemini-cli' || resolvedProfile?.framework === 'pi-cli')
-    ? resolvedProfile.framework
-    : resolveTopicFramework(topicId);
+  // ROUND-21: this WAS a five-arm chain duplicating the resolver, added
+  // because resolveTopicFramework silently dropped anything outside
+  // claude/codex. That made the sentence above ("both reads agree by
+  // construction") false — the spawn read the wide value while every status
+  // surface read the narrow one. The resolver is now wide, so the duplicate
+  // is deleted rather than extended: one fact, one reader.
+  // Admission stays dual-gated downstream; an un-opted-in grok launch throws
+  // `grok-interactive-ungated` LOUDLY.
+  const framework = resolveTopicFramework(topicId);
   // §5.2 fallback notices are once-per-transition deduped by the resolver —
   // surface any that fired on this resolution to the topic.
   if (resolvedProfile && resolvedProfile.notices.length > 0) {
@@ -1747,7 +1776,9 @@ function wireTelegramCallbacks(
       return { ok: true, message: `This topic is using "${current}". Just tell me to switch (e.g. "use codex here") — or /route codex-cli works too.` };
     }
 
-    const valid = ['claude-code', 'codex-cli'];
+    // Round-21: was a hand-written two-framework list, so `/route grok-build`
+    // answered "Unknown framework" on an agent that can spawn it.
+    const valid: readonly string[] = SUPPORTED_FRAMEWORKS;
     if (!valid.includes(framework)) {
       return { ok: false, message: `Unknown framework "${framework}". Supported: ${valid.join(', ')}.` };
     }
@@ -1829,7 +1860,12 @@ function wireTelegramCallbacks(
     }
 
     let patch: import('../core/topicProfileValidation.js').ProfilePatchInput | null = null;
-    if (['claude-code', 'codex-cli', 'gemini-cli', 'pi-cli'].includes(head) && parts.length === 1) {
+    // Round-22: this was a hand-written five-name list. COMPLETE, which is
+    // exactly the state the five other drift sites were in before they weren't
+    // — a sixth framework would be silently unrecognised here and the shorthand
+    // would fall through to the unknown-command arm. Derived from the canonical
+    // list so a sixth needs no edit.
+    if ((SUPPORTED_FRAMEWORKS as readonly string[]).includes(head) && parts.length === 1) {
       patch = { framework: head };
     } else if (head === 'framework' && parts.length === 2) {
       patch = { framework: parts[1].toLowerCase() };
@@ -4204,6 +4240,35 @@ export async function startServer(options: StartOptions): Promise<void> {
         console.warn(`  Providers registry: pi-cli registration failed (non-fatal): ${err instanceof Error ? err.message : err}`);
       }
 
+      // grok-build adapter (grok-build framework integration spec §7) —
+      // ships dark: registers ONLY when enabledFrameworks explicitly
+      // contains 'grok-build' AND the binary is detectable. Own try/catch:
+      // a grok registration failure must never affect other adapters or
+      // the boot.
+      try {
+        const { registerGrokBuildAdapters } = await import('../providers/bootRegistration.js');
+        const grokRegistration = await registerGrokBuildAdapters({
+          ...(config.enabledFrameworks ? { enabledFrameworks: config.enabledFrameworks } : {}),
+          ...(config.sessions?.frameworkBinaryPaths?.['grok-build']
+            ? { grokPath: config.sessions.frameworkBinaryPaths['grok-build'] }
+            : {}),
+          ...(config.sessions?.frameworkDefaultModels?.['grok-build']
+            ? { model: config.sessions.frameworkDefaultModels['grok-build'] }
+            : {}),
+        });
+        if (grokRegistration.skippedReason) {
+          if (grokRegistration.skippedReason === 'grok-binary-missing') {
+            console.log(pc.yellow(`  Providers registry: grok-build enabled but binary missing — install via https://x.ai/cli/install.sh`));
+          }
+          // 'grok-not-enabled' is the dark default — say nothing.
+        } else {
+          const grokIds = [...grokRegistration.registered, ...grokRegistration.alreadyRegistered];
+          console.log(pc.green(`  Providers registry: ${grokIds.join(', ')} registered`));
+        }
+      } catch (err) {
+        console.warn(`  Providers registry: grok-build registration failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+      }
+
       // Read-only probe — `getRoutingPolicy` isn't on the public surface,
       // so we test by attempting a no-op resolve and seeing whether the
       // chain fires. Cheaper proxy: a private convention — set a marker
@@ -6123,7 +6188,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       const framework = config.sessions?.framework ?? frameworkFromEnv() ?? 'claude-code';
       resolvedFramework = framework;
       _defaultFramework = framework as 'claude-code' | 'codex-cli';
-      _topicFrameworks = (config as { topicFrameworks?: Record<string, 'claude-code' | 'codex-cli'> }).topicFrameworks ?? {};
+      _topicFrameworks = (config as { topicFrameworks?: Record<string, IntelligenceFramework> }).topicFrameworks ?? {};
       // Initialize the runtime-mutable persistent store (overrides win over
       // config defaults; both layers feed resolveTopicFramework).
       try {
@@ -6228,13 +6293,33 @@ export async function startServer(options: StartOptions): Promise<void> {
               (config as { models?: { tierEscalation?: unknown } }).models?.tierEscalation,
             ),
           localModelBinding: (topicKey) => _topicLocalModelStore?.get(Number(topicKey)) ?? null,
-          // Mirrors SessionManager's spawn-path binary resolution exactly
-          // (frameworkBinaryPaths[fw] ?? claudePath, pi-cli → bare 'pi') so the
-          // launchability signal answers "would the REAL spawn find a binary",
-          // never a stricter question that false-fallbacks a valid pin.
+          // Answers "would the REAL spawn find a binary", never a stricter
+          // question that false-fallbacks a valid pin — so it must call the
+          // SAME resolver the spawn path calls.
+          //
+          // Round-10 (adversarial): this was the FOURTH resolution site, and it
+          // still inlined the pre-fence formula while claiming to mirror the
+          // spawn path "exactly" — a mirror the round-9 fence broke. Measured
+          // consequence on the opted-in shape: a grok-pinned topic on a machine
+          // with no grok binary probed the CLAUDE binary, so `isLaunchable`
+          // returned true, no §5.2 fallback notice fired, tmux launched a
+          // nonexistent binary, and the user got a "starting up" line and then
+          // silence. An inlined copy of a shared rule is the defect; the call
+          // is the fix.
+          // Round-11 (security): the disclosure path must see the gate that
+          // actually refuses, not just the binary — an un-opted-in grok pin
+          // otherwise resolves "launchable" and then throws on every spawn.
+          grokInteractiveOptIn: () => computeGrokInteractiveOptIn({
+            enabledFrameworks: config.enabledFrameworks,
+            grokInteractiveSessions: config.sessions?.grokInteractiveSessions,
+          }),
           frameworkBinaryPath: (fw) =>
-            config.sessions?.frameworkBinaryPaths?.[fw]
-            ?? (fw === 'pi-cli' ? 'pi' : (config.sessions?.claudePath ?? null)),
+            resolveFrameworkBinaryPath({
+              framework: fw,
+              frameworkBinaryPaths: config.sessions?.frameworkBinaryPaths,
+              claudePath: config.sessions?.claudePath,
+              configuredFramework: config.sessions?.framework,
+            }) ?? null,
           audit: (event) => {
             appendTopicProfileAudit(config.stateDir, event);
           },
@@ -6343,7 +6428,24 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
       const built = buildIntelligenceProvider({
         framework,
-        binaryPath: framework === 'claude-code' ? config.sessions.claudePath : undefined,
+        // ROUND-22: this site is genuinely SAFE on inspection — `framework` is
+        // bound from `config.sessions?.framework` above, so the ternary can only
+        // pass claudePath when the agent's configured framework IS claude-code,
+        // and in that case Config's claudePath arm resolves the real Claude
+        // binary. It is routed through the shared fence anyway, deliberately.
+        //
+        // The alternative was an exemption in the sweep test, and an exemption
+        // has to be maintained: its premise is that binding on the line above,
+        // which a future edit could change without anyone rechecking the argument
+        // written here. Uniformity costs nothing (the fence returns the identical
+        // path in the safe case) and leaves the class with ZERO exceptions, which
+        // is the only state a reader can verify at a glance.
+        binaryPath: resolveFrameworkBinaryPath({
+          framework,
+          frameworkBinaryPaths: config.sessions.frameworkBinaryPaths,
+          claudePath: config.sessions.claudePath,
+          configuredFramework: config.sessions.framework,
+        }) ?? undefined,
         ...(resolveCodexExecJson ? { resolveExecJson: resolveCodexExecJson } : {}),
         ...(subscriptionPathOption ? { subscriptionPath: subscriptionPathOption } : {}),
         ...(framework === 'gemini-cli' && config.monitoring?.quotaTracking
@@ -6367,15 +6469,79 @@ export async function startServer(options: StartOptions): Promise<void> {
         // subscription-path router, so a fallback provider can't silently
         // dodge June-15 routing. Factory-null (no claude binary) now yields
         // an honest absence instead of a provider with an undefined path.
-        sharedIntelligence =
-          buildIntelligenceProvider({
-            framework: 'claude-code',
-            binaryPath: config.sessions.claudePath,
+        // Round-17 (scalability + security): `config.sessions.claudePath` is
+        // selected by the CONFIGURED framework, so on a grok-primary agent it
+        // IS the grok binary — and this build is labelled `claude-code`, whose
+        // argv is `-p <prompt> --output-format json`. grok accepts that shape,
+        // so every internal sentinel/gate/extractor call would have spawned
+        // grok with the full prompt IN ARGV: no confinement floor, no scratch
+        // cwd, no budget ledger, no metered-key refusal, and the argv leak the
+        // adapter's --prompt-file transport exists to prevent. The shared
+        // fence resolves a GENUINE claude-code binary or the bare name, never
+        // another framework's path — the same protection the spawn lanes get.
+        const fallbackClaudeBinary = resolveFrameworkBinaryPath({
+          framework: 'claude-code',
+          frameworkBinaryPaths: config.sessions.frameworkBinaryPaths,
+          claudePath: config.sessions.claudePath,
+          configuredFramework: config.sessions.framework,
+        });
+        // Round-17 (scalability): grok is the ONLY framework whose provider
+        // build returns null while its binary is PRESENT — the exclusion is
+        // deliberate (§6.1: an unobservable weekly pool must not fund internal
+        // traffic). But this fallback hard-coded claude-code, and a grok-only
+        // agent has ALREADY tripped the claude-forbidden guard, so the build
+        // threw, the catch below swallowed it, and the agent booted with NO
+        // intelligence provider at all: the outbound tone gate — an always-on
+        // safety floor everywhere else — silently inactive, reported to the
+        // operator as "no Claude CLI available" on a machine where Claude is
+        // installed. A wrong diagnosis is worse than a missing one.
+        //
+        // So: try the other ENABLED frameworks that can genuinely build a
+        // provider before reaching for claude-code, and only reach for
+        // claude-code when it is not forbidden.
+        const enabledForFallback = (config.enabledFrameworks ?? []).filter(
+          (f): f is IntelligenceFramework =>
+            f !== framework && f !== 'grok-build' && SUPPORTED_FRAMEWORKS.includes(f as IntelligenceFramework),
+        );
+        for (const candidate of enabledForFallback) {
+          if (candidate === 'claude-code' && isClaudeForbidden()) continue;
+          const alt = buildIntelligenceProvider({
+            framework: candidate,
+            ...(candidate === 'claude-code' ? { binaryPath: fallbackClaudeBinary } : {}),
             ...(subscriptionPathOption ? { subscriptionPath: subscriptionPathOption } : {}),
-          }) ?? undefined;
-        intelligenceSource = 'Claude CLI subscription (fallback)';
+          });
+          if (alt) {
+            sharedIntelligence = alt;
+            intelligenceSource = `${candidate} (fallback)`;
+            break;
+          }
+        }
+        if (!sharedIntelligence && !isClaudeForbidden()) {
+          sharedIntelligence =
+            buildIntelligenceProvider({
+              framework: 'claude-code',
+              binaryPath: fallbackClaudeBinary,
+              ...(subscriptionPathOption ? { subscriptionPath: subscriptionPathOption } : {}),
+            }) ?? undefined;
+          intelligenceSource = 'Claude CLI subscription (fallback)';
+        }
+        if (!sharedIntelligence) {
+          // Name the REAL reason. The old empty catch sent the operator to
+          // install software that is already present.
+          intelligenceSource = framework === 'grok-build'
+            ? 'none — grok-build is excluded from internal LLM calls by design, and no other '
+              + 'enabled framework could provide one. Add a second framework to enabledFrameworks '
+              + 'to restore LLM-gated features (tone gate, sentinels, extractors).'
+            : 'none — no enabled framework could build an intelligence provider';
+        }
       }
-    } catch { /* CLI not available */ }
+    } catch (err) {
+      // Round-17: an empty catch here produced a WRONG diagnosis, not a
+      // missing one. Report what actually failed.
+      console.warn(
+        `[intelligence] provider construction failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
 
     // Per-component framework routing (docs/specs/per-component-framework-routing.md).
     // Wrap the shared provider in an IntelligenceRouter so internal components
@@ -6739,12 +6905,33 @@ export async function startServer(options: StartOptions): Promise<void> {
         // without LLM intelligence rather than silently using Claude.
         // Via the factory (Class 8): carries breaker + subscription router.
         const { buildIntelligenceProvider: buildFallbackIP } = await import('../core/intelligenceProviderFactory.js');
-        config.relationships.intelligence =
-          buildFallbackIP({
+        // ROUND-22, ninth site of the impersonation class. This passed
+        // `config.sessions.claudePath` under a hardcoded `claude-code` label, and
+        // that field holds the CONFIGURED FRAMEWORK's binary — so on an agent with
+        // enabledFrameworks ['grok-build', 'claude-code'] (grok primary, claude
+        // also enabled, so isClaudeForbidden() is false and this branch is live)
+        // the relationships provider would have run grok's binary with Claude's
+        // arguments. Narrower reach than the CLI sites — it needs a mixed config
+        // AND a failed shared-intelligence build — but it is the same defect, and
+        // "harder to reach" is not "closed".
+        //
+        // Routed through the shared fence, which resolves a GENUINE claude-code
+        // binary or nothing. A null result means the fallback simply does not
+        // build, which is the honest outcome: relationships run without LLM
+        // intelligence rather than silently on another framework's program.
+        const fencedFallbackBinary = resolveFrameworkBinaryPath({
+          framework: 'claude-code',
+          frameworkBinaryPaths: config.sessions.frameworkBinaryPaths,
+          claudePath: config.sessions.claudePath,
+          configuredFramework: config.sessions.framework,
+        });
+        config.relationships.intelligence = fencedFallbackBinary
+          ? (buildFallbackIP({
             framework: 'claude-code',
-            binaryPath: config.sessions.claudePath,
+            binaryPath: fencedFallbackBinary,
             ...(subscriptionPathOption ? { subscriptionPath: subscriptionPathOption } : {}),
-          }) ?? undefined;
+          }) ?? undefined)
+          : undefined;
         intelligenceMode = 'LLM-supervised (Claude CLI subscription, fallback)';
       }
 
@@ -10764,11 +10951,29 @@ export async function startServer(options: StartOptions): Promise<void> {
         // the breaker wrap + the subscription-path router so topic summaries
         // can't silently dodge June-15 routing.
         const { buildIntelligenceProvider: buildSummaryIP } = await import('../core/intelligenceProviderFactory.js');
-        summaryIntelligence = buildSummaryIP({
+        // ROUND-22, TENTH site — and the one that justifies the sweep test over
+        // another hand-grep. I swept for this shape by hand, fixed three sites,
+        // believed I was done, and then wrote
+        // tests/unit/claudepath-impersonation-sweep.test.ts as a class-level
+        // check. It found this on its first run. Ten sites across five rounds,
+        // every previous fix written for the site in front of me.
+        //
+        // Same defect: `sessions.claudePath` holds the CONFIGURED framework's
+        // binary, so on a grok-primary agent topic summaries would have run
+        // grok's program under Claude's label and arguments.
+        const fencedSummaryBinary = resolveFrameworkBinaryPath({
           framework: 'claude-code',
-          binaryPath: config.sessions.claudePath,
-          ...(subscriptionPathOption ? { subscriptionPath: subscriptionPathOption } : {}),
+          frameworkBinaryPaths: config.sessions.frameworkBinaryPaths,
+          claudePath: config.sessions.claudePath,
+          configuredFramework: config.sessions.framework,
         });
+        summaryIntelligence = fencedSummaryBinary
+          ? buildSummaryIP({
+            framework: 'claude-code',
+            binaryPath: fencedSummaryBinary,
+            ...(subscriptionPathOption ? { subscriptionPath: subscriptionPathOption } : {}),
+          })
+          : null;
       }
       // On a codex-only agent without a built Codex provider, summaryIntelligence
       // stays null — topic summaries are skipped rather than run on Claude.
@@ -13750,6 +13955,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       'codex-cli': 'codex login',
       'gemini-cli': 'gemini',
       'pi-cli': 'pi login',
+      // grok-build: the binary is `grok` (NEVER the colliding `agent` name),
+      // and device-code auth is the phone-approvable flow the enrollment
+      // wizard scrapes (public code/URL only, never a token).
+      'grok-build': 'grok login --device-auth',
     };
     const enrollLoginCommands = {
       ...DEFAULT_ENROLL_LOGIN_COMMANDS,
@@ -13798,8 +14007,24 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (!tmuxPath) throw new Error('tmux not available for enrollment login');
           const baseCmd = enrollLoginCommands[framework] ?? `${framework} login`;
           // env-prefix sets the per-account config home for the login process so
-          // the credential lands in its own slot (CLAUDE_CONFIG_DIR isolation).
-          const env = { ...(configHome ? { CLAUDE_CONFIG_DIR: configHome } : {}), ...enrollmentBrowserEnv(openBrowser) };
+          // the credential lands in its own slot.
+          //
+          // Round-12 (security): the isolation var is PER-FRAMEWORK, and this
+          // set `CLAUDE_CONFIG_DIR` unconditionally — a variable grok ignores.
+          // With `xai` now an accepted pool provider that meant a grok login
+          // would land in the AMBIENT `~/.grok` while the account record claimed
+          // an isolated `configHome`: a second grok enrolment would silently
+          // overwrite the first account's session while the pool showed both
+          // active. grok reads `GROK_HOME`; a framework with no known isolation
+          // var gets NONE rather than a misleading one.
+          const isolationEnv = configHome
+            ? (framework === 'grok-build'
+                ? { GROK_HOME: configHome }
+                : framework === 'claude-code'
+                  ? { CLAUDE_CONFIG_DIR: configHome }
+                  : { CLAUDE_CONFIG_DIR: configHome })
+            : {};
+          const env = { ...isolationEnv, ...enrollmentBrowserEnv(openBrowser) };
           const prefix = Object.entries(env).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ');
           const cmd = prefix ? `env ${prefix} ${baseCmd}` : baseCmd;
           const session = enrollPaneSessionName(framework, configHome);

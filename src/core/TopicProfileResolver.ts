@@ -88,6 +88,12 @@ export interface TopicProfileResolverOptions {
   localModelBinding: (topicKey: string) => { provider: string; model?: string } | null;
   /** Resolve the framework's CLI binary path (for the launchability check). */
   frameworkBinaryPath: (framework: IntelligenceFramework) => string | null;
+  /**
+   * Live read of the grok INTERACTIVE dual gate (round-11 security). Absent ⇒
+   * the admissibility check degrades to binary-presence only, which is the
+   * pre-round-11 behaviour and the safe direction for a disclosure signal.
+   */
+  grokInteractiveOptIn?: () => boolean;
   /** Audit sink for fallback events (one line each, even when deduped). */
   audit?: (event: Record<string, unknown>) => void;
 }
@@ -115,20 +121,23 @@ export class TopicProfileResolver {
     let framework: IntelligenceFramework | null = null;
     let frameworkSource = 'global-default';
     if (pin?.framework) {
-      if (this.isLaunchable(pin.framework)) {
+      if (this.isAdmissible(pin.framework)) {
         framework = pin.framework;
         frameworkSource = 'profile-pin';
         this.clearTransition(key, 'framework-unlaunchable');
       } else {
-        const notice = this.onceNotice(
-          key,
-          'framework-unlaunchable',
-          `this topic is pinned to ${pin.framework}, but its CLI isn't launchable here — using the default framework until it is`,
-        );
+        const reason = this.admissibility(pin.framework) ?? 'framework-unlaunchable';
+        const text =
+          reason === 'grok-interactive-ungated'
+            ? `this topic is pinned to ${pin.framework}, but interactive grok sessions need a second opt-in `
+              + `(sessions.grokInteractiveSessions) that isn't set — using the default framework until it is. `
+              + `The CLI itself is fine; reinstalling it won't change this.`
+            : `this topic is pinned to ${pin.framework}, but its CLI isn't launchable here — using the default framework until it is`;
+        const notice = this.onceNotice(key, reason, text);
         if (notice) notices.push(notice);
         this.opts.audit?.({
           type: 'fallback',
-          reason: 'framework-unlaunchable',
+          reason,
           topic: key,
           pinned: pin.framework,
         });
@@ -136,7 +145,7 @@ export class TopicProfileResolver {
     }
     if (!framework) {
       const configFw = this.opts.configTopicFrameworks()[key];
-      if (configFw && (SUPPORTED_FRAMEWORKS as readonly string[]).includes(configFw) && this.isLaunchable(configFw as IntelligenceFramework)) {
+      if (configFw && (SUPPORTED_FRAMEWORKS as readonly string[]).includes(configFw) && this.isAdmissible(configFw as IntelligenceFramework)) {
         framework = configFw as IntelligenceFramework;
         frameworkSource = 'config-default';
       }
@@ -285,6 +294,52 @@ export class TopicProfileResolver {
       sources: { framework: frameworkSource, model: modelSource, thinkingMode: thinkingSource, effort: effortSource },
       notices,
     };
+  }
+
+  /**
+   * Can a pin to this framework actually PRODUCE a session here?
+   *
+   * Round-11 (security): `isLaunchable` tests the BINARY only, and the
+   * disclosure path is driven by it — so on the documented reviewer posture
+   * (grok binary installed + `enabledFrameworks` opt-in, interactive opt-in
+   * UNSET) a grok pin resolved as launchable, NO fallback notice fired, and
+   * every spawn threw `grok-interactive-ungated` — a permanently bricked topic
+   * whose user-visible symptom was "an unexpected start-up error", with the pin
+   * never mentioned. That is the round-10 binary defect one layer up: the
+   * disclosure carrier was blind to the gate that actually refuses. Admissibility
+   * = launchable AND not refused by a framework-specific spawn gate.
+   *
+   * The `grok` alias is also ordinary developer English ("hard to grok"), so an
+   * accidental pin is likelier for exactly the framework whose accidental pin
+   * used to stick.
+   */
+  private isAdmissible(framework: IntelligenceFramework): boolean {
+    return this.admissibility(framework) === null;
+  }
+
+  /**
+   * WHY a framework is inadmissible, or null when it is fine.
+   *
+   * Round-17 (adversarial): both causes collapsed into one notice reading
+   * "its CLI isn't launchable here". On the documented reviewer posture — grok
+   * installed, `enabledFrameworks` opted in, interactive opt-in unset — the
+   * CLI IS launchable and the real refusal is the second opt-in. So the
+   * operator was handed a remedy (install/repair the binary) that cannot fix
+   * their problem, while the actual remedy is a config key the message never
+   * named. Distinguishing the two is the whole value of the disclosure.
+   */
+  private admissibility(
+    framework: IntelligenceFramework,
+  ): 'framework-unlaunchable' | 'grok-interactive-ungated' | null {
+    if (!this.isLaunchable(framework)) return 'framework-unlaunchable';
+    if (framework === 'grok-build') {
+      // Fail toward ADMISSIBLE when the gate cannot be read (no accessor
+      // wired): this predicate only decides whether to disclose a fallback,
+      // and a blind probe must never re-route a valid pin.
+      const gate = this.opts.grokInteractiveOptIn?.();
+      if (gate === false) return 'grok-interactive-ungated';
+    }
+    return null;
   }
 
   /**

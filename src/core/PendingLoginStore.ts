@@ -27,7 +27,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export type LoginFlowKind = 'device-code' | 'url-code-paste';
-export type LoginProvider = 'openai' | 'anthropic' | 'github-copilot' | 'google';
+export type LoginProvider = 'openai' | 'anthropic' | 'github-copilot' | 'google' | 'xai';
 
 /**
  * Pending-login lifecycle:
@@ -44,7 +44,7 @@ export interface PendingLogin {
   /** Operator-facing label / intended account nickname. */
   label: string;
   provider: LoginProvider;
-  framework: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli';
+  framework: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build';
   kind: LoginFlowKind;
   /** The new account's CLAUDE_CONFIG_DIR (a filesystem path, never a secret) —
    *  recorded so an auto-reissue re-drives the login under the SAME slot. */

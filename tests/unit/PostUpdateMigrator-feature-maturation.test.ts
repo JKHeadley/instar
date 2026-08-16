@@ -64,6 +64,58 @@ describe('migrateFeatureMaturationGate', () => {
    * The drift here is deliberately the SHAPE of the real failure: a stale copy that is
    * plausible, non-empty, and not a customization anyone declared.
    */
+  it('REFRESHES a DRIFTED installed writer + delivers the whole phase-5 chain (the deployed-agent state)', () => {
+    // Round-11 (integration): the existing assertions only ever exercised the
+    // install-if-missing branch, because setup() builds a bare root — so the
+    // prior-hash gate that actually governs every deployed agent was never
+    // reached, and under it the writer had not refreshed since June. A deployed
+    // agent BY DEFINITION already has the file with a drifted hash; that is the
+    // only path that matters.
+    const { root, run } = setup();
+    const writer = path.join(root, '.claude', 'skills', 'spec-converge', 'scripts', 'write-convergence-tag.mjs');
+    fs.mkdirSync(path.dirname(writer), { recursive: true });
+    fs.writeFileSync(writer, '// stale installed writer from an earlier release\n');
+
+    expect(run().errors).toEqual([]);
+
+    const refreshed = fs.readFileSync(writer, 'utf8');
+    expect(refreshed).not.toContain('stale installed writer');
+    expect(refreshed).toContain('eli16-overview-check.mjs');
+    // …and the module that import line resolves to must be delivered too, or
+    // the refreshed writer dies before parsing an argument.
+    expect(fs.existsSync(path.join(root, '.claude', 'scripts', 'eli16-overview-check.mjs'))).toBe(true);
+    // The sanctioned publish path had no delivery entry at all.
+    expect(fs.existsSync(path.join(root, '.claude', 'skills', 'spec-converge', 'scripts', 'publish-spec-review.mjs'))).toBe(true);
+  });
+
+  it('SYNCS the spec-converge reviewer templates, including one an existing agent never had', () => {
+    // Round-10: `installBuiltinSkills` writes a skill's files only when the
+    // skill is MISSING, so an existing agent's templates freeze at whatever
+    // version first landed. Measured on a live agent home, the wrapper was
+    // current while reviewer-decision-completeness.md — a reviewer SKILL.md
+    // calls non-optional — was ABSENT entirely, so that reviewer could not run
+    // there at all. Shipped content needs its own always-overwrite carrier.
+    const { root, run } = setup();
+    const templates = path.join(root, '.claude', 'skills', 'spec-converge', 'templates');
+    // Pre-seed a STALE copy of one template and leave the non-optional one absent,
+    // reproducing the live-agent shape exactly.
+    fs.mkdirSync(templates, { recursive: true });
+    fs.writeFileSync(path.join(templates, 'reviewer-lessons-aware.md'), 'stale bytes');
+    expect(fs.existsSync(path.join(templates, 'reviewer-decision-completeness.md'))).toBe(false);
+
+    expect(run().errors).toEqual([]);
+
+    const lessons = fs.readFileSync(path.join(templates, 'reviewer-lessons-aware.md'), 'utf8');
+    expect(lessons).not.toBe('stale bytes');
+    expect(lessons).toContain('FOUNDATION / SUBSYSTEM AUDIT');
+    expect(fs.existsSync(path.join(templates, 'reviewer-decision-completeness.md'))).toBe(true);
+
+    // Idempotent: a second pass changes nothing.
+    const before = fs.readFileSync(path.join(templates, 'reviewer-lessons-aware.md'), 'utf8');
+    expect(run().errors).toEqual([]);
+    expect(fs.readFileSync(path.join(templates, 'reviewer-lessons-aware.md'), 'utf8')).toBe(before);
+  });
+
   it('MIRRORS a drifted constitution back to the packed bytes, and is idempotent', () => {
     const packed = path.join(process.cwd(), 'dist', 'data', 'standards-registry.md');
     const { root, run } = setup();

@@ -152,10 +152,18 @@ export class EnrollmentWizard {
     this.emitAttention = cfg.emitAttention;
   }
 
-  /** Default flow kind per provider: Codex/OpenAI = device-code (its endorsed
-   *  flow); everyone else = url-code-paste (the phone-friendly Claude path). */
+  /** Default flow kind per provider: Codex/OpenAI and xAI/grok = device-code
+   *  (their endorsed single-code flows); everyone else = url-code-paste (the
+   *  phone-friendly Claude path).
+   *
+   *  Round-12 (lessons, grok-build spec §3.3): `xai` fell into the else-branch,
+   *  so an operator enrolling grok without hand-passing `kind` got a
+   *  verification URL with NO device code on the phone surface — unusable for
+   *  `grok login --device-auth`, whose whole point is the code. The branch had
+   *  wired the login COMMAND and stopped there; §3.1.1's claim that the wizard
+   *  carries "the correct binary + phone-approvable flow" was half true. */
   static defaultKind(provider: LoginProvider): LoginFlowKind {
-    return provider === 'openai' ? 'device-code' : 'url-code-paste';
+    return provider === 'openai' || provider === 'xai' ? 'device-code' : 'url-code-paste';
   }
 
   /**
@@ -170,7 +178,9 @@ export class EnrollmentWizard {
    * is a SUPERSET of defaultKind — anything device-code-capable locally is also
    * device-code-capable remotely. */
   static remoteKind(provider: LoginProvider): LoginFlowKind {
-    return provider === 'openai' ? 'device-code' : EnrollmentWizard.defaultKind(provider);
+    return provider === 'openai' || provider === 'xai'
+      ? 'device-code'
+      : EnrollmentWizard.defaultKind(provider);
   }
 
   /**

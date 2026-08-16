@@ -77,8 +77,13 @@ import {
   withClaudeUltracodePrompt,
   claudeHeadlessExtraFlags,
   resolveInteractiveFramework,
+  resolveFrameworkBinaryPath,
+  frameworkBinaryExists,
+  headlessLaneIsClosed,
+  resolveHeadlessFallbackFramework,
   resolveInteractiveLaunchModel,
   resolveModelForFramework,
+  computeGrokInteractiveOptIn,
 } from './frameworkSessionLaunch.js';
 import { frameworkFromEnv } from './intelligenceProviderFactory.js';
 import { decideSdkVsSubscription, DEFAULT_SAFETY_MARGIN_FRACTION } from '../providers/costAwareRouting.js';
@@ -2533,7 +2538,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Framework resolution: the per-call options.framework wins, falling
     // back to the agent's configured sessions.framework and then to the
     // INSTAR_FRAMEWORK env. Defaults to claude-code for back-compat.
-    const headlessFramework = resolveInteractiveFramework({
+    const requestedHeadlessFramework = resolveInteractiveFramework({
       perCall: options.framework,
       // config.framework is the agent's resolved runtime framework
       // (derived at load from sessions.framework | enabledFrameworks[0]
@@ -2541,9 +2546,76 @@ rm()  { "${shimRunner}" rm  "$@"; }
       configFramework: this.config.framework,
       envFramework: frameworkFromEnv(),
     });
-    const headlessBinaryPath =
-      this.config.frameworkBinaryPaths?.[headlessFramework]
-      ?? this.config.claudePath;
+    // CLOSED-LANE FALLBACK (round-12 adversarial, grok-build spec §4.3 lane 3).
+    // Making `resolveConfiguredFramework` finally return 'grok-build' fixed a
+    // real defect (a Grok-primary agent silently ran Claude) and created a new
+    // one: grok's HEADLESS builder refuses unconditionally until scratch-cwd
+    // wiring lands, so that same agent's scheduled jobs, upgrade-notify and
+    // pipe spawns would ALL throw. Pre-fix they ran mislabelled-but-working.
+    //
+    // Neither extreme is right: running Claude under a grok LABEL is the §2.0
+    // impersonation, and failing every job is a worse outcome than the bug we
+    // fixed. So fall back to a framework whose headless lane is OPEN and label
+    // the session HONESTLY as that framework — fallback WITH disclosure, the
+    // same shape §5.2 uses for an unlaunchable pin. Once the headless lane
+    // opens this branch stops being reachable. <!-- tracked: CMT-1317 -->
+    // Round-13 (adversarial): the first version hardcoded `claude-code` with no
+    // availability check — on a Grok-primary agent that never enabled Claude it
+    // would spawn a binary that may not exist. The fallback now picks a
+    // framework that is ENABLED and whose binary is genuinely present, and when
+    // there is no such framework it returns null so the lane's OWN refusal
+    // stands (a legible `grok-headless-cwd-ungated` beats a mystery ENOENT).
+    const fallbackFramework = resolveHeadlessFallbackFramework({
+      requested: requestedHeadlessFramework,
+      enabledFrameworks: this.config.enabledFrameworks,
+      frameworkBinaryPaths: this.config.frameworkBinaryPaths,
+      claudePath: this.config.claudePath,
+      binaryExists: (candidatePath) => {
+        try {
+          return candidatePath.includes('/')
+            ? fs.existsSync(candidatePath)
+            : true; // a bare command name resolves through PATH at spawn time
+        } catch {
+          // @silent-fallback-ok — an unprobeable candidate is treated as
+          // present; the spawn itself is the authority, and a probe error must
+          // not silently narrow the fallback set.
+          return true;
+        }
+      },
+    });
+    const headlessFramework = fallbackFramework ?? requestedHeadlessFramework;
+    if (headlessFramework !== requestedHeadlessFramework) {
+      if (!this.closedHeadlessLaneDisclosed.has(requestedHeadlessFramework)) {
+        this.closedHeadlessLaneDisclosed.add(requestedHeadlessFramework);
+        console.warn(
+          `[SessionManager] headless lane for "${requestedHeadlessFramework}" is not open yet — ` +
+          `running this and subsequent headless spawns on "${headlessFramework}" and labelling them ` +
+          `as such (never as ${requestedHeadlessFramework}). Interactive sessions are unaffected.`,
+        );
+      }
+    } else if (headlessLaneIsClosed(requestedHeadlessFramework)
+        && !this.closedHeadlessLaneDisclosed.has(`${requestedHeadlessFramework}:no-fallback`)) {
+      this.closedHeadlessLaneDisclosed.add(`${requestedHeadlessFramework}:no-fallback`);
+      console.warn(
+        `[SessionManager] headless lane for "${requestedHeadlessFramework}" is not open yet and NO ` +
+        `enabled framework with a present binary can take it — letting the lane's own refusal stand ` +
+        `so the failure names itself. Enable a second framework to give jobs a working lane.`,
+      );
+    }
+    // Shared impersonation fence (spec §2.0) — see resolveFrameworkBinaryPath.
+    // This site was the THIRD resolution point and the one the fence had
+    // MISSED (round-9 adversarial): a grok-labelled headless spawn resolved to
+    // `claudePath`, i.e. the CLAUDE binary, and only an unrelated cwd gate
+    // masked it.
+    const headlessBinaryPath = resolveFrameworkBinaryPath({
+      framework: headlessFramework,
+      frameworkBinaryPaths: this.config.frameworkBinaryPaths,
+      claudePath: this.config.claudePath,
+      configuredFramework: this.config.framework,
+    });
+    if (!headlessBinaryPath) {
+      throw new Error(`No binary path available for framework "${headlessFramework}"`);
+    }
 
     // Codex rate-limit model-swap (dark by default): when the agent's main
     // codex model has exhausted its weekly window, launch on a configured
@@ -2742,6 +2814,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // or data operations against the wrong database. (Learned from Portal incident 2026-02-22)
         '-e', 'DATABASE_URL=',
         '-e', 'DIRECT_DATABASE_URL=',
+        // Round-18 (security): the round-17 scrub landed on the LEAST-exposed
+        // of the spawn sites — the 10-minute scoped triage pane — while the
+        // long-lived interactive panes, where the agent runs arbitrary Bash and
+        // can invoke grok directly, inherited the metered key from the tmux
+        // server env. Found by grepping the codebase's OWN scrub convention:
+        // DATABASE_URL_PROD= appears at every spawn site, XAI_API_KEY= at one.
+        '-e', 'XAI_API_KEY=',
+        '-e', 'GROK_DEPLOYMENT_KEY=',
         '-e', 'DATABASE_URL_PROD=',
         '-e', 'DATABASE_URL_DEV=',
         '-e', 'DATABASE_URL_TEST=',
@@ -3055,6 +3135,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // Same DB-credential isolation as every other spawn (Portal 2026-02-22).
         '-e', 'DATABASE_URL=',
         '-e', 'DIRECT_DATABASE_URL=',
+        // Round-18 (security): the round-17 scrub landed on the LEAST-exposed
+        // of the spawn sites — the 10-minute scoped triage pane — while the
+        // long-lived interactive panes, where the agent runs arbitrary Bash and
+        // can invoke grok directly, inherited the metered key from the tmux
+        // server env. Found by grepping the codebase's OWN scrub convention:
+        // DATABASE_URL_PROD= appears at every spawn site, XAI_API_KEY= at one.
+        '-e', 'XAI_API_KEY=',
+        '-e', 'GROK_DEPLOYMENT_KEY=',
         '-e', 'DATABASE_URL_PROD=',
         '-e', 'DATABASE_URL_DEV=',
         '-e', 'DATABASE_URL_TEST=',
@@ -3827,6 +3915,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * transcript we cannot read (the safe direction is to fall through to the
    * pane/procs verdict, not to keep a possibly-dead session alive forever).
    */
+  /** Frameworks whose closed-headless-lane fallback has already been disclosed. */
+  private readonly closedHeadlessLaneDisclosed = new Set<string>();
+
   isTranscriptRecentlyActive(session: Session, withinMs: number): boolean {
     try {
       const sessionId = session.claudeSessionId;
@@ -4647,17 +4738,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
       configFramework: this.config.framework,
       envFramework: frameworkFromEnv(),
     });
-    const binaryPath =
-      this.config.frameworkBinaryPaths?.[framework]
-      ?? (framework === 'pi-cli'
-        // pi-cli must NEVER inherit the claudePath fallback: claudePath holds a
-        // CLAUDE binary on claude-code installs, and silently launching Claude
-        // with pi's flags violates the additive-only constraint
-        // (PI-HARNESS-INTEGRATION-SPEC §0.1). A bare 'pi' lets PATH resolution
-        // work when detection missed an install; a missing binary then fails
-        // loudly inside the pane instead of impersonating another framework.
-        ? 'pi'
-        : this.config.claudePath);
+    // Shared impersonation fence (spec §2.0) — see resolveFrameworkBinaryPath.
+    const binaryPath = resolveFrameworkBinaryPath({
+      framework,
+      frameworkBinaryPaths: this.config.frameworkBinaryPaths,
+      claudePath: this.config.claudePath,
+      configuredFramework: this.config.framework,
+    });
     if (!binaryPath) {
       throw new Error(`No binary path available for framework "${framework}"`);
     }
@@ -4733,6 +4820,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ...(framework === 'pi-cli'
         ? { piSessionDir: path.join(this.config.projectDir, '.instar', 'state', 'pi-sessions') }
         : {}),
+      // grok-build interactive step-3 gate (grok-build spec §7 round-8):
+      // enabledFrameworks is the reviewer lever; interactive sessions need
+      // the DISTINCT sessions.grokInteractiveSessions opt-in.
+      ...(framework === 'grok-build'
+        ? {
+            grokInteractiveOptIn: computeGrokInteractiveOptIn({
+              ...(this.config.enabledFrameworks
+                ? { enabledFrameworks: this.config.enabledFrameworks }
+                : {}),
+              ...(this.config.grokInteractiveSessions !== undefined
+                ? { grokInteractiveSessions: this.config.grokInteractiveSessions }
+                : {}),
+            }),
+          }
+        : {}),
       // Topic Profile §6: per-topic thinking mode (claude --effort / codex
       // model_reasoning_effort; strict no-op on gemini/pi).
       ...(options?.thinkingMode ? { thinkingMode: options.thinkingMode } : {}),
@@ -4784,6 +4886,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // database URLs from the parent shell. (Learned from Portal incident 2026-02-22)
         '-e', 'DATABASE_URL=',
         '-e', 'DIRECT_DATABASE_URL=',
+        // Round-18 (security): the round-17 scrub landed on the LEAST-exposed
+        // of the spawn sites — the 10-minute scoped triage pane — while the
+        // long-lived interactive panes, where the agent runs arbitrary Bash and
+        // can invoke grok directly, inherited the metered key from the tmux
+        // server env. Found by grepping the codebase's OWN scrub convention:
+        // DATABASE_URL_PROD= appears at every spawn site, XAI_API_KEY= at one.
+        '-e', 'XAI_API_KEY=',
+        '-e', 'GROK_DEPLOYMENT_KEY=',
         '-e', 'DATABASE_URL_PROD=',
         '-e', 'DATABASE_URL_DEV=',
         '-e', 'DATABASE_URL_TEST=',
@@ -5016,7 +5126,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Tmux still alive but readiness probe couldn't confirm — best-effort inject.
     // (Preserves the original behavior for prompt-detection false negatives.)
     if (stillAlive) {
-      console.error(`[SessionManager] Claude not ready in session "${tmuxSession}" — message NOT injected. Session may need manual intervention.`);
+      console.error(`[SessionManager] Session not ready in "${tmuxSession}" — message NOT injected. Session may need manual intervention.`);
       console.log(`[SessionManager] Session "${tmuxSession}" still alive — attempting injection anyway`);
       // Same instar-composed bootstrap as the ready path above — first-party (F7).
       this.injectMessage(tmuxSession, initialMessage, { firstParty: { source: 'session-bootstrap' } });
@@ -5029,10 +5139,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // notice. The bridge already retries on the next inbound message.
     // (The pending-inject record is deliberately NOT cleared here — the boot
     // sweep reports the loss loudly instead of letting it vanish.)
-    console.error(`[SessionManager] Claude not ready in session "${tmuxSession}" — tmux died during fresh startup. Message NOT injected.`);
+    console.error(`[SessionManager] Session not ready in "${tmuxSession}" — tmux died during fresh startup. Message NOT injected.`);
     DegradationReporter.getInstance().report({
       feature: 'SessionManager.handleReadyAndInject',
-      primary: 'Wait for Claude ready, inject initial message',
+      primary: 'Wait for session ready, inject initial message',
       fallback: 'tmux died during startup with no --resume to fall back from',
       reason: 'fresh-spawn crashed during startup; readiness probe could not verify prompt',
       impact: 'Initial message dropped; bridge will respawn on next inbound message',
@@ -5123,6 +5233,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
         '-e', 'ANTHROPIC_API_KEY=',
+        // Round-17 (lessons-aware): this pane runs Claude Code argv, so a
+        // metered key for ANY provider resident here defeats the same
+        // invariant ANTHROPIC_API_KEY= was added for. XAI_API_KEY in
+        // particular is grok's documented fallback billing path.
+        '-e', 'XAI_API_KEY=',
+        '-e', 'GROK_DEPLOYMENT_KEY=',
         '-e', 'DATABASE_URL=',
         '-e', 'DIRECT_DATABASE_URL=',
         '-e', 'DATABASE_URL_PROD=',
@@ -5130,7 +5246,31 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', 'DATABASE_URL_TEST=',
       ];
 
-      tmuxArgs.push(this.config.claudePath);
+      // Round-17 (lessons-aware): the FIFTH binary-resolution site, and the
+      // one the §2.0 symmetry claim missed. `config.claudePath` is selected by
+      // the CONFIGURED framework, so on a grok-primary agent it IS the grok
+      // binary — and this pane would have exec'd grok with Claude Code argv,
+      // outside every grok control. The shared fence resolves a genuine
+      // claude-code binary or nothing; nothing is a refusal, never a
+      // substitution, because a triage pane that silently runs the wrong
+      // framework is worse than a triage pane that does not start.
+      const triageBinary = resolveFrameworkBinaryPath({
+        framework: 'claude-code',
+        frameworkBinaryPaths: this.config.frameworkBinaryPaths,
+        claudePath: this.config.claudePath,
+        configuredFramework: this.config.framework,
+      });
+      // Only an explicit `false` refuses: an 'unknown' probe result means the
+      // prober failed, which is not evidence the binary is missing.
+      if (!triageBinary || frameworkBinaryExists(triageBinary) === false) {
+        throw new Error(
+          'triage-session-no-claude-binary: triage runs Claude Code argv and no genuine ' +
+            'claude-code binary resolved on this agent (configured framework: ' +
+            `${this.config.framework ?? 'unset'}). Refusing rather than ` +
+            'spawning another framework\'s binary with Claude flags.',
+        );
+      }
+      tmuxArgs.push(triageBinary);
 
       // Scoped permissions: allowedTools + permissionMode (NOT --dangerously-skip-permissions)
       if (options.allowedTools.length > 0) {
@@ -5806,8 +5946,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
         }
 
         // The marker is at the prompt — but if the session is actively working,
-        // that's NOT a stuck Enter: the injected text is correctly queued and
-        // Claude submits it when the current turn ends. Firing Enter now is a
+        // that's NOT a stuck Enter: the injected text is correctly queued and is
+        // submitted when the current turn ends. (Not universal — codex holds the
+        // draft instead, which is exactly why the stranded-draft marker above
+        // exists for it. Frameworks beyond claude/codex are unmeasured here.)
+        // Firing Enter now is a
         // no-op at best and a premature/duplicate submit at worst — and it's
         // the noisy "Injection stuck — Auto-recovering" spam that fires on
         // every inbound to a busy session. Skip recovery this tick; keep
@@ -5831,7 +5974,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
             feature: 'SessionManager.verifyInjection',
             primary: 'Bracketed paste + Enter submits injected message',
             fallback: 'Auto-resent Enter after detecting stuck input',
-            reason: 'Enter eaten by paste-end race on fresh Claude Code TUI',
+            // States the OBSERVED condition, not a presumed cause. This recovery
+            // runs for every framework (the codex branch is separate, above), so
+            // naming Claude Code here handed an operator on a grok/gemini/pi
+            // session a diagnosis about a program that was not running. The
+            // provenance is kept as provenance — where it was first seen — which
+            // is what makes it useful without making it a claim about THIS pane.
+            reason:
+              'Enter after bracketed-paste-end did not submit; text left at the prompt ' +
+              '(first observed on Claude Code TUI v2.1.105+, but the race is not framework-specific)',
             impact: 'Recovered without user intervention',
           });
         }
@@ -5994,14 +6145,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
         return false;
       }
       if (this.detectClaudePrompt(tmuxSession)) {
-        console.log(`[SessionManager] Claude ready in "${tmuxSession}" after ${Date.now() - start}ms`);
+        console.log(`[SessionManager] Session ready in "${tmuxSession}" after ${Date.now() - start}ms`);
         return true;
       }
       await new Promise(r => setTimeout(r, 500));
     }
     // Log what we see on timeout for debugging
     const finalOutput = this.captureOutput(tmuxSession, 30);
-    console.error(`[SessionManager] Claude not ready in "${tmuxSession}" after ${timeoutMs}ms. Output: ${(finalOutput || '').slice(-300)}`);
+    console.error(`[SessionManager] Session not ready in "${tmuxSession}" after ${timeoutMs}ms. Output: ${(finalOutput || '').slice(-300)}`);
     return false;
   }
 
@@ -6103,7 +6254,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         return false;
       }
       if (this.detectClaudePrompt(tmuxSession)) {
-        console.log(`[SessionManager] Claude ready in "${tmuxSession}" during extended wait (${Date.now() - extendedStart}ms after primary timeout)`);
+        console.log(`[SessionManager] Session ready in "${tmuxSession}" during extended wait (${Date.now() - extendedStart}ms after primary timeout)`);
         return true;
       }
       await new Promise(r => setTimeout(r, 1000));
