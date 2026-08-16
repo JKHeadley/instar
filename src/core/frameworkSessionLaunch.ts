@@ -84,6 +84,27 @@ export function resolveModelForFramework(
     if (key === 'capable' || key === 'opus') return 'gemini-3.1-pro-preview';
     return modelOrTier;
   }
+  if (framework === 'grok-build') {
+    // ADDED 2026-08-16, and the omission was NOT harmless. Without this row a
+    // job declaring the generic tier `haiku` handed the literal string "haiku"
+    // to grok, which answers:
+    //
+    //   Couldn't set model 'haiku': Invalid params: "unknown model id"
+    //
+    // …and EXITS 0. So instar recorded `result: "success"` for jobs that did
+    // nothing — the exit-0-empty class this framework's own stall-coverage doc
+    // names. Opening the headless lane without this row converted a LOUD failure
+    // into a silent one, which is strictly worse than the refusal it replaced.
+    //
+    // Verified against the live CLI: `grok models` lists exactly grok-4.6
+    // (default) and grok-4.5. There is no cheap tier to map `fast` onto, so all
+    // three generic tiers resolve to the default rather than inventing an id —
+    // a wrong id is not a cheaper model, it is a dead job.
+    if (key === 'fast' || key === 'haiku') return 'grok-4.6';
+    if (key === 'balanced' || key === 'sonnet') return 'grok-4.6';
+    if (key === 'capable' || key === 'opus') return 'grok-4.6';
+    return modelOrTier;
+  }
   if (framework === 'pi-cli') {
     // pi is multi-provider by design — its `--model` flag takes a
     // `provider/id` pattern and the PROVIDER is the agent's config choice
@@ -1104,7 +1125,14 @@ const grokBuildHeadlessBuilder: HeadlessBuilder = (options) => {
   // ordinary agent runs; a grok job that would open a self-updating CLI onto an
   // instar source checkout still refuses, by name.
   const argv = [options.binaryPath];
-  if (options.model) argv.push('--model', options.model);
+  // Map the GENERIC tier to a real grok model id. Passing `options.model`
+  // straight through is what shipped the exit-0-empty bug: a job declaring the
+  // tier `haiku` handed grok the literal "haiku", grok answered "unknown model
+  // id" and EXITED 0, and instar recorded `result: "success"` for a job that did
+  // nothing. Every other headless builder already routes through this resolver;
+  // this one did not, which is exactly why it was the one that broke.
+  const resolved = resolveModelForFramework('grok-build', options.model);
+  if (resolved) argv.push('--model', resolved);
   argv.push('-p', options.prompt);
   return { argv, envOverrides: buildGrokHeadlessEnvOverrides() };
 };

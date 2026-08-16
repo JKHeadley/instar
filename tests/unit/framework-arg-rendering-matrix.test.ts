@@ -54,7 +54,11 @@ const STUB_BINS: Record<string, string> = {
 const GATED_LANES: Record<string, { interactive?: RegExp; headless?: RegExp; interactiveOpts?: Record<string, unknown> }> = {
   'grok-build': {
     interactive: /grok-interactive-ungated/,
-    headless: /grok-headless-cwd-ungated/,
+    // headless: OPENED 2026-08-16 on an operator decision. This lane used to
+    // refuse every grok job with `grok-headless-cwd-ungated`; the bound moved to
+    // the spawn site and now fires only when the cwd is an instar source
+    // checkout (`grok-headless-source-tree`), which this argv-rendering matrix
+    // does not exercise. The INTERACTIVE gate is unchanged and still asserted.
     interactiveOpts: { grokInteractiveOptIn: true },
   },
 };

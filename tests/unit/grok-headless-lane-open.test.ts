@@ -81,6 +81,41 @@ describe('grok-build headless lane', () => {
     expect(spec.argv.join(' ')).not.toContain('undefined');
   });
 
+  it('maps a GENERIC tier to a real grok model — never passes a Claude tier through', () => {
+    // THE BUG THIS PINS, found by Justin asking "what door + model do the jobs
+    // use?" — a question I could not answer from assumption, which is why it
+    // caught something.
+    //
+    // Job manifests declare generic tiers (`model: haiku`). Every other headless
+    // builder routes that through resolveModelForFramework; this one pushed
+    // options.model verbatim. So grok received `--model haiku`, answered
+    //   Couldn't set model 'haiku': Invalid params: "unknown model id"
+    // and EXITED 0 — so instar logged `result: "success"` for jobs that did
+    // nothing. Opening the lane had converted a LOUD failure into a silent one,
+    // which is worse than the refusal it replaced.
+    for (const tier of ['haiku', 'fast', 'sonnet', 'balanced', 'opus', 'capable']) {
+      const spec = buildHeadlessLaunch('grok-build', {
+        binaryPath: '/opt/grok/bin/grok',
+        prompt: 'x',
+        model: tier,
+      });
+      const emitted = spec.argv[spec.argv.indexOf('--model') + 1];
+      expect(emitted, `tier '${tier}' must not reach grok verbatim`).not.toBe(tier);
+      // Verified against the live CLI: `grok models` lists exactly these two.
+      expect(['grok-4.6', 'grok-4.5']).toContain(emitted);
+    }
+  });
+
+  it('CONTROL: a real grok model id passes through untouched', () => {
+    // The mapper must not "helpfully" rewrite an id the caller already resolved.
+    const spec = buildHeadlessLaunch('grok-build', {
+      binaryPath: '/opt/grok/bin/grok',
+      prompt: 'x',
+      model: 'grok-4.5',
+    });
+    expect(spec.argv[spec.argv.indexOf('--model') + 1]).toBe('grok-4.5');
+  });
+
   it('CONTROL: the other frameworks are untouched by opening grok', () => {
     // Opening one lane must not open or alter another. claude-code is the
     // reference shape.

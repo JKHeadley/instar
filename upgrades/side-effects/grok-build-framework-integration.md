@@ -446,6 +446,40 @@ Caught by a control while doing it: a blanket `isClosed: () => true` across that
 suite put every case on the closed path, including the one control whose entire
 job is to prove the OPEN path short-circuits. It failed instantly.
 
+### The lane opened with a silent-failure bug, found by the operator's question
+
+Justin asked: *"what door + model does groky use for his background jobs/tasks?"*
+I could not answer it from assumption, which is why it caught something.
+
+The answer was `framework=grok-build model=haiku` — a CLAUDE tier handed to grok.
+Every other headless builder routes `options.model` through
+`resolveModelForFramework`; the grok builder I had just written pushed it
+verbatim. Probed against the live CLI:
+
+    grok --model haiku …
+    → Couldn't set model 'haiku': Invalid params: "unknown model id"
+    → exit 0
+
+**Exit ZERO.** So instar recorded `result: "success"` for jobs that did no work —
+two of them, 18s each, which was the session spawning and dying. Opening the lane
+had converted a LOUD failure (the honest refusal, which at least alerted) into a
+SILENT one. That is strictly worse, and it is the exit-0-empty class this
+framework's own stall-coverage matrix names.
+
+Fixed by adding grok's tier row (`grok models` lists exactly grok-4.6 and
+grok-4.5, so all three generic tiers resolve to the default — a wrong id is not a
+cheaper model, it is a dead job) AND routing the builder through the resolver like
+every other one. **Live-verified after the fix: a job completed in 43s with no
+model error**, against 18s-and-dead before.
+
+Two smaller repairs on the way, both worth naming because the lazy version was
+available. Three more obsolete "must refuse" assertions were INVERTED, not
+deleted. And an unrelated wiring test asserts a model is resolved within 2500
+chars of its use — my 20-line guard comment pushed it to 2572. I moved the guard
+EARLIER in the function (it needs only the framework and cwd, so refusing sooner
+is better anyway) rather than widening that test's tolerance; loosening another
+guard to fit my own comment would have been the wrong repair.
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**
