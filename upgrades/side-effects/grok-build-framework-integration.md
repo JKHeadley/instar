@@ -608,6 +608,36 @@ project, rather than slicing source text). My duplicate assertion was removed an
 the new file now carries only what is genuinely new: the coupling between the
 paragraph and `headlessLaneIsClosed`.
 
+### The stall-matrix edit was the wrong SHAPE, and CI caught what I did not
+
+My first matrix edit flipped `approval-prompt-wedge` to `covered` by changing the
+status token and writing prose. The ratchet refused it with eight violations, and
+the refusals were right on every count.
+
+`covered` is not a claim you assert — it is a claim you EVIDENCE. The validator
+requires a detector symbol, a distinct recovery symbol, a guard-manifest key,
+`posture: live`, and an evidence file that (a) exists, (b) contains the detector
+identifier, and (c) carries a literal `stall-class: <id>` marker. I had supplied
+none of them. The row now carries all five, and
+`tests/unit/permission-prompt-grok-menu.test.ts` is the evidence — appropriately,
+since it exercises the shipped detector against both live-captured menus, so the
+coverage claim rests on the detector rather than on my description of it.
+
+I also added a class id (`exit-zero-empty`) that is not in the canonical registry.
+That was refused too, and correctly: the class space is a single source of truth
+(`src/data/stall-classes.ts`), additive-only, and adding a class REQUIRES running
+`scripts/stall-class-codemod.mjs` in the same change so every OTHER framework's
+matrix gets a seeded row — otherwise the next push reds every stale matrix. A new
+class is a five-matrix change, not a one-matrix change. The row is removed here;
+the finding is preserved in the side-effects note above and in the filed action,
+and adding it properly is its own piece of work.
+
+Worth naming: this is the SECOND failure in this branch caused by choosing local
+tests via filename guesswork. `stall-coverage-ratchet.test.ts` matched none of my
+patterns. The mechanism that would have selected it correctly exists and has been
+timing out on every push (measured: 174s against a 120s budget), which is filed
+separately.
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**

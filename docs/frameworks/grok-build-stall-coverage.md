@@ -61,46 +61,20 @@ stall-coverage:
     liveness-surface: 'DEFECT if enabled: a walled grok session has no truthful standby state'
   - class: approval-prompt-wedge
     status: covered
+    detector: src/monitoring/PermissionPromptAutoResolver.ts#detectApprovalPrompt
+    recovery: src/monitoring/PermissionPromptAutoResolver.ts#PermissionPromptAutoResolver
+    guardKey: monitoring.permissionPromptAutoResolver.enabled
+    posture: live
+    evidence: tests/unit/permission-prompt-grok-menu.test.ts
     reason: >-
-      CLOSED 2026-08-16 on an operator decision ("we need the auto-answering
-      feature on and working, intelligent enough to select the correct answer").
-      A grok signature is registered with the PermissionPromptAutoResolver and
-      answered in INTENT mode: the resolver reads the option LABELS, presses the
-      allow-once row by its DIGIT, and positively excludes every blanket row.
-      --always-approve is still deliberately NOT passed at launch. Neither
-      obvious implementation was safe. Enter commits whatever row the dot rests
-      on, and the dot starts on row 1 which is a USER-GLOBAL persisted
-      always-approve grant, so an Enter floor would disable approval for the
-      whole machine on a session's first prompt. A hardcoded digit is also
-      wrong, and this was settled by MEASUREMENT rather than the vendor's
-      warning: grok emits at least TWO menus and the allow-once row is 2 on the
-      shell menu and 3 on the edit menu, captured from the same CLI on the same
-      day. The edit menu also carries a THIRD scope ("allow all edits during
-      this session") that names neither "always" nor "don't ask again" and is
-      excluded explicitly. An ambiguous menu, or one whose shape was never
-      characterized, DECLINES to Layer 3 rather than guessing at a keystroke.
-    issueRef: stallclass::approval-prompt-wedge::grok-build::covered
-    closePath: CMT-1319
-    liveness-surface: 'auto-answered; a declined menu still surfaces via Layer 3 as an un-cleared persisting menu'
-  - class: exit-zero-empty
-    status: declared-gap
-    reason: >-
-      ADDED 2026-08-16, observed in production on this machine. grok reports a
-      fatal startup error and EXITS 0 — measured with an unknown model id
-      ("Couldn't set model 'haiku': Invalid params" then exit 0). Every layer
-      above reads the exit code, so instar recorded result:"success" for two job
-      runs that did no work at all. This is the most dangerous class in this
-      matrix precisely because it is not a stall: nothing hangs, nothing alerts,
-      and the ledger reads healthy. The specific unknown-model trigger is fixed
-      (generic tiers are mapped before launch), but the CLASS is open — any other
-      fatal startup error grok chooses to exit 0 on lands the same way, and no
-      detector distinguishes a 3-second successful no-op from a real one.
-      Detection direction: a headless job that exits 0 having produced no output
-      and no tool calls, well under any plausible work duration, should be
-      treated as failed rather than successful.
-    issueRef: stallclass::exit-zero-empty::grok-build::gap
-    closePath: CMT-1319
-    liveness-surface: 'DEFECT: reads as SUCCESS, not as stalled — the ledger actively asserts the job worked'
+      CLOSED 2026-08-16. Answered in INTENT mode: read option LABELS, press
+      allow-once by DIGIT, exclude every blanket row. Enter commits row 1, a
+      machine-wide grant; a fixed digit is wrong too (allow-once is row 2 on
+      grok's shell menu, row 3 on its edit menu).
+    liveness-surface: >-
+      auto-answered; an ambiguous or uncharacterized menu DECLINES and surfaces
+      via Layer 3 as an un-cleared persisting menu, never a silent "running"
+      over a wedged approval prompt
   - class: context-window-wall
     status: declared-gap
     reason: 'CORRECTED round-22 by the mentee: grok auto-compacts IN PLACE rather than walling; the gap is missing DETECTION of that compaction, not missing recovery. See the context-window-wall note below.'

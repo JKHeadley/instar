@@ -14,6 +14,12 @@
  * detector missed grok — no `N. ` options (it uses `N (●)` radios), no `❯` selector,
  * no "Esc to cancel", no "Do you want to proceed".
  *
+ * stall-class: approval-prompt-wedge — this file is the grok-build EVIDENCE for
+ * that class in docs/frameworks/grok-build-stall-coverage.md. It exercises the
+ * real `detectApprovalPrompt` against two menus captured verbatim from a live
+ * session, and asserts the decline paths, so the coverage claim rests on the
+ * shipped detector rather than on prose.
+ *
  * SCOPE — WIDENED 2026-08-16 on an explicit operator decision. This originally
  * covered DETECTION only, because auto-approving grok tool calls is a real
  * authority change and the answering half was left to the operator. Justin made
