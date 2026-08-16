@@ -240,6 +240,25 @@ I verified the fix by running the tests with the tools deliberately hidden, whic
 first reproduced the failure and then passed. Checking on a machine that has them
 installed would have proved nothing — that's exactly what it had been doing.
 
+## A correction to something I already shipped
+
+The document said that when those background jobs fail, a safety mechanism stops them
+after a few tries, so the damage is limited. That isn't true, and I only found out by
+watching the Grok agent run after it shipped.
+
+That mechanism defaults to practising rather than acting: it writes "I would have
+stopped this job" in the log and then doesn't stop it. Unless someone has explicitly
+switched it to act, nothing is stopped. I watched one job fail six times, then eight,
+with the log dutifully noting each time that it would have intervened.
+
+So the real limit is just the schedule. Two of those thirty-three jobs run every five
+minutes, which means they keep failing indefinitely rather than settling down.
+
+I'm recording this as a retraction rather than quietly editing the sentence, because
+it's an exact example of the mistake this project keeps catching: writing a reassuring
+claim about a safeguard without checking whether the safeguard was actually switched
+on. I did that, and shipped it.
+
 ## What you're deciding
 
 Whether instar ships a fifth, dark-by-default framework whose billing sink is
