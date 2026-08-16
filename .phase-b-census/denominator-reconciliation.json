@@ -1,0 +1,117 @@
+{
+  "treeProvenance": {
+    "commit": "2197591",
+    "commitDate": "2026-08-05 02:19:20 +0000",
+    "packageVersion": "1.3.1126",
+    "crashLoopPauserControlCount": 4
+  },
+  "populations": {
+    "A_counterCensus": {
+      "count": 80,
+      "membershipRule": "The guard keys recorded as rows in .phase-b-census/guard-counter-census.json. The census report says this was reconstructed from the /guards source path: buildGuardInventory() over buildCompleteGuardPosture(), the union of config-derived posture keys and GUARD_MANIFEST keys.",
+      "citations": [
+        ".phase-b-census/guard-counter-census.md:1",
+        ".phase-b-census/guard-counter-census.md:7",
+        "src/monitoring/guardPostureView.ts:371-380",
+        "src/monitoring/guardPosture.ts:155-175"
+      ]
+    },
+    "B_phaseARuntimeGuards": {
+      "count": 90,
+      "membershipRule": "Rows returned by GET /guards on the live Mini at 2026-08-04 13:45Z, as recorded by the Phase A audit.",
+      "exactKeysRecovered": false,
+      "unrecoveredReason": "The Phase A audit text preserves the rule and count but not a complete 90-key response body. The advertised local server refused connection from this lane, so I did not substitute a current live read or infer keys from the count.",
+      "citations": [
+        "docs/audits/phase-a-constitutional-alignment.md:6-11",
+        "docs/audits/phase-a/journals/lint-class-rung3-verification.md:7-11",
+        "src/monitoring/guardPostureView.ts:371-380",
+        "src/monitoring/guardPosture.ts:155-175"
+      ]
+    },
+    "C_guardManifest": {
+      "count": 72,
+      "membershipRule": "Entries in the static GUARD_MANIFEST array in src/monitoring/guardManifest.ts.",
+      "citations": [
+        "src/monitoring/guardManifest.ts:1-11",
+        "src/monitoring/guardManifest.ts:67-1112"
+      ]
+    }
+  },
+  "setDifferences": {
+    "A_minus_C": {
+      "count": 8,
+      "keys": [
+        "models.tierEscalation.dryRun",
+        "monitoring.a2aRedelivery.enabled",
+        "monitoring.autonomousLivenessReconciler.enabled",
+        "monitoring.collaborationRedrive.enabled",
+        "monitoring.deliveryFailureSentinel.enabled",
+        "monitoring.orgIntentLlmJudge.enabled",
+        "monitoring.principalCoherence.enabled",
+        "monitoring.reportExternalProcesses"
+      ]
+    },
+    "C_minus_A": {
+      "count": 0,
+      "keys": [],
+      "zeroControl": "A_minus_C was verified non-empty before accepting this empty reverse difference."
+    },
+    "A_minus_B": {
+      "status": "unknown",
+      "reason": "B exact keys were not recovered."
+    },
+    "B_minus_A": {
+      "status": "unknown",
+      "reason": "B exact keys were not recovered."
+    },
+    "B_minus_C": {
+      "status": "unknown",
+      "reason": "B exact keys were not recovered."
+    },
+    "C_minus_B": {
+      "status": "unknown",
+      "reason": "B exact keys were not recovered."
+    }
+  },
+  "singleDefensibleTotal": {
+    "exists": false,
+    "reason": "The three populations answer different questions: B0.2 scored a persisted 80-row census, Phase A measured a live Mini /guards runtime population of 90, and GUARD_MANIFEST is a 72-entry static declaration list.",
+    "denominatorsByQuestion": {
+      "B0.2 counter coverage census": 80,
+      "Phase A live Mini GET /guards runtime inventory at 2026-08-04 13:45Z": 90,
+      "static GUARD_MANIFEST declarations": 72,
+      "lint guard-shaped candidate component classification": 87
+    }
+  },
+  "notAGuard": {
+    "count": 81,
+    "membershipRule": "Entries in the NOT_A_GUARD array in src/monitoring/guardManifest.ts.",
+    "citations": [
+      "src/monitoring/guardManifest.ts:1114-1119",
+      "src/monitoring/guardManifest.ts:1126-1209"
+    ]
+  },
+  "partition": {
+    "space": "The explicit candidate component space defined by scripts/lint-guard-manifest.js: file basenames in src/monitoring, src/messaging, src/lifeline, src/core matching the guard-shape suffix pattern, plus ADDITIONAL_CANDIDATES.",
+    "candidateComponents": 87,
+    "candidateComponentsInGuardManifest": 39,
+    "candidateComponentsInNotAGuard": 48,
+    "candidateUnclassified": [],
+    "candidateDualClassified": [],
+    "manifestNotAGuardComponentOverlap": [],
+    "lintResult": "lint-guard-manifest: clean",
+    "partitionsCandidateSpace": true,
+    "partitionsAllSemanticGuards": false,
+    "limitation": "The lint source explicitly limits detection to the basename suffix pattern plus ADDITIONAL_CANDIDATES; a guard-shaped component outside that shape can evade the lint until named.",
+    "citations": [
+      "scripts/lint-guard-manifest.js:6-24",
+      "scripts/lint-guard-manifest.js:30-46",
+      "scripts/lint-guard-manifest.js:225-248"
+    ]
+  },
+  "controls": {
+    "treeSearchControl": "grep -rl CrashLoopPauser src | wc -l returned 4.",
+    "setDifferenceControl": "A_minus_C returned 8 keys before C_minus_A was accepted as empty.",
+    "partitionControl": "node scripts/lint-guard-manifest.js returned clean; independent reproduction counted 87 candidates with 0 unclassified and 0 dual-classified."
+  }
+}
