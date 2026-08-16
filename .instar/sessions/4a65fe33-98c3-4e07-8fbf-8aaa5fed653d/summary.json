@@ -1,0 +1,27 @@
+{
+  "sessionId": "4a65fe33-98c3-4e07-8fbf-8aaa5fed653d",
+  "tmuxSession": "echo-commitment-follow-through",
+  "task": "[telegram:7794] please proceed as you best see fit (IMPORTANT: Read /tmp/instar-telegram/ctx-7794-17",
+  "phase": "testing",
+  "files": [
+    "scripts/instar-dev-precommit.js",
+    "src/commands/init.ts",
+    "tests/unit/ci-topic-watch.test.ts",
+    "upgrades/side-effects/ci-topic-watch.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-21T22:25:51.407Z",
+  "updatedAt": "2026-04-21T22:25:51.407Z",
+  "stale": true,
+  "outputHash": "2d3c059ade4de3da9e96fd0decd88b39"
+}

@@ -1,0 +1,114 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - img "Instar" [ref=e5]
+      - heading "Instar Dashboard" [level=1] [ref=e6]
+      - navigation [ref=e7]:
+        - button "Sessions 3" [ref=e45] [cursor=pointer]
+        - button "Files" [ref=e9] [cursor=pointer]
+        - button "Send Content" [ref=e10] [cursor=pointer]
+        - button "Jobs 29" [ref=e11] [cursor=pointer]
+        - button "Features" [ref=e12] [cursor=pointer]
+        - button "Health" [active] [ref=e13] [cursor=pointer]
+    - generic [ref=e14]:
+      - generic "Server status" [ref=e15] [cursor=pointer]:
+        - generic [ref=e17]: 1h 38m
+      - generic "Active sessions" [ref=e19] [cursor=pointer]:
+        - generic [ref=e20]: ○
+        - generic [ref=e21]: 3/10 sessions
+      - generic "Memory pressure" [ref=e23] [cursor=pointer]:
+        - generic [ref=e24]: Mem 77%
+    - generic [ref=e30]: Connected
+  - generic [ref=e192]:
+    - generic [ref=e193]:
+      - heading "Health" [level=2] [ref=e194]
+      - button "Refresh" [ref=e195] [cursor=pointer]
+    - generic [ref=e196]: Your agent's health and running processes
+    - generic [ref=e198]:
+      - generic [ref=e199]: ✓
+      - generic [ref=e200]:
+        - generic [ref=e201]: All systems operational
+        - generic [ref=e202]: "Uptime: 1h 38m · 12 capabilities active"
+    - generic [ref=e203]:
+      - generic [ref=e204]: Active Subsystems
+      - generic [ref=e205]:
+        - generic [ref=e206] [cursor=pointer]:
+          - generic [ref=e207]:
+            - generic [ref=e209]: Session Recovery
+            - generic [ref=e210]: ▶
+          - generic [ref=e211]: "Detects stuck or crashed sessions and automatically recovers them. Uses a 4-layer stack: watchdog catches stuck commands, mechanical recovery fixes JSONL issues, heuristics handle 90% of remaining cases, and LLM diagnosis covers the rest."
+          - generic [ref=e212]: Standing by
+        - generic [ref=e213] [cursor=pointer]:
+          - generic [ref=e214]:
+            - generic [ref=e216]: Session Intelligence
+            - generic [ref=e217]: ▶
+          - generic [ref=e218]: Monitors session activity and generates summaries for smart message routing. Captures terminal output every 60 seconds to enable intelligent routing of incoming messages to the most relevant session.
+          - generic [ref=e219]: Monitoring active sessions
+        - generic [ref=e220] [cursor=pointer]:
+          - generic [ref=e221]:
+            - generic [ref=e223]: Health Monitoring
+            - generic [ref=e224]: ▶
+          - generic [ref=e225]: Continuous self-checks across config drift, resource pressure, system integrity, and functional probes. Runs coherence checks every 5 minutes and deep system reviews every 6 hours.
+          - generic [ref=e226]:
+            - generic [ref=e227]: 9Checks OK
+            - generic [ref=e228]: 1Issues
+            - generic [ref=e229]: 77%Memory
+          - generic [ref=e230]: 1 failing · 13/16 probes passed · Memory 77%
+        - generic [ref=e231] [cursor=pointer]:
+          - generic [ref=e232]:
+            - generic [ref=e234]: Safety & Trust
+            - generic [ref=e235]: ▶
+          - generic [ref=e236]: Gates external operations by risk level, validates inbound messages against injection patterns, and manages adaptive trust levels per service.
+          - generic [ref=e237]: All gates active
+        - generic [ref=e238] [cursor=pointer]:
+          - generic [ref=e239]:
+            - generic [ref=e241]: Coherence & Integrity
+            - generic [ref=e242]: ▶
+          - generic [ref=e243]: Ensures project state, scope boundaries, and response quality remain consistent. Prevents cross-project contamination and validates agent instructions are properly loaded.
+          - generic [ref=e244]: Monitoring project integrity
+        - generic [ref=e245] [cursor=pointer]:
+          - generic [ref=e246]:
+            - generic [ref=e248]: Scheduled Jobs
+            - generic [ref=e249]: ▶
+          - generic [ref=e250]: Runs tasks on cron schedules with priority-based queuing. Also tracks behavioral commitments the agent made to the user.
+          - generic [ref=e252]: 29Jobs
+          - generic [ref=e253]: 29 jobs enabled
+        - generic [ref=e254] [cursor=pointer]:
+          - generic [ref=e255]:
+            - generic [ref=e257]: Telegram
+            - generic [ref=e258]: ▶
+          - generic [ref=e259]: Full Telegram messaging integration with long-polling, topic-based session routing, notification batching, and delivery retry.
+          - generic [ref=e260]:
+            - generic [ref=e261]: 61Topics
+            - generic [ref=e262]: 3195Messages
+          - generic [ref=e263]: Connected 1h 39m · 61 topics
+        - generic [ref=e264] [cursor=pointer]:
+          - generic [ref=e265]:
+            - generic [ref=e267]: Slack
+            - generic [ref=e268]: ▶
+          - generic [ref=e269]: Sends and receives messages through Slack
+          - generic [ref=e270]: Connected
+        - generic [ref=e271] [cursor=pointer]:
+          - generic [ref=e272]:
+            - generic [ref=e274]: Message Routing
+            - generic [ref=e275]: ▶
+          - generic [ref=e276]: Routes messages between platforms and sessions intelligently. Handles cross-platform bridging and inter-agent delivery with retry and dead-letter archiving.
+          - generic [ref=e277]: Routing active
+        - generic [ref=e278] [cursor=pointer]:
+          - generic [ref=e279]:
+            - generic [ref=e281]: Memory & Context
+            - generic [ref=e282]: ▶
+          - generic [ref=e283]: Topic memory stores conversation history per topic. Semantic memory enables natural language search. Working memory assembles relevant context for each session.
+          - generic [ref=e284]: Context assembly active
+        - generic [ref=e285] [cursor=pointer]:
+          - generic [ref=e286]:
+            - generic [ref=e288]: Self-Improvement
+            - generic [ref=e289]: ▶
+          - generic [ref=e290]: Detects capability gaps, generates improvement proposals, tracks learnings, and implements approved changes. The self-improvement loop.
+          - generic [ref=e291]: Monitoring capabilities
+        - generic [ref=e292] [cursor=pointer]:
+          - generic [ref=e293]:
+            - generic [ref=e295]: Infrastructure
+            - generic [ref=e296]: ▶
+          - generic [ref=e297]: Cloudflare tunnel for remote access, git worktree management for isolated agent work, and the Threadline agent network.
+          - generic [ref=e298]: Tunnel active

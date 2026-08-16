@@ -1,0 +1,45 @@
+{
+  "projectName": "Echo — Agent Identity",
+  "projectDir": "/Users/justin/.instar/agents/echo",
+  "gitRemote": "https://github.com/JKHeadley/instar-echo.git",
+  "gitBranch": "main",
+  "totalFiles": 77415,
+  "directories": [
+    {
+      "name": "specs",
+      "description": "Project directory",
+      "fileCount": 21
+    },
+    {
+      "name": "logs",
+      "description": "Project directory",
+      "fileCount": 3
+    },
+    {
+      "name": "state",
+      "description": "Project directory",
+      "fileCount": 2
+    },
+    {
+      "name": "handoffs",
+      "description": "Project directory",
+      "fileCount": 1
+    },
+    {
+      "name": "scripts",
+      "description": "Build/utility scripts",
+      "fileCount": 1
+    },
+    {
+      "name": "package",
+      "description": "Project directory",
+      "fileCount": 0
+    }
+  ],
+  "keyFiles": [
+    "CLAUDE.md"
+  ],
+  "projectType": "unknown",
+  "deploymentTargets": [],
+  "generatedAt": "2026-05-20T17:11:44.863Z"
+}

@@ -1,0 +1,21 @@
+{
+  "sessionId": "7fa2e332-990b-4f08-aa94-82296eacaf1f",
+  "tmuxSession": "echo-topic-4699",
+  "task": "[telegram:4699] done (IMPORTANT: Read /tmp/instar-telegram/ctx-4699-1775080886516.txt for thread his",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-01T23:01:42.799Z",
+  "updatedAt": "2026-04-01T23:01:42.799Z",
+  "stale": true,
+  "outputHash": "2c240c9d1998c2f02432c54685e9563f"
+}

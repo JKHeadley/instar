@@ -1,0 +1,19 @@
+{
+  "sessionId": "7a8dae3d-dba5-4da0-bb67-a97048092412",
+  "tmuxSession": "echo-github-prs",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-2317-1776367306216-6h69htvl.txt — it contains your f",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-16T20:28:47.384Z",
+  "updatedAt": "2026-04-16T20:28:47.384Z",
+  "stale": true,
+  "outputHash": "8f72c321383704e86449a5192595d38d"
+}

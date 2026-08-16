@@ -1,0 +1,12 @@
+{
+  "id": "fa8a4fde-e809-451d-842a-a79b3cd8775d",
+  "title": "Guardian Overseer Report — 2026-04-14",
+  "markdown": "# Guardian Overseer Report\n\n**Generated:** 2026-04-14 07:05 UTC  \n**Window:** Last 24 hours  \n**Overall:** 5 jobs, 4 healthy, 1 with chronic failures\n\n---\n\n## Critical: state-integrity-check Timeout Bug\n\n**Status:** 25% success rate (1/4 in 24h window; broader: 5/9 over 48h)\n\nThe job config says `expectedDurationMinutes: 3` (180s), but sessions are being killed at ~75 seconds. This is a runtime enforcement bug — the session timeout is not respecting the job config.\n\nPattern from ledger:\n- 2026-04-12: 2 timeouts at 75s, 1 success at 20s\n- 2026-04-13: 2 successes (55s, 70s), then 2 timeouts (74s, 75s)\n- 2026-04-14: 1 timeout at 75s, 1 success at 70s\n\nThe job is racing the timeout every run. When it completes in <70s it succeeds; when it takes 70-75s it gets killed. The bug is in the session runner's timeout enforcement.\n\n**Action needed:** Fix session timeout to respect `expectedDurationMinutes` in job config.\n\n---\n\n## Warning: degradation-digest Gate Skips (30 in 24h)\n\n30 gate skips vs only 3 actual runs. Effective coverage: ~50% of scheduled runs.  \nNo gate config in jobs.json — this is coming from scheduler internals (likely concurrency or quota gate).\n\n---\n\n## Watch: guardian-pulse Orphaned Pending Entry\n\nOne run from 2026-04-13T00:27:52 stuck in pending state for >31 hours.  \nSubsequent runs succeeded normally. State cleanup not triggering on session abandonment.\n\n---\n\n## No Handoff Notes from Any Guardian Job\n\nZero narrative continuity between overseer runs. Trend detection is stats-only.\n\n---\n\n## Model Allocation\n\nAll jobs use haiku — appropriate.\n",
+  "createdAt": "2026-04-14T07:06:35.226Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "overseer-guardian"
+    }
+  }
+}

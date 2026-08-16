@@ -1,0 +1,23 @@
+{
+  "sessionId": "087ccc3d-6926-47b0-8cfb-00399f1a6bc4",
+  "tmuxSession": "echo-exploring-slack-integration",
+  "task": "[telegram:3079] please continue (IMPORTANT: Read /tmp/instar-telegram/ctx-3079-1776884480431.txt for",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/.instar/agents/echo/.instar/bin/node-candidates.json",
+    "kspace/.instar/shadow-install/node_modules/instar/dist/cli.js"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "security",
+    "messaging",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-22T19:05:56.068Z",
+  "updatedAt": "2026-04-22T19:05:56.068Z",
+  "stale": true,
+  "outputHash": "c2b55e7506f8bff5295fd9a1cfa482ae"
+}

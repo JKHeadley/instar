@@ -1,0 +1,21 @@
+{
+  "sessionId": "c77469fe-8072-4464-aa1c-c71274f261f9",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] Checking in here looks like there's been a lot of activity. Please give me a summary",
+  "phase": "testing",
+  "files": [
+    "/tmp/view-payload.json",
+    "docs/specs/PR-REVIEW-HARDENING-SPEC.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T17:38:16.465Z",
+  "updatedAt": "2026-04-17T17:38:16.465Z",
+  "stale": true,
+  "outputHash": "d4c3972ea177d5fb9bc91f451dad1d99"
+}

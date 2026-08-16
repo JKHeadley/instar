@@ -1,0 +1,17 @@
+{
+  "sessionId": "f7110422-54c1-40b9-996a-26ee5121faa2",
+  "tmuxSession": "echo-openclaw",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-9003-1778320740205-h65x44zb.txt — it contains your f",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-09T10:00:05.454Z",
+  "updatedAt": "2026-05-09T10:00:05.454Z",
+  "stale": true,
+  "outputHash": "6cfe1a75abc8aba17316c23dd25828da"
+}

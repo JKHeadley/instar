@@ -1,0 +1,15 @@
+{
+  "sessionId": "e72581f5-ef80-446c-8e9d-a3857c6e3ffe",
+  "tmuxSession": "echo-test-sesh",
+  "task": "Session e72581f5-ef80-446c-8e9d-a3857c6e3ffe (testing)",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T06:36:41.003Z",
+  "updatedAt": "2026-03-20T06:36:41.003Z",
+  "stale": false,
+  "outputHash": "f798e80eb8b01b783915a88b8d148fe6"
+}

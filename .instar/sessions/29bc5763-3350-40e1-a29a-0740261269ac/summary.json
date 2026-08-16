@@ -1,0 +1,19 @@
+{
+  "sessionId": "29bc5763-3350-40e1-a29a-0740261269ac",
+  "tmuxSession": "echo-instar-agent-robustness",
+  "task": "[telegram:5447] before we move forward, I want to share a report from another instar agent that dire",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-20T19:07:47.257Z",
+  "updatedAt": "2026-04-20T19:07:47.257Z",
+  "stale": true,
+  "outputHash": "2475ccd6224d6a8448c1ddb036ba24b6"
+}

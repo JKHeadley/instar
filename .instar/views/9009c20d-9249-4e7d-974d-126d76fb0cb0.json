@@ -1,0 +1,12 @@
+{
+  "id": "9009c20d-9249-4e7d-974d-126d76fb0cb0",
+  "title": "Guardian Overseer Report - 2026-04-17",
+  "markdown": "# Guardian Overseer Report\n**Generated:** 2026-04-17T13:01 UTC\n\n## Summary\n\nAll 5 guardian jobs currently healthy (0 consecutive failures, 0 skips). Two patterns warrant monitoring.\n\n## Jobs Reviewed\n\n| Job | Schedule | Success Rate | Status |\n|-----|----------|-------------|--------|\n| health-check | every 5m | 98.3% (287 runs) | Healthy |\n| degradation-digest | every 4h | 100% (5 runs) | Healthy |\n| state-integrity-check | every 6h | 100% (3 runs) | Healthy |\n| guardian-pulse | every 8h | 100% (3 runs) | Healthy |\n| session-continuity-check | every 4h | 66.7% (6 runs) | Watch |\n\n## Findings\n\n### 1. session-continuity-check: Timeout Burst (Self-Resolved)\n\nTwo consecutive timeouts April 16: trigger=missed at 21:12 (145s) and scheduled at 23:01 (148s). Normal duration 55-95s. Recovered cleanly since with 3 consecutive successes.\n\n### 2. health-check: Scattered Timeout Spikes\n\nFull ledger shows 10 timeouts across April 15-17, all 73-110s (normal 18-28s). Non-clustered individual spikes suggesting occasional system load pressure. One spike at Apr 16 19:00 coincides with degradation-digest orphaned pending run at 19:03.\n\n### 3. Orphaned Pending Run in degradation-digest\n\nRun from 2026-04-16T19:03 has result=pending with no completedAt. Stale ledger entry. Job recovered in subsequent cycles.\n\n### 4. No Handoff Notes Across All Guardian Jobs\n\nAll 5 jobs have lastHandoff=null. Guardian jobs not passing findings forward. Cross-run pattern detection relies entirely on ledger parsing.\n\n## Recommendations\n\n- Low: Monitor session-continuity-check for timeout recurrence\n- Low: Investigate orphaned pending run in degradation-digest ledger\n- Medium: Guardian jobs should write handoff notes for overseer synthesis",
+  "createdAt": "2026-04-17T13:02:39.635Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "overseer-guardian"
+    }
+  }
+}

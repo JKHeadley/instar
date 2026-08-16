@@ -1,0 +1,23 @@
+{
+  "sessionId": "825a7ac7-71b2-4870-b52e-dec9cd83ed09",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] okay, here's the next test (IMPORTANT: Read /tmp/instar-telegram/ctx-1490-1773993362",
+  "phase": "testing",
+  "files": [
+    ".instar/topic-resume-map.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T08:12:57.099Z",
+  "updatedAt": "2026-03-20T08:12:57.099Z",
+  "stale": true,
+  "outputHash": "a620991c0dcf02c734eeb1c8748b13b0"
+}

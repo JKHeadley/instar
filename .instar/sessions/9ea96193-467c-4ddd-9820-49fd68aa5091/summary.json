@@ -1,0 +1,25 @@
+{
+  "sessionId": "9ea96193-467c-4ddd-9820-49fd68aa5091",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] hows this looking? (IMPORTANT: Read /tmp/instar-telegram/ctx-1490-1774026534468.txt ",
+  "phase": "testing",
+  "files": [
+    "tests/unit/esm-compliance.test.ts",
+    "tests/unit/no-silent-fallbacks.test.ts",
+    "tests/e2e/memory-export-job-lifecycle.test.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T17:21:58.264Z",
+  "updatedAt": "2026-03-20T17:21:58.264Z",
+  "stale": false,
+  "outputHash": "ebb4e66c9c13e928229345533d1d5976"
+}

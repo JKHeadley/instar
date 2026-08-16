@@ -1,0 +1,21 @@
+{
+  "sessionId": "ac335da3-f6e6-4b10-9f2c-8cc151738bb4",
+  "tmuxSession": "echo-indra-assistance",
+  "task": "[telegram:3995] lets try this again (IMPORTANT: Read /tmp/instar-telegram/ctx-3995-1774911692967.txt",
+  "phase": "testing",
+  "files": [
+    "tests/unit/autonomous-skill-deployment.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-31T00:31:34.977Z",
+  "updatedAt": "2026-03-31T00:31:34.977Z",
+  "stale": false,
+  "outputHash": "e076ba48add1295963743a2e6c2d53f3"
+}

@@ -1,0 +1,13 @@
+{
+  "sessionId": "abeedb2a-8819-4ecc-a909-50804a617566",
+  "tmuxSession": "echo-job-state-integrity-check-mogulqon",
+  "task": "[NOTIFICATION PROTOCOL: This job runs in quiet mode. The user will NOT see your output unless you ex",
+  "phase": "building",
+  "files": [],
+  "topics": [],
+  "blockers": null,
+  "lastActivity": "2026-04-27T07:00:50.039Z",
+  "updatedAt": "2026-04-27T07:00:50.039Z",
+  "stale": false,
+  "outputHash": "19410c3410966d07e7bd992d3c017dc4"
+}

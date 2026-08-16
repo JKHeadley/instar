@@ -1,0 +1,20 @@
+{
+  "sessionId": "82878886-8d72-4b46-840f-2afce379ffa1",
+  "tmuxSession": "echo-exploring-slack-integration",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-3079-1775355984767-gq3rp0ds.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "src/messaging/slack/FileHandler.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-05T02:44:30.094Z",
+  "updatedAt": "2026-04-05T02:44:30.094Z",
+  "stale": false,
+  "outputHash": "52826fc7ef9f253cbdd8858cb4f24fde"
+}

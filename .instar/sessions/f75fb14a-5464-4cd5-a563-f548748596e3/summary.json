@@ -1,0 +1,21 @@
+{
+  "sessionId": "f75fb14a-5464-4cd5-a563-f548748596e3",
+  "tmuxSession": "echo-git-syncing",
+  "task": "[telegram:8122] Dawn noticed some conflicts that apparently still exist with the worktree situation.",
+  "phase": "testing",
+  "files": [
+    "../../../../../tmp/RELAY-SPAWN-GHOST-REPLY-SPEC.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-28T19:58:55.972Z",
+  "updatedAt": "2026-04-28T19:58:55.972Z",
+  "stale": true,
+  "outputHash": "7abe1d457a11b565b6239801457008e4"
+}

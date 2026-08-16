@@ -1,0 +1,24 @@
+{
+  "sessionId": "f958b0e4-ba06-46f6-b0e9-26f12ce7f606",
+  "tmuxSession": "echo-topic-3963",
+  "task": "[telegram:3963] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1774744906933",
+  "phase": "testing",
+  "files": [
+    "MEMORY.md",
+    "NEXT.md",
+    "AGENT.md",
+    "input-relay.md",
+    "FIX-INVALID-HTTP-HOOKS.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T00:45:23.077Z",
+  "updatedAt": "2026-03-29T00:45:23.077Z",
+  "stale": true,
+  "outputHash": "0a1a972b4db960b8c4f6449a239791ab"
+}

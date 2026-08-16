@@ -1,0 +1,23 @@
+{
+  "sessionId": "fbd8849d-83c1-463b-991c-d41719823a71",
+  "tmuxSession": "echo-bug-zombie-cleanup-kills-active-sessions",
+  "task": "[telegram:1565] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1774034794847",
+  "phase": "testing",
+  "files": [
+    "tests/unit/session-reap-detect.test.ts",
+    "SessionManager.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T19:33:29.418Z",
+  "updatedAt": "2026-03-20T19:33:29.418Z",
+  "stale": false,
+  "outputHash": "9d1c5d259374728310a1f52ad1845b6b"
+}

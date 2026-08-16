@@ -1,0 +1,25 @@
+{
+  "sessionId": "006cd8a5-bcb6-4018-99e0-7d5a9c61dbce",
+  "tmuxSession": "echo-token-management",
+  "task": "[telegram:8615] All this sounds good, but I’d like a little bit more insight into each aspect of thi",
+  "phase": "testing",
+  "files": [
+    "src/threadline/ApprovalQueue.ts",
+    "src/threadline/AutonomyGate.ts",
+    "src/core/SessionManager.ts",
+    "src/server/routes.ts",
+    "/Users/justin/.instar/agents/echo/.instar/topic-resume-map.json"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-29T21:12:27.069Z",
+  "updatedAt": "2026-04-29T21:12:27.069Z",
+  "stale": false,
+  "outputHash": "4a7d8acf700679b065facee7ef35027f"
+}

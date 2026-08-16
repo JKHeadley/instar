@@ -1,0 +1,28 @@
+{
+  "sessionId": "3cd8e52e-905c-4382-9282-0f81700029fc",
+  "tmuxSession": "echo-server-side-process-review",
+  "task": "[telegram:1882] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1774748498995",
+  "phase": "testing",
+  "files": [
+    "MEMORY.md",
+    "NEXT.md",
+    "AGENT.md",
+    "input-relay.md",
+    "FIX-INVALID-HTTP-HOOKS.md",
+    "dashboard/index.html"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T01:47:29.925Z",
+  "updatedAt": "2026-03-29T01:47:29.925Z",
+  "stale": true,
+  "outputHash": "def749086f6a20d5541a7171cd504b65"
+}

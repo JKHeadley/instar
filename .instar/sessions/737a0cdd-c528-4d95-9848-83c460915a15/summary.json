@@ -1,0 +1,23 @@
+{
+  "sessionId": "737a0cdd-c528-4d95-9848-83c460915a15",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] /new server-recovery (IMPORTANT: Read /tmp/instar-telegram/ctx-2-1773446211532.txt for ",
+  "phase": "testing",
+  "files": [
+    "security.md",
+    "synthesis.md",
+    "learning-extractor.md"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-14T01:27:23.496Z",
+  "updatedAt": "2026-03-14T01:27:23.496Z",
+  "stale": true,
+  "outputHash": "46be1de519a72d633e36865148aaff03"
+}

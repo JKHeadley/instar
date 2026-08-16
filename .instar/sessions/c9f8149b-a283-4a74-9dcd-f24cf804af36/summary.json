@@ -1,0 +1,26 @@
+{
+  "sessionId": "c9f8149b-a283-4a74-9dcd-f24cf804af36",
+  "tmuxSession": "echo-compaction-bug-continued",
+  "task": "[telegram:6795] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1778543685034",
+  "phase": "testing",
+  "files": [
+    "telegram-delivery-robustness.md",
+    "tmux-bracketed-paste-unification.md",
+    "configuration.md",
+    "NEXT.md",
+    "0.28.77.md",
+    "src/core/SessionManager.ts"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-12T04:39:22.782Z",
+  "updatedAt": "2026-05-12T04:39:22.782Z",
+  "stale": false,
+  "outputHash": "46e83ba4372f5cc4e7a4ff83033e6c30"
+}

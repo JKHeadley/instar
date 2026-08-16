@@ -1,0 +1,27 @@
+{
+  "sessionId": "b6761a0f-dc41-4d51-a2fc-62b355cfa142",
+  "tmuxSession": "echo-github-prs",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-2317-1776452345322-yld9zgj6.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "../../../Documents/Projects/instar/.instar/instar-dev-traces/2026-04-17T19-11-48-000Z-pr-gate-phase-a-commit-2-backupconfig-plumbing.json",
+    "src/core/types.ts",
+    "src/config/ConfigDefaults.ts",
+    "src/core/BackupManager.ts",
+    "src/server/routes.ts",
+    "src/commands/backup.ts",
+    "src/commands/server.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T19:13:49.220Z",
+  "updatedAt": "2026-04-17T19:13:49.220Z",
+  "stale": true,
+  "outputHash": "00f7b8065f5f52cb6c31430b0aaad42b"
+}

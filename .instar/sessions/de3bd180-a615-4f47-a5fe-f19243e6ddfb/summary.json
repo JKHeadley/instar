@@ -1,0 +1,18 @@
+{
+  "sessionId": "de3bd180-a615-4f47-a5fe-f19243e6ddfb",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] unstick (IMPORTANT: Read /tmp/instar-telegram/ctx-1490-1774921902915.txt for thread ",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-31T04:01:44.595Z",
+  "updatedAt": "2026-03-31T04:01:44.595Z",
+  "stale": true,
+  "outputHash": "8d89a135e0f6b67ef82b55991ee1d1f3"
+}

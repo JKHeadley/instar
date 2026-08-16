@@ -1,0 +1,12 @@
+{
+  "id": "03366f7d-fdf2-4625-bd40-25837c61a40a",
+  "title": "Guardian Overseer Report — 2026-05-10",
+  "markdown": "# Guardian Overseer Report — 2026-05-10T07:04Z\n\n## Overall Status: ⚠️ DEGRADED (1 Critical Issue)\n\n5 guardian jobs monitored | 113 runs in 24h | 93.2% avg success rate | 0 skips | 0 disabled\n\n## Critical: Telegram Inbound Polling Down\n\nDetected by Guardian Pulse at 07:01 UTC. Onset ~02:23 UTC (4.5h before this report). Agent cannot receive Telegram messages.\n\nServer logs at 07:00-07:04 show outbound sends partially working (fetch errors, falling back edit→new) but inbound polling is stopped.\n\n**Escalation gap**: Guardian Pulse classified this CRITICAL but did NOT raise an attention queue item. The GP→attention pipeline is broken.\n\n## Timeout Pattern (3 in 24h)\n\n- health-check at 06:45 UTC: 77s (killed)\n- degradation-digest at May 9 23:00: 147s (killed)\n- session-continuity-check at May 9 19:03: 144s (killed)\n\nAll isolated. Two of the three (degradation-digest and session-continuity-check) hit their timeouts in the 19:00-23:00 UTC window — possible load pattern.\n\n## Coverage Gaps\n\n1. No handoff notes from any guardian job — each run starts blind with no prior context\n2. Guardian Pulse → attention queue escalation not firing for CRITICAL findings\n3. 6-8h check intervals mean a Telegram failure can go undetected for hours (confirmed: this one went 4.5h before guardian-pulse caught it)\n",
+  "createdAt": "2026-05-10T07:07:11.258Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "overseer-guardian"
+    }
+  }
+}

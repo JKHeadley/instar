@@ -1,0 +1,21 @@
+{
+  "sessionId": "c7a25cbf-2fc0-4033-bf11-78f4f9ba2877",
+  "tmuxSession": "echo-instar-agent-robustness",
+  "task": "[telegram:5447] the inspec agent seems to be unresponsive in telegram. please fix this (IMPORTANT: R",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-21T20:39:50.346Z",
+  "updatedAt": "2026-04-21T20:39:50.346Z",
+  "stale": false,
+  "outputHash": "31dc28a1252022aa808333baabf73826"
+}

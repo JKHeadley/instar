@@ -1,0 +1,23 @@
+{
+  "sessionId": "0e29d9fc-7ba2-4c97-ac28-70fbdd45fb9b",
+  "tmuxSession": "echo-server-side-process-review",
+  "task": "[telegram:1882] hows it going? (IMPORTANT: Read /tmp/instar-telegram/ctx-1882-1774667385352.txt for ",
+  "phase": "testing",
+  "files": [
+    "vitest.push.config.ts",
+    "src/data/builtin-manifest.json",
+    "NEXT.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T03:40:25.592Z",
+  "updatedAt": "2026-03-28T03:40:25.592Z",
+  "stale": false,
+  "outputHash": "10e8dc05225199508d9bbe6de70ad6ee"
+}

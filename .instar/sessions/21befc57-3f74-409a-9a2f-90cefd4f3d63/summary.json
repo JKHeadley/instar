@@ -1,0 +1,27 @@
+{
+  "sessionId": "21befc57-3f74-409a-9a2f-90cefd4f3d63",
+  "tmuxSession": "echo-attention",
+  "task": "CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.\n",
+  "phase": "testing",
+  "files": [
+    "server.ts",
+    "MEMORY.md",
+    "0.12.0.md",
+    "threadline.md",
+    "safety-gates.md",
+    "0.17.0.md",
+    "NEXT.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-10T00:21:35.788Z",
+  "updatedAt": "2026-03-10T00:21:35.788Z",
+  "stale": true,
+  "outputHash": "a645b5e95106146c4386549159bb4aa1"
+}

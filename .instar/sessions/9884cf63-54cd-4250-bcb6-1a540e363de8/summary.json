@@ -1,0 +1,15 @@
+{
+  "sessionId": "9884cf63-54cd-4250-bcb6-1a540e363de8",
+  "tmuxSession": "echo-ui-test-headless",
+  "task": "Session 9884cf63-54cd-4250-bcb6-1a540e363de8 (testing)",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-19T22:38:25.930Z",
+  "updatedAt": "2026-03-19T22:38:25.930Z",
+  "stale": true,
+  "outputHash": "6d72bec5ad3f172dc9976d032d91669a"
+}

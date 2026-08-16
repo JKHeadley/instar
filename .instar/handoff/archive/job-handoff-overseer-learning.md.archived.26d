@@ -1,0 +1,30 @@
+# Overseer: Learning Category — 2026-04-15
+
+## TL;DR
+Learning pipeline is structurally broken in a cascade. Not diminishing returns — zero downstream returns. Root cause: insight-harvest has a broken gate condition (missing auth header). Fix that and the entire pipeline unlocks.
+
+## Critical: insight-harvest gate auth bug
+Gate condition: `curl -sf http://localhost:4042/evolution/learnings?applied=false`
+Problem: No `-H "Authorization: Bearer $AUTH"` → endpoint returns 401 → curl -f produces empty output → JSON parse fails → gate exits 1 → always skips.
+Evidence: 87 all-time gate skips, 0 actual runs. Meanwhile 7 unapplied learnings exist, oldest from 2026-03-13 (5+ weeks unprocessed).
+
+## Cascade effect
+reflection-trigger runs → generates learnings → insight-harvest blocked (auth bug) → no learnings applied → no proposals generated → evolution-proposal-evaluate/implement correctly gate (nothing to evaluate) → evolution stalls completely.
+
+## reflection-trigger: shallow Opus ROI
+- Runs 6x/day (every 4h) on Opus, ~63s avg
+- Prompt field is EMPTY — relies on description only
+- Output: changelog maintenance (version number bumps, capability docs)
+- Not doing: behavioral pattern synthesis, cross-session insight generation, proposal creation
+- Verdict: Haiku-level work billed at Opus rates
+
+## Action tracker graveyard
+- 87 pending actions, 0 resolved visible
+- No due dates set → evolution-overdue-check never fires (correctly gates: no overdue)
+- Actions span 2026-04-09 to today, including already-completed work ("Ship instar 0.28.18")
+- No resolution mechanism in place
+
+## Recommendations
+1. Fix insight-harvest gate: add auth token to the curl command
+2. Downgrade reflection-trigger to sonnet (or write it a real Opus-worthy prompt)
+3. Add due dates to actions or build a "stale pending" gate for overdue-check

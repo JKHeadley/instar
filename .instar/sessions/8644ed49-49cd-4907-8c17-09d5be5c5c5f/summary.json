@@ -1,0 +1,19 @@
+{
+  "sessionId": "8644ed49-49cd-4907-8c17-09d5be5c5c5f",
+  "tmuxSession": "echo-token-management",
+  "task": "[telegram:8615] Hi Echo! We seem to be burning tokens very fast again. Can you overview the token us",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-20T17:13:37.858Z",
+  "updatedAt": "2026-05-20T17:13:37.858Z",
+  "stale": false,
+  "outputHash": "5eae3f9bb8ef37fd6660981279992964"
+}

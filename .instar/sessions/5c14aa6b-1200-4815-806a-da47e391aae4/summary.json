@@ -1,0 +1,16 @@
+{
+  "sessionId": "5c14aa6b-1200-4815-806a-da47e391aae4",
+  "tmuxSession": "echo-commitment-follow-through",
+  "task": "[telegram:7794] this is not future work, this is now work (IMPORTANT: Read /tmp/instar-telegram/ctx-",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-21T02:52:25.476Z",
+  "updatedAt": "2026-04-21T02:52:25.476Z",
+  "stale": true,
+  "outputHash": "5ac3d0c53c730eb1db797e2d48278a37"
+}

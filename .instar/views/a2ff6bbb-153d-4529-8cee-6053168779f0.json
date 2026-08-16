@@ -1,0 +1,12 @@
+{
+  "id": "a2ff6bbb-153d-4529-8cee-6053168779f0",
+  "title": "State Integrity Check Report",
+  "markdown": "# State Integrity Report — 2026-05-05\n\n## Summary\n\n4 of 5 checks healthy. 1 system degraded, 1 bloat detected.\n\n## Results\n\n### ✓ Active Job Tracking\nNo orphaned active-job.json records. Current job is active.\n\n### ✓ Topic Mappings\nNo job-topic mappings configured — no orphaned references to clean.\n\n### ⚠️ State File Bloat\n- **instructions-tracking**: 10,389 files (2.00MB) accumulating without pruning\n- **Other files**: Healthy (largest: commitments.json 263.1KB)\n- **Action needed**: Implement archival strategy for instructions-tracking\n\n### 🔴 Server Degradation (6 active issues)\n1. Conflicts may not auto-resolve correctly\n2. Sessions missing conversation summaries (search unavailable)\n3. iMessage messaging unavailable\n4. Knowledge graph unavailable\n5. Feature discovery state not persisted\n6. **Layer 2 (durable queue + structured events) disabled** — Fix: npm rebuild better-sqlite3\n\n### ✓ Handoff Notes\nAll recent. Max age: 2 days. No stale notes.\n\n### ⚠️ Commitment Violations\n- Total tracked violations: 5,612,833\n- Commitments with violations: 288 / 362\n- Signal: High violation count may indicate backoff loop or verification drift\n\n## Recommended Actions\n\n1. Rebuild better-sqlite3 to restore durable queue\n2. Audit commitment verification backoff logic\n3. Archive instructions-tracking files older than 30 days",
+  "createdAt": "2026-05-05T13:01:25.889Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "state-integrity-check"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "sessionId": "b4d1ac98-65d5-47db-b032-1f353c4b094f",
+  "tmuxSession": "echo-interactive-1774764420290",
+  "task": "[slack:C0APW9UHFJ5] Yes please! (IMPORTANT: Read /tmp/instar-slack/ctx-C0APW9UHFJ5-1774764420285.txt",
+  "phase": "testing",
+  "files": [
+    ".instar/machines/registry.json"
+  ],
+  "topics": [
+    "database",
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T06:21:52.567Z",
+  "updatedAt": "2026-03-29T06:21:52.567Z",
+  "stale": true,
+  "outputHash": "3f7946d28a91d391742abad9f0c2edc8"
+}

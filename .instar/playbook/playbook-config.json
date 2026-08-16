@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "engine_version": "4.0.0",
+  "paths": {
+    "playbook_root": "/Users/justin/.instar/agents/echo/.instar/playbook",
+    "manifest": "/Users/justin/.instar/agents/echo/.instar/playbook/context-manifest.json",
+    "governance": "/Users/justin/.instar/agents/echo/.instar/playbook/context-governance.json",
+    "history": "/Users/justin/.instar/agents/echo/.instar/playbook/playbook-history.jsonl",
+    "scripts_dir": null
+  },
+  "backend": {
+    "type": "filesystem"
+  },
+  "features": {
+    "delta_validation": true,
+    "hmac_signing": false,
+    "schema_validation": true,
+    "pii_screening": false,
+    "semantic_dedup": false,
+    "reflector": false
+  }
+}

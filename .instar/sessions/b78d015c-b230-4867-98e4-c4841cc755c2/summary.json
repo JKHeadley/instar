@@ -1,0 +1,22 @@
+{
+  "sessionId": "b78d015c-b230-4867-98e4-c4841cc755c2",
+  "tmuxSession": "echo-exploring-slack-integration",
+  "task": "[telegram:3079] Unstick (IMPORTANT: Read /tmp/instar-telegram/ctx-3079-1775102077972.txt for thread ",
+  "phase": "testing",
+  "files": [
+    "upgrades/0.26.2.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-02T03:56:23.566Z",
+  "updatedAt": "2026-04-02T03:56:23.566Z",
+  "stale": true,
+  "outputHash": "57c1e5225b2a8b7ceab78f8026b10f94"
+}

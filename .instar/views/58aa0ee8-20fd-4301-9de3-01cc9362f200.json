@@ -1,0 +1,12 @@
+{
+  "id": "58aa0ee8-20fd-4301-9de3-01cc9362f200",
+  "title": "State Integrity Check — 2026-05-04",
+  "markdown": "# State Integrity Check — 2026-05-04\n\n## Summary\n\n✅ All critical systems healthy. No action required.\n\n## Detailed Findings\n\n### Active Job Session\n✅ **Healthy** — Current job session is running, no orphaned references\n\n### Job-Topic Mappings  \n✅ **Healthy** — No stale topic references detected\n\n### State File Bloat\n⚠️ **Monitor** — Ledgers growing steadily but not yet problematic\n- `telegram-messages.jsonl`: 3.3 MB (expected growth)\n- `job-runs.jsonl`: 7.2 MB, 23,926 entries (~435/day)\n- `skipped-runs.jsonl`: 1.1 MB, 13,004 entries (~464/day)\n\n### Ledger Retention Policy\n✅ **Healthy** — All entries < 55 days old\n- No pruning needed now\n- **Future action**: Implement 90-day retention before ledgers reach 20 MB\n\n### Server Health\n✅ **Nominal** — Minor degradation (merge conflict auto-resolution) is expected\n\n### Handoff Notes\n✅ **Fresh** — 8 notes updated today, all within 7 days\n\n### Config-Reality Alignment\n✅ **Aligned** — All configurations match runtime state\n",
+  "createdAt": "2026-05-04T01:03:41.099Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "state-integrity-check"
+    }
+  }
+}

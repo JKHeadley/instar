@@ -1,0 +1,12 @@
+{
+  "id": "74bdb9eb-03c3-42e2-a19b-14ad70a28803",
+  "title": "State Integrity Check — 2026-05-12",
+  "markdown": "# State Integrity Check Report — 2026-05-12\n\n## Issues Found & Fixed\n\n### ✓ Fixed (3 issues)\n\n1. **Orphaned Job-Topic Mapping**\n   - Removed stale ci-monitor → topic 843 mapping\n   - Issue: Job doesn't exist; topic doesn't exist\n\n2. **Stale Handoff Note** \n   - Archived job-handoff-overseer-learning.md (26 days old)\n   - Reduces clutter; maintains audit trail\n\n3. **Stale DB Corruption Markers**\n   - Cleaned up 11 .semantic.db.corrupt-recovery.*.marker.json files\n   - Reduces bloat; markers now reflect current session only\n\n### ⚠️ Issues Flagged (Not Auto-Fixable)\n\n1. **Semantic DB Corruption Pattern** \n   - 11 recoveries in 6 days (May 5–11)\n   - Knowledge graph unavailable; legacy systems in use\n   - Recommendation: Monitor for recurrence\n\n2. **Large State Files** (Expected)\n   - telegram-messages.jsonl: 3.7MB\n   - feedback.json: 2.6MB\n   - No pruning needed\n\n3. **Deleted Telegram Topic**\n   - Topic 1 shows as \"[deleted]\"\n   - No impact; stale reference only\n\n4. **Telegram Polling Inactive** (Known degradation)\n   - Adapter not started; workaround in place\n\n## Summary\n\n- **Fixed**: 3 orphans cleaned\n- **Flagged**: 4 non-blocking issues\n- **Status**: State is consistent ✓\n- **Active Jobs**: 9/10 sessions healthy\n\nOverall: Integrity verified. Automatic cleanup completed.",
+  "createdAt": "2026-05-12T04:21:46.960Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "state-integrity-check"
+    }
+  }
+}

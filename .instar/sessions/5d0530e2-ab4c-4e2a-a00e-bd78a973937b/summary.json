@@ -1,0 +1,20 @@
+{
+  "sessionId": "5d0530e2-ab4c-4e2a-a00e-bd78a973937b",
+  "tmuxSession": "echo-session-resume-fix",
+  "task": "[telegram:5043] Please continue here (IMPORTANT: Read /tmp/instar-telegram/ctx-5043-1775181539348.tx",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-03T02:12:35.727Z",
+  "updatedAt": "2026-04-03T02:12:35.727Z",
+  "stale": true,
+  "outputHash": "5172ad8acb5548b612830d67e114cde7"
+}

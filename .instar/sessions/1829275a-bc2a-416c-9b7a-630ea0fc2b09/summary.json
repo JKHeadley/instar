@@ -1,0 +1,20 @@
+{
+  "sessionId": "1829275a-bc2a-416c-9b7a-630ea0fc2b09",
+  "tmuxSession": "echo-context-death-trap",
+  "task": "[telegram:6931] please proceed (IMPORTANT: Read /tmp/instar-telegram/ctx-6931-1776469683955.txt for ",
+  "phase": "testing",
+  "files": [
+    "docs/specs/context-death-pitfall-prevention.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T23:54:58.769Z",
+  "updatedAt": "2026-04-17T23:54:58.769Z",
+  "stale": false,
+  "outputHash": "9e5f04abf67be70584125030d513ea2d"
+}

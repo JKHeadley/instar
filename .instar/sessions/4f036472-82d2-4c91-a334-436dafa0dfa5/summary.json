@@ -1,0 +1,22 @@
+{
+  "sessionId": "4f036472-82d2-4c91-a334-436dafa0dfa5",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] could you look into why the Sagemind instar agent on this machine is down? (IMPORTANT: ",
+  "phase": "testing",
+  "files": [
+    ".instar/machines/registry.json",
+    "Node.js"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "security",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-24T20:57:21.099Z",
+  "updatedAt": "2026-03-24T20:57:21.099Z",
+  "stale": true,
+  "outputHash": "ff1ca77057452d4e4fb0ae549835e07f"
+}

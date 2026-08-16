@@ -1,0 +1,168 @@
+{
+  "profiles": {
+    "sagemind": {
+      "agent": "sagemind",
+      "fingerprint": "d5d07ce5f9b199abac3a90ea3c90d269",
+      "level": "trusted",
+      "source": "user-granted",
+      "history": {
+        "messagesReceived": 249,
+        "messagesResponded": 0,
+        "successfulInteractions": 0,
+        "failedInteractions": 0,
+        "lastInteraction": "2026-05-19T17:26:49.361Z",
+        "streakSinceIncident": 0
+      },
+      "allowedOperations": [
+        "ping",
+        "health",
+        "message",
+        "query",
+        "task-request",
+        "data-share"
+      ],
+      "blockedOperations": [],
+      "createdAt": "2026-03-17T04:55:59.517Z",
+      "updatedAt": "2026-05-19T17:26:49.361Z"
+    },
+    "deep-signal": {
+      "agent": "deep-signal",
+      "fingerprint": "895e9abe58b0c5208523be54af297e96",
+      "level": "trusted",
+      "source": "user-granted",
+      "history": {
+        "messagesReceived": 14,
+        "messagesResponded": 0,
+        "successfulInteractions": 0,
+        "failedInteractions": 0,
+        "lastInteraction": "2026-04-06T21:55:16.390Z",
+        "streakSinceIncident": 0
+      },
+      "allowedOperations": [
+        "ping",
+        "health",
+        "message",
+        "query",
+        "task-request",
+        "data-share"
+      ],
+      "blockedOperations": [],
+      "createdAt": "2026-03-17T04:55:59.813Z",
+      "updatedAt": "2026-04-06T21:55:16.390Z"
+    },
+    "8c7928aa9f04fbda947172a2f9b2d81a": {
+      "agent": "8c7928aa9f04fbda947172a2f9b2d81a",
+      "fingerprint": "8c7928aa9f04fbda947172a2f9b2d81a",
+      "level": "trusted",
+      "source": "user-granted",
+      "history": {
+        "messagesReceived": 72,
+        "messagesResponded": 0,
+        "successfulInteractions": 0,
+        "failedInteractions": 0,
+        "lastInteraction": "2026-05-19T02:46:37.957Z",
+        "streakSinceIncident": 0
+      },
+      "allowedOperations": [
+        "ping",
+        "health",
+        "message",
+        "query",
+        "task-request",
+        "data-share"
+      ],
+      "blockedOperations": [],
+      "createdAt": "2026-03-29T06:47:21.527Z",
+      "updatedAt": "2026-05-19T02:46:37.957Z"
+    },
+    "4e67af7a63874a9df6c315e55bf30308": {
+      "agent": "4e67af7a63874a9df6c315e55bf30308",
+      "fingerprint": "4e67af7a63874a9df6c315e55bf30308",
+      "level": "untrusted",
+      "source": "setup-default",
+      "history": {
+        "messagesReceived": 19,
+        "messagesResponded": 0,
+        "successfulInteractions": 0,
+        "failedInteractions": 0,
+        "lastInteraction": "2026-04-05T04:51:29.444Z",
+        "streakSinceIncident": 0
+      },
+      "allowedOperations": [
+        "ping",
+        "health"
+      ],
+      "blockedOperations": [],
+      "createdAt": "2026-04-05T02:44:58.997Z",
+      "updatedAt": "2026-04-05T04:51:29.444Z"
+    },
+    "e69ee27193f3cf899fceef5a0487c28b": {
+      "agent": "e69ee27193f3cf899fceef5a0487c28b",
+      "fingerprint": "e69ee27193f3cf899fceef5a0487c28b",
+      "level": "untrusted",
+      "source": "setup-default",
+      "history": {
+        "messagesReceived": 32,
+        "messagesResponded": 0,
+        "successfulInteractions": 0,
+        "failedInteractions": 0,
+        "lastInteraction": "2026-04-06T03:59:49.081Z",
+        "streakSinceIncident": 0
+      },
+      "allowedOperations": [
+        "ping",
+        "health"
+      ],
+      "blockedOperations": [],
+      "createdAt": "2026-04-06T02:47:18.848Z",
+      "updatedAt": "2026-04-06T03:59:49.081Z"
+    },
+    "237c0b750c1184ed00c9ce47cd9bd945": {
+      "agent": "237c0b750c1184ed00c9ce47cd9bd945",
+      "fingerprint": "237c0b750c1184ed00c9ce47cd9bd945",
+      "level": "verified",
+      "source": "setup-default",
+      "history": {
+        "messagesReceived": 92,
+        "messagesResponded": 0,
+        "successfulInteractions": 0,
+        "failedInteractions": 0,
+        "lastInteraction": "2026-04-09T22:57:08.393Z",
+        "streakSinceIncident": 0
+      },
+      "allowedOperations": [
+        "ping",
+        "health",
+        "message",
+        "query"
+      ],
+      "blockedOperations": [],
+      "createdAt": "2026-04-06T21:51:14.599Z",
+      "updatedAt": "2026-04-09T22:57:08.393Z"
+    },
+    "fd9268c2afc7dc46a84cb5888f0e303c": {
+      "agent": "fd9268c2afc7dc46a84cb5888f0e303c",
+      "fingerprint": "fd9268c2afc7dc46a84cb5888f0e303c",
+      "level": "verified",
+      "source": "setup-default",
+      "history": {
+        "messagesReceived": 2,
+        "messagesResponded": 0,
+        "successfulInteractions": 0,
+        "failedInteractions": 0,
+        "lastInteraction": "2026-05-11T16:31:25.914Z",
+        "streakSinceIncident": 0
+      },
+      "allowedOperations": [
+        "ping",
+        "health",
+        "message",
+        "query"
+      ],
+      "blockedOperations": [],
+      "createdAt": "2026-05-11T16:30:24.056Z",
+      "updatedAt": "2026-05-11T16:31:25.914Z"
+    }
+  },
+  "updatedAt": "2026-05-19T17:27:02.605Z"
+}

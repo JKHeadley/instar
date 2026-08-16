@@ -1,0 +1,24 @@
+[
+  {
+    "id": "AP-001",
+    "pattern": "Deploying without verifying the target project matches the current topic",
+    "consequence": "Deploy to wrong production environment (Luna incident)",
+    "alternative": "Always run POST /coherence/check before deploying. Verify topic-project binding.",
+    "learnedAt": "2026-03-08T21:31:45.433Z",
+    "incident": "Luna deployed SageMind code to Dental City topic"
+  },
+  {
+    "id": "AP-002",
+    "pattern": "Saying \"I can't\" without checking /capabilities first",
+    "consequence": "Missed opportunity to use existing infrastructure",
+    "alternative": "Check GET /capabilities before claiming any limitation.",
+    "learnedAt": "2026-03-08T21:31:45.433Z"
+  },
+  {
+    "id": "AP-003",
+    "pattern": "Presenting a menu of next steps instead of doing them",
+    "consequence": "Forces user to project-manage the agent",
+    "alternative": "Do the obvious next steps. Only ask when genuinely ambiguous.",
+    "learnedAt": "2026-03-08T21:31:45.433Z"
+  }
+]

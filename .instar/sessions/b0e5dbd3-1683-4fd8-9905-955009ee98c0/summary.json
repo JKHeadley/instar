@@ -1,0 +1,25 @@
+{
+  "sessionId": "b0e5dbd3-1683-4fd8-9905-955009ee98c0",
+  "tmuxSession": "echo-claude-agent-sdk",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-9984-1778821994068-fln7je85.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "src/monitoring/OrphanProcessReaper.ts",
+    "src/monitoring/StallTriageNurse.types.ts",
+    "src/monitoring/StallTriageNurse.ts",
+    "CoherenceReviewer.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-16T08:16:08.948Z",
+  "updatedAt": "2026-05-16T08:16:08.948Z",
+  "stale": false,
+  "outputHash": "87ff01ee094cfd6806af2f51a2a8623f"
+}

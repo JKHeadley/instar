@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "policy": {
+    "max_items": 500,
+    "max_tokens_total": 50000,
+    "retirement_threshold_days": 90,
+    "confidence_threshold": 0.6,
+    "rate_limit": {
+      "max_deltas_per_hour": 30,
+      "max_deltas_per_session": 100
+    }
+  }
+}

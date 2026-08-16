@@ -1,0 +1,21 @@
+{
+  "sessionId": "68e5ff27-dddb-4529-be3e-a3b1d7a7228e",
+  "tmuxSession": "echo-github-prs",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-2317-1776532847983-9yeujl5z.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "package.json"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-18T17:29:43.061Z",
+  "updatedAt": "2026-04-18T17:29:43.061Z",
+  "stale": true,
+  "outputHash": "6638d878e9104c57b89e2a4808d4e671"
+}

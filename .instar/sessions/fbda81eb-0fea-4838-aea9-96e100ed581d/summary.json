@@ -1,0 +1,20 @@
+{
+  "sessionId": "fbda81eb-0fea-4838-aea9-96e100ed581d",
+  "tmuxSession": "echo-jobs-not-running",
+  "task": "[telegram:1767] Let’s please do one at a time. How does the 11 script work? What does it do? (IMPORT",
+  "phase": "testing",
+  "files": [
+    ".instar/jobs.json",
+    ".instar/project-map.json"
+  ],
+  "topics": [
+    "security",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-22T05:42:40.576Z",
+  "updatedAt": "2026-03-22T05:42:40.576Z",
+  "stale": true,
+  "outputHash": "7661abf0a65360051d8eb9481c225a51"
+}

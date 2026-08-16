@@ -1,0 +1,28 @@
+{
+  "sessionId": "9171cd79-e159-4dad-919e-b715f94b96dd",
+  "tmuxSession": "echo-streamline-publishing",
+  "task": "[telegram:7187] How’s this looking? (IMPORTANT: Read /tmp/instar-telegram/ctx-7187-1776571545864.txt",
+  "phase": "testing",
+  "files": [
+    "/tmp/instar-shard-clean/package.json",
+    "NEXT.md",
+    "scripts/pre-push-gate.js",
+    "vitest.push.config.ts",
+    "tests/unit/relationship-routes.test.ts",
+    "tests/integration/messaging-routes.test.ts",
+    "tests/integration/whatsapp-routes.test.ts",
+    "tests/unit/server.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T04:30:16.588Z",
+  "updatedAt": "2026-04-19T04:30:16.588Z",
+  "stale": true,
+  "outputHash": "1450a98bc83628965c85479b98127325"
+}

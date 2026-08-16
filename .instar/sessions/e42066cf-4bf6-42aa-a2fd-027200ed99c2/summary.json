@@ -1,0 +1,21 @@
+{
+  "sessionId": "e42066cf-4bf6-42aa-a2fd-027200ed99c2",
+  "tmuxSession": "echo-machine-scoped-job-scheduling",
+  "task": "[telegram:121] OK, please keep me posted on this. (IMPORTANT: Read /tmp/instar-telegram/ctx-121-1773",
+  "phase": "testing",
+  "files": [
+    "vitest.push.config.ts",
+    "tests/e2e/user-agent-topology-full-lifecycle.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-09T22:16:39.550Z",
+  "updatedAt": "2026-03-09T22:16:39.550Z",
+  "stale": false,
+  "outputHash": "26d24fad8bb7e0c8f8eb613560202941"
+}

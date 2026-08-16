@@ -1,0 +1,18 @@
+{
+  "sessionId": "b43b8f49-e208-41a4-a5d6-a2ce627897b9",
+  "tmuxSession": "echo-openclaw",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-9003-1778546517851-tbd5uxov.txt — it contains your f",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-12T05:29:37.526Z",
+  "updatedAt": "2026-05-12T05:29:37.526Z",
+  "stale": false,
+  "outputHash": "fd74f4e0e77e31d9fa9d1eb102596d65"
+}

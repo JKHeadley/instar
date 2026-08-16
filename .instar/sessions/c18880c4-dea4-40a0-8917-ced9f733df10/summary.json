@@ -1,0 +1,13 @@
+{
+  "sessionId": "c18880c4-dea4-40a0-8917-ced9f733df10",
+  "tmuxSession": "echo-job-dashboard-link-refresh-mp8tewg4",
+  "task": "[VIEW METADATA]\nWhen creating private views (POST /view), include metadata to link the report to thi",
+  "phase": "building",
+  "files": [],
+  "topics": [],
+  "blockers": null,
+  "lastActivity": "2026-05-16T20:45:13.591Z",
+  "updatedAt": "2026-05-16T20:45:13.591Z",
+  "stale": false,
+  "outputHash": "46df559f07a4e7ba0e0eb05990b4b160"
+}

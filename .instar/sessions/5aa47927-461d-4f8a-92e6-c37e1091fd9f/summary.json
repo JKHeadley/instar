@@ -1,0 +1,25 @@
+{
+  "sessionId": "5aa47927-461d-4f8a-92e6-c37e1091fd9f",
+  "tmuxSession": "echo-topic-3080",
+  "task": "[telegram:3080] felt good! Can you confirm that the Standby messages accurately reflected what you w",
+  "phase": "testing",
+  "files": [
+    "CLAUDE.md",
+    "PROP-contextual-dispatch-integration.md",
+    "channels-adapter-spec.md",
+    "MEMORY.md",
+    "under-the-hood.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T05:46:28.308Z",
+  "updatedAt": "2026-03-28T05:46:28.308Z",
+  "stale": true,
+  "outputHash": "9c93bac297c335f726e05105d6694867"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "c6e38d19-af26-4178-9bea-abe2e0629946",
+  "title": "Coherence Audit Report",
+  "markdown": "# Echo Coherence Audit — 2026-05-01\n\n## Summary\n\n✓ **5/7 systems healthy** | ⚠ **2/7 degraded** | ✗ **1/7 unhealthy**\n\n**Action**: Regenerate stale memory index.\n\n## Key Findings\n\n### Healthy Systems\n- **Identity**: All 3 files present (AGENT.md, USER.md, MEMORY.md)\n- **Coherence API**: v0.28.76 matches disk; all 10 checks pass\n- **State Files**: 8,451 files, 2.61 MB, zero corruption\n- **Context Segments**: Dispatch table functional; all references valid\n- **Relationships**: 0 entries (expected for standalone agent)\n\n### Unhealthy Systems\n- **Memory System**: `.instar/MEMORY.md` index is stale\n  - Points to 21 files that don't exist\n  - Only 3 actual memory files present\n  - Dead links: role_developer_not_user.md, feedback_always_write_tests.md, port_4042.md, project_moltbridge.md, and 17 others\n\n### Degraded Systems\n- **Server Health**: 4 infrastructure degradations\n  1. Sessions: No conversation summaries (JSONL fallback)\n  2. iMessage: Unavailable\n  3. Knowledge Graph: Offline\n  4. Feature Discovery: State not persisted\n- **Projects API**: Returns empty (consistent with knowledge graph downtime)\n\n## Root Cause\n\nMemory index drift. The `.instar/MEMORY.md` file references memory entries that were either never created, moved to Claude Code's auto-memory system, or deleted. This is purely a broken index problem — the 3 actual memory files are intact and working.\n\n## Action Items\n\n**IMMEDIATE**: Regenerate `.instar/MEMORY.md` to only reference the 3 actual memory files:\n- capability_node_upgrade_resilience.md\n- feedback_finish_it_out_no_checkins.md\n- project_telegram_lifeline_internal_auth.md\n\n**MONITOR**: Watch server health. 4 simultaneous degradations suggest infrastructure maintenance. If they persist >2 hours, investigate backend logs.\n\n## No Blocking Issues\n\nProject topology verified. Git remote (github.com/JKHeadley/instar-echo) configured. Config valid. No orphaned state. Coherence gate operational.\n",
+  "createdAt": "2026-05-01T07:05:39.102Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "coherence-audit"
+    }
+  }
+}

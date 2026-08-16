@@ -1,0 +1,15 @@
+{
+  "sessionId": "6ce4c3eb-a7a7-4260-a72f-887273f47aea",
+  "tmuxSession": "echo-job-health-check-mogebloa",
+  "task": "[NOTIFICATION PROTOCOL: This job runs in quiet mode. The user will NOT see your output unless you ex",
+  "phase": "building",
+  "files": [],
+  "topics": [
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-26T23:25:10.603Z",
+  "updatedAt": "2026-04-26T23:25:10.603Z",
+  "stale": false,
+  "outputHash": "87eba926b4118d70c154d1a372d5dc04"
+}

@@ -1,0 +1,18 @@
+{
+  "sessionId": "64228d8a-332b-4cfd-8433-d735c3090a48",
+  "tmuxSession": "echo-job-overseer-infrastructure-moyctx3t",
+  "task": "[NOTIFICATION PROTOCOL: This job runs in quiet mode. The user will NOT see your output unless you ex",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "testing",
+    "messaging",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-09T13:03:52.358Z",
+  "updatedAt": "2026-05-09T13:03:52.358Z",
+  "stale": false,
+  "outputHash": "38d28055268f6c79ae021d18520aa0ef"
+}

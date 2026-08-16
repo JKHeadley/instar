@@ -1,0 +1,27 @@
+{
+  "sessionId": "66e1902d-9a46-4d70-ab43-08c1d3d279b0",
+  "tmuxSession": "echo-dashboard-development",
+  "task": "[telegram:5348] Please make the dashboard more responsive and mobile friendly. Please make these cha",
+  "phase": "testing",
+  "files": [
+    "job-review-spec.md",
+    "NEXT.md",
+    "SESSION-TRIAGE-AGENT-SPEC.md",
+    "AGENT.md",
+    "MEMORY.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-09T00:19:57.551Z",
+  "updatedAt": "2026-04-09T00:19:57.551Z",
+  "stale": true,
+  "outputHash": "21d1346a96b7b13336d7a8556a967981"
+}

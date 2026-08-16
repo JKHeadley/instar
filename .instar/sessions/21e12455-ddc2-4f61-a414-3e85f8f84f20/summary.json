@@ -1,0 +1,29 @@
+{
+  "sessionId": "21e12455-ddc2-4f61-a414-3e85f8f84f20",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] okay, killed it, now testing resume (IMPORTANT: Read /tmp/instar-telegram/ctx-1490-1",
+  "phase": "testing",
+  "files": [
+    "MEMORY.md",
+    "USER.md",
+    "0.24.0.md",
+    "AGENT.md",
+    "http-hook-templates.ts",
+    "PostUpdateMigrator.ts",
+    "init.ts",
+    "settings.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-24T17:28:50.790Z",
+  "updatedAt": "2026-03-24T17:28:50.790Z",
+  "stale": true,
+  "outputHash": "5c114f6b03b677e893745fc2127b4223"
+}

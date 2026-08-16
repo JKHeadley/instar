@@ -1,0 +1,30 @@
+{
+  "sessionId": "cf366789-b7d2-40ca-abec-39945ae23f6b",
+  "tmuxSession": "echo-git-syncing",
+  "task": "[telegram:8122] I got this report recently. Can you look into it?\n\n—-\n\nREVIEW | Priority: HIGH\n\nSign",
+  "phase": "testing",
+  "files": [
+    "/tmp/ruleset-relaxed.json",
+    "tests/integration/scope-coherence-routes.test.ts",
+    "tests/unit/relationship-routes.test.ts",
+    "tests/unit/server.test.ts",
+    "tests/unit/middleware.test.ts",
+    ".test.ts",
+    "tests/integration/messaging-routes.test.ts",
+    "tests/integration/whatsapp-routes.test.ts",
+    "tests/e2e/whatsapp-full-stack-e2e.test.ts",
+    "tests/e2e/messaging-multi-agent.test.ts"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-26T18:17:28.434Z",
+  "updatedAt": "2026-04-26T18:17:28.434Z",
+  "stale": true,
+  "outputHash": "5ef90c907ca3d54abe815e63bd8dd35a"
+}

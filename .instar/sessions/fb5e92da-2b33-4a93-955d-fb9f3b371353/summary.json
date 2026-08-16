@@ -1,0 +1,26 @@
+{
+  "sessionId": "fb5e92da-2b33-4a93-955d-fb9f3b371353",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] please proceed as you best see fit (IMPORTANT: Read /tmp/instar-telegram/ctx-2317-17",
+  "phase": "testing",
+  "files": [
+    "upgrades/side-effects/pr-gate-phase-a-commit-3-gitignore-pr-gate.md",
+    "../../../Documents/Projects/instar/.instar/instar-dev-traces/2026-04-17T20-25-29-000Z-pr-gate-phase-a-commit-3-gitignore-pr-gate.json",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/PostUpdateMigrator-gitignore.test.ts",
+    "docs/specs/plans/integrated-being-ledger-v2-implementation-plan.md",
+    "src/core/LedgerSessionRegistry.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T20:27:26.976Z",
+  "updatedAt": "2026-04-17T20:27:26.976Z",
+  "stale": true,
+  "outputHash": "fb56866451035ddbfcffbbc2abecdafc"
+}

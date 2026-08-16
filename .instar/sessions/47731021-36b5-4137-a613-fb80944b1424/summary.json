@@ -1,0 +1,23 @@
+{
+  "sessionId": "47731021-36b5-4137-a613-fb80944b1424",
+  "tmuxSession": "echo-instar-vps",
+  "task": "[telegram:6185] Hi echo! Got this message from a friend. Can’t Instar be installed on his environmen",
+  "phase": "testing",
+  "files": [
+    "a/src/threadline/mcp-stdio-entry.ts",
+    "SKILL.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-13T05:26:42.607Z",
+  "updatedAt": "2026-04-13T05:26:42.607Z",
+  "stale": true,
+  "outputHash": "b1ee4aeefcd2e1168c05ed1f41a4a6dc"
+}

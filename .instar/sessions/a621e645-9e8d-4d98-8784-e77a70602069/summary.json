@@ -1,0 +1,25 @@
+{
+  "sessionId": "a621e645-9e8d-4d98-8784-e77a70602069",
+  "tmuxSession": "echo-server-restarts",
+  "task": "[telegram:2922] Can we functionally test this with your system to verify these work in real life? (I",
+  "phase": "testing",
+  "files": [
+    "response-review-pipeline.md",
+    "review-round1-changes.md",
+    "0.24.9.md",
+    "self-healing.md",
+    "0.24.10.md"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-27T18:30:59.798Z",
+  "updatedAt": "2026-03-27T18:30:59.798Z",
+  "stale": true,
+  "outputHash": "6a145c46f106ecb5e37992421fd41062"
+}

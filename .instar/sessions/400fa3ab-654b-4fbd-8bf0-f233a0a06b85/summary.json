@@ -1,0 +1,22 @@
+{
+  "sessionId": "400fa3ab-654b-4fbd-8bf0-f233a0a06b85",
+  "tmuxSession": "echo-instar-jobs-as-agentmd",
+  "task": "[telegram:9529] Let’s continue. Also, it should already be be enforced, but this should have a stron",
+  "phase": "testing",
+  "files": [
+    "tests/integration/jobs-phase4-mutation-endpoints.test.ts",
+    "upgrades/side-effects/dashboard-jobs-ui-phase-4.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-20T17:13:37.826Z",
+  "updatedAt": "2026-05-20T17:13:37.826Z",
+  "stale": false,
+  "outputHash": "83f87e5f1868cacaa0964e8a0f493853"
+}

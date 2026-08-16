@@ -1,0 +1,24 @@
+{
+  "sessionId": "95e446a2-ff2c-4658-aec2-61d9225f321a",
+  "tmuxSession": "echo-claude-agent-sdk",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-9984-1778978668566-bop9pnvk.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "../../../Documents/Projects/instar/.instar/worktrees/spec-provider-portability/tests/unit/coherence-gate-escalation.test.ts",
+    "../../../Documents/Projects/instar/.instar/worktrees/spec-provider-portability/tests/unit/escalation-resolution-reviewer.test.ts",
+    "../../../Documents/Projects/instar/.instar/worktrees/spec-provider-portability/tests/unit/CoherenceGateE2E.test.ts",
+    "../../../Documents/Projects/instar/.instar/worktrees/spec-provider-portability/tests/unit/CoherenceGate.test.ts",
+    "../../../Documents/Projects/instar/.instar/worktrees/spec-provider-portability/tests/unit/CoherenceReviewer.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-17T17:16:10.954Z",
+  "updatedAt": "2026-05-17T17:16:10.954Z",
+  "stale": false,
+  "outputHash": "059514ece7034881c809ceebbabb939a"
+}

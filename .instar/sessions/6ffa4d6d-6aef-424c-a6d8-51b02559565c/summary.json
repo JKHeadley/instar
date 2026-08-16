@@ -1,0 +1,21 @@
+{
+  "sessionId": "6ffa4d6d-6aef-424c-a6d8-51b02559565c",
+  "tmuxSession": "echo-sleep-wake-fix",
+  "task": "CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.\n",
+  "phase": "testing",
+  "files": [
+    "tests/unit/sleep-wake-detector.test.ts"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-30T23:01:23.492Z",
+  "updatedAt": "2026-03-30T23:01:23.492Z",
+  "stale": true,
+  "outputHash": "bc3fe7926221bfe3432904bb03dfe30e"
+}

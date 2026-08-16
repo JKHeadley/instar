@@ -1,0 +1,28 @@
+{
+  "sessionId": "fbba481a-f3e8-4a12-8d41-4e61dc9dbade",
+  "tmuxSession": "echo-instar-agent-robustness",
+  "task": "[telegram:5447] please respond (IMPORTANT: Read /tmp/instar-telegram/ctx-5447-1776646849700.txt for ",
+  "phase": "testing",
+  "files": [
+    "src/lifeline/retryWithBackoff.ts",
+    "src/data/builtin-manifest.json",
+    "src/lifeline/TelegramLifeline.ts",
+    "src/lifeline/droppedMessages.ts",
+    "/Users/justin/Documents/Projects/instar/scripts/instar-dev-precommit.js",
+    "AUTHORIZATION-POLICY-SPEC.md",
+    "CAPABILITY-ADVISOR-SPEC.md",
+    "CAPABILITY-MAP-SPEC.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-20T02:04:37.698Z",
+  "updatedAt": "2026-04-20T02:04:37.698Z",
+  "stale": true,
+  "outputHash": "135292780b8d06dd9a5c44fbfd071987"
+}

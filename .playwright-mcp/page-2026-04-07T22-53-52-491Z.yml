@@ -1,0 +1,63 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - img "Instar" [ref=e5]
+      - heading "Instar Dashboard" [level=1] [ref=e6]
+      - navigation [ref=e7]:
+        - button "Sessions 3" [ref=e8] [cursor=pointer]
+        - button "Files" [ref=e9] [cursor=pointer]
+        - button "Send Content" [ref=e10] [cursor=pointer]
+        - button "Secret Drop" [ref=e11] [cursor=pointer]
+        - button "Jobs 29" [ref=e12] [cursor=pointer]
+        - button "Features" [ref=e13] [cursor=pointer]
+        - button "Health" [ref=e14] [cursor=pointer]
+    - generic [ref=e15]:
+      - generic "Server status" [ref=e16] [cursor=pointer]:
+        - generic [ref=e18]: 8m 3s
+      - generic "Active sessions" [ref=e20] [cursor=pointer]:
+        - generic [ref=e21]: ○
+        - generic [ref=e22]: 3/10 sessions
+      - generic "Memory pressure" [ref=e24] [cursor=pointer]:
+        - generic [ref=e25]: Mem 60%
+      - generic "Attention items" [ref=e30] [cursor=pointer]:
+        - generic [ref=e31]: 🔔
+        - generic [ref=e32]: "1"
+    - generic [ref=e35]: Connected
+  - complementary [ref=e36]:
+    - generic [ref=e37]:
+      - heading "Sessions" [level=2] [ref=e38]
+      - generic [ref=e39]:
+        - generic [ref=e40]: "3"
+        - button "+" [ref=e41] [cursor=pointer]
+    - generic [ref=e42]:
+      - generic [ref=e43] [cursor=pointer]:
+        - generic [ref=e44]:
+          - generic [ref=e45]: github-prs
+          - button "×" [ref=e46]
+        - generic [ref=e47]:
+          - generic [ref=e48]: interactive
+          - generic [ref=e49]: opus
+          - generic "Headless" [ref=e50]: 🖥️
+          - generic [ref=e51]: 55m
+      - generic [ref=e52] [cursor=pointer]:
+        - generic [ref=e53]:
+          - generic [ref=e54]: dashboard development
+          - button "×" [ref=e55]
+        - generic [ref=e56]:
+          - generic [ref=e57]: interactive
+          - generic [ref=e58]: opus
+          - generic "Headless" [ref=e59]: 🖥️
+          - generic [ref=e60]: 51m
+      - generic [ref=e61] [cursor=pointer]:
+        - generic [ref=e62]:
+          - generic [ref=e63]: im-7e162abb
+          - button "×" [ref=e64]
+        - generic [ref=e65]:
+          - generic [ref=e66]: interactive
+          - generic [ref=e67]: opus
+          - generic "Headless" [ref=e68]: 🖥️
+          - generic [ref=e69]: 1m
+  - main [ref=e70]:
+    - generic [ref=e71]:
+      - generic [ref=e72]: 🖥
+      - paragraph [ref=e73]: Select a session to view its terminal

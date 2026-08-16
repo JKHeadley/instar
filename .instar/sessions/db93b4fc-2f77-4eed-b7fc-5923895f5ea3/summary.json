@@ -1,0 +1,20 @@
+{
+  "sessionId": "db93b4fc-2f77-4eed-b7fc-5923895f5ea3",
+  "tmuxSession": "echo-dashboard-development",
+  "task": "[telegram:5348] Can I test these features? (IMPORTANT: Read /tmp/instar-telegram/ctx-5348-1775513458",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-07T01:16:52.140Z",
+  "updatedAt": "2026-04-07T01:16:52.140Z",
+  "stale": true,
+  "outputHash": "924bac8375fb93cecf7a1a9fca827986"
+}

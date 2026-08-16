@@ -1,0 +1,25 @@
+{
+  "id": "00-smoke-ping",
+  "description": "Smoke test: target agent replies to a simple ping. Verifies the driver's send-receive loop end-to-end before scenarios that test specific functionality.",
+  "topic": 2525,
+  "setup": [],
+  "steps": [
+    {
+      "action": "assert-http",
+      "endpoint": "/health",
+      "status": 200,
+      "bodyMatch": "\"status\""
+    },
+    {
+      "action": "send-telegram",
+      "text": "ping — v1 scenario driver smoke test, please reply with anything",
+      "fromFirstName": "v1-driver"
+    },
+    {
+      "action": "wait-for-response",
+      "timeoutMs": 120000,
+      "matcher": "."
+    }
+  ],
+  "teardown": []
+}

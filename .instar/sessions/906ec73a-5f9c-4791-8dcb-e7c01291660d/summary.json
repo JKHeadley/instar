@@ -1,0 +1,27 @@
+{
+  "sessionId": "906ec73a-5f9c-4791-8dcb-e7c01291660d",
+  "tmuxSession": "echo-claude-agent-sdk",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-9984-1779038282687-f2r2mzlf.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "src/commands/init.ts",
+    "provider-portability/.instar/hooks/instar/scope-coherence-collector.js",
+    "provider-portability/.instar/hooks/instar/claim-intercept.js",
+    "provider-portability/.instar/hooks/instar/post-action-reflection.js",
+    "agenticSessionHeadless.ts",
+    "src/core/Config.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-17T21:18:51.673Z",
+  "updatedAt": "2026-05-17T21:18:51.673Z",
+  "stale": false,
+  "outputHash": "b39ea62ba82590ceb2babef88a33c529"
+}

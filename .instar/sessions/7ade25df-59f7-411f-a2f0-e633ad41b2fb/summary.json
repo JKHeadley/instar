@@ -1,0 +1,20 @@
+{
+  "sessionId": "7ade25df-59f7-411f-a2f0-e633ad41b2fb",
+  "tmuxSession": "echo-instar-jobs-as-agentmd",
+  "task": "[telegram:9529] hows this looking? (IMPORTANT: Read /tmp/instar-telegram/ctx-9529-1778639578996.txt ",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-13T14:44:27.683Z",
+  "updatedAt": "2026-05-13T14:44:27.683Z",
+  "stale": true,
+  "outputHash": "f8e8b8e5a82fe0d37ab480bd71b91087"
+}

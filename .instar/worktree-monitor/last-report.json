@@ -1,0 +1,17 @@
+{
+  "timestamp": "2026-05-20T17:16:44.219Z",
+  "worktrees": [
+    {
+      "path": "/private/tmp/instar-wikiclaim-phase2",
+      "head": "f37e447958da11bdae6c444612a06f83a3b407c1",
+      "branch": null,
+      "isMain": false,
+      "isBare": false
+    }
+  ],
+  "withUnmergedWork": [],
+  "orphanBranches": [],
+  "actions": [
+    "Stale worktree alert: 1 worktree(s)"
+  ]
+}

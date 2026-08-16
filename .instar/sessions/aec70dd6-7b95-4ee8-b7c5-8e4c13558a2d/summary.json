@@ -1,0 +1,17 @@
+{
+  "sessionId": "aec70dd6-7b95-4ee8-b7c5-8e4c13558a2d",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] /new launchd bug (IMPORTANT: Read /tmp/instar-telegram/ctx-2-1773721309546.txt for thre",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-17T04:22:04.084Z",
+  "updatedAt": "2026-03-17T04:22:04.084Z",
+  "stale": false,
+  "outputHash": "c7e78080cec224a1941d8c9c62ebd10b"
+}

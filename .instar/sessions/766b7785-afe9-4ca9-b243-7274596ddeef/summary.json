@@ -1,0 +1,25 @@
+{
+  "sessionId": "766b7785-afe9-4ca9-b243-7274596ddeef",
+  "tmuxSession": "echo-session-compaction-bug-update",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-5290-1776267734062-7h3wx0l7.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "src/data/builtin-manifest.json",
+    "upgrades/NEXT.md",
+    "src/commands/server.ts",
+    "src/core/MessagingToneGate.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-15T16:15:44.003Z",
+  "updatedAt": "2026-04-15T16:15:44.003Z",
+  "stale": false,
+  "outputHash": "a44fd4f42cb4db4a6ae3259c006c5919"
+}

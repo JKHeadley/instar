@@ -1,0 +1,9 @@
+[    1446ms] [LOG] Supported image mime types Set(5) @ https://web.telegram.org/k/index-g7E65A_q.js:22
+[    1835ms] [LOG] Elapsed time since unlocked: 15.72998046875 ms allStates loaded @ https://web.telegram.org/k/index-g7E65A_q.js:22
+[    1836ms] [LOG] Elapsed time since unlocked: 16.176025390625 ms singleInstance started @ https://web.telegram.org/k/index-g7E65A_q.js:22
+[    1837ms] [LOG] Elapsed time since unlocked: 17.18994140625 ms sent all states (1) @ https://web.telegram.org/k/index-g7E65A_q.js:22
+[    2016ms] [LOG] Elapsed time since unlocked: 196.11279296875 ms await I18n.getCacheLangPack() @ https://web.telegram.org/k/index-g7E65A_q.js:22
+[    2035ms] [LOG] Elapsed time since unlocked: 215.636962890625 ms sent all states (2) @ https://web.telegram.org/k/index-g7E65A_q.js:22
+[    2037ms] [LOG] got state, time: 592.7000002861023 @ https://web.telegram.org/k/index-g7E65A_q.js:22
+[    2037ms] [LOG] Elapsed time since unlocked: 217.184814453125 ms IMAGE_MIME_TYPES_SUPPORTED_PROMISE @ https://web.telegram.org/k/index-g7E65A_q.js:22
+[    2037ms] [LOG] Will mount auth page: authStateSignQr 1778619399.802 @ https://web.telegram.org/k/index-g7E65A_q.js:22

@@ -1,0 +1,21 @@
+{
+  "sessionId": "0fa69308-8b1c-4b70-bd69-e873687d1104",
+  "tmuxSession": "echo-subscription-first-intelligence",
+  "task": "[telegram:6655] is there anything left to do here? (IMPORTANT: Read /tmp/instar-telegram/ctx-6655-17",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js",
+    "../../../Documents/Projects/instar/tests/unit/InputGuard.test.ts",
+    "../../../Documents/Projects/instar/src/core/InputGuard.ts",
+    "../../../Documents/Projects/instar/src/commands/server.ts"
+  ],
+  "topics": [
+    "testing",
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-16T19:06:26.911Z",
+  "updatedAt": "2026-04-16T19:06:26.911Z",
+  "stale": true,
+  "outputHash": "1a2d5456f0b0fa1240cbf468f8b935a5"
+}

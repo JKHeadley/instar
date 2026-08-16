@@ -1,0 +1,31 @@
+# Runtime state
+.instar/state/
+.instar/logs/
+.instar/*.tmp
+
+# Secrets
+.instar/config.json
+.instar/machine/
+.instar/secrets/
+
+# Backups (local only)
+.instar/backups/
+
+# Derived data
+.instar/memory.db
+.instar/memory.db-*
+.instar/server-data/
+
+# Claude Code
+.claude/projects/
+.claude/todos/
+# Paste files (may contain sensitive content)
+.instar/paste/
+.instar/secrets/pr-gate/
+
+# Inter-agent messages (may contain rotated secrets, tokens, etc.)
+.instar/messages/
+
+# Config backups (may contain sensitive tokens)
+*.bak
+*.backup

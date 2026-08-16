@@ -1,0 +1,13 @@
+{
+  "sessionId": "fc6501ab-9e7e-41ac-9de0-f814b7fd06fc",
+  "tmuxSession": "echo-job-degradation-digest-mp13badk",
+  "task": "[NOTIFICATION PROTOCOL: This job runs in quiet mode. The user will NOT see your output unless you ex",
+  "phase": "building",
+  "files": [],
+  "topics": [],
+  "blockers": null,
+  "lastActivity": "2026-05-11T11:00:25.645Z",
+  "updatedAt": "2026-05-11T11:00:25.645Z",
+  "stale": false,
+  "outputHash": "36ec1509197a6f34841fbb240465aecf"
+}

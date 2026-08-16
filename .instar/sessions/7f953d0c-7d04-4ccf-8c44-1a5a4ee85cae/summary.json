@@ -1,0 +1,23 @@
+{
+  "sessionId": "7f953d0c-7d04-4ccf-8c44-1a5a4ee85cae",
+  "tmuxSession": "echo-memory-rot",
+  "task": "[telegram:8663] I want this to be done right if that requires another message from Dan then maybe yo",
+  "phase": "testing",
+  "files": [
+    "AGENT.md",
+    "MEMORY.md",
+    "USER.md",
+    "docs/signal-vs-authority.md"
+  ],
+  "topics": [
+    "database",
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-01T20:42:03.379Z",
+  "updatedAt": "2026-05-01T20:42:03.379Z",
+  "stale": true,
+  "outputHash": "47f5bbbc64e2ae2bfec61f45fc7deb29"
+}

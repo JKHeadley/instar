@@ -1,0 +1,24 @@
+{
+  "sessionId": "f09989f8-f025-4360-bf08-b71151b575d5",
+  "tmuxSession": "echo-server-side-process-review",
+  "task": "[telegram:1882] for the last two categories, can you also review if there are any telemetry opportun",
+  "phase": "testing",
+  "files": [
+    "server.ts",
+    "tests/unit/SessionMonitor.test.ts",
+    "tests/unit/SessionRecovery.test.ts",
+    "tests/unit/messaging-shared/StallDetector.test.ts",
+    "tests/unit/TriageOrchestrator-validation.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-27T01:01:20.912Z",
+  "updatedAt": "2026-03-27T01:01:20.912Z",
+  "stale": true,
+  "outputHash": "e25e7bedfd446efdb4aba7fc123db4bf"
+}

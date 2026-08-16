@@ -1,0 +1,27 @@
+{
+  "sessionId": "afc9e6b9-9231-409b-9e29-0a465ba290c4",
+  "tmuxSession": "echo-instar-agent-robustness",
+  "task": "[telegram:5447] show me please (IMPORTANT: Read /tmp/instar-telegram/ctx-5447-1776724264332.txt for ",
+  "phase": "testing",
+  "files": [
+    "signal-vs-authority.md",
+    "LIFELINE-SELF-RESTART-STAGE-B-SPEC.md",
+    "LIFELINE-MESSAGE-DROP-ROBUSTNESS-SPEC.md",
+    "compaction-preamble-tone-and-intent.md",
+    "NEXT.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-21T00:00:17.951Z",
+  "updatedAt": "2026-04-21T00:00:17.951Z",
+  "stale": true,
+  "outputHash": "7bd5eea876e31684472fdbdc1bafe46b"
+}

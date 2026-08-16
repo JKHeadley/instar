@@ -1,0 +1,20 @@
+{
+  "sessionId": "cef34c47-e38d-4e5a-a08c-d2e93a02f5c8",
+  "tmuxSession": "echo-robust-dashboard-link",
+  "task": "[telegram:1359] I've noticed that dashboard links are often stale/broken for instar agents. Can we a",
+  "phase": "testing",
+  "files": [
+    "ci.yml"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-19T18:42:17.404Z",
+  "updatedAt": "2026-03-19T18:42:17.404Z",
+  "stale": false,
+  "outputHash": "b418f22c7e3d3ca791edac01bfb12327"
+}

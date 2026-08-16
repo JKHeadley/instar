@@ -1,0 +1,25 @@
+{
+  "sessionId": "7f0ea9dd-5ed8-4181-b8fa-0df7ab08a005",
+  "tmuxSession": "echo-subscription-first-intelligence",
+  "task": "[telegram:6655] please begin this task (IMPORTANT: Read /tmp/instar-telegram/ctx-6655-1776359481881.",
+  "phase": "testing",
+  "files": [
+    "tests/unit/degradation-reporter.test.ts",
+    "tests/unit/CoherenceReviewer.test.ts",
+    "tests/unit/InputGuard.test.ts",
+    "tests/e2e/input-guard-e2e.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-16T17:21:30.798Z",
+  "updatedAt": "2026-04-16T17:21:30.798Z",
+  "stale": true,
+  "outputHash": "0e83b55a669378d36d1afeb290bd614f"
+}

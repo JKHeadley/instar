@@ -1,0 +1,30 @@
+{
+  "sessionId": "6e9c7e8c-35af-4a3e-a009-830b9e566786",
+  "tmuxSession": "echo-instar-agent-robustness",
+  "task": "[telegram:5447] now the ai-guy agent is down (IMPORTANT: Read /tmp/instar-telegram/ctx-5447-17757791",
+  "phase": "testing",
+  "files": [
+    "src/monitoring/SessionWatchdog.ts",
+    "src/monitoring/probes/PlatformProbe.ts",
+    "src/server/routes.ts",
+    "package.json",
+    "src/core/Prerequisites.ts",
+    "src/data/builtin-manifest.json",
+    "tests/unit/Prerequisites.test.ts",
+    "upgrades/NEXT.md",
+    "routes.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-10T00:07:32.418Z",
+  "updatedAt": "2026-04-10T00:07:32.418Z",
+  "stale": true,
+  "outputHash": "0fdc8899a8ee4fcfa583f8eb744aa6ea"
+}

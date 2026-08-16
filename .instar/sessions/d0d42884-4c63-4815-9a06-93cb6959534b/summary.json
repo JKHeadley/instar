@@ -1,0 +1,19 @@
+{
+  "sessionId": "d0d42884-4c63-4815-9a06-93cb6959534b",
+  "tmuxSession": "echo-topic-3079",
+  "task": "[telegram:3079] Great! Can we test it with you? (IMPORTANT: Read /tmp/instar-telegram/ctx-3079-17746",
+  "phase": "testing",
+  "files": [
+    "settings.json"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T08:47:55.919Z",
+  "updatedAt": "2026-03-28T08:47:55.919Z",
+  "stale": true,
+  "outputHash": "55af06d92f3d2818043415b19061a8b5"
+}

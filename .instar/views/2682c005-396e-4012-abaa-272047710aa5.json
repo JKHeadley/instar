@@ -1,0 +1,12 @@
+{
+  "id": "2682c005-396e-4012-abaa-272047710aa5",
+  "title": "Session Continuity Report",
+  "markdown": "# Session Continuity Health Check\n\n**Check Date**: 2026-04-17T21:08:00Z\n**Status**: ⚠ PARTIAL — Handoff infrastructure healthy, but learning extraction stale\n\n## Findings\n\n### ✓ Healthy\n\n- **Job Execution**: 41 recent sessions (last 8h), all completed normally\n  - Job sessions: 33 (all healthy cadence)\n  - Telegram interactive: 8 (all completed)\n- **Handoff Notes**: 12 updated since Apr 11, current across all job types\n  - Latest: Apr 17 14:07 (git-sync, degradation-digest)\n  - All contain actionable summaries for next runs\n- **Git Commits**: Regular sync activity (14+ commits in last 12h)\n- **Memory.md**: Last updated Apr 17 08:03 (reflection job ran)\n- **Continuity Check**: Running automatically, confirmed healthy at 15:02 UTC\n\n### ⚠ Stale\n\n- **Learning Registry**: Last updated 2026-04-11 (6 days old)\n  - 7 pending learnings still unapplied\n  - Post-Apr-11 sessions not contributing new learnings to registry\n  - Root cause: Reflection job ran per MEMORY.md, but learning-extractor may not be feeding new findings back\n- **State Verification Timestamps**: quick-facts.json and project-registry.json dated 2026-03-08 (40 days old)\n\n## Continuity Gap\n\nJobs ARE producing handoffs, but handoffs are NOT feeding into structured learnings. Recent insights from 41 sessions over 8 hours are becoming transaction logs (in handoff notes) but not crystallizing into design principles or patterns (in learning registry).\n\n### What This Means\n\n- **Transient intelligence loss**: If a handoff note isn't read before the next job runs, its insight evaporates\n- **No accumulation**: The agent doesn't compound on recent work; each job starts fresh\n- **Memory hygiene works but learnings don't**: MEMORY.md is pruned, but new learnings aren't being extracted from jobs to replace old static entries\n\n## Recommendations\n\n1. Verify reflection-trigger is running post-Apr-11 and why learning registry isn't updating\n2. Check learning-extractor pipeline: handoff notes → learning registry → MEMORY.md\n3. Auto-apply pending learnings: 7 learnings are pending, review and apply or archive each\n4. Refresh state verification: quick-facts and project-registry dated 2026-03-08 (40 days old)\n",
+  "createdAt": "2026-04-17T21:08:10.666Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "session-continuity-check"
+    }
+  }
+}

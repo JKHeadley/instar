@@ -1,0 +1,19 @@
+{
+  "sessionId": "491192e3-1b2f-411a-9fea-bb9a8b6585fc",
+  "tmuxSession": "echo-jobs-not-running",
+  "task": "[telegram:1767] Dawn sent a message in this topic. Look at the message history? (IMPORTANT: Read /tm",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-22T05:01:05.521Z",
+  "updatedAt": "2026-03-22T05:01:05.521Z",
+  "stale": true,
+  "outputHash": "9d9e34021fca4eb1613e274bd6a57328"
+}

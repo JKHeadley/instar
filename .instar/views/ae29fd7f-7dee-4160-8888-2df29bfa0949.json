@@ -1,0 +1,6 @@
+{
+  "id": "ae29fd7f-7dee-4160-8888-2df29bfa0949",
+  "title": "State Integrity Report — 2026-04-16",
+  "markdown": "# State Integrity Audit\n\n**Timestamp:** 2026-04-16 07:00 UTC\n\n## Issues Found & Actions\n\n### ✓ FIXED: Orphaned Topic Mapping\nTopic 845 was stale (threadline-sync job). Removed from job-topic-mappings.json.\n\n### ⚠️ CRITICAL: Telegram Adapter Offline\n- **Severity:** Tier 1 (High)\n- **Impact:** No incoming Telegram messages\n- **Status:** Adapter not started, polling inactive\n- **Diagnostics:** 69 topics mapped, but adapter offline\n- **Remediation:** Verify token, check network, restart adapter\n\n### ⚠️ CRITICAL: Lifeline Supervisor Down  \n- **Severity:** Tier 1 (High)\n- **Impact:** Message delivery at risk\n- **Status:** Server not running, 0 restart attempts\n- **Queue:** Empty (no backlog)\n- **Remediation:** Check logs, verify process, restart if needed\n\n## State Health\n\n✓ No bloated files  \n✓ Handoff notes current  \n✓ Active job consistent  \n✓ Scheduler healthy (29 jobs, 0 queued)  \n✓ Sessions healthy (3/10)  \n\n## System Review\n\n13/16 probes passed. Last review: 2026-04-15 16:03:55Z\n",
+  "createdAt": "2026-04-16T07:01:37.718Z"
+}

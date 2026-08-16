@@ -1,0 +1,23 @@
+{
+  "sessionId": "62ffe217-762d-4680-b765-dad2bcb51427",
+  "tmuxSession": "echo-instar-agent-robustness",
+  "task": "[telegram:5447] please read my previous message (IMPORTANT: Read /tmp/instar-telegram/ctx-5447-17767",
+  "phase": "testing",
+  "files": [
+    "docs/specs/LIFELINE-MESSAGE-DROP-ROBUSTNESS-SPEC.md",
+    "../../../Documents/Projects/instar/.instar/worktrees/build-stage-b--lifeline-self-restart/docs/specs/reports/lifeline-self-restart-stage-b-convergence.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-20T21:58:50.425Z",
+  "updatedAt": "2026-04-20T21:58:50.425Z",
+  "stale": true,
+  "outputHash": "0301f8310c361abfb639bb885ca4bb0f"
+}

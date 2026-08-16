@@ -1,0 +1,18 @@
+{
+  "sessionId": "da8a4f4d-3ef2-449e-bc6e-6e5bf388dfee",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] /new support-files (IMPORTANT: Read /tmp/instar-telegram/ctx-2-1773803235448.txt for th",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-18T03:09:34.449Z",
+  "updatedAt": "2026-03-18T03:09:34.449Z",
+  "stale": true,
+  "outputHash": "6019debdf5e59d0ceac608ccc4395638"
+}

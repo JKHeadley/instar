@@ -1,0 +1,28 @@
+{
+  "sessionId": "05718f6b-175a-410a-8f0a-e34102f398fd",
+  "tmuxSession": "echo-updates",
+  "task": "[telegram:4] Please don’t force to restart (IMPORTANT: Read /tmp/instar-telegram/ctx-4-1773091880302",
+  "phase": "testing",
+  "files": [
+    "synthesis.md",
+    "security.md",
+    "scalability.md",
+    "business.md",
+    "MEMORY.md",
+    "UpdateGate.ts",
+    "config.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-10T00:21:35.783Z",
+  "updatedAt": "2026-03-10T00:21:35.783Z",
+  "stale": true,
+  "outputHash": "1e0487653b2a3e42e52d1f8717443e3e"
+}

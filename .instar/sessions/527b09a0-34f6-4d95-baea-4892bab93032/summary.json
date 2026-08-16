@@ -1,0 +1,23 @@
+{
+  "sessionId": "527b09a0-34f6-4d95-baea-4892bab93032",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1774243599829",
+  "phase": "testing",
+  "files": [
+    "TopicResumeMap.ts",
+    "server.ts",
+    "routes.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T05:40:11.689Z",
+  "updatedAt": "2026-03-23T05:40:11.689Z",
+  "stale": true,
+  "outputHash": "daa740edbd8efd13309bef55b96b0e8b"
+}

@@ -1,0 +1,27 @@
+{
+  "sessionId": "48590a81-4bcd-4af3-9ca4-de7c9725057e",
+  "tmuxSession": "echo-session-stalled",
+  "task": "[telegram:4659] this needs careful thought. please enter /autonomous mode, iterate on reviews and up",
+  "phase": "testing",
+  "files": [
+    "tests/unit/InputClassifier.test.ts",
+    "tests/unit/AutoApprover.test.ts",
+    "src/monitoring/PromptGate.ts",
+    "tests/unit/PromptGate.test.ts",
+    "dashboard/index.html",
+    "scripts/collect-metrics.py",
+    "src/commands/server.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-14T22:16:28.926Z",
+  "updatedAt": "2026-04-14T22:16:28.926Z",
+  "stale": true,
+  "outputHash": "19a9dfa990b15346141b805dc8b6f97b"
+}

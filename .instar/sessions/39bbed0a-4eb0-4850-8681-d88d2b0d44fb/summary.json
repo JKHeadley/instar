@@ -1,0 +1,23 @@
+{
+  "sessionId": "39bbed0a-4eb0-4850-8681-d88d2b0d44fb",
+  "tmuxSession": "echo-token-management",
+  "task": "[telegram:8615] Hi Echo, we need to start rirorously tracking token usage for instar agents so that ",
+  "phase": "testing",
+  "files": [
+    "CLAUDE.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-29T17:22:25.487Z",
+  "updatedAt": "2026-04-29T17:22:25.487Z",
+  "stale": true,
+  "outputHash": "5537bd371543541a10dd84a8898a7d68"
+}

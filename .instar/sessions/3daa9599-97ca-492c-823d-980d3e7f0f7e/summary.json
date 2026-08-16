@@ -1,0 +1,21 @@
+{
+  "sessionId": "3daa9599-97ca-492c-823d-980d3e7f0f7e",
+  "tmuxSession": "echo-context-death-trap",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-6931-1776535910484-9b12rr58.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/instar/package.json",
+    "/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/instar/dist/core/StopGateDb.d.ts",
+    "/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/instar/dist/core/UnjustifiedStopGate.d.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-18T19:26:20.154Z",
+  "updatedAt": "2026-04-18T19:26:20.154Z",
+  "stale": false,
+  "outputHash": "5f2f9aebe479cd436b0c107742a2c889"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "2539c161-b70d-497f-99ac-929f792d3deb",
+  "title": "Instar Upgrade: Faster Startup",
+  "markdown": "# Instar Upgrade: Faster Startup\n\nYour instar server just got smarter about startup time.\n\n## What Changed\n\nWhen you start instar with a lot of session history, it used to try to load everything at once. This could block for minutes if you had thousands of past sessions. Now it works in batches.\n\n## What You'll Notice\n\n**The Tokens tab loads faster.** Instead of staring at an empty tab while it processes years of history, you'll see recent sessions (last 30 days) appear in the first minute. Older sessions fill in gradually as the background scan continues.\n\n**The server stays responsive.** While the system is catching up on old data, it keeps responding to your messages. You won't see that stuck/unresponsive state anymore.\n\n## Why This Matters\n\nInstar now uses three independent safeguards to keep startup smooth:\n1. **Processes in batches** — 500 files at a time instead of all at once\n2. **Yields between batches** — Every 25 files, it stops to let HTTP traffic through\n3. **Focuses on recent data first** — Last 30 days loaded first, older sessions backfilled gradually\n\nNo configuration needed. This is automatic.",
+  "createdAt": "2026-05-02T05:30:58.629Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "upgrade-notification"
+    }
+  }
+}

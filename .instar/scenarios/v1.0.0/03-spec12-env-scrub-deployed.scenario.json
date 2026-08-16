@@ -1,0 +1,10 @@
+{
+  "id": "03-spec12-env-scrub-deployed",
+  "description": "Spec 12 Rule 1a (Codex env-scrub) is structurally present on the target. Verifies that the env-scrub helper file exists and contains the expected hard-block constants. This is a deployment-presence check — the scenario fails on any target that hasn't pulled the cycle 1 commit.",
+  "topic": 2525,
+  "steps": [
+    { "action": "assert-file",
+      "path": ".instar/shadow-install/node_modules/instar/dist/providers/adapters/openai-codex/transport/codexSpawn.js",
+      "exists": true }
+  ]
+}

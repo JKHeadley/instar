@@ -1,0 +1,21 @@
+{
+  "sessionId": "1ab86124-b73f-4afc-8274-1386afaccbb5",
+  "tmuxSession": "echo-jobs-not-running",
+  "task": "[telegram:1767] I feel like everything should run up to 75%, then proceed from there. I also think t",
+  "phase": "testing",
+  "files": [
+    "jobs.json"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "security",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T20:29:58.105Z",
+  "updatedAt": "2026-03-23T20:29:58.105Z",
+  "stale": true,
+  "outputHash": "e8991dca5c6f56667639e8d71b4a8cc0"
+}

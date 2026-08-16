@@ -1,0 +1,24 @@
+{
+  "sessionId": "34aa6192-87cf-4965-a5cc-7b434fbf13d3",
+  "tmuxSession": "echo-topic-3079",
+  "task": "[telegram:3079] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1774670196951",
+  "phase": "testing",
+  "files": [
+    "tests/unit/slack/sanitize.test.ts",
+    "tests/unit/slack/FileHandler.test.ts",
+    "tests/unit/slack/ChannelManager.test.ts",
+    "server.ts"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T05:02:13.996Z",
+  "updatedAt": "2026-03-28T05:02:13.996Z",
+  "stale": true,
+  "outputHash": "a435cae75c427322627a06d3de0a3c4c"
+}

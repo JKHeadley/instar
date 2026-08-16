@@ -1,0 +1,21 @@
+{
+  "sessionId": "1a876094-e33a-42c0-bfec-ccfc17de981e",
+  "tmuxSession": "echo-npm-tokens",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-11078-1779292283382-slw40rez.txt — it contains your ",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/.claude/CLAUDE.md",
+    "/Users/justin/.claude/settings.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-20T17:13:37.812Z",
+  "updatedAt": "2026-05-20T17:13:37.812Z",
+  "stale": false,
+  "outputHash": "21ffd9acc355f006057a10b066f49246"
+}

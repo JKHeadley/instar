@@ -1,0 +1,20 @@
+{
+  "sessionId": "92a29119-d49f-4e96-973b-8efaad32605a",
+  "tmuxSession": "echo-token-management",
+  "task": "[telegram:8615] thank you. some thoughts:\n\n• I'm very cautious about trimming CLAUDE.md and MEMORY.m",
+  "phase": "testing",
+  "files": [
+    ".instar/jobs.json"
+  ],
+  "topics": [
+    "database",
+    "security",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-02T18:52:20.740Z",
+  "updatedAt": "2026-05-02T18:52:20.740Z",
+  "stale": true,
+  "outputHash": "4592e2a4cbf962bfc8ec321e2a2256f4"
+}

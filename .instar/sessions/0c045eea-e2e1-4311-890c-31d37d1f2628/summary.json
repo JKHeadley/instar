@@ -1,0 +1,16 @@
+{
+  "sessionId": "0c045eea-e2e1-4311-890c-31d37d1f2628",
+  "tmuxSession": "echo-job-overseer-development-mnmlstyk",
+  "task": "[NOTIFICATION PROTOCOL: This job runs in quiet mode. The user will NOT see your output unless you ex",
+  "phase": "building",
+  "files": [],
+  "topics": [
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-06T03:01:46.948Z",
+  "updatedAt": "2026-04-06T03:01:46.948Z",
+  "stale": false,
+  "outputHash": "a5b0bf32f4a64954cba812154d873efe"
+}

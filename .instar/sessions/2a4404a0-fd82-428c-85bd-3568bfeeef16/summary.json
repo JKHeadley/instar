@@ -1,0 +1,25 @@
+{
+  "sessionId": "2a4404a0-fd82-428c-85bd-3568bfeeef16",
+  "tmuxSession": "echo-interactive-1775229857203",
+  "task": "[slack:C0APW9UHFJ5 from U0AP927E2R1 (uid:U0AP927E2R1)] Great! Please continue (IMPORTANT: Read /tmp/",
+  "phase": "testing",
+  "files": [
+    "src/threadline/RateLimiter.ts",
+    "src/threadline/OpenClawBridge.ts",
+    "src/threadline/ListenerSessionManager.ts",
+    "./tests/integration/threadline-responsive-messaging.test.ts",
+    "./.github/workflows/publish-threadline-mcp.yml"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-03T15:29:31.108Z",
+  "updatedAt": "2026-04-03T15:29:31.108Z",
+  "stale": true,
+  "outputHash": "1f287adba75fc0cc5116baccaf61815f"
+}

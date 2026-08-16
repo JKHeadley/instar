@@ -1,0 +1,23 @@
+{
+  "sessionId": "e349a42b-291d-4619-b3be-a7f9f346a95e",
+  "tmuxSession": "echo-watchdog-issues",
+  "task": "[telegram:6269] yes, please continue (IMPORTANT: Read /tmp/instar-telegram/ctx-6269-1776221570009.tx",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js",
+    "../../../Documents/Projects/instar/src/commands/server.ts",
+    "../../../Documents/Projects/instar/tests/unit/CoherenceReviewer.test.ts",
+    "../../../Documents/Projects/instar/src/core/CoherenceGate.ts",
+    "../../../Documents/Projects/instar/src/core/CoherenceReviewer.ts",
+    "../../../Documents/Projects/instar/src/core/types.ts"
+  ],
+  "topics": [
+    "testing",
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-15T03:35:47.632Z",
+  "updatedAt": "2026-04-15T03:35:47.632Z",
+  "stale": true,
+  "outputHash": "5200b2f5f50272449048b95cf972dd1c"
+}

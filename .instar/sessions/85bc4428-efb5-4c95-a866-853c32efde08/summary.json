@@ -1,0 +1,21 @@
+{
+  "sessionId": "85bc4428-efb5-4c95-a866-853c32efde08",
+  "tmuxSession": "echo-topic-3079",
+  "task": "CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.\n",
+  "phase": "testing",
+  "files": [
+    ".claude/skills/specreview/output/20260327-173101/adversarial.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T01:03:46.616Z",
+  "updatedAt": "2026-03-28T01:03:46.616Z",
+  "stale": true,
+  "outputHash": "dace51c4dfb389f9c27f08c2f07ad3df"
+}

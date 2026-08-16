@@ -1,0 +1,27 @@
+{
+  "sessionId": "da1e4e4c-e070-4bbe-a6bf-b90d21db476f",
+  "tmuxSession": "echo-parallel-dev-infra",
+  "task": "[telegram:7000] please proceed as you best see fit and finish this out (IMPORTANT: Read /tmp/instar-",
+  "phase": "testing",
+  "files": [
+    "tests/unit/WorktreeManager.test.ts",
+    "tests/unit/WorktreeKeyVault.test.ts",
+    "tsconfig.json",
+    ".instar/instar-dev-traces/2026-04-17T23-50-00-000Z-initiative-tracker-core-and-api.json",
+    "dashboard/index.html",
+    "src/commands/server.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-18T06:22:08.539Z",
+  "updatedAt": "2026-04-18T06:22:08.539Z",
+  "stale": false,
+  "outputHash": "b165342466abc6624854326ffc1de19d"
+}

@@ -1,0 +1,13 @@
+{
+  "sessionId": "f007ed07-923a-4ab9-9c43-22e1eb5691ae",
+  "tmuxSession": "echo-job-session-continuity-check-mp052dm0",
+  "task": "[NOTIFICATION PROTOCOL: This job runs in quiet mode. The user will NOT see your output unless you ex",
+  "phase": "debugging",
+  "files": [],
+  "topics": [],
+  "blockers": null,
+  "lastActivity": "2026-05-10T19:03:08.226Z",
+  "updatedAt": "2026-05-10T19:03:08.226Z",
+  "stale": false,
+  "outputHash": "0b22dd7ed7466eee12ed30dfefeb2a29"
+}

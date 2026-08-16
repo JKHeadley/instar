@@ -1,0 +1,23 @@
+{
+  "sessionId": "78b8c627-1970-443a-bac9-bf469f47a302",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] okay, testing with this topic now (IMPORTANT: Read /tmp/instar-telegram/ctx-1490-177",
+  "phase": "testing",
+  "files": [
+    ".instar/shadow-install/node_modules/instar/dist/core/Config.js",
+    "Config.ts",
+    ".instar/shadow-install/node_modules/instar/package.json",
+    "/Users/justin/Documents/Projects/instar/package.json"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T21:52:22.531Z",
+  "updatedAt": "2026-03-23T21:52:22.531Z",
+  "stale": false,
+  "outputHash": "b7a925dc5cbd9210c7e80279566f7b2c"
+}

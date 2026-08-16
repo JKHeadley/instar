@@ -1,0 +1,19 @@
+{
+  "sessionId": "9e5e07f7-c7ed-411d-b990-b001e87be56f",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] yes please! (IMPORTANT: Read /tmp/instar-telegram/ctx-2317-1776365613170.txt for thr",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-16T19:20:43.930Z",
+  "updatedAt": "2026-04-16T19:20:43.930Z",
+  "stale": false,
+  "outputHash": "4645f97c1fa489f041f35f2d6a756c0e"
+}

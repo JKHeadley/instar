@@ -1,0 +1,11 @@
+{
+  "id": "01-health-baseline",
+  "description": "Health endpoint returns a sensible status object with the expected top-level keys. Baseline for v1.0.0 — every agent must answer.",
+  "topic": 2525,
+  "steps": [
+    { "action": "assert-http", "endpoint": "/health", "status": 200,
+      "bodyMatch": "\"status\"" },
+    { "action": "assert-http", "endpoint": "/health", "status": 200,
+      "bodyMatch": "\"uptime\"" }
+  ]
+}

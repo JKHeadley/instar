@@ -1,0 +1,22 @@
+{
+  "sessionId": "d6ca0407-7cb6-4c4c-8c71-a94323c2741a",
+  "tmuxSession": "echo-server-side-process-review",
+  "task": "[telegram:1882] first question: how do these differ from the instar \"jobs\"? (IMPORTANT: Read /tmp/in",
+  "phase": "testing",
+  "files": [
+    ".instar/jobs.json",
+    "MEMORY.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "security",
+    "messaging",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-22T06:43:11.871Z",
+  "updatedAt": "2026-03-22T06:43:11.871Z",
+  "stale": true,
+  "outputHash": "d4e186a66afc21d60d1ee3ba9c7e2066"
+}

@@ -1,0 +1,3 @@
+[instar-boot] Node symlink self-healed: /Users/justin/.instar/agents/echo/.instar/bin/node -> /opt/homebrew/Cellar/node/25.6.1/bin/node
+Cannot 'server start' from inside a session (session b43b8f49-e208-41a4-a5d6-a2ce627897b9).
+The server is managed by the supervisor. Sessions should not start, stop, or restart it.

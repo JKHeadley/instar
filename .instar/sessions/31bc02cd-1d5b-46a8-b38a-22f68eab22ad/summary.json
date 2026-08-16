@@ -1,0 +1,19 @@
+{
+  "sessionId": "31bc02cd-1d5b-46a8-b38a-22f68eab22ad",
+  "tmuxSession": "echo-attention",
+  "task": "[telegram:3] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1774239145881-21",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T04:29:43.949Z",
+  "updatedAt": "2026-03-23T04:29:43.949Z",
+  "stale": true,
+  "outputHash": "1cc31911bf75fc2537fd67fa11820ca9"
+}

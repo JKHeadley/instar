@@ -1,0 +1,27 @@
+{
+  "sessionId": "0fa09725-340a-4fee-9d9c-6adc6a6af725",
+  "tmuxSession": "echo-little-bird-ai",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-10775-1779158838882-v2rqtyw0.txt — it contains your ",
+  "phase": "testing",
+  "files": [
+    "MEMORY.md",
+    "framework-functional-parity.md",
+    "required-primitives-inventory.md",
+    "01-primitives-inventory.md",
+    "USER.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-20T17:13:37.754Z",
+  "updatedAt": "2026-05-20T17:13:37.754Z",
+  "stale": false,
+  "outputHash": "bfd58eab7299366c09b2ca10357686eb"
+}

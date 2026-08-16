@@ -1,0 +1,11 @@
+{
+  "id": "05-route-decision-low-credit",
+  "description": "Routing decision when SDK credit is below the safety margin returns the subscription adapter. Exercises the cost-aware policy's below-margin branch via a test-only override (passes a fake credit snapshot in the request).",
+  "topic": 2525,
+  "steps": [
+    { "action": "assert-http",
+      "endpoint": "/providers/routing/decide?task=baseline-anthropic&fakeRemainingUsd=5&fakeTotalUsd=100",
+      "status": 200,
+      "bodyMatch": "sdk-credit-at-or-below-safety-margin" }
+  ]
+}

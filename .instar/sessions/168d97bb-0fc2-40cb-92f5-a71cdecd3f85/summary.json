@@ -1,0 +1,28 @@
+{
+  "sessionId": "168d97bb-0fc2-40cb-92f5-a71cdecd3f85",
+  "tmuxSession": "echo-watchdog-issues",
+  "task": "[telegram:6269] please don't ever recommend that I run a cli command. You can ALWAYS DO THIS YOURSEL",
+  "phase": "testing",
+  "files": [
+    "src/monitoring/SessionWatchdog.ts",
+    "tests/unit/SessionWatchdog-pipeline.test.ts",
+    "src/data/builtin-manifest.js",
+    "scripts/collect-metrics.py",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/builtin-manifest.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-14T21:41:28.548Z",
+  "updatedAt": "2026-04-14T21:41:28.548Z",
+  "stale": false,
+  "outputHash": "cac3435674fe238e65dcb25ef3e043d9"
+}

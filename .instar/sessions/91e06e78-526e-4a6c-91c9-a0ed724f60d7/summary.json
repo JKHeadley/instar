@@ -1,0 +1,19 @@
+{
+  "sessionId": "91e06e78-526e-4a6c-91c9-a0ed724f60d7",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] /new server-restarts (IMPORTANT: Read /tmp/instar-telegram/ctx-2-1774566222507.txt for ",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-27T00:13:46.403Z",
+  "updatedAt": "2026-03-27T00:13:46.403Z",
+  "stale": true,
+  "outputHash": "361c6616dc5a1def1b519ddf0a94e978"
+}

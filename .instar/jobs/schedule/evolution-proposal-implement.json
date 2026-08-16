@@ -1,0 +1,10 @@
+{
+  "slug": "evolution-proposal-implement",
+  "origin": "user",
+  "schedule": "0 1,7,13,19 * * *",
+  "enabled": true,
+  "execute": {
+    "type": "agentmd"
+  },
+  "manifestVersion": 1
+}

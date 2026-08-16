@@ -1,0 +1,21 @@
+{
+  "sessionId": "02f46d1b-5d86-4082-9afd-aa01fb5e0271",
+  "tmuxSession": "echo-openclaw",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-9003-1778542909568-957jg8l6.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    ".instar/shadow-install/node_modules/instar/dist/server/routes.js",
+    ".instar/state/auto-updater.json"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-12T00:38:54.383Z",
+  "updatedAt": "2026-05-12T00:38:54.383Z",
+  "stale": false,
+  "outputHash": "a7eae1199fffbf05e93b87c8b5c0162c"
+}

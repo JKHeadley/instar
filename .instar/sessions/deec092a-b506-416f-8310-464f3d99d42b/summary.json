@@ -1,0 +1,26 @@
+{
+  "sessionId": "deec092a-b506-416f-8310-464f3d99d42b",
+  "tmuxSession": "echo-attention",
+  "task": "[telegram:3] These degradation messages are noisy and not helpful. The default message tone for ALl ",
+  "phase": "testing",
+  "files": [
+    "src/monitoring/DegradationReporter.ts",
+    "src/core/FeedbackManager.ts",
+    "src/server/routes.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-11T05:53:04.337Z",
+  "updatedAt": "2026-03-11T05:53:04.337Z",
+  "stale": true,
+  "outputHash": "e6c794a7f094dceebfaca4bd2b17f49f"
+}

@@ -1,0 +1,19 @@
+{
+  "sessionId": "9ab211a9-d456-4b12-b789-b310af3d323b",
+  "tmuxSession": "echo-session-topic-confusion",
+  "task": "Session 9ab211a9-d456-4b12-b789-b310af3d323b (testing)",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-21T02:15:39.925Z",
+  "updatedAt": "2026-03-21T02:15:39.925Z",
+  "stale": true,
+  "outputHash": "12b57ebabf45d9e893f2459a08f0eeb0"
+}

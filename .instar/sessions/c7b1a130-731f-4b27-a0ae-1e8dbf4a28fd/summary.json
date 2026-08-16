@@ -1,0 +1,23 @@
+{
+  "sessionId": "c7b1a130-731f-4b27-a0ae-1e8dbf4a28fd",
+  "tmuxSession": "echo-update-messages",
+  "task": "[telegram:6176] All my agents are sending this message and it’s not helpful at all. I would expect a",
+  "phase": "testing",
+  "files": [
+    "tests/unit/dispatch-manager.test.ts",
+    "src/core/AutoDispatcher.ts",
+    "tests/unit/formatApprovalNotification.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-12T03:34:29.413Z",
+  "updatedAt": "2026-04-12T03:34:29.413Z",
+  "stale": true,
+  "outputHash": "73c292c94eb96a01353e8023c9be752d"
+}

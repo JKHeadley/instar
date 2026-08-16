@@ -1,0 +1,3 @@
+{"receivedAt":"2026-05-08T22:15:33.304Z","payload":{"event":"PostToolUse","session_id":"ff8b6035-e13f-4d2c-8e09-7aa38b3931d3","tool_name":"Bash"}}
+{"receivedAt":"2026-05-08T22:15:35.780Z","payload":{"event":"Unknown","session_id":"ff8b6035-e13f-4d2c-8e09-7aa38b3931d3","tool_name":""}}
+{"receivedAt":"2026-05-08T22:15:35.883Z","payload":{"event":"Unknown","session_id":"ff8b6035-e13f-4d2c-8e09-7aa38b3931d3","tool_name":""}}

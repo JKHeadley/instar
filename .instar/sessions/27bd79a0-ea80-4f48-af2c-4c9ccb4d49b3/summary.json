@@ -1,0 +1,22 @@
+{
+  "sessionId": "27bd79a0-ea80-4f48-af2c-4c9ccb4d49b3",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] checking in here (IMPORTANT: Read /tmp/instar-telegram/ctx-1490-1774310892448.txt fo",
+  "phase": "testing",
+  "files": [
+    "restart-requested.json",
+    ".instar/topic-resume-map.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-24T00:14:41.059Z",
+  "updatedAt": "2026-03-24T00:14:41.059Z",
+  "stale": true,
+  "outputHash": "3e2ce993fd61bcc2a28e9972eeb3e56a"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "e7641c45-0841-4075-bf80-6cb27d6fc4d6",
+  "title": "Guardian Overseer — 2026-04-30",
+  "markdown": "# Guardian Overseer — 2026-04-30\n\n**Status: All Clear.** 5 jobs healthy, 99.7% success rate, 0 failures in last 24h, 0 skips.\n\n## Job Summary\n\n| Job | Schedule | Runs (24h) | Success Rate | Model | Notes |\n|-----|----------|------------|--------------|-------|-------|\n| health-check | */5 min | 286 | 98.6% | haiku | 4 historical spawn-errors (March); last 24h clean |\n| degradation-digest | every 4h | 6 | 100% | haiku | Healthy |\n| state-integrity-check | every 6h | 3 (young) | 100% | haiku | View accumulation issue (see below) |\n| guardian-pulse | every 8h | 3 (young) | 100% | haiku | Only 1 full day of data |\n| session-continuity-check | every 4h | 6 | 100% | haiku | Healthy |\n\n## Issues Found\n\n### 1. View Accumulation — state-integrity-check\nThis job has created **19 private views** since April 14, with no cleanup of old ones. One run on 2026-04-29T19:03 created **two views in the same minute** (double-create bug). Only the latest view is useful; the rest are dead weight in the views list. The job should clean up previous versions when creating new ones.\n\n### 2. No Handoff Notes from Any Guardian Job\nAll five jobs have `lastHandoff: null`. The overseer has no cross-run memory — it cannot detect trends, compare findings run-to-run, or build context over time. Each overseer run starts blind. For meaningful trend analysis, at minimum `health-check`, `state-integrity-check`, and `guardian-pulse` should write structured handoff notes.\n\n## Non-Issues\n\n- **health-check 98.6% rate**: The 4 failures are from March spawn-errors, not recent. Last 24h is 100% clean.\n- **Model allocation**: All jobs use haiku — correct for monitoring workloads. No over-allocation.\n- **Coverage**: Health, degradation, integrity, pulse, continuity, and overseer are all covered. No blind spots observed.\n- **Attention queue**: One item (`ci-release-token-missing`) is marked DONE — no active concerns.\n\n## Recommendations\n\n1. **Fix state-integrity-check view cleanup** — delete the previous view before creating the new one, or use an update (PUT) to overwrite in place.\n2. **Add handoff notes** — at minimum health-check and state-integrity-check should write a one-paragraph handoff summarizing their findings each run.\n",
+  "createdAt": "2026-04-30T01:01:29.622Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "overseer-guardian"
+    }
+  }
+}

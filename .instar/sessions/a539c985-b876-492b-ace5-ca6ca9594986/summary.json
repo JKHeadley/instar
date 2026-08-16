@@ -1,0 +1,21 @@
+{
+  "sessionId": "a539c985-b876-492b-ace5-ca6ca9594986",
+  "tmuxSession": "echo-server-side-process-review",
+  "task": "[telegram:1882] lets go through each of these. For #1, how can it robustly tell if a session is stuc",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T01:01:07.236Z",
+  "updatedAt": "2026-03-23T01:01:07.236Z",
+  "stale": true,
+  "outputHash": "c96d89d3d49971ac55d8ea51e374baa7"
+}

@@ -1,0 +1,21 @@
+{
+  "sessionId": "7fbf738d-804b-422c-b1ee-721e97ae3758",
+  "tmuxSession": "echo-commitment-backing-gap-infra-research",
+  "task": "[telegram:6484] how are we looking here? (IMPORTANT: Read /tmp/instar-telegram/ctx-6484-177638818180",
+  "phase": "testing",
+  "files": [
+    "../../../Documents/Projects/instar/docs/specs/reports/integrated-being-ledger-v2-convergence.md",
+    "docs/specs/reports/integrated-being-ledger-v2-convergence.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T01:56:44.809Z",
+  "updatedAt": "2026-04-17T01:56:44.809Z",
+  "stale": true,
+  "outputHash": "38ee4e8a90bf51029b690456f99e6d4e"
+}

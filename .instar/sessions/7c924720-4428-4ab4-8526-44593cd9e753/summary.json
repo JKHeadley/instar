@@ -1,0 +1,23 @@
+{
+  "sessionId": "7c924720-4428-4ab4-8526-44593cd9e753",
+  "tmuxSession": "echo-topic-3080",
+  "task": "[telegram:3080] hows this coming? (IMPORTANT: Read /tmp/instar-telegram/ctx-3080-1774835005028.txt f",
+  "phase": "testing",
+  "files": [
+    "privacy.md",
+    "adversarial.md",
+    "dx.md",
+    "marketing.md",
+    "synthesis.md"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-30T02:00:42.743Z",
+  "updatedAt": "2026-03-30T02:00:42.743Z",
+  "stale": true,
+  "outputHash": "d39555075b6f6a869d6df0d0e829651b"
+}

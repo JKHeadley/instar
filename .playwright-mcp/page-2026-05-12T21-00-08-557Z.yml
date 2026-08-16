@@ -1,0 +1,38 @@
+- generic [ref=e1]:
+  - img [ref=e2]
+  - generic [ref=e30]:
+    - generic [ref=e36]:
+      - textbox [active] [ref=e37]:
+        - /placeholder: " "
+      - generic: 
+      - generic: Search
+    - generic [ref=e38]:
+      - navigation [ref=e96]:
+        - generic [ref=e97] [cursor=pointer]:
+          - generic:
+            - generic: Chats
+        - generic [ref=e99] [cursor=pointer]:
+          - generic:
+            - generic: Apps
+        - generic [ref=e101] [cursor=pointer]:
+          - generic:
+            - generic: Posts
+        - generic [ref=e103] [cursor=pointer]:
+          - generic:
+            - generic: Media
+        - generic [ref=e105] [cursor=pointer]:
+          - generic:
+            - generic: Links
+        - generic [ref=e107] [cursor=pointer]:
+          - generic:
+            - generic: Files
+        - generic [ref=e109] [cursor=pointer]:
+          - generic:
+            - generic: Music
+        - generic [ref=e111] [cursor=pointer]:
+          - generic:
+            - generic: Voice
+      - button " " [ref=e77] [cursor=pointer]:
+        - generic: 
+        - generic: 
+      - generic [ref=e81] [cursor=pointer]: UPDATE

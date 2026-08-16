@@ -1,0 +1,15 @@
+{
+  "sessionId": "0a31b0a3-aedf-476f-b7ff-370a14ae788c",
+  "tmuxSession": "echo-job-commitment-detection-moy3lyzb",
+  "task": "[NOTIFICATION PROTOCOL: This job runs in quiet mode. The user will NOT see your output unless you ex",
+  "phase": "building",
+  "files": [],
+  "topics": [
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-09T08:45:32.343Z",
+  "updatedAt": "2026-05-09T08:45:32.343Z",
+  "stale": false,
+  "outputHash": "51e9390109e9b03f3862440763221dc4"
+}

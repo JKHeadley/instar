@@ -1,0 +1,23 @@
+{
+  "sessionId": "be801a2f-b0b7-451e-bb6b-d8c7abf91e41",
+  "tmuxSession": "echo-interactive-1775327023845",
+  "task": "[slack:C0APW9UHFJ5 from U0AP927E2R1 (uid:U0AP927E2R1)] please continue (IMPORTANT: Read /tmp/instar-",
+  "phase": "testing",
+  "files": [
+    ".github/workflows/ci.yml",
+    "docs/specs/AUTHORIZATION-POLICY-SPEC.md",
+    "docs/specs/SYBIL-PROTECTION-SPEC.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-04T19:42:36.022Z",
+  "updatedAt": "2026-04-04T19:42:36.022Z",
+  "stale": false,
+  "outputHash": "5408b9f5a05639379c6831bb79931fc0"
+}

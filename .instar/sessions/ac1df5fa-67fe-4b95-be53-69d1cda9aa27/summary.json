@@ -1,0 +1,21 @@
+{
+  "sessionId": "ac1df5fa-67fe-4b95-be53-69d1cda9aa27",
+  "tmuxSession": "echo-topic-3079",
+  "task": "[telegram:3079] hows this coming? (IMPORTANT: Read /tmp/instar-telegram/ctx-3079-1774649521209.txt f",
+  "phase": "testing",
+  "files": [
+    "docs/specs/SLACK-ADAPTER-SPEC.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-27T22:13:10.195Z",
+  "updatedAt": "2026-03-27T22:13:10.195Z",
+  "stale": true,
+  "outputHash": "23471bb017ab365a6fe87522cb421f74"
+}

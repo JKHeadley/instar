@@ -1,0 +1,18 @@
+{
+  "sessionId": "3c8ee5f4-6448-4ec8-bf36-5951fbb2f208",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] Great! What’s next? (IMPORTANT: Read /tmp/instar-telegram/ctx-2-1776580907524.txt for t",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T06:43:22.658Z",
+  "updatedAt": "2026-04-19T06:43:22.658Z",
+  "stale": true,
+  "outputHash": "7a45748e51f3c983517bfa60c7e8c333"
+}

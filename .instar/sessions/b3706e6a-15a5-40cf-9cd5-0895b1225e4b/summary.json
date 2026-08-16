@@ -1,0 +1,21 @@
+{
+  "sessionId": "b3706e6a-15a5-40cf-9cd5-0895b1225e4b",
+  "tmuxSession": "echo-topic-5056",
+  "task": "[telegram:5056] please review the project in the Documents/Projects/openclaude directory and provide",
+  "phase": "testing",
+  "files": [
+    "CLAUDE.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-03T05:16:35.805Z",
+  "updatedAt": "2026-04-03T05:16:35.805Z",
+  "stale": true,
+  "outputHash": "57919681fb9e166cb9e57e8d9db179c4"
+}

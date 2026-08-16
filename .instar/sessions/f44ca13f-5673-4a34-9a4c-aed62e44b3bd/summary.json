@@ -1,0 +1,26 @@
+{
+  "sessionId": "f44ca13f-5673-4a34-9a4c-aed62e44b3bd",
+  "tmuxSession": "echo-commitment-backing-gap-infra-research",
+  "task": "[telegram:6484] Okay, you really need to hand hold me through whatever I need to do here (IMPORTANT:",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js",
+    "../../../Documents/Projects/instar/src/server/routes.ts",
+    "../../../Documents/Projects/instar/src/core/types.ts",
+    "../../../Documents/Projects/instar/dashboard/index.html",
+    "../../../Documents/Projects/instar/src/core/PostUpdateMigrator.ts",
+    "../../../Documents/Projects/instar/.instar/instar-dev-traces/2026-04-17T20-55-00-000Z-integrated-being-ledger-v2-slice-7-bindings-revoke.json"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T23:27:58.733Z",
+  "updatedAt": "2026-04-17T23:27:58.733Z",
+  "stale": true,
+  "outputHash": "d4d3d553eb3c2d7ab11fa1c5ff29647f"
+}

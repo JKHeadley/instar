@@ -1,0 +1,17 @@
+{
+  "sessionId": "4f38234a-1444-4abc-9358-9054dfce0114",
+  "tmuxSession": "echo-interactive-1774801342382",
+  "task": "[slack:C0APW9UHFJ5] Where are we here? How was the review? (IMPORTANT: Read /tmp/instar-slack/ctx-C0",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T17:31:47.973Z",
+  "updatedAt": "2026-03-29T17:31:47.973Z",
+  "stale": true,
+  "outputHash": "46e43be8a06737f3d8106a725787f746"
+}

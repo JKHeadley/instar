@@ -1,0 +1,15 @@
+{
+  "sessionId": "4105e75f-d304-490f-8fbf-1e34a3551af3",
+  "tmuxSession": "echo-playwright-slack-test",
+  "task": "Session 4105e75f-d304-490f-8fbf-1e34a3551af3 (testing)",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T16:59:18.265Z",
+  "updatedAt": "2026-03-28T16:59:18.265Z",
+  "stale": true,
+  "outputHash": "32e9dff39e3af3b958dd65c5b2187e08"
+}

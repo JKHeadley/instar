@@ -1,0 +1,12 @@
+{
+  "id": "d864c754-5679-4838-81bc-26dc4b745885",
+  "title": "Learning Category Overseer — 2026-04-15",
+  "markdown": "# Learning Category Overseer\n\n**Generated:** 2026-04-15\n\n## Critical: insight-harvest Auth Bug (87 gate skips, 0 runs)\n\nThe gate condition calls `/evolution/learnings?applied=false` without auth. Endpoint returns 401 → curl -f outputs nothing → JSON parse fails → gate exits 1 → always blocks.\n\n**Impact:** 7 unapplied learnings idle, oldest from 2026-03-13 (5+ weeks). The entire downstream evolution pipeline is starved.\n\n## The Cascade\n\n`reflection-trigger` runs → generates learnings → **insight-harvest blocked** (auth bug) → no learnings applied → no proposals generated → proposal-evaluate/implement correctly gate → zero evolution.\n\n## reflection-trigger: Empty Prompt on Opus\n\n- 6x/day on Opus, ~63s avg = ~$6-8/day just for changelog maintenance\n- Prompt field is EMPTY — description is \"Review recent work and update MEMORY.md\"\n- Actual output: version number bumps, capability documentation\n- Verdict: mechanical changelog work at Opus rates. Haiku would do this fine.\n\n## Action Tracker: 87 Orphaned, 0 Resolved\n\n87 pending actions with no due dates. evolution-overdue-check correctly gates (nothing overdue). Actions include already-completed items like \"Ship instar 0.28.18\". No resolution mechanism — pure accumulation.\n\n## Verdict\n\nNot diminishing returns. **Zero downstream returns.** Fix the auth bug in insight-harvest's gate and the pipeline unlocks immediately.\n\n## Fix\n\nIn jobs.json, insight-harvest gate needs:\n```\nAUTH=$(python3 -c \"...\"); curl -sf -H \"Authorization: Bearer $AUTH\" http://localhost:4042/evolution/learnings?applied=false | ...\n```",
+  "createdAt": "2026-04-15T10:04:26.540Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "overseer-learning"
+    }
+  }
+}

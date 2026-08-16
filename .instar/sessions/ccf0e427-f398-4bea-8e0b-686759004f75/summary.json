@@ -1,0 +1,22 @@
+{
+  "sessionId": "ccf0e427-f398-4bea-8e0b-686759004f75",
+  "tmuxSession": "echo-session-robustness",
+  "task": "CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.\n",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/Documents/Projects/instar/src/core/SessionManager.ts",
+    ".instar/shadow-install/node_modules/instar/dist/core/SessionManager.js"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T21:54:41.734Z",
+  "updatedAt": "2026-03-29T21:54:41.734Z",
+  "stale": true,
+  "outputHash": "9775a6a96fe5acb6d8166c8791072d62"
+}

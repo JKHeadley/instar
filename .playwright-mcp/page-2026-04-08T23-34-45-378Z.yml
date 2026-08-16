@@ -1,0 +1,121 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - navigation [ref=e5]:
+      - button "Sessions 2" [ref=e37] [cursor=pointer]:
+        - text: Sessions
+        - generic [ref=e7]: "2"
+      - button "Files" [ref=e8] [cursor=pointer]
+      - button "Send Content" [ref=e9] [cursor=pointer]
+      - button "Secret Drop" [ref=e10] [cursor=pointer]
+      - button "Jobs 1" [ref=e38] [cursor=pointer]:
+        - text: Jobs
+        - generic [ref=e12]: "1"
+      - button "Features" [ref=e13] [cursor=pointer]
+      - button "Health" [active] [ref=e14] [cursor=pointer]
+    - generic [ref=e15]:
+      - generic "Server status" [ref=e16] [cursor=pointer]:
+        - generic [ref=e18]: 32m 22s
+      - generic "Active sessions" [ref=e19] [cursor=pointer]:
+        - generic [ref=e20]: ○
+        - generic [ref=e21]: 2/10 sessions
+      - generic "Memory pressure" [ref=e22] [cursor=pointer]:
+        - generic [ref=e23]: Mem 51%
+      - generic "Failing jobs" [ref=e39] [cursor=pointer]:
+        - generic [ref=e40]: ⚠
+        - generic [ref=e41]: 1 failing
+      - generic "Attention items" [ref=e42] [cursor=pointer]:
+        - generic [ref=e43]: 🔔
+        - generic [ref=e44]: "1"
+    - generic [ref=e26]: Connected
+  - generic [ref=e81]:
+    - generic [ref=e82]:
+      - heading "Health" [level=2] [ref=e83]
+      - button "Refresh" [ref=e84] [cursor=pointer]
+    - generic [ref=e85]: Your agent's health and running processes
+    - generic [ref=e87]:
+      - generic [ref=e88]: ✓
+      - generic [ref=e89]:
+        - generic [ref=e90]: All systems operational
+        - generic [ref=e91]: "Uptime: 32m · 12 capabilities active"
+    - generic [ref=e92]:
+      - generic [ref=e93]: Active Subsystems
+      - generic [ref=e94]:
+        - generic [ref=e95] [cursor=pointer]:
+          - generic [ref=e96]:
+            - generic [ref=e98]: Session Recovery
+            - generic [ref=e99]: ▶
+          - generic [ref=e100]: "Detects stuck or crashed sessions and automatically recovers them. Uses a 4-layer stack: watchdog catches stuck commands, mechanical recovery fixes JSONL issues, heuristics handle 90% of remaining cases, and LLM diagnosis covers the rest."
+          - generic [ref=e101]: Standing by
+        - generic [ref=e102] [cursor=pointer]:
+          - generic [ref=e103]:
+            - generic [ref=e105]: Session Intelligence
+            - generic [ref=e106]: ▶
+          - generic [ref=e107]: Monitors session activity and generates summaries for smart message routing. Captures terminal output every 60 seconds to enable intelligent routing of incoming messages to the most relevant session.
+          - generic [ref=e108]: Monitoring active sessions
+        - generic [ref=e109] [cursor=pointer]:
+          - generic [ref=e110]:
+            - generic [ref=e112]: Health Monitoring
+            - generic [ref=e113]: ▶
+          - generic [ref=e114]: Continuous self-checks across config drift, resource pressure, system integrity, and functional probes. Runs coherence checks every 5 minutes and deep system reviews every 6 hours.
+          - generic [ref=e115]:
+            - generic [ref=e116]: 10Checks OK
+            - generic [ref=e117]: 51%Memory
+          - generic [ref=e118]: 10 checks passed · 13/16 probes passed · Memory 51%
+        - generic [ref=e119] [cursor=pointer]:
+          - generic [ref=e120]:
+            - generic [ref=e122]: Safety & Trust
+            - generic [ref=e123]: ▶
+          - generic [ref=e124]: Gates external operations by risk level, validates inbound messages against injection patterns, and manages adaptive trust levels per service.
+          - generic [ref=e125]: All gates active
+        - generic [ref=e126] [cursor=pointer]:
+          - generic [ref=e127]:
+            - generic [ref=e129]: Coherence & Integrity
+            - generic [ref=e130]: ▶
+          - generic [ref=e131]: Ensures project state, scope boundaries, and response quality remain consistent. Prevents cross-project contamination and validates agent instructions are properly loaded.
+          - generic [ref=e132]: Monitoring project integrity
+        - generic [ref=e133] [cursor=pointer]:
+          - generic [ref=e134]:
+            - generic [ref=e136]: Scheduled Jobs
+            - generic [ref=e137]: ▶
+          - generic [ref=e138]: Runs tasks on cron schedules with priority-based queuing. Also tracks behavioral commitments the agent made to the user.
+          - generic [ref=e140]: 29Jobs
+          - generic [ref=e141]: 29 jobs enabled
+        - generic [ref=e142] [cursor=pointer]:
+          - generic [ref=e143]:
+            - generic [ref=e145]: Telegram
+            - generic [ref=e146]: ▶
+          - generic [ref=e147]: Full Telegram messaging integration with long-polling, topic-based session routing, notification batching, and delivery retry.
+          - generic [ref=e148]:
+            - generic [ref=e149]: 64Topics
+            - generic [ref=e150]: 3482Messages
+          - generic [ref=e151]: 64 topics
+        - generic [ref=e152] [cursor=pointer]:
+          - generic [ref=e153]:
+            - generic [ref=e155]: Slack
+            - generic [ref=e156]: ▶
+          - generic [ref=e157]: Sends and receives messages through Slack
+          - generic [ref=e158]: Connected
+        - generic [ref=e159] [cursor=pointer]:
+          - generic [ref=e160]:
+            - generic [ref=e162]: Message Routing
+            - generic [ref=e163]: ▶
+          - generic [ref=e164]: Routes messages between platforms and sessions intelligently. Handles cross-platform bridging and inter-agent delivery with retry and dead-letter archiving.
+          - generic [ref=e165]: Routing active
+        - generic [ref=e166] [cursor=pointer]:
+          - generic [ref=e167]:
+            - generic [ref=e169]: Memory & Context
+            - generic [ref=e170]: ▶
+          - generic [ref=e171]: Topic memory stores conversation history per topic. Semantic memory enables natural language search. Working memory assembles relevant context for each session.
+          - generic [ref=e172]: Context assembly active
+        - generic [ref=e173] [cursor=pointer]:
+          - generic [ref=e174]:
+            - generic [ref=e176]: Self-Improvement
+            - generic [ref=e177]: ▶
+          - generic [ref=e178]: Detects capability gaps, generates improvement proposals, tracks learnings, and implements approved changes. The self-improvement loop.
+          - generic [ref=e179]: Monitoring capabilities
+        - generic [ref=e180] [cursor=pointer]:
+          - generic [ref=e181]:
+            - generic [ref=e183]: Infrastructure
+            - generic [ref=e184]: ▶
+          - generic [ref=e185]: Cloudflare tunnel for remote access, git worktree management for isolated agent work, and the Threadline agent network.
+          - generic [ref=e186]: Tunnel active

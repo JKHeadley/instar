@@ -1,0 +1,17 @@
+{
+  "sessionId": "8f8060fa-9a4c-47b6-834a-9c15b486b3cf",
+  "tmuxSession": "echo-prompt-gate",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-9029-1778208808852-x3fqijf9.txt — it contains your f",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-08T02:54:49.086Z",
+  "updatedAt": "2026-05-08T02:54:49.086Z",
+  "stale": true,
+  "outputHash": "0add1866fe7cbfc884e201bfba86772d"
+}

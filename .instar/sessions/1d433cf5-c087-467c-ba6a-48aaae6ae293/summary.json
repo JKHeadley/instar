@@ -1,0 +1,20 @@
+{
+  "sessionId": "1d433cf5-c087-467c-ba6a-48aaae6ae293",
+  "tmuxSession": "echo-compaction-bug-continued",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-6795-1777476981109-ywpuqnex.txt — it contains your f",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-29T15:44:16.025Z",
+  "updatedAt": "2026-04-29T15:44:16.025Z",
+  "stale": true,
+  "outputHash": "321f0e950a161862b5b532a87b73d164"
+}

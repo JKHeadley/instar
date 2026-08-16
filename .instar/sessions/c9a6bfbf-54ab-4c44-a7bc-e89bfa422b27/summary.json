@@ -1,0 +1,25 @@
+{
+  "sessionId": "c9a6bfbf-54ab-4c44-a7bc-e89bfa422b27",
+  "tmuxSession": "echo-dashboard-development",
+  "task": "[telegram:5348] • secred drop tab: looks great, but each field should have a key AND a value\n• i sti",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js",
+    "../../../Documents/Projects/instar/.instar/worktrees/build-dashboard-revamp-v2--modularize-monolith/dashboard/index.html",
+    "../../../Documents/Projects/instar/.instar/worktrees/build-dashboard-revamp-v2--modularize-monolith/src/server/routes.ts",
+    "../../../Documents/Projects/instar/.instar/state/build/plan.md",
+    ".claude/skills/crossreview/output/20260407-152119/synthesis.md",
+    ".claude/skills/crossreview/output/20260407-152119/gemini.md"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-08T06:06:48.016Z",
+  "updatedAt": "2026-04-08T06:06:48.016Z",
+  "stale": true,
+  "outputHash": "2f61aa7e4a2ce76e495a48dcb7e5b08b"
+}

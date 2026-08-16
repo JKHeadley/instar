@@ -1,0 +1,269 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - navigation [ref=e5]:
+      - button "Sessions 2" [ref=e40] [cursor=pointer]:
+        - text: Sessions
+        - generic [ref=e7]: "2"
+      - button "Files" [ref=e8] [cursor=pointer]
+      - button "Send Content" [ref=e9] [cursor=pointer]
+      - button "Secret Drop" [ref=e10] [cursor=pointer]
+      - button "Jobs 1" [active] [ref=e11] [cursor=pointer]:
+        - text: Jobs
+        - generic [ref=e12]: "1"
+      - button "Features" [ref=e13] [cursor=pointer]
+      - button "Health" [ref=e14] [cursor=pointer]
+    - generic [ref=e15]:
+      - generic "Server status" [ref=e16] [cursor=pointer]:
+        - generic [ref=e18]: 29m 56s
+      - generic "Active sessions" [ref=e19] [cursor=pointer]:
+        - generic [ref=e20]: ○
+        - generic [ref=e21]: 2/10 sessions
+      - generic "Memory pressure" [ref=e22] [cursor=pointer]:
+        - generic [ref=e23]: Mem 51%
+      - generic "Failing jobs" [ref=e24] [cursor=pointer]:
+        - generic [ref=e25]: ⚠
+        - generic [ref=e26]: 1 failing
+      - generic "Attention items" [ref=e41] [cursor=pointer]:
+        - generic [ref=e42]: 🔔
+        - generic [ref=e43]: "1"
+    - generic [ref=e29]: Connected
+  - generic [ref=e79]:
+    - generic [ref=e80]:
+      - heading "Jobs" [level=2] [ref=e81]
+      - combobox [ref=e82]:
+        - 'option "Sort: Status" [selected]'
+        - 'option "Sort: Priority"'
+        - 'option "Sort: Name"'
+        - 'option "Sort: Last Run"'
+    - generic [ref=e83]: Monitor and control your scheduled tasks
+    - generic [ref=e84]:
+      - generic [ref=e85]:
+        - generic [ref=e86]: "29"
+        - generic [ref=e87]: Total
+      - generic [ref=e88]:
+        - generic [ref=e89]: "2"
+        - generic [ref=e90]: Running
+      - generic [ref=e91]:
+        - generic [ref=e92]: "1"
+        - generic [ref=e93]: Failing
+      - generic [ref=e94]:
+        - generic [ref=e95]: "0"
+        - generic [ref=e96]: Disabled
+    - generic [ref=e97]:
+      - button "All" [ref=e98] [cursor=pointer]
+      - button "Running" [ref=e99] [cursor=pointer]
+      - button "Failing" [ref=e100] [cursor=pointer]
+      - button "Disabled" [ref=e101] [cursor=pointer]
+    - generic [ref=e102]:
+      - generic [ref=e103] [cursor=pointer]:
+        - generic [ref=e104]:
+          - generic [ref=e106]: CI Monitor
+          - generic [ref=e107]: 1 fail
+        - generic [ref=e108]: Monitor instar CI health on GitHub Actions. When tests fail, investigate root causes and fix them in source code. Never applies band-aids to tests.
+        - generic [ref=e109]:
+          - generic [ref=e110]: Every 3h
+          - generic [ref=e111]: opus
+          - generic [ref=e112]: high
+        - generic [ref=e113]: failure · 1h ago
+      - generic [ref=e114] [cursor=pointer]:
+        - generic [ref=e117]: Health Check
+        - generic [ref=e118]: Monitor server health, session status, and system resources.
+        - generic [ref=e119]:
+          - generic [ref=e120]: Every 5 min
+          - generic [ref=e121]: haiku
+          - generic [ref=e122]: critical
+        - generic [ref=e123]: success · 2m ago
+      - generic [ref=e124] [cursor=pointer]:
+        - generic [ref=e127]: Evolution Overdue Check
+        - generic [ref=e128]: Monitor overdue evolution actions and stale commitments. Report only — no autonomous completing or cancelling.
+        - generic [ref=e129]:
+          - generic [ref=e130]: Every 4h
+          - generic [ref=e131]: haiku
+          - generic [ref=e132]: high
+        - generic [ref=e133]: — · never
+      - generic [ref=e134] [cursor=pointer]:
+        - generic [ref=e137]: Commitment Detection
+        - generic [ref=e138]: Scan recent messages for promises and commitments, register them as evolution actions. Replaces CommitmentSentinel server process.
+        - generic [ref=e139]:
+          - generic [ref=e140]: Every 5 min
+          - generic [ref=e141]: haiku
+          - generic [ref=e142]: high
+        - generic [ref=e143]: success · 3d ago
+      - generic [ref=e144] [cursor=pointer]:
+        - generic [ref=e147]: Memory Hygiene
+        - generic [ref=e148]: Review MEMORY.md for stale entries, duplicates, and quality issues. Propose cleanup.
+        - generic [ref=e149]:
+          - generic [ref=e150]: Every 12h
+          - generic [ref=e151]: opus
+          - generic [ref=e152]: high
+        - generic [ref=e153]: success · 16h ago
+      - generic [ref=e154] [cursor=pointer]:
+        - generic [ref=e157]: Guardian Pulse
+        - generic [ref=e158]: "Meta-monitor: verify other jobs are running, healthy, and not silently failing."
+        - generic [ref=e159]:
+          - generic [ref=e160]: Every 8h
+          - generic [ref=e161]: haiku
+          - generic [ref=e162]: high
+        - generic [ref=e163]: success · 3d ago
+      - generic [ref=e164] [cursor=pointer]:
+        - generic [ref=e167]: Git Sync
+        - generic [ref=e168]: "Intelligent multi-machine git synchronization. Pulls remote changes, merges with conflict resolution, commits local changes, and pushes. Uses tiered model selection: haiku for clean syncs, sonnet for state file conflicts, opus for code conflicts."
+        - generic [ref=e169]:
+          - generic [ref=e170]: Every hour
+          - generic [ref=e171]: haiku
+          - generic [ref=e172]: high
+        - generic [ref=e173]: success · 13h ago
+      - generic [ref=e174] [cursor=pointer]:
+        - generic [ref=e177]: Reflection Trigger
+        - generic [ref=e178]: Review recent work and update MEMORY.md if any learnings exist.
+        - generic [ref=e179]:
+          - generic [ref=e180]: Every 4h
+          - generic [ref=e181]: opus
+        - generic [ref=e182]: pending · 4h ago
+      - generic [ref=e183] [cursor=pointer]:
+        - generic [ref=e186]: Evolution Proposal Evaluate
+        - generic [ref=e187]: "Phase A: Read pending evolution proposals, evaluate their merit, accept or reject. Paired with evolution-proposal-implement."
+        - generic [ref=e188]:
+          - generic [ref=e189]: Every 6h
+          - generic [ref=e190]: sonnet
+        - generic [ref=e191]: — · never
+      - generic [ref=e192] [cursor=pointer]:
+        - generic [ref=e195]: Evolution Proposal Implement
+        - generic [ref=e196]: "Phase B: Pick up approved evolution proposals and implement them with full context. Paired with evolution-proposal-evaluate."
+        - generic [ref=e197]:
+          - generic [ref=e198]: 0 1,7,13,19 * * *
+          - generic [ref=e199]: opus
+        - generic [ref=e200]: — · never
+      - generic [ref=e201] [cursor=pointer]:
+        - generic [ref=e204]: Project Map Refresh
+        - generic [ref=e205]: Regenerate the project territory map to keep spatial awareness current.
+        - generic [ref=e206]:
+          - generic [ref=e207]: Every 12h
+          - generic [ref=e208]: haiku
+        - generic [ref=e209]: — · never
+      - generic [ref=e210] [cursor=pointer]:
+        - generic [ref=e213]: Coherence Audit
+        - generic [ref=e214]: Verify topic-project bindings are still valid, state files are healthy, and no drift has occurred.
+        - generic [ref=e215]:
+          - generic [ref=e216]: Every 8h
+          - generic [ref=e217]: haiku
+        - generic [ref=e218]: — · never
+      - generic [ref=e219] [cursor=pointer]:
+        - generic [ref=e222]: Degradation Digest
+        - generic [ref=e223]: Read DegradationReporter events, group repeated patterns, and escalate trends that need attention.
+        - generic [ref=e224]:
+          - generic [ref=e225]: Every 4h
+          - generic [ref=e226]: haiku
+        - generic [ref=e227]: — · never
+      - generic [ref=e228] [cursor=pointer]:
+        - generic [ref=e231]: State Integrity Check
+        - generic [ref=e232]: Cross-validate state file consistency, detect orphaned references and bloat.
+        - generic [ref=e233]:
+          - generic [ref=e234]: Every 6h
+          - generic [ref=e235]: haiku
+        - generic [ref=e236]: — · never
+      - generic [ref=e237] [cursor=pointer]:
+        - generic [ref=e240]: Session Continuity Check
+        - generic [ref=e241]: "Verify that sessions produce lasting artifacts: handoff notes, memory updates, learnings."
+        - generic [ref=e242]:
+          - generic [ref=e243]: Every 4h
+          - generic [ref=e244]: haiku
+        - generic [ref=e245]: — · never
+      - generic [ref=e246] [cursor=pointer]:
+        - generic [ref=e249]: Memory Export
+        - generic [ref=e250]: Regenerate MEMORY.md from SemanticMemory knowledge graph. Keeps the human-readable memory snapshot fresh without manual intervention.
+        - generic [ref=e251]:
+          - generic [ref=e252]: Every 6h
+          - generic [ref=e253]: haiku
+        - generic [ref=e254]: — · never
+      - generic [ref=e255] [cursor=pointer]:
+        - generic [ref=e258]: Capability Audit
+        - generic [ref=e259]: "Refresh the capability map and detect drift. Compute-first: only spawns LLM if changes detected."
+        - generic [ref=e260]:
+          - generic [ref=e261]: Every 6h
+          - generic [ref=e262]: haiku
+        - generic [ref=e263]: — · never
+      - generic [ref=e264] [cursor=pointer]:
+        - generic [ref=e267]: Threadline Implementation Sync
+        - generic [ref=e268]: Compare the standalone threadline-mcp package (packages/threadline-mcp/) against the built-in Threadline (src/threadline/) and sync relational features. The standalone package evolves independently on npm — this job ensures the built-in version adopts new capabilities.
+        - generic [ref=e269]:
+          - generic [ref=e270]: Mon at 8 AM
+          - generic [ref=e271]: opus
+        - generic [ref=e272]: — · never
+      - generic [ref=e273] [cursor=pointer]:
+        - generic [ref=e276]: Dashboard Link Refresh
+        - generic [ref=e277]: Refresh the pinned dashboard link in Telegram so it never goes stale.
+        - generic [ref=e278]:
+          - generic [ref=e279]: Every 15 min
+          - generic [ref=e280]: haiku
+        - generic [ref=e281]: — · never
+      - generic [ref=e282] [cursor=pointer]:
+        - generic [ref=e285]: Guardian Overseer
+        - generic [ref=e286]: "Reviews all guardian/monitoring jobs: health-check, guardian-pulse, degradation-digest, state-integrity-check, session-continuity-check. Spots cross-job patterns, flags contradictions, recommends schedule/priority/model changes."
+        - generic [ref=e287]:
+          - generic [ref=e288]: Every 6h
+          - generic [ref=e289]: sonnet
+        - generic [ref=e290]: success · 9h ago
+      - generic [ref=e291] [cursor=pointer]:
+        - generic [ref=e294]: Learning Overseer
+        - generic [ref=e295]: "Reviews all evolution/learning jobs: evolution-review, insight-harvest, commitment-check, reflection-trigger. Assesses whether the learning pipeline is producing value."
+        - generic [ref=e296]:
+          - generic [ref=e297]: 0 3 */2 * *
+          - generic [ref=e298]: sonnet
+        - generic [ref=e299]: success · 1d ago
+      - generic [ref=e300] [cursor=pointer]:
+        - generic [ref=e303]: Maintenance Overseer
+        - generic [ref=e304]: "Reviews all maintenance jobs: project-map-refresh, coherence-audit, capability-audit, memory-hygiene, memory-export. Ensures housekeeping is effective."
+        - generic [ref=e305]:
+          - generic [ref=e306]: Daily at 2 AM
+          - generic [ref=e307]: sonnet
+        - generic [ref=e308]: success · 14h ago
+      - generic [ref=e309] [cursor=pointer]:
+        - generic [ref=e312]: Infrastructure Overseer
+        - generic [ref=e313]: "Reviews infrastructure jobs: git-sync, dashboard-link-refresh, feedback-retry. Ensures plumbing is solid."
+        - generic [ref=e314]:
+          - generic [ref=e315]: Daily at 6 AM
+          - generic [ref=e316]: haiku
+        - generic [ref=e317]: success · 1d ago
+      - generic [ref=e318] [cursor=pointer]:
+        - generic [ref=e321]: Docs-Code Sync
+        - generic [ref=e322]: Detect documentation drift from code changes and apply targeted updates
+        - generic [ref=e323]:
+          - generic [ref=e324]: Every 4h
+          - generic [ref=e325]: sonnet
+        - generic [ref=e326]: success · 31m ago
+      - generic [ref=e327] [cursor=pointer]:
+        - generic [ref=e330]: GitHub Collaboration Monitor
+        - generic [ref=e331]: Scan and review GitHub PRs, forks, and collaboration activity. Stage 1 (Haiku) classifies activity, Stage 2 (Opus) reviews items needing attention.
+        - generic [ref=e332]:
+          - generic [ref=e333]: 0 8,20 * * *
+          - generic [ref=e334]: haiku
+        - generic [ref=e335]: success · 48m ago
+      - generic [ref=e336] [cursor=pointer]:
+        - generic [ref=e339]: Relationship Maintenance
+        - generic [ref=e340]: Review tracked relationships and surface observations about stale contacts.
+        - generic [ref=e341]:
+          - generic [ref=e342]: Daily at 9 AM
+          - generic [ref=e343]: haiku
+        - generic [ref=e344]: pending · 7h ago
+      - generic [ref=e345] [cursor=pointer]:
+        - generic [ref=e348]: Feedback Retry
+        - generic [ref=e349]: Retry forwarding any feedback that failed to reach upstream.
+        - generic [ref=e350]:
+          - generic [ref=e351]: Every 6h
+          - generic [ref=e352]: haiku
+        - generic [ref=e353]: — · never
+      - generic [ref=e354] [cursor=pointer]:
+        - generic [ref=e357]: Insight Harvest
+        - generic [ref=e358]: Synthesize learnings from the learning registry, detect patterns, and generate evolution proposals from high-confidence insights.
+        - generic [ref=e359]:
+          - generic [ref=e360]: Every 8h
+          - generic [ref=e361]: opus
+        - generic [ref=e362]: — · never
+      - generic [ref=e363] [cursor=pointer]:
+        - generic [ref=e366]: Development Overseer
+        - generic [ref=e367]: "Reviews development jobs: ci-monitor, threadline-sync. Ensures development tooling is functional."
+        - generic [ref=e368]:
+          - generic [ref=e369]: Daily at 8 AM
+          - generic [ref=e370]: haiku
+        - generic [ref=e371]: success · 1d ago

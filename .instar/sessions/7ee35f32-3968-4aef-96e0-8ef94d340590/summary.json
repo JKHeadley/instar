@@ -1,0 +1,19 @@
+{
+  "sessionId": "7ee35f32-3968-4aef-96e0-8ef94d340590",
+  "tmuxSession": "echo-topic-4699",
+  "task": "[telegram:4699] Just got a message “hi @echo” but you didn’t respond (IMPORTANT: Read /tmp/instar-te",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-02T09:46:38.492Z",
+  "updatedAt": "2026-04-02T09:46:38.492Z",
+  "stale": true,
+  "outputHash": "c2f01f570e58ee2db36221f6b0c6ee39"
+}

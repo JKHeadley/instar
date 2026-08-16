@@ -1,0 +1,17 @@
+{
+  "sessionId": "32fde67c-834c-48f7-b6fa-becf5f9bd849",
+  "tmuxSession": "echo-pre-build-scouting-gap",
+  "task": "[telegram:6790] Great let's write this spec and let's start converging on it (IMPORTANT: Read /tmp/i",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T16:19:45.606Z",
+  "updatedAt": "2026-04-17T16:19:45.606Z",
+  "stale": true,
+  "outputHash": "804130d87b20bff6b08e4aca045a2b97"
+}

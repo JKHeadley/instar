@@ -1,0 +1,26 @@
+{
+  "sessionId": "0755dca5-10a7-4e15-a56e-eae9ae8811ba",
+  "tmuxSession": "echo-sleep-wake-fix",
+  "task": "[telegram:4216] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1774928613806",
+  "phase": "testing",
+  "files": [
+    "CLAUDE.md",
+    "MEMORY.md",
+    "NEXT.md",
+    "USER-AGENT-TOPOLOGY-SPEC.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-31T04:01:44.591Z",
+  "updatedAt": "2026-03-31T04:01:44.591Z",
+  "stale": true,
+  "outputHash": "7f70b6e66c1fecde011c537c177a7a0b"
+}

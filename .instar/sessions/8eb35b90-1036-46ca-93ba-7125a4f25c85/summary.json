@@ -1,0 +1,22 @@
+{
+  "sessionId": "8eb35b90-1036-46ca-93ba-7125a4f25c85",
+  "tmuxSession": "echo-server-side-process-review",
+  "task": "CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.\n",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/Documents/Projects/instar/dashboard/index.html",
+    ".instar/shadow-install/node_modules/instar/dashboard/index.html",
+    "dashboard/index.html"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T21:31:02.124Z",
+  "updatedAt": "2026-03-28T21:31:02.124Z",
+  "stale": true,
+  "outputHash": "1032e774f5d539804715140cb44718ea"
+}

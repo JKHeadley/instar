@@ -1,0 +1,16 @@
+{
+  "sessionId": "3f22f3c9-f031-4475-852c-cbceb7cf206f",
+  "tmuxSession": "echo-v1-0-0-testing",
+  "task": "[telegram:10306] hi echo! can you hear me? I need help. My messages to the \"claude agent sdk\" topic ",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-16T15:54:58.583Z",
+  "updatedAt": "2026-05-16T15:54:58.583Z",
+  "stale": false,
+  "outputHash": "36e7aa5cecc9dc4fadee44a6a6804162"
+}

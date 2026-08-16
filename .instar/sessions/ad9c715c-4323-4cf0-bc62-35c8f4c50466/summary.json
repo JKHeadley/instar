@@ -1,0 +1,18 @@
+{
+  "sessionId": "ad9c715c-4323-4cf0-bc62-35c8f4c50466",
+  "tmuxSession": "echo-attention",
+  "task": "[telegram:3] Please do it now (IMPORTANT: Read /tmp/instar-telegram/ctx-3-1777783466537.txt for thre",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security",
+    "messaging",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-03T04:54:53.524Z",
+  "updatedAt": "2026-05-03T04:54:53.524Z",
+  "stale": true,
+  "outputHash": "840a3848fcafbe96fb71dda1fa40761a"
+}

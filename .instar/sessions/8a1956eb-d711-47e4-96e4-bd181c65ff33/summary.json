@@ -1,0 +1,18 @@
+{
+  "sessionId": "8a1956eb-d711-47e4-96e4-bd181c65ff33",
+  "tmuxSession": "echo-topic-session-command-trap",
+  "task": "[telegram:1427] what were the review team results? (IMPORTANT: Read /tmp/instar-telegram/ctx-1427-17",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T07:34:38.060Z",
+  "updatedAt": "2026-03-20T07:34:38.060Z",
+  "stale": false,
+  "outputHash": "a67f4ed5ff0043675ffd177d0e74e878"
+}

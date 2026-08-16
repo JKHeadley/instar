@@ -1,0 +1,20 @@
+{
+  "sessionId": "d8528222-dc94-4da9-b7ea-1161861f5731",
+  "tmuxSession": "echo-topic-3079",
+  "task": "[telegram:3079] yes please! (IMPORTANT: Read /tmp/instar-telegram/ctx-3079-1774667354752.txt for thr",
+  "phase": "testing",
+  "files": [
+    ".instar/state/quota.json"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T03:55:26.961Z",
+  "updatedAt": "2026-03-28T03:55:26.961Z",
+  "stale": false,
+  "outputHash": "aa1a996fe203bad11867e98c8f13851d"
+}

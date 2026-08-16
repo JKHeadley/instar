@@ -1,0 +1,19 @@
+{
+  "sessionId": "cca14027-af4c-493a-991c-514d8f53cafb",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] where are we at here? (IMPORTANT: Read /tmp/instar-telegram/ctx-2317-1776376421236.t",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js",
+    "../../../Documents/Projects/instar/docs/specs/PR-REVIEW-HARDENING-SPEC.md"
+  ],
+  "topics": [
+    "testing",
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-16T21:56:40.826Z",
+  "updatedAt": "2026-04-16T21:56:40.826Z",
+  "stale": true,
+  "outputHash": "d848904b63dc016656a5fe2397a87b57"
+}

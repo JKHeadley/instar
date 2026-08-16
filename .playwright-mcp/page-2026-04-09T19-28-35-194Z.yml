@@ -1,0 +1,80 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - img "Instar" [ref=e5]
+      - heading "Instar Dashboard" [level=1] [ref=e6]
+      - navigation [ref=e7]:
+        - button "Sessions 2" [ref=e50] [cursor=pointer]
+        - button "Files" [ref=e9] [cursor=pointer]
+        - button "Send Content" [ref=e10] [cursor=pointer]
+        - button "Secret Drop" [ref=e11] [cursor=pointer]
+        - button "Jobs 2" [ref=e12] [cursor=pointer]
+        - button "Features" [ref=e13] [cursor=pointer]
+        - button "Activity 1" [ref=e51] [cursor=pointer]
+        - button "Health" [ref=e15] [cursor=pointer]
+    - generic [ref=e16]:
+      - generic "Server status" [ref=e17] [cursor=pointer]:
+        - generic [ref=e19]: 2m 47s
+      - generic "Active sessions" [ref=e21] [cursor=pointer]:
+        - generic [ref=e22]: ○
+        - generic [ref=e23]: 2/10 sessions
+      - generic "Memory pressure" [ref=e25] [cursor=pointer]:
+        - generic [ref=e26]: Mem 56%
+      - generic "Failing jobs" [ref=e29] [cursor=pointer]:
+        - generic [ref=e30]: ⚠
+        - generic [ref=e31]: 2 failing
+      - generic "Attention items" [ref=e54] [cursor=pointer]:
+        - generic [ref=e55]: 🔔
+        - generic [ref=e56]: "1"
+    - generic [ref=e34]: Connected
+  - generic [ref=e35]:
+    - generic [ref=e36]:
+      - generic [ref=e37]:
+        - heading "Files" [level=2] [ref=e38]
+        - button "⚙" [ref=e39] [cursor=pointer]
+      - generic [ref=e40]:
+        - generic [ref=e57] [cursor=pointer]:
+          - generic [ref=e58]: 📁
+          - generic [ref=e59]: .claude
+          - generic [ref=e60]: ▶
+        - generic [ref=e61]:
+          - generic [ref=e62] [cursor=pointer]:
+            - generic [ref=e63]: 📁
+            - generic [ref=e64]: projects
+            - generic [ref=e65]: ▶
+          - generic [ref=e66] [cursor=pointer]:
+            - generic [ref=e67]: 📁
+            - generic [ref=e68]: scripts
+            - generic [ref=e69]: ▶
+          - generic [ref=e70] [cursor=pointer]:
+            - generic [ref=e71]: 📁
+            - generic [ref=e72]: skills
+            - generic [ref=e73]: ▶
+          - generic [ref=e74] [cursor=pointer]:
+            - generic [ref=e75]: 📁
+            - generic [ref=e76]: worktrees
+            - generic [ref=e77]: ▶
+          - generic [ref=e78] [cursor=pointer]:
+            - generic [ref=e79]: ⚙️
+            - generic [ref=e80]: settings.json
+    - generic [ref=e45]:
+      - generic [ref=e81]:
+        - generic [ref=e82]:
+          - generic [ref=e83] [cursor=pointer]: .claude
+          - generic [ref=e84]: /
+          - generic [ref=e85]: settings.json
+        - generic [ref=e86]:
+          - generic [ref=e87]: Editable
+          - button "Edit" [ref=e88] [cursor=pointer]
+          - button "Download" [ref=e89] [cursor=pointer]
+          - button "Copy" [ref=e90] [cursor=pointer]
+      - code [ref=e93]:
+        - text: "{ \"hooks\": { \"PreToolUse\": [ { \"matcher\": \"Bash\", \"hooks\": [ { \"type\": \"command\", \"command\": \"bash .instar/hooks/instar/dangerous-command-guard.sh \\\"$TOOL_INPUT\\\"\", \"blocking\":"
+        - generic [ref=e94]: "true"
+        - text: "}, { \"type\": \"command\", \"command\": \"bash .instar/hooks/instar/grounding-before-messaging.sh \\\"$TOOL_INPUT\\\"\", \"blocking\":"
+        - generic [ref=e95]: "false"
+        - text: "}, { \"type\": \"command\", \"command\": \"bash .instar/hooks/custom/gh-identity-guard.sh \\\"$TOOL_INPUT\\\"\", \"blocking\":"
+        - generic [ref=e96]: "true"
+        - text: ", \"timeout\": 5000 }, { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/deferral-detector.js\", \"timeout\": 5000 }, { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/external-communication-guard.js\", \"timeout\": 5000 }, { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/post-action-reflection.js\", \"timeout\": 5000 } ] }, { \"matcher\": \"mcp__.*\", \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/external-operation-gate.js\", \"blocking\":"
+        - generic [ref=e97]: "true"
+        - text: ", \"timeout\": 5000 } ] }, { \"matcher\": \"EnterPlanMode\", \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/custom/plan-prompt-relay.js\", \"timeout\": 130000 } ] } ], \"SessionStart\": [ { \"matcher\": \"startup\", \"hooks\": [ { \"type\": \"command\", \"command\": \"bash .instar/hooks/instar/session-start.sh\", \"timeout\": 5 } ] }, { \"matcher\": \"resume\", \"hooks\": [ { \"type\": \"command\", \"command\": \"bash .instar/hooks/instar/session-start.sh\", \"timeout\": 5 } ] }, { \"matcher\": \"compact\", \"hooks\": [ { \"type\": \"command\", \"command\": \"bash .instar/hooks/instar/session-start.sh\", \"timeout\": 5 } ] } ], \"PostToolUse\": [ { \"matcher\": \"Edit\", \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/scope-coherence-collector.js\", \"timeout\": 5000 }, { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/claim-intercept.js\", \"timeout\": 5000 }, { \"type\": \"command\", \"command\": \"node .claude/scripts/test-coverage-reminder.js\", \"timeout\": 3000 } ] }, { \"matcher\": \"Write\", \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/scope-coherence-collector.js\", \"timeout\": 5000 }, { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/claim-intercept.js\", \"timeout\": 5000 }, { \"type\": \"command\", \"command\": \"node .claude/scripts/test-coverage-reminder.js\", \"timeout\": 3000 } ] }, { \"matcher\": \"Bash\", \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/scope-coherence-collector.js\", \"timeout\": 5000 }, { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/claim-intercept.js\", \"timeout\": 5000 } ] }, { \"matcher\": \"Read\", \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/scope-coherence-collector.js\", \"timeout\": 5000 } ] }, { \"matcher\": \"Skill\", \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/scope-coherence-collector.js\", \"timeout\": 5000 } ] }, { \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/hook-event-reporter.js\", \"timeout\": 3000 } ], \"matcher\": \"\" } ], \"Stop\": [ { \"matcher\": \"\", \"hooks\": [ { \"type\": \"command\", \"command\": \"bash .claude/skills/autonomous/hooks/autonomous-stop-hook.sh\", \"timeout\": 10000 } ] }, { \"matcher\": \"\", \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/claim-intercept-response.js\", \"timeout\": 10000 } ] }, { \"matcher\": \"\", \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/scope-coherence-checkpoint.js\", \"timeout\": 10000 } ] }, { \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/hook-event-reporter.js\", \"timeout\": 3000 } ], \"matcher\": \"\" } ], \"InstructionsLoaded\": [ { \"matcher\": \"\", \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/instructions-loaded-tracker.js\", \"timeout\": 5000 } ] } ], \"SubagentStart\": [ { \"matcher\": \"\", \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/subagent-start-tracker.js\", \"timeout\": 5000 } ] }, { \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/hook-event-reporter.js\", \"timeout\": 3000 } ], \"matcher\": \"\" } ], \"UserPromptSubmit\": [ { \"matcher\": \"\", \"hooks\": [ { \"type\": \"command\", \"command\": \"bash .instar/hooks/instar/telegram-topic-context.sh\", \"timeout\": 5000 } ] }, { \"matcher\": \"\", \"hooks\": [ { \"type\": \"command\", \"command\": \"bash .instar/hooks/instar/slack-channel-context.sh\", \"timeout\": 5000 } ] } ], \"SubagentStop\": [ { \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/hook-event-reporter.js\", \"timeout\": 3000 } ], \"matcher\": \"\" } ], \"WorktreeCreate\": [ { \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/hook-event-reporter.js\", \"timeout\": 3000 } ], \"matcher\": \"\" } ], \"WorktreeRemove\": [ { \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/hook-event-reporter.js\", \"timeout\": 3000 } ], \"matcher\": \"\" } ], \"TaskCompleted\": [ { \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/hook-event-reporter.js\", \"timeout\": 3000 } ], \"matcher\": \"\" } ], \"SessionEnd\": [ { \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/hook-event-reporter.js\", \"timeout\": 3000 } ], \"matcher\": \"\" } ], \"PreCompact\": [ { \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/hook-event-reporter.js\", \"timeout\": 3000 } ], \"matcher\": \"\" } ], \"PermissionRequest\": [ { \"matcher\": \"\", \"hooks\": [ { \"type\": \"command\", \"command\": \"node .instar/hooks/instar/auto-approve-permissions.js\", \"timeout\": 5000 } ] } ] }, \"mcpServers\": { \"playwright\": { \"command\": \"npx\", \"args\": [ \"-y\", \"@playwright/mcp@latest\" ] } } }"

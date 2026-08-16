@@ -1,0 +1,20 @@
+{
+  "sessionId": "49470aed-af2e-4937-94d9-8063a620e163",
+  "tmuxSession": "echo-resume-live-input-bug",
+  "task": "[telegram:6309] hows this looking? (IMPORTANT: Read /tmp/instar-telegram/ctx-6309-1776562243845.txt ",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/Documents/Projects/instar/dashboard/index.html"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T03:03:06.852Z",
+  "updatedAt": "2026-04-19T03:03:06.852Z",
+  "stale": true,
+  "outputHash": "d885fbcb8343a5fc1cb217b01d4817c6"
+}

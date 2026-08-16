@@ -1,0 +1,21 @@
+{
+  "sessionId": "a4beb711-6740-40c7-b4d9-e1f95e136f72",
+  "tmuxSession": "echo-interactive-1775419370036",
+  "task": "[slack:C0APW9UHFJ5] [RECOVERY] Context exhaustion — session restarted fresh. (IMPORTANT: Read /tmp/i",
+  "phase": "testing",
+  "files": [
+    "package.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-05T20:07:46.521Z",
+  "updatedAt": "2026-04-05T20:07:46.521Z",
+  "stale": true,
+  "outputHash": "79339041fd252ee5818245e9863fb862"
+}

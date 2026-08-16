@@ -1,0 +1,19 @@
+{
+  "sessionId": "d43346ed-d633-46c2-9d6d-f5cc3dde6cb0",
+  "tmuxSession": "echo-parallel-dev-infra",
+  "task": "[telegram:7000] why is this not merged? (IMPORTANT: Read /tmp/instar-telegram/ctx-7000-1776499933577",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-18T08:14:16.857Z",
+  "updatedAt": "2026-04-18T08:14:16.857Z",
+  "stale": true,
+  "outputHash": "1f2a82637b8003cd90aa2da8d7639cb7"
+}

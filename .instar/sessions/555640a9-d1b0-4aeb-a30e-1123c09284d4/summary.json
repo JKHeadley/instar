@@ -1,0 +1,23 @@
+{
+  "sessionId": "555640a9-d1b0-4aeb-a30e-1123c09284d4",
+  "tmuxSession": "echo-resume-live-input-bug",
+  "task": "[telegram:6309] checing in again (IMPORTANT: Read /tmp/instar-telegram/ctx-6309-1776544631385.txt fo",
+  "phase": "testing",
+  "files": [
+    "MEMORY.md",
+    "tests/unit/SessionWatchdog-pipeline.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T01:18:28.730Z",
+  "updatedAt": "2026-04-19T01:18:28.730Z",
+  "stale": false,
+  "outputHash": "f54abc26345ce0edbd9eddbbc5532c90"
+}

@@ -1,0 +1,21 @@
+{
+  "sessionId": "f2038bf0-cbd7-4232-a237-2fa3a204824d",
+  "tmuxSession": "echo-telegram-issues",
+  "task": "Session f2038bf0-cbd7-4232-a237-2fa3a204824d (testing)",
+  "phase": "testing",
+  "files": [
+    "package.json",
+    "upgrades/NEXT.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T00:02:42.075Z",
+  "updatedAt": "2026-04-19T00:02:42.075Z",
+  "stale": true,
+  "outputHash": "f8385fd411e9ad1e60d0ab6adf9a151c"
+}

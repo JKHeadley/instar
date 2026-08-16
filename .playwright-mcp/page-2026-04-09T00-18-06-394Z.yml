@@ -1,0 +1,38 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - navigation [ref=e5]:
+      - button "Sessions 0" [ref=e6] [cursor=pointer]:
+        - text: Sessions
+        - generic [ref=e7]: "0"
+      - button "Files" [ref=e8] [cursor=pointer]
+      - button "Send Content" [ref=e9] [cursor=pointer]
+      - button "Secret Drop" [ref=e10] [cursor=pointer]
+      - button "Jobs 1" [ref=e11] [cursor=pointer]:
+        - text: Jobs
+        - generic [ref=e12]: "1"
+      - button "Features" [ref=e13] [cursor=pointer]
+      - button "Activity" [ref=e14] [cursor=pointer]
+      - button "Health" [ref=e15] [cursor=pointer]
+    - generic [ref=e16]:
+      - generic "Server status" [ref=e17] [cursor=pointer]:
+        - generic [ref=e19]: 1h 15m
+      - generic "Active sessions" [ref=e20] [cursor=pointer]:
+        - generic [ref=e21]: ○
+        - generic [ref=e22]: 2/10 sessions
+      - generic "Memory pressure" [ref=e23] [cursor=pointer]:
+        - generic [ref=e24]: Mem 51%
+      - generic "Failing jobs" [ref=e25] [cursor=pointer]:
+        - generic [ref=e26]: ⚠
+        - generic [ref=e27]: 1 failing
+    - generic [ref=e30]: Connected
+  - complementary [ref=e31]:
+    - generic [ref=e32]:
+      - heading "Sessions" [level=2] [ref=e33]
+      - generic [ref=e34]:
+        - generic [ref=e35]: "0"
+        - button "+" [ref=e36] [cursor=pointer]
+    - generic [ref=e38]:
+      - generic [ref=e39]: 💭
+      - paragraph [ref=e40]:
+        - text: No sessions running
+        - text: Create one to start working with your agent

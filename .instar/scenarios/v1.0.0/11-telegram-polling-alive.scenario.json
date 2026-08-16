@@ -1,0 +1,15 @@
+{
+  "id": "11-telegram-polling-alive",
+  "description": "Telegram polling loop on the target is alive and producing fresh updates. Verifies the network leg the injection-mode driver bypasses. Combined with the injection-mode scenarios, this gives end-to-end coverage even when a separate driver bot for full real-Telegram round-trip isn't provisioned.",
+  "topic": 2525,
+  "steps": [
+    { "action": "assert-http",
+      "endpoint": "/telegram/log-stats",
+      "status": 200,
+      "bodyMatch": "\"totalMessages\"" },
+    { "action": "assert-http",
+      "endpoint": "/telegram/topics",
+      "status": 200,
+      "bodyMatch": "\"topics\"" }
+  ]
+}

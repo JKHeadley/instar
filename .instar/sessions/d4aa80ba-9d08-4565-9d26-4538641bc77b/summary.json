@@ -1,0 +1,20 @@
+{
+  "sessionId": "d4aa80ba-9d08-4565-9d26-4538641bc77b",
+  "tmuxSession": "echo-threadline-cooldown-queue-drain",
+  "task": "[telegram:7344] Let’s continue here (IMPORTANT: Read /tmp/instar-telegram/ctx-7344-1776617790800.txt",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T17:48:20.512Z",
+  "updatedAt": "2026-04-19T17:48:20.512Z",
+  "stale": true,
+  "outputHash": "96679056569402955300650982de9785"
+}

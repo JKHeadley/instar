@@ -1,0 +1,23 @@
+[     193ms] TypeError: Cannot read properties of null (reading 'onmessage')
+    at http://localhost:4042/dashboard?token=ed02ebe3-5e6e-4e57-ba1d-a8a0338063ea:6459:32
+[     207ms] [VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ http://localhost:4042/dashboard?token=ed02ebe3-5e6e-4e57-ba1d-a8a0338063ea:0
+[     207ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[    3204ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[    6300ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[    9347ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   12346ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   15328ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   18319ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   21317ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   24197ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   27347ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   30264ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   33346ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   36306ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   39341ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   42203ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   45239ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   48336ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   51322ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   54330ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0
+[   57310ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost:4042/whatsapp/qr:0

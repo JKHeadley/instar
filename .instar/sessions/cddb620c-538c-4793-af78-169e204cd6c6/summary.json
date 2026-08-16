@@ -1,0 +1,21 @@
+{
+  "sessionId": "cddb620c-538c-4793-af78-169e204cd6c6",
+  "tmuxSession": "echo-topic-session-command-trap",
+  "task": "[telegram:1427] How did it go? (IMPORTANT: Read /tmp/instar-telegram/ctx-1427-1774027956194.txt for ",
+  "phase": "testing",
+  "files": [
+    "tests/unit/PromptGate.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T19:10:29.161Z",
+  "updatedAt": "2026-03-20T19:10:29.161Z",
+  "stale": false,
+  "outputHash": "88c14484c309e7b61dc3ead34fc30fe0"
+}

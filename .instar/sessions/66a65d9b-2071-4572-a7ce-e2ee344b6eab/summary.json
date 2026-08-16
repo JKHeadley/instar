@@ -1,0 +1,25 @@
+{
+  "sessionId": "66a65d9b-2071-4572-a7ce-e2ee344b6eab",
+  "tmuxSession": "echo-dashboard-job-reports-and-metrics",
+  "task": "[telegram:1532] hows it coming? (IMPORTANT: Read /tmp/instar-telegram/ctx-1532-1774058810076.txt for",
+  "phase": "testing",
+  "files": [
+    "tests/unit/PromptGate.test.ts",
+    "tests/unit/InputClassifier.test.ts",
+    "tests/unit/AutoApprover.test.ts",
+    "tests/unit/session-reap-detect.test.ts",
+    "tests/unit/CallbackRegistry.test.ts",
+    "messaging-multi-agent.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-21T02:22:10.196Z",
+  "updatedAt": "2026-03-21T02:22:10.196Z",
+  "stale": true,
+  "outputHash": "6d2ef090473e12efb80b336d654388cc"
+}

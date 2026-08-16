@@ -1,0 +1,19 @@
+{
+  "sessionId": "429b4e6d-1212-4017-b11a-8b84ebc45467",
+  "tmuxSession": "echo-attention",
+  "task": "[telegram:3] please proceed, however collaborate with dawn to try to move all threadline public docs",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-03T03:00:53.061Z",
+  "updatedAt": "2026-05-03T03:00:53.061Z",
+  "stale": true,
+  "outputHash": "c4bcd6b59c04d02f9f0341abe761cf6d"
+}

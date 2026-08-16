@@ -1,0 +1,28 @@
+{
+  "sessionId": "58270d8c-85eb-4ed9-a385-53308987c42e",
+  "tmuxSession": "echo-job-system-meta-review",
+  "task": "[telegram:1839] Please proceed as you best see fit (IMPORTANT: Read /tmp/instar-telegram/ctx-1839-17",
+  "phase": "testing",
+  "files": [
+    "src/monitoring/TelemetryAuth.ts",
+    "src/monitoring/TelemetryCollector.ts",
+    "src/core/types.ts",
+    "src/monitoring/TelemetryHeartbeat.ts",
+    "src/server/routes.ts",
+    "src/cli.ts",
+    "src/commands/server.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-22T19:35:18.215Z",
+  "updatedAt": "2026-03-22T19:35:18.215Z",
+  "stale": true,
+  "outputHash": "bbae7804de679824db4e22f89cee45f2"
+}

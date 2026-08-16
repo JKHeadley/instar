@@ -1,0 +1,24 @@
+{
+  "sessionId": "7ede0c9d-1531-4fca-951e-85a3dc2d2ee3",
+  "tmuxSession": "echo-compaction-bug-continued",
+  "task": "[telegram:6795] approved (IMPORTANT: Read /tmp/instar-telegram/ctx-6795-1776720017551.txt for thread",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js",
+    "../../../../../tmp/instar-compaction-preamble-0.28.53/docs/specs/compaction-preamble-tone-and-intent.md",
+    "../../../../../tmp/instar-compaction-preamble-0.28.53/upgrades/NEXT.md",
+    "../../../../../tmp/instar-compaction-preamble-0.28.53/upgrades/side-effects/0.28.66.md",
+    "../../../../../tmp/instar-compaction-preamble-0.28.53/tests/unit/compactionResumePayload.test.ts",
+    "../../../../../tmp/instar-compaction-preamble-0.28.53/skills/instar-dev/templates/side-effects-artifact.md"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-20T21:23:50.348Z",
+  "updatedAt": "2026-04-20T21:23:50.348Z",
+  "stale": true,
+  "outputHash": "2f41bdac90645afa99fd0d58aa94c51b"
+}

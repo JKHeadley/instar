@@ -1,0 +1,6 @@
+{
+  "id": "ea10e456-4a0d-4ce7-877c-959227e7cb71",
+  "title": "Claude binary path for FDA",
+  "markdown": "# Claude binary — Full Disk Access\n\nAdd EITHER of these to System Settings → Privacy & Security → Full Disk Access (macOS follows the symlink, so either works):\n\n**Symlink (easier to type):**\n\n    /opt/homebrew/bin/claude\n\n**Real executable:**\n\n    /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe\n\n## Steps\n\n1. System Settings → Privacy & Security → Full Disk Access\n2. Click the **+** button\n3. In the Finder picker, press **Shift-Cmd-G**\n4. Paste one of the paths above and press Return\n5. Select the file and click Open\n6. Toggle it ON\n\nNo restart needed — this session should regain Documents access immediately.\n",
+  "createdAt": "2026-04-29T04:51:21.060Z"
+}

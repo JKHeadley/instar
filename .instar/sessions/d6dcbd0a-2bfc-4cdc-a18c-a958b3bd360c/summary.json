@@ -1,0 +1,15 @@
+{
+  "sessionId": "d6dcbd0a-2bfc-4cdc-a18c-a958b3bd360c",
+  "tmuxSession": "echo-job-feedback-retry-mo150bzv",
+  "task": "[NOTIFICATION PROTOCOL: This job runs in quiet mode. The user will NOT see your output unless you ex",
+  "phase": "building",
+  "files": [],
+  "topics": [
+    "database"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-16T07:07:57.964Z",
+  "updatedAt": "2026-04-16T07:07:57.964Z",
+  "stale": false,
+  "outputHash": "14b259342f625165ff01860a7e2d7dcd"
+}

@@ -1,0 +1,22 @@
+{
+  "sessionId": "447d2c93-caee-441e-9e4b-56886e500ddf",
+  "tmuxSession": "echo-watchdog-issues",
+  "task": "[telegram:6269] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1776654411255",
+  "phase": "testing",
+  "files": [
+    "src/data/builtin-manifest.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-20T04:29:52.013Z",
+  "updatedAt": "2026-04-20T04:29:52.013Z",
+  "stale": true,
+  "outputHash": "ac993a0adef789c21782f75128b04990"
+}

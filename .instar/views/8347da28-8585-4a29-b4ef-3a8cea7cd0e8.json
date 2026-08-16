@@ -1,0 +1,12 @@
+{
+  "id": "8347da28-8585-4a29-b4ef-3a8cea7cd0e8",
+  "title": "State Integrity Check Report",
+  "markdown": "# State Integrity Check — 2026-04-29\n\n## Summary\nAll critical integrity checks pass. One archival opportunity identified.\n\n## Findings\n\n### ✓ Active Job Orphans\n- Current running session references: 3 total sessions\n- Active job verification: **PASS** — current state-integrity-check job is running\n- Orphaned active-job.json: **None detected**\n\n### ✓ Job-Topic Mappings\n- Mapping file status: empty (expected, zero mappings)\n- Telegram connectivity: reachable (reported by API)\n- Orphaned topic references: **None detected**\n\n### ⚠ State File Bloat\n- **instructions-tracking**: 28MB across 7,135 JSONL files\n  - Cause: One file per session, filesystem 4KB allocation overhead\n  - Status: By design, not corruption\n  - Recommendation: Implement rotating log or archive strategy in future\n  - Action: None required now\n  \n- All other state files: healthy (<500KB each)\n\n### ✓ Config-Reality Match\n- Telegram config: disabled (matches server state)\n- Server health: degraded (session search, iMessage, knowledge graph subsystems)\n- State-level mismatch: **None detected**\n\n### ✓ Handoff Notes\n- All job handoff files: fresh (0–5 days old)\n- Stale entries (>7 days): **None detected**\n\n## Recommendation\n\nState integrity is sound. The instructions-tracking bloat (28MB) is a design consequence of per-session tracking, not corruption. No immediate action required. Consider implementing log rotation or archival for instructions-tracking in future optimization phase.\n",
+  "createdAt": "2026-04-29T19:03:02.761Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "state-integrity-check"
+    }
+  }
+}

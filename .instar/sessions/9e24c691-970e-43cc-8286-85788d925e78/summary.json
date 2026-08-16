@@ -1,0 +1,21 @@
+{
+  "sessionId": "9e24c691-970e-43cc-8286-85788d925e78",
+  "tmuxSession": "echo-interactive-1775281387432",
+  "task": "[slack:C0APW9UHFJ5 from U0AP927E2R1 (uid:U0AP927E2R1)] excellent! Now:\n\n1. do you have awareness of ",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/instar/dist/cli.js",
+    ".instar/identity.json"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-04T08:05:40.614Z",
+  "updatedAt": "2026-04-04T08:05:40.614Z",
+  "stale": true,
+  "outputHash": "b12e5ebf340cdff58e0a18151d5ffecf"
+}

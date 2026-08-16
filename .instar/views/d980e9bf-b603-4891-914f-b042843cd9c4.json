@@ -1,0 +1,12 @@
+{
+  "id": "d980e9bf-b603-4891-914f-b042843cd9c4",
+  "title": "State Integrity Check — 2026-04-21T01:00Z",
+  "markdown": "# Echo Agent State Integrity Report\n\n**Generated**: 2026-04-21T01:00Z  \n**Agent**: Echo (instar developer)  \n\n## Summary\n\n**Status**: ✓ Coherent (3 known issues, all reported)\n\n### Issues Found\n\n#### 1. Telegram Polling Not Active (Config-Reality Mismatch)\n- Config: `telegram.enabled: true`\n- Health check: \"Adapter exists but polling is not active\"\n- Remediation: Verify bot token, network connectivity, check adapter logs\n\n#### 2. better-sqlite3 Binding Issues (Outstanding since Apr 14)\n- 4 features affected: TopicMemory, SemanticMemory, iMessage, FeatureRegistry\n- 50+ total degradations\n- Already reported via feedback\n- Awaiting upstream fix\n\n#### 3. Evolution Pipeline Dormant (Configuration Gap)\n- Jobs never scheduled: evolution-proposal-evaluate, evolution-proposal-implement, evolution-overdue-check\n- Impact: Self-improvement system not tracking ideas\n- Fix: Add to jobs.json config or document policy\n\n### State File Health\n- ✓ 939 state files, all accounted for\n- ✓ No bloat (all < 1MB)\n- ✓ No orphaned references\n- ✓ Handoff notes all recent (< 7 days)\n- ✓ Coherence check: 10/10 passed\n- ✓ Active job running: state-integrity-check-mo7x2n6h\n\n### Positive Updates\n**Resolved from Apr 16 handoff**:\n- ✓ Reflection-Trigger: Now running, lastReflectionTimestamp active\n- ✓ Commitment-Detection: Now running, 58 topics tracked\n\n### Warning\n- state-integrity-check duration increasing (80→124→129→150s)\n- Current timeout ~160s; monitor next run\n\n**All systems coherent. No critical data loss or state corruption.**",
+  "createdAt": "2026-04-21T01:01:49.995Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "state-integrity-check"
+    }
+  }
+}

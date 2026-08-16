@@ -1,0 +1,26 @@
+{
+  "sessionId": "73b35e22-4f1c-40e7-afca-755157935ec0",
+  "tmuxSession": "echo-threadline-cooldown-queue-drain",
+  "task": "[telegram:7344] Please continue. Use the new dev build skill as needed (IMPORTANT: Read /tmp/instar-",
+  "phase": "testing",
+  "files": [
+    "src/messaging/types.ts",
+    "src/messaging/MessageStore.ts",
+    "src/messaging/DeliveryRetryManager.ts",
+    "/Users/justin/Documents/Projects/instar/.instar/instar-dev-traces/20260418-234546-threadline-cooldown-prereq-1-undelivered-phase.json"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T06:50:22.679Z",
+  "updatedAt": "2026-04-19T06:50:22.679Z",
+  "stale": true,
+  "outputHash": "e68408ac7d5e15bb4b47c32f580168f3"
+}

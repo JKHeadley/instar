@@ -1,0 +1,25 @@
+{
+  "sessionId": "ac31dca1-4df4-47bf-993d-f979ca55deca",
+  "tmuxSession": "echo-server-recovery",
+  "task": "[telegram:815] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1773446352974-",
+  "phase": "testing",
+  "files": [
+    "Node.js",
+    "upgrades/0.19.2.md",
+    "upgrades/0.19.3.md",
+    "upgrades/0.19.4.md"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-14T01:25:53.495Z",
+  "updatedAt": "2026-03-14T01:25:53.495Z",
+  "stale": true,
+  "outputHash": "e8f261329db47569a1855f728dbc1d10"
+}

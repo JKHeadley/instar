@@ -1,0 +1,15 @@
+{
+  "sessionId": "4f13aadb-fe4f-4817-96d2-c429634370cd",
+  "tmuxSession": "echo-job-degradation-digest-mowkgpam",
+  "task": "[NOTIFICATION PROTOCOL: This job runs in quiet mode. The user will NOT see your output unless you ex",
+  "phase": "building",
+  "files": [],
+  "topics": [
+    "database"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-08T07:02:02.745Z",
+  "updatedAt": "2026-05-08T07:02:02.745Z",
+  "stale": false,
+  "outputHash": "1a67b29b6c0c097f35cd5efb6cd13898"
+}

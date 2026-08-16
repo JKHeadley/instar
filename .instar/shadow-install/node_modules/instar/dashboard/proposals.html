@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Remediation Proposals — Instar Dashboard</title>
+  <link rel="icon" href="/dashboard/favicon.png" />
+  <style>
+    :root {
+      --bg: #0c0c10;
+      --bg-card: #15161c;
+      --bg-hover: #1c1d24;
+      --fg: #e4e4eb;
+      --fg-dim: #888894;
+      --accent: #6aa9ff;
+      --border: #2a2b34;
+      --red: #e57373;
+      --amber: #e0a060;
+      --green: #80c080;
+      --untrusted: #2a2018;
+      --untrusted-border: #6a4828;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .page {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px 20px 60px;
+    }
+    header.top {
+      display: flex;
+      align-items: baseline;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    h1 { font-size: 20px; font-weight: 600; margin: 0; }
+    .sub { color: var(--fg-dim); font-size: 13px; }
+    .auth-bar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .auth-bar input {
+      flex: 1;
+      min-width: 200px;
+      padding: 6px 10px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--fg);
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+    }
+    .btn {
+      padding: 6px 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--fg);
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .btn:hover { background: var(--bg-hover); border-color: var(--accent); }
+    .btn-primary { border-color: var(--accent); color: var(--accent); }
+    .btn-danger { border-color: var(--red); color: var(--red); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .status-line {
+      color: var(--fg-dim);
+      font-size: 12px;
+      margin-bottom: 12px;
+      min-height: 16px;
+    }
+    .status-line.err { color: var(--red); }
+    .status-line.ok { color: var(--green); }
+    section.bucket {
+      margin-top: 28px;
+    }
+    section.bucket h2 {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--fg-dim);
+      margin: 0 0 10px 0;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    section.bucket .count {
+      color: var(--fg-dim);
+      font-weight: 400;
+      margin-left: 6px;
+    }
+    .empty {
+      color: var(--fg-dim);
+      font-style: italic;
+      padding: 16px;
+      background: var(--bg-card);
+      border: 1px dashed var(--border);
+      border-radius: 6px;
+      text-align: center;
+      font-size: 13px;
+    }
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px;
+      margin-bottom: 10px;
+    }
+    .card.queued { opacity: 0.78; }
+    .card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .card-title {
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .card-meta {
+      color: var(--fg-dim);
+      font-size: 11px;
+      font-family: ui-monospace, monospace;
+    }
+    .card-body {
+      font-size: 13px;
+      color: var(--fg);
+    }
+    .card-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .untrusted-frame {
+      background: var(--untrusted);
+      border: 1px solid var(--untrusted-border);
+      border-radius: 4px;
+      padding: 10px 12px;
+      margin-top: 8px;
+      font-size: 12px;
+    }
+    .untrusted-frame .untrusted-label {
+      color: var(--amber);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
+    .untrusted-frame .untrusted-content {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: 130px 1fr;
+      gap: 4px 10px;
+      font-size: 12px;
+      margin-top: 8px;
+    }
+    .kv .k { color: var(--fg-dim); }
+    .kv .v {
+      font-family: ui-monospace, monospace;
+      word-break: break-all;
+    }
+    .redaction-note {
+      color: var(--amber);
+      font-size: 11px;
+      margin-top: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="top">
+      <h1>Remediation Proposals</h1>
+      <span class="sub">
+        Pending <code>NovelFailureReviewer</code> outputs — review-needed,
+        un-promoted. Untrusted LLM-summarized content rendered in a clearly
+        marked frame per spec §A10.
+      </span>
+    </header>
+
+    <div class="auth-bar">
+      <input
+        id="authToken"
+        type="password"
+        placeholder="Bearer token (from .instar/config.json#authToken)"
+        autocomplete="off"
+      />
+      <button class="btn btn-primary" id="refreshBtn" type="button">Refresh</button>
+    </div>
+
+    <div class="status-line" id="status"></div>
+
+    <section class="bucket" id="visibleSection">
+      <h2>Visible <span class="count" id="visibleCount">(0)</span></h2>
+      <div id="visibleList"></div>
+    </section>
+
+    <section class="bucket" id="queuedSection">
+      <h2>Queued (silent, behind the visible 3) <span class="count" id="queuedCount">(0)</span></h2>
+      <div id="queuedList"></div>
+    </section>
+
+    <section class="bucket" id="dismissedSection">
+      <h2>Dismissed <span class="count" id="dismissedCount">(0)</span></h2>
+      <div id="dismissedList"></div>
+    </section>
+  </div>
+
+  <script>
+    // ── State ────────────────────────────────────────────────────────
+    const TOKEN_STORAGE_KEY = 'instar.remediation-proposals.authToken';
+
+    function loadToken() {
+      try {
+        return localStorage.getItem(TOKEN_STORAGE_KEY) || '';
+      } catch { return ''; }
+    }
+    function saveToken(t) {
+      try { localStorage.setItem(TOKEN_STORAGE_KEY, t); } catch { /* noop */ }
+    }
+
+    const authInput = document.getElementById('authToken');
+    const statusEl = document.getElementById('status');
+    const refreshBtn = document.getElementById('refreshBtn');
+    authInput.value = loadToken();
+    authInput.addEventListener('change', () => saveToken(authInput.value));
+
+    function setStatus(msg, kind) {
+      statusEl.textContent = msg;
+      statusEl.className = 'status-line' + (kind ? ' ' + kind : '');
+    }
+
+    function authHeaders() {
+      const t = authInput.value.trim();
+      const headers = { 'X-Instar-Request': '1' };
+      if (t) headers['Authorization'] = 'Bearer ' + t;
+      return headers;
+    }
+
+    function escapeHtml(s) {
+      if (s == null) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function fmtDate(ts) {
+      if (typeof ts !== 'number') return 'unknown time';
+      try {
+        const d = new Date(ts);
+        return d.toISOString().replace('T', ' ').slice(0, 19);
+      } catch { return 'invalid time'; }
+    }
+
+    function renderCard(p, opts) {
+      const queued = !!(opts && opts.queued);
+      const dismissed = !!(opts && opts.dismissed);
+      const id = escapeHtml(p.proposalId || '(missing id)');
+      const summary = escapeHtml(p.llmSummary || '(no summary)');
+      const hypothesis = escapeHtml(p.hypothesis || '');
+      const errCode = escapeHtml(p.suggestedErrorCode || '');
+      const agent = escapeHtml(p.producingAgentId || '');
+      const gen = fmtDate(p.generatedAt);
+      const occ = p.occurrencesObserved != null ? p.occurrencesObserved : '?';
+      const lifetimes = p.processLifetimes != null ? p.processLifetimes : '?';
+      const redacted = p.redactionApplied === true;
+      const showDismiss = !queued && !dismissed && p.status === 'outstanding';
+      return [
+        '<div class="card ' + (queued ? 'queued' : '') + '" data-id="' + id + '">',
+        '  <div class="card-head">',
+        '    <div class="card-title">[REVIEW NEEDED] ' + (errCode ? escapeHtml(errCode) : '(no error code)') + '</div>',
+        '    <div class="card-meta">' + id + '</div>',
+        '  </div>',
+        '  <div class="card-body">',
+        '    <div class="untrusted-frame">',
+        '      <div class="untrusted-label">Untrusted LLM-summarized content</div>',
+        '      <div class="untrusted-content">' + summary + (hypothesis ? '\n\nHypothesis: ' + hypothesis : '') + '</div>',
+        '    </div>',
+        '    <div class="kv">',
+        '      <div class="k">Cluster sig</div><div class="v">' + escapeHtml(p.clusterSignature || '') + '</div>',
+        '      <div class="k">Occurrences</div><div class="v">' + occ + ' across ' + lifetimes + ' process lifetimes</div>',
+        '      <div class="k">Producing agent</div><div class="v">' + agent + '</div>',
+        '      <div class="k">Generated</div><div class="v">' + gen + '</div>',
+        '      <div class="k">Status</div><div class="v">' + escapeHtml(p.status || 'unknown') + '</div>',
+        '    </div>',
+        redacted ? '<div class="redaction-note">reason.full + forensic.rawResponse hidden — collaborative trust required to view.</div>' : '',
+        '  </div>',
+        '  <div class="card-actions">',
+        '    <button class="btn" type="button" data-action="detail" data-id="' + id + '">View detail</button>',
+        showDismiss ? '    <button class="btn btn-danger" type="button" data-action="dismiss" data-id="' + id + '">Dismiss</button>' : '',
+        '  </div>',
+        '</div>',
+      ].join('\n');
+    }
+
+    function renderList(elementId, arr, opts) {
+      const el = document.getElementById(elementId);
+      if (!arr || arr.length === 0) {
+        el.innerHTML = '<div class="empty">None.</div>';
+        return;
+      }
+      el.innerHTML = arr.map((p) => renderCard(p, opts)).join('');
+    }
+
+    async function loadProposals() {
+      setStatus('Loading...', '');
+      try {
+        const res = await fetch('/remediation/proposals', { headers: authHeaders() });
+        if (res.status === 401) {
+          setStatus('Auth required — enter your bearer token above.', 'err');
+          return;
+        }
+        if (!res.ok) {
+          const body = await res.text();
+          setStatus('Error ' + res.status + ': ' + body, 'err');
+          return;
+        }
+        const data = await res.json();
+        document.getElementById('visibleCount').textContent = '(' + data.visible.length + ')';
+        document.getElementById('queuedCount').textContent = '(' + data.queued.length + ')';
+        document.getElementById('dismissedCount').textContent = '(' + (data.dismissed || []).length + ')';
+        renderList('visibleList', data.visible, { queued: false });
+        renderList('queuedList', data.queued, { queued: true });
+        renderList('dismissedList', data.dismissed || [], { dismissed: true });
+        const collaborative = data.trust && data.trust.hasCollaborative;
+        setStatus(
+          'Loaded ' + data.visible.length + ' visible / ' + data.queued.length + ' queued. Trust: ' +
+            (collaborative ? 'collaborative (full view)' : 'below collaborative (redacted view)'),
+          'ok',
+        );
+      } catch (err) {
+        setStatus('Network error: ' + (err && err.message ? err.message : err), 'err');
+      }
+    }
+
+    async function dismissProposal(id) {
+      if (!id) return;
+      if (!confirm('Dismiss proposal ' + id + '? This removes it from the outstanding-3 cap.')) return;
+      try {
+        const res = await fetch('/remediation/proposals/' + encodeURIComponent(id) + '/dismiss', {
+          method: 'POST',
+          headers: authHeaders(),
+        });
+        if (res.status === 403) {
+          setStatus('Dismiss refused: collaborative trust required.', 'err');
+          return;
+        }
+        if (res.status === 429) {
+          const body = await res.json().catch(() => ({}));
+          setStatus('Dismiss rate-limited. ' + (body.error || ''), 'err');
+          return;
+        }
+        if (!res.ok) {
+          const body = await res.text();
+          setStatus('Dismiss failed ' + res.status + ': ' + body, 'err');
+          return;
+        }
+        setStatus('Dismissed.', 'ok');
+        loadProposals();
+      } catch (err) {
+        setStatus('Network error during dismiss: ' + err, 'err');
+      }
+    }
+
+    async function showDetail(id) {
+      try {
+        const res = await fetch('/remediation/proposals/' + encodeURIComponent(id), {
+          headers: authHeaders(),
+        });
+        if (!res.ok) {
+          const body = await res.text();
+          setStatus('Detail fetch failed ' + res.status + ': ' + body, 'err');
+          return;
+        }
+        const data = await res.json();
+        const w = window.open('', '_blank', 'width=720,height=600');
+        if (!w) return;
+        const json = JSON.stringify(data.proposal, null, 2);
+        w.document.write(
+          '<!doctype html><html><head><title>Proposal ' + escapeHtml(id) +
+          '</title><style>body{background:#0c0c10;color:#e4e4eb;font-family:ui-monospace,monospace;padding:16px;font-size:12px;white-space:pre-wrap}</style></head>' +
+          '<body>' + escapeHtml(json) + '</body></html>',
+        );
+        w.document.close();
+      } catch (err) {
+        setStatus('Network error: ' + err, 'err');
+      }
+    }
+
+    refreshBtn.addEventListener('click', loadProposals);
+    document.addEventListener('click', (ev) => {
+      const t = ev.target;
+      if (!(t instanceof HTMLElement)) return;
+      const action = t.dataset.action;
+      const id = t.dataset.id;
+      if (action === 'dismiss') dismissProposal(id);
+      else if (action === 'detail') showDetail(id);
+    });
+
+    if (authInput.value) loadProposals();
+  </script>
+</body>
+</html>

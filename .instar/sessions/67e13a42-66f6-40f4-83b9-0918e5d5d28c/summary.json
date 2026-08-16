@@ -1,0 +1,32 @@
+{
+  "sessionId": "67e13a42-66f6-40f4-83b9-0918e5d5d28c",
+  "tmuxSession": "echo-prompt-gate",
+  "task": "[telegram:9029] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1778206560701",
+  "phase": "testing",
+  "files": [
+    "tests/unit/PromptGate.test.ts",
+    "tests/unit/InputClassifier.test.ts",
+    "tests/unit/AutoApprover.test.ts",
+    "tests/unit/TelegramAdapter.test.ts",
+    "src/commands/server.ts",
+    "src/data/builtin-manifest.json",
+    "src/monitoring/PromptGate.ts",
+    "a/src/data/builtin-manifest.json",
+    "b/src/data/builtin-manifest.json",
+    "dist/monitoring/PromptGate.js",
+    "dist/commands/server.js",
+    "/Users/justin/.instar/agents/echo/.instar/config.json",
+    "PromptGate.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-08T02:52:48.683Z",
+  "updatedAt": "2026-05-08T02:52:48.683Z",
+  "stale": false,
+  "outputHash": "1e17c311d4c589b9591e2784ba44e263"
+}

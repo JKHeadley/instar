@@ -1,0 +1,18 @@
+{
+  "sessionId": "aaed436f-a878-4486-9789-db5feae9ea42",
+  "tmuxSession": "echo-job-system-meta-review",
+  "task": "[telegram:1839] great! Whats next? (IMPORTANT: Read /tmp/instar-telegram/ctx-1839-1774239268587.txt ",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T04:29:43.962Z",
+  "updatedAt": "2026-03-23T04:29:43.962Z",
+  "stale": true,
+  "outputHash": "a5e5fbfe03d75a58cbdc694ade0e3ee3"
+}

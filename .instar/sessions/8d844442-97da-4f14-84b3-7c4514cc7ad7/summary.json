@@ -1,0 +1,19 @@
+{
+  "sessionId": "8d844442-97da-4f14-84b3-7c4514cc7ad7",
+  "tmuxSession": "echo-pre-build-scouting-gap",
+  "task": "[telegram:6790] please continue (IMPORTANT: Read /tmp/instar-telegram/ctx-6790-1776450812244.txt for",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T19:29:20.897Z",
+  "updatedAt": "2026-04-17T19:29:20.897Z",
+  "stale": true,
+  "outputHash": "f2cd2ecaee11984d93c3f04c483cff34"
+}

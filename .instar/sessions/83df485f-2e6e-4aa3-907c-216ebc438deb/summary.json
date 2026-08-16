@@ -1,0 +1,23 @@
+{
+  "sessionId": "83df485f-2e6e-4aa3-907c-216ebc438deb",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] /new Google feature (IMPORTANT: Read /tmp/instar-telegram/ctx-2-1773176973784.txt for t",
+  "phase": "testing",
+  "files": [
+    "ReflectionConsolidator.test.ts",
+    "interactive-session-cap.test.ts",
+    "TelegramAdapter.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-11T01:21:49.756Z",
+  "updatedAt": "2026-03-11T01:21:49.756Z",
+  "stale": true,
+  "outputHash": "2f6a9895698e14139afdbef69dc6922c"
+}

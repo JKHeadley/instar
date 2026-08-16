@@ -1,0 +1,22 @@
+{
+  "sessionId": "5a1915b9-9b7f-4769-9506-ed2454bbd278",
+  "tmuxSession": "echo-instar-claude-me",
+  "task": "[telegram:894] Let’s put the review teams against this with the goal of optimal, coherence, optimal,",
+  "phase": "testing",
+  "files": [
+    "CLAUDE.md",
+    "CLAUDE.monolith.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-14T21:52:12.223Z",
+  "updatedAt": "2026-03-14T21:52:12.223Z",
+  "stale": true,
+  "outputHash": "2ad0d35975bdb1b45d20358c19c5765d"
+}

@@ -1,0 +1,20 @@
+{
+  "sessionId": "2dc212be-fb4e-4fb9-8f36-1461c5124096",
+  "tmuxSession": "echo-instar-topic-management",
+  "task": "[telegram:8937] please proceed (IMPORTANT: Read /tmp/instar-telegram/ctx-8937-1778079355521.txt for ",
+  "phase": "testing",
+  "files": [
+    "upgrades/NEXT.md"
+  ],
+  "topics": [
+    "database",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-06T19:05:31.260Z",
+  "updatedAt": "2026-05-06T19:05:31.260Z",
+  "stale": true,
+  "outputHash": "bc8cc18ff64db850570dbf18a66afdd6"
+}

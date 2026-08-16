@@ -1,0 +1,10 @@
+{
+  "slug": "identity-review",
+  "origin": "instar",
+  "schedule": "0 3 * * *",
+  "enabled": true,
+  "execute": {
+    "type": "agentmd"
+  },
+  "manifestVersion": 1
+}

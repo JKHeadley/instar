@@ -1,0 +1,30 @@
+{
+  "sessionId": "fa394e1a-f133-4938-8702-40af34dade38",
+  "tmuxSession": "echo-instar-jobs-as-agentmd",
+  "task": "[telegram:9529] I think this is great, however I would make a distinction between default \"instar\" j",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/Documents/Projects/instar/CHANGELOG.md",
+    "/Users/justin/Documents/Projects/instar/.instar/worktrees/phase1b-pr3-round-runner/upgrades/side-effects/project-scope-phase1b-pr3.md",
+    "/Users/justin/Documents/Projects/instar/.instar/worktrees/phase1b-pr3-round-runner/upgrades/NEXT.md",
+    "/Users/justin/Documents/Projects/instar/.instar/worktrees/phase1b-pr3-round-runner/upgrades/side-effects/promise-beacon-ux-fixes.md",
+    "CLAUDE.md",
+    "Node.js",
+    "/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/instar/upgrades/0.28.69.md",
+    "/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/instar/upgrades/side-effects/0.28.69.md",
+    "/Users/justin/Documents/Projects/instar/.instar/worktrees/prop-399-native-healer/CLAUDE.md",
+    "/Users/justin/.instar/agents/echo/.instar/telegraph-pages.json"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-12T07:03:27.892Z",
+  "updatedAt": "2026-05-12T07:03:27.892Z",
+  "stale": true,
+  "outputHash": "88c554c5cd62d384af30c12a59548fe7"
+}

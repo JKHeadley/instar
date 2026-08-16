@@ -1,0 +1,12 @@
+{
+  "id": "d8cca5f3-356e-4123-96be-b8e796650ef7",
+  "title": "Guardian Pulse Alert: Critical Issues Detected",
+  "markdown": "# Guardian Pulse Alert — 2026-04-18 07:02 UTC\n\n## Critical Issues Found\n\n### 🔴 Telegram Connection Failure\n- **Status**: Polling not active\n- **Impact**: Messaging unavailable; commitment-detection jobs failing\n- **Action**: Verify bot token and network connectivity to api.telegram.org\n\n### 🔴 Lifeline Supervisor Down\n- **Status**: Server down, 0 restart attempts\n- **Impact**: Stalled session recovery offline\n- **Action**: Restart Lifeline supervisor process\n\n### 🟡 Job Failures\n- commitment-detection: 1 failure (Session killed)\n- ci-monitor: 1 failure (Session killed)\n\n---\n\n## System Status\n- **Server**: DEGRADED (4 active degradations)\n- **System Review**: CRITICAL (13/16 probes passing)\n- **Queue**: 13 jobs queued (normal)\n- **Sessions**: 51 active, 0 zombies\n\n**Recommendation**: Fix Telegram and Lifeline issues within the next few hours to prevent job pipeline degradation.",
+  "createdAt": "2026-04-18T07:01:48.312Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "guardian-pulse"
+    }
+  }
+}

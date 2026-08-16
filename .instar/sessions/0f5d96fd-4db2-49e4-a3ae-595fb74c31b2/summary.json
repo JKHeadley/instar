@@ -1,0 +1,19 @@
+{
+  "sessionId": "0f5d96fd-4db2-49e4-a3ae-595fb74c31b2",
+  "tmuxSession": "echo-job-health-check-mp5d3jue",
+  "task": "[NOTIFICATION PROTOCOL: This job runs in quiet mode. The user will NOT see your output unless you ex",
+  "phase": "debugging",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-14T10:45:20.318Z",
+  "updatedAt": "2026-05-14T10:45:20.318Z",
+  "stale": false,
+  "outputHash": "bf396d321a3231b987a45dff8321d20b"
+}

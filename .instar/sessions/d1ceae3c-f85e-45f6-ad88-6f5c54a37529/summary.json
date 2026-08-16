@@ -1,0 +1,20 @@
+{
+  "sessionId": "d1ceae3c-f85e-45f6-ad88-6f5c54a37529",
+  "tmuxSession": "echo-server-recovery",
+  "task": "[telegram:815] and? Why didn't you respond? You should always respond. (IMPORTANT: Read /tmp/instar-",
+  "phase": "testing",
+  "files": [
+    "src/core/SessionManager.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-18T23:36:31.534Z",
+  "updatedAt": "2026-03-18T23:36:31.534Z",
+  "stale": false,
+  "outputHash": "59fd4f10ac81d61363507519393bbaf7"
+}

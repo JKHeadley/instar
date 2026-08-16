@@ -1,0 +1,27 @@
+{
+  "sessionId": "5ae3c7c0-8881-4ecd-b0f1-f78f7bb05d1f",
+  "tmuxSession": "echo-instar-agent-robustness",
+  "task": "[telegram:5447] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1777391098975",
+  "phase": "testing",
+  "files": [
+    "tests/unit/refresh-jobs.test.ts",
+    "tests/integration/fresh-install.test.ts",
+    ".claude/worktrees/ci-fix-next-guide/tests/unit/refresh-jobs.test.ts",
+    "src/server/routes.ts",
+    "src/monitoring/ReflectionMetrics.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-28T15:53:00.903Z",
+  "updatedAt": "2026-04-28T15:53:00.903Z",
+  "stale": true,
+  "outputHash": "7c8549540febd4dd1ea68bbc0a244189"
+}

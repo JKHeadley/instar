@@ -1,0 +1,26 @@
+{
+  "sessionId": "a2ac2a32-b950-4142-8d83-d1862a80fd87",
+  "tmuxSession": "echo-consent-discovery-framework",
+  "task": "CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.\n",
+  "phase": "testing",
+  "files": [
+    "FeatureRegistry.ts",
+    "DiscoveryEvaluator.ts",
+    "SurfacingTemplates.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T05:02:42.272Z",
+  "updatedAt": "2026-03-23T05:02:42.272Z",
+  "stale": true,
+  "outputHash": "c0a2561c3b890305e9f38ff1f08075ca"
+}

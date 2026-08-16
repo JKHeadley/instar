@@ -1,0 +1,17 @@
+{
+  "sessionId": "04e4bc3c-848f-43ac-893d-0a75c6b4dc09",
+  "tmuxSession": "echo-commitment-backing-gap-infra-research",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-6484-1776359598227-yvrl53qf.txt — it contains your f",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-16T17:14:19.448Z",
+  "updatedAt": "2026-04-16T17:14:19.448Z",
+  "stale": true,
+  "outputHash": "593b40c742e2843036ceed22beb238e2"
+}

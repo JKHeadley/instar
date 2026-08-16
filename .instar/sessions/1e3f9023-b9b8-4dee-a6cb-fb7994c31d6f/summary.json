@@ -1,0 +1,26 @@
+{
+  "sessionId": "1e3f9023-b9b8-4dee-a6cb-fb7994c31d6f",
+  "tmuxSession": "echo-messaging-secrets",
+  "task": "[telegram:875] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1776647518955-",
+  "phase": "testing",
+  "files": [
+    "PARALLEL-DEV-ISOLATION-SPEC.md",
+    "README.md",
+    "CURRENT-STATUS.md",
+    "signal-vs-authority.md",
+    "CLAUDE.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-20T02:08:39.238Z",
+  "updatedAt": "2026-04-20T02:08:39.238Z",
+  "stale": true,
+  "outputHash": "4d7224b063ec62eccb921b44e3238ba1"
+}

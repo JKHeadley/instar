@@ -1,0 +1,25 @@
+{
+  "sessionId": "e2ae490b-5f8e-4c40-b492-558243c74de2",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] okay, closed the session again so we can test again to see if the session resumes wi",
+  "phase": "testing",
+  "files": [
+    "routes.ts",
+    "server.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T07:54:57.731Z",
+  "updatedAt": "2026-03-20T07:54:57.731Z",
+  "stale": false,
+  "outputHash": "6504f516eb3ae91d7c3a94649ba6eb68"
+}

@@ -1,0 +1,20 @@
+{
+  "sessionId": "e072106e-a3d1-401f-b4db-a7e15b25607f",
+  "tmuxSession": "echo-threadline-test",
+  "task": "[telegram:309] Please test threadline and see if you can have a chat with an agent (IMPORTANT: Read ",
+  "phase": "testing",
+  "files": [
+    "NEXT.md"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-17T07:59:11.076Z",
+  "updatedAt": "2026-03-17T07:59:11.076Z",
+  "stale": true,
+  "outputHash": "16fccdec044b775051eedb5c86e21024"
+}

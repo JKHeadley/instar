@@ -1,0 +1,23 @@
+{
+  "sessionId": "5d863030-7b6d-458d-bac0-42602809ef3c",
+  "tmuxSession": "echo-native-module-self-heal-robust-fix-for-s",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-11013-1779250387226-cujzgpj7.txt — it contains your ",
+  "phase": "testing",
+  "files": [
+    "e-heal-degradation/.instar/hooks/instar/scope-coherence-collector.js",
+    "e-heal-degradation/.instar/hooks/instar/claim-intercept.js",
+    "tests/unit/no-silent-fallbacks.test.ts",
+    "e-heal-degradation/.instar/hooks/instar/post-action-reflection.js"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-20T17:16:41.566Z",
+  "updatedAt": "2026-05-20T17:16:41.566Z",
+  "stale": false,
+  "outputHash": "5f3fcdefe7b6a1acd0f0f71b5d65ce88"
+}

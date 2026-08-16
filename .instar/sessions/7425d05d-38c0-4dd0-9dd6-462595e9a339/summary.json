@@ -1,0 +1,17 @@
+{
+  "sessionId": "7425d05d-38c0-4dd0-9dd6-462595e9a339",
+  "tmuxSession": "echo-interactive-1774757194147",
+  "task": "[slack:C0APW9UHFJ5] testing (IMPORTANT: Read /tmp/instar-slack/ctx-C0APW9UHFJ5-1774757194119.txt for",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T04:20:47.206Z",
+  "updatedAt": "2026-03-29T04:20:47.206Z",
+  "stale": true,
+  "outputHash": "d922e404a88e3de0256e2ecd421bd873"
+}

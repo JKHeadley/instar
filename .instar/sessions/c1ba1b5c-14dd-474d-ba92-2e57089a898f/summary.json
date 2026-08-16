@@ -1,0 +1,24 @@
+{
+  "sessionId": "c1ba1b5c-14dd-474d-ba92-2e57089a898f",
+  "tmuxSession": "echo-duplicate-responses",
+  "task": "[telegram:6644] yes please! (IMPORTANT: Read /tmp/instar-telegram/ctx-6644-1776365668088.txt for thr",
+  "phase": "testing",
+  "files": [
+    "tests/unit/config-version.test.ts",
+    "tests/unit/feedback-webhook.test.ts",
+    "tests/unit/bootstrap.test.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-16T19:37:47.179Z",
+  "updatedAt": "2026-04-16T19:37:47.179Z",
+  "stale": true,
+  "outputHash": "78987428d104f0005940aa1f0752f4a3"
+}

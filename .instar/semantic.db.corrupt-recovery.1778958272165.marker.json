@@ -1,0 +1,7 @@
+{
+  "event": "semantic_memory.auto_recovery",
+  "timestamp": "2026-05-16T19:04:32.165Z",
+  "dbPath": "/Users/justin/.instar/agents/echo/.instar/semantic.db",
+  "quarantinedTo": "/Users/justin/.instar/agents/echo/.instar/semantic.db.corrupt.1778958272165",
+  "reason": "probe read failed: no such module: vec0"
+}

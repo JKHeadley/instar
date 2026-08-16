@@ -1,0 +1,23 @@
+{
+  "sessionId": "4c5a8798-2106-44bc-9ddf-24870ef0c46f",
+  "tmuxSession": "echo-topic-3080",
+  "task": "[telegram:3080] please continue (IMPORTANT: Read /tmp/instar-telegram/ctx-3080-1774654994976.txt for",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/Documents/Projects/instar/dist/cli.js"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T00:05:58.961Z",
+  "updatedAt": "2026-03-28T00:05:58.961Z",
+  "stale": true,
+  "outputHash": "65ec6543c438ef39948816fa016f8987"
+}

@@ -1,0 +1,23 @@
+{
+  "sessionId": "1b2e64b3-a1ca-44e2-b4ce-baaa52047b00",
+  "tmuxSession": "echo-topic-3080",
+  "task": "[telegram:3080] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1775147300261",
+  "phase": "testing",
+  "files": [
+    "src/monitoring/PresenceProxy.ts",
+    "a/src/monitoring/PresenceProxy.ts",
+    "b/src/monitoring/PresenceProxy.ts"
+  ],
+  "topics": [
+    "database",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-02T20:16:30.708Z",
+  "updatedAt": "2026-04-02T20:16:30.708Z",
+  "stale": true,
+  "outputHash": "4538d0de9afe26614ebbce7cb8ea2242"
+}

@@ -1,0 +1,19 @@
+{
+  "sessionId": "9e89eef5-7e16-4f89-b465-d116aabb5359",
+  "tmuxSession": "echo-interactive-1775783915020",
+  "task": "[slack:C0APW9UHFJ5 from U0AP927E2R1 (uid:U0AP927E2R1)] [Long message saved to /tmp/instar-slack/msg-",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-10T01:39:04.307Z",
+  "updatedAt": "2026-04-10T01:39:04.307Z",
+  "stale": true,
+  "outputHash": "9a7b169242ba9febe7dcf09fdecb7fb4"
+}

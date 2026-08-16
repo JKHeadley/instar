@@ -1,0 +1,28 @@
+{
+  "sessionId": "7d403248-4574-4d1e-9f4d-17d0c1747939",
+  "tmuxSession": "echo-subscription-first-intelligence",
+  "task": "[telegram:6655] Please check in see where we are here and if anything needs to be done, you have my ",
+  "phase": "testing",
+  "files": [
+    "tests/unit/middleware-exports.test.ts",
+    "tests/unit/telegram-token-redaction.test.ts",
+    "tests/unit/session-timeout.test.ts",
+    "0.28.52.md",
+    "/tmp/instar-pending-0.28.52.md",
+    "upgrades/0.28.52.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T17:27:14.716Z",
+  "updatedAt": "2026-04-17T17:27:14.716Z",
+  "stale": true,
+  "outputHash": "5f427360b77aaeb7ae3f998accc02723"
+}

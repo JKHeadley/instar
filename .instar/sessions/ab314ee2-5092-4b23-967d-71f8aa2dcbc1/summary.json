@@ -1,0 +1,20 @@
+{
+  "sessionId": "ab314ee2-5092-4b23-967d-71f8aa2dcbc1",
+  "tmuxSession": "echo-attention",
+  "task": "[telegram:3] /new dashboard-updates (IMPORTANT: Read /tmp/instar-telegram/ctx-3-1773274945585.txt fo",
+  "phase": "testing",
+  "files": [
+    "CLAUDE.md"
+  ],
+  "topics": [
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-12T00:23:20.556Z",
+  "updatedAt": "2026-03-12T00:23:20.556Z",
+  "stale": true,
+  "outputHash": "85cc98ca3528ddd4956d860ee308d1fa"
+}

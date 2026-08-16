@@ -1,0 +1,17 @@
+{
+  "sessionId": "cb925aee-50f5-4ef7-a635-fed5fdd3af69",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] /new dasbhoard-features (IMPORTANT: Read /tmp/instar-telegram/ctx-2-1773955574164.txt f",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-19T21:38:10.684Z",
+  "updatedAt": "2026-03-19T21:38:10.684Z",
+  "stale": true,
+  "outputHash": "919409f47bf1d2be0c985ef20ff1413e"
+}

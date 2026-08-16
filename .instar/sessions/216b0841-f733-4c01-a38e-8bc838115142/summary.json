@@ -1,0 +1,25 @@
+{
+  "sessionId": "216b0841-f733-4c01-a38e-8bc838115142",
+  "tmuxSession": "echo-threadline-cooldown-queue-drain",
+  "task": "[telegram:7344] Checking in here. I feel like this fell into the “I’ll get back to you” trap that we",
+  "phase": "testing",
+  "files": [
+    "../../../Documents/Projects/instar/upgrades/side-effects/threadline-cooldown-spec-landing.md",
+    "2026-04-18T22-23-13Z-publish-drop-duplicate-ci-gate.json",
+    "20260415-195550-state-file-self-heal-stage-1.json",
+    "20260418-230814-threadline-cooldown-spec-landing.json",
+    "docs/specs/THREADLINE-COOLDOWN-QUEUE-DRAIN-SPEC.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-19T06:10:19.520Z",
+  "updatedAt": "2026-04-19T06:10:19.520Z",
+  "stale": true,
+  "outputHash": "4c38252e7383dfeac9126f9d090391da"
+}

@@ -1,0 +1,23 @@
+{
+  "sessionId": "27c74036-3905-4676-9cd4-802fb6cbd581",
+  "tmuxSession": "echo-dashboard-development",
+  "task": "[telegram:5348] i think some of our worked got git stashed, please look into this and continue (IMPO",
+  "phase": "testing",
+  "files": [
+    "src/messaging/imessage/IMessageAdapter.ts",
+    "src/messaging/imessage/NativeBackend.ts",
+    "tests/e2e/whatsapp-server-e2e.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-10T00:15:37.196Z",
+  "updatedAt": "2026-04-10T00:15:37.196Z",
+  "stale": true,
+  "outputHash": "29546082c183f612f91338820177c8f9"
+}

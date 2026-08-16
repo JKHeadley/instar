@@ -1,0 +1,19 @@
+{
+  "sessionId": "fc4c5153-a65a-455b-b807-deaf0f15bb12",
+  "tmuxSession": "echo-topic-3079",
+  "task": "[telegram:3079] okay, you can use the browser now. please fix this (IMPORTANT: Read /tmp/instar-tele",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T01:43:29.933Z",
+  "updatedAt": "2026-03-29T01:43:29.933Z",
+  "stale": true,
+  "outputHash": "1b0f3fe0b3d7ee68be41899cd3c0a6a1"
+}

@@ -1,0 +1,13 @@
+{
+  "sessionId": "831ccb2c-a9c8-4a15-9ede-418c5c7dbe62",
+  "tmuxSession": "echo-msg-spawn-1778517086622",
+  "task": "You were spawned by an inter-agent message request.\n\nRequester: ai-guy/drain on drain\nReason: Drain ",
+  "phase": "building",
+  "files": [],
+  "topics": [],
+  "blockers": null,
+  "lastActivity": "2026-05-11T16:31:58.093Z",
+  "updatedAt": "2026-05-11T16:31:58.093Z",
+  "stale": false,
+  "outputHash": "7663844b5470ca2abe22be15071839c5"
+}

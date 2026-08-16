@@ -1,0 +1,318 @@
+Calling gpt (gpt-5.4)...
+## 1. Overall Assessment
+
+- **Score**: **8.7/10**
+- **Status**: **CONDITIONAL**
+
+This is a strong, mature spec with clear evidence of iterative review and convergence. Its biggest strength is that it correctly reframes the feature as a third monitor layered onto existing infrastructure rather than inventing a duplicate ledger/parser stack. The document is unusually thorough on race conditions, security hardening, failure modes, and operational rollout. It also does a good job distinguishing minute-scale “communication cadence” from commitment verification and from user-waiting standby. The main reasons it is not a straight approval are: a few contracts are still too implementation-heavy without enough product-policy clarity, the stuck/dead escalation path risks false violations, ownership/boot-cap/archive behavior has potentially surprising user-facing consequences, and there are still some unresolved consistency and usability questions around activation, deadline semantics, and message generation under ambiguous progress.
+
+---
+
+## 2. Critical Issues (Must Fix)
+
+### Issue 1: “stalled/dead” auto-violation policy is too aggressive and under-specified
+- **What**: The spec allows Tier-3 Sonnet to classify a commitment as `stalled | dead`, and then automatically transition `pending → violated`. This is a major state transition based on inferred status from tmux output and model interpretation.
+- **Why it matters**: False positives here are costly. A long-running task can appear idle, blocked on external I/O, waiting for CI, or simply be progressing outside tmux-visible output. Auto-violating a valid commitment can erode trust more than silence would.
+- **Suggested fix**: Narrow auto-violation to only hard signals:
+  - session restart
+  - session ended
+  - topic/session reassignment
+  - backup/restore uncertainty
+  - hard deadline expiry  
+  For “stalled” model verdicts, introduce an intermediate non-terminal state or internal flag such as `atRisk` / `needsReview`, emit a softer user notice, and require either repeated corroboration over time or explicit operator confirmation before `violated`.
+- **Section reference**: “Lifecycle additions”; “PromiseBeacon monitor” step 9; “Backup/restore notice symmetry”
+
+### Issue 2: `globalMaxOpen` enforcement by auto-withdrawing commitments on boot is dangerous
+- **What**: On boot, if open beacon-enabled commitments exceed `globalMaxOpen`, the spec keeps the most recent ones and archive-renames the rest with status `withdrawn` reason `"boot-cap-exceeded"`.
+- **Why it matters**: This silently changes the semantic state of a real user-facing promise because of infrastructure capacity. “Withdrawn” implies intent or explicit closure, but here it is an operational discard. That is a semantic mismatch and likely to produce incorrect audit trails.
+- **Suggested fix**: Do not mutate user commitments to `withdrawn` for capacity reasons. Instead:
+  - keep all commitments in ledger state,
+  - mark excess ones as `beaconSuppressed` / `monitorDeferred`,
+  - emit an AttentionQueue item,
+  - optionally send one admin-visible warning and/or one user-visible notice only if suppression exceeds a threshold.
+  If a terminal state is necessary, use a distinct reasoned administrative status or a non-terminal suppression flag.
+- **Section reference**: “Boot order + globalMaxOpen enforcement (I21)”; `config.json`
+
+### Issue 3: Hard deadline semantics are still operationally brittle
+- **What**: The spec resolves one concern by requiring `hardDeadlineAt` for beacon-enabled commitments, but it still treats deadline miss as `expired` with a user-visible warning regardless of task type or whether the agent is still actively progressing.
+- **Why it matters**: Many legitimate commitments are inherently uncertain. Forcing all beacon-enabled commitments to carry a hard deadline may push callers toward arbitrary deadlines, producing noisy expiries and weakening the meaning of the mechanism.
+- **Suggested fix**: Split deadline concepts more explicitly:
+  - `nextUpdateDueAt` or cadence-only commitments for “I’ll keep you posted”
+  - optional `softDeadlineAt`
+  - optional `hardDeadlineAt` only for true promises with a real cutoff  
+  If `hardDeadlineAt` remains mandatory, the API/skill must strongly guide users toward realistic values and support “heartbeat only, no deadline violation” mode. The current `silent` flag is not enough.
+- **Section reference**: Data model; “No default hardDeadlineAt”; “Delivery detection”; Success criteria
+
+### Issue 4: Ownership and machine-local hot state create correctness gaps in failover scenarios
+- **What**: The spec intentionally avoids multi-awake complexity in Phase 1, but the combination of machine-local hot state, ownerMachineId gating, and no signed handoff means failover behavior is only partially defined.
+- **Why it matters**: If the owner machine dies, commitments may stop heartbeating until manual intervention, and the system may not clearly distinguish “owner unavailable” from “task unresolved.” This is especially important because the feature’s purpose is to reduce silent uncertainty.
+- **Suggested fix**: Add an explicit Phase 1 failover policy section. At minimum define:
+  - what happens when owner machine is down for > N cadence intervals,
+  - whether a standby machine may emit a single `⚠️ monitoring unavailable` notice,
+  - how/when ownership can be manually reassigned,
+  - what diagnostics surface this state.
+- **Section reference**: Data model (`ownerMachineId`); “Ownership check”; “Storage model — hot/cold split”; “Non-goals”; “Phase 3”
+
+### Issue 5: The spec lacks a clear user-facing policy for heartbeat tone, verbosity, and repetition
+- **What**: The implementation logic is detailed, but the product behavior is not fully specified. For example, repeated templated heartbeats may become spammy, and “still working, no new output” can be reassuring once but annoying after several repetitions.
+- **Why it matters**: This feature succeeds or fails on user perception. A technically correct system that sends low-signal repetitive updates may degrade UX and train users to ignore the messages.
+- **Suggested fix**: Add a message policy section covering:
+  - max repeated identical heartbeat count before cadence stretches,
+  - wording differences for working/waiting/blocker/uncertain,
+  - when to suppress low-information updates,
+  - whether users can opt into terse vs richer updates,
+  - how heartbeats interact with topic noise expectations.
+- **Section reference**: “Timer-fire handler”; “Heartbeat wording example”; “Cost model”; “Residual open questions”
+
+### Issue 6: Sentinel auto-enable path still has product and consent ambiguity
+- **What**: The spec says Sentinel can eventually propose or auto-enable beaconing after shadow mode, gated by precision and user-visible approval, but the exact approval model is not fully defined.
+- **Why it matters**: Auto-enabling a monitor that sends proactive messages changes the communication contract. Even if precision is high, users may not want every “I’ll update you” phrase converted into an active heartbeat.
+- **Suggested fix**: Make explicit that Phase 2 defaults to “propose only” unless a per-user or per-topic preference is enabled. Define what “user-visible approval message” means operationally: one-time global consent, per-topic consent, or per-commitment confirmation.
+- **Section reference**: “Declaration paths”; “Phase 2”; “Shadow-mode precision gate”; “Residual open questions”
+
+---
+
+## 3. Strengths
+
+### 1) Excellent architectural reframing
+The strongest move in the document is the v2 reframe: one ledger, three monitors. That avoids duplicate infrastructure and shows strong system awareness. The distinction between:
+- CommitmentTracker = state/verification
+- CommitmentSentinel = declaration detection
+- PromiseBeacon = communication cadence  
+is crisp and compelling.
+
+### 2) Strong race-condition and concurrency treatment
+The spec is unusually good at naming races and giving explicit guards. The “Concurrency / races summary” table is one of the best parts of the document. It demonstrates practical engineering discipline rather than aspirational design.
+
+### 3) Security review quality is above average
+The security hardening is substantive, not checkbox-level:
+- metadata stamping at ingress
+- prompt-injection hardening
+- tmux sanitization
+- post-send redaction
+- loopback definition
+- multi-user isolation
+- terminal immutability
+- metadata-based skip logic instead of prefix matching  
+This is a strong security posture for a feature that reads untrusted session output and emits user-facing text.
+
+### 4) Good operational realism
+The spec handles corruption, boot reconciliation, archive rotation, queue overflow, spend caps, fail-open behavior for provider outages, and rollback. Many specs omit these. This one does not.
+
+### 5) Smart use of snapshot-hash gating
+The snapshot hash normalization and templated fallback are smart cost and reliability controls. This directly reduces unnecessary LLM calls and lowers variance.
+
+### 6) Good compatibility and migration discipline
+The additive schema extension, version bump, unknown-field retention, and avoidance of full-object replace writes are all signs of careful evolution rather than brittle redesign.
+
+### 7) Clear phased rollout
+Phase separation is sensible:
+- Phase 1: core monitor
+- Phase 2: Sentinel integration
+- Phase 3: multi-awake/cross-machine  
+This reduces blast radius and aligns with the actual dependency graph.
+
+### 8) Honest non-goals
+The spec clearly says what this is not: not a task manager, not a new ledger, not a cross-agent registry, not a multi-awake-safe system in Phase 1. That clarity reduces future scope confusion.
+
+---
+
+## 4. Gaps & Missing Elements
+
+### A. No explicit user controls/preferences model
+The spec lacks a clear story for:
+- user opt-out per topic
+- user preference for cadence or verbosity
+- snoozing heartbeats
+- muting a specific commitment without withdrawing it  
+There is `silent`, but that appears declaration-time and system-facing, not a user preference control.
+
+### B. No clear distinction between “progress heartbeat” and “waiting heartbeat”
+The Tier-3 verdict includes `waiting`, but the state machine and message policy do not fully explain how waiting on CI, human review, network, or external dependency should be communicated. That is a common real-world case.
+
+### C. Missing explicit internationalization / formatting policy
+Timestamps like “~4m in” and “Next update ~10m” are shown, but locale, timezone, and formatting consistency are not specified. This is minor for MVP but should be explicit if user-facing.
+
+### D. Diagnostics are specified, but SLOs/alert thresholds are not
+The spec says diagnostics should expose next-due-at, counters, and last decision, but there are no operational thresholds like:
+- heartbeat miss rate
+- false violation review rate
+- queue saturation alerting
+- LLM cap hit frequency  
+These would help validate rollout success.
+
+### E. No explicit abuse-prevention policy beyond caps
+There are spend caps and payload limits, but not much on malicious or accidental creation churn:
+- repeated create/withdraw loops
+- large number of low-cadence commitments from a single user
+- topic thrashing  
+A per-user/per-topic creation rate limit would be prudent.
+
+### F. Some semantics are still overloaded in the status model
+Using existing statuses is elegant, but `violated`, `expired`, and `withdrawn` are carrying a lot of meaning. The spec already stretches `violated` to include session restart, backup uncertainty, and LLM-inferred deadness. That may be too much semantic compression.
+
+### G. Missing explicit privacy/data retention rationale for tmux-derived summaries
+The spec sanitizes output and redacts secrets, but it does not clearly state:
+- whether raw snapshots are ever persisted
+- how long LLM prompts/responses are retained
+- whether diagnostics include sensitive excerpts  
+This should be explicit, especially because session output may contain confidential work.
+
+### H. No explicit fallback when topicId exists but session binding is temporarily unavailable
+The spec handles mismatch and dead session, but not the case where session lookup is transiently unavailable due to startup lag or adapter issues. Immediate violation may be too harsh.
+
+### I. Missing human review workflow for disputed terminal transitions
+Once a commitment is marked terminal, PATCH is rejected. Good for immutability, but there should be an explicit remediation path:
+- reopen impossible, create replacement required
+- how linked replacement is surfaced
+- whether the user sees both
+- how admins correct erroneous machine-caused terminal states
+
+---
+
+## 5. Industry Comparison
+
+### Compared to existing solutions in the same space
+This is more sophisticated than typical “progress notification” systems in chat products because it:
+- ties updates to explicit commitments,
+- uses a durable ledger,
+- integrates session liveness and topic binding,
+- avoids duplicate notifications with shared coordination,
+- includes a real security model around untrusted execution output.
+
+Most commercial systems either:
+1. do no follow-through monitoring at all, or
+2. provide coarse job-status updates for backend tasks, not conversational commitments.
+
+In that sense, this is closer to a hybrid of:
+- SLA/deadline monitors,
+- workflow watchdogs,
+- conversational standby systems,
+- and background-job heartbeats.
+
+### Compared to industry best practices
+It aligns well with best practices in:
+- additive schema evolution
+- explicit state machines
+- idempotency
+- fail-open for user reassurance
+- queue isolation and budget partitioning
+- threat-model-driven prompt handling
+
+It diverges slightly from best practice where it lets an LLM inference directly trigger a hard semantic state transition (`violated`). Industry systems usually reserve terminal transitions for deterministic signals or require human confirmation.
+
+### Known patterns and anti-patterns
+
+**Good patterns present**
+- Single source of truth ledger
+- Event-driven scheduling instead of blind polling
+- Shared coordination for overlapping notifiers
+- Explicit cold/hot state split
+- Metadata-based provenance checks
+- Shadow mode before automation
+
+**Potential anti-patterns**
+- Overloading a single status enum for too many operational meanings
+- Letting probabilistic model judgments drive irreversible state
+- Conflating capacity suppression with user-intent withdrawal
+- Requiring hard deadlines for all beacon-enabled commitments even when the real need is “keep me updated”
+
+---
+
+## 6. Scalability Assessment
+
+### Phase 1 (MVP, 10–50 users): Will it work?
+**Yes, likely well.**
+
+At this scale, the architecture is appropriate:
+- `setTimeout` per active commitment is fine
+- per-id mutation queue is fine
+- hot/cold file storage is acceptable
+- 4 in-flight beacon handlers is enough
+- LLM spend cap and hash gating should keep costs manageable
+
+Main risks at this stage are not raw scale but correctness and UX:
+- false positives
+- noisy heartbeat wording
+- edge-case state transitions
+
+### Phase 2 (Growth, 50–500 users): What breaks?
+Likely pressure points:
+1. **File-based storage**
+   - More contention, more boot-time scan work, more archive churn.
+2. **Timer-per-commitment scheduling**
+   - Still workable at low thousands, but less observable and harder to rebalance.
+3. **Single-process in-memory coordination**
+   - Fine for one active node; brittle for failover and horizontal growth.
+4. **LLM budget fairness**
+   - Per-topic cap helps, but you may need per-user fairness and stricter queue QoS.
+5. **Operational review burden**
+   - More false `violated` events if model-based escalation remains aggressive.
+
+### Phase 3 (Scale, 500–5000 users): Architecture changes needed?
+Yes. At that scale, several changes become necessary:
+
+- Move from file-backed store to a transactional datastore
+  - SQLite/Postgres minimum
+  - row-level versioning
+  - durable indexes on `(status, beaconEnabled, nextDueAt, ownerMachineId, userId, externalKey)`
+
+- Replace timer-per-commitment with a due-time scheduler
+  - priority queue / timing wheel / DB-driven lease worker
+
+- Add distributed ownership and leasing
+  - explicit leader/lease protocol
+  - heartbeat of monitor ownership
+  - failover with takeover delay
+
+- Separate state transition engine from message generation
+  - deterministic monitor worker
+  - notification worker
+  - optional review queue for uncertain escalations
+
+- Better observability
+  - metrics, tracing, rate dashboards, false-positive review loop
+
+### Spike handling: What happens under sudden load?
+The spec has some decent protections:
+- `globalMaxOpen`
+- LLM spend cap
+- 4 in-flight semaphore
+- shared queue with priority lanes
+- templated fail-open
+- jittered boot scheduling
+
+However, under a sudden spike:
+- many commitments may all become due around the same time,
+- background lane may become noisy,
+- file mutation queue may back up,
+- capacity suppression semantics become problematic,
+- users may receive clustered low-value updates.
+
+The system degrades functionally, but not always gracefully from a product perspective. The spend cap and templated fallback prevent catastrophic cost blowups, but there should be stronger explicit degradation behavior such as:
+- widening cadence under saturation,
+- suppressing repeated no-change updates,
+- surfacing “monitoring delayed due to load” internally.
+
+---
+
+## 7. Recommendations (Prioritized)
+
+1. **Remove LLM-inferred direct auto-violation for “stalled/dead”; require deterministic evidence or a review state first.**  
+   This is the highest-risk correctness issue. Keep terminal transitions deterministic wherever possible.
+
+2. **Replace boot-time `withdrawn` on `globalMaxOpen` overflow with a non-terminal suppression/deferred-monitoring state or flag.**  
+   Capacity limits should not rewrite user-intent semantics.
+
+3. **Clarify the product contract for beacon-enabled commitments: heartbeat-only vs deadline-backed promises.**  
+   Introduce a cleaner distinction between “keep me updated” and “must finish by X,” or at least make hard deadlines optional with explicit semantics.
+
+4. **Add a user-facing notification policy section covering repetition, cadence stretching, waiting states, and opt-out/snooze controls.**  
+   This feature’s success depends on trust and message quality, not only backend correctness.
+
+5. **Define explicit Phase 1 failover/ownership behavior when the owner machine is unavailable.**  
+   Even if multi-awake is deferred, the system needs a documented policy for “who notices that the beacon itself is no longer able to reassure the user?”
+
+If you want, I can also produce:
+- a **line-by-line redline review**, or
+- a **“spec author feedback memo”** written in the style of a design review comment thread.

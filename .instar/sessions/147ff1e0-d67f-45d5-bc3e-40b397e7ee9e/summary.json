@@ -1,0 +1,27 @@
+{
+  "sessionId": "147ff1e0-d67f-45d5-bc3e-40b397e7ee9e",
+  "tmuxSession": "echo-bug-cross-topic-context-injection",
+  "task": "[telegram:360] We need to make sure you have end to end testing for this feature as well (IMPORTANT:",
+  "phase": "testing",
+  "files": [
+    "dx.md",
+    "marketing.md",
+    "synthesis.md",
+    "MEMORY.md",
+    "0.17.5.md",
+    "InputGuard.ts",
+    "SessionManager.ts"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-10T06:05:53.415Z",
+  "updatedAt": "2026-03-10T06:05:53.415Z",
+  "stale": true,
+  "outputHash": "9a32c7f5f8449ccc106cf2fafb3ede59"
+}

@@ -1,0 +1,53 @@
+Calling grok (grok-4-1-fast)...
+### 1. Overall Assessment
+- **Score**: 9/10 – Exceptionally thorough, battle-tested through multiple review rounds, with proactive fixes for races, security, and costs; deducts 1 for residual open questions that need ratification and minor gaps in prompt examples/observability metrics.
+- **Status**: APPROVE
+- This spec is production-ready for Phase 1, demonstrating mature engineering with explicit handling of concurrency races, security findings (S1-S22), performance gates (P1-P22), and integration seams. It elegantly extends existing systems (CommitmentTracker, PresenceProxy) without duplication, provides clear rollback paths, and balances user trust with operational realism via tiered LLM usage and caps. The v2 reframe and Round 2 clarifications make it a model of iterative convergence.
+
+### 2. Critical Issues (Must Fix)
+No critical issues identified. All major concerns from prior rounds (e.g., races, security, mutations) are explicitly addressed with guards, tables, and contracts. Residual open questions (prefix, rate-limit, Sentinel) are surfaced for ratification but do not block.
+
+### 3. Strengths
+- **Comprehensive race condition table**: The "Concurrency / races summary" explicitly guards every identified race (e.g., Beacon ↔ PresenceProxy via shared mutex), with cross-references to fixes (A10, P3) – this prevents the subtle Heisenbugs that plague async monitors.
+- **Security hardening table**: Exhaustive coverage of 20+ findings (S1-S22) with concrete mitigations (e.g., hot/cold split for git-sync injection, S5), turning potential vulnerabilities into strengths.
+- **Cost model honesty**: Transparent worst-case math (~$0.80/day) with hard caps and snapshot-hash gating (P1) shows fiscal responsibility, rare in LLM-heavy specs.
+- **Lifecycle and storage model**: Reuses existing statuses/ledger, hot/cold split (P4), and optimistic CAS via `mutate()` (P3) minimize migration risk while enabling high-throughput.
+- **Phased rollout + shadow mode**: Phase 1 MVP is self-contained; Sentinel integration (Phase 2) uses 7-day precision gating (A9, S22), ensuring data-driven enablement.
+- **Observability and rollback**: `[PromiseBeacon]` logs, bus events, `/diagnostics`, and multi-level disables (runtime/boot/full) make it ops-friendly.
+
+### 4. Gaps & Missing Elements
+- **Missing edge cases**:
+  - Network partition during tmux capture: `captureSessionOutput` failure (e.g., tmux unresponsive) lacks retry/backoff; could loop on stale snapshots.
+  - Commitment with `cadenceMs < 60s` clamped but no user warning on declaration (e.g., skill proposes 30s, server clamps silently).
+  - Multi-topic commitments: Spec assumes one `topicId`; what if agent declares "working on topic A and B"?
+- **Unaddressed failure modes**:
+  - LLM provider outage > cadenceMs: Fail-open to templated is good, but no circuit-breaker (e.g., degrade all beacons for 1h if 3 consecutive 5xx).
+  - `deliveryMessageId` verification fails (e.g., message deleted post-reference): Spec says transition to `verified` only if exists/non-proxy; unclear if partial failure (e.g., proxy message) retries or notifies.
+  - Boot-time reconciliation races: If `commitmentTracker.isReady()` false during PromiseBeacon boot, no backoff/retry specified.
+- **Implicit assumptions needing explicitness**:
+  - `sessionEpoch` relies on `claudeCodeSessionUuid` from metadata file; assumes file always present/accurate (add "if absent, treat as mismatch").
+  - `globalMaxOpen: 20` hardcoded in config example but not justified (e.g., timer slot exhaustion math).
+  - Prompts: Tier selection logic references prompts but no examples (e.g., Tier-1 Haiku prompt for `NO_OBSERVABLE_PROGRESS`).
+- **Missing sections**:
+  - **Migration plan**: Schema v2 bump good, but no "pre-flight check" script for existing deployments (e.g., validate all pending commitments have `ownerMachineId`).
+  - **Prompt engineering**: Inline Tier-1/2/3 prompt skeletons.
+  - **Metrics**: No Prometheus/Grafana export (e.g., `heartbeat_fired_total{ tier, topic }`, `llm_spend_cents_total`).
+  - **Accessibility**: `⏳` prefix assumes emoji support; fallback text for plain-text clients.
+
+### 5. Industry Comparison
+- **Existing solutions**: Mirrors Kubernetes liveness/readiness probes (heartbeat on commitment-scoped cadence, violated on stall/dead) + distributed task queues like Celery/ RQ beat schedules (timer re-arm on activity, exponential backoff). Like PagerDuty's escalation policies (Tier 1→3 with Sonnet verdict).
+- **Best practices**: Adheres to 12-factor app (config-driven, hot/cold split for state), single-writer principle (mutate queue), and fail-open for monitoring (templated on LLM outage). Security tables follow OWASP (injection hardening via sanitization/delimiters) and zero-trust (ownerMachineId, loopback-only).
+- **Patterns/Anti-patterns**: Avoids polling (setTimeout + event-driven re-arm, P2); uses optimistic concurrency (CAS) over locking anti-pattern. Like Sentry's heartbeat SDKs but agent-scoped. Anti-pattern dodged: no naive cron (jittered boot, P11); no shared mutable state across machines (Phase 1 awake-only).
+
+### 6. Scalability Assessment
+- **Phase 1 (MVP, 10-50 users)**: Fully works – in-memory timers/mutexes handle 20 open × 10min cadence (~2/min peak); `LlmQueue` caps spend; jitter prevents thundering herd.
+- **Phase 2 (Growth, 50-500 users)**: Breaks at ~200 open commitments (timer exhaustion if Node event loop starves; `globalMaxOpen=20` per-machine mitigator). Multi-machine without Phase 3 leases duplicates heartbeats. LlmQueue daily cap hit → all templated (acceptable degradation).
+- **Phase 3 (Scale, 500-5000 users)**: Needs Redis-backed `LlmQueue` + distributed locks (file-lease → etcd/Redis TTL); migrate cold storage to DB (e.g., SQLite → Postgres); sharded hot files by `userId`. Bus events → Kafka for fanout.
+- **Spike handling**: User flood → `globalMaxOpen` + `mutate()` bounded queue (256 depth) reject excess (503); PresenceProxy lane reservation (40%) prevents starvation. Snapshot-hash + metadata skip amortizes to O(1) per tick.
+
+### 7. Recommendations (Prioritized)
+1. **Ratify residuals explicitly**: Add section "Ratifications" – Prefix: `⏳`; `maxDailyLlmSpendCents: 100`; Sentinel: 7-day shadow + precision ≥85% gate. Merge as micro-commit pre-Phase 1.
+2. **Add prompt skeletons**: Inline Tier-1 Haiku example: "Summarize progress on <promiseText> from <tmuxOutput>. If no observable progress, respond ONLY 'NO_OBSERVABLE_PROGRESS'. Output: one line status." Repeat for Tiers 2/3. Update "Tier selection" section.
+3. **Specify tmux failure handling**: In timer-fire #8, on `captureSessionOutput` error/timeout: emit templated "⏳ Still open, session output unavailable" + increment `tier3AssessmentCount`. Add to "Snapshot-hash gate (P1 fix)".
+4. **Export core metrics**: Add to "Observability": Prometheus counters (`promise_heartbeat_fired_total{tier,status}`, `llm_spend_cents_total`, `mutate_queue_depth`). Expose `/metrics` in AgentServer.
+5. **Pre-flight migration script**: New `bin/migrate-commitments-v1-to-v2.js` – backfill `version:0`, `ownerMachineId`, validate `hardDeadlineAt` on pending beacons (error if missing). Document in "Schema migration".

@@ -1,0 +1,1002 @@
+[
+  {
+    "feature": "SessionManager.verifyInjection",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Auto-resent Enter after detecting stuck input",
+    "reason": "Enter eaten by paste-end race on fresh Claude Code TUI",
+    "impact": "Recovered without user intervention",
+    "timestamp": "2026-05-20T15:12:38.964Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SessionManager.verifyInjection",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Auto-resent Enter after detecting stuck input",
+    "reason": "Enter eaten by paste-end race on fresh Claude Code TUI",
+    "impact": "Recovered without user intervention",
+    "timestamp": "2026-05-20T15:14:19.594Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SessionManager.verifyInjection",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Auto-resent Enter after detecting stuck input",
+    "reason": "Enter eaten by paste-end race on fresh Claude Code TUI",
+    "impact": "Recovered without user intervention",
+    "timestamp": "2026-05-20T15:16:29.017Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "GitSync.pull",
+    "primary": "Clean git pull",
+    "fallback": "Attempt auto-resolution of conflicts",
+    "reason": "Why: Command failed: git pull --rebase --autostash\nerror: unable to read askpass response from '/usr/bin/false'\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+    "impact": "Conflicts may not auto-resolve correctly",
+    "timestamp": "2026-05-20T15:30:36.258Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "TopicMemory",
+    "primary": "SQLite-backed conversational memory with summaries and FTS5 search",
+    "fallback": "JSONL-based last 20 messages (no summaries, no search)",
+    "reason": "TopicMemory init failed: spawnSync /opt/homebrew/Cellar/node/25.6.1/bin/node ENOENT",
+    "impact": "Sessions start without conversation summaries. Search unavailable. Context limited to last 20 raw messages.",
+    "timestamp": "2026-05-20T15:30:37.515Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "iMessage",
+    "primary": "iMessage messaging adapter",
+    "fallback": "Other messaging channels",
+    "reason": "iMessage init failed: Failed to open Messages database: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "iMessage messaging unavailable.",
+    "timestamp": "2026-05-20T15:30:37.905Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SemanticMemory",
+    "primary": "SQLite-backed knowledge graph with FTS5 + vector hybrid search",
+    "fallback": "Legacy memory systems (MEMORY.md, CanonicalState, MemoryIndex)",
+    "reason": "SemanticMemory init failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Knowledge graph unavailable. Migration, semantic search, and entity-relationship queries disabled.",
+    "timestamp": "2026-05-20T15:30:37.910Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "FeatureRegistry",
+    "primary": "SQLite-backed feature registry with discovery state tracking",
+    "fallback": "Feature definitions available in-memory only (no persistent state)",
+    "reason": "FeatureRegistry open failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_V",
+    "impact": "Feature discovery state not persisted. Features default to definitions only.",
+    "timestamp": "2026-05-20T15:30:41.359Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "sqlite-runtime-broken",
+    "primary": "better-sqlite3 in-process driver",
+    "fallback": "pending-relay queue disabled — recoverable failures will not be enqueued",
+    "reason": "better-sqlite3 failed to open an in-memory DB: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Layer 2 (durable queue + structured failure events) is disabled. Existing direct-send paths continue to work. Fix: rebuild better-sqlite3 for this platform (npm rebuild better-sqlite3).",
+    "timestamp": "2026-05-20T15:30:41.573Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "StuckInputSentinel.recover",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Persistent sentinel re-fires Enter after in-process verifyInjection window expired (covers server-restart cases)",
+    "reason": "Prompt text persistent for ≥2 sentinel ticks with no activity indicator",
+    "impact": "Recovered without user intervention; survives server restart",
+    "timestamp": "2026-05-20T15:30:58.258Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "GitSync.pull",
+    "primary": "Clean git pull",
+    "fallback": "Attempt auto-resolution of conflicts",
+    "reason": "Why: Command failed: git pull --rebase --autostash\nerror: unable to read askpass response from '/usr/bin/false'\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+    "impact": "Conflicts may not auto-resolve correctly",
+    "timestamp": "2026-05-20T15:47:46.429Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "TopicMemory",
+    "primary": "SQLite-backed conversational memory with summaries and FTS5 search",
+    "fallback": "JSONL-based last 20 messages (no summaries, no search)",
+    "reason": "TopicMemory init failed: spawnSync /opt/homebrew/Cellar/node/25.6.1/bin/node ENOENT",
+    "impact": "Sessions start without conversation summaries. Search unavailable. Context limited to last 20 raw messages.",
+    "timestamp": "2026-05-20T15:47:47.875Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "iMessage",
+    "primary": "iMessage messaging adapter",
+    "fallback": "Other messaging channels",
+    "reason": "iMessage init failed: Failed to open Messages database: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "iMessage messaging unavailable.",
+    "timestamp": "2026-05-20T15:47:48.247Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SemanticMemory",
+    "primary": "SQLite-backed knowledge graph with FTS5 + vector hybrid search",
+    "fallback": "Legacy memory systems (MEMORY.md, CanonicalState, MemoryIndex)",
+    "reason": "SemanticMemory init failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Knowledge graph unavailable. Migration, semantic search, and entity-relationship queries disabled.",
+    "timestamp": "2026-05-20T15:47:48.249Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "FeatureRegistry",
+    "primary": "SQLite-backed feature registry with discovery state tracking",
+    "fallback": "Feature definitions available in-memory only (no persistent state)",
+    "reason": "FeatureRegistry open failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_V",
+    "impact": "Feature discovery state not persisted. Features default to definitions only.",
+    "timestamp": "2026-05-20T15:47:49.284Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "sqlite-runtime-broken",
+    "primary": "better-sqlite3 in-process driver",
+    "fallback": "pending-relay queue disabled — recoverable failures will not be enqueued",
+    "reason": "better-sqlite3 failed to open an in-memory DB: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Layer 2 (durable queue + structured failure events) is disabled. Existing direct-send paths continue to work. Fix: rebuild better-sqlite3 for this platform (npm rebuild better-sqlite3).",
+    "timestamp": "2026-05-20T15:47:49.456Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "StuckInputSentinel.recover",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Persistent sentinel re-fires Enter after in-process verifyInjection window expired (covers server-restart cases)",
+    "reason": "Prompt text persistent for ≥2 sentinel ticks with no activity indicator",
+    "impact": "Recovered without user intervention; survives server restart",
+    "timestamp": "2026-05-20T15:48:08.420Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SessionManager.verifyInjection",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Auto-resent Enter after detecting stuck input",
+    "reason": "Enter eaten by paste-end race on fresh Claude Code TUI",
+    "impact": "Recovered without user intervention",
+    "timestamp": "2026-05-20T15:51:24.535Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SessionManager.verifyInjection",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Auto-resent Enter after detecting stuck input",
+    "reason": "Enter eaten by paste-end race on fresh Claude Code TUI",
+    "impact": "Recovered without user intervention",
+    "timestamp": "2026-05-20T15:51:29.712Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "GitSync.pull",
+    "primary": "Clean git pull",
+    "fallback": "Attempt auto-resolution of conflicts",
+    "reason": "Why: Command failed: git pull --rebase --autostash\nerror: unable to read askpass response from '/usr/bin/false'\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+    "impact": "Conflicts may not auto-resolve correctly",
+    "timestamp": "2026-05-20T15:52:27.108Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "TopicMemory",
+    "primary": "SQLite-backed conversational memory with summaries and FTS5 search",
+    "fallback": "JSONL-based last 20 messages (no summaries, no search)",
+    "reason": "TopicMemory init failed: spawnSync /opt/homebrew/Cellar/node/25.6.1/bin/node ENOENT",
+    "impact": "Sessions start without conversation summaries. Search unavailable. Context limited to last 20 raw messages.",
+    "timestamp": "2026-05-20T15:52:28.561Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "iMessage",
+    "primary": "iMessage messaging adapter",
+    "fallback": "Other messaging channels",
+    "reason": "iMessage init failed: Failed to open Messages database: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "iMessage messaging unavailable.",
+    "timestamp": "2026-05-20T15:52:28.927Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SemanticMemory",
+    "primary": "SQLite-backed knowledge graph with FTS5 + vector hybrid search",
+    "fallback": "Legacy memory systems (MEMORY.md, CanonicalState, MemoryIndex)",
+    "reason": "SemanticMemory init failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Knowledge graph unavailable. Migration, semantic search, and entity-relationship queries disabled.",
+    "timestamp": "2026-05-20T15:52:28.930Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "FeatureRegistry",
+    "primary": "SQLite-backed feature registry with discovery state tracking",
+    "fallback": "Feature definitions available in-memory only (no persistent state)",
+    "reason": "FeatureRegistry open failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_V",
+    "impact": "Feature discovery state not persisted. Features default to definitions only.",
+    "timestamp": "2026-05-20T15:52:30.079Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "sqlite-runtime-broken",
+    "primary": "better-sqlite3 in-process driver",
+    "fallback": "pending-relay queue disabled — recoverable failures will not be enqueued",
+    "reason": "better-sqlite3 failed to open an in-memory DB: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Layer 2 (durable queue + structured failure events) is disabled. Existing direct-send paths continue to work. Fix: rebuild better-sqlite3 for this platform (npm rebuild better-sqlite3).",
+    "timestamp": "2026-05-20T15:52:30.256Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SessionManager.verifyInjection",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Auto-resent Enter after detecting stuck input",
+    "reason": "Enter eaten by paste-end race on fresh Claude Code TUI",
+    "impact": "Recovered without user intervention",
+    "timestamp": "2026-05-20T15:52:46.032Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "StuckInputSentinel.recover",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Persistent sentinel re-fires Enter after in-process verifyInjection window expired (covers server-restart cases)",
+    "reason": "Prompt text persistent for ≥2 sentinel ticks with no activity indicator",
+    "impact": "Recovered without user intervention; survives server restart",
+    "timestamp": "2026-05-20T15:52:49.592Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "GitSync.pull",
+    "primary": "Clean git pull",
+    "fallback": "Attempt auto-resolution of conflicts",
+    "reason": "Why: Command failed: git pull --rebase --autostash\nerror: unable to read askpass response from '/usr/bin/false'\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+    "impact": "Conflicts may not auto-resolve correctly",
+    "timestamp": "2026-05-20T16:05:47.701Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "TopicMemory",
+    "primary": "SQLite-backed conversational memory with summaries and FTS5 search",
+    "fallback": "JSONL-based last 20 messages (no summaries, no search)",
+    "reason": "TopicMemory init failed: spawnSync /opt/homebrew/Cellar/node/25.6.1/bin/node ENOENT",
+    "impact": "Sessions start without conversation summaries. Search unavailable. Context limited to last 20 raw messages.",
+    "timestamp": "2026-05-20T16:05:49.523Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "iMessage",
+    "primary": "iMessage messaging adapter",
+    "fallback": "Other messaging channels",
+    "reason": "iMessage init failed: Failed to open Messages database: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "iMessage messaging unavailable.",
+    "timestamp": "2026-05-20T16:05:50.037Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SemanticMemory",
+    "primary": "SQLite-backed knowledge graph with FTS5 + vector hybrid search",
+    "fallback": "Legacy memory systems (MEMORY.md, CanonicalState, MemoryIndex)",
+    "reason": "SemanticMemory init failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Knowledge graph unavailable. Migration, semantic search, and entity-relationship queries disabled.",
+    "timestamp": "2026-05-20T16:05:50.040Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "FeatureRegistry",
+    "primary": "SQLite-backed feature registry with discovery state tracking",
+    "fallback": "Feature definitions available in-memory only (no persistent state)",
+    "reason": "FeatureRegistry open failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_V",
+    "impact": "Feature discovery state not persisted. Features default to definitions only.",
+    "timestamp": "2026-05-20T16:05:51.222Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "sqlite-runtime-broken",
+    "primary": "better-sqlite3 in-process driver",
+    "fallback": "pending-relay queue disabled — recoverable failures will not be enqueued",
+    "reason": "better-sqlite3 failed to open an in-memory DB: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Layer 2 (durable queue + structured failure events) is disabled. Existing direct-send paths continue to work. Fix: rebuild better-sqlite3 for this platform (npm rebuild better-sqlite3).",
+    "timestamp": "2026-05-20T16:05:51.390Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "StuckInputSentinel.recover",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Persistent sentinel re-fires Enter after in-process verifyInjection window expired (covers server-restart cases)",
+    "reason": "Prompt text persistent for ≥2 sentinel ticks with no activity indicator",
+    "impact": "Recovered without user intervention; survives server restart",
+    "timestamp": "2026-05-20T16:06:10.231Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "GitSync.pull",
+    "primary": "Clean git pull",
+    "fallback": "Attempt auto-resolution of conflicts",
+    "reason": "Why: Command failed: git pull --rebase --autostash\nerror: unable to read askpass response from '/usr/bin/false'\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+    "impact": "Conflicts may not auto-resolve correctly",
+    "timestamp": "2026-05-20T16:12:36.881Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "TopicMemory",
+    "primary": "SQLite-backed conversational memory with summaries and FTS5 search",
+    "fallback": "JSONL-based last 20 messages (no summaries, no search)",
+    "reason": "TopicMemory init failed: spawnSync /opt/homebrew/Cellar/node/25.6.1/bin/node ENOENT",
+    "impact": "Sessions start without conversation summaries. Search unavailable. Context limited to last 20 raw messages.",
+    "timestamp": "2026-05-20T16:12:38.595Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "iMessage",
+    "primary": "iMessage messaging adapter",
+    "fallback": "Other messaging channels",
+    "reason": "iMessage init failed: Failed to open Messages database: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "iMessage messaging unavailable.",
+    "timestamp": "2026-05-20T16:12:38.959Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SemanticMemory",
+    "primary": "SQLite-backed knowledge graph with FTS5 + vector hybrid search",
+    "fallback": "Legacy memory systems (MEMORY.md, CanonicalState, MemoryIndex)",
+    "reason": "SemanticMemory init failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Knowledge graph unavailable. Migration, semantic search, and entity-relationship queries disabled.",
+    "timestamp": "2026-05-20T16:12:38.962Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "FeatureRegistry",
+    "primary": "SQLite-backed feature registry with discovery state tracking",
+    "fallback": "Feature definitions available in-memory only (no persistent state)",
+    "reason": "FeatureRegistry open failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_V",
+    "impact": "Feature discovery state not persisted. Features default to definitions only.",
+    "timestamp": "2026-05-20T16:12:40.138Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "sqlite-runtime-broken",
+    "primary": "better-sqlite3 in-process driver",
+    "fallback": "pending-relay queue disabled — recoverable failures will not be enqueued",
+    "reason": "better-sqlite3 failed to open an in-memory DB: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Layer 2 (durable queue + structured failure events) is disabled. Existing direct-send paths continue to work. Fix: rebuild better-sqlite3 for this platform (npm rebuild better-sqlite3).",
+    "timestamp": "2026-05-20T16:12:40.317Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "StuckInputSentinel.recover",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Persistent sentinel re-fires Enter after in-process verifyInjection window expired (covers server-restart cases)",
+    "reason": "Prompt text persistent for ≥2 sentinel ticks with no activity indicator",
+    "impact": "Recovered without user intervention; survives server restart",
+    "timestamp": "2026-05-20T16:12:59.125Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "GitSync.pull",
+    "primary": "Clean git pull",
+    "fallback": "Attempt auto-resolution of conflicts",
+    "reason": "Why: Command failed: git pull --rebase --autostash\nerror: unable to read askpass response from '/usr/bin/false'\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+    "impact": "Conflicts may not auto-resolve correctly",
+    "timestamp": "2026-05-20T16:24:24.018Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "TopicMemory",
+    "primary": "SQLite-backed conversational memory with summaries and FTS5 search",
+    "fallback": "JSONL-based last 20 messages (no summaries, no search)",
+    "reason": "TopicMemory init failed: spawnSync /opt/homebrew/Cellar/node/25.6.1/bin/node ENOENT",
+    "impact": "Sessions start without conversation summaries. Search unavailable. Context limited to last 20 raw messages.",
+    "timestamp": "2026-05-20T16:24:28.265Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "iMessage",
+    "primary": "iMessage messaging adapter",
+    "fallback": "Other messaging channels",
+    "reason": "iMessage init failed: Failed to open Messages database: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "iMessage messaging unavailable.",
+    "timestamp": "2026-05-20T16:24:28.655Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SemanticMemory",
+    "primary": "SQLite-backed knowledge graph with FTS5 + vector hybrid search",
+    "fallback": "Legacy memory systems (MEMORY.md, CanonicalState, MemoryIndex)",
+    "reason": "SemanticMemory init failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Knowledge graph unavailable. Migration, semantic search, and entity-relationship queries disabled.",
+    "timestamp": "2026-05-20T16:24:28.659Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "FeatureRegistry",
+    "primary": "SQLite-backed feature registry with discovery state tracking",
+    "fallback": "Feature definitions available in-memory only (no persistent state)",
+    "reason": "FeatureRegistry open failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_V",
+    "impact": "Feature discovery state not persisted. Features default to definitions only.",
+    "timestamp": "2026-05-20T16:24:33.755Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "sqlite-runtime-broken",
+    "primary": "better-sqlite3 in-process driver",
+    "fallback": "pending-relay queue disabled — recoverable failures will not be enqueued",
+    "reason": "better-sqlite3 failed to open an in-memory DB: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Layer 2 (durable queue + structured failure events) is disabled. Existing direct-send paths continue to work. Fix: rebuild better-sqlite3 for this platform (npm rebuild better-sqlite3).",
+    "timestamp": "2026-05-20T16:24:34.734Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "StuckInputSentinel.recover",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Persistent sentinel re-fires Enter after in-process verifyInjection window expired (covers server-restart cases)",
+    "reason": "Prompt text persistent for ≥2 sentinel ticks with no activity indicator",
+    "impact": "Recovered without user intervention; survives server restart",
+    "timestamp": "2026-05-20T16:24:49.569Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SessionManager.verifyInjection",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Auto-resent Enter after detecting stuck input",
+    "reason": "Enter eaten by paste-end race on fresh Claude Code TUI",
+    "impact": "Recovered without user intervention",
+    "timestamp": "2026-05-20T16:27:43.874Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SessionManager.verifyInjection",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Auto-resent Enter after detecting stuck input",
+    "reason": "Enter eaten by paste-end race on fresh Claude Code TUI",
+    "impact": "Recovered without user intervention",
+    "timestamp": "2026-05-20T16:27:54.112Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SessionManager.verifyInjection",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Auto-resent Enter after detecting stuck input",
+    "reason": "Enter eaten by paste-end race on fresh Claude Code TUI",
+    "impact": "Recovered without user intervention",
+    "timestamp": "2026-05-20T16:34:03.961Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "GitSync.pull",
+    "primary": "Clean git pull",
+    "fallback": "Attempt auto-resolution of conflicts",
+    "reason": "Why: Command failed: git pull --rebase --autostash\nerror: unable to read askpass response from '/usr/bin/false'\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+    "impact": "Conflicts may not auto-resolve correctly",
+    "timestamp": "2026-05-20T16:35:15.194Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "TopicMemory",
+    "primary": "SQLite-backed conversational memory with summaries and FTS5 search",
+    "fallback": "JSONL-based last 20 messages (no summaries, no search)",
+    "reason": "TopicMemory init failed: spawnSync /opt/homebrew/Cellar/node/25.6.1/bin/node ENOENT",
+    "impact": "Sessions start without conversation summaries. Search unavailable. Context limited to last 20 raw messages.",
+    "timestamp": "2026-05-20T16:35:17.154Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "iMessage",
+    "primary": "iMessage messaging adapter",
+    "fallback": "Other messaging channels",
+    "reason": "iMessage init failed: Failed to open Messages database: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "iMessage messaging unavailable.",
+    "timestamp": "2026-05-20T16:35:17.560Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SemanticMemory",
+    "primary": "SQLite-backed knowledge graph with FTS5 + vector hybrid search",
+    "fallback": "Legacy memory systems (MEMORY.md, CanonicalState, MemoryIndex)",
+    "reason": "SemanticMemory init failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Knowledge graph unavailable. Migration, semantic search, and entity-relationship queries disabled.",
+    "timestamp": "2026-05-20T16:35:17.562Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "FeatureRegistry",
+    "primary": "SQLite-backed feature registry with discovery state tracking",
+    "fallback": "Feature definitions available in-memory only (no persistent state)",
+    "reason": "FeatureRegistry open failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_V",
+    "impact": "Feature discovery state not persisted. Features default to definitions only.",
+    "timestamp": "2026-05-20T16:35:23.395Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "sqlite-runtime-broken",
+    "primary": "better-sqlite3 in-process driver",
+    "fallback": "pending-relay queue disabled — recoverable failures will not be enqueued",
+    "reason": "better-sqlite3 failed to open an in-memory DB: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Layer 2 (durable queue + structured failure events) is disabled. Existing direct-send paths continue to work. Fix: rebuild better-sqlite3 for this platform (npm rebuild better-sqlite3).",
+    "timestamp": "2026-05-20T16:35:23.547Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "StuckInputSentinel.recover",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Persistent sentinel re-fires Enter after in-process verifyInjection window expired (covers server-restart cases)",
+    "reason": "Prompt text persistent for ≥2 sentinel ticks with no activity indicator",
+    "impact": "Recovered without user intervention; survives server restart",
+    "timestamp": "2026-05-20T16:35:38.146Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SessionManager.verifyInjection",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Auto-resent Enter after detecting stuck input",
+    "reason": "Enter eaten by paste-end race on fresh Claude Code TUI",
+    "impact": "Recovered without user intervention",
+    "timestamp": "2026-05-20T16:35:49.919Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SessionManager.verifyInjection",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Auto-resent Enter after detecting stuck input",
+    "reason": "Enter eaten by paste-end race on fresh Claude Code TUI",
+    "impact": "Recovered without user intervention",
+    "timestamp": "2026-05-20T16:38:43.832Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "GitSync.pull",
+    "primary": "Clean git pull",
+    "fallback": "Attempt auto-resolution of conflicts",
+    "reason": "Why: Command failed: git pull --rebase --autostash\nerror: unable to read askpass response from '/usr/bin/false'\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+    "impact": "Conflicts may not auto-resolve correctly",
+    "timestamp": "2026-05-20T16:45:59.701Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "TopicMemory",
+    "primary": "SQLite-backed conversational memory with summaries and FTS5 search",
+    "fallback": "JSONL-based last 20 messages (no summaries, no search)",
+    "reason": "TopicMemory init failed: spawnSync /opt/homebrew/Cellar/node/25.6.1/bin/node ENOENT",
+    "impact": "Sessions start without conversation summaries. Search unavailable. Context limited to last 20 raw messages.",
+    "timestamp": "2026-05-20T16:46:01.390Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "iMessage",
+    "primary": "iMessage messaging adapter",
+    "fallback": "Other messaging channels",
+    "reason": "iMessage init failed: Failed to open Messages database: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "iMessage messaging unavailable.",
+    "timestamp": "2026-05-20T16:46:01.759Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SemanticMemory",
+    "primary": "SQLite-backed knowledge graph with FTS5 + vector hybrid search",
+    "fallback": "Legacy memory systems (MEMORY.md, CanonicalState, MemoryIndex)",
+    "reason": "SemanticMemory init failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Knowledge graph unavailable. Migration, semantic search, and entity-relationship queries disabled.",
+    "timestamp": "2026-05-20T16:46:01.761Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "FeatureRegistry",
+    "primary": "SQLite-backed feature registry with discovery state tracking",
+    "fallback": "Feature definitions available in-memory only (no persistent state)",
+    "reason": "FeatureRegistry open failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_V",
+    "impact": "Feature discovery state not persisted. Features default to definitions only.",
+    "timestamp": "2026-05-20T16:46:02.894Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "sqlite-runtime-broken",
+    "primary": "better-sqlite3 in-process driver",
+    "fallback": "pending-relay queue disabled — recoverable failures will not be enqueued",
+    "reason": "better-sqlite3 failed to open an in-memory DB: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Layer 2 (durable queue + structured failure events) is disabled. Existing direct-send paths continue to work. Fix: rebuild better-sqlite3 for this platform (npm rebuild better-sqlite3).",
+    "timestamp": "2026-05-20T16:46:03.040Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SessionManager.verifyInjection",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Auto-resent Enter after detecting stuck input",
+    "reason": "Enter eaten by paste-end race on fresh Claude Code TUI",
+    "impact": "Recovered without user intervention",
+    "timestamp": "2026-05-20T16:46:03.953Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "StuckInputSentinel.recover",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Persistent sentinel re-fires Enter after in-process verifyInjection window expired (covers server-restart cases)",
+    "reason": "Prompt text persistent for ≥2 sentinel ticks with no activity indicator",
+    "impact": "Recovered without user intervention; survives server restart",
+    "timestamp": "2026-05-20T16:46:23.201Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SessionManager.verifyInjection",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Auto-resent Enter after detecting stuck input",
+    "reason": "Enter eaten by paste-end race on fresh Claude Code TUI",
+    "impact": "Recovered without user intervention",
+    "timestamp": "2026-05-20T16:50:22.940Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "GitSync.pull",
+    "primary": "Clean git pull",
+    "fallback": "Attempt auto-resolution of conflicts",
+    "reason": "Why: Command failed: git pull --rebase --autostash\nerror: unable to read askpass response from '/usr/bin/false'\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+    "impact": "Conflicts may not auto-resolve correctly",
+    "timestamp": "2026-05-20T16:51:45.291Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "TopicMemory",
+    "primary": "SQLite-backed conversational memory with summaries and FTS5 search",
+    "fallback": "JSONL-based last 20 messages (no summaries, no search)",
+    "reason": "TopicMemory init failed: spawnSync /opt/homebrew/Cellar/node/25.6.1/bin/node ENOENT",
+    "impact": "Sessions start without conversation summaries. Search unavailable. Context limited to last 20 raw messages.",
+    "timestamp": "2026-05-20T16:51:46.772Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "iMessage",
+    "primary": "iMessage messaging adapter",
+    "fallback": "Other messaging channels",
+    "reason": "iMessage init failed: Failed to open Messages database: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "iMessage messaging unavailable.",
+    "timestamp": "2026-05-20T16:51:47.137Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SemanticMemory",
+    "primary": "SQLite-backed knowledge graph with FTS5 + vector hybrid search",
+    "fallback": "Legacy memory systems (MEMORY.md, CanonicalState, MemoryIndex)",
+    "reason": "SemanticMemory init failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Knowledge graph unavailable. Migration, semantic search, and entity-relationship queries disabled.",
+    "timestamp": "2026-05-20T16:51:47.140Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "FeatureRegistry",
+    "primary": "SQLite-backed feature registry with discovery state tracking",
+    "fallback": "Feature definitions available in-memory only (no persistent state)",
+    "reason": "FeatureRegistry open failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_V",
+    "impact": "Feature discovery state not persisted. Features default to definitions only.",
+    "timestamp": "2026-05-20T16:51:48.408Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "sqlite-runtime-broken",
+    "primary": "better-sqlite3 in-process driver",
+    "fallback": "pending-relay queue disabled — recoverable failures will not be enqueued",
+    "reason": "better-sqlite3 failed to open an in-memory DB: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Layer 2 (durable queue + structured failure events) is disabled. Existing direct-send paths continue to work. Fix: rebuild better-sqlite3 for this platform (npm rebuild better-sqlite3).",
+    "timestamp": "2026-05-20T16:51:48.549Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SessionManager.verifyInjection",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Auto-resent Enter after detecting stuck input",
+    "reason": "Enter eaten by paste-end race on fresh Claude Code TUI",
+    "impact": "Recovered without user intervention",
+    "timestamp": "2026-05-20T16:52:02.987Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "StuckInputSentinel.recover",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Persistent sentinel re-fires Enter after in-process verifyInjection window expired (covers server-restart cases)",
+    "reason": "Prompt text persistent for ≥2 sentinel ticks with no activity indicator",
+    "impact": "Recovered without user intervention; survives server restart",
+    "timestamp": "2026-05-20T16:52:08.003Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "GitSync.pull",
+    "primary": "Clean git pull",
+    "fallback": "Attempt auto-resolution of conflicts",
+    "reason": "Why: Command failed: git pull --rebase --autostash\nerror: unable to read askpass response from '/usr/bin/false'\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+    "impact": "Conflicts may not auto-resolve correctly",
+    "timestamp": "2026-05-20T16:57:32.374Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "TopicMemory",
+    "primary": "SQLite-backed conversational memory with summaries and FTS5 search",
+    "fallback": "JSONL-based last 20 messages (no summaries, no search)",
+    "reason": "TopicMemory init failed: spawnSync /opt/homebrew/Cellar/node/25.6.1/bin/node ENOENT",
+    "impact": "Sessions start without conversation summaries. Search unavailable. Context limited to last 20 raw messages.",
+    "timestamp": "2026-05-20T16:57:38.022Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "iMessage",
+    "primary": "iMessage messaging adapter",
+    "fallback": "Other messaging channels",
+    "reason": "iMessage init failed: Failed to open Messages database: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "iMessage messaging unavailable.",
+    "timestamp": "2026-05-20T16:57:38.752Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SemanticMemory",
+    "primary": "SQLite-backed knowledge graph with FTS5 + vector hybrid search",
+    "fallback": "Legacy memory systems (MEMORY.md, CanonicalState, MemoryIndex)",
+    "reason": "SemanticMemory init failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Knowledge graph unavailable. Migration, semantic search, and entity-relationship queries disabled.",
+    "timestamp": "2026-05-20T16:57:38.755Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "FeatureRegistry",
+    "primary": "SQLite-backed feature registry with discovery state tracking",
+    "fallback": "Feature definitions available in-memory only (no persistent state)",
+    "reason": "FeatureRegistry open failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_V",
+    "impact": "Feature discovery state not persisted. Features default to definitions only.",
+    "timestamp": "2026-05-20T16:57:47.401Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "sqlite-runtime-broken",
+    "primary": "better-sqlite3 in-process driver",
+    "fallback": "pending-relay queue disabled — recoverable failures will not be enqueued",
+    "reason": "better-sqlite3 failed to open an in-memory DB: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Layer 2 (durable queue + structured failure events) is disabled. Existing direct-send paths continue to work. Fix: rebuild better-sqlite3 for this platform (npm rebuild better-sqlite3).",
+    "timestamp": "2026-05-20T16:57:47.906Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "StuckInputSentinel.recover",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Persistent sentinel re-fires Enter after in-process verifyInjection window expired (covers server-restart cases)",
+    "reason": "Prompt text persistent for ≥2 sentinel ticks with no activity indicator",
+    "impact": "Recovered without user intervention; survives server restart",
+    "timestamp": "2026-05-20T16:57:59.943Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SessionManager.verifyInjection",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Auto-resent Enter after detecting stuck input",
+    "reason": "Enter eaten by paste-end race on fresh Claude Code TUI",
+    "impact": "Recovered without user intervention",
+    "timestamp": "2026-05-20T16:58:04.063Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "GitSync.pull",
+    "primary": "Clean git pull",
+    "fallback": "Attempt auto-resolution of conflicts",
+    "reason": "Why: Command failed: git pull --rebase --autostash\nerror: unable to read askpass response from '/usr/bin/false'\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+    "impact": "Conflicts may not auto-resolve correctly",
+    "timestamp": "2026-05-20T17:06:07.302Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "TopicMemory",
+    "primary": "SQLite-backed conversational memory with summaries and FTS5 search",
+    "fallback": "JSONL-based last 20 messages (no summaries, no search)",
+    "reason": "TopicMemory init failed: spawnSync /opt/homebrew/Cellar/node/25.6.1/bin/node ENOENT",
+    "impact": "Sessions start without conversation summaries. Search unavailable. Context limited to last 20 raw messages.",
+    "timestamp": "2026-05-20T17:06:18.254Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "iMessage",
+    "primary": "iMessage messaging adapter",
+    "fallback": "Other messaging channels",
+    "reason": "iMessage init failed: Failed to open Messages database: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "iMessage messaging unavailable.",
+    "timestamp": "2026-05-20T17:06:18.820Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SemanticMemory",
+    "primary": "SQLite-backed knowledge graph with FTS5 + vector hybrid search",
+    "fallback": "Legacy memory systems (MEMORY.md, CanonicalState, MemoryIndex)",
+    "reason": "SemanticMemory init failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Knowledge graph unavailable. Migration, semantic search, and entity-relationship queries disabled.",
+    "timestamp": "2026-05-20T17:06:18.824Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "FeatureRegistry",
+    "primary": "SQLite-backed feature registry with discovery state tracking",
+    "fallback": "Feature definitions available in-memory only (no persistent state)",
+    "reason": "FeatureRegistry open failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_V",
+    "impact": "Feature discovery state not persisted. Features default to definitions only.",
+    "timestamp": "2026-05-20T17:06:34.863Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "sqlite-runtime-broken",
+    "primary": "better-sqlite3 in-process driver",
+    "fallback": "pending-relay queue disabled — recoverable failures will not be enqueued",
+    "reason": "better-sqlite3 failed to open an in-memory DB: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Layer 2 (durable queue + structured failure events) is disabled. Existing direct-send paths continue to work. Fix: rebuild better-sqlite3 for this platform (npm rebuild better-sqlite3).",
+    "timestamp": "2026-05-20T17:06:35.584Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "StuckInputSentinel.recover",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Persistent sentinel re-fires Enter after in-process verifyInjection window expired (covers server-restart cases)",
+    "reason": "Prompt text persistent for ≥2 sentinel ticks with no activity indicator",
+    "impact": "Recovered without user intervention; survives server restart",
+    "timestamp": "2026-05-20T17:06:40.743Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "GitSync.pull",
+    "primary": "Clean git pull",
+    "fallback": "Attempt auto-resolution of conflicts",
+    "reason": "Why: Command failed: git pull --rebase --autostash\nerror: unable to read askpass response from '/usr/bin/false'\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+    "impact": "Conflicts may not auto-resolve correctly",
+    "timestamp": "2026-05-20T17:11:41.136Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "TopicMemory",
+    "primary": "SQLite-backed conversational memory with summaries and FTS5 search",
+    "fallback": "JSONL-based last 20 messages (no summaries, no search)",
+    "reason": "TopicMemory init failed: spawnSync /opt/homebrew/Cellar/node/25.6.1/bin/node ENOENT",
+    "impact": "Sessions start without conversation summaries. Search unavailable. Context limited to last 20 raw messages.",
+    "timestamp": "2026-05-20T17:11:43.779Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "iMessage",
+    "primary": "iMessage messaging adapter",
+    "fallback": "Other messaging channels",
+    "reason": "iMessage init failed: Failed to open Messages database: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "iMessage messaging unavailable.",
+    "timestamp": "2026-05-20T17:11:44.154Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "SemanticMemory",
+    "primary": "SQLite-backed knowledge graph with FTS5 + vector hybrid search",
+    "fallback": "Legacy memory systems (MEMORY.md, CanonicalState, MemoryIndex)",
+    "reason": "SemanticMemory init failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Knowledge graph unavailable. Migration, semantic search, and entity-relationship queries disabled.",
+    "timestamp": "2026-05-20T17:11:44.156Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "FeatureRegistry",
+    "primary": "SQLite-backed feature registry with discovery state tracking",
+    "fallback": "Feature definitions available in-memory only (no persistent state)",
+    "reason": "FeatureRegistry open failed: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_V",
+    "impact": "Feature discovery state not persisted. Features default to definitions only.",
+    "timestamp": "2026-05-20T17:11:45.493Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "sqlite-runtime-broken",
+    "primary": "better-sqlite3 in-process driver",
+    "fallback": "pending-relay queue disabled — recoverable failures will not be enqueued",
+    "reason": "better-sqlite3 failed to open an in-memory DB: The module '/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/better-sqlite3/build/Release/better_sqlite3.node'\nwas compiled against a different Node.js version using\nNODE_MODULE_VERSION 127. This version of Node.js requires\nNODE_MODULE_VERSION 141. Please try re-compiling or re-installing\nthe module (for instance, using `npm rebuild` or `npm install`).",
+    "impact": "Layer 2 (durable queue + structured failure events) is disabled. Existing direct-send paths continue to work. Fix: rebuild better-sqlite3 for this platform (npm rebuild better-sqlite3).",
+    "timestamp": "2026-05-20T17:11:46.308Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "StuckInputSentinel.recover",
+    "primary": "Bracketed paste + Enter submits injected message",
+    "fallback": "Persistent sentinel re-fires Enter after in-process verifyInjection window expired (covers server-restart cases)",
+    "reason": "Prompt text persistent for ≥2 sentinel ticks with no activity indicator",
+    "impact": "Recovered without user intervention; survives server restart",
+    "timestamp": "2026-05-20T17:12:05.676Z",
+    "reported": true,
+    "alerted": true
+  },
+  {
+    "feature": "GitSync.pull",
+    "primary": "Clean git pull",
+    "fallback": "Attempt auto-resolution of conflicts",
+    "reason": "Why: Command failed: git pull --rebase --autostash\nerror: unable to read askpass response from '/usr/bin/false'\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+    "impact": "Conflicts may not auto-resolve correctly",
+    "timestamp": "2026-05-20T17:17:40.535Z",
+    "reported": false,
+    "alerted": false
+  }
+]

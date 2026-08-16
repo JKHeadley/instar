@@ -1,0 +1,15 @@
+{
+  "sessionId": "64fe72f3-d59d-4b34-986b-dedcd50e65dc",
+  "tmuxSession": "echo-test-slack",
+  "task": "Session 64fe72f3-d59d-4b34-986b-dedcd50e65dc (testing)",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T16:30:26.947Z",
+  "updatedAt": "2026-03-28T16:30:26.947Z",
+  "stale": false,
+  "outputHash": "32e9dff39e3af3b958dd65c5b2187e08"
+}

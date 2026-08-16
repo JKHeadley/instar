@@ -1,0 +1,21 @@
+{
+  "sessionId": "1c000e4b-c6a6-4810-857d-432a78e76d23",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] I can't follow you, we just need this working robustly (IMPORTANT: Read /tmp/instar-",
+  "phase": "testing",
+  "files": [
+    "settings.json",
+    "init.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T19:10:40.372Z",
+  "updatedAt": "2026-03-23T19:10:40.372Z",
+  "stale": false,
+  "outputHash": "2140d90dfa0b0634ec72dc1304fa60fe"
+}

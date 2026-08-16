@@ -1,0 +1,11 @@
+{
+  "id": "02-capabilities-routing",
+  "description": "Capabilities endpoint returns the standard envelope. Sanity-checks the v1.0.0 self-discovery contract that downstream tooling depends on.",
+  "topic": 2525,
+  "steps": [
+    { "action": "assert-http", "endpoint": "/capabilities", "status": 200,
+      "bodyMatch": "\"identity\"" },
+    { "action": "assert-http", "endpoint": "/capabilities", "status": 200,
+      "bodyMatch": "\"telegram\"" }
+  ]
+}

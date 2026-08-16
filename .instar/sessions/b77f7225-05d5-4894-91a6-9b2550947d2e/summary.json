@@ -1,0 +1,23 @@
+{
+  "sessionId": "b77f7225-05d5-4894-91a6-9b2550947d2e",
+  "tmuxSession": "echo-topic-3080",
+  "task": "[telegram:3080] please review the \"Server-Side Process Review\" topic/session (IMPORTANT: Read /tmp/i",
+  "phase": "testing",
+  "files": [
+    "MEMORY.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T08:26:54.365Z",
+  "updatedAt": "2026-03-28T08:26:54.365Z",
+  "stale": true,
+  "outputHash": "5c307940ba6e05b4690866e21f2c62b9"
+}

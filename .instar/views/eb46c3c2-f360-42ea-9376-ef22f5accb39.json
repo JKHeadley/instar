@@ -1,0 +1,12 @@
+{
+  "id": "eb46c3c2-f360-42ea-9376-ef22f5accb39",
+  "title": "Capability Audit — 2026-04-17",
+  "markdown": "# Capability Audit Report\n\n**Date:** 2026-04-17  \n**Status:** No drift  \n**Unmapped Items:** 86 (all functional)\n\n## Summary\n\nThe capability map detected 86 unmapped items. All are deployed and working—these items lack registry entries.\n\n## Unmapped Categories\n\n- **Skills** (23): autonomous, build, ci-fix, coherence-audit, commit-action, crossreview, degradation-digest, docs-code-sync, evolve, feedback, fork-and-fix, gaps, git-sync, guardian-pulse, instar-dev, learn, memory-hygiene, reflect, session-continuity-check, spec-converge, specreview, state-integrity-check, threadline-sync, triage-findings\n- **Scripts** (10): git-sync-gate.sh, github-monitor-scan.sh, health-watchdog.sh, imessage-reply.sh, post-update.sh, slack-reply.sh, smart-fetch.py, telegram-reply.sh, test-coverage-reminder.js\n- **Jobs** (28): health-check, reflection-trigger, relationship-maintenance, feedback-retry, evolution-proposal-evaluate, evolution-proposal-implement, insight-harvest, evolution-overdue-check, commitment-detection, project-map-refresh, coherence-audit, degradation-digest, state-integrity-check, memory-hygiene, guardian-pulse, session-continuity-check, memory-export, git-sync, capability-audit, ci-monitor, threadline-sync, dashboard-link-refresh, overseer-guardian, overseer-learning, overseer-maintenance, overseer-infrastructure, overseer-development, docs-code-sync, github-collab-monitor\n- **Subsystems** (12): telegram, scheduler, evolution, session-manager, state-manager, relationships, topic-memory, monitoring, publishing, auto-updates, playbook, feedback, tunnel\n- **Context Files** (13): DISPATCH.md, architecture.md, communication.md, deployment.md, development.md, identity.md, project.md, relationships.md, research-navigation.md, safety.md, session.md\n\n## Action\n\nThese items are all functional and in use. The capability map needs a refresh or re-scan to sync its registry with deployed capabilities. This is a documentation/tracking issue, not a functionality gap.\n",
+  "createdAt": "2026-04-17T13:02:43.118Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "capability-audit"
+    }
+  }
+}

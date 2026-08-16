@@ -1,0 +1,22 @@
+{
+  "sessionId": "1e77f678-8daf-4fea-ae87-c661f045f3c0",
+  "tmuxSession": "echo-dashboard-scroll-history",
+  "task": "[telegram:1541] hmm, the scroll seems to be forced to the bottom if the session is active. It should",
+  "phase": "testing",
+  "files": [
+    ".instar/shadow-install/node_modules/instar/dashboard/index.html",
+    "/Users/justin/Documents/Projects/instar/dashboard/index.html"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T21:22:44.017Z",
+  "updatedAt": "2026-03-20T21:22:44.017Z",
+  "stale": true,
+  "outputHash": "fc424604555ff86f11b40f6a3d7c6a30"
+}

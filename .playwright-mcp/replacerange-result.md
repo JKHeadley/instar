@@ -1,0 +1,291 @@
+- generic [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - text: 
+      - link "Slack API" [ref=e5] [cursor=pointer]:
+        - /url: https://api.slack.com/
+        - img "Slack API" [ref=e6]
+      - generic [ref=e8]:
+        - link "Documentation" [ref=e9] [cursor=pointer]:
+          - /url: /#read_the_docs
+        - link "Tutorials" [ref=e10] [cursor=pointer]:
+          - /url: /tutorials
+        - link "Your Apps" [ref=e11] [cursor=pointer]:
+          - /url: /apps
+  - generic [ref=e15]:
+    - heading "Your Apps" [level=1] [ref=e16]
+    - generic [ref=e18]:
+      - heading "Build something amazing." [level=3] [ref=e19]
+      - paragraph [ref=e20]: Use our APIs to build an app that makes people's working lives better. You can create an app that's just for your workspace or create a public Slack App to list in the Slack Marketplace, where anyone on Slack can discover it.
+      - paragraph [ref=e21]:
+        - button "Create an App" [ref=e22] [cursor=pointer]
+    - generic [ref=e25]:
+      - generic [ref=e26]:
+        - heading "Your App Configuration Tokens" [level=4] [ref=e27]
+        - link "Learn about tokens" [ref=e28] [cursor=pointer]:
+          - /url: https://docs.slack.dev/authentication/tokens
+      - button "Generate Token" [ref=e30] [cursor=pointer]
+    - paragraph [ref=e31]:
+      - text: Don't see an app you're looking for?
+      - link "Sign in to another workspace" [ref=e32] [cursor=pointer]:
+        - /url: https://slack.com/signin
+      - text: .
+  - contentinfo [ref=e33]:
+    - generic [ref=e35]:
+      - list [ref=e37]:
+        - listitem [ref=e38]: Using Slack
+        - listitem [ref=e39]:
+          - link "Product" [ref=e40] [cursor=pointer]:
+            - /url: https://slack.com/is
+        - listitem [ref=e41]:
+          - link "Enterprise" [ref=e42] [cursor=pointer]:
+            - /url: https://slack.com/enterprise
+        - listitem [ref=e43]:
+          - link "Pricing" [ref=e44] [cursor=pointer]:
+            - /url: https://slack.com/pricing?ui_step=28&ui_element=5
+        - listitem [ref=e45]:
+          - link "Support" [ref=e46] [cursor=pointer]:
+            - /url: https://get.slack.help/hc/en-us
+        - listitem [ref=e47]:
+          - link "Slack Guides" [ref=e48] [cursor=pointer]:
+            - /url: https://slack.com/guides
+        - listitem [ref=e49]:
+          - link "Slack Marketplace" [ref=e50] [cursor=pointer]:
+            - /url: https://slack.com/marketplace
+        - listitem [ref=e51]:
+          - link "API" [ref=e52] [cursor=pointer]:
+            - /url: https://api.slack.com/
+      - list [ref=e54]:
+        - listitem [ref=e55]:
+          - text: Slack
+          - generic [ref=e56]: 
+        - listitem [ref=e57]:
+          - link "Jobs" [ref=e58] [cursor=pointer]:
+            - /url: https://slack.com/careers
+        - listitem [ref=e59]:
+          - link "Customers" [ref=e60] [cursor=pointer]:
+            - /url: https://slack.com/customers
+        - listitem [ref=e61]:
+          - link "Developers" [ref=e62] [cursor=pointer]:
+            - /url: https://slack.com/developers
+        - listitem [ref=e63]:
+          - link "Events" [ref=e64] [cursor=pointer]:
+            - /url: https://slack.com/events
+        - listitem [ref=e65]:
+          - link "Blog" [ref=e66] [cursor=pointer]:
+            - /url: https://slackhq.com/
+      - list [ref=e68]:
+        - listitem [ref=e69]: Legal
+        - listitem [ref=e70]:
+          - link "Privacy" [ref=e71] [cursor=pointer]:
+            - /url: https://slack.com/privacy-policy
+        - listitem [ref=e72]:
+          - link "Security" [ref=e73] [cursor=pointer]:
+            - /url: https://slack.com/trust/security
+        - listitem [ref=e74]:
+          - link "Terms of Service" [ref=e75] [cursor=pointer]:
+            - /url: https://slack.com/terms-of-service
+        - listitem [ref=e76]:
+          - link "Policies" [ref=e77] [cursor=pointer]:
+            - /url: https://slack.com/legal
+      - list [ref=e79]:
+        - listitem [ref=e80]: Handy Links
+        - listitem [ref=e81]:
+          - link "Download desktop app" [ref=e82] [cursor=pointer]:
+            - /url: https://slack.com/downloads
+        - listitem [ref=e83]:
+          - link "Download mobile app" [ref=e84] [cursor=pointer]:
+            - /url: https://slack.com/downloads
+        - listitem [ref=e85]:
+          - link "Brand Guidelines" [ref=e86] [cursor=pointer]:
+            - /url: https://slack.com/brand-guidelines
+        - listitem [ref=e87]:
+          - link "Slack at Work" [ref=e88] [cursor=pointer]:
+            - /url: https://slackatwork.com
+        - listitem [ref=e89]:
+          - link "Status" [ref=e90] [cursor=pointer]:
+            - /url: https://slack-status.com
+    - generic [ref=e92]:
+      - link "Slack homepage" [ref=e93] [cursor=pointer]:
+        - /url: https://slack.com
+        - generic [ref=e94]: 
+      - list [ref=e95]:
+        - listitem [ref=e96]:
+          - link "Contact Us" [ref=e97] [cursor=pointer]:
+            - /url: https://slack.com/help/requests/new
+        - listitem [ref=e98]:
+          - link "Slack on Twitter" [ref=e99] [cursor=pointer]:
+            - /url: https://twitter.com/SlackHQ
+            - generic [ref=e100]: 
+        - listitem [ref=e101]:
+          - link "Slack on YouTube" [ref=e102] [cursor=pointer]:
+            - /url: https://www.youtube.com/channel/UCY3YECgeBcLCzIrFLP4gblw
+            - generic [ref=e103]: 
+  - generic [ref=e104]:
+    - alert [ref=e105]
+    - log [ref=e106]
+  - generic [ref=e107]:
+    - alert [ref=e108]
+    - log [ref=e109]
+  - alertdialog "Create app from manifest" [ref=e1047]:
+    - heading "Create app from manifest" [level=1] [ref=e1051]
+    - generic [ref=e1054]:
+      - generic [ref=e1195]:
+        - img [ref=e1197]
+        - strong [ref=e1202]: We can’t translate a manifest with errors.
+      - paragraph [ref=e1055]:
+        - text: This is your app’s manifest containing basic info, scopes, settings, and features. For help on how this works, you can check out our
+        - link "documentation" [ref=e1056] [cursor=pointer]:
+          - /url: /tools/manifests
+        - text: or check out a few
+        - link "examples" [ref=e1057] [cursor=pointer]:
+          - /url: /tutorials
+        - text: .
+      - tablist [ref=e1058]:
+        - tab "JSON" [disabled] [selected] [ref=e1059] [cursor=pointer]:
+          - generic [ref=e1060]: JSON
+        - tab "YAML" [disabled] [ref=e1061] [cursor=pointer]:
+          - generic [ref=e1062]: YAML
+      - tabpanel "JSON" [ref=e1063]:
+        - generic [ref=e1065]:
+          - textbox [active] [ref=e1066]: "{ \"display_information\": { \"name\": \"Demo App\" }, \"settings\": { \"org_deploy_enabled\": false, \"socket_mode_enabled\": false, \"is_hosted\": false, \"token_rotation_enabled\": false } }"
+          - generic [ref=e1069]:
+            - generic [ref=e1296]:
+              - generic [ref=e1297]: "1"
+              - text: "{"
+            - generic [ref=e1298]:
+              - generic [ref=e1299]: "2"
+              - text: "\"display_information\": {"
+            - generic [ref=e1300]:
+              - generic [ref=e1301]: "3"
+              - text: "\"name\": \"echo\","
+            - generic [ref=e1302]:
+              - generic [ref=e1303]: "4"
+              - text: "\"description\": \"Instar agent - echo\""
+            - generic [ref=e1304]:
+              - generic [ref=e1305]: "5"
+              - text: "},"
+            - generic [ref=e1306]:
+              - generic [ref=e1307]: "6"
+              - text: "\"features\": {"
+            - generic [ref=e1308]:
+              - generic [ref=e1309]: "7"
+              - text: "\"bot_user\": {"
+            - generic [ref=e1310]:
+              - generic [ref=e1311]: "8"
+              - text: "\"display_name\": \"echo\","
+            - generic [ref=e1312]:
+              - generic [ref=e1313]: "9"
+              - text: "\"always_online\": true"
+            - generic [ref=e1314]:
+              - generic [ref=e1315]: "10"
+              - text: "}"
+            - generic [ref=e1316]:
+              - generic [ref=e1317]: "11"
+              - text: "},"
+            - generic [ref=e1318]:
+              - generic [ref=e1319]: "12"
+              - text: "\"oauth_config\": {"
+            - generic [ref=e1320]:
+              - generic [ref=e1321]: "13"
+              - text: "\"scopes\": {"
+            - generic [ref=e1322]:
+              - generic [ref=e1323]: "14"
+              - text: "\"bot\": ["
+            - generic [ref=e1324]:
+              - generic [ref=e1325]: "15"
+              - text: "\"app_mentions:read\","
+            - generic [ref=e1326]:
+              - generic [ref=e1327]: "16"
+              - text: "\"channels:history\","
+            - generic [ref=e1328]:
+              - generic [ref=e1329]: "17"
+              - text: "\"channels:read\","
+            - generic [ref=e1330]:
+              - generic [ref=e1331]: "18"
+              - text: "\"chat:write\","
+            - generic [ref=e1332]:
+              - generic [ref=e1333]: "19"
+              - text: "\"im:history\","
+            - generic [ref=e1334]:
+              - generic [ref=e1335]: "20"
+              - text: "\"im:read\","
+            - generic [ref=e1336]:
+              - generic [ref=e1337]: "21"
+              - text: "\"im:write\","
+            - generic [ref=e1338]:
+              - generic [ref=e1339]: "22"
+              - text: "\"pins:write\","
+            - generic [ref=e1340]:
+              - generic [ref=e1341]: "23"
+              - text: "\"reactions:read\","
+            - generic [ref=e1342]:
+              - generic [ref=e1343]: "24"
+              - text: "\"reactions:write\","
+            - generic [ref=e1344]:
+              - generic [ref=e1345]: "25"
+              - text: "\"users:read\""
+            - generic [ref=e1346]:
+              - generic [ref=e1347]: "26"
+              - text: "]"
+            - generic [ref=e1348]:
+              - generic [ref=e1349]: "27"
+              - text: "}"
+            - generic [ref=e1350]:
+              - generic [ref=e1351]: "28"
+              - text: "},"
+            - generic [ref=e1352]:
+              - generic [ref=e1353]: "29"
+              - text: "\"settings\": {"
+            - generic [ref=e1354]:
+              - generic [ref=e1355]: "30"
+              - text: "\"event_subscriptions\": {"
+            - generic [ref=e1358]:
+              - generic [ref=e1359]: "31"
+              - text: "\"bot_events\": ["
+            - generic [ref=e1360]:
+              - generic [ref=e1361]: "32"
+              - text: "\"message.channels\","
+            - generic [ref=e1362]:
+              - generic [ref=e1363]: "33"
+              - text: "\"message.groups\","
+            - generic [ref=e1364]:
+              - generic [ref=e1365]: "34"
+              - text: "\"message.im\","
+            - generic [ref=e1366]:
+              - generic [ref=e1367]: "35"
+              - text: "\"file_shared\","
+            - generic [ref=e1368]:
+              - generic [ref=e1369]: "36"
+              - text: "\"reaction_added\","
+            - generic [ref=e1370]:
+              - generic [ref=e1371]: "37"
+              - text: "\"app_mention\""
+            - generic [ref=e1372]:
+              - generic [ref=e1373]: "38"
+              - text: "]"
+            - generic [ref=e1374]:
+              - generic [ref=e1375]: "39"
+              - text: "},"
+            - generic [ref=e1376]:
+              - generic [ref=e1377]: "40"
+              - text: "\"socket_mode_enabled\": true,"
+            - generic [ref=e1378]:
+              - generic [ref=e1379]: "41"
+              - text: "\"org_deploy_enabled\": false,"
+            - generic [ref=e1380]:
+              - generic [ref=e1381]: "42"
+              - text: "\"token_rotation_enabled\": false"
+            - generic [ref=e1382]:
+              - generic [ref=e1383]: "43"
+              - text: "}"
+            - generic [ref=e1384]:
+              - generic [ref=e1386]: "44"
+              - text: "}"
+    - generic [ref=e1096]:
+      - generic [ref=e1097]: Step 2 of 3
+      - generic [ref=e1098]:
+        - button "Back" [ref=e1099] [cursor=pointer]
+        - button "Next" [disabled]
+    - button "Close" [ref=e544] [cursor=pointer]:
+      - img [ref=e545]

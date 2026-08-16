@@ -1,0 +1,19 @@
+{
+  "sessionId": "8c2c49f1-ef6c-44ac-8a63-49bb119dd2a8",
+  "tmuxSession": "echo-server-recovery",
+  "task": "[telegram:815] here is the bitwarden token. Please store it securely outside of bitwarden so you can",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-18T23:15:31.269Z",
+  "updatedAt": "2026-03-18T23:15:31.269Z",
+  "stale": false,
+  "outputHash": "e96d7992b6d4fce764cce83f49c8e84f"
+}

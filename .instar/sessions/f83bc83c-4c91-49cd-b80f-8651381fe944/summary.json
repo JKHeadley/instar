@@ -1,0 +1,21 @@
+{
+  "sessionId": "f83bc83c-4c91-49cd-b80f-8651381fe944",
+  "tmuxSession": "echo-deleted-topic-1",
+  "task": "[telegram:1] /start (IMPORTANT: Read /tmp/instar-telegram/ctx-1-1778681566114.txt for thread history",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-13T15:04:52.192Z",
+  "updatedAt": "2026-05-13T15:04:52.192Z",
+  "stale": false,
+  "outputHash": "355c2725c861ae7f56d0c2a95da5e703"
+}

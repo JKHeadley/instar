@@ -1,0 +1,19 @@
+{
+  "sessionId": "bfd25a80-5d24-4d1f-95e0-2b0142dfd6c9",
+  "tmuxSession": "echo-instar-update-messages",
+  "task": "[telegram:7675] please proceed as you best see fit (IMPORTANT: Read /tmp/instar-telegram/ctx-7675-17",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-20T17:34:47.226Z",
+  "updatedAt": "2026-04-20T17:34:47.226Z",
+  "stale": true,
+  "outputHash": "398509e81dcc1ae40118a33cf7c8c611"
+}

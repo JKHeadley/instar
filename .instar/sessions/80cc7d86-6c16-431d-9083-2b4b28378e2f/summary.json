@@ -1,0 +1,25 @@
+{
+  "sessionId": "80cc7d86-6c16-431d-9083-2b4b28378e2f",
+  "tmuxSession": "echo-prompt-selection-bug",
+  "task": "[telegram:8105] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1776980444604",
+  "phase": "testing",
+  "files": [
+    "AccountSwitcher.ts",
+    "CoherenceMonitor.ts",
+    "CommitmentSentinel.ts"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-23T22:02:31.534Z",
+  "updatedAt": "2026-04-23T22:02:31.534Z",
+  "stale": true,
+  "outputHash": "a8ed8e4cd1f36da2ea2b392c841d8cd7"
+}

@@ -1,0 +1,21 @@
+{
+  "sessionId": "5e85b0ea-4b11-42a2-a49e-4def0671a05b",
+  "tmuxSession": "echo-git-syncing",
+  "task": "[telegram:8122] Please start the investigation (IMPORTANT: Read /tmp/instar-telegram/ctx-8122-177699",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-24T03:54:55.119Z",
+  "updatedAt": "2026-04-24T03:54:55.119Z",
+  "stale": true,
+  "outputHash": "dd2d4702c290b027085e74a43e8a0b64"
+}

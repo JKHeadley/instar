@@ -1,0 +1,22 @@
+{
+  "sessionId": "378af65c-0c26-4b5f-a365-a760fc07cb7c",
+  "tmuxSession": "echo-interactive-1774823552878",
+  "task": "[slack:C0APW9UHFJ5] what happened here? (IMPORTANT: Read /tmp/instar-slack/ctx-C0APW9UHFJ5-177482355",
+  "phase": "testing",
+  "files": [
+    "/tmp/adversarial-review.md",
+    "/Users/justin/.instar/agents/echo/.claude/skills/specreview/output/20260329-153601/adversarial.md",
+    "/tmp/marketing-review.md"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T22:48:41.804Z",
+  "updatedAt": "2026-03-29T22:48:41.804Z",
+  "stale": true,
+  "outputHash": "d667ba0645adf78dabe789b9693e9715"
+}

@@ -1,0 +1,15 @@
+{
+  "sessionId": "66ad5b8f-9e92-4738-b775-80c9293f9ceb",
+  "tmuxSession": "echo-github-prs",
+  "task": "[telegram:2317] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1774817649369",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T20:55:27.774Z",
+  "updatedAt": "2026-03-29T20:55:27.774Z",
+  "stale": true,
+  "outputHash": "6ef50bef192f343244a027a26faf2861"
+}

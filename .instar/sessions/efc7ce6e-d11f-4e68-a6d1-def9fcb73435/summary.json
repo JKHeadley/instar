@@ -1,0 +1,21 @@
+{
+  "sessionId": "efc7ce6e-d11f-4e68-a6d1-def9fcb73435",
+  "tmuxSession": "echo-deployment-lockdown",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-10873-1779217299924-hle5ebh7.txt — it contains your ",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-20T03:33:35.002Z",
+  "updatedAt": "2026-05-20T03:33:35.002Z",
+  "stale": true,
+  "outputHash": "278ce245cc431434c5681c97ebae60c8"
+}

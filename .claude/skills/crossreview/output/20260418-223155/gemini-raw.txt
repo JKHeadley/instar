@@ -1,0 +1,79 @@
+Calling gemini (gemini-3.1-pro-preview)...
+Here is a thorough, structured review of the `PROMISE-BEACON-SPEC.md` document.
+
+### 1. Overall Assessment
+- **Score**: 9/10
+- **Status**: CONDITIONAL APPROVAL
+- **Summary**: This is an exceptionally high-quality, battle-scarred specification. It demonstrates deep systemic thinking, particularly in how it handles failure modes, state management (the hot/cold storage split is excellent), and cost containment. The "Round 2 Clarifications" section shows rigorous attention to race conditions and idempotency. The spec is approved conceptually, but requires a few specific technical clarifications regarding LLM preemption, agent awareness, and restart semantics before implementation begins.
+
+---
+
+### 2. Critical Issues (Must Fix)
+
+**1. "Preemption" in LLM Queue lacks execution mechanism**
+- **What**: The spec states the Interactive lane "preempts background lane on arrival" (I17, P13).
+- **Why it matters**: LLM calls (especially Tier 3 Sonnet) can take 5–15 seconds. If a background heartbeat is mid-flight, placing an interactive request at the front of the queue does not actually preempt the *active* execution. The interactive request will stall until the background call finishes, violating the low-latency requirement for PresenceProxy.
+- **Suggested fix**: Explicitly state that background-lane LLM requests must be passed an `AbortSignal`. When an interactive request arrives and concurrency limits are maxed, the `LlmQueue` must `abort()` the lowest-priority in-flight background request, instantly freeing the socket/concurrency slot, and push the aborted background task back onto the queue with a delay.
+- **Section reference**: `LlmQueue` priority lanes (I17, P13, S17)
+
+**2. Over-aggressive violation on Server Restart**
+- **What**: `sessionEpoch` is defined as `claudeCodeSessionUuid|serverBootId`. If `serverBootId` changes, the commitment transitions to `violated` (A6, A16).
+- **Why it matters**: If the `AgentServer` process crashes and restarts, but the underlying `claudeCode` session (e.g., running in a detached tmux session) is still perfectly healthy and working, the beacon will instantly violate all active commitments upon boot. This creates false negatives.
+- **Suggested fix**: Remove `serverBootId` from the epoch definition, or change the logic so a `serverBootId` mismatch triggers a "re-verify tmux liveness" check rather than an instant terminal violation.
+- **Section reference**: Session epoch definition (A6, A16)
+
+**3. Tmux Capture Fragmentation Race**
+- **What**: The snapshot-hash gate (P1) relies on a 2s cache of `captureSessionOutput`.
+- **Why it matters**: If the agent is rapidly writing to stdout, a raw capture might grab half of an ANSI escape sequence or a truncated word. The normalization logic (P14) might strip it differently than the subsequent capture 10 minutes later, resulting in a hash mismatch and triggering an unnecessary LLM call, even if semantic progress hasn't occurred.
+- **Suggested fix**: Add a "settle" requirement to the tmux capture (e.g., only snapshot if output has been idle for >500ms), or ensure the ANSI stripper in P14 explicitly drops trailing incomplete escape sequences.
+- **Section reference**: Snapshot hash normalization (P14)
+
+---
+
+### 3. Strengths
+
+- **Hot/Cold Storage Split (P4, I2)**: Keeping rapidly mutating heartbeat state out of git-synced paths while keeping the core commitment in the ledger is a brilliant, pragmatic solution to prevent merge conflicts and remote-injection vulnerabilities.
+- **Cost Control & Snapshot Gating (P1, P7)**: Bypassing the LLM entirely if the tmux hash hasn't changed is an elegant way to keep costs at ~$0.80/day. The fallback to templated text ensures the system fails open safely.
+- **Security Posture**: The spec anticipates complex attack vectors. The combination of loopback enforcement (S15), metadata-stamped skips (A21), and PII redaction (S18) provides robust defense-in-depth.
+- **Immutability of Terminal States (A17)**: Rejecting `PATCH` on terminal states prevents a whole class of zombie-state bugs and audit-log tampering.
+
+---
+
+### 4. Gaps & Missing Elements
+
+- **Agent Awareness**: The spec updates `AGENT.md` to say "⏳ is reserved", but does the agent actually *know* it is on the clock? If the agent cannot read its own active ledger via a tool or context injection, it cannot prioritize tasks to meet the `hardDeadlineAt`.
+- **LLM API Provider Failures**: The spec covers the daily spend cap, but doesn't explicitly define behavior for 5xx/429 errors from Anthropic/OpenAI. (Assumption: it should catch these and immediately fail-open to the templated heartbeat rather than retrying and clogging the queue).
+- **Timezone/Clock Drift Strictness**: `expectedFinishAt` and `hardDeadlineAt` are ISO strings. The spec must explicitly mandate UTC normalization at the API ingress boundary (`POST /commitments`) to prevent timezone offset bugs from triggering premature expirations.
+- **Resolution of Open Question #3**: The spec leaves the Sentinel auto-enable shadow mode as an open question. *Recommendation: Require explicit user opt-in via config (`promiseBeacon.sentinelAutoEnable=true`) even after the 7-day shadow period hits the 85% precision mark. Do not auto-flip config values.*
+
+---
+
+### 5. Industry Comparison
+
+- **Existing Solutions**: Most current agent frameworks (LangChain, AutoGen, CrewAI) lack native, durable asynchronous "promises." They rely on synchronous execution, simple webhooks, or polling. This spec's asymmetric, heartbeat-driven approach models human asynchronous communication much more accurately.
+- **Patterns Used**: The spec utilizes excellent distributed systems patterns: Optimistic Concurrency Control (CAS on `version`), Circuit Breakers (daily LLM cap), Exponential Backoff, and Single-Writer Queues.
+- **Anti-patterns Avoided**: By extracting `ProxyCoordinator` and removing the local mutex, the spec successfully avoids the "distributed lock over local files" anti-pattern that plagues many early-stage agent architectures.
+
+---
+
+### 6. Scalability Assessment
+
+- **Phase 1 (MVP, 10-50 agents/commitments)**: **Excellent.** The single-writer queue (depth 256) and local file JSON/JSONL storage will easily handle this load. The p99 target of 50ms is highly achievable.
+- **Phase 2 (Growth, 50-500 agents/commitments)**: **Friction points emerge.** The 256-depth queue on `mutate()` will likely overflow during burst events (e.g., network reconnects causing mass updates). Returning 503s is safe, but requires the client/skills to have robust retry logic with jitter. File I/O for hot state will start causing high disk IOPS.
+- **Phase 3 (Scale, 500-5000 agents/commitments)**: **Architecture change required.**
+  - JSON file-backed storage must be replaced with SQLite or Postgres.
+  - The in-memory `ProxyCoordinator` will fail when `AgentServer` is scaled horizontally across multiple instances.
+  - `LlmQueue` will need to become a Redis-backed priority queue (e.g., BullMQ) to handle distributed rate limiting.
+
+---
+
+### 7. Recommendations (Prioritized)
+
+1. **Implement LLM Abort Wiring (High Impact)**: Update the `LlmQueue` spec to pass `AbortController.signal` to all background-lane (Beacon) LLM calls. Ensure the queue actively aborts these requests when interactive-lane requests arrive and capacity is full.
+2. **Decouple Server Boot from Session Liveness (High Impact)**: Remove `serverBootId` from `sessionEpoch`. Rely strictly on the underlying Claude/Tmux session UUID to determine if an agent session has died, preventing mass false-violations on server restarts.
+3. **Inject Active Promises into Agent Context (Medium Impact)**: Add a lightweight, read-only summary of pending commitments (and their deadlines) to the agent's system prompt or state injection, so the agent can self-regulate its pacing.
+4. **Mandate UTC and Strict API Validation (Medium Impact)**: Add a requirement that all time-based fields (`hardDeadlineAt`, etc.) are strictly validated as UTC at the API boundary, rejecting non-UTC ISO strings with a 400 error.
+5. **Ratify Open Questions (Low Impact/Administrative)**:
+   - Accept `⏳` as the prefix.
+   - Accept `$1.00/day` (100 cents) as a sensible default limit.
+   - Mandate manual user opt-in for Sentinel Phase 2 (do not auto-enable based purely on shadow-mode metrics).

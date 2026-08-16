@@ -1,0 +1,19 @@
+{
+  "sessionId": "6750af7e-cfe4-43fa-8d53-fbf5ee34240e",
+  "tmuxSession": "echo-interactive-1775339232842",
+  "task": "[slack:C0APW9UHFJ5 from U0AP927E2R1 (uid:U0AP927E2R1)] please let me know where we stand here (IMPOR",
+  "phase": "testing",
+  "files": [
+    ".instar/slack-channel-registry.json"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-04T21:47:33.421Z",
+  "updatedAt": "2026-04-04T21:47:33.421Z",
+  "stale": false,
+  "outputHash": "5bf156f79d6155df82dc8d387812417a"
+}

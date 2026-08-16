@@ -1,0 +1,21 @@
+{
+  "sessionId": "5611ffca-6261-4a88-8038-a631010181e0",
+  "tmuxSession": "echo-dashboard-scroll-history",
+  "task": "[telegram:1541] hows it looking (IMPORTANT: Read /tmp/instar-telegram/ctx-1541-1774038702345.txt for",
+  "phase": "testing",
+  "files": [
+    "tests/unit/PromptGate.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T20:35:43.182Z",
+  "updatedAt": "2026-03-20T20:35:43.182Z",
+  "stale": true,
+  "outputHash": "0f1ccbc221c74641b4c9d2701ad00223"
+}

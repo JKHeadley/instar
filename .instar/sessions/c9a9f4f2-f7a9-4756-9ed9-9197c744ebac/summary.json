@@ -1,0 +1,19 @@
+{
+  "sessionId": "c9a9f4f2-f7a9-4756-9ed9-9197c744ebac",
+  "tmuxSession": "echo-server-side-process-review",
+  "task": "[telegram:1882] top to bottom (IMPORTANT: Read /tmp/instar-telegram/ctx-1882-1774217707254.txt for t",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "security",
+    "messaging",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-22T22:18:11.579Z",
+  "updatedAt": "2026-03-22T22:18:11.579Z",
+  "stale": true,
+  "outputHash": "08850a7abd9e87dce38dfb92c78c1035"
+}

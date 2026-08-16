@@ -1,0 +1,27 @@
+{
+  "sessionId": "1088c54a-a790-448c-a823-704947008e39",
+  "tmuxSession": "echo-exploring-slack-integration",
+  "task": "[telegram:3079] yes, spin up the spec, then run it through the review process (IMPORTANT: Read /tmp/",
+  "phase": "testing",
+  "files": [
+    "job-review-spec.md",
+    "architecture.md",
+    "CAPABILITY-MAP-SPEC.md",
+    "SELF-HEALING-REMEDIATOR-SPEC.md",
+    "signal-vs-authority.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-23T04:08:44.517Z",
+  "updatedAt": "2026-04-23T04:08:44.517Z",
+  "stale": true,
+  "outputHash": "474c1a7d411fc4b7510313fa054bc8c8"
+}

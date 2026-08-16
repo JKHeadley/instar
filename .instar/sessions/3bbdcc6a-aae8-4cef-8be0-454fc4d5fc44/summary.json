@@ -1,0 +1,22 @@
+{
+  "sessionId": "3bbdcc6a-aae8-4cef-8be0-454fc4d5fc44",
+  "tmuxSession": "echo-automatic-lesson-extraction",
+  "task": "[telegram:772] I feel like we already have some hook type infrastructure that we pass messages throu",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-14T01:26:23.482Z",
+  "updatedAt": "2026-03-14T01:26:23.482Z",
+  "stale": true,
+  "outputHash": "58c3ef3c8c8bb492de5c014a2605451d"
+}

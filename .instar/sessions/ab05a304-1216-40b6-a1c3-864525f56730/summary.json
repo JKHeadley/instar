@@ -1,0 +1,19 @@
+{
+  "sessionId": "ab05a304-1216-40b6-a1c3-864525f56730",
+  "tmuxSession": "echo-topic-5447",
+  "task": "[telegram:5447] Hi Echo! I would like to use this topic to focus on issues regarding Instar agent ro",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-05T21:13:50.625Z",
+  "updatedAt": "2026-04-05T21:13:50.625Z",
+  "stale": true,
+  "outputHash": "b85aeaed60970014bbab5208a1d1d69c"
+}

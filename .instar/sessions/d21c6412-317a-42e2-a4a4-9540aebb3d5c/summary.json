@@ -1,0 +1,22 @@
+{
+  "sessionId": "d21c6412-317a-42e2-a4a4-9540aebb3d5c",
+  "tmuxSession": "echo-jobs-not-running",
+  "task": "[telegram:1767] We either need to find a way to actually switch models based on complexity or just u",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/.instar/agents/echo/.instar/jobs.json"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-23T01:47:08.510Z",
+  "updatedAt": "2026-03-23T01:47:08.510Z",
+  "stale": true,
+  "outputHash": "5a3db5827ec2ba3dcfa9b556f552fe0c"
+}

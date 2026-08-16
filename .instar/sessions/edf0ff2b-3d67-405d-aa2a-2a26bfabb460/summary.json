@@ -1,0 +1,22 @@
+{
+  "sessionId": "edf0ff2b-3d67-405d-aa2a-2a26bfabb460",
+  "tmuxSession": "echo-claude-agent-sdk",
+  "task": "[telegram:9984] Hi Echo! Please look into this announcement and see how it affects Instar:\n\nhttps://",
+  "phase": "testing",
+  "files": [
+    "../../../Documents/Projects/instar/.instar/worktrees/spec-provider-portability/src/providers/adapters/anthropic-interactive-pool/transport/oneShotCompletion.ts",
+    "../../../Documents/Projects/instar/.instar/worktrees/spec-provider-portability/src/providers/adapters/anthropic-interactive-pool/transport/warmSessionInbox.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-15T05:12:07.703Z",
+  "updatedAt": "2026-05-15T05:12:07.703Z",
+  "stale": false,
+  "outputHash": "dba47a50bdc11cfff70d2b739b04b2e7"
+}

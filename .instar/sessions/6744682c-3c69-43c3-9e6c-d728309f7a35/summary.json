@@ -1,0 +1,23 @@
+{
+  "sessionId": "6744682c-3c69-43c3-9e6c-d728309f7a35",
+  "tmuxSession": "echo-server-recovery",
+  "task": "[telegram:815] hello? (IMPORTANT: Read /tmp/instar-telegram/ctx-815-1773803235981.txt for thread his",
+  "phase": "testing",
+  "files": [
+    "upgrades/0.21.3.md",
+    "upgrades/0.21.4.md",
+    "upgrades/0.22.0.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-18T04:45:11.673Z",
+  "updatedAt": "2026-03-18T04:45:11.673Z",
+  "stale": true,
+  "outputHash": "6fc1281841f640fb19e9ae376815b311"
+}

@@ -1,0 +1,15 @@
+{
+  "sessionId": "4ae496e6-6fd2-435a-a419-0b49e0b4955d",
+  "tmuxSession": "echo-explore-btw-mode",
+  "task": "Session 4ae496e6-6fd2-435a-a419-0b49e0b4955d (testing)",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T06:48:11.195Z",
+  "updatedAt": "2026-03-20T06:48:11.195Z",
+  "stale": true,
+  "outputHash": "6d72bec5ad3f172dc9976d032d91669a"
+}

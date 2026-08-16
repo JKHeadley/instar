@@ -1,0 +1,18 @@
+{
+  "sessionId": "3d09c5ad-5a8e-4680-93ff-04d68de91acd",
+  "tmuxSession": "echo-interactive-1774732362078",
+  "task": "[slack:C0AQ9P1CN00] why haven't some of these been cleaned up yet? I'm sure they're inactive by now,",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T21:31:02.120Z",
+  "updatedAt": "2026-03-28T21:31:02.120Z",
+  "stale": true,
+  "outputHash": "dc90a20ce348b29955af4cc8fc42ba8d"
+}

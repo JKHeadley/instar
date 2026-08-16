@@ -1,0 +1,17 @@
+{
+  "sessionId": "52f35d7a-ed77-4ce2-a2f3-f3f4f7d4fe5c",
+  "tmuxSession": "echo-attention",
+  "task": "[telegram:3] Memory is fine, please increase your threshold so we don't get these warnings (IMPORTAN",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security",
+    "messaging",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-28T04:14:30.627Z",
+  "updatedAt": "2026-03-28T04:14:30.627Z",
+  "stale": true,
+  "outputHash": "625ac3e6ff21fc12e7f35c45ce51fa7b"
+}

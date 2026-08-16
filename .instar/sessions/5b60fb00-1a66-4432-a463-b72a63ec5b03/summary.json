@@ -1,0 +1,22 @@
+{
+  "sessionId": "5b60fb00-1a66-4432-a463-b72a63ec5b03",
+  "tmuxSession": "echo-topic-session-command-trap",
+  "task": "[telegram:1427] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1773956368922",
+  "phase": "testing",
+  "files": [
+    "specs/session-prompt-bridge.md"
+  ],
+  "topics": [
+    "database",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-19T21:49:10.814Z",
+  "updatedAt": "2026-03-19T21:49:10.814Z",
+  "stale": false,
+  "outputHash": "199b7498a8487a43044ab2a1b5b72977"
+}

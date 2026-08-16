@@ -1,0 +1,21 @@
+{
+  "sessionId": "5bff42d8-9afe-499b-9344-862fc6358f36",
+  "tmuxSession": "echo-server-side-process-review",
+  "task": "CONTINUATION — You are resuming an EXISTING conversation. Read the context below before responding.\n",
+  "phase": "testing",
+  "files": [
+    "/reference/cli/index.html",
+    "/reference/configuration/index.html",
+    "/reference/default-jobs/index.html"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-27T16:44:10.284Z",
+  "updatedAt": "2026-03-27T16:44:10.284Z",
+  "stale": true,
+  "outputHash": "ed16542ef161e901c7691325aa1b183f"
+}

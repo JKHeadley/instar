@@ -1,0 +1,20 @@
+{
+  "sessionId": "6491219a-e692-47fe-aa6e-9e544876ae48",
+  "tmuxSession": "echo-default-model",
+  "task": "Session 6491219a-e692-47fe-aa6e-9e544876ae48 (testing)",
+  "phase": "testing",
+  "files": [
+    "src/core/models.ts"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T21:34:44.200Z",
+  "updatedAt": "2026-03-20T21:34:44.200Z",
+  "stale": true,
+  "outputHash": "f5dcfaf8ac22e3e254d2e8ab3a017241"
+}

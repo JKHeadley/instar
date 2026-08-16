@@ -1,0 +1,21 @@
+{
+  "sessionId": "a2def04e-d836-49de-ae0f-28db90390ef8",
+  "tmuxSession": "echo-progress-update-bug",
+  "task": "[telegram:9429] [image:download-failed] this still seems to be happening (IMPORTANT: Read /tmp/insta",
+  "phase": "testing",
+  "files": [
+    "NEXT.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-13T14:44:27.689Z",
+  "updatedAt": "2026-05-13T14:44:27.689Z",
+  "stale": true,
+  "outputHash": "cf4b5cd2ab2ae7dbfeddcf9c8ec493a1"
+}

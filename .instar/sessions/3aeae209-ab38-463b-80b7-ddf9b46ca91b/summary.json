@@ -1,0 +1,19 @@
+{
+  "sessionId": "3aeae209-ab38-463b-80b7-ddf9b46ca91b",
+  "tmuxSession": "echo-indra-assistance",
+  "task": "[telegram:3995] Indra isn’t responding again (IMPORTANT: Read /tmp/instar-telegram/ctx-3995-17756904",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-09T02:31:42.377Z",
+  "updatedAt": "2026-04-09T02:31:42.377Z",
+  "stale": true,
+  "outputHash": "284ffb1e4df9dd6e2173b6add35e9d8d"
+}

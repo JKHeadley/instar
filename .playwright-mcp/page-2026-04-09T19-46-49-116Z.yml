@@ -1,0 +1,38 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - img "Instar" [ref=e5]
+      - heading "Instar Dashboard" [level=1] [ref=e6]
+      - navigation [ref=e7]:
+        - button "Sessions 0" [ref=e8] [cursor=pointer]
+        - button "Files" [ref=e9] [cursor=pointer]
+        - button "Send Content" [ref=e10] [cursor=pointer]
+        - button "Secret Drop" [ref=e11] [cursor=pointer]
+        - button "Jobs 2" [ref=e12] [cursor=pointer]
+        - button "Features" [ref=e13] [cursor=pointer]
+        - button "Activity 1" [ref=e14] [cursor=pointer]
+        - button "Health" [ref=e15] [cursor=pointer]
+    - generic [ref=e16]:
+      - generic "Server status" [ref=e17] [cursor=pointer]:
+        - generic [ref=e19]: 13s
+      - generic "Active sessions" [ref=e21] [cursor=pointer]:
+        - generic [ref=e22]: ○
+        - generic [ref=e23]: 3/10 sessions
+      - generic "Memory pressure" [ref=e25] [cursor=pointer]:
+        - generic [ref=e26]: Mem 57%
+      - generic "Failing jobs" [ref=e29] [cursor=pointer]:
+        - generic [ref=e30]: ⚠
+        - generic [ref=e31]: 2 failing
+      - generic "Attention items" [ref=e33] [cursor=pointer]:
+        - generic [ref=e34]: 🔔
+        - generic [ref=e35]: "1"
+    - generic [ref=e38]: Connected
+  - generic [ref=e39]:
+    - generic [ref=e40]:
+      - generic [ref=e41]:
+        - heading "Files" [level=2] [ref=e42]
+        - button "⚙" [ref=e43] [cursor=pointer]
+      - generic [ref=e45]: Loading...
+    - generic [ref=e48]:
+      - generic [ref=e49]: 📂
+      - paragraph [ref=e50]: Select a file to view its contents

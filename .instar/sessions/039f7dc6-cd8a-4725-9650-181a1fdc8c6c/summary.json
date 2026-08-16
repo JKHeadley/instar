@@ -1,0 +1,18 @@
+{
+  "sessionId": "039f7dc6-cd8a-4725-9650-181a1fdc8c6c",
+  "tmuxSession": "echo-session-robustness",
+  "task": "[telegram:2169] “Queue them up for the next session” sounds like a “delay for a later that never com",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-28T01:03:00.094Z",
+  "updatedAt": "2026-04-28T01:03:00.094Z",
+  "stale": true,
+  "outputHash": "ed05a7e071ae7df7310985946223ad5e"
+}

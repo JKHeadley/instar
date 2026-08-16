@@ -1,0 +1,20 @@
+{
+  "sessionId": "5ed3d917-99f4-49bf-853e-6895ca62840d",
+  "tmuxSession": "echo-dashboard-development",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-5348-1778113603898-vah1p5ip.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    "dashboard/index.html"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-07T00:49:30.943Z",
+  "updatedAt": "2026-05-07T00:49:30.943Z",
+  "stale": true,
+  "outputHash": "5c9c96243290c2ffd5b542991388365d"
+}

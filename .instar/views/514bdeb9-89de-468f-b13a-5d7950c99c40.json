@@ -1,0 +1,12 @@
+{
+  "id": "514bdeb9-89de-468f-b13a-5d7950c99c40",
+  "title": "State Integrity Check — 2026-04-29",
+  "markdown": "# State Integrity Check Report\n**Date**: 2026-04-29  \n**Status**: CRITICAL ISSUE FOUND\n\n## Summary\nFour areas checked cleanly. One critical issue found: Telegram messaging adapter is not started despite being enabled in configuration.\n\n## Findings\n\n### 1. Active Job Orphan ✓ OK\nNo orphaned jobs. Session referenced in active-job.json is currently running.\n\n### 2. Job-Topic Orphan ✓ OK  \nNo stale mappings. job-topic-mappings.json is empty.\n\n### 3. State File Bloat ✓ OK\nNo files exceed 1MB. Largest files are 33-43KB configs.\n\n### 4. Handoff Note Staleness ✓ OK\nAll handoff notes recent (oldest is 4 days).\n\n### 5. Config-Reality Mismatch ❌ CRITICAL\n**Telegram adapter not started despite enabled config**\n- Duration: 5+ hours (detected at 07:23 UTC)\n- Impact: Agent cannot receive Telegram messages\n- System probes show `started: false`, `polling: inactive`\n- Config shows `enabled: true`\n\n## Actions Taken\n- Submitted feedback: ID fb-300346db-8c9 (type: bug, severity: critical)\n- No automatic recovery available (no restart endpoint)\n",
+  "createdAt": "2026-04-29T13:01:31.032Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "state-integrity-check"
+    }
+  }
+}

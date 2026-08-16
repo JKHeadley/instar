@@ -1,0 +1,24 @@
+{
+  "sessionId": "1365ef18-784d-41c0-98d8-fb75597a9992",
+  "tmuxSession": "echo-lifeline",
+  "task": "[telegram:2] hi (IMPORTANT: Read /tmp/instar-telegram/ctx-2-1773253810374.txt for thread history and",
+  "phase": "testing",
+  "files": [
+    "0.17.8.md",
+    "GRACEFUL_UPDATES.md",
+    "0.17.7.md",
+    "NEXT.md",
+    "0.9.36.md",
+    "../lib/node_modules/instar/dist/cli.js"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-11T19:12:46.878Z",
+  "updatedAt": "2026-03-11T19:12:46.878Z",
+  "stale": true,
+  "outputHash": "fbc5a28d156c3d2ad0c54e3596fcdbe1"
+}

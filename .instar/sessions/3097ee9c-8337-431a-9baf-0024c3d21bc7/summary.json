@@ -1,0 +1,22 @@
+{
+  "sessionId": "3097ee9c-8337-431a-9baf-0024c3d21bc7",
+  "tmuxSession": "echo-server-restarts",
+  "task": "[telegram:2922] lets just make sure these times are always local to the machine tha tthe agent is ru",
+  "phase": "testing",
+  "files": [
+    ".instar/shadow-install/node_modules/instar/dist/cli.js"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-27T04:05:10.775Z",
+  "updatedAt": "2026-03-27T04:05:10.775Z",
+  "stale": true,
+  "outputHash": "3c06a07edc5b2304b5b8c20a36b30bf1"
+}

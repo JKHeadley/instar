@@ -1,0 +1,23 @@
+{
+  "sessionId": "b807b257-c718-4f0e-8cbd-f79ecc997ec8",
+  "tmuxSession": "echo-telegram-messages-pausing-in-input",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-7195-1778550789352-laa1kw2v.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    ".instar/memory/project_input_lockup_secondary_bug.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "security",
+    "messaging",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-12T05:45:38.824Z",
+  "updatedAt": "2026-05-12T05:45:38.824Z",
+  "stale": true,
+  "outputHash": "fce0d24b580c05188ef1a23cdf064ba3"
+}

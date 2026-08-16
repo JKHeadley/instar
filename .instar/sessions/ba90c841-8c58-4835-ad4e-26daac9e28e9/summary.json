@@ -1,0 +1,15 @@
+{
+  "sessionId": "ba90c841-8c58-4835-ad4e-26daac9e28e9",
+  "tmuxSession": "echo-ui-test-with-topic",
+  "task": "Session ba90c841-8c58-4835-ad4e-26daac9e28e9 (testing)",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-19T22:38:25.933Z",
+  "updatedAt": "2026-03-19T22:38:25.933Z",
+  "stale": true,
+  "outputHash": "6d72bec5ad3f172dc9976d032d91669a"
+}

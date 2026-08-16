@@ -1,0 +1,24 @@
+{
+  "sessionId": "c6a1aec7-f50a-4f2f-8d7a-967cfac3ed6d",
+  "tmuxSession": "echo-standby-mode-edits",
+  "task": "[telegram:8882] Hi Echo! I'd like to make an adjustment to standby messages:\n\n1) first of all, this ",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/Documents/Projects/instar/src/monitoring/PresenceProxy.ts",
+    "/Users/justin/Documents/Projects/instar/tests/unit/presence-proxy-quota.test.ts",
+    "/Users/justin/Documents/Projects/instar/tests/unit/isSystemOrProxyMessage.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-05T03:59:13.158Z",
+  "updatedAt": "2026-05-05T03:59:13.158Z",
+  "stale": false,
+  "outputHash": "e646a8e5dfdfa787585fa062cbdbf76a"
+}

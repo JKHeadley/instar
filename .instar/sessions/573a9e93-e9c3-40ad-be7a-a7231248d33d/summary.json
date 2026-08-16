@@ -1,0 +1,20 @@
+{
+  "sessionId": "573a9e93-e9c3-40ad-be7a-a7231248d33d",
+  "tmuxSession": "echo-dashboard-job-reports-and-metrics",
+  "task": "[telegram:1532] hows thsi looking? (IMPORTANT: Read /tmp/instar-telegram/ctx-1532-1774046962897.txt ",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T23:13:43.528Z",
+  "updatedAt": "2026-03-20T23:13:43.528Z",
+  "stale": false,
+  "outputHash": "5deeae19b5534ed6e07ef030bd494587"
+}

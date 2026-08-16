@@ -1,0 +1,23 @@
+{
+  "sessionId": "6b774fc2-8e1c-4fac-966c-42415873f2ca",
+  "tmuxSession": "echo-openclaw",
+  "task": "[telegram:9003] Why did we stop? The whole point of autonomous mode is to complete all the work and ",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/.instar/agents/echo/.instar/autonomous-state.local.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-11T00:18:10.573Z",
+  "updatedAt": "2026-05-11T00:18:10.573Z",
+  "stale": true,
+  "outputHash": "306111afecde96590ca5b1ac52b67b76"
+}

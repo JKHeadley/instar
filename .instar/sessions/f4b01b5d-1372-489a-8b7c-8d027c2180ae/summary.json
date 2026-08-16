@@ -1,0 +1,21 @@
+{
+  "sessionId": "f4b01b5d-1372-489a-8b7c-8d027c2180ae",
+  "tmuxSession": "echo-sessions-not-resuming",
+  "task": "[telegram:1490] test resuming again (IMPORTANT: Read /tmp/instar-telegram/ctx-1490-1773996739434.txt",
+  "phase": "testing",
+  "files": [
+    "package.json",
+    "scripts/pre-push-gate.js"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T09:07:58.111Z",
+  "updatedAt": "2026-03-20T09:07:58.111Z",
+  "stale": false,
+  "outputHash": "c74c98275dc5a7f712c174ff1ad90bca"
+}

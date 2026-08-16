@@ -1,0 +1,381 @@
+- generic [ref=e5]:
+  - generic [ref=e8]:
+    - application [ref=e10]
+    - toolbar "History Navigation" [ref=e12]:
+      - generic [ref=e14]:
+        - generic [ref=e17]:
+          - generic [ref=e18]:
+            - button "Back in history" [disabled] [ref=e19]:
+              - img [ref=e20]
+            - button "Forward in history" [disabled] [ref=e22]:
+              - img [ref=e23]
+          - button "Show history" [ref=e26] [cursor=pointer]:
+            - img [ref=e27]
+        - button "Search" [ref=e31] [cursor=pointer]:
+          - img [ref=e33]
+          - generic [ref=e35]: Search Echo Agent
+        - generic [ref=e36]:
+          - button "Chat with Slackbot AI" [ref=e42] [cursor=pointer]:
+            - img [ref=e44]
+          - button "Help" [ref=e48] [cursor=pointer]:
+            - img [ref=e49]
+    - tabpanel "Echo Agent" [ref=e52]:
+      - generic [ref=e53]:
+        - button "Switch workspaces… (Echo Agent)" [ref=e56] [cursor=pointer]:
+          - img "Echo Agent" [ref=e57]: EA
+        - tablist "Echo Agent" [ref=e60]:
+          - tab "Home" [selected] [ref=e62] [cursor=pointer]:
+            - generic [ref=e63]:
+              - img [ref=e67]
+              - generic [ref=e70]: Home
+              - generic: "1"
+          - tab "DMs" [ref=e71] [cursor=pointer]:
+            - generic [ref=e72]:
+              - img [ref=e75]
+              - generic [ref=e77]: DMs
+              - generic: "2"
+          - tab "Activity" [ref=e78] [cursor=pointer]:
+            - generic [ref=e79]:
+              - img [ref=e84]
+              - generic [ref=e86]: "3"
+              - generic [ref=e87]: Activity
+              - generic: "3"
+          - tab "Files" [ref=e88] [cursor=pointer]:
+            - generic [ref=e89]:
+              - img [ref=e92]
+              - generic [ref=e95]: Files
+              - generic: "4"
+          - tab "More…" [ref=e96] [cursor=pointer]:
+            - generic [ref=e97]:
+              - img [ref=e100]
+              - generic [ref=e103]: More
+              - generic: "0"
+          - separator [ref=e104]
+          - tab "Admin" [ref=e105] [cursor=pointer]:
+            - generic [ref=e106]:
+              - img [ref=e109]
+              - generic [ref=e111]: Admin
+      - generic [ref=e115]:
+        - tabpanel "Home" [ref=e116]:
+          - generic [ref=e118]:
+            - group "Home" [ref=e119]:
+              - generic [ref=e121]:
+                - toolbar "Actions" [ref=e122]:
+                  - button "Echo Agent Actions" [ref=e125] [cursor=pointer]:
+                    - generic [ref=e126]: Echo Agent
+                    - img "caret-down" [ref=e127]
+                  - generic [ref=e129]:
+                    - button "Manage my sidebar" [ref=e130] [cursor=pointer]:
+                      - img [ref=e131]
+                    - button "New message" [ref=e134] [cursor=pointer]:
+                      - img [ref=e135]
+                - button "Get 50% off Pro 6 days left on this offer" [ref=e141] [cursor=pointer]:
+                  - img [ref=e143]
+                  - generic [ref=e145]:
+                    - generic [ref=e146]: Get 50% off Pro
+                    - generic [ref=e147]: 6 days left on this offer
+                - generic [ref=e148]:
+                  - tree "Channels and direct messages" [ref=e150]:
+                    - treeitem "Huddles" [level=1] [ref=e151] [cursor=pointer]:
+                      - generic [ref=e154]:
+                        - generic [ref=e155]: 
+                        - generic [ref=e156]: Huddles
+                    - treeitem "Drafts & sent" [level=1] [ref=e157] [cursor=pointer]:
+                      - generic [ref=e159]:
+                        - img [ref=e161]
+                        - generic [ref=e163]: Drafts & sent
+                    - treeitem "Directories" [level=1] [ref=e164] [cursor=pointer]:
+                      - generic [ref=e165]:
+                        - img [ref=e167]
+                        - generic [ref=e170]: Directories
+                    - treeitem "Starred" [expanded] [level=1] [ref=e173]:
+                      - button [ref=e177] [cursor=pointer]:
+                        - generic [ref=e178]:
+                          - img [ref=e180]
+                          - img [ref=e183]
+                        - generic [ref=e187]: Starred
+                      - group
+                    - treeitem [ref=e188] [cursor=pointer]:
+                      - generic [ref=e193]: Drag and drop important stuff here
+                    - treeitem "Channels" [expanded] [level=1] [ref=e194]:
+                      - button [ref=e198] [cursor=pointer]:
+                        - generic [ref=e199]:
+                          - img [ref=e201]
+                          - img [ref=e204]
+                        - generic [ref=e208]: Channels
+                      - group:
+                        - treeitem "echo-agent-sess-api-slack-test" [level=2] [ref=e209] [cursor=pointer]:
+                          - generic [ref=e210]:
+                            - img [ref=e212]
+                            - generic [ref=e214]: echo-agent-sess-api-slack-test
+                            - generic [ref=e216]: "1"
+                        - treeitem "echo-agent-sess-test-slack" [level=2] [ref=e217] [cursor=pointer]:
+                          - generic [ref=e218]:
+                            - img [ref=e220]
+                            - generic [ref=e222]: echo-agent-sess-test-slack
+                            - generic [ref=e224]: "1"
+                        - treeitem "all-echo-agent" [level=2] [ref=e225] [cursor=pointer]:
+                          - generic [ref=e226]:
+                            - img [ref=e228]
+                            - generic [ref=e230]: all-echo-agent
+                        - treeitem "echo-agent-sys-attention" [level=2] [ref=e231] [cursor=pointer]:
+                          - generic [ref=e232]:
+                            - img [ref=e234]
+                            - generic [ref=e236]: echo-agent-sys-attention
+                        - treeitem "echo-sys-dashboard" [level=2] [ref=e237] [cursor=pointer]:
+                          - generic [ref=e238]:
+                            - img [ref=e240]
+                            - generic [ref=e242]: echo-sys-dashboard
+                        - treeitem "echo-sys-lifeline" [level=2] [ref=e243] [cursor=pointer]:
+                          - generic [ref=e244]:
+                            - img [ref=e246]
+                            - generic [ref=e248]: echo-sys-lifeline
+                        - treeitem "new-channel" [level=2] [ref=e249] [cursor=pointer]:
+                          - generic [ref=e250]:
+                            - img [ref=e252]
+                            - generic [ref=e254]: new-channel
+                        - treeitem "social" [level=2] [ref=e255] [cursor=pointer]:
+                          - generic [ref=e256]:
+                            - img [ref=e258]
+                            - generic [ref=e260]: social
+                        - treeitem "Add channels" [level=2] [ref=e261] [cursor=pointer]:
+                          - button "Add channels" [ref=e263]:
+                            - generic [ref=e264]:
+                              - generic [ref=e265]: 
+                              - generic [ref=e266]: Add channels
+                    - treeitem "Direct Messages" [expanded] [level=1] [ref=e267]:
+                      - button [ref=e271] [cursor=pointer]:
+                        - generic [ref=e272]:
+                          - img [ref=e274]
+                          - img [ref=e277]
+                        - generic [ref=e281]: Direct messages
+                      - group:
+                        - treeitem "Active, notifications snoozed Justin Headleyyou" [level=2] [ref=e282] [cursor=pointer]:
+                          - generic [ref=e283]:
+                            - generic [ref=e285]:
+                              - img [ref=e286]
+                              - img [ref=e288]
+                              - img "Active, notifications snoozed" [ref=e290]
+                            - generic [ref=e292]: Justin Headleyyou
+                        - treeitem "Invite people" [level=2] [ref=e293] [cursor=pointer]:
+                          - generic [ref=e295]:
+                            - generic [ref=e296]: 
+                            - generic [ref=e297]: Invite people
+                    - treeitem "Apps" [expanded] [level=1] [ref=e298]:
+                      - button [ref=e302] [cursor=pointer]:
+                        - generic [ref=e303]:
+                          - img [ref=e305]
+                          - img [ref=e308]
+                        - generic [ref=e312]: Apps
+                      - group:
+                        - treeitem "Slackbot" [level=2] [ref=e313] [cursor=pointer]:
+                          - generic [ref=e314]:
+                            - img [ref=e318]
+                            - generic [ref=e319]: Slackbot
+                        - treeitem "echo" [level=2] [ref=e320] [cursor=pointer]:
+                          - generic [ref=e321]:
+                            - img [ref=e325]
+                            - generic [ref=e326]: echo
+                        - treeitem "Add apps" [level=2] [ref=e327] [cursor=pointer]:
+                          - generic [ref=e329]:
+                            - generic [ref=e330]: 
+                            - generic [ref=e331]: Add apps
+                  - generic [ref=e334]:
+                    - generic [ref=e335]: Slack works better when you use it together.
+                    - button "Invite teammates" [ref=e336] [cursor=pointer]:
+                      - img [ref=e338]
+                      - text: Invite teammates
+            - slider "Sidebar width" [ref=e340]: "270"
+          - group "Channel new-channel" [ref=e344]:
+            - generic [ref=e345]:
+              - toolbar "Primary view actions" [ref=e346]:
+                - button "Move channel" [ref=e349] [cursor=pointer]:
+                  - img [ref=e350]
+                - button "#new-channel" [ref=e353] [cursor=pointer]:
+                  - generic [ref=e354]:
+                    - img [ref=e356]
+                    - generic [ref=e358]: new-channel
+                - generic [ref=e359]:
+                  - button "Invite teammates" [ref=e361] [cursor=pointer]:
+                    - img [ref=e363]
+                    - text: Invite teammates
+                  - generic [ref=e367]:
+                    - img [ref=e368]
+                    - button "Start huddle in new-channel" [ref=e369] [cursor=pointer]:
+                      - img [ref=e370]
+                      - generic [ref=e372]: Huddle
+                    - button "More Huddles options" [ref=e374] [cursor=pointer]:
+                      - img [ref=e375]
+                  - button "All new posts" [ref=e377] [cursor=pointer]:
+                    - img [ref=e379]
+                  - button "Search in channel" [ref=e383] [cursor=pointer]:
+                    - img [ref=e384]
+                  - button "More channel actions" [ref=e386] [cursor=pointer]:
+                    - img [ref=e387]
+              - tablist "new-channel views" [ref=e392]:
+                - tab "Messages" [selected] [ref=e393] [cursor=pointer]:
+                  - generic [ref=e396]:
+                    - img [ref=e398]
+                    - generic [ref=e400]: Messages
+                - tab "Add canvas" [ref=e403] [cursor=pointer]:
+                  - generic [ref=e406]:
+                    - img [ref=e408]
+                    - generic [ref=e410]: Add canvas
+                - button "Add and Edit Channel Tabs" [ref=e412] [cursor=pointer]:
+                  - img [ref=e416]
+              - generic [ref=e418]: Canvas
+              - generic [ref=e419]: List
+              - generic [ref=e420]: Folder
+              - generic [ref=e422]:
+                - generic [ref=e424]:
+                  - generic:
+                    - listitem [ref=e425]:
+                      - generic [ref=e426]:
+                        - generic [ref=e427]:
+                          - heading "wave emoji Welcome to your first channel!" [level=1] [ref=e428]:
+                            - img "wave emoji" [ref=e429]
+                            - text: Welcome to your first channel!
+                          - paragraph [ref=e430]:
+                            - text: Channels keep work focused around a specific topic. Pick a template to get started, or
+                            - button "see all" [ref=e431] [cursor=pointer]
+                            - text: .
+                        - generic [ref=e433]:
+                          - toolbar [ref=e434]:
+                            - generic [ref=e435]:
+                              - button "Run a project" [ref=e438] [cursor=pointer]:
+                                - generic [ref=e439]:
+                                  - paragraph [ref=e440]:
+                                    - generic [ref=e441]: Run a project
+                                  - paragraph [ref=e442]: Project starter kit template
+                                - img "'Project Plan' canvas template with sections for Team, Documents, and Milestones" [ref=e443]
+                              - button "Chat with your team" [ref=e446] [cursor=pointer]:
+                                - generic [ref=e447]:
+                                  - paragraph [ref=e448]:
+                                    - generic [ref=e449]: Chat with your team
+                                  - paragraph [ref=e450]: Team support template
+                                - img "Team support template with a pre-scheduled weekly huddle" [ref=e451]
+                              - button "Collaborate with external partners" [ref=e454] [cursor=pointer]:
+                                - generic [ref=e455]:
+                                  - paragraph [ref=e456]:
+                                    - generic [ref=e457]: Collaborate with external partners
+                                  - paragraph [ref=e458]: External partner template
+                                - img "List template with avatars of team members and status labels indicating tasks as 'In-Progress' or 'To-do'." [ref=e459]
+                              - button "Invite teammates" [ref=e462] [cursor=pointer]:
+                                - generic [ref=e463]:
+                                  - paragraph [ref=e464]:
+                                    - generic [ref=e465]: Invite teammates
+                                  - paragraph [ref=e466]: Add your whole team
+                                - img "Avatars of various people" [ref=e467]
+                          - generic:
+                            - button "Scroll left":
+                              - img
+                          - generic:
+                            - button "Scroll right":
+                              - img
+                    - listitem [ref=e468]:
+                      - button "Jump to date" [ref=e469] [cursor=pointer]:
+                        - text: Yesterday
+                        - img [ref=e471]
+                    - listitem [ref=e473]
+                    - 'listitem "Justin Headley: joined #new-channel. 10:29 PM." [ref=e476]':
+                      - document [ref=e477]:
+                        - generic [ref=e479]:
+                          - button [ref=e480] [cursor=pointer]:
+                            - img [ref=e482]
+                          - button "Justin Headley" [ref=e484] [cursor=pointer]
+                          - link "Yesterday at 10:29:02 PM" [ref=e485] [cursor=pointer]:
+                            - /url: https://echo-agent.slack.com/archives/C0APK1M956G/p1774675742350589
+                            - text: 10:29 PM
+                          - text: "joined #new-channel."
+                    - listitem [ref=e486]
+                    - list "new-channel (channel)" [ref=e488]
+                - generic [ref=e491]:
+                  - group "composer" [ref=e493]:
+                    - generic [ref=e495]:
+                      - toolbar "Formatting" [ref=e496]:
+                        - generic [ref=e497]:
+                          - generic:
+                            - generic:
+                              - button "Bold" [ref=e498] [cursor=pointer]:
+                                - img [ref=e499]
+                              - button "Italic" [ref=e501] [cursor=pointer]:
+                                - img [ref=e502]
+                              - button "Underline" [ref=e504] [cursor=pointer]:
+                                - img [ref=e505]
+                              - button "Strikethrough" [ref=e507] [cursor=pointer]:
+                                - img [ref=e508]
+                              - button "Link" [ref=e511] [cursor=pointer]:
+                                - img [ref=e512]
+                              - button "Ordered list" [ref=e514] [cursor=pointer]:
+                                - img [ref=e515]
+                              - button "Bulleted list" [ref=e517] [cursor=pointer]:
+                                - img [ref=e518]
+                              - button "Blockquote" [ref=e521] [cursor=pointer]:
+                                - img [ref=e522]
+                              - button "Code" [ref=e524] [cursor=pointer]:
+                                - img [ref=e525]
+                              - button "Code block" [ref=e527] [cursor=pointer]:
+                                - img [ref=e528]
+                      - generic [ref=e531]:
+                        - textbox "Message to new-channel" [active] [ref=e532]:
+                          - paragraph [ref=e533]
+                        - generic:
+                          - generic:
+                            - generic:
+                              - text: Message
+                              - generic: 
+                              - text: new-channel
+                      - toolbar "Composer actions" [ref=e534]:
+                        - generic [ref=e536]:
+                          - button "Attach" [ref=e537] [cursor=pointer]:
+                            - img [ref=e538]
+                          - button [ref=e540]
+                        - generic [ref=e542]:
+                          - button "Show formatting" [pressed] [ref=e543] [cursor=pointer]:
+                            - img [ref=e544]
+                          - button "Emoji" [ref=e546] [cursor=pointer]:
+                            - img [ref=e548]
+                          - button "Mention someone" [ref=e550] [cursor=pointer]:
+                            - img [ref=e551]
+                          - button "Record video clip" [ref=e554] [cursor=pointer]:
+                            - img [ref=e555]
+                          - button "Record audio clip" [ref=e557] [cursor=pointer]:
+                            - img [ref=e558]
+                          - button "Run shortcut" [ref=e561] [cursor=pointer]:
+                            - img [ref=e562]
+                        - generic [ref=e565]:
+                          - button "Send now" [disabled]:
+                            - img
+                          - button "Schedule for later" [disabled]:
+                            - img
+                  - generic [ref=e566]:
+                    - generic:
+                      - generic:
+                        - button: Shift + Return to add a new line
+        - toolbar "Control strip" [ref=e572]:
+          - button "Create new" [ref=e573] [cursor=pointer]:
+            - img [ref=e575]
+          - 'button "User: Justin Headley" [ref=e577] [cursor=pointer]':
+            - generic [ref=e579]:
+              - img [ref=e580]
+              - img [ref=e582]
+              - img "Active, notifications snoozed" [ref=e584]
+      - dialog "Information" [ref=e591]:
+        - generic [ref=e592]:
+          - generic [ref=e593]: 
+          - text: Stop juggling tabs, download the Slack app.
+          - link "Get Slack for macOS" [ref=e594] [cursor=pointer]:
+            - /url: https://slack.com/downloads?t=T0AQ9MLRHEC
+          - generic [ref=e595]:
+            - text: (Already have the app?
+            - link "Open Slack" [ref=e596] [cursor=pointer]:
+              - /url: https://echo-agent.slack.com/ssb/redirect
+            - text: .)
+        - button "Close" [ref=e597] [cursor=pointer]:
+          - img [ref=e598]
+      - generic:
+        - generic:
+          - img
+  - generic [ref=e603]:
+    - alert [ref=e604]
+    - log [ref=e605]

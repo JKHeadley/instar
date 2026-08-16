@@ -1,0 +1,21 @@
+{
+  "sessionId": "51a9be4b-c98e-4eed-b4b4-0e59c1283690",
+  "tmuxSession": "echo-topic-3995",
+  "task": "[telegram:3995] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1774749575435",
+  "phase": "testing",
+  "files": [
+    "dow-install/node_modules/instar/dist/cli.js",
+    "instar/instar-boot.js"
+  ],
+  "topics": [
+    "testing",
+    "security",
+    "messaging",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T04:20:47.202Z",
+  "updatedAt": "2026-03-29T04:20:47.202Z",
+  "stale": true,
+  "outputHash": "a43c5c720dccd8ba9dd0cace0affd83a"
+}

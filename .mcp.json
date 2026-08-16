@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest"
+      ]
+    },
+    "threadline": {
+      "command": "node",
+      "args": [
+        "/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/instar/dist/threadline/mcp-stdio-entry.js",
+        "--state-dir",
+        "/Users/justin/.instar/agents/echo/.instar",
+        "--agent-name",
+        "echo"
+      ]
+    }
+  }
+}

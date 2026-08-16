@@ -1,0 +1,22 @@
+{
+  "sessionId": "3c84d320-0260-40fb-81a5-3a205ba2236c",
+  "tmuxSession": "echo-session-compaction-bug-update",
+  "task": "[telegram:5290] Hmm, this is good to hear, but it troubles me that this doesn't seem to result in an",
+  "phase": "testing",
+  "files": [
+    "msg-1776308555804-ufidoz.json"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-16T03:27:56.704Z",
+  "updatedAt": "2026-04-16T03:27:56.704Z",
+  "stale": true,
+  "outputHash": "8d252ad072dedb5c3c2d6931d7d3d949"
+}

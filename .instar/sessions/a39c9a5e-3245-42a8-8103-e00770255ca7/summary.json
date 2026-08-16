@@ -1,0 +1,18 @@
+{
+  "sessionId": "a39c9a5e-3245-42a8-8103-e00770255ca7",
+  "tmuxSession": "echo-session-robustness",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-2169-1778950143198-rv3y3099.txt — it contains your f",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-16T16:50:00.597Z",
+  "updatedAt": "2026-05-16T16:50:00.597Z",
+  "stale": false,
+  "outputHash": "5b7d7f7d98a1d96e35b04da0bb57aadb"
+}

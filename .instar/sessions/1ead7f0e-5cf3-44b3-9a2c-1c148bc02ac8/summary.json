@@ -1,0 +1,13 @@
+{
+  "sessionId": "1ead7f0e-5cf3-44b3-9a2c-1c148bc02ac8",
+  "tmuxSession": "echo-test",
+  "task": "Session 1ead7f0e-5cf3-44b3-9a2c-1c148bc02ac8 (building)",
+  "phase": "building",
+  "files": [],
+  "topics": [],
+  "blockers": null,
+  "lastActivity": "2026-04-06T23:28:19.061Z",
+  "updatedAt": "2026-04-06T23:28:19.061Z",
+  "stale": true,
+  "outputHash": "57b16dde04baaa311cb29be983492449"
+}

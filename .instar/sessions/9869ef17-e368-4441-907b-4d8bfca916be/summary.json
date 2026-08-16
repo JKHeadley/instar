@@ -1,0 +1,20 @@
+{
+  "sessionId": "9869ef17-e368-4441-907b-4d8bfca916be",
+  "tmuxSession": "echo-token-management",
+  "task": "[telegram:8615] please proceed here (IMPORTANT: Read /tmp/instar-telegram/ctx-8615-1777681917863.txt",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/.instar/agents/echo/.instar/shadow-install/node_modules/instar/dist/cli.js"
+  ],
+  "topics": [
+    "frontend",
+    "security",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-02T01:05:34.092Z",
+  "updatedAt": "2026-05-02T01:05:34.092Z",
+  "stale": false,
+  "outputHash": "736476b539274c595eeff695e00aa590"
+}

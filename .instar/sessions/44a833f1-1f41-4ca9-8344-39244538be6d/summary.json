@@ -1,0 +1,25 @@
+{
+  "sessionId": "44a833f1-1f41-4ca9-8344-39244538be6d",
+  "tmuxSession": "echo-dashboard",
+  "task": "[telegram:5] How come I'm not getting dashboard links here (IMPORTANT: Read /tmp/instar-telegram/ctx",
+  "phase": "testing",
+  "files": [
+    "/Users/justin/Documents/Projects/instar/dist/cli.js",
+    "src/commands/init.ts",
+    "src/server/middleware.ts",
+    "src/commands/server.ts",
+    "src/tunnel/TunnelManager.ts",
+    "src/core/types.ts"
+  ],
+  "topics": [
+    "security",
+    "messaging",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-10T00:22:06.048Z",
+  "updatedAt": "2026-03-10T00:22:06.048Z",
+  "stale": true,
+  "outputHash": "1239dbf6b3ba4a0770d99eae9868079e"
+}

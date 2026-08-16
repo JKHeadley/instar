@@ -1,0 +1,25 @@
+{
+  "sessionId": "5a397986-048e-48ae-a79d-1abba39eab80",
+  "tmuxSession": "echo-session-robustness",
+  "task": "[telegram:2169] quick question: what is the claude code \"/loop\" skill? (IMPORTANT: Read /tmp/instar-",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js",
+    "../../../Documents/Projects/instar/.instar/worktrees/instar-dev-build-heartbeat/src/monitoring/PresenceProxy.ts",
+    "../../../Documents/Projects/instar/.instar/worktrees/instar-dev-build-heartbeat/src/commands/server.ts",
+    "../../../Documents/Projects/instar/.instar/worktrees/instar-dev-build-heartbeat/docs/specs/BUILD-STALL-VISIBILITY-SPEC.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-20T19:16:47.283Z",
+  "updatedAt": "2026-04-20T19:16:47.283Z",
+  "stale": true,
+  "outputHash": "44e54f791db9e02ff372d95a04de4e05"
+}

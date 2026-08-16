@@ -1,0 +1,21 @@
+{
+  "sessionId": "652452eb-f6be-4c63-bcea-65339a661045",
+  "tmuxSession": "echo-context-death-trap",
+  "task": "[telegram:6931] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1776457489886",
+  "phase": "testing",
+  "files": [
+    "../../../Documents/Projects/instar/docs/specs/context-death-pitfall-prevention.md",
+    "docs/specs/context-death-pitfall-prevention.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T21:07:40.891Z",
+  "updatedAt": "2026-04-17T21:07:40.891Z",
+  "stale": true,
+  "outputHash": "17ef199b7f5ff0bfcfbfc8e879bccdd3"
+}

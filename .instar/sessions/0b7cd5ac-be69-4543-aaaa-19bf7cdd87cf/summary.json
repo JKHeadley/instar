@@ -1,0 +1,23 @@
+{
+  "sessionId": "0b7cd5ac-be69-4543-aaaa-19bf7cdd87cf",
+  "tmuxSession": "echo-commitment-backing-gap-infra-research",
+  "task": "[telegram:6484] Please proceed here (IMPORTANT: Read /tmp/instar-telegram/ctx-6484-1776441923008.txt",
+  "phase": "testing",
+  "files": [
+    ".instar/hooks/instar/hook-event-reporter.js",
+    "../../../Documents/Projects/instar/docs/specs/integrated-being-ledger-v2.md",
+    "../../../Documents/Projects/instar/docs/specs/reports/integrated-being-ledger-v2-convergence.md",
+    "../../../../../tmp/spec-converge-integrated-being-ledger-v2/iter1/adversarial.md",
+    "../../../../../tmp/spec-converge-integrated-being-ledger-v2/iter1/security.md",
+    "../../../Documents/Projects/instar/docs/specs/reports/integrated-being-ledger-v1-convergence.md"
+  ],
+  "topics": [
+    "testing",
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T16:08:43.972Z",
+  "updatedAt": "2026-04-17T16:08:43.972Z",
+  "stale": true,
+  "outputHash": "3453e4d55060fa085c07f530a2a69f75"
+}

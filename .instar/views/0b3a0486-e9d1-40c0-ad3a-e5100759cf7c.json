@@ -1,0 +1,12 @@
+{
+  "id": "0b3a0486-e9d1-40c0-ad3a-e5100759cf7c",
+  "title": "🚨 CRITICAL: Telegram Bot Token Leaked in Public Repo",
+  "markdown": "# CRITICAL SECURITY ISSUE\n\n## Summary\n\nThe Telegram bot token is exposed in public GitHub repository in backup files.\n\n**Token:** `8615114091:AAHvgU5xBXbVaJ0uluFCTi_FyLNWoOJYZzM` (COMPROMISED)\n\n**Location:** `.instar/config.json.bak` and `.instar/config.json.backup` in https://github.com/JKHeadley/instar-echo.git\n\n## Immediate Actions Required\n\n1. **Revoke the bot immediately** via Telegram BotFather:\n   - Open Telegram\n   - Message @BotFather\n   - Select \"Manage bots\" → \"Echo\" → \"Revoke current token\"\n   - This invalidates the leaked token immediately\n\n2. **Generate new token** via BotFather\n   - After revoking, request a new token\n\n3. **Update Echo config** with the new token\n\n## Why This Matters\n\nAnyone with this token can:\n- Send messages as Echo\n- Read all messages from the bot\n- Modify bot settings\n- Potentially cause damage to message streams\n\nAttackers may rename the bot to a VPN-ad or spam service first.\n\n## Files to Clean\n\n- `.instar/config.json.bak` (git-tracked, Apr 17)\n- `.instar/config.json.backup` (git-tracked, May 16)\n- `.instar/skill-telemetry.jsonl.backup` (not a token leak but in git)\n\n## Fix Strategy\n\nOnce you revoke and get new token:\n1. Add `*.bak` and `*.backup` to `.gitignore`\n2. Run: `git rm --cached .instar/config.json.bak .instar/config.json.backup .instar/skill-telemetry.jsonl.backup`\n3. Run: `git commit -m \"security: remove leaked backup files and add to gitignore\"`\n4. Run: `git push`\n5. Update `.instar/config.json` messaging.telegram.config.token with new token\n\n## Status\n\nAfter token revocation, I will handle the git cleanup automatically.",
+  "createdAt": "2026-05-17T07:03:39.736Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "state-integrity-check"
+    }
+  }
+}

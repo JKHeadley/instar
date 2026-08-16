@@ -1,0 +1,19 @@
+{
+  "sessionId": "0dcf34d7-27d7-4f16-be14-b058fb327e2c",
+  "tmuxSession": "echo-session-compaction-bug-update",
+  "task": "[telegram:5290] hows this looking? (IMPORTANT: Read /tmp/instar-telegram/ctx-5290-1776450913268.txt ",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-17T19:10:47.471Z",
+  "updatedAt": "2026-04-17T19:10:47.471Z",
+  "stale": true,
+  "outputHash": "925f283f3a698a0b4a5dd450fc38c1cd"
+}

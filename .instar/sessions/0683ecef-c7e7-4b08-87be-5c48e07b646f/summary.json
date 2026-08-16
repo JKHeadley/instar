@@ -1,0 +1,22 @@
+{
+  "sessionId": "0683ecef-c7e7-4b08-87be-5c48e07b646f",
+  "tmuxSession": "echo-dashboard-development",
+  "task": "[IMPORTANT: Read /tmp/instar-telegram/bootstrap-5348-1775362409112-g0s2l6g6.txt — it contains your f",
+  "phase": "testing",
+  "files": [
+    ".instar/autonomous-state.local.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-05T08:46:37.779Z",
+  "updatedAt": "2026-04-05T08:46:37.779Z",
+  "stale": true,
+  "outputHash": "5966dda3df281688817e307103c5326f"
+}

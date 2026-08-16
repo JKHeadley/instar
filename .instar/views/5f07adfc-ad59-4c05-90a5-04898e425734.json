@@ -1,0 +1,12 @@
+{
+  "id": "5f07adfc-ad59-4c05-90a5-04898e425734",
+  "title": "Guardian Pulse — Job Health Alert",
+  "markdown": "# Guardian Pulse — Critical Alert\n\n**Report Time**: 2026-04-14 15:09  \n**Status**: 🔴 CRITICAL\n\n## Problem\n\nMultiple background jobs are severely overdue and not executing despite being scheduled.\n\n### Overdue Jobs (10 critical)\n\n| Job | Overdue | Last Run |\n|-----|---------|----------|\n| ci-monitor | 89h | 2026-04-09 |\n| overseer-learning | 29h | 2026-04-13 |\n| threadline-sync | 24h | 2026-04-13 |\n| overseer-development | 24h | 2026-04-13 |\n| docs-code-sync | 14h | 2026-04-14 02:16 |\n| github-collab-monitor | 12h | 2026-04-14 03:08 |\n| memory-hygiene | 8h | 2026-04-14 07:00 |\n| coherence-audit | 8h | 2026-04-14 07:14 |\n| project-map-refresh | 8h | 2026-04-14 07:14 |\n| overseer-maintenance | 6h | 2026-04-14 09:09 |\n\n### Never-Run Jobs (5 warnings)\n\n- evolution-overdue-check\n- evolution-proposal-evaluate  \n- evolution-proposal-implement\n- insight-harvest\n- memory-export\n\n## Root Cause\n\nScheduler is partially running but most job triggers have stalled. Queue is empty, no failures recorded.\n\n## Impact\n\n- Learning/memory updates offline\n- Code quality monitoring offline\n- Coherence checks stalled\n- Development oversight blind for 24+ hours\n",
+  "createdAt": "2026-04-14T15:01:43.652Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "guardian-pulse"
+    }
+  }
+}

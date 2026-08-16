@@ -1,0 +1,15 @@
+{
+  "sessionId": "86ec4c05-0024-49af-90df-ce35c09d58e6",
+  "tmuxSession": "echo-dashboard-scroll-history",
+  "task": "Session 86ec4c05-0024-49af-90df-ce35c09d58e6 (testing)",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "security"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T08:50:27.909Z",
+  "updatedAt": "2026-03-20T08:50:27.909Z",
+  "stale": true,
+  "outputHash": "6d72bec5ad3f172dc9976d032d91669a"
+}

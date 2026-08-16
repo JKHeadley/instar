@@ -1,0 +1,595 @@
+Pine Cone is a vector database company.
+Last month, they shipped a product that
+basically says vector search is not
+enough on its own, which is a very
+strange thing for a vector database
+company to ship. They're basically
+saying, well, what we provide, maybe
+that's not quite enough. And they're not
+alone. In the same few weeks, SAP spent
+over a billion euros on AI
+infrastructure, and none of it is for
+chatbot or language model builds or
+buys. Google made knowledge architecture
+the headline at Cloud Next. Cloudflare
+shipped a memory product for agents.
+Microsoft continues to push on graphs
+for AI. Every serious infrastructure
+vendor is racing to solve a memory
+problem. And if you're building agents
+right now, you've probably felt the
+problem they're trying to solve. You can
+give an agent a tool, a database, and a
+doc store, and you can ask it to do real
+work. It will burn up a lot of the
+context window along the way,
+rediscovering things it should already
+know. It will reread documents it
+summarized last time. It will reask the
+user questions the system already was
+provided an answer to. It will blow the
+token budget before useful work starts.
+In some cases, Pine Cone says that that
+kind of rediscovery can eat up to 85% of
+agent compute. And anecdotally, I don't
+know if it's 85%, but I buy that it's a
+big number. Everyone is starting to see
+this memory problem and there are
+thousands of products that are blooming
+everywhere promising to fix it, right?
+We have vector database solutions. We
+have knowledge graph solutions. We have
+document indexes and memory layers and
+lakehouse query engines and agent
+platforms with retrieval baked in. I
+feel like every week someone ships
+something new here. And so picking the
+right one is actually getting harder and
+harder and harder and committing to one
+is getting even more difficult because
+the moment you wire it into your stack,
+the cost of being wrong goes up really
+fast and agent systems keep evolving.
+So, what I want to do in this video is
+to show you what these players are
+actually building, why they're building
+it, and what it means for the choice
+that you're making. And then at the end,
+I'm going to give you the three steps
+I'd take if I were building an agent
+today instead of just picking a database
+and hoping it works out, right? Quick
+definitions before we go further because
+the language around this stuff has
+gotten sloppy. Rag or retrieval
+augmented generation is just a loop
+where your system pulls information from
+somewhere and hands it to the model so
+it has the context to answer. It can be
+information from a wide variety of
+sources, but typically what people mean
+when they say rag is actually one kind
+of rag, perhaps the most common kind,
+vector search. Vector search is a way to
+turn your documents into number vectors
+and find the chunks that are
+mathematically closest to the query. We
+call it semantic search because you end
+up finding things where the words match
+or the themes match. And that can be one
+way to do retrieval. But of course,
+there are other ways. You can retrieve
+from a database. you can retrieve
+directly from text. There's a lot of
+options on the table now and I wanted to
+make sure that you understood the
+different options before we go further
+because we're going to be talking about
+rag and vector search and you just I
+don't want you to get lost. And before
+we go further, I just want to be very
+clear. If you are looking for a silver
+bullet answer where you don't have to
+pay attention to multiple kinds of
+retrieval, stop looking. That's not how
+this works. You are going to need to be
+willing to think about a more
+sophisticated memory system. and you're
+going to need to think deliberately
+about how you combine multiple kinds of
+retrieval to get the work you want to do
+agentically done. Now, let's start with
+why memory and memory systems are
+suddenly a major question that see a lot
+of building activity. With classic rag,
+the version that most teams shipped back
+in 2024 and 2025, it was built for one
+job. It was built for frankly a chatbot
+era job. Question answering, a user
+types, "How do I reset my password?" in
+the system embeds the question, finds
+three semantically similar chunks in the
+help center docs, and the model writes a
+paragraph. That loop works because the
+answer usually lives in a couple of
+paragraphs in the source material, and
+the user doesn't need the exact wording
+from the source material to get their
+job done. Agents don't work like that.
+An agent doesn't ask a question and
+stop. It runs a task. It opens a ticket.
+It retrieves the customer record. It
+checks the policy, drafts the response.
+It does work, right? And if it does
+work, it needs to be able to retrieve
+the information it needs to do the work
+well. And so the tasks I'm talking about
+where you're cross-referencing
+definitions across 40 pages of
+contracts, that kind of thing, those are
+not tasks answered by classic vector
+search. Like you can't say find three
+relevant chunks of text when you're
+doing a longunning agentic workflow over
+hundreds of pages of documents. It
+doesn't lead to accurate text perfect
+responses. And increasingly because we
+expect agents to do work, that is the
+bar we hold and it's the bar we should
+hold. So what does an agent need instead
+of a simple vector search in 2026? What
+an agent needs is a bundle. It needs the
+customer record plus the policy plus the
+entitlement plus the prior tickets all
+assembled into the right shape. It needs
+the metric plus the source of truth plus
+the lineage of that metric plus the
+authorization to use it. It needs the
+contract plus the definitions plus the
+exceptions plus the schedule of the
+contract. Right? Classic rag leaves the
+agent to assemble that bundle on the fly
+every run from raw search results.
+That's where the rediscovery problem
+starts to kick in. The agent will
+refetch that same context every run. It
+will reummarize documents it summarized
+last time, maybe correctly, maybe not.
+It will ask the user for information the
+system has. it blows the token budget
+before it does useful work and you don't
+get consistency along the way. So now
+let's look at how the infrastructure
+layer is responding to this challenge
+because four of the biggest moves in the
+last 6 months tell you what they think
+the fix for this problem is. First, Pine
+Cone. Pine Cone launched a product
+called Nexus with a query language
+called NoQL. Their pitch is that agents
+need a different retrieval contract than
+chatbots do. A chatbot needs related
+text. An agent needs operating context.
+Their failure mode is the one you've
+probably seen. If your agent prepares a
+customer escalation, it shouldn't search
+five different systems from scratch
+every time. The system should already
+know to assemble customer context,
+entitlement, controlling policy, and
+prior history into a usable agent
+bundle. Or if it's doing financial
+analysis, it shouldn't answer from
+whatever paragraph happens to sit
+closest to the query vector. It needs to
+know whether the source of truth is the
+filing, the governed table, the metric
+definition, the prior forecast, or the
+live dashboard. Those are five different
+answers. Noql is pine cones attempt to
+make retrieval carry the things that
+decide those answers to agents, right?
+It should carry intent and filters and
+access policy and provenence and
+response shape and confidence and
+budget. A vector database can power a
+part of that, but it doesn't define the
+whole job anymore. And even Pine Cone is
+telling you that now. If you want more
+on what Pine Cone is actually delivering
+versus what they're saying they're
+delivering. I dove deep into that on
+Substack. I think that's one bet. The
+retrieval interface should carry more
+than similarity. But there's a sharper
+bet that's on the table in the same vein
+and I want to talk about it even as we
+cover pine cone here. Right? So that's
+one bet. The retrieval interface should
+carry more than similarity. I think I
+agree with that. But there's a sharper
+bet on the table that's distinct from
+pine cones that I want to cover next and
+that's page index. Page Index makes a
+stronger claim than Pine Cone does in
+this space. They say a lot of documents
+should never be chunked in the first
+place because the structure of the
+document carries the meaning and when
+you flatten it into vectorized math
+chunks, you throw the meaning away. Take
+a financial filing. The risk factors
+section is not the management
+discussion. The notes to financial
+statements are not the narrative
+summary. A table is not interchangeable
+with a paragraph. If you retrieve three
+semantically similar chunks from that
+body of work, you might miss the part of
+the document that actually controls the
+answer because it lies in the structure,
+not in the semantics. Contracts are even
+worse here. A clause can look relevant
+to your query, but the definition
+section can completely change what that
+clause means. A schedule can overwrite a
+general term. An exception can sit 40
+pages from the paragraph that triggers
+your search. So chunk retrieval finds
+text that looks and sounds right
+relative to your query while losing the
+legal structure that makes it correct.
+So let's walk through the page index
+answer to this. They build a
+hierarchical tree of the document like a
+table of contents with summaries on
+every single node. The model reasons
+through the tree to find the right
+section and there are no embeddings on
+the dock. There's no vector similarity
+and they claim to hit 98.7%
+accuracy on a evaluation for finance
+called finance bench by using this tree
+approach to docs. The principle
+underneath page index is the thing you
+you should be remembering here. The
+retrieval unit needs to match the work
+you're doing and I think that's a very
+durable principle. The principle
+underneath this page index approach is
+the thing I want you to grab on to. What
+they're basically saying is the way you
+retrieve memory needs to match the kind
+of work you do. So a chunk works for a
+simple FAQ, a section works for a
+filing, a table works for financial
+analysis, a customer record works for
+support, a graph neighborhood works for
+dependency reasoning, and a compiled
+brief works for a repeated workflow. If
+you pick the wrong kind of memory, the
+model has to compensate heavily and it
+will end up trying to rebuild a bunch of
+things with expensive token costs to get
+there. And better embeddings in simple
+rag approaches don't fix this. All they
+do is find more relevant text. And
+that's a very 2025 answer to the larger
+question we're tackling here as agents
+deal with more and more different kinds
+of data. So that's the page index
+approach. Page index is basically saying
+we need the structure in our documents
+to be part of the meaning of the answer
+and traditional approaches don't deal
+with that. Let's jump to SAP next. Let's
+jump to SAP next. SAP announced a couple
+of acquisitions in this space that are
+relevant. The first is Dreamio. It has a
+lakehouse architecture, a semantic
+layer, a query federation across both
+SAP and nonSAP systems. It has access
+controls and it has lineage. The second
+is Prior Labs. Prior Labs builds tabular
+foundation models. Their lead model, Tab
+PFN, got published in Nature magazine
+and SAP put more than a billion euros
+behind both bets together. Now, these
+companies, of course, do not make a
+chatbot. SAP spent more than a billion
+euros on AI memory infrastructure, and
+none of it has to do with how we're
+powering or retrieving any of this with
+LLMs. Why did SAP think this memory
+piece was so significant? Because most
+companies don't store their most
+important knowledge in the kind of text
+or pros that rag is designed to solve
+for with vector search. They store it in
+ERP systems and CRM and customer records
+and governed tables. A huge slice of
+enterprise knowledge is in that tabular
+structured data. And so the chatbot rag
+vector playbook of index a PDF and
+answer it from a paragraph is just the
+wrong abstraction for most memory in
+that system. Right? In that world, rag
+doesn't work and it's a terrible way to
+run business operations. If your agent
+needs a revenue number, the source of
+truth is the governed table in your
+warehouse with a specific metric. If it
+needs supplier risk, it's the supplier
+record plus the risk model. You're not
+getting that from an indirect source of
+knowledge and getting it correct. And so
+what they want to be, SAP wants to be
+the system that owns the data. And
+that's what Dreamio gives them. It gives
+them governed access to business data
+across systems with permissions and
+lineage baked in. So for an enterprise
+agent, the agent now knows it's allowed
+to see the data, where it came from, how
+the metric was defined, and whether the
+answer is fit for the action it's about
+to take. When a procurement agent
+answers from the wrong source, the cost
+isn't just a bad paragraph in these
+kinds of operations. It's actually real
+money out the door. And companies are
+realizing that. Prior Labs is the second
+half of that bet, right? tabular
+foundation models exist because turning
+a spreadsheet into text and asking a
+language model to reason over it is just
+the wrong way to solve that problem.
+It's the wrong abstraction. You can't
+reliably understand complicated stuff
+like churn risk and supplier risk and
+renewal forecasting from text derived
+from spreadsheets. You need to be table
+native. SAP is saying agents need to
+reason over tables as tables. So if you
+put Dreamio and Prior Labs together, the
+bet is this. Agents need knowledge in
+the shape the business uses. Sometimes
+that shape is a document. Sometimes it's
+a table. Sometimes it's a metric
+definition. Sometimes it's a workflow
+state. A serious knowledge layer
+respects those shapes as core instead of
+trying to flatten everything out.
+There's a fourth shape worth naming too
+because some agent work is just
+relational at core like which suppliers
+connect to which shipments or which
+customers share a particular failure
+pattern or which incidents trace back to
+the same root cause. Those are graph
+questions mathematically and Microsoft's
+graph rag is the most prominent attempt
+to handle them. It's expensive. The
+entity extraction isn't perfect yet and
+the graphs can go stale. But the reason
+it keeps coming back is that some
+knowledge is naturally relational and
+chunks don't carry it and neither do
+tables. So now you have at least four
+shapes the industry is racing to
+support. You have fuzzy pros. You have
+long structured documents. You have
+business data in tables. You have
+relationships and how they're handled in
+graphs. The choice you're making isn't
+really database X versus Y. It's which
+of those shapes your agent needs to
+handle in the course of its work and how
+you assemble them effectively. Now, if
+you want to dive more on the SAP
+acquisitions and what they mean on
+enterprise data, I I go real deep on
+that in Substack, I think there's a
+whole lot to unpack on tabular data and
+tabular models. But one piece I want to
+cover before we sort of tie off this
+video is if model context windows keep
+growing, can't we just hand the model
+all the material and stop worrying about
+retrieval? Do I have to deal with this?
+Nate, larger context does help. It does
+not fix this problem. A bigger window
+gives the model a lot more room to work,
+but it doesn't decide what belongs in
+that room. It doesn't mark which source
+is authoritative. It doesn't enforce
+permissions. It doesn't preserve
+document hierarchy. It doesn't
+distinguish memory. the user confirmed
+from memory the model inferred. If
+you've ever heard the phrase context
+rot, that's what we're talking about
+here. Chroma has published research
+showing model performance degrades as
+the context gets larger and more
+cluttered. The problem isn't only
+whether the right answer is somewhere in
+there, right? It's whether the right
+answer is presented in a form that the
+model can actually use reliably. If you
+dump 20 docs into the window and the
+model might have access to the right
+fact, it may still give you the wrong
+emphasis on that fact. It may still
+blend sources. It may treat stale and
+current as equal. So the goal for
+production agents is absolutely not
+maximum context. It is appropriate
+context. Chroma's full context research
+is also on the substack if you want to
+go deeper there. But here's what I would
+do if I were building an agent today.
+One, don't pick a database first. Pick
+the contract your agent will have with
+the data first. The default move for a
+lot of builders is to start vendor
+first, right? Pine Cone, Weev8, Neo4j,
+Chroma, somebody, and then you figure
+out what to store in that data. That's
+backwards. Like, don't do that. It's why
+so many agent projects get into trouble
+a few months in. The database is
+determinative of the shape of what you
+retrieve. If you pick the database
+before you know what your agent needs to
+do and receive data on, you're
+constraining the agent to whatever the
+database is good at. The contract needs
+to come first. The contract is the
+answer to a clear question. What does
+this agent need to receive in what form
+to do its job reliably? Number two,
+write down the bundle your agent needs,
+not relevant context. That's very vague.
+Write down the specific thing the agent
+needs. If it's a customer support refund
+agent, write it out. It needs the
+customer record. It needs the plan. It
+needs the region. It needs the product
+version. It needs the purchase history.
+It needs the applicable refund policy,
+the refund threshold, any prior
+exceptions for this customer, the
+current ticket, the approved response
+language, whether the agent is allowed
+to issue the refund or only draft a
+recommendation. All of that together,
+that's a bundle. Every field on it
+represents a choice you've made. Where
+does this come from? Who's allowed to
+see it? Is the source authoritative or
+just relevant? How fresh does it need to
+be? What happens if it's missing? When
+you write that bundle out, three things
+happen. You realize most of the fields
+don't live in one system. You realize
+some of them need to be governed, not
+just retrieved. And you realize that the
+work your agent actually does is
+assembling and reasoning over the
+bundle, not just searching for docs.
+Three, choose the primitives that
+deliver that bundle. Now, you can go
+shopping here. If your bundle is mostly
+pros, you need vector search and
+probably document trees. If it's mostly
+governed business data, you'll need a
+semantic layer and also tabular
+reasoning. If it's relational, you're
+going to need a graph. Most real agents
+need a mix, and that's fine. The point
+is you're choosing primitives because
+they deliver your bundle, not because
+they trended on LinkedIn last week.
+Right? So, Pine Cone, Page Index, Dreo,
+Graph Rag, they're not competing for the
+same slot. They're each solving for one
+of these underlying shapes. Once you
+know the contract your agent needs to
+have for the work, the choice between
+them stops being a debate and starts
+feeling like a thoughtful engineering
+decision, which is where you want to be.
+Now, a quick word on failure modes
+because there are no free wins here.
+Compiled bundles can go stale. So if you
+compile them ahead of time, you have
+risk. Graphs can encode bad
+relationships if you're not careful
+about underlying data. Document parsers
+can miss tables. Semantic layers can get
+politically contested because in most
+companies, the source of truth is a bit
+of an organizational fight. And so
+memory can accumulate bad conclusions if
+you're not careful. And depending on how
+you handle multiple agent runs, you can
+get into a situation where the agent can
+store its own inference or previous run
+as a confirmed fact, which could in turn
+influence future runs to get quietly
+worse. You can also overbuild the
+system, right? A simple help center
+assistant doesn't need graph rag plus a
+document tree plus a semantic layer plus
+a memory system. Just pick the simplest
+number of layers your agent needs and no
+more than that. The cheapest place to
+learn what you need is your own work
+logs. How many retrieval calls happen
+before useful work starts for your agent
+today? How often is the agent opening
+the same sources? How much of your token
+budget is just sucking in that raw
+context? How how often the agent asks
+the user for something the system
+already has is something you should be
+tracking or how often the next run
+rediscovers what the prior run learned.
+You should be able to track that too.
+The pattern is in your existing agent
+runs. If you look, if you zoom back out
+here, the story of the memory era is
+that the infrastructure layer is racing
+to catch up because production agents
+hit the world in December and all of our
+memory systems were built for the
+chatbot era. And every serious vendor
+knows that Pine Cone would not be
+reshaping their interface if that
+weren't true. SAP wouldn't be writing
+billion euro checks if that weren't
+true. Google and Cloudflare and
+Microsoft wouldn't be in this space if
+they didn't see it as being critically
+necessary to long-term agentic success
+for enterprises. The teams that win in
+this memory battle are not going to be
+the ones that try and keep up with the
+most fashionable retrieval. They're
+going to be the ones who took the time
+to think about what their agent actually
+needs before they went on a shopping
+spree. So, if you're building, don't
+pick that database first. Instead, write
+down what your agent needs to do the
+work. Think about the shape that data
+needs to be in to be effective and how
+you can efficiently deliver it. I go
+into all of this in a ton more detail on
+Substack, including the full retrieval
+contract checklist and four worked out
+bundles for support and legal and
+finance and code review agents so you
+can get some examples to work from. The
+memory wars are something that I get
+really passionate about because if you
+don't understand how your agent
+retrieves and handles memory, you're
+essentially trusting some other
+company's vision of your own data in
+your own systems and saying that's
+probably going to work for my agents.
+I'll just sign a check or that's
+probably going to work. I'll just make
+my developers build it. That's not a
+solution. And the workflows you're
+trying to deliver and the customers
+you're trying to serve deserve more
+effective agent runs. So, if you're
+interested in diving deeper, check it
+out. Subscribe if you want to keep
+getting much sharper on infrastructure
+choices that matter because that's I'm
+super passionate about that. Happy
+building. Choose.

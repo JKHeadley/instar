@@ -1,0 +1,30 @@
+{
+  "sessionId": "f94cc9cc-7437-4917-9adc-08876063e631",
+  "tmuxSession": "echo-consent-discovery-framework",
+  "task": "[telegram:1895] yes, please continue (IMPORTANT: Read /tmp/instar-telegram/ctx-1895-1774217144837.tx",
+  "phase": "testing",
+  "files": [
+    "commands/server.ts",
+    "tests/e2e/discovery-evaluator.test.ts",
+    "tests/e2e/feature-registry-lifecycle.test.ts",
+    "tests/unit/builtin-manifest.test.ts",
+    "src/core/DiscoveryEvaluator.ts",
+    "src/server/routes.ts",
+    "src/server/AgentServer.ts",
+    "src/commands/server.ts",
+    "src/monitoring/TelemetryAuth.ts",
+    "TelemetryHeartbeat.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-22T22:29:41.785Z",
+  "updatedAt": "2026-03-22T22:29:41.785Z",
+  "stale": true,
+  "outputHash": "f9b3378288300621ef540fba357d0cd9"
+}

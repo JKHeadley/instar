@@ -1,0 +1,21 @@
+{
+  "sessionId": "b72176e0-1a65-41a0-872d-02ef9c93d96b",
+  "tmuxSession": "echo-exploring-slack-integration",
+  "task": "[telegram:3079] It wasn’t just a standby bug. Echo never responded in the slack channel to my messag",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-29T17:31:47.980Z",
+  "updatedAt": "2026-03-29T17:31:47.980Z",
+  "stale": true,
+  "outputHash": "06102617d0497aa54f30ee7c4a814921"
+}

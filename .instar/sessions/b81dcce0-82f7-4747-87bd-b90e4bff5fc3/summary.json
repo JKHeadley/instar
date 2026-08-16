@@ -1,0 +1,20 @@
+{
+  "sessionId": "b81dcce0-82f7-4747-87bd-b90e4bff5fc3",
+  "tmuxSession": "echo-watchdog-issues",
+  "task": "[telegram:6269] [image:/Users/justin/.instar/agents/echo/.instar/telegram-images/photo-1776194479860",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-14T20:02:25.486Z",
+  "updatedAt": "2026-04-14T20:02:25.486Z",
+  "stale": false,
+  "outputHash": "e2821e6681f07885ab6afe03b2a577a5"
+}

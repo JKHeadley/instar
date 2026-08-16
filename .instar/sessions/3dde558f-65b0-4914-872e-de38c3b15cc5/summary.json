@@ -1,0 +1,20 @@
+{
+  "sessionId": "3dde558f-65b0-4914-872e-de38c3b15cc5",
+  "tmuxSession": "echo-job-system-meta-review",
+  "task": "[telegram:1839] question: how does this differentiate common practices from common issues? For examp",
+  "phase": "testing",
+  "files": [
+    "adversarial.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-22T07:01:07.541Z",
+  "updatedAt": "2026-03-22T07:01:07.541Z",
+  "stale": true,
+  "outputHash": "db44e5bea0dae6ba63532f56f1727206"
+}

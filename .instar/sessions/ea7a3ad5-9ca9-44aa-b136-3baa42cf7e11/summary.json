@@ -1,0 +1,25 @@
+{
+  "sessionId": "ea7a3ad5-9ca9-44aa-b136-3baa42cf7e11",
+  "tmuxSession": "echo-topic-session-command-trap",
+  "task": "[telegram:1427] why did the session get killed? (IMPORTANT: Read /tmp/instar-telegram/ctx-1427-17740",
+  "phase": "testing",
+  "files": [
+    "privacy.md",
+    "adversarial.md",
+    "dx.md",
+    "marketing.md",
+    "synthesis.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T19:36:29.853Z",
+  "updatedAt": "2026-03-20T19:36:29.853Z",
+  "stale": false,
+  "outputHash": "ed4d5763e0bc7669238fd5fc550638b8"
+}

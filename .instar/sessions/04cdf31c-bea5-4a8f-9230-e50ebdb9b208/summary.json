@@ -1,0 +1,19 @@
+{
+  "sessionId": "04cdf31c-bea5-4a8f-9230-e50ebdb9b208",
+  "tmuxSession": "echo-token-management",
+  "task": "[telegram:8615] you never got back to me here. We're continuing to burn tokens on this machine and w",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "database",
+    "testing",
+    "security",
+    "api",
+    "monitoring"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-02T05:28:50.424Z",
+  "updatedAt": "2026-05-02T05:28:50.424Z",
+  "stale": true,
+  "outputHash": "cdb4e970fdea02590b21d01aa25db8ad"
+}

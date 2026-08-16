@@ -1,0 +1,19 @@
+{
+  "sessionId": "71c52e40-da35-4522-910e-60ac6ac1d83b",
+  "tmuxSession": "echo-job-ci-monitor-mp1kg31w",
+  "task": "[VIEW METADATA]\nWhen creating private views (POST /view), include metadata to link the report to thi",
+  "phase": "debugging",
+  "files": [
+    "NEXT.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-11T19:05:29.356Z",
+  "updatedAt": "2026-05-11T19:05:29.356Z",
+  "stale": false,
+  "outputHash": "936ec7defec222260e5f22d0769971dc"
+}

@@ -1,0 +1,25 @@
+{
+  "sessionId": "09bffdd9-6734-41d1-ade5-788674f31ff4",
+  "tmuxSession": "echo-dashboard-features",
+  "task": "[telegram:1419] 1) we need to strengthen the infra that requires NEXT.md BEFORE running the tests to",
+  "phase": "testing",
+  "files": [
+    "NEXT.md",
+    "scripts/pre-push-gate.js",
+    "package.json",
+    "deployment.md"
+  ],
+  "topics": [
+    "database",
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-20T07:13:37.197Z",
+  "updatedAt": "2026-03-20T07:13:37.197Z",
+  "stale": true,
+  "outputHash": "9100e344cb886472e12d1441fceea4ba"
+}

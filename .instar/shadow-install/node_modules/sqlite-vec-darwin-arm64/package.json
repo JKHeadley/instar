@@ -1,0 +1,1 @@
+{"name":"sqlite-vec-darwin-arm64","version":"0.1.9","author":"Alex Garcia","license":"MIT OR Apache","description":"A vector search SQLite extension.","repository":{"type":"git","url":"https://github.com/asg017/sqlite-vec","directory":null},"exports":{"./vec0.dylib":{"default":"./vec0.dylib"}},"files":[],"keywords":[],"os":["darwin"],"cpu":["arm64"]}

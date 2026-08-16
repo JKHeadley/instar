@@ -1,0 +1,21 @@
+{
+  "sessionId": "db1c22f8-96cd-48d0-8833-c5a309f204b2",
+  "tmuxSession": "echo-interactive-1775260647557",
+  "task": "[slack:C0APW9UHFJ5 from U0AP927E2R1 (uid:U0AP927E2R1)] yes! perfect! so what's left to finish this o",
+  "phase": "testing",
+  "files": [
+    "specs/unified-threadline-moltbridge-instar.md"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-04T00:07:38.551Z",
+  "updatedAt": "2026-04-04T00:07:38.551Z",
+  "stale": true,
+  "outputHash": "f02b0348643eb7321fea061f89b6ee8b"
+}

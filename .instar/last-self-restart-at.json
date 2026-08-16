@@ -1,0 +1,256 @@
+{
+  "lastRestartAt": "2026-05-19T21:18:26.125Z",
+  "lastReason": "version-skew",
+  "history": [
+    {
+      "at": "2026-05-05T22:12:50.018Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-05T22:22:50.115Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-05T22:32:50.226Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-05T22:45:50.275Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-05T22:55:50.337Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-05T23:05:50.379Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-05T23:15:50.451Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-05T23:25:50.490Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-05T23:39:50.618Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-05T23:49:50.732Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-05T23:59:50.770Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T00:09:50.865Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T00:19:50.956Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T00:32:50.983Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T00:42:51.125Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T00:52:51.244Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T01:02:51.353Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T01:12:51.377Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T01:22:51.408Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T01:37:21.546Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T01:47:21.569Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T01:57:21.609Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T02:12:21.637Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T02:22:21.732Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T02:32:21.758Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T02:42:21.767Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T02:52:21.798Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T03:05:21.827Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T03:15:21.916Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T03:25:21.968Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T03:35:22.015Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T03:45:22.043Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T03:58:22.131Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T04:08:22.162Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T04:18:22.270Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T04:33:22.343Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T04:47:52.389Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T04:57:52.505Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T05:07:52.574Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T05:17:52.732Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T05:27:52.782Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T05:40:52.981Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T05:50:53.138Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T06:00:53.241Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T06:10:53.346Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-06T06:20:53.447Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-08T02:31:34.223Z",
+      "reason": "conflict409Stuck",
+      "bucket": "watchdog"
+    },
+    {
+      "at": "2026-05-19T20:51:23.784Z",
+      "reason": "version-skew",
+      "bucket": "versionSkew"
+    },
+    {
+      "at": "2026-05-19T21:04:54.367Z",
+      "reason": "version-skew",
+      "bucket": "versionSkew"
+    },
+    {
+      "at": "2026-05-19T21:18:26.125Z",
+      "reason": "version-skew",
+      "bucket": "versionSkew"
+    }
+  ]
+}

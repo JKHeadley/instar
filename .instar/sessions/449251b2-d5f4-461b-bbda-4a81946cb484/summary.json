@@ -1,0 +1,27 @@
+{
+  "sessionId": "449251b2-d5f4-461b-bbda-4a81946cb484",
+  "tmuxSession": "echo-session-robustness",
+  "task": "[telegram:2169] Yes, please (IMPORTANT: Read /tmp/instar-telegram/ctx-2169-1775513297452.txt for thr",
+  "phase": "testing",
+  "files": [
+    "vitest.push.config.ts",
+    "src/core/SessionManager.ts",
+    "src/messaging/slack/SlackAdapter.ts",
+    "src/commands/server.ts",
+    "tests/unit/slack-session-continuity.test.ts",
+    "tests/unit/slack-context-exhaustion-recovery.test.ts"
+  ],
+  "topics": [
+    "frontend",
+    "testing",
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-04-06T22:19:15.241Z",
+  "updatedAt": "2026-04-06T22:19:15.241Z",
+  "stale": false,
+  "outputHash": "13642dd4d634eb96f82816884172bee9"
+}

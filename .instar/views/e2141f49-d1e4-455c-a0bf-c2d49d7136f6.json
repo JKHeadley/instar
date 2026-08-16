@@ -1,0 +1,12 @@
+{
+  "id": "e2141f49-d1e4-455c-a0bf-c2d49d7136f6",
+  "title": "Guardian Overseer Report — 2026-04-25",
+  "markdown": "# Guardian Overseer Report\n**Generated:** 2026-04-25T13:02Z\n\n## Overall: HEALTHY with structural gaps\n\nAll 5 guardian jobs running. No consecutive failures. No quota skips. 296 total runs in 24h window.\n\n---\n\n## Cross-Job Issues Found\n\n### 1. ZERO handoff notes across all jobs\nEvery job shows `lastHandoff: null`. Guardian jobs run blind — no institutional memory between runs. If degradation-digest finds a pattern, the next run has no way to know it. The overseer is currently the only cross-job view.\n\n### 2. Recurring 147s timeout signature\n- **degradation-digest**: timed out 2026-04-25T07:04 (147s — session killed)\n- **guardian-pulse**: timed out 2026-04-24T23:00 (147s — session killed)\n\nBoth jobs hit **exactly 147s**. This is a configured session kill threshold. Happens once in the 24h window for each job, suggesting occasional heavy workloads that exceed the limit. Not critical yet but worth monitoring.\n\n### 3. state-integrity-check duration variance\nDuration ranges 45s–178s. The 178s run exceeded the 147s apparent threshold but still completed — either this job has a different limit or the 178s run predates the current kill config. Monitor for timeout failures here.\n\n### 4. guardian-pulse nominal 66.7% success rate\nOnly 3 runs total — 1 timeout produces a misleading 33% failure rate. Sample too small to conclude anything. Will stabilize after 10+ runs.\n\n---\n\n## Per-Job Status\n\n| Job | Runs | Success Rate | Last Result | Notes |\n|-----|------|-------------|-------------|-------|\n| health-check | 278 | 97.8% | success | Solid, 5min cadence |\n| degradation-digest | 6 | 83.3% | success | 1 timeout at 07:04 |\n| state-integrity-check | 3 | 100% | pending | Currently running |\n| guardian-pulse | 3 | 66.7% | success | 1 timeout, small sample |\n| session-continuity-check | 6 | 100% | success | Clean |\n\n---\n\n## Recommended Actions\n\n1. **Investigate why no guardian jobs write handoff notes** — likely a missing step in each job prompt\n2. **Monitor 147s timeout recurrence** on degradation-digest and guardian-pulse over next 48h\n3. **Consider raising session timeout** for guardian-pulse if timeouts persist",
+  "createdAt": "2026-04-25T13:03:09.761Z",
+  "metadata": {
+    "source": {
+      "type": "job",
+      "id": "overseer-guardian"
+    }
+  }
+}

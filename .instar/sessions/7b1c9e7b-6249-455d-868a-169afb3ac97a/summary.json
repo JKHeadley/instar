@@ -1,0 +1,17 @@
+{
+  "sessionId": "7b1c9e7b-6249-455d-868a-169afb3ac97a",
+  "tmuxSession": "echo-job-health-check-mosrs3tn",
+  "task": "[NOTIFICATION PROTOCOL: This job runs in quiet mode. The user will NOT see your output unless you ex",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "testing",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-05T15:15:24.668Z",
+  "updatedAt": "2026-05-05T15:15:24.668Z",
+  "stale": false,
+  "outputHash": "ab298fac371e80304be4c4f34ad7ce1d"
+}

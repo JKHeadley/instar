@@ -1,0 +1,22 @@
+{
+  "sessionId": "be915cc8-e044-44b1-8408-ea76306c55b0",
+  "tmuxSession": "echo-threadline-telegram-bridge",
+  "task": "[telegram:8686] please proceed (IMPORTANT: Read /tmp/instar-telegram/ctx-8686-1777751477181.txt for ",
+  "phase": "testing",
+  "files": [
+    "resp.json",
+    ".instar/threadline/backfill-seed-topic8686.json",
+    ".instar/threadline/bridge-backfill-ledger.json"
+  ],
+  "topics": [
+    "security",
+    "messaging",
+    "deployment",
+    "api"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-05-02T20:04:45.232Z",
+  "updatedAt": "2026-05-02T20:04:45.232Z",
+  "stale": true,
+  "outputHash": "c041a7716dfeb44c94befc8f26c8506f"
+}

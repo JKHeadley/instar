@@ -1,0 +1,18 @@
+{
+  "sessionId": "1cbbaf23-0ce8-4854-a387-beb1a3e226b9",
+  "tmuxSession": "echo-server-recovery",
+  "task": "[telegram:815] the new token should be in bitwarden already (IMPORTANT: Read /tmp/instar-telegram/ct",
+  "phase": "testing",
+  "files": [],
+  "topics": [
+    "frontend",
+    "security",
+    "messaging",
+    "deployment"
+  ],
+  "blockers": null,
+  "lastActivity": "2026-03-18T19:02:50.571Z",
+  "updatedAt": "2026-03-18T19:02:50.571Z",
+  "stale": true,
+  "outputHash": "81413e95d388fddbf77cab7197b016a4"
+}

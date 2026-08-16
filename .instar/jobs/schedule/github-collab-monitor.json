@@ -1,0 +1,10 @@
+{
+  "slug": "github-collab-monitor",
+  "origin": "user",
+  "schedule": "0 8,20 * * *",
+  "enabled": true,
+  "execute": {
+    "type": "agentmd"
+  },
+  "manifestVersion": 1
+}
