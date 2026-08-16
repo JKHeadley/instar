@@ -122,13 +122,27 @@ regardless of whether a row was written.
   refuse.
 
   **Freeze is the ONE exception, and it must be**, or the emergency stop would be the thing
-  the lock takes away. A freeze under a lost lock is accepted and applied, because its effect
-  is to REFUSE spend — and the spend path independently fails closed under a lost lock
-  anyway, so freeze can only ever agree with it, never widen authority. It is recorded to
-  the server log marked non-authoritative if the audit append cannot be trusted, and the
-  operator is told the freeze applied but its audit row is provisional. **Unfreeze is NOT
-  exempt**: resuming spend under a lost lock is refused, so the exemption strictly cannot be
-  used to turn spending back on.
+  the lock takes away.
+
+  **It is safe without the lock because freeze is MONOTONIC, and that is the whole argument.**
+  §7's single-writer discipline exists to stop two processes producing an incoherent
+  interleaving — but freeze is **set-true-only and idempotent**: two processes writing "frozen"
+  concurrently cannot disagree, and there is no interleaving whose outcome is wrong. Concretely:
+
+  - A freeze writes an **atomic durable marker per keyRef** (`freeze/<keyRef>`): write to a temp file, **fsync the file**, `rename` into place, then
+    **fsync the containing directory**. `rename` alone gives atomic REPLACEMENT, not
+    durability across a crash — the fsync pair is what makes the marker survive, and naming
+    only `rename` was an overclaim. No read-modify-write, so no lost update.
+  - **The spend path reads the freeze set from disk on every paid call** (§5), so whichever
+    process holds the lock observes a marker written by one that does not — which is exactly
+    the case that must work: a losing process freezing, and the lock holder honouring it.
+  - **Unfreeze is NOT exempt** and requires both the lock and the PIN. Clearing is the
+    non-monotonic direction, so it takes the full discipline; the asymmetry is deliberate and
+    is the same one freeze/unfreeze already has.
+  - If the audit append cannot be trusted, the freeze still applies and is recorded to the
+    server log marked non-authoritative, with the operator told the row is provisional.
+  - **T34** asserts the load-bearing case end to end: a freeze issued by a process that does
+    NOT hold the lock stops spend in the process that does.
 
   **The lost-lock case needs its own reporting path, or the refusal would be unrecordable** —
   a refusal that cannot be audited because auditing is what is refused. So: when the lock is
@@ -155,8 +169,17 @@ regardless of whether a row was written.
       adopts nothing and changes no state.
     - **`POST /routing-spend/config-adopt`** applies the on-disk config to the process. When
       adoption would move the layer from off toward on (`wouldIncreaseAuthority`), it
-      **requires the PIN**; when it would reduce or not change authority, Bearer alone
-      suffices — the halting direction stays cheap, exactly as freeze does, and for the same
+      **requires the full plan-then-commit flow, exactly like enable** — a rendered plan
+      naming the exact before/after fields, machine-bound, TTL'd, nonce'd, and rejected if the
+      on-disk state changed since rendering. It is the same class of authority as enable and
+      caps-adjust, so it takes the same discipline; a PIN alone would have made it the one
+      authority-increasing path with no server-rendered text for the operator to read. The
+      enum gains `money-layer-config-adopt` for this, and it commits through the SAME
+      `POST /routing-spend/money-layer/commit` route as every other plan-bound action — there
+      is one commit path, not two. `POST /routing-spend/config-adopt` therefore handles ONLY
+      the authority-reducing case, and refuses (`409`) when `wouldIncreaseAuthority` is true,
+      naming the plan flow. The rendered plan carries the exact before/after fields and the
+      on-disk snapshot hash; commit rejects it if either moved — the halting direction stays cheap, exactly as freeze does, and for the same
       reason: an agent that cannot stop its own overspend is the worse failure. A
       Bearer-only adoption that turns config-enabled spend OFF is deliberately equivalent in
       authority to disable, and is audited on the AUTHORITY channel (not the audit-only
@@ -181,6 +204,12 @@ regardless of whether a row was written.
     this spec owns. The earlier phrasing "changes no state" was wrong and is withdrawn: it
     changes the process's money-config snapshot, which is precisely its purpose.
 
+    **Two different words, deliberately.** `config-inspect` is **non-adopting inspection**:
+    it mutates no authority, config or process state, but it DOES append an audit row and
+    advance rate-limit state, so it is not called read-only. **`GET /enable-status` is
+    read-only** in the strict sense — it writes nothing at all, not even an audit row (T32).
+    Reserving "read-only" for genuinely no-write routes keeps the word worth something.
+
     **Why the split is not ceremony:** `intentEnabled` reads partly from the process config
     snapshot, so a Bearer-only "just re-read the file" would let the agent adopt a
     `routingSpend.money.enabled: true` sitting on disk and move itself to `servingReady`
@@ -191,6 +220,14 @@ regardless of whether a row was written.
     no way to make their change visible — a bounded-staleness display with no refresh is a
     dead end. `config-inspect` changes no state; `config-adopt` changes only the
     process money-config snapshot.
+
+    **Precedence, so a later global reload cannot silently undo it:** the adopted money-config
+    values are held as an explicit overlay with a stamped source (`adopted-by-operator`,
+    with its plan id where one applies). A subsequent global config reload refreshes
+    everything else and **does not clear the overlay**; it is cleared only by another adopt,
+    or by an operator action that says so. Without this an ordinary reload elsewhere in the
+    server could revert an authority decision the operator made deliberately — a silent
+    authority change, which is the class of failure this spec exists to close.
   - **This is stated to the operator rather than hidden:** the `config-enabled` surface says
     a config-file edit is not an immediate control, and points at **freeze** for anything
     that must take effect now. Freeze reads live, unconditionally.
@@ -221,10 +258,10 @@ because they are the door to turning it on. Six mutate or act; `GET
 | `POST /routing-spend/plan` | Bearer | `{ action: <member of MONEY_LAYER_PREGATE_ACTIONS> }` | `{ planId, nonce, renderedText, action, sourceStateAtRender, machineId, machineNickname, expiresAt }` |
 | `POST /routing-spend/money-layer/commit` | Bearer **+** PIN | `{ pin, planId, nonce }` | `{ lifecycleState, enforcementReady, enableSources, storeCleared, probe, message }` |
 | `POST /routing-spend/money-layer/restart` | Bearer **+** PIN | `{ pin, nonce }` | `{ accepted, message }` |
-| `POST /routing-spend/config-inspect` | Bearer | `{}` | `{ onDiskEnabled, snapshotEnabled, differs, wouldIncreaseAuthority, configSnapshotAt }` — READ ONLY, adopts nothing |
-| `POST /routing-spend/config-adopt` | Bearer **+** PIN when `wouldIncreaseAuthority`, else Bearer | `{ pin? }` | same shape as `enable-status`, after adopting the on-disk config |
+| `POST /routing-spend/config-inspect` | Bearer | `{}` | `{ onDiskEnabled, snapshotEnabled, differs, wouldIncreaseAuthority, configSnapshotAt }` — non-adopting inspection (see below) |
+| `POST /routing-spend/config-adopt` | Bearer (authority-REDUCING adoption only) | `{}` | same shape as `enable-status`, after adopting the on-disk config |
 | `POST /routing-spend/money-layer/restart-nonce` | Bearer | `{}` | `{ nonce, expiresAt, confirmationText }` — refused (409) outside the three restartable states |
-| `GET /routing-spend/enable-status` | Bearer | — | `{ lifecycleState, enforcementReady, enableSources, configSnapshotAt, machineId, lastTransitionAt, failingComponent?, settlingCount, restartEligible }` — read-only, `Cache-Control: no-store`, mints nothing |
+| `GET /routing-spend/enable-status` | Bearer | — | `{ lifecycleState, enforcementReady, enableSources, configSnapshotAt, machineId, lastTransitionAt, failingComponent?, settlingCount, restartEligible, anyKeyFrozen, freezeRecordProvisional }` — read-only, `Cache-Control: no-store`, mints nothing |
 
 ### The action enum (defined once, referenced everywhere)
 
@@ -235,10 +272,11 @@ MONEY_LAYER_PREGATE_ACTIONS = [
                                     // yielding both-enabled; does NOT clear the config key
   "money-layer-disable",             // refused by the renderer while the config key is set
   "money-layer-disable-store-only",  // the acknowledged variant, rendered in its place
+  "money-layer-config-adopt",        // authority-INCREASING config adoption only
 ]
 ```
 
-**Four** public actions. Any statement of a count elsewhere refers to this enum; the commit
+**Five** public actions. Any statement of a count elsewhere refers to this enum; the commit
 route accepts a signed action **iff** it is a member of it. There is no internal-only
 variant — `money-layer-disable-store-only` is a public action precisely so that what the
 operator approved is visible in the signed plan and the audit log.
@@ -335,7 +373,9 @@ without adding a decision for the operator to read. It is therefore PIN-gated an
 but not plan-bound, and the difference is stated rather than left as an inconsistency with
 §7's "authority writes are plan-bound". To close the gaps that plan-binding would otherwise
 have covered: the route takes a **single-use nonce** minted by `POST
-/routing-spend/money-layer/restart-nonce` (replay/CSRF protection), the nonce expires on a short window
+/routing-spend/money-layer/restart-nonce` (**single-use replay protection** — the claim is
+deliberately narrowed: without session or origin binding this does not prove browser CSRF is
+impossible, and calling it CSRF protection would overstate it), the nonce expires on a short window
 (stale-PIN replay), and it is accepted only in `enable-pending-restart`, `probe-failed` or
 `construction-failed`.
 
@@ -393,7 +433,7 @@ every Bearer caller collapses to a single identity, so binding to it isolates no
 test for it could not fail. The claim is withdrawn rather than restated more carefully.
 
 What the nonce actually provides is **replay protection, not caller isolation**: single-use,
-short TTL, valid only in the two restartable states, and spendable only alongside the PIN
+short TTL, valid only in the three restartable states, and spendable only alongside the PIN
 and the displayed confirmation string. Anyone holding the Bearer token and the PIN can
 restart the server; that is the accepted boundary, stated plainly in §2. Binding to a
 specific *dashboard* session is deliberately NOT required: the operator may legitimately
@@ -604,33 +644,56 @@ never silently means "and a few more charges are still landing."
 ## 6. The cap-gate readiness probe
 
 A **cap-gate** readiness probe — its name is its scope. It proves cap enforcement is wired
-and refusing; it does not exercise the full paid-call route end to end, and full-path
-coverage remains with the metered path's own integration tests.
+and refusing; it does not exercise provider credentials, booking commit or downstream
+execution, and full-path coverage remains with the metered path's own integration tests.
 
-- **Sentinel:** a reserved keyRef (`__probe_sentinel__`), never a real paid door, registered
-  with a nominal cap and a `probe: true` marker, and structurally excluded from go-live.
-- **How a never-live sentinel reaches the cap gate:** the probe enters the metered path
-  **after** the go-live check and **before** the cap check, in dry-run mode.
-- **Why a bypass at all, rather than a test-mode provider or dependency injection.** Those
-  are the conventional answers and they are right for *tests* — T16 uses exactly that shape.
-  They cannot answer this question, though: readiness must be verified **in the running
-  production process, against the same wiring that will serve real calls**. A DI seam or a
-  fake ledger proves the code is correct in a harness; it cannot prove *this* process
-  constructed *its* gate and reachably wired it. That is why the probe exists at all, and why
-  the bypass is fenced as tightly as it is rather than avoided. The residual risk is
-  acknowledged: a bypass in metered execution is custom machinery, and T8 exists because
-  fencing it is the price of using it.
-- **The bypass is a capability, not a visibility convention.** It accepts a **closure-scoped
-  capability token** minted once at money-layer construction and handed only to the prober.
-  The token type has no exported constructor; possession is the authorization. Without the
-  token the path behaves exactly like the normal metered path, i.e. go-live is enforced.
-- **Preconditions asserted before the probe runs:** the sentinel resolves, its provider is
-  present, the request is well-formed — so those failure modes cannot be mistaken for
+**There is no bypass.** Earlier drafts reached the cap check by entering the metered path
+after the go-live check, behind a capability token — a privileged execution path inside the
+money path, fenced with a non-exported entry point, a lint and a negative HTTP test. Review
+challenged it in five separate rounds and the convergence comparator named it the single
+largest unresolved architectural risk. Fencing it better was the wrong answer five times
+running. It is removed, and the risk with it.
+
+**Instead: a probe DOOR that is genuinely live and structurally cannot bill.**
+
+| Property | Value |
+|---|---|
+| keyRef | `__probe__` — reserved; refused as a user-supplied keyRef everywhere |
+| provider | `null-provider` — a built-in no-op that performs NO network call and returns a fixed synthetic response |
+| price | fixed `$0` per unit, in the price manifest, not operator-editable |
+| `goLiveState` | **live** — deliberately, so the go-live check PASSES |
+| dailyCap / lifetimeCap | `$0` |
+
+The probe is then an **ordinary metered call on the ordinary path**: go-live passes because
+the door really is live; the cap check refuses because any usage exceeds a `$0` cap. Nothing
+is skipped, nothing is privileged, and the thing being proven — *the cap gate refuses on the
+path that spends* — is proven by the path that spends.
+
+**Why this is safe where a bypass was not.** The bypass's risk was that a privileged branch
+inside metered execution could be reached by something other than the prober — through a
+refactor, a barrel file, DI, or a leaked token. That branch no longer exists. The probe door
+is protected by two independent structural facts instead: its provider **cannot** perform a
+billable operation (it makes no call), and its cap is `$0` (so the gate refuses it even if
+the provider were swapped). Either alone prevents spend; both must fail together to bill,
+and neither is reachable by editing spec-local code.
+
+**The probe's contract is unchanged, including the cause check:**
+
+- **Preconditions asserted first:** the `__probe__` door resolves, is live, and the request
+  is well-formed — so "door not armed", "unknown key" and "malformed" cannot be mistaken for
   enforcement.
-- **The refusal's CAUSE is checked, not merely its occurrence.** Expected result is refusal
-  with the specific cap-exceeded reason. **Any other refusal reason ⇒ `unknown` ⇒ NOT
-  ready.** A refusal for the wrong reason is a probe failure, never a pass.
-- **Post-assertion:** committed spend for the sentinel is unchanged.
+- **Expected result:** refusal with the specific **cap-exceeded** reason. Any other refusal
+  reason ⇒ `unknown` ⇒ NOT ready. A refusal for the wrong reason is a probe failure, never a
+  pass.
+- **Post-assertion:** committed spend is unchanged, and the ledger records `$0`.
+- **Unmeasurable ⇒ `unknown` ⇒ not ready**, per P20.
+
+**The cost, stated honestly:** a permanently-live `$0` door exists in the caps registry. It
+appears in `GET /routing-spend/caps` flagged `probe: true` so it is never mistaken for a real
+paid door, it is excluded from spend summaries and from the operator's arming UI, and its
+keyRef is refused as user input. That is a smaller and far more inspectable surface than a
+privileged branch inside metered execution — a visible always-`$0` row versus a hidden
+conditional in the code path that moves money.
 
 ## 7. Audit channels
 
@@ -656,7 +719,16 @@ spec does not need it. Records are size-bounded; an oversize record is truncated
 explicit marker rather than split. The log is never rotated or renamed by this path, so no
 directory-fsync semantics are involved. **Append/fsync failure is a first-class outcome, not an assumed success.** If an
 authority-write's audit append fails, **the authority write is refused** — money state never
-changes without its record. If a non-authority audit append fails, the operation proceeds and
+changes without its record.
+
+**FREEZE is the one named exception to that coupling.** Refusing a freeze because its audit
+row could not be written would let a logging failure disable the emergency stop, which
+inverts the priority: stopping spend matters more than recording that we stopped it. So for
+freeze specifically, **the marker write is authoritative and proceeds**, and the audit row is
+best-effort — written to the server log marked provisional when the authority append cannot
+be trusted (lost lock, fsync failure). The operator is told the freeze applied and its record
+is provisional. **Unfreeze is NOT excepted** and follows the normal coupling: no record, no
+resumption. T36 covers an audit failure during freeze. If a non-authority audit append fails, the operation proceeds and
 the failure is reported to the caller and the server log. If the pre-handoff fsync fails, the
 restart is **not** initiated and returns `503`: an unrecorded restart is precisely the case
 the ordering exists to prevent. There is an explicit **flush/fsync before the
@@ -684,8 +756,8 @@ satisfy an external auditor, that is a different requirement and needs its own d
 | T4 | Commit without Bearer is refused even with a correct PIN. |
 | T5 | Enable commit yields `enable-pending-restart` and constructs nothing. |
 | T6 | After construction, the probe passes only when the refusal reason is cap-exceeded; every other refusal reason yields not-ready. |
-| T7 | The probe books nothing — sentinel committed spend unchanged. |
-| T8 | No HTTP route can obtain a bypassed evaluation (negative integration test across all routes). |
+| T7 | The probe books nothing — `__probe__` committed spend stays `$0`, and `null-provider` performs no network call. |
+| T8 | The `__probe__` keyRef is refused when supplied by a caller on any route; only the internal prober may target it. |
 | T9 | Disable with config true returns `lifecycleState: "probed"`, `storeCleared: true`, and does not report success. |
 | T10 | A paid call refuses when the single-instance lock is not held by this process. |
 | T11 | Money layer refuses to construct when the single-instance lock is absent/unverifiable ⇒ `construction-failed`. |
@@ -694,13 +766,17 @@ satisfy an external auditor, that is a different requirement and needs its own d
 | T13 | Freeze is reachable in every state, including both failure states and `config-enabled`. |
 | T32 | `GET /routing-spend/enable-status` performs NO writes: repeated polling appends no audit rows and does not update `lastObservedSourceState`. |
 | T33 | In `config-enabled` + frozen, the surface states that freeze is active but the layer is still enabled by config — it must not read as a durable disable. |
+| T34 | A freeze written by a process NOT holding the single-instance lock stops spend in the process that DOES hold it. |
+| T35 | Repeated `config-inspect` calls mutate no authority, config or process state (audit + rate-limit only). |
+| T36 | A freeze whose audit append fails still applies, and is reported as applied-with-provisional-record; an unfreeze whose append fails is REFUSED. |
+| T37 | An authority-increasing `config-adopt` without a rendered plan is refused; an authority-reducing one succeeds with Bearer alone. |
 | T29 | `config-inspect` is Bearer-only, adopts nothing, and reports `wouldIncreaseAuthority` correctly. |
 | T30 | `config-adopt` is REFUSED without a PIN when `wouldIncreaseAuthority` is true, and accepted with Bearer alone when it is false. |
 | T31 | Restart is accepted in all three restartable states and refused in `disabled` and `probed`. |
 | T14 | The audit handle cannot write authority fields; the authority handle cannot append audit rows. |
 | T15 | The metered path re-reads enable state per call (constructed-but-disabled layer refuses). |
 
-| T16 | **Required, and normative.** A real armed-door dry-run refuses over-cap through the full metered path (not the sentinel bypass), covering per-door routing the sentinel probe deliberately does not. It is tied to `enforcementReady` regression coverage: the sentinel probe is NOT comprehensive readiness, and T16 exists so a future implementer cannot treat it as such. |
+| T16 | **Required, and normative.** A real armed-door dry-run refuses over-cap through the full metered path, covering provider-credential and per-door routing the probe door deliberately does not. It is tied to `enforcementReady` regression coverage: the sentinel probe is NOT comprehensive readiness, and T16 exists so a future implementer cannot treat it as such. |
 | T17 | Read-only spend/settling status stays reachable while `settlingCount > 0` after a disable. |
 | T18 | `GET /routing-spend/caps/log` is reachable in every state, including `disabled` with nothing settling. |
 | T19 | A frozen key refuses a paid call in every combination of `intentEnabled`, config key, `lifecycleState` and lock state. |
@@ -740,10 +816,11 @@ model becomes the right shape; at one step it is machinery without a job to do.
   route and one restart route to the money authority; the state lands OUTSIDE
   `PATCHABLE_CONFIG_KEYS`.
 - **Replaces** `moneyOn()` with `intentEnabled` / `servingReady`.
-- **Modifies the metered call path** — a synchronous live enable check per paid call, plus
-  the capability-gated probe entry point. This is the load-bearing change; without it
-  disable is cosmetic.
-- **Modifies the caps store** — operator-enabled flag, failure record,
+- **Modifies the metered call path** — a synchronous live enable check per paid call, and a
+  live freeze check ahead of the money layer. This is the load-bearing change; without it
+  disable is cosmetic. **No privileged probe entry point is added**: the probe is an ordinary
+  metered call against the reserved `$0` `__probe__` door (§6).
+- **Modifies the caps store** — the reserved `__probe__` door, operator-enabled flag, failure record,
   `lastTransitionAt`, probe sentinel, and the separate audit handle.
 - **Modifies the ledger (dry-run path only)** — the sentinel evaluation books nothing.
 - **Genuinely untouched:** per-door arming, the freeze asymmetry, `PATCHABLE_CONFIG_KEYS`.
@@ -893,8 +970,10 @@ design. The substantive corrections, recorded so they are not re-litigated:
    spend path reading a construction-time value — a cosmetic disable.
 5. **The probe checks the refusal's cause** because a refusal alone can come from a dozen
    unrelated failures, any of which would have read as success.
-6. **The probe bypass is a capability token**, not a non-exported function, because module
-   visibility erodes through barrel files, test exports and DI.
+6. **The probe uses a live `$0` door, not a bypass.** Five rounds challenged a privileged
+   branch inside metered execution and the convergence comparator named it the largest
+   residual risk. Fencing it better was the wrong answer each time; removing the privileged
+   path — so the probe is an ordinary call that cannot bill — was the right one.
 7. **Phase 1 ships pending-restart** because hot construction is a lifecycle manager, and
    the operator's complaint was "no way to turn it on", not "it takes a restart".
 8. **The restart is specified end to end** because "the tab offers a restart" left a remote
