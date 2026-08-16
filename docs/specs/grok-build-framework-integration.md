@@ -508,8 +508,9 @@ framework is not "wired" on a passing test alone.
 
   **A candidate remedy, deduced from the entrypoint census rather than guessed:**
   warm-session A2A spawns a tmux keep-alive worker and admits it so follow-ups
-  inject into the live session — and `WarmSessionPool` is NOT one of the two
-  `buildHeadlessLaunch` call sites, so that path never touches the closed lane,
+  inject into the live session — and `WarmSessionPool` is NOT among the
+  `buildHeadlessLaunch` call sites enumerated by the entrypoint census, so that
+  path never touches the closed lane,
   while grok's INTERACTIVE lane is open. Enabling it may therefore give
   grok-primary agents working ingress without the scratch-cwd work. Stated as a
   candidate, NOT a fix: it ships dark, and nothing here has been run to confirm

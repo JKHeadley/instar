@@ -54,6 +54,16 @@ function isHistoricalNarration(line: string): boolean {
   return /It read:|previously (?:read|said)|the list was|used to say|once said|became|corrected round|CORRECTED ROUND|drifted/i.test(line);
 }
 
+/*
+ * KNOWN OVER-BREADTH, left deliberately (2026-08-15). This matcher cannot tell
+ * WHICH count a prose number restates. It fired on "one of the two
+ * `buildHeadlessLaunch` call sites" — a sentence about the headless-entrypoint
+ * census, nothing to do with the surface list. The prose was reworded rather than
+ * the matcher narrowed: it has caught five real drifts, its false positive cost
+ * one rewording and was reported instantly and unambiguously. An over-broad guard
+ * with immediate, legible feedback is a good trade; narrowing it to chase a
+ * harmless false positive would trade a caught defect for tidiness.
+ */
 describe('dark-ship surface list — the count lives in the list, not in prose', () => {
   it('CONTROL: the detector fires on every shape that actually shipped', () => {
     // The four real stale sentences from this document's history, verbatim.
