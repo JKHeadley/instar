@@ -3541,8 +3541,8 @@
         What the internal AI calls cost, and where the paid-door caps sit. The dollar figures are a
         <b>reporting</b> view — immutable token counts priced against a reviewed price list on read, so a
         price correction reflows automatically. <b>No paid door is live yet</b>, so metered spend is $0;
-        subscription/CLI doors are <b>$0 (not per-token billed)</b>. This is read-only — money caps and the
-        go-live control are a later increment.
+        subscription/CLI doors are <b>$0 (not per-token billed)</b>. The spend figures above are a report;
+        the controls below set a door's ceilings and take it live, and each of those takes your PIN.
       </div>
 
       <!-- Glance floors F10/F11 (topic 29836, Phase 3): the shared component renders
@@ -3550,6 +3550,12 @@
            became plain words at the glance ("pay-per-use"); the per-model math and the
            paid-door caps moved one drill down. -->
       <div id="spendGlance" class="glance-root"></div>
+
+      <!-- Paid-door arming (Increment B UI). Two PIN-committed steps: set both ceilings,
+           then take the door live. The server renders the exact wording of each step and
+           the commit sends back only the plan id + nonce, so a field the operator never
+           saw rendered cannot land. Freeze needs no PIN — halting money is always cheap. -->
+      <div id="spendArming" class="spend-arm-root"></div>
     </div>
 
     <!-- Evidence Tab (WikiClaim Phase 4) — per-entity evidence + reverse "what cites this?" view.
@@ -3634,6 +3640,28 @@
 
     <!-- subscriptions tab (Subscription & Auth Standard P2.2 — live quota + pending logins) -->
     <style>
+      /* Paid-door arming controls (Spend tab). Mobile-first: full-width stacked fields
+         and 44px touch targets, since the operator reaches this from their phone. */
+      .spend-arm-root { display:flex; flex-direction:column; gap:12px; margin-top:8px;
+        border-top:1px solid var(--border,#2a2a2a); padding-top:16px; }
+      .spend-arm-h { margin:0; font-size:16px; }
+      .spend-arm-field { display:flex; flex-direction:column; gap:6px; font-size:13px; opacity:.9; }
+      .spend-arm-input { width:100%; box-sizing:border-box; min-height:44px; padding:10px 12px;
+        font-size:16px; /* 16px stops iOS zooming the page on focus */
+        border:1px solid var(--border,#2a2a2a); border-radius:8px; background:transparent; color:inherit; }
+      .spend-arm-hint { font-size:12px; opacity:.6; }
+      .spend-arm-btns { display:flex; flex-wrap:wrap; gap:8px; }
+      .spend-arm-btn { min-height:44px; padding:10px 14px; font-size:14px; border-radius:8px;
+        border:1px solid var(--border,#2a2a2a); background:transparent; color:inherit; cursor:pointer; flex:1 1 auto; }
+      .spend-arm-btn-freeze { border-color:#b45309; color:#f59e0b; }
+      .spend-arm-btn-commit { border-color:#16a34a; color:#22c55e; width:100%; margin-top:10px; }
+      .spend-arm-plan { display:flex; flex-direction:column; gap:8px; }
+      .spend-arm-plan-label { font-size:12px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; opacity:.6; }
+      .spend-arm-plan-text { font-size:14px; line-height:1.5; padding:12px; border-radius:8px;
+        border:1px solid var(--border,#2a2a2a); white-space:pre-wrap; word-break:break-word; }
+      .spend-arm-plan-expiry, .spend-arm-note { font-size:12px; opacity:.7; }
+      @media (max-width:520px) { .spend-arm-btn { flex:1 1 100%; } }
+
       /* Provider group heading — only rendered when more than one provider is
          enrolled, so a single-provider install looks exactly as it did before. */
       .sub-provider-heading { font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
@@ -6010,6 +6038,10 @@
 
       const spec = glance.spendGlanceSpec(document, summary, caps);
       glance.renderGlance(document, glanceRoot, spec);
+      // The arming controls sit below the read-only glance. Rendered from the SAME caps
+      // payload, so the door list and its live/frozen wording cannot drift from the view
+      // above it.
+      renderSpendArming(caps);
     }
 
     async function loadResources() {
@@ -8633,6 +8665,217 @@
         catch (e) { console.error('[glance] module load failed', e); return null; }
       }
       return __glanceModule;
+    }
+
+    // ── Spend tab — paid-door arming (Increment B UI) ──
+    // Two PIN-committed steps (set both ceilings, then go live), each previewed as the
+    // SERVER's rendered wording before the PIN box appears. The commit posts only the
+    // plan id + nonce + PIN, never the form fields.
+    let __spendArmModule = null;
+    async function loadSpendArmModule() {
+      if (!__spendArmModule) {
+        try { __spendArmModule = await import('/dashboard/spend-arming.js'); }
+        catch (e) { console.error('[spend-arming] module load failed', e); return null; }
+      }
+      return __spendArmModule;
+    }
+
+    // The plan currently awaiting approval. Cleared whenever inputs change, so a PIN can
+    // never be applied to a plan the operator has since edited away from.
+    let __spendPendingPlan = null;
+
+    async function renderSpendArming(caps) {
+      const root = document.getElementById('spendArming');
+      if (!root) return;
+      const M = await loadSpendArmModule();
+      if (!M) { root.textContent = 'Loading the money controls failed — refresh to retry.'; return; }
+      root.replaceChildren();
+
+      const h = document.createElement('h3');
+      h.textContent = 'Paid doors';
+      h.className = 'spend-arm-h';
+      root.appendChild(h);
+
+      const rows = M.armableDoors(caps);
+      if (rows.length === 0) {
+        const n = document.createElement('div');
+        n.className = 'spend-arm-note';
+        n.textContent = 'No pay-per-use doors are configured on this agent.';
+        root.appendChild(n);
+        return;
+      }
+
+      const sel = document.createElement('select');
+      sel.id = 'spendArmKey';
+      sel.className = 'spend-arm-input';
+      for (const r of rows) {
+        const o = document.createElement('option');
+        o.value = r.keyRef;
+        // textContent — keyRef/provider are server data, never markup.
+        o.textContent = `${r.provider} · ${r.door} — ${M.doorStateWords(r)}`;
+        sel.appendChild(o);
+      }
+      const selWrap = document.createElement('label');
+      selWrap.className = 'spend-arm-field';
+      selWrap.appendChild(document.createTextNode('Which door'));
+      selWrap.appendChild(sel);
+      root.appendChild(selWrap);
+
+      const mkNum = (id, label, hint) => {
+        const w = document.createElement('label');
+        w.className = 'spend-arm-field';
+        w.appendChild(document.createTextNode(label));
+        const i = document.createElement('input');
+        i.id = id; i.type = 'number'; i.min = '0'; i.step = '0.01';
+        i.className = 'spend-arm-input'; i.inputMode = 'decimal';
+        i.addEventListener('input', () => { __spendPendingPlan = null; renderSpendPlan(null); });
+        w.appendChild(i);
+        const hn = document.createElement('div');
+        hn.className = 'spend-arm-hint'; hn.textContent = hint;
+        w.appendChild(hn);
+        return w;
+      };
+      root.appendChild(mkNum('spendArmLifetime', 'Lifetime ceiling (USD)',
+        'The total this door may ever spend. It stops permanently here.'));
+      root.appendChild(mkNum('spendArmDaily', 'Daily ceiling (USD)',
+        'The most it may spend in one day. Both ceilings are required.'));
+      sel.addEventListener('change', () => { __spendPendingPlan = null; renderSpendPlan(null); });
+
+      const btns = document.createElement('div');
+      btns.className = 'spend-arm-btns';
+      const mkBtn = (text, cls, fn) => {
+        const b = document.createElement('button');
+        b.textContent = text; b.className = cls; b.onclick = fn; return b;
+      };
+      btns.appendChild(mkBtn('Preview cap change', 'spend-arm-btn', () => previewSpendPlan('caps-adjust')));
+      btns.appendChild(mkBtn('Preview go live', 'spend-arm-btn', () => previewSpendPlan('go-live')));
+      btns.appendChild(mkBtn('Freeze this door', 'spend-arm-btn spend-arm-btn-freeze', freezeSpendDoor));
+      root.appendChild(btns);
+
+      const planBox = document.createElement('div');
+      planBox.id = 'spendArmPlan'; planBox.className = 'spend-arm-plan';
+      root.appendChild(planBox);
+
+      const status = document.createElement('div');
+      status.id = 'spendArmStatus'; status.className = 'spend-arm-note';
+      root.appendChild(status);
+    }
+
+    function selectedSpendRow(caps, M) {
+      const key = (document.getElementById('spendArmKey') || {}).value;
+      return M.armableDoors(caps).find((r) => r.keyRef === key) || null;
+    }
+
+    function renderSpendPlan(plan) {
+      const box = document.getElementById('spendArmPlan');
+      if (!box) return;
+      loadSpendArmModule().then((M) => {
+        if (!M) return;
+        M.renderPlanPreview(document, box, plan);
+        if (!plan) return;
+        // The PIN box appears ONLY once there is a rendered plan to approve, so the
+        // operator never types a secret against something they have not read.
+        const w = document.createElement('label');
+        w.className = 'spend-arm-field';
+        w.appendChild(document.createTextNode('Dashboard PIN'));
+        const p = document.createElement('input');
+        p.type = 'password'; p.id = 'spendArmPin'; p.className = 'spend-arm-input';
+        p.autocomplete = 'off'; p.inputMode = 'numeric';
+        w.appendChild(p);
+        box.appendChild(w);
+        const b = document.createElement('button');
+        b.className = 'spend-arm-btn spend-arm-btn-commit';
+        b.textContent = 'Approve with PIN';
+        b.onclick = commitSpendPlan;
+        box.appendChild(b);
+      });
+    }
+
+    function setSpendArmStatus(text) {
+      const s = document.getElementById('spendArmStatus');
+      if (s) s.textContent = text;
+    }
+
+    async function previewSpendPlan(action) {
+      const M = await loadSpendArmModule();
+      if (!M) return;
+      const caps = await apiFetch('/routing-spend/caps').catch(() => null);
+      const row = selectedSpendRow(caps, M);
+      if (!row) { setSpendArmStatus('Pick a door first.'); return; }
+
+      let fields;
+      if (action === 'caps-adjust') {
+        const num = (id) => {
+          const raw = (document.getElementById(id) || {}).value;
+          return raw === '' || raw === undefined ? '' : Number(raw);
+        };
+        const lifetimeCapUsd = num('spendArmLifetime');
+        const dailyCapUsd = num('spendArmDaily');
+        const v = M.validateCaps({ lifetimeCapUsd, dailyCapUsd });
+        if (!v.ok) { setSpendArmStatus(v.error); return; }
+        fields = { keyRef: row.keyRef, provider: row.provider, lifetimeCapUsd, dailyCapUsd };
+      } else {
+        fields = { door: row.door, keyRef: row.keyRef, enabled: true };
+      }
+
+      try {
+        const plan = await apiFetch('/routing-spend/plan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(M.planRequest(action, fields)),
+        });
+        __spendPendingPlan = plan;
+        setSpendArmStatus('');
+        renderSpendPlan(plan);
+      } catch (err) {
+        __spendPendingPlan = null;
+        renderSpendPlan(null);
+        setSpendArmStatus(M.moneyLayerNote(err && err.message));
+      }
+    }
+
+    async function commitSpendPlan() {
+      const M = await loadSpendArmModule();
+      if (!M || !__spendPendingPlan) { setSpendArmStatus('Preview a change first.'); return; }
+      const pinEl = document.getElementById('spendArmPin');
+      const pin = pinEl ? pinEl.value : '';
+      if (!pin) { setSpendArmStatus('Enter your dashboard PIN to approve.'); return; }
+      try {
+        await apiFetch('/routing-spend/caps/adjust', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(M.commitRequest(__spendPendingPlan, pin)),
+        });
+        if (pinEl) pinEl.value = '';
+        __spendPendingPlan = null;
+        renderSpendPlan(null);
+        setSpendArmStatus('Applied.');
+        loadRoutingSpend();
+      } catch (err) {
+        if (pinEl) pinEl.value = '';
+        setSpendArmStatus(M.moneyLayerNote(err && err.message));
+      }
+    }
+
+    async function freezeSpendDoor() {
+      const M = await loadSpendArmModule();
+      if (!M) return;
+      const caps = await apiFetch('/routing-spend/caps').catch(() => null);
+      const row = selectedSpendRow(caps, M);
+      if (!row) { setSpendArmStatus('Pick a door first.'); return; }
+      try {
+        // No PIN: halting money is always cheap and always available. UNfreezing is the
+        // PIN-gated direction.
+        await apiFetch('/routing-spend/freeze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keyRef: row.keyRef }),
+        });
+        setSpendArmStatus('Frozen. Spending on that door is halted.');
+        loadRoutingSpend();
+      } catch (err) {
+        setSpendArmStatus(M.moneyLayerNote(err && err.message));
+      }
     }
 
     async function loadCommitments() {
