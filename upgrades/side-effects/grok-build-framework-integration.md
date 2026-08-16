@@ -584,6 +584,30 @@ version of the same false claim fails too. Parity between the two copies is
 asserted in the same file, since this paragraph has now been edited in place
 twice. Both new assertions were shown red against the stale sentence.
 
+### A test was actively defending the false claim
+
+The stale awareness sentence did not merely survive the lane change — it was being
+DEFENDED. `tests/unit/grok-build-awareness-parity.test.ts` asserted:
+
+    expect(md).toContain('headless job spawns do NOT run on grok yet');
+
+So correcting the text turned the suite red, and the path of least resistance was
+to put the falsehood back. A test demanding the wrong words is worse than no test
+at all, because it converts telling the truth into a build failure. Inverted to
+forbid the claim rather than restoring it, and extended to require the name of the
+bound that replaced it.
+
+Two process notes worth keeping. First, my own affected-test census missed this
+file: I ran the grok, permission-prompt, headless-lane and framework-matrix suites
+after editing the template, and this one matched none of those patterns, so I
+believed the change was clean when it was not. CI would have caught it; my local
+selection would not have. Second, the pre-existing file ALREADY asserted migration
+parity between the two shipped copies, more strongly than the version I had just
+written (it renders through `generateClaudeMd` and the migrator against a real temp
+project, rather than slicing source text). My duplicate assertion was removed and
+the new file now carries only what is genuinely new: the coupling between the
+paragraph and `headlessLaneIsClosed`.
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**

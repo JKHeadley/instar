@@ -70,12 +70,10 @@ describe('grok agent-awareness text agrees with grok behaviour', () => {
     }
   });
 
-  it('the two shipped copies carry the SAME claims', () => {
-    // Migration Parity: new agents read templates.ts, existing agents get the
-    // migrator's copy. A fix applied to one only is a fix half the fleet never
-    // receives — and this paragraph has now been edited in place twice.
-    expect(grokParagraph(TEMPLATE)).toBe(grokParagraph(MIGRATOR));
-  });
+  // Migration Parity between the two shipped copies is already asserted by
+  // grok-build-awareness-parity.test.ts (it compares the rendered note from
+  // generateClaudeMd against the migrator's output on a real temp project, which
+  // is the stronger check). Not duplicated here.
 
   it('CONTROL: the assertions read a real paragraph, not an empty string', () => {
     // Without this, a change to the marker string would make grokParagraph return
