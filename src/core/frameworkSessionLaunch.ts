@@ -1164,6 +1164,26 @@ const grokBuildHeadlessBuilder: HeadlessBuilder = (options) => {
   // this one did not, which is exactly why it was the one that broke.
   const resolved = resolveModelForFramework('grok-build', options.model);
   if (resolved) argv.push('--model', resolved);
+  // WITHOUT THIS FLAG THE LANE IS WORSE THAN CLOSED. Measured against grok 1.x
+  // on 2026-08-16: a headless run silently DROPS any tool call that would need
+  // approval, then exits 0. Asked to create a file, grok answers "I'll create
+  // made.txt…", creates nothing, and reports success — so every job that writes
+  // anything would have been recorded as successful while doing no work. Reads
+  // are unaffected (a read of a marker file returned the real contents), which
+  // is exactly why this is invisible: a job that only reads looks healthy.
+  //
+  // Measured per mode, same prompt, file-created as the only success signal:
+  //   (none) / acceptEdits / dontAsk → NOT created, exit 0
+  //   auto / bypassPermissions       → created
+  // `dontAsk` is the trap: it reads as the obvious choice and does not work.
+  //
+  // bypassPermissions over auto because `auto`'s boundary is uncharacterized. An
+  // under-permissive mode fails SILENTLY here — a dropped tool call still exits 0
+  // — so a mode that might approve only some operations reintroduces the exact
+  // invisible failure. Jobs on other frameworks already run unattended with full
+  // machine access (claude uses --dangerously-skip-permissions), and the lane's
+  // own bound still refuses an instar source checkout.
+  argv.push('--permission-mode', 'bypassPermissions');
   argv.push('--prompt-file', writeGrokPromptFile(options.prompt));
   return { argv, envOverrides: buildGrokHeadlessEnvOverrides() };
 };

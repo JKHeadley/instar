@@ -21,9 +21,15 @@ menus and the safe row sits in a different place on each. The floor reads the
 option labels, presses the row meaning "approve this call", excludes every blanket
 row, and declines entirely when the menu is ambiguous or an unfamiliar shape.
 
-**Background jobs run on Grok agents.** The job lane refused every Grok job, so a
-Grok-primary agent's scheduled jobs failed on their schedule indefinitely. The lane
-is open; the safety bound moved to the case it was actually about.
+**Background jobs run on Grok agents — and actually do their work.** The job lane
+refused every Grok job, so a Grok-primary agent's scheduled jobs failed on their
+schedule indefinitely. The lane is open, and the safety bound moved to the case it
+was actually about. Opening it was not sufficient on its own: a headless Grok run
+silently skips any action needing approval and still exits successfully, so a job
+asked to write a file would announce it, write nothing, and be recorded as a
+success. Reads were unaffected, which is what made it invisible — a read-only job
+looked perfectly healthy. Jobs now run in a mode where their actions actually
+execute.
 
 **Grok jobs no longer report success while doing nothing.** Opening the lane
 introduced a worse failure than the one it fixed. Job manifests name a generic
@@ -75,9 +81,14 @@ machine can read. They now travel in a file only the agent can open.
 - The model fix is pinned for every generic tier, with a control proving a real
   Grok model id still passes through untouched. Verified live: a job that died in
   18 seconds now runs 47.
+- The "jobs actually act" fix was measured mode by mode against the live CLI, with
+  the file being created as the only success signal — no mode, "accept edits" and
+  "don't ask" all failed to create it while exiting successfully; two other modes
+  worked. The one that sounds most obviously correct is among the ones that do
+  nothing, which is why this is pinned by a test rather than left to judgement.
 - Claude's behaviour is asserted unchanged, so this did not trade one framework's
   safety for another's.
-- 20 Grok test files across all three tiers, 244 tests.
+- 20 Grok test files across all three tiers, 245 tests.
 
 ## Compatibility Notes
 

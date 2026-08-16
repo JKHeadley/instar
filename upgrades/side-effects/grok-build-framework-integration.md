@@ -638,6 +638,48 @@ patterns. The mechanism that would have selected it correctly exists and has bee
 timing out on every push (measured: 174s against a 120s budget), which is filed
 separately.
 
+### The opened lane produced jobs that TALK but do not ACT
+
+The worst finding of the branch, found by running a real grok job end-to-end
+instead of trusting that "the lane builds argv" meant "the lane works".
+
+Measured against the live CLI, 2026-08-16. A headless grok run silently DROPS any
+tool call that would need approval, and then exits 0. Asked to create a file, grok
+answers `I'll create made.txt in the current directory with the word yes`, creates
+nothing, and reports success. The file was searched for across the filesystem
+afterwards: never written, anywhere.
+
+**Reads are unaffected** — a read of a marker file returned its real contents — and
+that is precisely what makes this invisible. A read-only job looks perfectly
+healthy. Only a job that writes is silently hollow.
+
+So the lane as first opened would have converted 33 scheduled jobs from
+"loudly refused" to "silently pretending", which is strictly worse than the
+refusal it replaced. This is the SECOND time in this branch that opening the lane
+produced an exit-0-over-zero-work failure, and the second time the ledger would
+have asserted success over nothing.
+
+Per-mode measurement, same prompt, file-created as the ONLY success signal:
+
+    (none)             → NOT created, exit 0
+    acceptEdits        → NOT created, exit 0
+    dontAsk            → NOT created, exit 0
+    auto               → created
+    bypassPermissions  → created
+
+`dontAsk` is the trap: it is the obvious-sounding choice and it does not work.
+
+`bypassPermissions` chosen over `auto` because `auto`'s boundary is
+uncharacterized, and an under-permissive mode fails SILENTLY here — a dropped tool
+call still exits 0 — so a mode that approves only some operations reintroduces the
+exact invisible failure this fixes. Jobs on other frameworks already run unattended
+with full machine access (claude uses `--dangerously-skip-permissions`), and the
+lane's own bound still refuses an instar source checkout.
+
+HONEST RESIDUAL: this was measured with a file-creation task. I have not
+characterized every tool class under `bypassPermissions`, so "writes now work" is
+what is proven, not "every tool works".
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**

@@ -81,6 +81,35 @@ describe('grok-build headless lane', () => {
     expect(path.basename(path.dirname(fileA)).startsWith('grok-scratch-')).toBe(true);
   });
 
+  it('passes a permission mode that lets tool calls actually EXECUTE', () => {
+    // THE BUG THIS PINS, and it is the one that would have made the whole lane a
+    // lie. Measured against the live CLI 2026-08-16: a headless grok run silently
+    // DROPS any tool call needing approval and then exits 0. Asked to create a
+    // file it answers "I'll create made.txt…", creates nothing, and reports
+    // success — so every job that writes would have been logged as successful
+    // while doing no work.
+    //
+    // Reads are unaffected (a read of a marker file returned its real contents),
+    // which is why it is invisible: a read-only job looks perfectly healthy.
+    //
+    // Per-mode measurement, same prompt, file-created as the ONLY success signal:
+    //   (none) / acceptEdits / dontAsk → NOT created, exit 0
+    //   auto / bypassPermissions       → created
+    // `dontAsk` is the trap — it reads as the obvious choice and does not work.
+    const spec = buildHeadlessLaunch('grok-build', {
+      binaryPath: '/opt/grok/bin/grok',
+      prompt: 'x',
+    });
+    const i = spec.argv.indexOf('--permission-mode');
+    expect(i, 'a headless grok job without --permission-mode silently does nothing').toBeGreaterThan(-1);
+    const mode = spec.argv[i + 1];
+    // Pinned to the MEASURED-WORKING set. A future edit to `dontAsk` — the
+    // plausible-sounding wrong answer — fails here rather than in production,
+    // where it would look like success.
+    expect(['bypassPermissions', 'auto']).toContain(mode);
+    expect(mode).not.toBe('dontAsk');
+  });
+
   it('the lane reports itself OPEN', () => {
     expect(headlessLaneIsClosed('grok-build')).toBe(false);
   });
