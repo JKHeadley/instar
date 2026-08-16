@@ -28,6 +28,15 @@ export interface RelayResult {
   topicId: number;
 }
 
+/**
+ * Quiet by Default (notification-selectivity §2.4): the relay protocol version
+ * this sender advertises. Version 1 = the relay body carries the `relayed`
+ * marker + (when present) the plain provenance envelope. The HOLDER classifies
+ * every relayed send FRESH against its own registry/budgets; a PRE-DECIDED
+ * envelope never crosses the mesh.
+ */
+export const RELAY_PROTOCOL_VERSION = 1;
+
 export interface RelayDeps {
   /** Resolve the lease holder's machine id, or null if we hold it / none known. */
   leaseHolder: () => string | null;
@@ -52,7 +61,7 @@ export interface RelayDeps {
 export async function relayOutbound(
   topicId: number,
   text: string,
-  opts: { silent?: boolean; kindMetadata?: Record<string, unknown> } | undefined,
+  opts: { silent?: boolean; kindMetadata?: Record<string, unknown>; envelope?: Record<string, unknown> } | undefined,
   deps: RelayDeps,
 ): Promise<RelayResult | null> {
   const log = deps.log ?? (() => {});
@@ -81,6 +90,16 @@ export async function relayOutbound(
         text,
         ...(opts?.silent ? { silent: true } : {}),
         ...(opts?.kindMetadata ? { metadata: opts.kindMetadata } : {}),
+        // Quiet by Default (§2.4): the relay carrier. `relayed: true` +
+        // machineId + protocolVersion let the holder KNOW this is a relay hop
+        // (drives relayedOrigin tagging + per-peer version gating); the plain
+        // envelope rides alongside as peer-asserted provenance the holder
+        // re-classifies fresh. Absence of this marker on a legacy peer's relay
+        // is exactly the version-skew signal the §2.4 fallback covers.
+        relayed: true,
+        machineId: deps.selfMachineId,
+        protocolVersion: RELAY_PROTOCOL_VERSION,
+        ...(opts?.envelope ? { envelope: opts.envelope } : {}),
       }),
       signal: ac.signal,
     });

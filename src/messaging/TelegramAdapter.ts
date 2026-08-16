@@ -11,6 +11,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { NotificationBatcher, NotificationTier } from './NotificationBatcher.js';
@@ -36,6 +37,10 @@ import {
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { stopAutonomousTopic, type AutonomousJournalSeam } from '../core/AutonomousSessions.js';
 import { AttentionTopicGuard, TopicFloodBudgetError, type AttentionTopicGuardConfig } from './AttentionTopicGuard.js';
+import type { NotificationSelectivityGate } from './NotificationSelectivityGate.js';
+import type { InboundRecencyMap } from './InboundRecencyMap.js';
+import { PreDecidedEnvelope, telegramAdapterStamper, type OutboundEnvelope } from './notificationEnvelope.js';
+import type { SignificantClass } from './notificationCategories.js';
 
 export interface TelegramConfig {
   /** Bot token from @BotFather */
@@ -166,10 +171,21 @@ interface PendingPromptReply {
 }
 
 export interface SendResult {
-  /** Telegram message ID */
+  /** Telegram message ID (`-1` when the send was quiet-routed, never delivered). */
   messageId: number;
   /** Topic the message was sent to */
   topicId?: number;
+  /**
+   * Quiet by Default (§2.3 return contract): false when the selectivity gate
+   * routed the send `record` — it reached its governed surface (quiet store +
+   * ledger), NOT Telegram. Callers must not treat a recorded result as delivery
+   * (no retries, no "user was notified" state). Absent ⇒ delivered.
+   */
+  delivered?: boolean;
+  /** True when the send was recorded to the quiet store instead of delivered. */
+  recorded?: boolean;
+  /** The quiet-store row id for a recorded send. */
+  quietId?: string;
 }
 
 export interface DashboardBroadcastResult {
@@ -322,6 +338,18 @@ export interface AttentionItem {
   /** Display nickname of `machineId`, resolved from the pool registry at read
    *  time. */
   machineNickname?: string;
+  /**
+   * Quiet by Default (notification-selectivity §4.2): true when the selectivity
+   * gate routed this item quiet — it persists in the store and appears on the
+   * dashboard Notifications tab, but never generated the hub send.
+   */
+  heldQuiet?: boolean;
+  /**
+   * §5 significant lane: the class this item claims. Honored ONLY per the
+   * SIGNIFICANT_TABLE (category, class) code table — a mislabel is ignored +
+   * audited, never a push entitlement.
+   */
+  significantClass?: SignificantClass;
 }
 
 /**
@@ -513,6 +541,22 @@ export class TelegramAdapter implements MessagingAdapter {
   private agentHealthPending: Promise<number | null> | null = null;
   /** entity key -> last-posted epoch ms (suppression-dedup ring, insertion-ordered). */
   private agentHealthKeyRing: Map<string, number> = new Map();
+  // ── Quiet by Default (notification-selectivity) ─────────────────────────────
+  /**
+   * The last-hop selectivity gate, attached post-construction by the composition
+   * root (like `intelligence`/`outboundRelay`). Absent or dark ⇒ every send
+   * behaves exactly as before this feature existed (fail-open to delivery).
+   */
+  public selectivityGate: NotificationSelectivityGate | null = null;
+  /** §2.5 inbound recency map, attached post-construction; fed by processUpdate. */
+  public inboundRecencyMap: InboundRecencyMap | null = null;
+  /**
+   * §2.1 command-response stamping: ONE structural chokepoint instead of ~100
+   * per-callsite stamps. Every `sendToTopic` issued while handling a user-typed
+   * command classifies `command-response`, bound to the triggering inbound
+   * message id (AsyncLocalStorage — race-free across interleaved updates).
+   */
+  private commandContext = new AsyncLocalStorage<{ inboundMessageId: string }>();
   // ── Single-alerts-topic routing (2026-07-09 directive) ─────────────────────
   /** Resolved routing mode ('single-topic' unless config opts into legacy). */
   private attentionRoutingMode!: 'single-topic' | 'per-item';
@@ -613,7 +657,7 @@ export class TelegramAdapter implements MessagingAdapter {
    * invariant that avoids the 409-poller-conflict incident). Returns the sent
    * message's SendResult, or null if the relay could not deliver.
    */
-  public outboundRelay: ((topicId: number, text: string, options?: { silent?: boolean; kindMetadata?: Record<string, unknown> }) => Promise<SendResult | null>) | null = null;
+  public outboundRelay: ((topicId: number, text: string, options?: { silent?: boolean; kindMetadata?: Record<string, unknown>; envelope?: Record<string, unknown> }) => Promise<SendResult | null>) | null = null;
 
   /**
    * True when a `sendToTopic` will RELAY through the lease holder rather than
@@ -1308,8 +1352,42 @@ export class TelegramAdapter implements MessagingAdapter {
        *  hop (spec outbound-jargon-filepath-gap §2.5). Direct sends ignore it
        *  — the local route already consumed it. */
       kindMetadata?: Record<string, unknown>;
+      /** Quiet by Default (§2.1): the provenance envelope stamped at the send's
+       *  origination chokepoint, or a gate-minted PRE-DECIDED envelope for a
+       *  verdict already rendered upstream (attention hub, §5/§6 pushes). */
+      envelope?: OutboundEnvelope | PreDecidedEnvelope;
     },
   ): Promise<SendResult> {
+    // ── Quiet by Default: the LAST-HOP selectivity gate (§2) ──────────────
+    // Runs before any payload is built so it covers BOTH the relay branch and
+    // the direct-apiCall branch. Gate absent or dark ⇒ exactly today's behavior.
+    if (this.selectivityGate) {
+      let envelope = options?.envelope;
+      if (!envelope) {
+        // Structural command-response stamping: a send issued while handling a
+        // user-typed command is that command's response (§2.1), bound to the
+        // triggering inbound id for §3.2 corroboration.
+        const cmdCtx = this.commandContext.getStore();
+        if (cmdCtx) {
+          envelope = telegramAdapterStamper.stamp('command-response', {
+            inboundMessageId: cmdCtx.inboundMessageId,
+            sourceContext: 'command-response',
+          });
+        }
+      }
+      const verdict = this.selectivityGate.process({
+        topicId,
+        text,
+        envelope,
+        kindMetadata: options?.kindMetadata,
+      });
+      if (!verdict.deliver) {
+        // §2.3 return contract: recorded is SUCCESS for the emitter — the notice
+        // reached its governed surface. It must never look like a Telegram send.
+        return { messageId: -1, topicId, delivered: false, recorded: true, quietId: verdict.quietId };
+      }
+    }
+
     const params: Record<string, unknown> = {
       chat_id: this.config.chatId,
       text,
@@ -1333,9 +1411,26 @@ export class TelegramAdapter implements MessagingAdapter {
       // Tokenless standby (bug #7): relay the send through the Telegram-owning router
       // instead of calling the API with no token. The rest of this method's bookkeeping
       // (log, stall-clear, promise-tracking) then runs identically on the relayed id.
+      // Quiet by Default (§2.4): the plain envelope rides the relay as
+      // peer-asserted provenance; a PRE-DECIDED envelope NEVER crosses the mesh
+      // — it degrades to its plain fields so the HOLDER classifies fresh against
+      // its own table and budgets.
+      const env = options?.envelope;
+      const relayEnvelope: Record<string, unknown> | undefined =
+        env instanceof PreDecidedEnvelope
+          ? {
+              origin: 'automated',
+              category: env.category,
+              ...(env.significantClass ? { significantClass: env.significantClass } : {}),
+              sourceContext: env.sourceContext,
+            }
+          : env
+            ? { ...env }
+            : undefined;
       const relayed = await this.outboundRelay(topicId, text, {
         silent: options?.silent,
         kindMetadata: options?.kindMetadata,
+        envelope: relayEnvelope,
       });
       if (!relayed) {
         throw new Error('telegram outbound relay failed (tokenless standby, router unreachable)');
@@ -3851,6 +3946,30 @@ export class TelegramAdapter implements MessagingAdapter {
       updatedAt: now,
     };
 
+    // ── Quiet by Default (notification-selectivity §2, §3.1) ─────────────
+    // ONE gate evaluation upstream of every delivery branch (hub / lane /
+    // per-item). Quiet verdict ⇒ the item persists in the store with
+    // `heldQuiet` and appears on the dashboard Notifications tab — but no
+    // Telegram surface is generated. A push verdict rides a gate-minted
+    // PRE-DECIDED envelope through the funnel (single evaluation, §2). Gate
+    // absent or dark ⇒ exactly today's behavior.
+    let selectivityMint: (() => PreDecidedEnvelope) | undefined;
+    if (this.selectivityGate) {
+      const gateVerdict = this.selectivityGate.evaluateAttention({
+        category: item.lane === 'agent-health' ? 'agent-health' : 'attention-item',
+        sourceContext: item.sourceContext || item.category || item.id,
+        significantClass: item.significantClass,
+        priority: item.priority,
+      });
+      if (!gateVerdict.push) {
+        attention.heldQuiet = true;
+        this.attentionItems.set(item.id, attention);
+        this.saveAttentionItems();
+        return attention;
+      }
+      selectivityMint = gateVerdict.mintPush;
+    }
+
     // ── Agent-Health lane (calm self-health notices) ─────────────────────
     // A routine self-health/housekeeping notice routes into ONE named "🩺 Agent
     // Health" topic from the very first item — it never spawns its own topic
@@ -3859,7 +3978,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // entirely, so a stale-session/peer-unreachable feature can never flood
     // topic-after-topic. Only items that explicitly opt in are affected.
     if (this.agentHealthLaneCfg.enabled && item.lane === 'agent-health') {
-      const laneTopicId = await this.routeToAgentHealthLane(attention);
+      const laneTopicId = await this.routeToAgentHealthLane(attention, selectivityMint);
       attention.coalesced = true;
       if (laneTopicId !== null) attention.topicId = laneTopicId;
       this.attentionItems.set(item.id, attention);
@@ -3875,7 +3994,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // maps (many items share the hub — see the coalesce-path comment below);
     // hub items are managed via /attention (PATCH / dashboard), not /ack.
     if (this.attentionRoutingMode === 'single-topic') {
-      const hubTopicId = await this.routeToAttentionHub(attention);
+      const hubTopicId = await this.routeToAttentionHub(attention, selectivityMint);
       attention.coalesced = true;
       if (hubTopicId !== null) attention.topicId = hubTopicId;
       this.attentionItems.set(item.id, attention);
@@ -4027,7 +4146,10 @@ export class TelegramAdapter implements MessagingAdapter {
    * lane topic is created lazily once and reused. Returns the lane topic id, or
    * null if Telegram is unavailable (the item is still recorded in the store).
    */
-  private async routeToAgentHealthLane(item: AttentionItem): Promise<number | null> {
+  private async routeToAgentHealthLane(
+    item: AttentionItem,
+    selectivityMint?: () => PreDecidedEnvelope,
+  ): Promise<number | null> {
     const key = this.healthKeyFor(item);
     const now = Date.now();
     const last = this.agentHealthKeyRing.get(key);
@@ -4066,7 +4188,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // @silent-fallback-ok — best-effort lane post; the item is already recorded in
     // the attention store, so a transient send failure is non-fatal. If the topic
     // was deleted out from under us, drop the cached id so it's recreated next time.
-    await this.sendToTopic(topicId, line).catch(() => { this.agentHealthTopicId = null; });
+    await this.sendToTopic(topicId, line, { envelope: selectivityMint?.() }).catch(() => { this.agentHealthTopicId = null; });
     return topicId;
   }
 
@@ -4221,7 +4343,27 @@ export class TelegramAdapter implements MessagingAdapter {
    * per-item topic. Returns the hub topic id, or null if Telegram is
    * unavailable (the item is still recorded in the store).
    */
-  private async routeToAttentionHub(item: AttentionItem): Promise<number | null> {
+  /**
+   * Quiet by Default (§5.2): deliver a gate-minted overflow summary to the
+   * "🔔 Attention" hub. Best-effort — items are all individually recorded in the
+   * quiet store regardless; the summary is the window's overflow representative.
+   */
+  async sendSelectivitySummary(text: string, envelope: PreDecidedEnvelope): Promise<void> {
+    let topicId: number | null = null;
+    try {
+      const injected = this.config.getAttentionHubTopicId?.();
+      topicId = typeof injected === 'number' && injected > 0 ? injected : await this.ensureAttentionHubTopic();
+    } catch {
+      topicId = this.attentionHubTopicId;
+    }
+    if (topicId === null) return;
+    await this.sendToTopic(topicId, text, { envelope }).catch(() => {}); // @silent-fallback-ok
+  }
+
+  private async routeToAttentionHub(
+    item: AttentionItem,
+    selectivityMint?: () => PreDecidedEnvelope,
+  ): Promise<number | null> {
     const emoji = PRIORITY_EMOJI[item.priority] || PRIORITY_EMOJI.NORMAL;
     const detail = [
       `${emoji} <b>${this.escapeHtml(item.title)}</b>`,
@@ -4242,7 +4384,7 @@ export class TelegramAdapter implements MessagingAdapter {
     }
     if (typeof injected === 'number' && injected > 0) {
       try {
-        await this.sendToTopic(injected, detail);
+        await this.sendToTopic(injected, detail, { envelope: selectivityMint?.() });
         return injected;
       } catch (err) {
         console.warn(`[telegram] attention hub send to injected topic ${injected} failed (${err}); self-healing a hub topic`);
@@ -4269,7 +4411,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // Best-effort hub post; the item is already recorded in the attention
     // store. If the hub was deleted out from under us, drop the cached id so
     // it's recreated next time.
-    await this.sendToTopic(topicId, detail).catch(() => { this.attentionHubTopicId = null; }); // @silent-fallback-ok
+    await this.sendToTopic(topicId, detail, { envelope: selectivityMint?.() }).catch(() => { this.attentionHubTopicId = null; }); // @silent-fallback-ok
     return topicId;
   }
 
@@ -4651,6 +4793,12 @@ export class TelegramAdapter implements MessagingAdapter {
       return;
     }
 
+    // Quiet by Default (§2.5): feed the in-memory inbound recency map on the
+    // AUTHORIZED inbound path — the gate's conversation-serving corroboration
+    // and the opt-in route's confirmation citations read only this map (never
+    // disk on the send path).
+    this.inboundRecencyMap?.recordInbound(numericTopicId, msg.message_id);
+
     // Handle voice messages
     if (msg.voice) {
       await this.handleVoiceMessage(msg, numericTopicId);
@@ -4674,9 +4822,15 @@ export class TelegramAdapter implements MessagingAdapter {
 
     const text = msg.text;
 
-    // Check for commands first
+    // Check for commands first. The command context (§2.1) makes every send
+    // issued while HANDLING this command classify `command-response`, bound to
+    // the triggering message id — one structural chokepoint, race-free across
+    // interleaved updates (AsyncLocalStorage), instead of ~100 per-site stamps.
     if (text.startsWith('/')) {
-      const handled = await this.handleCommand(text, numericTopicId, msg.from.id);
+      const handled = await this.commandContext.run(
+        { inboundMessageId: String(msg.message_id) },
+        () => this.handleCommand(text, numericTopicId, msg.from.id),
+      );
       if (handled) return;
     }
 
