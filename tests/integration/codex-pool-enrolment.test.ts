@@ -235,3 +235,58 @@ describe('enrolment gate — the route must not disagree with the identity layer
     expect(routes).not.toContain("provider !== 'anthropic' || framework !== 'claude-code'");
   });
 });
+
+/**
+ * The THIRD layer this feature broke at, and the one that makes the pattern obvious.
+ *
+ * Layer 1 (the oracle) could not read a Codex slot — fixed.
+ * Layer 2 (the route's provider gate) refused Codex before asking — fixed.
+ * Layer 3 is this: the route falls back to a composite oracle only when the server
+ * supplies NONE, and the server has always supplied one — the plain Anthropic oracle.
+ * So the fallback never ran, and enrolment still failed `email-unresolved` with a
+ * working Codex reader sitting right there.
+ *
+ * A default that a caller always overrides is not a default. Each of these three passed
+ * every test that existed, because each test stopped at the layer below the break.
+ */
+describe('enrolment oracle wiring — the server must supply an oracle that speaks Codex', () => {
+  it('the server passes the COMPOSITE oracle for subscription identity', () => {
+    const server = fs.readFileSync('src/commands/server.ts', 'utf8');
+    expect(server).toContain('const subscriptionIdentityOracle = new CompositeCredentialIdentityOracle({');
+    expect(server).toContain('subscriptionIdentityOracle,');
+    // The exact wiring that silently disabled Codex enrolment for two releases.
+    expect(server).not.toContain('subscriptionIdentityOracle: credentialIdentityOracle');
+  });
+
+  it('the credential-LOCATION ledger keeps the Anthropic oracle — scope stays narrow', () => {
+    // Widening the ledger's oracle would change quarantine/repair behaviour for Codex
+    // homes, which is a different feature with a different blast radius. Subscription
+    // identity is the only question that needed to learn Codex.
+    const server = fs.readFileSync('src/commands/server.ts', 'utf8');
+    expect(server).toContain('oracle: credentialIdentityOracle,');
+  });
+
+  it('THE END-TO-END PROPERTY: the composite oracle resolves a Codex slot the plain one cannot', async () => {
+    // Stated as the behaviour rather than the wiring, so it survives a refactor of how
+    // the oracle is constructed.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'oracle-wiring-'));
+    try {
+      const home = writeCodexHome(root, 'codex', 'wired@example.com', 'acct-wired');
+
+      const plain = await anthropicOnly.resolveSlotTenant(home);
+      expect(plain.unavailable, 'CONTROL: the plain oracle must NOT be able to answer').toBe(true);
+
+      const composite = await new CompositeCredentialIdentityOracle({
+        anthropic: anthropicOnly,
+      }).resolveSlotTenant(home);
+      expect(composite.unavailable).toBeFalsy();
+      expect(composite.email).toBe('wired@example.com');
+    } finally {
+      SafeFsExecutor.safeRmSync(root, {
+        recursive: true,
+        force: true,
+        operation: 'tests/integration/codex-pool-enrolment.test.ts:oracle-wiring',
+      });
+    }
+  });
+});
