@@ -196,11 +196,21 @@ My fix was never the thing that mattered; the trust grant was.
 I had a second theory about why trust would help, and checked that too. Also wrong
 — the log line it predicts never appears.
 
-So: messages now get through, it depends on the peer being trusted, and I cannot
-yet tell you by what route. Two theories, both killed by evidence. I'm writing
-that down rather than inventing a third, because a confident-sounding explanation
-nobody checked is precisely the kind of thing this project keeps finding and
-having to retract.
+Then I checked one step further and had to weaken it again. The messages are
+accepted and safely written down, and the system reports them as handled — but
+nobody reads them. No session is ever started to look, and the Grok agent has
+never replied to one. Four messages now.
+
+So the message reaches the machine, not the agent. What changed is that they used
+to be queued waiting for something that could never happen, and lost on restart;
+now they're filed straight away and nothing is lost. That's a real improvement,
+and it swapped silent losing for silent filing.
+
+Three times in this stretch I stated something more strongly than the evidence
+supported, and each time what caught it was going one step past where I already
+had an answer I liked. I'm recording the open question rather than inventing an
+explanation, because a confident-sounding mechanism nobody checked is precisely
+what this project keeps finding and having to retract.
 
 ## The one the tests finally caught
 

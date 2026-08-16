@@ -521,11 +521,24 @@ framework is not "wired" on a passing test alone.
   (`shouldUseListener` is trust-gated and needs no spawn) — is refuted too: the
   `Routed to listener inbox` line never appears in the log.
 
-  **So the honest state is: delivery works, gated on peer trust, by a path I have
-  not isolated.** Two mechanism guesses, both killed by evidence. That is recorded
-  rather than resolved into a third guess, because a plausible mechanism written
-  into a spec is exactly the "claim whose carrier does not exist" defect this
-  document catalogues as its own recurring failure.
+  **And "delivered" turned out to mean FILED, not READ.** Checked one step
+  further: all four test messages are durably recorded (a per-thread log plus a
+  MessageStore inbox entry) and the router reports `handled: true` — but no
+  session was ever started to read them, and the mentee has never replied to one.
+  The message reaches the agent's DISK, not the agent.
+
+  So what the trust grant actually changed is the ROUTING: from "queue a spawn
+  that can never happen, and lose the queue on restart" to "file it immediately".
+  That removes the silent LOSS and is a real improvement — but it substitutes
+  silent FILING, and neither ends with anyone reading the message.
+
+  **Honest state: ingress is accepted and durably recorded, gated on peer trust,
+  by a path not isolated, and nothing consumes it.** Three mechanism guesses were
+  made across this investigation and the first two were killed by evidence; the
+  third is not offered. A plausible mechanism written into a spec is exactly the
+  "claim whose carrier does not exist" defect this document catalogues as its own
+  recurring failure, and the pull toward supplying one was strongest precisely
+  when the evidence thinned.
 
   Not fixed here for the same reason as the jobs case: closing the lane properly
   means the scratch-cwd wiring, and leaving it closed while suppressing the

@@ -313,7 +313,16 @@ was never load-bearing; the trust grant was.** A second hypothesis — that trus
 opened the spawn-free listener-inbox branch — is refuted too: its log line never
 appears.
 
-So: ingress works, gated on peer trust, by a path NOT yet isolated. Two mechanism
+**And "delivered" means FILED, not READ.** One further check: all four test
+messages are durably recorded (per-thread log + MessageStore inbox entry) and the
+router reports `handled: true` — but no session was ever started to read them and
+the mentee has never replied. The message reaches the DISK, not the agent. So the
+trust grant changed the ROUTING (from "queue a spawn that cannot happen, lose it
+on restart" to "file it immediately"), removing silent LOSS and substituting
+silent FILING. Real improvement; still nobody reading.
+
+So: ingress is accepted and durably recorded, gated on peer trust, by a path NOT
+yet isolated, and nothing consumes it. Two mechanism
 guesses, both killed by evidence, recorded as such rather than resolved into a
 third. The deduction was sound and still wrong, which is the argument for running
 the control even when the reasoning feels tight — I would otherwise have written
