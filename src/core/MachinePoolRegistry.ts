@@ -113,6 +113,10 @@ export interface HeartbeatObservation {
    *  channels this machine's adapters are connected to; consumed by placement so a
    *  channel is never owned by a machine that can't reach it. Absent = older heartbeat. */
   servesChannels?: MachineCapacity['servesChannels'];
+  /** Cross-machine account & quota sharing (§5.1): the compact serve-capability
+   *  summary. Absent = older peer / feature dark. Carried-forward across our own
+   *  sparse liveness beats (the same pattern as seamlessnessFlags). */
+  canServe?: MachineCapacity['canServe'];
   /** WS1.1 (MULTI-MACHINE-SEAMLESSNESS-SPEC invariant 5): the machine's
    *  self-advertised seamlessness capabilities. Absent = pre-spec peer or
    *  feature dark = non-participant (the conservative side). */
@@ -219,10 +223,20 @@ export class MachinePoolRegistry {
     // one. Field-specific (not a generic deep-merge) by design: merging stale
     // fail-OPEN fields like quotaState forward would regress placement. A fully
     // offline peer still ages out via routerReceivedAtMs → online:false.
-    const obsToStore: HeartbeatObservation =
-      obs.seamlessnessFlags === undefined && prev?.obs.seamlessnessFlags !== undefined
-        ? { ...obs, seamlessnessFlags: prev.obs.seamlessnessFlags }
-        : obs;
+    // canServe rides the SAME carry-forward as seamlessnessFlags: a LIGHT liveness
+    // beat (the 30s sparse {machineId,selfReportedLastSeen} echo) must NOT erase the
+    // last pulled serve-capability summary, or the failover candidate filter would
+    // falsely read "peer cannot serve" every 30s. A GENUINE rich beat always rebuilds
+    // the summary (server.ts) — a withdrawn capability flips hasNonWalledAccount false
+    // INSIDE a present object — so carry-forward preserves a real capability and never
+    // strands a withdrawn one. A fully offline peer still ages out via routerReceivedAtMs.
+    let obsToStore: HeartbeatObservation = obs;
+    if (obs.seamlessnessFlags === undefined && prev?.obs.seamlessnessFlags !== undefined) {
+      obsToStore = { ...obsToStore, seamlessnessFlags: prev.obs.seamlessnessFlags };
+    }
+    if (obs.canServe === undefined && prev?.obs.canServe !== undefined) {
+      obsToStore = { ...obsToStore, canServe: prev.obs.canServe };
+    }
     this.observed.set(obs.machineId, { routerReceivedAtMs: nowMs, obs: obsToStore, skew: next, posture });
     if (sideEffect === 'removed') {
       this.d.onClockQuarantine?.(
@@ -288,6 +302,10 @@ export class MachinePoolRegistry {
       clockSkewStatus: live?.skew.status ?? 'ok',
       quotaState: live?.obs.quotaState,
       servesChannels: live?.obs.servesChannels,
+      // Cross-machine account & quota sharing (§5.1): pass the carried serve-
+      // capability summary through. Advisory; consumed by the failover candidate
+      // filter (ServeFailoverEngine), revalidated at admission.
+      canServe: live?.obs.canServe,
       inboundQueue: live?.obs.inboundQueue,
       // WS1.1: capability advertisement passthrough. Memory-only (lost on a
       // local restart, like posture's in-memory half — no durable disk

@@ -58,6 +58,10 @@ import { ClaudeCliIntelligenceProvider } from '../core/ClaudeCliIntelligenceProv
 import { wrapIntelligenceWithCircuitBreaker } from '../core/CircuitBreakingIntelligenceProvider.js';
 import { configureLlmCircuitBreaker, llmCircuitAvailable } from '../core/LlmCircuitBreaker.js';
 import { computeSelfQuotaState } from '../core/selfQuotaState.js';
+import { buildServeCapabilitySummary, resolveCanServe } from '../core/serveCapability.js';
+import { ServeFailoverEngine, resolveServeFailoverPolicy } from '../core/ServeFailoverEngine.js';
+import { HonestDegradationNotifier, resolveHonestDegradationPolicy } from '../core/HonestDegradationNotifier.js';
+import { WalledEnrollmentOfferStub } from '../core/WalledEnrollmentOffer.js';
 import { isClaudeForbidden } from '../core/claudeForbiddenGuard.js';
 import { FeedbackManager } from '../core/FeedbackManager.js';
 import { FeedbackAnomalyDetector } from '../monitoring/FeedbackAnomalyDetector.js';
@@ -514,6 +518,28 @@ let _poolLink: import('../server/routes.js').RouteContext['poolLink'] | null = n
 let _poolPollCache: import('../server/PoolPollCache.js').PoolPollCache | null = null;
 /** Recognize + apply a "move/run this on <nickname>" relocation on inbound; returns handled=true when the message WAS a relocation command (so it must not also be dispatched). */
 let _tryNicknameRelocation: ((topicId: number, text: string) => Promise<{ handled: boolean }>) | null = null;
+/**
+ * Cross-machine account & quota sharing (§5.3/§5.4 — the REAL inbound trigger).
+ * The serve-failover engine driver, wired from the `_serveFailoverCtx` IIFE in
+ * startServer (the engine is constructed long after routing is wired — same
+ * late-bound-ref pattern as `_sessionRouter`/`_agentServerRef`).
+ *
+ * `null` whenever the feature resolves DARK / single-machine — so the inbound
+ * chokepoint's FIRST check (`if (_serveFailoverDriveInbound)`) is a structural
+ * early-skip and a dark install is byte-identical to today (no engine call, no
+ * requirement build, no behavior change). When non-null the driver itself re-checks
+ * `isEnabled()` live and honors dryRun (log-only), so a config flip mid-run is
+ * respected without a wiring change.
+ *
+ * Returns `{ failedOver: true }` when the engine moved the seat to a peer (the
+ * inbound is now owned by the new machine — local dispatch must NOT also fire) OR
+ * fired honest degradation (§5.4 — no peer can serve; the inbound stays durably
+ * queued on the owner and the notice was emitted, so local dispatch must NOT
+ * produce the dead "🔭 working" reply). `{ failedOver: false }` for every other
+ * outcome (owner can serve / single-machine / dwell-defer / dry-run) → today's
+ * local dispatch proceeds unchanged.
+ */
+let _serveFailoverDriveInbound: ((topicId: number) => Promise<{ failedOver: boolean }>) | null = null;
 /** Per-topic framework override (claude-code | codex-cli). Populated from
  *  `config.topicFrameworks` at server boot. Boot-immutable; runtime
  *  mutations go through `_topicFrameworksStore` instead so they persist
@@ -2076,6 +2102,39 @@ export function wireTelegramRouting(
           }
         } catch { /* point-read error → fail open (fall through) */ }
         console.warn(`[session-pool] route error for topic ${topicId} — falling back to local dispatch: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // ── Cross-machine account & quota sharing (§5.3/§5.4): serve-failover trigger ──
+    // THE REAL inbound chokepoint. This machine is the local owner (the pool router
+    // above either left the message local or this is single-machine dispatch). If
+    // this machine CANNOT serve the topic's channel right now (its own quota is
+    // walled / llm-circuit open) and a peer CAN, the engine transfers the seat to
+    // that peer (the inbound is then owned + served there) — OR, if no machine can
+    // serve, fires §5.4 honest degradation instead of letting local dispatch below
+    // produce the dead "🔭 working" reply this feature exists to kill.
+    //
+    // DARK-FLAG NO-OP IS AIRTIGHT: `_serveFailoverDriveInbound` is null whenever the
+    // feature resolves dark / single-machine, so this guard is the VERY FIRST thing
+    // checked at the chokepoint — a dark install never builds a requirement, never
+    // calls the engine, and falls straight through to today's dispatch unchanged.
+    // dryRun returns failedOver:false (log-only inside the driver) → dispatch unchanged.
+    if (_serveFailoverDriveInbound) {
+      try {
+        const sf = await _serveFailoverDriveInbound(topicId);
+        if (sf.failedOver) {
+          // Seat moved to a peer (served there) OR honest degradation emitted (inbound
+          // stays durably queued on the owner). Either way, do NOT dispatch locally —
+          // that is exactly the dead-reply the failover replaces.
+          console.log(`[serve-failover] topic ${topicId} handled by failover/degradation — not dispatching locally`);
+          return;
+        }
+      } catch (err) {
+        // @silent-fallback-ok — a failover-trigger error must never break message
+        // routing; the engine itself fails toward the safe direction (owner serves),
+        // and on a throw here we fall through to today's local dispatch so the user
+        // is never silently dropped. Logged, never swallowed invisibly.
+        console.warn(`[serve-failover] inbound trigger error for topic ${topicId} (dispatching locally): ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -14813,6 +14872,17 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
             return (out.telegram || out.slack) ? out : undefined;
           };
+          // Cross-machine account & quota sharing (§5.1): the compact serve-
+          // capability summary riding the capacity heartbeat. Derived from the SAME
+          // two self-signals placement already advertises — the self-quota block
+          // (account-quota OR llm-circuit) and the adapter-derived servesChannels —
+          // so it never adds a new probe. hasNonWalledAccount = NOT walled right now;
+          // the per-topic canServe is resolved downstream (resolveCanServe) by an
+          // O(1) lookup against this summary + the topic's ServeRequirement. Advert-
+          // carried, never recomputed on the inbound hot path.
+          const selfCanServe = (): import('../core/serveCapability.js').ServeCapabilitySummary => {
+            return buildServeCapabilitySummary(selfQuotaState(), selfServesChannels());
+          };
           // Self guard-posture block riding the capacity heartbeat (spec §2.3).
           // Computed per beat from the same one-read snapshot GET /guards uses;
           // a failed compute omits the block (older-peer semantics), never throws.
@@ -14857,6 +14927,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 loadAvg: osMod.loadavg()[0],
                 quotaState: selfQuotaState(),
                 servesChannels: selfServesChannels(),
+                canServe: selfCanServe(),
                 guardPosture: selfGuardPosture(),
                 // WS1.1 capability advertisement (spec invariant 5): a bounded
                 // fixed-size summary, never an inventory. Reported live each
@@ -17297,7 +17368,212 @@ export async function startServer(options: StartOptions): Promise<void> {
             carrier: _topicProfileCarrier,
           }
         : null;
-    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+
+    // ── Cross-machine account & quota sharing — serve-failover bundle ───────────
+    // Spec: docs/specs/cross-machine-account-quota-sharing.md §5.3/§5.4/§5A.
+    // Ships DARK on the fleet + LIVE-in-dry-run on a dev agent (resolveDevAgentGate
+    // on subscriptionPool.serveFailover.enabled; dryRun:true is the canary). The
+    // engine ORCHESTRATES only — it fires the proven POST /pool/transfer (signed
+    // mesh RPC, D7) onto an online+canServe peer; it NEVER touches a credential
+    // (C1/C2). Single-machine pools are a strict no-op (the candidate set excludes
+    // self and is empty). Constructed here because it depends on the pool registry +
+    // ownership registry which are declared above; shared BY REFERENCE into the
+    // routes ctx, so the periodic sweep (started after) reaches the live deps.
+    const _serveFailoverCtx: import('../server/routes.js').RouteContext['serveFailover'] = (() => {
+      if (!machinePoolRegistry || !sessionOwnershipRegistry) return null; // dark / single-machine: no pool to fail over within
+      const sfMod = { ServeFailoverEngine: ServeFailoverEngine, HonestDegradationNotifier: HonestDegradationNotifier, WalledEnrollmentOfferStub: WalledEnrollmentOfferStub };
+      const sfCfg = config.subscriptionPool?.serveFailover;
+      const sfEnabled = (): boolean => resolveDevAgentGate(sfCfg?.enabled, config);
+      const sfDryRun = (): boolean => sfCfg?.dryRun !== false; // default true (canary)
+      const sfPolicy = resolveServeFailoverPolicy(sfCfg);
+      const sfDegradePolicy = resolveHonestDegradationPolicy(sfCfg);
+      const sfMeshSelf = (): string | null => _meshSelfId ?? machineHeartbeat?.config?.machineId ?? null;
+      // Adapter-derived servesChannels for THIS machine (same shape the heartbeat
+      // producer builds) — used to resolve local serveability for a topic's channel.
+      const selfServesChannelsForFailover = (): import('../core/machineServesChannel.js').ServesChannels | undefined => {
+        const out: { telegram?: { chatIds: string[] }; slack?: { workspaceIds: string[] } } = {};
+        const tg = config.messaging.find((m) => m.type === 'telegram' && m.enabled);
+        const rawChatId = tg ? (tg.config as { chatId?: unknown }).chatId : undefined;
+        if (typeof rawChatId === 'string' || typeof rawChatId === 'number') out.telegram = { chatIds: [String(rawChatId)] };
+        if (_slackAdapter && _slackAdapter.isConnected()) {
+          const ws = _slackAdapter.getWorkspaceId();
+          if (ws) out.slack = { workspaceIds: [ws] };
+        }
+        return (out.telegram || out.slack) ? out : undefined;
+      };
+      // Audit trail: logs/serve-failover.jsonl (reap-log/credential-audit precedent).
+      const sfLogPath = path.join(config.stateDir, 'logs', 'serve-failover.jsonl');
+      const sfAppend = (rec: Record<string, unknown>): void => {
+        try {
+          fs.mkdirSync(path.dirname(sfLogPath), { recursive: true });
+          fs.appendFileSync(sfLogPath, JSON.stringify(rec) + '\n');
+        } catch (err) {
+          // NOT silent: a failed audit write is logged once-ish to stderr; the engine
+          // still proceeds (the audit is observability, never the gate).
+          console.warn(`[serve-failover] audit append failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      };
+      const sfReadTail = (limit: number): Array<Record<string, unknown>> => {
+        try {
+          const raw = fs.readFileSync(sfLogPath, 'utf8');
+          const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+          return lines.slice(-Math.max(0, limit)).map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return { raw: l }; } });
+        } catch { return []; /* @silent-fallback-ok — no log yet = empty tail (observability) */ }
+      };
+      // The honest-degradation notifier (§5.4 + D9). The voice-holder emits ONE
+      // in-channel notice; cross-topic aggregation collapses a reset-boundary burst.
+      const notifier = new sfMod.HonestDegradationNotifier({
+        policy: sfDegradePolicy,
+        isDryRun: sfDryRun,
+        resolveOperatorUid: (topicId) => {
+          // @silent-fallback-ok — the operator uid only SCOPES aggregation (D9); an
+          // unresolvable principal degrades to platform-scoped grouping (never blocks).
+          try { return _agentServerRef?.getTopicOperatorStore()?.getOperator(topicId)?.uid ?? null; } catch { return null; }
+        },
+        sendPerTopicNotice: async (topicId) => {
+          const text =
+            "Heads up — every machine I run on is currently out of Claude quota, so I can't answer this right now. " +
+            "Your message is saved and I'll reply automatically the moment quota frees up.";
+          // @silent-fallback-ok — a failed honest-degradation send must not throw into
+          // the engine; the inbound stays durably queued on the owner regardless (§5.4),
+          // and the durable-queue TTL loss-notice is the second terminal.
+          if (telegram) await telegram.sendToTopic(Number(topicId), text).catch(() => {});
+        },
+        sendAggregatedNotice: async (_scopeKey, affectedTopics) => {
+          // Aggregate-don't-enumerate: ONE pool-level notice to the FIRST affected
+          // topic's channel (the scope's representative). Names the count, never lists.
+          const repTopic = affectedTopics[0];
+          if (!repTopic) return;
+          const text =
+            `Heads up — every machine I run on is currently out of Claude quota, affecting ${affectedTopics.length} conversations. ` +
+            "Your messages are saved and I'll reply automatically the moment quota frees up.";
+          // @silent-fallback-ok — best-effort notice; same posture as the per-topic send.
+          if (telegram) await telegram.sendToTopic(Number(repTopic), text).catch(() => {});
+        },
+        audit: (rec) => sfAppend({ kind: 'honest-degradation', ...rec }),
+        now: () => Date.now(),
+      });
+      // The failover engine (§5.3). executeTransfer fires the LOCAL /pool/transfer
+      // (which itself routes through the signed-mesh holder-proxy + planTransferByNickname
+      // + drain leg). A 409/needsConfirmation/offline target is treated as a bounce →
+      // try next candidate (D8 admission revalidation lives at the destination's guards).
+      const engine = new sfMod.ServeFailoverEngine({
+        policy: sfPolicy,
+        selfMachineId: sfMeshSelf,
+        getMachines: () => machinePoolRegistry!.getCapacities(),
+        ownerOf: (topicId) => sessionOwnershipRegistry!.ownerOf(topicId),
+        ownershipEpoch: (topicId) => { try { return sessionOwnershipRegistry!.read(topicId)?.ownershipEpoch ?? 0; } catch { return 0; /* @silent-fallback-ok — epoch is a fencing hint for the audit; an unreadable record degrades to epoch 0 (the transfer still validates at the destination). */ } },
+        isEnabled: sfEnabled,
+        isDryRun: sfDryRun,
+        localServeability: (_topicId, requirement) => {
+          // CERTAIN local serveability (D10): derived from this machine's OWN live
+          // self-quota signal (account-quota OR llm-circuit), never a heartbeat advert.
+          try {
+            const block = computeSelfQuotaState(quotaTracker?.getState(), llmCircuitAvailable());
+            const summary = buildServeCapabilitySummary(block, selfServesChannelsForFailover());
+            const r = resolveCanServe(summary, requirement);
+            // We POSITIVELY observed the self-quota signal (block computed without throwing),
+            // so serveability is CERTAIN whichever way it resolved.
+            return { canServe: r.canServe, certain: true };
+          } catch {
+            // Could not read our own signal → UNCERTAIN (D10 (a): owner serves on uncertainty).
+            return { canServe: true, certain: false };
+          }
+        },
+        executeTransfer: async (topicId, toMachineId, _epoch) => {
+          try {
+            const r = await fetch(`http://localhost:${config.port}/pool/transfer`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${config.authToken}`, 'Content-Type': 'application/json' },
+              // confirm:true so a LIVE autonomous-run topic inherits suspend-and-move (D11),
+              // never a silent skip. The planner re-evaluates the full chain on confirm.
+              body: JSON.stringify({ topic: topicId, to: toMachineId, confirm: true }),
+            });
+            const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+            if (r.ok) return { ok: true, bounced: false, detail: `seatMoved via ${(j.handledBy as string) ?? 'holder'}` };
+            // 409 needsConfirmation (offline target) / not-online / cannot-serve → bounce, try next.
+            const bounced = r.status === 409 || r.status === 404;
+            return { ok: false, bounced, detail: `pool/transfer ${r.status}: ${String(j.error ?? j.rejectReason ?? '')}` };
+          } catch (err) {
+            return { ok: false, bounced: false, detail: err instanceof Error ? err.message : String(err) };
+          }
+        },
+        emitHonestDegradation: async (topicId, requirement) => { await notifier.notify(topicId, requirement); },
+        audit: (rec) => sfAppend({ kind: 'failover', ...rec }),
+        // Observability (§10): every routing decision + outcome is captured in the
+        // audit trail (logs/serve-failover.jsonl) above; recordMetric mirrors the
+        // engaged/found-server/no-server/whole-pool-walled sub-outcome there too.
+        recordMetric: (outcome) => sfAppend({ kind: 'metric', ts: new Date().toISOString(), outcome }),
+        now: () => Date.now(),
+      });
+      // §5A STUB — detect a walled machine → surface an operator enrollment OFFER via
+      // the existing attention path. NO credential minting, NO mesh enrollment verb
+      // (D14/D15). NEVER blocks; §5.3/§5.4 serve regardless.
+      const enrollmentStub = new sfMod.WalledEnrollmentOfferStub({
+        isEnabled: sfEnabled,
+        isDryRun: sfDryRun,
+        surfaceOffer: async (input) => {
+          if (!telegram) return;
+          return telegram.createAttentionItem?.({
+            id: input.id,
+            title: input.title,
+            summary: input.summary,
+            category: 'enrollment',
+            priority: 'NORMAL',
+          });
+        },
+        audit: (rec) => sfAppend({ kind: 'enroll-offer', ...rec }),
+        now: () => Date.now(),
+      });
+      // Periodic §5A sweep (the detect→offer trigger). STRICT no-op while dark
+      // (sweep returns early on !isEnabled). unref'd; reentrancy-guarded.
+      let sfSweepInFlight = false;
+      const sfSweepTimer = setInterval(() => {
+        if (sfSweepInFlight) return;
+        if (!sfEnabled()) return;
+        sfSweepInFlight = true;
+        void enrollmentStub.sweep(machinePoolRegistry!.getCapacities())
+          .catch((e) => console.warn(`[serve-failover] enrollment sweep error: ${e instanceof Error ? e.message : String(e)}`))
+          .finally(() => { sfSweepInFlight = false; });
+      }, 300_000);
+      sfSweepTimer.unref?.();
+      return { engine, notifier, enrollmentStub, policy: sfPolicy, readAuditTail: sfReadTail, isEnabled: sfEnabled, isDryRun: sfDryRun };
+    })();
+
+    // ── Wire the serve-failover engine into the REAL inbound path (§5.3/§5.4) ──────
+    // The `onTopicMessage` chokepoint (wired earlier, before this engine existed)
+    // consults `_serveFailoverDriveInbound`. Set it ONLY when the pool ctx exists;
+    // it stays null on a single-machine / dark-of-pool install so the inbound
+    // chokepoint's first guard is a structural early-skip (byte-identical to today).
+    // The driver re-checks `isEnabled()` LIVE as its first line so a config flip is
+    // honored without re-wiring, and honors dryRun (log-only — failedOver:false).
+    if (_serveFailoverCtx) {
+      const sfCtx = _serveFailoverCtx;
+      _serveFailoverDriveInbound = async (topicId: number): Promise<{ failedOver: boolean }> => {
+        // FIRST CHECK, before ANY new logic (no requirement build, no engine state
+        // touched): the live enabled gate. Disabled ⇒ exactly today's behavior.
+        if (!sfCtx.isEnabled()) return { failedOver: false };
+        // Build the topic's ServeRequirement from THIS machine's configured channel
+        // (telegram chatId). Channel-granular per §5.2 — reuse the same adapter-
+        // derived chatId the heartbeat advert uses (selfServesChannelsForFailover).
+        const tg = config.messaging.find((m) => m.type === 'telegram' && m.enabled);
+        const rawChatId = tg ? (tg.config as { chatId?: unknown }).chatId : undefined;
+        const requirement: import('../core/serveCapability.js').ServeRequirement | undefined =
+          (typeof rawChatId === 'string' || typeof rawChatId === 'number')
+            ? { platform: 'telegram', chatId: String(rawChatId) }
+            : undefined;
+        const decision = await sfCtx.engine.handleInbound(String(topicId), requirement);
+        // A LIVE (non-dry-run) transfer that landed, or honest degradation that fired,
+        // means the inbound is handled elsewhere / queued-with-notice — local dispatch
+        // must NOT also run. Dry-run + every other outcome → dispatch proceeds.
+        if (sfCtx.isDryRun()) return { failedOver: false };
+        const handled =
+          (decision.action === 'transfer' && decision.chosenCandidate != null) ||
+          decision.action === 'honest-degradation';
+        return { failedOver: handled };
+      };
+    }
+    const server = new AgentServer({ config, sessionManager, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographer: cartographer ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, credentialRepointing, serveFailover: _serveFailoverCtx, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, localSigningKeyPem, leaseTransport, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, getInboundQueue: () => _inboundQueue, meshRpcDispatcher, workingSetPullCoordinator, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, topicPinStore: _topicPinStore ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;

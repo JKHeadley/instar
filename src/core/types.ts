@@ -1939,6 +1939,15 @@ export interface MachineCapacity {
    *  a channel is never owned by a machine whose adapter can't reach it. Absent = older heartbeat
    *  (placement treats as `unknown`/fail-open). */
   servesChannels?: import('./machineServesChannel.js').ServesChannels;
+  /** Cross-machine account & quota sharing (spec cross-machine-account-quota-
+   *  sharing.md §5.1): the compact, per-machine serve-capability summary —
+   *  `{ hasNonWalledAccount, servesChannels }`. Derived (NOT raw quotaState) so a
+   *  consumer can resolve the per-topic `canServe` by an O(1) local lookup against
+   *  this summary keyed on the topic's ServeRequirement. ADVISORY signal (D8) —
+   *  the failover engine revalidates at admission; a stale advert never produces a
+   *  dead reply. Absent = older peer / feature dark = treated as no-summary
+   *  (never auto-selected as a failover candidate, the safe direction). */
+  canServe?: import('./serveCapability.js').ServeCapabilitySummary;
   /** Durable Inbound Message Queue (spec §5.1): self-reported custody state —
    *  consumed by the survivor's loss-SUSPECTED item + capped re-placement arm
    *  and the supersede-dedupe episode key (machineId + tenure). Absent =
@@ -3062,6 +3071,54 @@ export interface InstarConfig {
         /** Min score delta to justify a non-forced move; clamp [0,1000]. Default 10. */
         minScoreDelta?: number;
       };
+    };
+    /**
+     * Cross-machine account & quota sharing — quota-aware automatic seat-transfer
+     * FAILOVER (spec: docs/specs/cross-machine-account-quota-sharing.md, §5.3/§5.4).
+     * Sibling of `credentialRepointing`: ships DARK on the fleet + LIVE-in-dry-run on
+     * a development agent (the `enabled` flag is OMITTED in ConfigDefaults so
+     * `resolveDevAgentGate` resolves it; `dryRun:true` is the canary — the engine runs
+     * the FULL decision loop and AUDITS every transfer/notice it WOULD perform, but
+     * fires NONE while dryRun holds). A real failover needs a deliberate `dryRun:false`.
+     * Single-machine pools are a strict no-op (the candidate set excludes self and is
+     * empty). This layer ORCHESTRATES only — it never touches a credential (D-C1/C2).
+     */
+    serveFailover?: {
+      /** Master switch. OMIT to ride the developmentAgent dark-feature gate
+       *  (live-on-dev / dark-on-fleet). An explicit value always wins. */
+      enabled?: boolean;
+      /** When true (default), the engine logs every PROPOSED transfer + honest-
+       *  degradation notice to the audit trail but performs none — the dry-run
+       *  canary (D6). A real failover needs `dryRun:false`. */
+      dryRun?: boolean;
+      /** D4 hysteresis: minimum seat-dwell (ms) before a seat may move again —
+       *  a flapping account can't thrash the seat. Default 60000 (reuses
+       *  SpeakerElection.DEFAULT_DWELL_MS). */
+      minSeatDwellMs?: number;
+      /** D4: a recovered owner-account is not "recovered" for seat-pull purposes
+       *  until it has been continuously non-walled for at least this many heartbeat
+       *  intervals (debounce against a half-open llm-circuit probe flicker).
+       *  Default 2 (≥ 2× heartbeat interval per the spec). */
+      recoveredDebounceHeartbeats?: number;
+      /** The capacity-heartbeat interval (ms) the debounce above is measured in;
+       *  default 30000 (matches the pool heartbeat cadence). */
+      heartbeatIntervalMs?: number;
+      /** D8/§5.3 admission bounce: max failover candidates tried for one inbound
+       *  before falling to honest degradation (§5.4). Default 3. */
+      maxAdmissionAttempts?: number;
+      /** §5.3 herd controls: max concurrent in-flight failovers FROM this machine
+       *  as source. Default 3. */
+      maxConcurrentFailoversPerSource?: number;
+      /** §5.3 herd controls: per-destination cooldown (ms) after a cannot-serve
+       *  bounce — the peer is skipped for a jittered window. Default 30000. */
+      bounceCooldownMs?: number;
+      /** D9 honest-degradation: window (ms) over which repeat walled-episode
+       *  notices for the SAME (topic) are coalesced into one. Default 600000 (10m). */
+      degradationCoalesceWindowMs?: number;
+      /** D9 cross-topic aggregation threshold: when ≥ this many topics enter a
+       *  walled-episode within the coalesce window (scoped per operator+platform),
+       *  collapse to ONE pool-level notice. Default 3. */
+      degradationAggregateThreshold?: number;
     };
   };
   /** Secret handling config */

@@ -702,6 +702,24 @@ export interface RouteContext {
     /** Raw-blob reader for a slot (restore-enrollment coherence probe). Injectable for tests. */
     readBlob?: (slot: string) => Promise<{ raw: string; oauth: import('../core/OAuthRefresher.js').ClaudeOauth | null } | null>;
   } | null;
+  /** Cross-machine account & quota sharing (spec cross-machine-account-quota-sharing.md
+   *  §5.3/§5.4/§5A) — the quota-aware automatic seat-transfer failover engine + honest-
+   *  degradation notifier + the §5A walled-machine enrollment-offer stub. Null until the
+   *  server wiring constructs it; ships DARK behind `subscriptionPool.serveFailover.enabled`
+   *  (the GET /serve-failover route 503s when the flag is off / this bundle is unwired). */
+  serveFailover?: {
+    engine: import('../core/ServeFailoverEngine.js').ServeFailoverEngine;
+    notifier: import('../core/HonestDegradationNotifier.js').HonestDegradationNotifier;
+    enrollmentStub: import('../core/WalledEnrollmentOffer.js').WalledEnrollmentOfferStub;
+    /** Live policy snapshot for the status surface (resolved at construction). */
+    policy: import('../core/ServeFailoverEngine.js').ServeFailoverPolicy;
+    /** Reads the recent audit tail (logs/serve-failover.jsonl). */
+    readAuditTail: (limit: number) => Array<Record<string, unknown>>;
+    /** resolveDevAgentGate(serveFailover.enabled) read live. */
+    isEnabled: () => boolean;
+    /** dryRun !== false read live. */
+    isDryRun: () => boolean;
+  } | null;
   semanticMemory: SemanticMemory | null;
   activitySentinel: SessionActivitySentinel | null;
   rateLimitSentinel: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel | null;
@@ -12091,6 +12109,43 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         : null,
       machines,
+    });
+  });
+
+  // GET /serve-failover — Cross-machine account & quota sharing status surface
+  // (spec cross-machine-account-quota-sharing.md §10). Read-only: reports whether
+  // the quota-aware seat-transfer failover layer is wired + enabled + dry-run, the
+  // resolved policy, the live in-flight count, the walled machines the §5A stub
+  // would offer enrollment for, and the recent audit tail (logs/serve-failover.jsonl).
+  // 503 while the dark `subscriptionPool.serveFailover.enabled` flag is off (the
+  // ships-dark contract — like /credentials/rebalancer), so the route's presence
+  // honestly reflects whether the layer is engaged on this agent.
+  router.get('/serve-failover', (_req, res) => {
+    const sf = ctx.serveFailover;
+    if (!sf || !sf.isEnabled()) {
+      res.status(503).json({
+        enabled: false,
+        reason: 'serve-failover is disabled (dark) — ships behind subscriptionPool.serveFailover.enabled (dev-agent gated; live-on-dev / dark-on-fleet)',
+      });
+      return;
+    }
+    const machines = ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [];
+    let walled: ReturnType<typeof import('../core/WalledEnrollmentOffer.js').detectWalledMachines> = [];
+    try {
+      // Lazy import-free: the stub's detection is pure, but to avoid a sync import we
+      // surface the canServe summaries directly so the dashboard can render walled state.
+      walled = machines
+        .filter((m) => m.online && (m.canServe ? !m.canServe.hasNonWalledAccount : m.quotaState?.blocked === true))
+        .map((m) => ({ machineId: m.machineId, nickname: m.nickname, reason: 'no-account-or-walled' as const }));
+    } catch { /* @silent-fallback-ok — detection is best-effort observability; empty list on error */ }
+    res.json({
+      enabled: true,
+      dryRun: sf.isDryRun(),
+      policy: sf.policy,
+      inFlightCount: sf.engine.inFlightCount(),
+      walledMachines: walled,
+      machines: machines.map((m) => ({ machineId: m.machineId, nickname: m.nickname, online: m.online, canServe: m.canServe ?? null })),
+      auditTail: sf.readAuditTail(50),
     });
   });
 

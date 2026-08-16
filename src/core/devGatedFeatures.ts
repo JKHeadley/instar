@@ -134,6 +134,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the levers + the balancer run the FULL decision loop and AUDIT every swap they WOULD make, but the CredentialSwapExecutor returns BEFORE the keychain/config write step while dryRun holds (verified at CredentialSwapExecutor §2.3 — outcome `dry-run`, ZERO writes). So live-on-dev is alive + observable but performs NO destructive credential write; real writes need a deliberate dryRun:false (gated behind the §5 livetest promotion). Same dogfooding posture as topicProfiles / threadline.singleNegotiator. (Operator directive 2026-06-13, topic 20905: NONE of this should be dark for development agents — replaces the rev-2 dark-for-everyone DARK_GATE_EXCLUSIONS choice.)',
   },
   {
+    name: 'serveFailover',
+    configPath: 'subscriptionPool.serveFailover.enabled',
+    description: 'Cross-machine account & quota sharing — quota-aware automatic seat-transfer failover (§5.3) + honest degradation (§5.4) + the walled-machine enrollment-offer stub (§5A). When the topic owner cannot serve and a peer can, it fires the proven POST /pool/transfer onto an online+canServe peer.',
+    justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the engine runs the FULL failover decision loop (canServe derivation, hysteresis, candidate selection, admission-bounce) and AUDITS every transfer + honest-degradation notice it WOULD perform, but fires NONE while dryRun holds (the executor returns before the real POST /pool/transfer / notice send). It ORCHESTRATES only — never extracts/relocates a credential (C1/C2 untouched), reuses the already-proven signed-mesh /pool/transfer path (no raw Bearer fan-out), and is a strict no-op on a single-machine pool (the candidate set excludes self and is empty). No spend, no destructive action while the canary holds; a real transfer needs a deliberate dryRun:false. Same dogfooding posture as credentialRepointing / topicProfiles.',
+  },
+  {
     name: 'playwrightRegistry',
     configPath: 'playwrightRegistry.enabled',
     description: 'Playwright profile↔accounts registry + boot awareness + activate.',

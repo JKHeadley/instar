@@ -250,6 +250,7 @@ describe('narrowSessionStatusToPeerCapacity — the shared receive-mapping (wiri
     guardPosture: { generatedAt: '2026-06-14T10:00:00.000Z', on: 2, off: 1, total: 3 } as unknown,
     seamlessnessFlags: { ws11DeliverReceive: true, stateSyncReceive: { learnings: true } },
     servesChannels: { slack: { workspaceIds: ['T-LIVE'] }, telegram: { chatIds: ['-100'] } },
+    canServe: { hasNonWalledAccount: true, servesChannels: { telegram: { chatIds: ['-100'] } } },
   };
   const UNWRAPPED_JOURNAL = { 'learning-record': { incarnation: 'inc-j', lastSeq: 12 } };
 

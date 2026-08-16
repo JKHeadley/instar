@@ -108,6 +108,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'serveFailover',
+    prefixes: ['/serve-failover'],
+    description: 'Cross-machine account & quota sharing (cross-machine-account-quota-sharing.md §5.3/§5.4/§5A) — quota-aware AUTOMATIC seat-transfer FAILOVER: when the machine that OWNS a conversation cannot serve it (its account is walled / llm-circuit open) and a peer CAN, the seat is moved to an online+canServe peer via the proven POST /pool/transfer (signed mesh RPC — never a credential copy, C1/C2 untouched). When NO machine can serve (whole pool walled), ONE honest in-channel notice replaces the dead "🔭 working…" reply (cross-topic-aggregated at a reset boundary). The §5A stub surfaces an operator enrollment OFFER for a walled machine (never mints a credential). GET /serve-failover reports enabled/dryRun/policy/inFlightCount/walledMachines + the audit tail; GET /pool now carries per-machine canServe. Ships DARK on the fleet + LIVE-in-dry-run on a dev agent (subscriptionPool.serveFailover.enabled omitted → resolveDevAgentGate; dryRun:true is the canary). Single-machine = strict no-op.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.serveFailover,
+      enabled: resolveDevAgentGate(ctx.config.subscriptionPool?.serveFailover?.enabled, ctx.config),
+      endpoints: ['GET /serve-failover'],
+    }),
+  },
+  {
     key: 'guardPosture',
     prefixes: ['/guards'],
     description: 'Guard Posture (GUARD-POSTURE-ENDPOINT-SPEC) — read every machine\'s safety-guard flags with HONEST verification-graded states: on-confirmed (live runtime confirms) / on-unverified (config-on only, grey not green) / on-stale (dead tick loop) / on-dry-run (watching but toothless) / off classified dark-default vs diverged-from-default (the load-shed signature — the only off that alerts) / diverged-pending-restart (disk edit not yet live) / errored / missing (expected runtime never registered) / off-runtime-divergent (runtime contradicts an on-config — the in-memory load-shed class). ?scope=pool accounts for EVERY registered machine by name (classified failure rows, never silent omission); the Machines tab shows last-known posture with age even for a dark peer (heartbeat piggyback + durable store). Read-only, always-on (deliberately no enabled gate — an off-switch on the guard-visibility surface would itself be an invisible disabled guard). When asked "are my guards on?" / "why didn\'t the watchdog fire on machine X?" / after any incident load-shed → read this, never guess. To re-enable a guard via PATCH /config, send the guard\'s FULL config block (one-level-deep merge erases sibling tuning).',

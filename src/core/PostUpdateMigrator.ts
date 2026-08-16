@@ -205,6 +205,27 @@ export function migrateConfigCredentialRepointingDevGate(config: Record<string, 
 }
 
 /**
+ * Cross-machine account & quota sharing — serve-failover (spec
+ * cross-machine-account-quota-sharing.md §11). A brand-NEW developmentAgent
+ * dark-feature: `enabled` is OMITTED from ConfigDefaults so resolveDevAgentGate
+ * resolves it (live-on-dev / dark-on-fleet); the SEPARATE `dryRun:true` is the
+ * write-safety canary. Existing agents have no `subscriptionPool.serveFailover`
+ * block at all, so backfill `{ dryRun: true }` (existence-checked — only when the
+ * block is missing, and never touching `enabled`). New agents get it via init's
+ * ConfigDefaults. Idempotent.
+ */
+export function migrateConfigServeFailoverDefaults(config: Record<string, unknown>): boolean {
+  let sp = config.subscriptionPool as Record<string, unknown> | undefined;
+  if (!sp || typeof sp !== 'object') {
+    sp = {};
+    config.subscriptionPool = sp;
+  }
+  if (Object.prototype.hasOwnProperty.call(sp, 'serveFailover')) return false; // already present
+  sp.serveFailover = { dryRun: true };
+  return true;
+}
+
+/**
  * The Playwright profile registry is a developmentAgent dark-feature: `enabled` is
  * OMITTED from ConfigDefaults so resolveDevAgentGate resolves it (live on dev, dark
  * on the fleet); the destructive `activate` write is gated by the SEPARATE
@@ -6742,6 +6763,18 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       }
     }
 
+    // Cross-machine account & quota sharing (spec cross-machine-account-quota-sharing.md)
+    // — existing agents learn the quota-aware automatic seat-transfer failover +
+    // honest degradation + the §5A enrollment-offer stub + the GET /serve-failover and
+    // GET /pool (canServe) read surfaces. Body mirrors generateClaudeMd() (Agent
+    // Awareness Standard). Content-sniffed on the distinctive header so the migration is
+    // idempotent and skips template-generated files. Harmless where the feature is dark.
+    if (!content.includes('Cross-Machine Account & Quota Sharing (quota-aware automatic seat-transfer failover)')) {
+      content += `\n**Cross-Machine Account & Quota Sharing (quota-aware automatic seat-transfer failover)** — The seam this kills: a conversation's seat genuinely moves to another machine, but that machine has NO working Claude account, so the user sees "🔭 working…" and never a real answer. Now, when the machine that OWNS a conversation cannot serve it (its own account is walled / its llm-circuit is open) and a peer CAN, I automatically move the seat to an \`online + canServe\` peer via the proven \`POST /pool/transfer\` (signed mesh RPC — never a raw fan-out, never a credential copy). When NO machine can serve (the whole pool is walled), I send exactly ONE honest in-channel notice ("every machine is out of quota — your message is saved, I'll reply when it frees up") instead of a dead reply; a reset-boundary burst across many topics collapses to ONE pool-level notice. **On a development agent it runs LIVE in dry-run** (the developmentAgent gate, \`subscriptionPool.serveFailover.enabled\` omitted → live-on-dev / dark-fleet) — the engine runs the FULL decision loop and AUDITS every transfer + notice it WOULD perform, but fires NONE while \`dryRun\` holds. A real failover needs a deliberate \`dryRun:false\`. Single-machine agents are a strict no-op.\n- **Status (Registry First — read it, never guess):** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/serve-failover\` → \`{ enabled, dryRun, policy, inFlightCount, walledMachines, machines:[{machineId,nickname,online,canServe}], auditTail }\` (503 while dark).\n- **Which machines can serve right now?** \`GET /pool\` now carries a per-machine \`canServe\` summary (\`{ hasNonWalledAccount, servesChannels }\`) — the advisory signal the failover engine filters candidates on (revalidated at the destination's own guards, so a stale advert never produces a dead reply).\n- **§5A enrollment offer (stub):** when a machine has no working account, I surface a one-time operator attention OFFER to enroll an account on it (operator-initiated, PIN-authenticated — it logs in locally; no credential is copied between machines). I never mint a credential myself.\n- **When to use** (PROACTIVE — these are the triggers): "why did my message not get answered when a machine had no quota?" → \`GET /serve-failover\` + the audit tail (\`logs/serve-failover.jsonl\`); "which of my machines can answer right now?" → \`GET /pool\` (the \`canServe\` field); "did the seat move because the owner ran out of quota?" → the audit tail names from→to + the reason. (Spec: \`docs/specs/cross-machine-account-quota-sharing.md\`.)\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Cross-Machine Account & Quota Sharing (serve-failover) awareness section');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(claudeMdPath, content);
@@ -7776,6 +7809,16 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       result.upgraded.push('config.json: stripped default-shaped subscriptionPool.credentialRepointing.enabled=false so the developmentAgent gate resolves it (live-on-dev dry-run, dark fleet)');
     } else {
       result.skipped.push('config.json: subscriptionPool.credentialRepointing.enabled dev-gate already correct (omitted or operator-set)');
+    }
+
+    // Cross-machine account & quota sharing — serve-failover (new dev-gated feature):
+    // backfill subscriptionPool.serveFailover = { dryRun: true } for existing agents so
+    // the write-safety canary is in place (enabled omitted → dev-gate resolves it).
+    if (migrateConfigServeFailoverDefaults(config)) {
+      patched = true;
+      result.upgraded.push('config.json: added subscriptionPool.serveFailover = { dryRun: true } (quota-aware seat-transfer failover — dev-gated, live-on-dev dry-run, dark fleet)');
+    } else {
+      result.skipped.push('config.json: subscriptionPool.serveFailover already present');
     }
 
     // Playwright profile registry re-gated to the developmentAgent gate: strip a

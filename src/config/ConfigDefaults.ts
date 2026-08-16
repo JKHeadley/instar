@@ -1300,6 +1300,18 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       dryRun: true,
       manualLeversEnabled: true,
     },
+    // Cross-machine account & quota sharing — quota-aware automatic seat-transfer
+    // FAILOVER (spec: cross-machine-account-quota-sharing.md §5.3/§5.4). Sibling of
+    // credentialRepointing: `enabled` is OMITTED so resolveDevAgentGate resolves it
+    // LIVE on a dev agent + DARK on the fleet (DEV_GATED_FEATURES entry). The
+    // SEPARATE dryRun flag (default true) is the write-safety canary: live-on-dev
+    // runs the full failover decision loop + audits every transfer/notice it WOULD
+    // perform, but fires NONE while dryRun holds. A real failover needs a deliberate
+    // dryRun:false. DO NOT hardcode `enabled` here (a baked-in false would dark dev
+    // agents too — the #1001 shape the dark-gate lint forbids for a dev-gated block).
+    serveFailover: {
+      dryRun: true,
+    },
   },
   // Playwright profile↔accounts registry (spec: playwright-profile-registry.md).
   // developmentAgent dark-feature gate: `enabled` is OMITTED so resolveDevAgentGate

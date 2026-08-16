@@ -368,6 +368,7 @@ export class AgentServer {
     inUseAccountResolver?: import('../core/InUseAccountResolver.js').InUseAccountResolver;
     enrollmentWizard?: import('../core/EnrollmentWizard.js').EnrollmentWizard;
     credentialRepointing?: import('./routes.js').RouteContext['credentialRepointing'];
+    serveFailover?: import('./routes.js').RouteContext['serveFailover'];
     semanticMemory?: import('../memory/SemanticMemory.js').SemanticMemory;
     activitySentinel?: import('../monitoring/SessionActivitySentinel.js').SessionActivitySentinel;
     rateLimitSentinel?: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel;
@@ -2006,6 +2007,7 @@ export class AgentServer {
       inUseAccountResolver: options.inUseAccountResolver,
       enrollmentWizard: options.enrollmentWizard ?? null,
       credentialRepointing: options.credentialRepointing ?? null,
+      serveFailover: options.serveFailover ?? null,
       semanticMemory: options.semanticMemory ?? null,
       activitySentinel: options.activitySentinel ?? null,
       rateLimitSentinel: options.rateLimitSentinel ?? null,
