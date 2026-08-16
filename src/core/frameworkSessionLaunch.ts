@@ -622,9 +622,18 @@ export function resolveInteractiveFramework(input: {
  * drift: a lane that opens must be removed here in the same edit.
  */
 export function headlessLaneIsClosed(framework: IntelligenceFramework): boolean {
-  // grok-build: refuses with `grok-headless-cwd-ungated` until the scratch-cwd
+  // OPENED 2026-08-16 (operator decision). grok's headless lane no longer
+  // refuses wholesale; the bound moved to the spawn site, which refuses only a
+  // grok job whose cwd is an instar SOURCE tree. See grokBuildHeadlessBuilder.
+  // (Historical note kept because the refusal name still appears in old logs:)
+  // grok-build: refused with `grok-headless-cwd-ungated` until the scratch-cwd
   // wiring lands (grok-build spec §4.3 lane 3).
-  return framework === 'grok-build';
+  //
+  // No framework's headless lane is closed today. Kept (rather than deleted)
+  // because it is the seam a future closed lane plugs into, and because the
+  // fallback-substitution logic that consumes it is still load-bearing.
+  void framework;
+  return false;
 }
 
 /**
@@ -647,8 +656,20 @@ export function resolveHeadlessFallbackFramework(input: {
   claudePath?: string;
   binaryExists: (candidatePath: string) => boolean;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Closed-lane predicate. Defaults to the live `headlessLaneIsClosed`.
+   *
+   * Injected because NO lane is closed today (grok's opened 2026-08-16), which
+   * made the selection logic below unreachable — and unreachable logic whose
+   * tests still pass is precisely the "guard that guards nothing" shape. The
+   * seam stays exercised: callers that matter use the default, and the tests
+   * state the closed-ness they are testing instead of depending on a global that
+   * currently answers false to everything.
+   */
+  isClosed?: (framework: IntelligenceFramework) => boolean;
 }): IntelligenceFramework | null {
-  if (!headlessLaneIsClosed(input.requested)) return input.requested;
+  const isClosed = input.isClosed ?? headlessLaneIsClosed;
+  if (!isClosed(input.requested)) return input.requested;
   // Prefer the agent's own enabled frameworks, in their declared order, and
   // only ever a framework whose headless lane is OPEN and whose binary is
   // actually present. claude-code is the last resort, not the assumption.
@@ -1038,23 +1059,54 @@ const piCliHeadlessBuilder: HeadlessBuilder = (options) => {
 };
 
 
+
+/**
+ * Env overrides for a grok HEADLESS job spawn.
+ *
+ * Mirrors the one-shot adapter's billing containment rather than reinventing it:
+ * a metered API key must never be reachable, so the api-key path is force-killed
+ * per spawn regardless of what the parent environment carries. The adapter's
+ * `buildGrokChildEnv` is an allow-list over a fresh env, which does not fit the
+ * tmux `-e` model here (tmux MERGES these into the inherited environment), so
+ * this sets the kill switch and CLEARS the billing vars explicitly.
+ */
+function buildGrokHeadlessEnvOverrides(): Record<string, string> {
+  return {
+    // The switch the adapter forces on every spawn: no API-key auth, session only.
+    GROK_DISABLE_API_KEY_AUTH: '1',
+    // Cleared, not merely unset — tmux inherits the server env otherwise.
+    XAI_API_KEY: '',
+    GROK_API_KEY: '',
+  };
+}
+
 const grokBuildHeadlessBuilder: HeadlessBuilder = (options) => {
   // grok headless one-shot (spec §4.1). NOTE: this legacy spawn path passes
   // the prompt as the -p argv value — acceptable ONLY for internal
   // scheduler-authored prompts. The provider-registry adapter (the preferred
-  // path) uses --prompt-file; new callers should go through it. The prompt is
-  // exactly one argv element following `-p`, so a leading-dash prompt can't
-  // be re-parsed as a flag.
-  // STRUCTURAL GATE, not prose (adversarial round-7): the headless lane
-  // runs in the session's project cwd, so the §4.1 deny-list residual
-  // acceptance (which leans on the scratch-cwd bound) does NOT cover it.
-  // Until a scratch cwd lands at the SessionManager grok spawn site
-  // (CMT-1317), a grok headless job REFUSES loudly rather than running a
-  // self-updating CLI with the repo as its working tree.
-  throw new Error(
-    'grok-headless-cwd-ungated: grok-build headless job spawns are refused until ' +
-    'the SessionManager spawn site provides a scratch cwd (grok-build spec §8; CMT-1317)',
-  );
+  // path) uses --prompt-file. The prompt is exactly one argv element following
+  // `-p`, so a leading-dash prompt can't be re-parsed as a flag.
+  //
+  // OPENED 2026-08-16 on an operator decision, and the bound MOVED rather than
+  // being dropped. It previously refused outright, pending "a scratch cwd at the
+  // SessionManager spawn site". Measuring what instar jobs actually do showed a
+  // scratch cwd would have made the lane useless: job bodies read
+  // `.instar/config.json` and `.instar/state/*` by RELATIVE path, so an empty
+  // temp dir breaks most of the 33 shipped jobs while satisfying the letter of
+  // the old note.
+  //
+  // The REAL concern in that note was narrower than the remedy: "running a
+  // self-updating CLI with the repo as its working tree". For an ordinary agent
+  // the spawn cwd is its own agent home (config + state), not an instar
+  // checkout — the source-tree case only arises on a DEV agent. So the refusal
+  // is now scoped to exactly that case, at the spawn site, via the detector
+  // instar already has (`isInstarSourceTree`, which fails CLOSED). A job on an
+  // ordinary agent runs; a grok job that would open a self-updating CLI onto an
+  // instar source checkout still refuses, by name.
+  const argv = [options.binaryPath];
+  if (options.model) argv.push('--model', options.model);
+  argv.push('-p', options.prompt);
+  return { argv, envOverrides: buildGrokHeadlessEnvOverrides() };
 };
 
 const HEADLESS_BUILDERS: Record<IntelligenceFramework, HeadlessBuilder> = {

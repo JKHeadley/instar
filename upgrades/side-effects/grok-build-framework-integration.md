@@ -405,6 +405,47 @@ failing: restoring the naive `Enter` answer turns exactly those two tests red.
 claude-code is asserted byte-identical (still cursor mode, still Enter), so this
 did not trade one framework's safety for another's.
 
+## Headless job lane — OPENED, with the bound moved rather than dropped
+
+Operator decision (Justin, 2026-08-16): *"sounds like this part needs to be
+built"*. The lane previously refused EVERY grok job with
+`grok-headless-cwd-ungated`, so all 33 shipped jobs failed on their schedule
+forever — the live symptom was "Job Alert: Health Check — 14 consecutive
+failures" arriving hourly.
+
+**The remedy the old note proposed would have broken the lane it protected.** It
+asked for a scratch cwd at the spawn site. Measured before building it: the
+shipped job bodies read `.instar/config.json` and `.instar/state/*` by RELATIVE
+path, so an empty temp dir satisfies the letter of the note and leaves every job
+failing differently. That is the "fix that passes its own description" shape.
+
+**So the bound narrowed to the concern the note actually named** — *"running a
+self-updating CLI with the repo as its working tree"*. For an ordinary agent the
+spawn cwd is its own agent home (config + state), not an instar checkout; the
+source-tree case arises only on a DEV agent. The refusal now lives at the spawn
+site as `grok-headless-source-tree`, keyed on `isInstarSourceTree(resolvedCwd)` —
+instar's existing detector, which FAILS CLOSED, so an unreadable or ambiguous
+path refuses rather than proceeds.
+
+Billing containment is preserved and tested: a job spawn forces
+`GROK_DISABLE_API_KEY_AUTH=1` and CLEARS the billing vars (tmux merges env into
+the inherited server environment, so unsetting is not enough).
+
+**A second-order honesty fix.** Opening the lane made
+`resolveHeadlessFallbackFramework`'s selection logic unreachable — nothing is
+closed now — while its six tests kept passing against a short-circuit. That is the
+guard-that-guards-nothing shape this branch has been closing all day, so the
+closed-lane predicate became injectable: production uses the live one, and the
+tests state the closed-ness they are testing.
+
+**Two obsolete tests were INVERTED, not deleted** (they asserted the refusal).
+Inverting keeps the property that mattered — the lane declaration and the builder
+must AGREE — pinned to the new truth.
+
+Caught by a control while doing it: a blanket `isClosed: () => true` across that
+suite put every case on the closed path, including the one control whose entire
+job is to prove the OPEN path short-circuits. It failed instantly.
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**

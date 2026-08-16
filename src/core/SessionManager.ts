@@ -7,6 +7,7 @@
  */
 
 import { execFileSync, execFile } from 'node:child_process';
+import { isInstarSourceTree } from './SourceTreeGuard.js';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -2655,6 +2656,26 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // gate refused — 'force' already threw inside evaluateRerouteGate; only
       // 'auto' reaches here, having degradation-reported. Fall through to the
       // headless build below.
+    }
+
+    // ── grok headless bound (2026-08-16) ────────────────────────────────────
+    // The grok headless lane is open, but NOT into an instar source checkout.
+    // grok self-updates, and the original refusal named exactly that risk:
+    // "running a self-updating CLI with the repo as its working tree". An
+    // ordinary agent's spawn cwd is its own agent home (config + state), which
+    // is what the shipped jobs need — they read `.instar/*` by relative path, so
+    // an empty scratch dir would satisfy the letter of the old note while
+    // breaking the lane it was meant to protect.
+    //
+    // `isInstarSourceTree` fails CLOSED (an unreadable/ambiguous path reads as a
+    // source tree), so the uncertain case refuses rather than proceeds.
+    if (headlessFramework === 'grok-build' && isInstarSourceTree(resolvedCwd)) {
+      throw new Error(
+        'grok-headless-source-tree: refusing a grok-build headless job whose working ' +
+          'directory is an instar source checkout — grok self-updates, and this is the ' +
+          'case the headless bound exists for. Run this job on an agent whose project ' +
+          'directory is its agent home, or use the confined one-shot reviewer lane.',
+      );
     }
 
     const headlessSpec = buildHeadlessLaunch(headlessFramework, {
