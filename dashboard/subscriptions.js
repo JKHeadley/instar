@@ -195,6 +195,47 @@ export function quotaBar(doc, label, pct, resetIso, now = Date.now()) {
   return wrap;
 }
 
+/**
+ * Order accounts so each provider's accounts sit together, interleaving a heading
+ * marker before each group. Returns a flat list of accounts with `{__providerHeading}`
+ * markers spliced in, so the caller keeps ONE loop and one card-rendering path.
+ *
+ * Two deliberate choices:
+ *
+ * - **Groups appear in first-appearance order, and accounts keep their order within a
+ *   group.** Nothing is sorted. The pool's order carries meaning the dashboard cannot
+ *   see (enrolment order, which account is the default), so grouping re-associates
+ *   without re-ranking.
+ *
+ * - **A single-provider list gets NO heading.** Every instar install with one provider
+ *   renders exactly as it did before — the heading only appears once there is genuinely
+ *   something to tell apart, which is the condition that prompted this. That property is
+ *   pinned by a test, because "we grouped everything" would quietly add a redundant
+ *   heading to the common case.
+ */
+export function groupAccountsByProvider(accounts) {
+  if (!Array.isArray(accounts)) return [];
+  const groups = new Map(); // provider key (raw) → accounts, in first-appearance order
+  for (const a of accounts) {
+    const key = a && typeof a.provider === 'string' ? a.provider : '';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(a);
+  }
+  const out = [];
+  const multi = groups.size > 1;
+  for (const [key, members] of groups) {
+    if (multi) {
+      // friendlyProvider maps anthropic→Claude / openai→Codex and SANITIZES anything
+      // else, so an unrecognised or hostile provider string cannot reach the DOM raw.
+      // An absent provider has no honest name, so say so rather than invent one.
+      const label = friendlyProvider(key) || 'Other';
+      out.push({ __providerHeading: label });
+    }
+    for (const m of members) out.push(m);
+  }
+  return out;
+}
+
 /** Per-account rows: nickname, status, provider·framework, 5h + weekly quota bars.
  *  `inUseAccountId` (optional) is the account the agent is CURRENTLY running on —
  *  that card gets an "In use" marker so "active" (healthy) reads distinct from
@@ -206,7 +247,15 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
     target.appendChild(el(doc, 'div', 'sub-empty', 'No subscription accounts enrolled yet.'));
     return;
   }
-  for (const a of accounts) {
+  for (const a of groupAccountsByProvider(accounts)) {
+    // A group marker, not an account: render the provider heading and continue.
+    // (The operator's complaint was a flat interleaved list — Claude and Codex
+    // accounts mixed together with only a small per-card meta line to tell them
+    // apart. The heading is what makes the split scannable.)
+    if (a && a.__providerHeading) {
+      target.appendChild(el(doc, 'div', 'sub-provider-heading', a.__providerHeading));
+      continue;
+    }
     const inUse = !!(inUseAccountId && a && a.id === inUseAccountId);
     const card = el(doc, 'div', inUse ? 'sub-account sub-account-inuse' : 'sub-account');
     const head = el(doc, 'div', 'sub-account-head');
