@@ -58,6 +58,33 @@ const GROK_APPROVAL_TAIL = [
   '  1/3:select  │  Tab:next option  │  Ctrl+f:expand  │  Ctrl+o:always-approve  │  Ctrl+c:cancel  │  Esc:scrollback',
 ].join('\n');
 
+/**
+ * The OTHER real grok menu — a file EDIT approval, captured verbatim from a live
+ * fresh session on 2026-08-16.
+ *
+ * WHY IT EXISTS. The signature was first written from the shell menu above and
+ * generalised. Driving a real fresh grok session refuted that in one shot: the
+ * Edit menu has FOUR rows, its allow-once label is a BARE "Yes" (so
+ * `^Yes,\s*proceed` matched nothing and the floor declined a menu it was built to
+ * answer), and row 2 is a THIRD scope — a session-wide blanket that says neither
+ * "always" nor "don't ask again", so the original alwaysApprove pattern did not
+ * recognise it as a row to avoid either.
+ *
+ * Both menus come from the same CLI on the same day, and allow-once is row 2 on
+ * one and row 3 on the other. That is the positional argument settled by
+ * measurement rather than by the vendor's warning.
+ */
+const GROK_EDIT_TAIL = [
+  '  ┃  Allow Edit to /private/tmp/grok-menu-capture/hello.txt?',
+  '  ┃',
+  "  ┃  1 (●) Yes, and don't ask again for anything (always-approve mode)",
+  '  ┃  2 (○) Yes, allow all edits during this session',
+  '  ┃  3 (○) Yes',
+  '  ┃  4 (○) No, reject (type to add feedback)',
+  '  ┃',
+  '  1/4:select  │  Tab:next option  │  Ctrl+o:always-approve  │  Ctrl+c:cancel  │  Esc:scrollback',
+].join('\n');
+
 /** A claude-code menu — the shape that already worked, as a no-regression control. */
 const CLAUDE_APPROVAL_TAIL = [
   '  Compound command contains cd with output redirection — manual approval required',
@@ -117,6 +144,36 @@ describe('permission floor — grok-build approval menu is DETECTED', () => {
     const m = detectApprovalPrompt(toPaneTailLines(reordered), 'grok-build', false);
     expect(m).not.toBeNull();
     expect(m!.approveKey).toBe('3');
+  });
+
+  it('answers the real EDIT menu on its BARE "Yes" row — the shape that refuted v1', () => {
+    // Live-captured, four rows, allow-once at 3. The first implementation
+    // declined this menu outright: its approveOnce was `^Yes,\s*proceed`, which
+    // matches none of these rows, so a file write on a fresh grok session would
+    // have stayed wedged exactly as before the feature existed.
+    const m = detectApprovalPrompt(toPaneTailLines(GROK_EDIT_TAIL), 'grok-build', false);
+    expect(m, 'the Edit menu must be answerable, not declined').not.toBeNull();
+    expect(m!.approveKey).toBe('3');
+  });
+
+  it('treats "allow all edits during this session" as an ALWAYS row, not allow-once', () => {
+    // The load-bearing half of the Edit-menu fix, asserted on its own so a
+    // regression here cannot hide behind the digit assertion above.
+    //
+    // Row 2 is a session-wide blanket wearing neither of the words the original
+    // pattern looked for. If it is read as allow-once, this menu has TWO
+    // allow-once rows — and the ambiguity rule then declines every Edit approval
+    // grok ever raises. If the ambiguity rule were ever relaxed, it would instead
+    // press a blanket grant. Both failures start here.
+    const rows = GROK_EDIT_TAIL.split('\n')
+      .filter((l) => /\([●○]\)/.test(l))
+      .map((l) => l.replace(/^.*?\d+\s*\([●○]\)\s*/, ''));
+    const intent = APPROVAL_PROMPT_SIGNATURES['grok-build']!.intent!;
+    const sessionBlanket = rows.find((r) => /allow all edits/i.test(r))!;
+    expect(intent.alwaysApprove.test(sessionBlanket)).toBe(true);
+    // CONTROL: the row we DO press must not be swept up by that same pattern.
+    expect(intent.alwaysApprove.test('Yes')).toBe(false);
+    expect(intent.approveOnce.test('Yes')).toBe(true);
   });
 
   it('CONTROL: declines an AMBIGUOUS menu rather than guessing', () => {

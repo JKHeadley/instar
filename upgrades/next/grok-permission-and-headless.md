@@ -42,10 +42,15 @@ lane is open; the safety bound moved to the case it was actually about.
 
 ## Evidence
 
-- The load-bearing test is a deliberately REORDERED menu, with the safe row third
-  and the dangerous row second. A positional implementation presses the dangerous
-  one; this presses the safe one. Shown capable of failing: restoring the naive
-  default-key answer turns exactly that test and one other red.
+- Grok raises TWO different approval menus, both now verbatim fixtures taken from a
+  live session: a three-row one for shell commands and a four-row one for file
+  edits. They disagree about where the safe row sits — second on one, third on the
+  other — which is what rules out a hardcoded position. The edit menu also offers a
+  third scope, "allow all edits during this session", which is excluded along with
+  the machine-wide option.
+- Shown capable of failing: restoring the naive default-key answer turns the
+  reordered-menu test and one other red; restoring the shell-only label patterns
+  turns both edit-menu tests red while the other ten stay green.
 - Declining is tested in both directions — an ambiguous menu with two plausible
   rows, and a menu missing the always-row (an unfamiliar shape) — because a wrong
   guess on a permission prompt is worse than a stuck session.

@@ -157,32 +157,61 @@ export const APPROVAL_PROMPT_SIGNATURES: Record<string, ApprovalSignature> = {
     approveLabels: /^(yes|proceed|allow|continue)\b/i,
   },
   // grok-build — VERIFIED against the live wedge captured 2026-08-15, and
-  // answered in INTENT mode (see ApprovalSignature.intent). Its menu:
+  // answered in INTENT mode (see ApprovalSignature.intent).
   //
+  // GROK EMITS (at least) TWO DIFFERENT APPROVAL MENUS. Both captured verbatim
+  // from a live fresh session on 2026-08-16, because the first cut of this
+  // signature was generalised from ONE of them and silently failed the other —
+  // the exact hand-idealised-fixture trap the tests warn about.
+  //
+  //   Shell/tool menu (3 rows, triggered by a mutating command):
   //     1 (●) Yes, and don't ask again for anything (always-approve mode)
   //     2 (○) Yes, proceed
   //     3 (○) No, reject (type to add feedback)
   //     1/3:select │ Tab:next option │ Ctrl+c:cancel │ Esc:scrollback
   //
-  // The row we press is 2, chosen BY LABEL. Never Enter: the grok agent's own
-  // account of its keyboard contract is that Enter commits whatever row the dot
-  // rests on, the dot starts on row 1 on a session's first prompt, and it is
-  // STICKY afterwards — so an Enter floor would, on a fresh session, flip the
-  // machine into always-approve and persist it to user-global config. Never by
-  // position either: it warned the order shifts when optional rows appear, which
-  // is why `approveOnce` is a label test and an ambiguous menu declines.
+  //   Edit menu (4 rows, triggered by a file write):
+  //     1 (●) Yes, and don't ask again for anything (always-approve mode)
+  //     2 (○) Yes, allow all edits during this session
+  //     3 (○) Yes
+  //     4 (○) No, reject (type to add feedback)
+  //     1/4:select │ Tab:next option │ Ctrl+o:always-approve │ Ctrl+c:cancel
+  //
+  // Two consequences the shell-only reading missed. The allow-once label is not
+  // always "Yes, proceed" — on the Edit menu it is a BARE "Yes". And there is a
+  // THIRD scope between allow-once and machine-global: row 2's "all edits during
+  // this session" is a session-wide blanket, so it must be excluded as an
+  // always-row even though it says neither "always" nor "don't ask again".
+  //
+  // Read-only commands (`ls`) are auto-allowed and raise no menu at all, which is
+  // why a plain probe looks like the floor is dead when it is simply not needed.
+  //
+  // The row we press is the allow-once one, chosen BY LABEL. Never Enter: the dot
+  // starts on row 1 on a session's first prompt and is STICKY afterwards, so an
+  // Enter floor would flip the machine into always-approve and persist that to
+  // user-global config. Never by position either — allow-once is row 2 on one of
+  // these menus and row 3 on the other, from the same CLI on the same day.
   'grok-build': {
     prosePatterns: [
       { name: 'grok-always-approve-row', pattern: /don'?t ask again for anything/i },
-      { name: 'grok-proceed-row', pattern: /^\s*\d+\s*\([●○]\)\s*Yes,\s*proceed\b/im },
+      // Deliberately `Yes\b` and not `Yes,\s*proceed` — the Edit menu's affirmative
+      // row is a bare "Yes", so the narrower pattern matched neither of its rows.
+      { name: 'grok-affirmative-row', pattern: /^\s*\d+\s*\([●○]\)\s*Yes\b/im },
       { name: 'grok-reject-row', pattern: /No,\s*reject\b/i },
       { name: 'grok-select-affordance', pattern: /\b\d+\/\d+:select\b/i },
     ],
     // Unused in intent mode (kept so the shape stays uniform across signatures).
     approveLabels: /^(yes|proceed|allow|continue)\b/i,
     intent: {
-      approveOnce: /^Yes,\s*proceed\b/i,
-      alwaysApprove: /don'?t ask again|always[- ]approve|all sessions/i,
+      // Matches "Yes", "Yes, proceed". The negative lookahead is defence in depth:
+      // blanket rows are already excluded by the alwaysApprove pass that runs
+      // FIRST, so this only matters if that pass ever fails to recognise a new
+      // blanket phrasing — in which case this refuses to treat it as allow-once
+      // rather than pressing it.
+      approveOnce: /^Yes\b(?!.*\b(?:and don'?t ask|always|all edits|all sessions|this session)\b)/i,
+      // "allow all edits during this session" says neither "always" nor "don't ask
+      // again"; it is caught by `allow all` and by `during this session`.
+      alwaysApprove: /don'?t ask again|always[- ]approve|all sessions|allow all|during this session/i,
       optionPrefix: /^\s*\d+\s*\([●○]\)\s*/,
     },
   },

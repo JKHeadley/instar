@@ -480,6 +480,49 @@ EARLIER in the function (it needs only the framework and cwd, so refusing sooner
 is better anyway) rather than widening that test's tolerance; loosening another
 guard to fit my own comment would have been the wrong repair.
 
+### The auto-answer was built against one of grok's two approval menus
+
+Driving a real fresh grok session refuted the first cut of the intent-mode
+signature in a single shot. Grok emits at least TWO approval menus, and the
+signature was generalised from one of them.
+
+Shell/tool menu, 3 rows, raised by a mutating command:
+
+    1 (●) Yes, and don't ask again for anything (always-approve mode)
+    2 (○) Yes, proceed
+    3 (○) No, reject (type to add feedback)
+
+Edit menu, 4 rows, raised by a file write:
+
+    1 (●) Yes, and don't ask again for anything (always-approve mode)
+    2 (○) Yes, allow all edits during this session
+    3 (○) Yes
+    4 (○) No, reject (type to add feedback)
+
+Two misses, both load-bearing. The allow-once label is **not always "Yes,
+proceed"** — on the Edit menu it is a bare `Yes`, so `approveOnce:
+/^Yes,\s*proceed\b/` matched no row and the floor DECLINED a menu it exists to
+answer; a file write on a fresh grok session would have stayed wedged exactly as
+before the feature. And there is a **third scope** between allow-once and
+machine-global: row 2's "allow all edits during this session" is a session-wide
+blanket that says neither "always" nor "don't ask again", so the original
+alwaysApprove pattern did not recognise it as a row to avoid.
+
+Fixed by widening `approveOnce` to a bare `Yes\b` (safe because the alwaysApprove
+pass runs FIRST and removes blanket rows before allow-once is counted, with a
+negative lookahead as defence in depth if that pass ever misses a new phrasing),
+and by widening `alwaysApprove` to catch `allow all` and `during this session`.
+
+**This also settles the positional question by measurement rather than by the
+vendor's warning**: allow-once is row 2 on one menu and row 3 on the other, from
+the same CLI on the same day. A hardcoded digit would have been wrong roughly half
+the time.
+
+Incidental but worth recording: read-only commands (`ls`) are auto-approved and
+raise no menu at all, so a probe using one looks exactly like a dead floor. Both
+menus above are now verbatim fixtures, and both new assertions were shown red
+against the old patterns while the ten existing ones stayed green.
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**
