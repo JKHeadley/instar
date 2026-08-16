@@ -39,6 +39,76 @@ export function enrollPaneSessionName(framework: string, configHome?: string): s
   return `instar-enroll-${framework}-${slug}`;
 }
 
+/**
+ * The environment that confines an enrollment login to its own credential slot.
+ * SINGLE SOURCE OF TRUTH — the spawn (server.ts) derives the env through this
+ * helper so the mapping can never drift from what each CLI actually reads.
+ *
+ * The isolation variable is PER-FRAMEWORK, and handing a CLI a variable it does
+ * not read is worse than handing it none: the login silently lands in the
+ * AMBIENT home while the pool records an isolated `configHome`, so a second
+ * enrolment overwrites the first account's session while the pool shows both
+ * active. Each framework therefore gets the variable it genuinely honours, and
+ * a framework with NO known isolation variable gets NONE rather than a
+ * misleading one.
+ *
+ * `codex-cli` reads `CODEX_HOME` (verified against the CLI: `CLAUDE_CONFIG_DIR`
+ * pointed at an empty directory still reported "Logged in using ChatGPT", while
+ * `CODEX_HOME` pointed at the same directory correctly reported "Not logged
+ * in"). It previously fell through to `CLAUDE_CONFIG_DIR`, so every
+ * instar-started Codex sign-in ran against the machine's real `~/.codex` —
+ * which is how an enrolment signed the operator out of their default Codex
+ * login. `gemini-cli` and `pi-cli` have no isolation variable instar has
+ * verified, so they get none.
+ */
+export function enrollmentIsolationEnv(
+  framework: string,
+  configHome?: string,
+): Record<string, string> {
+  if (!configHome) return {};
+  switch (framework) {
+    case 'claude-code':
+      return { CLAUDE_CONFIG_DIR: configHome };
+    case 'codex-cli':
+      return { CODEX_HOME: configHome };
+    case 'grok-build':
+      return { GROK_HOME: configHome };
+    default:
+      return {};
+  }
+}
+
+/**
+ * Where a framework's login writes its credential — the file whose appearance
+ * proves a `device-code` sign-in succeeded (see `EnrollmentWizard`'s
+ * `credentialWitness`). MIRRORS `enrollmentIsolationEnv` by construction: the
+ * credential lands wherever that env points, or in the CLI's ambient home when
+ * the framework has no isolation variable.
+ *
+ * Returns null for a framework whose credential location instar has not
+ * verified — a witness that guesses a path would read an absent file forever
+ * and silently degrade to the old re-ask loop while looking supported.
+ *
+ * `env`/`homedir` are parameters rather than direct `process`/`os` reads so the
+ * resolution stays pure and testable.
+ */
+export function enrollmentCredentialPath(
+  framework: string,
+  configHome: string | undefined,
+  env: Record<string, string | undefined>,
+  homedir: string,
+): string | null {
+  const join = (dir: string, file: string) => `${dir.replace(/\/+$/, '')}/${file}`;
+  switch (framework) {
+    case 'codex-cli':
+      return join(configHome ?? env['CODEX_HOME'] ?? join(homedir, '.codex'), 'auth.json');
+    case 'grok-build':
+      return join(configHome ?? env['GROK_HOME'] ?? join(homedir, '.grok'), 'auth.json');
+    default:
+      return null;
+  }
+}
+
 /** A login flow we know how to launch + scrape. */
 export interface FrameworkLoginRequest {
   provider: LoginProvider;

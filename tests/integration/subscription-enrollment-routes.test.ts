@@ -19,6 +19,7 @@ import type { AddressInfo } from 'node:net';
 import { createRoutes } from '../../src/server/routes.js';
 import { PendingLoginStore } from '../../src/core/PendingLoginStore.js';
 import { EnrollmentWizard, type LoginArtifact } from '../../src/core/EnrollmentWizard.js';
+import { enrollmentCredentialPath } from '../../src/core/FrameworkLoginDriver.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 interface TestServer { url: string; close: () => Promise<void>; }
@@ -228,5 +229,92 @@ describe('/subscription-pool enrollment routes (integration)', () => {
   it('400 when required fields are missing', async () => {
     const res = await api('/subscription-pool/enroll', { method: 'POST', body: JSON.stringify({ id: 'x' }) });
     expect(res.status).toBe(400);
+  });
+});
+
+/**
+ * Integration — the credential witness composed EXACTLY as production composes it
+ * (`enrollmentCredentialPath` + a real `fs.statSync`), driven through the real
+ * reissue route against a real credential file on disk.
+ *
+ * The bug this guards: a Codex device-code sign-in completes inside the CLI and
+ * never tells instar, so the reissue sweep killed the succeeded pane and minted a
+ * fresh code on a loop (33 reissues over 8h, observed live 2026-08-16).
+ */
+describe('enrollment reissue — a device-code login that already signed in (integration)', () => {
+  let server: TestServer;
+  let dir: string;
+  let store: PendingLoginStore;
+  let clock: number;
+  let drives: number;
+  let slotHome: string;
+
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'enroll-witness-int-'));
+    clock = Date.parse('2026-08-16T00:00:00Z');
+    store = new PendingLoginStore({ stateDir: dir, now: () => clock });
+    drives = 0;
+    slotHome = path.join(dir, 'codex-slot');
+    fs.mkdirSync(slotHome, { recursive: true });
+
+    const wizard = new EnrollmentWizard({
+      store,
+      now: () => clock,
+      driveLogin: async () => { drives++; return ARTIFACT; },
+      // The production composition, verbatim (src/commands/server.ts).
+      credentialWitness: (login) => {
+        const credentialPath = enrollmentCredentialPath(login.framework, login.configHome, process.env, os.homedir());
+        if (!credentialPath) return null;
+        try { return fs.statSync(credentialPath).mtimeMs; } catch { return null; }
+      },
+    });
+    const app = express();
+    app.use(express.json());
+    app.use(createRoutes({
+      config: { authToken: 't', stateDir: dir, port: 0 },
+      startTime: new Date(),
+      enrollmentWizard: wizard,
+    } as any));
+    server = await listen(app);
+  });
+  afterEach(async () => {
+    await server?.close();
+    try { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/subscription-enrollment-routes.test.ts:witness-cleanup' }); } catch { /* @silent-fallback-ok */ }
+  });
+
+  const api = (p: string, init?: RequestInit) =>
+    fetch(server.url + p, { headers: { 'Content-Type': 'application/json' }, ...init })
+      .then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
+
+  async function startCodexLogin() {
+    return api('/subscription-pool/enroll', {
+      method: 'POST',
+      body: JSON.stringify({ id: 'codex-1', label: 'codex', provider: 'openai', framework: 'codex-cli', configHome: slotHome }),
+    });
+  }
+
+  it('completes it instead of minting yet another code', async () => {
+    await startCodexLogin();
+    drives = 0;
+    // The operator approved at OpenAI; the CLI wrote its credential and exited.
+    fs.writeFileSync(path.join(slotHome, 'auth.json'), '{"tokens":{}}');
+
+    clock += 16 * 60_000; // TTL elapsed
+    const res = await api('/subscription-pool/enroll/reissue-expired', { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(drives).toBe(0);
+    expect(store.get('codex-1')!.status).toBe('completed');
+  });
+
+  it('still reissues when the slot genuinely holds no credential', async () => {
+    await startCodexLogin();
+    drives = 0;
+
+    clock += 16 * 60_000;
+    await api('/subscription-pool/enroll/reissue-expired', { method: 'POST' });
+
+    expect(drives).toBe(1);
+    expect(store.get('codex-1')!.status).toBe('pending');
   });
 });

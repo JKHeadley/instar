@@ -107,6 +107,24 @@ export interface EnrollmentWizardConfig {
    * is paged.
    */
   emitAttention?: (item: { id: string; title: string; body: string; priority: 'high'; source: 'agent' }) => void;
+  /**
+   * Witness for a login that completed WITHOUT telling instar.
+   *
+   * A `url-code-paste` flow (Claude) ends by the operator pasting a code back
+   * through the dashboard, which reaches a route that calls `complete()`. A
+   * `device-code` flow (Codex, grok) does not: the operator approves at the
+   * provider, the CLI writes its own credential and exits, and nothing informs
+   * instar. Without a witness that login stays `pending` forever, its TTL
+   * elapses, the reissue sweep kills the pane and mints a new code — so a
+   * SUCCESSFUL sign-in is destroyed and re-asked on a loop (33 reissues over 8h,
+   * observed 2026-08-16).
+   *
+   * Returns the epoch-ms mtime of the credential in the login's slot, or null
+   * when absent/unreadable. Compared against the login's `createdAt` so a
+   * credential that was ALREADY in the slot before this flow began cannot be
+   * mistaken for this flow succeeding. Absent ⇒ no witness ⇒ previous behaviour.
+   */
+  credentialWitness?: (login: PendingLogin) => Promise<number | null> | number | null;
 }
 
 export interface StartEnrollmentInput {
@@ -142,6 +160,7 @@ export class EnrollmentWizard {
   private readonly ensureReady: (configHome: string) => EnsureInteractiveReadyResult;
   private readonly oracle?: IdentityOracle;
   private readonly emitAttention?: (item: { id: string; title: string; body: string; priority: 'high'; source: 'agent' }) => void;
+  private readonly credentialWitness?: (login: PendingLogin) => Promise<number | null> | number | null;
 
   constructor(cfg: EnrollmentWizardConfig) {
     this.store = cfg.store;
@@ -150,6 +169,7 @@ export class EnrollmentWizard {
     this.ensureReady = cfg.ensureReady ?? ensureInteractiveReady;
     this.oracle = cfg.oracle;
     this.emitAttention = cfg.emitAttention;
+    this.credentialWitness = cfg.credentialWitness;
   }
 
   /** Default flow kind per provider: Codex/OpenAI and xAI/grok = device-code
@@ -274,6 +294,19 @@ export class EnrollmentWizard {
     const reissued: PendingLogin[] = [];
     for (const login of logins) {
       try {
+        // A device-code login can succeed without telling instar, and every
+        // re-drive KILLS the pane it would have succeeded in. Ask the witness
+        // BEFORE destroying anything: an already-succeeded flow is completed,
+        // never re-asked.
+        if (await this.completedWithoutTelling(login)) {
+          const completed = this.complete(login.id);
+          if (completed) {
+            this.logger.log(
+              `[EnrollmentWizard] ${login.id} already signed in — completing instead of ${reason} refresh`,
+            );
+            continue;
+          }
+        }
         const fresh = await this.driveLogin({
           provider: login.provider,
           framework: login.framework,
@@ -299,6 +332,37 @@ export class EnrollmentWizard {
       }
     }
     return reissued;
+  }
+
+  /**
+   * Did this login already succeed without instar being told?
+   *
+   * Only `device-code` flows can: a `url-code-paste` flow completes through the
+   * dashboard route that calls `complete()`, and its slot's credential is
+   * rewritten by ordinary token refresh, so witnessing it would risk marking a
+   * live re-enrolment "done" on an mtime bump that was never this flow.
+   *
+   * EVERY uncertainty answers false — no witness, unreadable slot, absent
+   * credential, unparseable timestamp, or a probe that throws. False is the
+   * previous behaviour (re-drive), so the witness can only ever PREVENT a
+   * destructive re-ask, never cause one, and can never strand an operator on a
+   * dead code by wrongly declaring success.
+   */
+  private async completedWithoutTelling(login: PendingLogin): Promise<boolean> {
+    if (!this.credentialWitness) return false;
+    if (login.kind !== 'device-code') return false;
+    try {
+      const credentialMs = await this.credentialWitness(login);
+      if (typeof credentialMs !== 'number' || !Number.isFinite(credentialMs)) return false;
+      const startedMs = Date.parse(login.createdAt);
+      if (!Number.isFinite(startedMs)) return false;
+      // A credential older than the flow was already there — a prior account in
+      // the slot, not this sign-in.
+      return credentialMs >= startedMs;
+    } catch {
+      // @silent-fallback-ok: an unreadable slot is not evidence of success.
+      return false;
+    }
   }
 
   /**
