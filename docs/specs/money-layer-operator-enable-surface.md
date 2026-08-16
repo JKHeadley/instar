@@ -164,9 +164,16 @@ regardless of whether a row was written.
     so the operator is never shown a config-derived claim without its age, **and offers a
     refresh action — `POST /routing-spend/config-inspect`**, which REPORTS and adopts
     nothing. It returns `{ differs, configSnapshotAt, fields: [{ path, current, onDisk }] }`
-    over the enumerated authority-bearing fields (`routingSpend.money.enabled` and each
-    `routingSpend.money.limits.*`), so an operator who hand-edited the file can see that the
-    edit has not taken effect, and exactly which values differ.
+    over the enumerated authority-bearing fields, so an operator who hand-edited the file can
+    see that the edit has not taken effect, and exactly which values differ.
+
+    **Bearer alone sees ONLY `routingSpend.money.enabled`.** The cap values under
+    `routingSpend.money.limits.*` are the same data §7 withholds from a pre-gate reader, so
+    returning them here would have handed the agent through one route exactly what the log
+    filter denies it through another — the boundary is only as strong as its leakiest
+    surface. Limits therefore require the PIN, and a Bearer-only inspect reports
+    `differs`/`configSnapshotAt` for the enable flag alone, which is all that is needed to
+    answer "has my edit taken effect?".
 
     It is **non-adopting inspection**: it mutates no authority, config or process state. It
     does append an audit row and advance rate-limit state, which is why it is a POST and why
@@ -220,8 +227,8 @@ because they are the door to turning it on. Five mutate or act; `GET
 |---|---|---|---|
 | `POST /routing-spend/plan` | Bearer | `{ action: <member of MONEY_LAYER_PREGATE_ACTIONS> }` | `{ planId, nonce, renderedText, action, sourceStateAtRender, machineId, machineNickname, expiresAt }` |
 | `POST /routing-spend/money-layer/commit` | Bearer **+** PIN | `{ pin, planId, nonce }` | `{ lifecycleState, enforcementReady, enableSources, storeCleared, probe, message }` |
-| `POST /routing-spend/money-layer/restart` | Bearer **+** PIN | `{ pin, nonce }` | `{ accepted, message }` |
-| `POST /routing-spend/config-inspect` | Bearer | `{}` | `{ differs, configSnapshotAt, fields: [{ path, current, onDisk }] }` — non-adopting inspection |
+| `POST /routing-spend/money-layer/restart` | Bearer **+** PIN | `{ pin, nonce, confirmationTextHash }` | `{ accepted, message }` |
+| `POST /routing-spend/config-inspect` | Bearer; **+ PIN** for limits fields | `{ pin? }` | `{ differs, configSnapshotAt, fields: [...] }` — non-adopting inspection. The route is always reachable pre-gate; without a PIN, `fields` contains ONLY `routingSpend.money.enabled` |
 | `POST /routing-spend/money-layer/restart-nonce` | Bearer | `{}` | `{ nonce, expiresAt, confirmationText }` — refused (409) outside the three restartable states |
 | `GET /routing-spend/enable-status` | Bearer | — | `{ lifecycleState, enforcementReady, enableSources, configSnapshotAt, machineId, lastTransitionAt, failingComponent?, settlingCount, restartEligible, anyKeyFrozen, freezeRecordProvisional }` — read-only, `Cache-Control: no-store`, mints nothing |
 
@@ -288,8 +295,8 @@ anything; when there is nothing to freeze it is a harmless no-op that says so.
 |---|---|
 | `plan` (allowlisted actions), `money-layer/commit`, `money-layer/restart`, `money-layer/restart-nonce`, `config-inspect`, `enable-status` | **always** (pre-gate) |
 | `freeze` | **always** (pre-gate, unconditional) |
-| `caps/log` — enable/disable/status rows only | **always** (pre-gate), Bearer |
-| `caps/log` — caps, arming, freeze, spend rows | `servingReady \|\| settlingCount > 0` |
+| `caps/log` — enable/disable/status rows, and **redacted** freeze/unfreeze summaries (keyRef, caller, reason; no timestamp) | **always** (pre-gate), Bearer |
+| `caps/log` — caps, arming, spend rows, and **full** freeze/unfreeze rows with timing | `servingReady \|\| settlingCount > 0` |
 | read-only spend views: `summary`, `caps` | `servingReady \|\| settlingCount > 0` |
 | everything else under `/routing-spend/*` — caps adjust, arming, and all mutating routes | `servingReady` |
 
@@ -357,6 +364,22 @@ could show a reassuring label over a different signed action, which is the whole
 plan-binding exists to prevent. The **hash of `renderedText`** is audited with the commit,
 so what the operator was shown is recoverable afterwards rather than merely asserted.
 
+**Plan rendering REQUIRES the single-instance lock**, unlike the other audit-only pre-gate
+routes. A rendered plan is not an authority write, but it IS authorization material — a
+`planId`/`nonce` later spendable with the PIN — so minting it from a process that is not the
+owner would let a non-owner manufacture the artifact the commit path trusts. Render is
+refused without the lock, and commit additionally **rejects any plan whose render was not
+recorded under the lock**, so an unaudited render is structurally unusable rather than merely
+discouraged.
+
+**Working remotely against a machine-bound flow.** Plans, the enable state and the audit are
+all machine-local, and the operator is usually remote. That is workable but must be said:
+the operator drives the Spend tab **of the machine they are enabling** — the existing
+pool-link machinery resolves the fronting server to the owning machine, and every rendered
+plan names its target machine and nickname so a multi-machine operator always knows which
+one they are arming. There is deliberately no fleet-wide enable: each machine is enabled on
+its own, by its own PIN, from wherever the operator happens to be.
+
 **Plans are machine-bound.** `machineId` is part of the signed plan material and named in
 the rendered text; a plan committed on a different machine is refused (`409`).
 
@@ -379,9 +402,15 @@ a restart the route would refuse. **The nonce is minted by `POST /routing-spend/
 An earlier draft had `enable-status` issue it — a read-only, cacheable, prefetchable route
 minting security-relevant state, which is the same mistake this spec rejected for
 `config-refresh` two sections earlier. `enable-status` now reports only `restartEligible`
-(a boolean) and carries `Cache-Control: no-store`. The mint route **stores the hash of the confirmation text against the nonce**, and the
-restart route recomputes and verifies it — so "the UI must display it" is enforceable rather
-than aspirational, and the audit records which words the operator was shown. The mint route
+(a boolean) and carries `Cache-Control: no-store`. The mint route **stores the hash of the confirmation text against the nonce**, and the restart
+request MUST submit that hash as `confirmationTextHash`; the server compares and refuses
+(`409`) on mismatch or absence. That makes the check real: a client that never fetched the
+text cannot produce the hash. **What it proves, stated exactly:** the caller possessed the
+canonical text — NOT that a human read it. A Bearer+PIN holder can mint the nonce, hash the
+text and restart without any human ever seeing it; the hash is a **client-integrity check,
+not an operator-consent proof**, and it must never be cited as the latter. The consent
+evidence for restart is the PIN, exactly as elsewhere in this spec. Display remains a client obligation, and this
+spec does not claim cryptographic proof of display, because it does not have one. The mint route
 returns, alongside the nonce, a **canonical server-rendered confirmation string bound to
 that nonce**, which the UI must display verbatim before the restart is
 submitted — naming the machine and that the whole agent server restarts. This is the same
@@ -770,6 +799,9 @@ satisfy an external auditor, that is a different requirement and needs its own d
 | T33 | In `config-enabled` + frozen, the surface states that freeze is active but the layer is still enabled by config — it must not read as a durable disable. |
 | T34 | A freeze written by a process NOT holding the single-instance lock stops spend in the process that DOES hold it. |
 | T35 | Repeated `config-inspect` calls mutate no authority, config or process state (audit + rate-limit only). |
+| T38 | A plan rendered without the single-instance lock is refused; a plan whose render was not recorded under the lock is rejected at commit. |
+| T39 | Restart is refused when `confirmationTextHash` is absent or does not match the hash stored at mint. |
+| T40 | A Bearer-only `config-inspect` returns no `routingSpend.money.limits.*` values; with a PIN it does. |
 | T36 | A freeze whose audit append fails still applies, and is reported as applied-with-provisional-record; an unfreeze whose append fails is REFUSED. |
 | T29 | `config-inspect` is Bearer-only, adopts nothing, and reports the per-field disk-vs-process diff correctly. |
 | T30 | No route adopts on-disk config into the running process; `config-inspect` leaves the process snapshot unchanged. |
