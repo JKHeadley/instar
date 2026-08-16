@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-16T00:24:47.469Z",
+  "slug": "codex-enrolment-oracle-wiring",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 19,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts"
+    ],
+    "addedLines": 18,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
