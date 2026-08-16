@@ -234,13 +234,20 @@ describe('round-11: the drift advisory is clamped before it enters a reviewer fi
 });
 
 describe('round-12: a grok-DEFAULT agent still has a working job surface', () => {
-  it('the grok headless lane is declared CLOSED, and the declaration matches the builder', () => {
-    // The declaration and the builder must agree, or the fallback either fires
-    // for an open lane or fails to fire for a closed one.
-    expect(headlessLaneIsClosed('grok-build')).toBe(true);
-    expect(() =>
-      buildHeadlessLaunch('grok-build', { binaryPath: '/stub/grok', prompt: 'x' }),
-    ).toThrow(/grok-headless-cwd-ungated/);
+  it('the grok headless lane is declared OPEN, and the declaration matches the builder', () => {
+    // INVERTED 2026-08-16 (operator decision: "sounds like this part needs to be
+    // built"). This previously asserted the lane was CLOSED and that the builder
+    // threw `grok-headless-cwd-ungated`. Both halves flipped together, which is
+    // the property that actually matters: the declaration and the builder must
+    // AGREE, or the fallback either fires for an open lane or fails to fire for a
+    // closed one. Asserting the new truth rather than deleting the test keeps
+    // that agreement pinned.
+    expect(headlessLaneIsClosed('grok-build')).toBe(false);
+    const spec = buildHeadlessLaunch('grok-build', { binaryPath: '/stub/grok', prompt: 'x' });
+    expect(spec.argv[0]).toBe('/stub/grok');
+    // Prompts go through a private file rather than argv (see the headless-lane
+    // suite); the declaration-vs-builder agreement this test pins is unaffected.
+    expect(spec.argv).toContain('--prompt-file');
   });
 
   it('CONTROL: an OPEN lane is not declared closed (the fallback must not fire for claude/codex)', () => {
@@ -281,6 +288,9 @@ describe('round-14: the closed-lane fallback cannot pick a framework that is onl
     // but has no codex installed, so frameworkBinaryPaths has no codex entry
     // and the historical default arm hands back the CLAUDE binary.
     const picked = resolveHeadlessFallbackFramework({
+      // grok's lane is OPEN since 2026-08-16; state the closed-ness this suite
+      // is about so the SELECTION logic stays exercised rather than short-circuited.
+      isClosed: () => true,
       ...base,
       enabledFrameworks: ['grok-build', 'codex-cli'],
       frameworkBinaryPaths: {},
@@ -295,6 +305,9 @@ describe('round-14: the closed-lane fallback cannot pick a framework that is onl
   it('accepts claude-code ONLY on its own keyed binary — never on the shared claudePath', () => {
     expect(
       resolveHeadlessFallbackFramework({
+      // grok's lane is OPEN since 2026-08-16; state the closed-ness this suite
+      // is about so the SELECTION logic stays exercised rather than short-circuited.
+      isClosed: () => true,
         ...base,
         enabledFrameworks: ['grok-build', 'claude-code'],
         frameworkBinaryPaths: { 'claude-code': '/real/bin/claude' },
@@ -306,6 +319,9 @@ describe('round-14: the closed-lane fallback cannot pick a framework that is onl
     // billing and confinement controls).
     expect(
       resolveHeadlessFallbackFramework({
+      // grok's lane is OPEN since 2026-08-16; state the closed-ness this suite
+      // is about so the SELECTION logic stays exercised rather than short-circuited.
+      isClosed: () => true,
         ...base,
         enabledFrameworks: ['grok-build'],
         frameworkBinaryPaths: {},
@@ -317,6 +333,9 @@ describe('round-14: the closed-lane fallback cannot pick a framework that is onl
     // pi resolves to the bare name `pi`, and a bare name cannot be probed, so
     // it was accepted unconditionally and pre-empted a working framework.
     const picked = resolveHeadlessFallbackFramework({
+      // grok's lane is OPEN since 2026-08-16; state the closed-ness this suite
+      // is about so the SELECTION logic stays exercised rather than short-circuited.
+      isClosed: () => true,
       ...base,
       enabledFrameworks: ['grok-build', 'pi-cli', 'claude-code'],
       frameworkBinaryPaths: { 'claude-code': '/real/bin/claude' },
@@ -326,6 +345,9 @@ describe('round-14: the closed-lane fallback cannot pick a framework that is onl
 
   it('ACCEPTS codex-cli when it resolves to its OWN configured binary', () => {
     const picked = resolveHeadlessFallbackFramework({
+      // grok's lane is OPEN since 2026-08-16; state the closed-ness this suite
+      // is about so the SELECTION logic stays exercised rather than short-circuited.
+      isClosed: () => true,
       ...base,
       enabledFrameworks: ['codex-cli'],
       frameworkBinaryPaths: { 'codex-cli': '/real/bin/codex' },
@@ -335,6 +357,9 @@ describe('round-14: the closed-lane fallback cannot pick a framework that is onl
 
   it('returns NULL when nothing qualifies, so the lane\'s own refusal stands', () => {
     const picked = resolveHeadlessFallbackFramework({
+      // grok's lane is OPEN since 2026-08-16; state the closed-ness this suite
+      // is about so the SELECTION logic stays exercised rather than short-circuited.
+      isClosed: () => true,
       ...base,
       enabledFrameworks: ['grok-build'],
       frameworkBinaryPaths: {},
@@ -346,6 +371,9 @@ describe('round-14: the closed-lane fallback cannot pick a framework that is onl
 
   it('IGNORES an unknown framework string from config (a typo must not become the answer)', () => {
     const picked = resolveHeadlessFallbackFramework({
+      // grok's lane is OPEN since 2026-08-16; state the closed-ness this suite
+      // is about so the SELECTION logic stays exercised rather than short-circuited.
+      isClosed: () => true,
       ...base,
       enabledFrameworks: ['not-a-framework', 'grok-build', 'claude-code'],
       frameworkBinaryPaths: { 'claude-code': '/real/bin/claude' },
@@ -362,6 +390,9 @@ describe('round-14: the closed-lane fallback cannot pick a framework that is onl
     // binary is NOT sufficient; enablement is the gate.
     expect(
       resolveHeadlessFallbackFramework({
+      // grok's lane is OPEN since 2026-08-16; state the closed-ness this suite
+      // is about so the SELECTION logic stays exercised rather than short-circuited.
+      isClosed: () => true,
         ...base,
         enabledFrameworks: ['grok-build'],
         frameworkBinaryPaths: { 'claude-code': '/real/bin/claude' },
@@ -376,6 +407,9 @@ describe('round-14: the closed-lane fallback cannot pick a framework that is onl
     // satisfied by a resolver that always returns null.
     expect(
       resolveHeadlessFallbackFramework({
+      // grok's lane is OPEN since 2026-08-16; state the closed-ness this suite
+      // is about so the SELECTION logic stays exercised rather than short-circuited.
+      isClosed: () => true,
         ...base,
         enabledFrameworks: [],
         frameworkBinaryPaths: { 'claude-code': '/real/bin/claude' },
@@ -384,6 +418,10 @@ describe('round-14: the closed-lane fallback cannot pick a framework that is onl
   });
 
   it('CONTROL: an OPEN requested lane is returned unchanged, never re-selected', () => {
+    // Deliberately NOT injecting a closed predicate — this control exists to
+    // prove the OPEN path short-circuits. It caught a real mistake: a blanket
+    // isClosed:true across this suite put every case on the closed path,
+    // including this one. That is what a control is for.
     expect(
       resolveHeadlessFallbackFramework({
         ...base,

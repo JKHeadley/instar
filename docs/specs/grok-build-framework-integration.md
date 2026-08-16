@@ -432,13 +432,23 @@ framework is not "wired" on a passing test alone.
 **What is CLOSED, and by what:**
 - Interactive sessions — refuse unless BOTH `enabledFrameworks` contains
   `grok-build` AND `sessions.grokInteractiveSessions` is set (§4.2/§4.3).
-- Headless job spawns — the grok headless lane is CLOSED until scratch-cwd
-  wiring lands. Round-13 correction: "refuse unconditionally" stopped being
-  accurate the moment the closed-lane fallback landed. A job spawn resolved to
-  grok now runs on an ENABLED framework whose binary is genuinely present, and
-  is LABELLED as that framework; when no such framework exists the lane's own
-  `grok-headless-cwd-ungated` refusal stands. What never happens is a
-  grok-labelled Claude spawn (§4.3 lane 3, Frontloaded Decision 10).
+- Headless job spawns — **OPEN as of 2026-08-16** (operator decision: "sounds
+  like this part needs to be built"). Superseding the round-13 text below, which
+  is retained one paragraph down as history. The lane no longer refuses
+  unconditionally; the bound MOVED and narrowed to the concern the old note
+  actually named. A grok job whose cwd is an instar SOURCE checkout is refused by
+  name (`grok-headless-source-tree`, enforced at the SessionManager spawn site
+  against the exact cwd tmux receives, using a detector that fails CLOSED). Any
+  other cwd runs. The scratch cwd the old note proposed was REJECTED on
+  measurement, not preference: shipped job bodies read `.instar/config.json` and
+  `.instar/state/*` by RELATIVE path, so an empty temp dir satisfies the letter of
+  that note while leaving the lane useless. Prompts are carried in a private 0600
+  file, never argv. HISTORY (round-13, no longer the contract): "the grok headless
+  lane is CLOSED until scratch-cwd wiring lands … a job spawn resolved to grok
+  runs on an ENABLED framework whose binary is genuinely present, and is LABELLED
+  as that framework." That fallback still applies when grok genuinely cannot run
+  the job; what never happens, then or now, is a grok-labelled Claude spawn
+  (§4.3 lane 3, Frontloaded Decision 10).
 
   **ROUND-22, OBSERVED LIVE — the consequence this bullet never traced.** On a
   grok-ONLY agent there IS no other enabled framework, so the fallback finds
@@ -1663,7 +1673,7 @@ sensitive content that lands on that machine-local disk.
 |---|---|---|---|---|---|---|---|
 | Adapter one-shot | provider-registry adapter (`createGrokBuildAdapter` → OneShotCompletion) | `grok --prompt-file … --output-format json` | fresh per-call scratch dir | temp file inside the scratch dir | denied + no web | LIVE (the only enabled lane) | YES — this is the reviewer's lane |
 | Interactive session | SessionManager tmux spawn (topic pin) | `grok [-m model]` TUI | session project dir | n/a (interactive) | interactive approval (no `--always-approve`) | **REFUSES** (`grok-interactive-ungated`) unless BOTH `enabledFrameworks` contains grok-build AND the DISTINCT `sessions.grokInteractiveSessions` opt-in is set — WITH THE LOAD PATH NAMED AS PART OF THE CARRIER (round-9; the fourth documented load-path-gap instance, caught in review): loadConfig LIFTS both levers from the config FILE into the sessions slice SessionManager actually receives; the file-load-path test tier proves the documented keys REACH that slice, and the extracted conjunction seam (`computeGrokInteractiveOptIn`, round-8) carries the open-the-gate half under its own three-case test (an in-memory threading that skips loadConfig recreates the dead switch — the exact mechanism of the three prior incidents). A Groky-class agent sets both deliberately, accepting the named residuals — retention probe pending, no per-session budget brake | no |
-| Headless session job | SessionManager job spawn | `grok -p …` | session project dir | argv (`-p`) | denied (shared constant) | **CLOSED** until scratch-cwd wiring lands: the builder refuses (`grok-headless-cwd-ungated`), and the spawn path substitutes an ENABLED framework with a present binary, labelled as that framework — or lets the refusal stand when none exists (round-13; Frontloaded Decision 10) | no |
+| Headless session job | SessionManager job spawn | `grok --prompt-file …` | session project dir (REFUSED when it is an instar source checkout) | temp file, 0600, in a per-call `mkdtemp` dir — never argv | denied (shared constant) | **OPEN** since 2026-08-16 (operator decision). The old blanket `grok-headless-cwd-ungated` refusal is gone; the bound moved to the spawn site and fires only on an instar SOURCE checkout, by name (`grok-headless-source-tree`). The round-13 substitution — an ENABLED framework with a present binary, labelled as that framework — still covers the cases grok cannot serve (Frontloaded Decision 10) | no |
 | ACP stdio | none | `grok agent stdio` | n/a | n/a | n/a | NOT declared (candidate transport, §4.2) | no |
 
 A builder wiring the reviewer through any lane but the first violates the
@@ -2951,7 +2961,8 @@ invariants already name as the precondition for growth); and the three test
 tiers green.
 
 Explicitly NOT accepted by Phase A passing — every closed lane in the normative
-contract: interactive sessions (second opt-in), headless job spawns (refuse),
-ACP (undeclared), internal routing (structurally excluded), and pool enrolment
-through the production route. The § 5 file count measures Phase B's threading,
+contract: interactive sessions (second opt-in), ACP (undeclared), internal
+routing (structurally excluded), and pool enrolment through the production route.
+(Headless job spawns were on this list until 2026-08-16; that lane is now OPEN,
+bounded to refuse only an instar source checkout — see §4.3 lane 3.) The § 5 file count measures Phase B's threading,
 not Phase A's deliverable.

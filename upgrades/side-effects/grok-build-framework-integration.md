@@ -374,6 +374,312 @@ reproduced the CI failure locally first (one case, exactly the one that resolves
 to grok), then passed 8/8 after. Passing on a host that HAS the binaries would
 have proved nothing, since that is what it did before.
 
+## Auto-answering grok prompts — the withheld half, now built (operator decision)
+
+The detection fix deliberately withheld auto-ANSWER and routed it to the operator.
+Justin decided it on 2026-08-16: *"yes we need the auto-answering feature on and
+working. It should be intelligent enough to select the correct answer."*
+
+**"Intelligent" rules out both obvious implementations**, which is the whole design.
+Pressing **Enter** is wrong — Enter commits whatever row the dot rests on, the dot
+starts on grok's row 1, and row 1 is a USER-GLOBAL persisted always-approve grant,
+so an Enter floor would disable approval for the entire machine on a session's
+first prompt. Hardcoding **"press 2"** is also wrong — the grok agent's own account
+of its keyboard contract warns the row order shifts when optional rows appear.
+
+So the signature gained an optional `intent` block and the detector an INTENT mode:
+read every option row, classify by LABEL, press the digit of the row meaning
+"approve THIS call", and positively exclude any row meaning always/don't-ask-again
+(checked FIRST, so a label satisfying both readings can never be taken as
+allow-once). `approveKey` widened from the literal `'Enter'` to a string.
+
+**It fails CLOSED on every uncertainty** — no allow-once row, more than one, an
+unreadable digit, or a menu with no always row (an uncharacterized shape) all
+return null, which hands the menu to Layer 3 to report rather than letting the
+floor guess at a keystroke on a permission prompt.
+
+Six tests, and the load-bearing one is `is NOT positional`: a REORDERED menu with
+allow-once at row 3 and always-approve at row 2 — a positional implementation
+presses 2 and disables approval globally; this presses 3. Verified capable of
+failing: restoring the naive `Enter` answer turns exactly those two tests red.
+claude-code is asserted byte-identical (still cursor mode, still Enter), so this
+did not trade one framework's safety for another's.
+
+## Headless job lane — OPENED, with the bound moved rather than dropped
+
+Operator decision (Justin, 2026-08-16): *"sounds like this part needs to be
+built"*. The lane previously refused EVERY grok job with
+`grok-headless-cwd-ungated`, so all 33 shipped jobs failed on their schedule
+forever — the live symptom was "Job Alert: Health Check — 14 consecutive
+failures" arriving hourly.
+
+**The remedy the old note proposed would have broken the lane it protected.** It
+asked for a scratch cwd at the spawn site. Measured before building it: the
+shipped job bodies read `.instar/config.json` and `.instar/state/*` by RELATIVE
+path, so an empty temp dir satisfies the letter of the note and leaves every job
+failing differently. That is the "fix that passes its own description" shape.
+
+**So the bound narrowed to the concern the note actually named** — *"running a
+self-updating CLI with the repo as its working tree"*. For an ordinary agent the
+spawn cwd is its own agent home (config + state), not an instar checkout; the
+source-tree case arises only on a DEV agent. The refusal now lives at the spawn
+site as `grok-headless-source-tree`, keyed on `isInstarSourceTree(resolvedCwd)` —
+instar's existing detector, which FAILS CLOSED, so an unreadable or ambiguous
+path refuses rather than proceeds.
+
+Billing containment is preserved and tested: a job spawn forces
+`GROK_DISABLE_API_KEY_AUTH=1` and CLEARS the billing vars (tmux merges env into
+the inherited server environment, so unsetting is not enough).
+
+**A second-order honesty fix.** Opening the lane made
+`resolveHeadlessFallbackFramework`'s selection logic unreachable — nothing is
+closed now — while its six tests kept passing against a short-circuit. That is the
+guard-that-guards-nothing shape this branch has been closing all day, so the
+closed-lane predicate became injectable: production uses the live one, and the
+tests state the closed-ness they are testing.
+
+**Two obsolete tests were INVERTED, not deleted** (they asserted the refusal).
+Inverting keeps the property that mattered — the lane declaration and the builder
+must AGREE — pinned to the new truth.
+
+Caught by a control while doing it: a blanket `isClosed: () => true` across that
+suite put every case on the closed path, including the one control whose entire
+job is to prove the OPEN path short-circuits. It failed instantly.
+
+### The lane opened with a silent-failure bug, found by the operator's question
+
+Justin asked: *"what door + model does groky use for his background jobs/tasks?"*
+I could not answer it from assumption, which is why it caught something.
+
+The answer was `framework=grok-build model=haiku` — a CLAUDE tier handed to grok.
+Every other headless builder routes `options.model` through
+`resolveModelForFramework`; the grok builder I had just written pushed it
+verbatim. Probed against the live CLI:
+
+    grok --model haiku …
+    → Couldn't set model 'haiku': Invalid params: "unknown model id"
+    → exit 0
+
+**Exit ZERO.** So instar recorded `result: "success"` for jobs that did no work —
+two of them, 18s each, which was the session spawning and dying. Opening the lane
+had converted a LOUD failure (the honest refusal, which at least alerted) into a
+SILENT one. That is strictly worse, and it is the exit-0-empty class this
+framework's own stall-coverage matrix names.
+
+Fixed by adding grok's tier row (`grok models` lists exactly grok-4.6 and
+grok-4.5, so all three generic tiers resolve to the default — a wrong id is not a
+cheaper model, it is a dead job) AND routing the builder through the resolver like
+every other one. **Live-verified after the fix: a job completed in 43s with no
+model error**, against 18s-and-dead before.
+
+Two smaller repairs on the way, both worth naming because the lazy version was
+available. Three more obsolete "must refuse" assertions were INVERTED, not
+deleted. And an unrelated wiring test asserts a model is resolved within 2500
+chars of its use — my 20-line guard comment pushed it to 2572. I moved the guard
+EARLIER in the function (it needs only the framework and cwd, so refusing sooner
+is better anyway) rather than widening that test's tolerance; loosening another
+guard to fit my own comment would have been the wrong repair.
+
+### The auto-answer was built against one of grok's two approval menus
+
+Driving a real fresh grok session refuted the first cut of the intent-mode
+signature in a single shot. Grok emits at least TWO approval menus, and the
+signature was generalised from one of them.
+
+Shell/tool menu, 3 rows, raised by a mutating command:
+
+    1 (●) Yes, and don't ask again for anything (always-approve mode)
+    2 (○) Yes, proceed
+    3 (○) No, reject (type to add feedback)
+
+Edit menu, 4 rows, raised by a file write:
+
+    1 (●) Yes, and don't ask again for anything (always-approve mode)
+    2 (○) Yes, allow all edits during this session
+    3 (○) Yes
+    4 (○) No, reject (type to add feedback)
+
+Two misses, both load-bearing. The allow-once label is **not always "Yes,
+proceed"** — on the Edit menu it is a bare `Yes`, so `approveOnce:
+/^Yes,\s*proceed\b/` matched no row and the floor DECLINED a menu it exists to
+answer; a file write on a fresh grok session would have stayed wedged exactly as
+before the feature. And there is a **third scope** between allow-once and
+machine-global: row 2's "allow all edits during this session" is a session-wide
+blanket that says neither "always" nor "don't ask again", so the original
+alwaysApprove pattern did not recognise it as a row to avoid.
+
+Fixed by widening `approveOnce` to a bare `Yes\b` (safe because the alwaysApprove
+pass runs FIRST and removes blanket rows before allow-once is counted, with a
+negative lookahead as defence in depth if that pass ever misses a new phrasing),
+and by widening `alwaysApprove` to catch `allow all` and `during this session`.
+
+**This also settles the positional question by measurement rather than by the
+vendor's warning**: allow-once is row 2 on one menu and row 3 on the other, from
+the same CLI on the same day. A hardcoded digit would have been wrong roughly half
+the time.
+
+Incidental but worth recording: read-only commands (`ls`) are auto-approved and
+raise no menu at all, so a probe using one looks exactly like a dead floor. Both
+menus above are now verbatim fixtures, and both new assertions were shown red
+against the old patterns while the ten existing ones stayed green.
+
+### The headless lane put job prompts on argv, against the standing instruction
+
+The instruction for this integration was prompts via `--prompt-file`, never argv.
+The headless builder I wrote used `-p <prompt>` anyway, under a carve-out I wrote
+into its own comment: "acceptable ONLY for internal scheduler-authored prompts".
+
+That carve-out does not survive contact with the reason for the rule. `ps` shows
+every process's full command line to any local principal, so a prompt passed as an
+argument is legible to anything running on the machine for the lifetime of the job
+— and job prompts carry task context. The exposure does not care who authored the
+string. The adapter lane in the same integration had already established
+`--prompt-file` for exactly this reason, with a documented lifecycle; the headless
+builder simply diverged from its sibling.
+
+Measured before switching (not assumed equivalent): `grok --model grok-4.6
+--prompt-file <path>` prints the response to stdout and exits 0 in ~3.4s — the same
+behaviour class as `-p`.
+
+Now written 0600 into a `mkdtemp` directory (unpredictable and per-call-owned; a
+fixed shared subdir under tmpdir is pre-creatable by another principal), reusing
+the adapter lane's `grok-scratch-` prefix so the crash-orphan sweeper that already
+exists there collects these too. grok reads the prompt at startup, so that
+sweeper's one-hour staleness gate cannot pull a file from under a running job.
+
+Three existing tests asserted the `-p` argv shape and were UPDATED rather than
+deleted, because one of them carries a real invariant that outlives the mechanism:
+the arg-rendering matrix's "no silent prompt drop" check now follows the file when
+a framework hands one over, so it still proves delivery instead of proving
+placement. The new assertions read the file back — a path that merely looks right
+is not evidence a prompt was delivered.
+
+### The whole suite was green while the docs told agents the feature does not exist
+
+After opening the headless lane, the agent-awareness paragraph shipped to every
+agent still read:
+
+    "headless job spawns do NOT run on grok yet: a job resolved to grok runs on
+     another ENABLED framework … so read the session's framework label, not the
+     pin, when asking whose quota ran a job."
+
+Every test passed. Typecheck passed. Nothing in the suite could see that the text
+which IS an agent's knowledge of this feature described the opposite behaviour —
+and worse, handed agents a rule ("a grok job never runs on grok") that makes them
+answer "whose quota ran this job?" exactly backwards. Both shipped copies were
+stale: `templates.ts`, which new agents read, and `PostUpdateMigrator.ts`, which is
+how existing agents receive it.
+
+This is the Agent Awareness Standard failing in the precise way it exists to
+prevent. It is also the fourth instance in one evening of the same root cause: I
+changed behaviour and reasoned that the surrounding material still held, instead
+of reading it.
+
+The structural fix is `tests/unit/grok-awareness-matches-behaviour.test.ts`, which
+COUPLES the paragraph to the runtime predicate: if `headlessLaneIsClosed`
+disagrees with what the text claims, the build fails. A test merely asserting "the
+paragraph mentions grok" would not have caught this — the paragraph mentioned grok
+at length and was still wrong — so the assertion keys on the CLAIM, and a reworded
+version of the same false claim fails too. Parity between the two copies is
+asserted in the same file, since this paragraph has now been edited in place
+twice. Both new assertions were shown red against the stale sentence.
+
+### A test was actively defending the false claim
+
+The stale awareness sentence did not merely survive the lane change — it was being
+DEFENDED. `tests/unit/grok-build-awareness-parity.test.ts` asserted:
+
+    expect(md).toContain('headless job spawns do NOT run on grok yet');
+
+So correcting the text turned the suite red, and the path of least resistance was
+to put the falsehood back. A test demanding the wrong words is worse than no test
+at all, because it converts telling the truth into a build failure. Inverted to
+forbid the claim rather than restoring it, and extended to require the name of the
+bound that replaced it.
+
+Two process notes worth keeping. First, my own affected-test census missed this
+file: I ran the grok, permission-prompt, headless-lane and framework-matrix suites
+after editing the template, and this one matched none of those patterns, so I
+believed the change was clean when it was not. CI would have caught it; my local
+selection would not have. Second, the pre-existing file ALREADY asserted migration
+parity between the two shipped copies, more strongly than the version I had just
+written (it renders through `generateClaudeMd` and the migrator against a real temp
+project, rather than slicing source text). My duplicate assertion was removed and
+the new file now carries only what is genuinely new: the coupling between the
+paragraph and `headlessLaneIsClosed`.
+
+### The stall-matrix edit was the wrong SHAPE, and CI caught what I did not
+
+My first matrix edit flipped `approval-prompt-wedge` to `covered` by changing the
+status token and writing prose. The ratchet refused it with eight violations, and
+the refusals were right on every count.
+
+`covered` is not a claim you assert — it is a claim you EVIDENCE. The validator
+requires a detector symbol, a distinct recovery symbol, a guard-manifest key,
+`posture: live`, and an evidence file that (a) exists, (b) contains the detector
+identifier, and (c) carries a literal `stall-class: <id>` marker. I had supplied
+none of them. The row now carries all five, and
+`tests/unit/permission-prompt-grok-menu.test.ts` is the evidence — appropriately,
+since it exercises the shipped detector against both live-captured menus, so the
+coverage claim rests on the detector rather than on my description of it.
+
+I also added a class id (`exit-zero-empty`) that is not in the canonical registry.
+That was refused too, and correctly: the class space is a single source of truth
+(`src/data/stall-classes.ts`), additive-only, and adding a class REQUIRES running
+`scripts/stall-class-codemod.mjs` in the same change so every OTHER framework's
+matrix gets a seeded row — otherwise the next push reds every stale matrix. A new
+class is a five-matrix change, not a one-matrix change. The row is removed here;
+the finding is preserved in the side-effects note above and in the filed action,
+and adding it properly is its own piece of work.
+
+Worth naming: this is the SECOND failure in this branch caused by choosing local
+tests via filename guesswork. `stall-coverage-ratchet.test.ts` matched none of my
+patterns. The mechanism that would have selected it correctly exists and has been
+timing out on every push (measured: 174s against a 120s budget), which is filed
+separately.
+
+### The opened lane produced jobs that TALK but do not ACT
+
+The worst finding of the branch, found by running a real grok job end-to-end
+instead of trusting that "the lane builds argv" meant "the lane works".
+
+Measured against the live CLI, 2026-08-16. A headless grok run silently DROPS any
+tool call that would need approval, and then exits 0. Asked to create a file, grok
+answers `I'll create made.txt in the current directory with the word yes`, creates
+nothing, and reports success. The file was searched for across the filesystem
+afterwards: never written, anywhere.
+
+**Reads are unaffected** — a read of a marker file returned its real contents — and
+that is precisely what makes this invisible. A read-only job looks perfectly
+healthy. Only a job that writes is silently hollow.
+
+So the lane as first opened would have converted 33 scheduled jobs from
+"loudly refused" to "silently pretending", which is strictly worse than the
+refusal it replaced. This is the SECOND time in this branch that opening the lane
+produced an exit-0-over-zero-work failure, and the second time the ledger would
+have asserted success over nothing.
+
+Per-mode measurement, same prompt, file-created as the ONLY success signal:
+
+    (none)             → NOT created, exit 0
+    acceptEdits        → NOT created, exit 0
+    dontAsk            → NOT created, exit 0
+    auto               → created
+    bypassPermissions  → created
+
+`dontAsk` is the trap: it is the obvious-sounding choice and it does not work.
+
+`bypassPermissions` chosen over `auto` because `auto`'s boundary is
+uncharacterized, and an under-permissive mode fails SILENTLY here — a dropped tool
+call still exits 0 — so a mode that approves only some operations reintroduces the
+exact invisible failure this fixes. Jobs on other frameworks already run unattended
+with full machine access (claude uses `--dangerously-skip-permissions`), and the
+lane's own bound still refuses an instar source checkout.
+
+HONEST RESIDUAL: this was measured with a file-creation task. I have not
+characterized every tool class under `bypassPermissions`, so "writes now work" is
+what is proven, not "every tool works".
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**

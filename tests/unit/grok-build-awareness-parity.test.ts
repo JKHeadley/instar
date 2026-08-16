@@ -77,8 +77,17 @@ describe('grok-build agent-awareness note — the §7 disclosure carrier', () =>
     // a job resolved to grok runs on another enabled framework and is labelled
     // as it. Wrong in the one direction the disclosure exists to cover: whose
     // quota ran your job.
-    expect(md).toContain('headless job spawns do NOT run on grok yet');
+    // INVERTED 2026-08-16. This previously asserted the template CONTAINS
+    // "headless job spawns do NOT run on grok yet". When the headless lane was
+    // opened, that sentence became false — and this assertion was actively
+    // DEFENDING it, which is why the stale claim survived the change: a test
+    // demanding the wrong text is worse than no test, because the suite goes red
+    // for telling the truth. Inverted to forbid the false claim rather than
+    // restoring it to get green. The behavioural coupling — text vs
+    // headlessLaneIsClosed — lives in grok-awareness-matches-behaviour.test.ts.
+    expect(md).not.toContain('headless job spawns do NOT run on grok yet');
     expect(md).not.toContain('headless job spawns refuse outright');
+    expect(md).toContain('grok-headless-source-tree');
     // §0.0: the honest cost posture.
     expect(md).toContain('budget grok runs as if metered');
   });

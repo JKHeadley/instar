@@ -60,15 +60,21 @@ stall-coverage:
     closePath: CMT-1319
     liveness-surface: 'DEFECT if enabled: a walled grok session has no truthful standby state'
   - class: approval-prompt-wedge
-    status: declared-gap
+    status: covered
+    detector: src/monitoring/PermissionPromptAutoResolver.ts#detectApprovalPrompt
+    recovery: src/monitoring/PermissionPromptAutoResolver.ts#PermissionPromptAutoResolver
+    guardKey: monitoring.permissionPromptAutoResolver.enabled
+    posture: live
+    evidence: tests/unit/permission-prompt-grok-menu.test.ts
     reason: >-
-      grok's TUI has interactive tool-approval prompts; no signatures are
-      registered with the PermissionPromptAutoResolver, and --always-approve
-      is deliberately NOT passed at launch (ACP permission contract
-      unprobed — capabilities.ts)
-    issueRef: stallclass::approval-prompt-wedge::grok-build::gap
-    closePath: CMT-1319
-    liveness-surface: 'DEFECT if enabled: a grok session parked on an approval menu reads as running'
+      CLOSED 2026-08-16. Answered in INTENT mode: read option LABELS, press
+      allow-once by DIGIT, exclude every blanket row. Enter commits row 1, a
+      machine-wide grant; a fixed digit is wrong too (allow-once is row 2 on
+      grok's shell menu, row 3 on its edit menu).
+    liveness-surface: >-
+      auto-answered; an ambiguous or uncharacterized menu DECLINES and surfaces
+      via Layer 3 as an un-cleared persisting menu, never a silent "running"
+      over a wedged approval prompt
   - class: context-window-wall
     status: declared-gap
     reason: 'CORRECTED round-22 by the mentee: grok auto-compacts IN PLACE rather than walling; the gap is missing DETECTION of that compaction, not missing recovery. See the context-window-wall note below.'

@@ -1074,14 +1074,39 @@ describe('checkGrokVersionDrift', () => {
   });
 });
 
-describe('grok headless lane structural gate (round-7)', () => {
-  it('REFUSES a grok-build headless job spawn with the named error until scratch-cwd lands', () => {
-    expect(() =>
-      buildHeadlessLaunch('grok-build', {
-        binaryPath: '/bin/echo',
-        prompt: 'hello',
-      } as never),
-    ).toThrow(/grok-headless-cwd-ungated/);
+describe('grok headless lane structural gate (round-7 → opened 2026-08-16)', () => {
+  it('BUILDS a grok-build headless job spawn — the lane is open', () => {
+    // INVERTED on an operator decision. This asserted the round-7 blanket
+    // refusal (`grok-headless-cwd-ungated`), which made all 33 shipped jobs fail
+    // forever on a grok-primary agent.
+    //
+    // The bound did not disappear, it MOVED and narrowed. Round-7's stated worry
+    // was "running a self-updating CLI with the repo as its working tree"; the
+    // remedy it proposed (a scratch cwd) would have broken the lane it protected,
+    // because job bodies read `.instar/*` by relative path. The refusal now lives
+    // at the spawn site and fires only when the cwd IS an instar source checkout
+    // — see `grok-headless-source-tree` in SessionManager.
+    const spec = buildHeadlessLaunch('grok-build', {
+      binaryPath: '/bin/echo',
+      prompt: 'hello',
+    } as never);
+    expect(spec.argv[0]).toBe('/bin/echo');
+    // The prompt travels in a private file, never argv — `ps` would otherwise
+    // expose every job prompt to any local principal. Read it back, because a
+    // path that merely LOOKS right is not evidence the prompt was delivered.
+    const pf = spec.argv[spec.argv.indexOf('--prompt-file') + 1]!;
+    expect(fs.readFileSync(pf, 'utf8')).toBe('hello');
+  });
+
+  it('CONTROL: a job spawn still cannot reach a metered API key', () => {
+    // The billing sink is UNPROVEN (spec §0.0). Opening the lane must not open
+    // that: the kill switch is forced and the billing vars are cleared per spawn.
+    const spec = buildHeadlessLaunch('grok-build', {
+      binaryPath: '/bin/echo',
+      prompt: 'hello',
+    } as never);
+    expect(spec.envOverrides['GROK_DISABLE_API_KEY_AUTH']).toBe('1');
+    expect(spec.envOverrides['XAI_API_KEY']).toBe('');
   });
 });
 

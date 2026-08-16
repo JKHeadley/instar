@@ -7,6 +7,7 @@
  */
 
 import { execFileSync, execFile } from 'node:child_process';
+import { isInstarSourceTree } from './SourceTreeGuard.js';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -2621,7 +2622,25 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // codex model has exhausted its weekly window, launch on a configured
     // fallback model (separate quota bucket) instead of stalling. No-op +
     // zero disk I/O unless codex.rateLimitModelSwap is enabled. Best-effort.
+
+
+    // grok headless bound: the lane is open, but NOT into an instar source
+    // checkout (grok self-updates). Rationale + why a scratch cwd was rejected:
+    // upgrades/side-effects/grok-build-framework-integration.md. The detector
+    // FAILS CLOSED, so an ambiguous path refuses rather than proceeds.
+    if (headlessFramework === 'grok-build' && isInstarSourceTree(resolvedCwd)) {
+      throw new Error(
+        'grok-headless-source-tree: refusing a grok-build headless job whose working ' +
+          'directory is an instar source checkout — grok self-updates, and this is the ' +
+          'case the headless bound exists for. Run this job on an agent whose project ' +
+          'directory is its agent home, or use the confined one-shot reviewer lane.',
+      );
+    }
+
     const launchModel = await this.resolveCodexLaunchModel(headlessFramework, options.model);
+
+
+
 
     // ── Headless-spawn reroute (june15-headless-spawn-reroute, PR2) ──
     // For claude-code ONLY, when subscriptionPath.mode is 'force' (or 'auto'

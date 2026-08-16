@@ -1,0 +1,30 @@
+{
+  "ts": "2026-08-16T04:51:27.492Z",
+  "slug": "grok-build-framework-integration",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot caller-driven actions only, verified rather than asserted: the grok adapter adds no scheduler job, no retry controller and no respawn path. Every timer in it is a single-shot bound INSIDE one call (spawn-slot poll bounded by the acquire budget; call timeout; escalating SIGTERM/SIGKILL grace in grokHardKill), and the error contract explicitly forbids blind retry (errors.ts: terminal for the call, the caller must not blind-retry). The reviewer lane runs when a reviewer invokes it; the auth admission narrows a refusal, it does not schedule anything."
+  },
+  "verdict": "pass"
+}

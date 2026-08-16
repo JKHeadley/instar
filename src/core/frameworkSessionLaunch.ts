@@ -14,6 +14,8 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import { codexSupportsHookTrustBypass } from './codexCapabilities.js';
 import { GROK_ONESHOT_DENIED_TOOLS } from '../providers/adapters/grok-build/transport/grokSpawn.js';
@@ -82,6 +84,27 @@ export function resolveModelForFramework(
     if (key === 'fast' || key === 'haiku') return 'gemini-2.5-flash';
     if (key === 'balanced' || key === 'sonnet') return 'gemini-2.5-flash';
     if (key === 'capable' || key === 'opus') return 'gemini-3.1-pro-preview';
+    return modelOrTier;
+  }
+  if (framework === 'grok-build') {
+    // ADDED 2026-08-16, and the omission was NOT harmless. Without this row a
+    // job declaring the generic tier `haiku` handed the literal string "haiku"
+    // to grok, which answers:
+    //
+    //   Couldn't set model 'haiku': Invalid params: "unknown model id"
+    //
+    // …and EXITS 0. So instar recorded `result: "success"` for jobs that did
+    // nothing — the exit-0-empty class this framework's own stall-coverage doc
+    // names. Opening the headless lane without this row converted a LOUD failure
+    // into a silent one, which is strictly worse than the refusal it replaced.
+    //
+    // Verified against the live CLI: `grok models` lists exactly grok-4.6
+    // (default) and grok-4.5. There is no cheap tier to map `fast` onto, so all
+    // three generic tiers resolve to the default rather than inventing an id —
+    // a wrong id is not a cheaper model, it is a dead job.
+    if (key === 'fast' || key === 'haiku') return 'grok-4.6';
+    if (key === 'balanced' || key === 'sonnet') return 'grok-4.6';
+    if (key === 'capable' || key === 'opus') return 'grok-4.6';
     return modelOrTier;
   }
   if (framework === 'pi-cli') {
@@ -622,9 +645,18 @@ export function resolveInteractiveFramework(input: {
  * drift: a lane that opens must be removed here in the same edit.
  */
 export function headlessLaneIsClosed(framework: IntelligenceFramework): boolean {
-  // grok-build: refuses with `grok-headless-cwd-ungated` until the scratch-cwd
+  // OPENED 2026-08-16 (operator decision). grok's headless lane no longer
+  // refuses wholesale; the bound moved to the spawn site, which refuses only a
+  // grok job whose cwd is an instar SOURCE tree. See grokBuildHeadlessBuilder.
+  // (Historical note kept because the refusal name still appears in old logs:)
+  // grok-build: refused with `grok-headless-cwd-ungated` until the scratch-cwd
   // wiring lands (grok-build spec §4.3 lane 3).
-  return framework === 'grok-build';
+  //
+  // No framework's headless lane is closed today. Kept (rather than deleted)
+  // because it is the seam a future closed lane plugs into, and because the
+  // fallback-substitution logic that consumes it is still load-bearing.
+  void framework;
+  return false;
 }
 
 /**
@@ -647,8 +679,20 @@ export function resolveHeadlessFallbackFramework(input: {
   claudePath?: string;
   binaryExists: (candidatePath: string) => boolean;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Closed-lane predicate. Defaults to the live `headlessLaneIsClosed`.
+   *
+   * Injected because NO lane is closed today (grok's opened 2026-08-16), which
+   * made the selection logic below unreachable — and unreachable logic whose
+   * tests still pass is precisely the "guard that guards nothing" shape. The
+   * seam stays exercised: callers that matter use the default, and the tests
+   * state the closed-ness they are testing instead of depending on a global that
+   * currently answers false to everything.
+   */
+  isClosed?: (framework: IntelligenceFramework) => boolean;
 }): IntelligenceFramework | null {
-  if (!headlessLaneIsClosed(input.requested)) return input.requested;
+  const isClosed = input.isClosed ?? headlessLaneIsClosed;
+  if (!isClosed(input.requested)) return input.requested;
   // Prefer the agent's own enabled frameworks, in their declared order, and
   // only ever a framework whose headless lane is OPEN and whose binary is
   // actually present. claude-code is the last resort, not the assumption.
@@ -1038,23 +1082,110 @@ const piCliHeadlessBuilder: HeadlessBuilder = (options) => {
 };
 
 
+
+/**
+ * Env overrides for a grok HEADLESS job spawn.
+ *
+ * Mirrors the one-shot adapter's billing containment rather than reinventing it:
+ * a metered API key must never be reachable, so the api-key path is force-killed
+ * per spawn regardless of what the parent environment carries. The adapter's
+ * `buildGrokChildEnv` is an allow-list over a fresh env, which does not fit the
+ * tmux `-e` model here (tmux MERGES these into the inherited environment), so
+ * this sets the kill switch and CLEARS the billing vars explicitly.
+ */
+function buildGrokHeadlessEnvOverrides(): Record<string, string> {
+  return {
+    // The switch the adapter forces on every spawn: no API-key auth, session only.
+    GROK_DISABLE_API_KEY_AUTH: '1',
+    // Cleared, not merely unset — tmux inherits the server env otherwise.
+    XAI_API_KEY: '',
+    GROK_API_KEY: '',
+  };
+}
+
+/**
+ * Materialise a grok headless prompt into a private file and return its path.
+ *
+ * WHY A FILE AND NOT `-p <prompt>`. argv is world-readable: `ps` shows the full
+ * command line of every process on the machine to any local principal, so a
+ * prompt passed as an argument is legible to anything running on the box for the
+ * lifetime of the job. The adapter lane established `--prompt-file` for exactly
+ * this reason, and the standing instruction for this integration is prompts via
+ * `--prompt-file`, never argv. The first cut of the headless builder used `-p`
+ * anyway, under a self-granted carve-out for "internal scheduler-authored
+ * prompts" — but job prompts carry task context, and the exposure does not care
+ * who authored the string.
+ *
+ * Measured before adopting: `grok --model grok-4.6 --prompt-file <path>` prints
+ * the response to stdout and exits 0 in ~3.4s, the same behaviour class as `-p`.
+ *
+ * Lifecycle: 0600, inside a `mkdtemp` dir whose name is unpredictable and
+ * per-call-owned (a fixed shared subdir under tmpdir is pre-creatable by another
+ * principal). Deliberately the SAME `grok-scratch-` prefix the adapter lane uses,
+ * so the crash-orphan sweeper that already exists there collects these too. grok
+ * reads the prompt at startup, so the file is unneeded after spawn and the
+ * sweeper's one-hour staleness gate cannot pull it from under a running job.
+ */
+export function writeGrokPromptFile(prompt: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-scratch-'));
+  const file = path.join(dir, 'prompt.txt');
+  // `wx` fails rather than truncating if the path somehow already exists.
+  fs.writeFileSync(file, prompt, { mode: 0o600, flag: 'wx' });
+  return file;
+}
+
 const grokBuildHeadlessBuilder: HeadlessBuilder = (options) => {
-  // grok headless one-shot (spec §4.1). NOTE: this legacy spawn path passes
-  // the prompt as the -p argv value — acceptable ONLY for internal
-  // scheduler-authored prompts. The provider-registry adapter (the preferred
-  // path) uses --prompt-file; new callers should go through it. The prompt is
-  // exactly one argv element following `-p`, so a leading-dash prompt can't
-  // be re-parsed as a flag.
-  // STRUCTURAL GATE, not prose (adversarial round-7): the headless lane
-  // runs in the session's project cwd, so the §4.1 deny-list residual
-  // acceptance (which leans on the scratch-cwd bound) does NOT cover it.
-  // Until a scratch cwd lands at the SessionManager grok spawn site
-  // (CMT-1317), a grok headless job REFUSES loudly rather than running a
-  // self-updating CLI with the repo as its working tree.
-  throw new Error(
-    'grok-headless-cwd-ungated: grok-build headless job spawns are refused until ' +
-    'the SessionManager spawn site provides a scratch cwd (grok-build spec §8; CMT-1317)',
-  );
+  // grok headless one-shot (spec §4.1). The prompt goes through a private file,
+  // never argv — see writeGrokPromptFile for why, and for what was measured
+  // before switching.
+  //
+  // OPENED 2026-08-16 on an operator decision, and the bound MOVED rather than
+  // being dropped. It previously refused outright, pending "a scratch cwd at the
+  // SessionManager spawn site". Measuring what instar jobs actually do showed a
+  // scratch cwd would have made the lane useless: job bodies read
+  // `.instar/config.json` and `.instar/state/*` by RELATIVE path, so an empty
+  // temp dir breaks most of the 33 shipped jobs while satisfying the letter of
+  // the old note.
+  //
+  // The REAL concern in that note was narrower than the remedy: "running a
+  // self-updating CLI with the repo as its working tree". For an ordinary agent
+  // the spawn cwd is its own agent home (config + state), not an instar
+  // checkout — the source-tree case only arises on a DEV agent. So the refusal
+  // is now scoped to exactly that case, at the spawn site, via the detector
+  // instar already has (`isInstarSourceTree`, which fails CLOSED). A job on an
+  // ordinary agent runs; a grok job that would open a self-updating CLI onto an
+  // instar source checkout still refuses, by name.
+  const argv = [options.binaryPath];
+  // Map the GENERIC tier to a real grok model id. Passing `options.model`
+  // straight through is what shipped the exit-0-empty bug: a job declaring the
+  // tier `haiku` handed grok the literal "haiku", grok answered "unknown model
+  // id" and EXITED 0, and instar recorded `result: "success"` for a job that did
+  // nothing. Every other headless builder already routes through this resolver;
+  // this one did not, which is exactly why it was the one that broke.
+  const resolved = resolveModelForFramework('grok-build', options.model);
+  if (resolved) argv.push('--model', resolved);
+  // WITHOUT THIS FLAG THE LANE IS WORSE THAN CLOSED. Measured against grok 1.x
+  // on 2026-08-16: a headless run silently DROPS any tool call that would need
+  // approval, then exits 0. Asked to create a file, grok answers "I'll create
+  // made.txt…", creates nothing, and reports success — so every job that writes
+  // anything would have been recorded as successful while doing no work. Reads
+  // are unaffected (a read of a marker file returned the real contents), which
+  // is exactly why this is invisible: a job that only reads looks healthy.
+  //
+  // Measured per mode, same prompt, file-created as the only success signal:
+  //   (none) / acceptEdits / dontAsk → NOT created, exit 0
+  //   auto / bypassPermissions       → created
+  // `dontAsk` is the trap: it reads as the obvious choice and does not work.
+  //
+  // bypassPermissions over auto because `auto`'s boundary is uncharacterized. An
+  // under-permissive mode fails SILENTLY here — a dropped tool call still exits 0
+  // — so a mode that might approve only some operations reintroduces the exact
+  // invisible failure. Jobs on other frameworks already run unattended with full
+  // machine access (claude uses --dangerously-skip-permissions), and the lane's
+  // own bound still refuses an instar source checkout.
+  argv.push('--permission-mode', 'bypassPermissions');
+  argv.push('--prompt-file', writeGrokPromptFile(options.prompt));
+  return { argv, envOverrides: buildGrokHeadlessEnvOverrides() };
 };
 
 const HEADLESS_BUILDERS: Record<IntelligenceFramework, HeadlessBuilder> = {
