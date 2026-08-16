@@ -1,5 +1,7 @@
 # BUILD-STATUS — machine-coherence-guard (Session C handoff)
 
+SHIPPED: PR #1360 2fcde8d4c (merged 2026-07-04T01:26Z) — detection + episode/alarm machinery, dev-gated dark. The fix-ACTUATION unit (§4.2.1 pendingFix flow, §3.2 alarm-marker attach, §3.4 cross-machine takeover) is the named, design-documented deferred follow-up (the single most dangerous action, split out deliberately). Timely note: this guard alarms exactly on the machine version/settings drift that caused the 2026-07-03 mesh-lease confusion.
+
 **As of:** 2026-07-03 15:31 PDT (Session C — resumed the C₁b build) · branch `echo/machine-coherence-guard` · worktree `~/.instar/agents/echo/.worktrees/machine-coherence-guard`
 
 ## Session C progress (this session) — THE FEATURE IS ALIVE
