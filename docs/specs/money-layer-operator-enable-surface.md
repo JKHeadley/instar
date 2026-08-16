@@ -4,776 +4,862 @@ slug: "money-layer-operator-enable-surface"
 author: "echo"
 status: "draft"
 parent-principle: "Mobile-Complete Operator Actions — A PIN-Gated Route With No Human Surface Is An Incomplete Feature"
+eli16-overview: "docs/specs/money-layer-operator-enable-surface.eli16.md"
 approved: true
 approved-by: "operator (Justin), conversational approval in topic 46473, 2026-08-16 14:26 PDT"
 ---
 
 # Routing Spend — an operator surface for the money-layer master switch
 
+> **How to read this document.** Everything up to "Appendix A" is the **normative build
+> contract** — what Phase 1 must implement. Appendix A is Phase 2 design, deliberately out
+> of scope. Appendix B records why the design is shaped this way. Appendices are
+> non-normative and are not part of what is being specified.
+
 ## Problem statement
 
-Increment B of the Routing Control Room shipped the full paid-door arming flow: a caps
-form, a canonical server-rendered plan, a PIN commit, a freeze control, and a change
-log (`POST /routing-spend/plan`, `/routing-spend/caps/adjust`, `/routing-spend/freeze`,
-`GET /routing-spend/caps/log`), with a dashboard Spend tab rendering them.
+Increment B of the Routing Control Room shipped the full paid-door arming flow — a caps
+form, a server-rendered canonical plan, a PIN commit, a freeze control and a change log
+(`POST /routing-spend/plan`, `/routing-spend/caps/adjust`, `/routing-spend/freeze`,
+`GET /routing-spend/caps/log`) with a dashboard Spend tab rendering them.
 
-Every one of those routes is gated on `routingSpend.money.enabled === true`
-(`routes.ts`, `moneyOn()`), which per **FD-16** is a documented `DARK_GATE_EXCLUSIONS`
-action-bearing case — an explicit operator enable that deliberately does **not** ride
-the dev-agent gate.
+Every one of those routes is gated on `routingSpend.money.enabled === true`, and **there
+is no way for the operator to perform that enable.** The dashboard control sits *behind*
+the switch; `PATCH /config` deliberately cannot set it (`routingSpend` is excluded from
+`PATCHABLE_CONFIG_KEYS` because a Bearer token — held by the agent — must never reach
+money state); no CLI sets it. The only path is hand-editing `.instar/config.json` on the
+machine. The operator's report was exactly this: *"still has no path/mechanism to enable
+any options."*
 
-There is no way for the operator to perform that explicit enable.
+That violates **Mobile-Complete Operator Actions**: a PIN-gated route with no human
+surface is an incomplete feature, not a finished API.
 
-- The dashboard has no control for it — the Spend tab's arming UI sits *behind* the
-  switch, so the operator only ever sees the disabled state.
-- `PATCH /config` cannot set it: `routingSpend` is not in `PATCHABLE_CONFIG_KEYS`, and
-  that exclusion is deliberate and load-bearing (`RoutingSpendCapsStore.ts` documents
-  it: a Bearer token must never reach money state).
-- No CLI command sets it.
+**Adding `routingSpend` to `PATCHABLE_CONFIG_KEYS` is the smallest diff and the wrong
+fix** — it would let the agent switch on its own spending authority, collapsing the
+requester ≠ authorizer separation the money layer exists to preserve. That exclusion is a
+safety property and this spec does not weaken it.
 
-So the only path is hand-editing `.instar/config.json` on the machine, at a
-filesystem the operator may not have in front of them. The operator's report was
-exactly this: *"still has no path/mechanism to enable any options."*
+---
 
-This is a direct violation of the **Mobile-Complete Operator Actions** standard, which
-the routing-spend spec itself invokes elsewhere: *a PIN-gated or approval-class route
-with no human surface is an incomplete feature, not a finished API.* The arming screen
-is reachable-but-unreachable — correct, signed, audited, and unusable.
+# THE BUILD CONTRACT (Phase 1)
 
-### Why this is not simply "add routingSpend to PATCHABLE_CONFIG_KEYS"
+## 0. Glossary
 
-That would be the smallest diff and it is the wrong fix. `PATCHABLE_CONFIG_KEYS` is
-Bearer-authorized, and the Bearer token is held by the agent. Adding `routingSpend`
-there would let the agent switch on its own spending authority — collapsing exactly
-the requester ≠ authorizer separation the money layer exists to preserve. The
-exclusion is a safety property, not an oversight, and this spec must not weaken it.
+Five terms do distinct work and are easy to conflate; this is the whole vocabulary.
 
-## What this proposes
+| Term | One line |
+|---|---|
+| `intentEnabled` | the operator ASKED for the layer on (store flag OR config key) |
+| `lifecycleState` | the CONSTRUCTION/probe state: `disabled` / `enable-pending-restart` / `probed` / `probe-failed` / `construction-failed` |
+| `servingReady` | money MAY move: `intentEnabled && lifecycleState === "probed" && singleInstanceLockHeld` |
+| `enforcementReady` | the API field for `servingReady` — identical by definition, never a proxy |
+| `enableSources.state` | WHICH source enabled it: `disabled` / `operator-enabled` / `config-enabled` / `both-enabled` |
 
-A PIN-gated enable/disable action for the money layer, reusing the plan-then-commit
-machinery Increment B already ships, plus the dashboard control that makes it
-reachable from a phone.
+The trap the vocabulary exists to avoid: *asked for* (`intentEnabled`), *built*
+(`lifecycleState`), and *permitted to spend* (`servingReady`) are three different facts, and
+collapsing any two of them produces a surface that reports one while the spend path enforces
+another.
 
-### The action
+## 1. Invariants
 
-Two new plan actions on the existing endpoints, not new endpoints:
+**MLE-1 — two inputs, one question.**
+`intentEnabled = store.operatorEnabled === true || config.routingSpend.money.enabled === true`.
+An OR, so neither source can silently disable what the other enabled. The four states are
+enumerated and each has a declared operator-visibility:
 
-- `POST /routing-spend/plan` accepts `action: "money-layer-enable"` and
-  `action: "money-layer-disable"`, rendering the canonical plan text the operator
-  reads before approving.
-- A commit route applies it **only** from a rendered plan id + nonce, PIN-gated,
-  exactly as `caps/adjust` does today. A field the operator never saw rendered cannot
-  land.
+| store | config | `enableSources.state` | Surfaced to operator? |
+|---|---|---|---|
+| false | false | `disabled` | normal — the enable control is shown |
+| true | false | `operator-enabled` | normal — not a warning |
+| false | true | `config-enabled` | **yes** — labelled as set by the config file, with a "mirror into store" action offered |
+| true | true | `both-enabled` | informational only, in the detail view |
 
-#### The bootstrap exemption (without it, this spec reproduces the bug it fixes)
+Recomputed at money-layer construction, on **every `GET /routing-spend/enable-status`**, on
+every **plan render**, on every `GET /routing-spend/caps` read, and at each commit's
+post-verify step.
 
-Every `/routing-spend/*` route is currently gated on `moneyOn()`. If the enable plan is
-rendered by a route behind that gate, then enabling requires the layer to already be
-enabled — the fix would be exactly as unreachable as the thing it fixes. A first-round
-cross-model review caught this; it is the single most important correction in this spec.
+**`enable-status` does NOT force a config reload.** It recomputes `enableSources` from the
+current process snapshot and returns `configSnapshotAt` alongside it, so the operator can see
+HOW FRESH the config half of the answer is rather than assuming it is live. Forcing a disk
+re-read per status poll would be a disk hit on a polled route to chase a value the spec
+already says is not an immediate control. The store half IS live.
 
-So a **narrow, enumerated exemption** is part of the design, not an afterthought:
+The first two matter most and were missing from an earlier list: `enable-status` is the
+always-visible pre-gate route that actually returns `enableSources`, so a config edit made
+while the layer is disabled would otherwise be invisible or stale on the one surface the
+operator is looking at; and plan rendering must recompute because the state chooses between
+`money-layer-disable` and `money-layer-disable-store-only`. `GET /caps` is gated and cannot
+be relied on as a recomputation point.
 
-- `POST /routing-spend/plan` runs **pre-gate for exactly two action values** (the allowlist of MLE-2):
-  `money-layer-enable` and `money-layer-disable`. Every other action stays gated.
-- The matching commit route and a read-only `GET /routing-spend/enable-status` are
-  likewise pre-gate.
-- **Nothing else is exempt.** Caps adjust, arming, the ledger, the metered gate and the
-  spend summary all remain behind `servingReady` (see MLE-2).
+**Audited on TRANSITION, not on observation.** Since the state is recomputed on every read,
+auditing "we saw `config-enabled`" would spam the log in proportion to dashboard polling and
+would also *miss* nothing useful. The store therefore persists `lastObservedSourceState`, and
+an audit row is appended only when the recomputed state differs from it, keyed
+`enable-source-transition:<from>-><to>`. A transition that recurs after a genuine change back
+and forth is audited each time; a thousand identical reads produce one row.
 
-The exemption is an **allowlist keyed on the action value**, expressed as a single
-enumerated constant so the exempt set is greppable and testable, never a
-"skip the gate when the body looks like an enable" condition. A required test asserts
-that a non-exempt action presented to the pre-gate path is refused with the normal 503 —
-the exemption must not become a hole through which the rest of the money surface is
-reachable while the layer is off.
+**MLE-2 — intent is not permission to spend.**
 
-The exemption is safe precisely because these two actions **cannot move money**: they
-render text and, on PIN commit, flip a permission flag that leaves every door disarmed.
-The PIN requirement is unchanged; what is relaxed is only "the layer must already be on."
-
-The enable state must live **outside** `.instar/config.json`'s patchable surface. Two
-candidates were considered:
-
-1. **In the existing `RoutingSpendCapsStore`** — already outside `PATCHABLE_CONFIG_KEYS`,
-   already PIN-authored, already audited by `caps/log`. `intentEnabled` becomes
-   "config says true **or** the store's operator-enabled flag is set".
-2. **A dedicated store.** Cleaner separation, one more file to keep coherent.
-
-**DECIDED: Option 1.** It reuses a store whose write-discipline is already money-grade,
-and it keeps the whole money authority answerable from one audit log. The config key
-remains honored so no existing install changes behavior.
-
-**Why two sources rather than migrating to one authoritative source.** Cross-model review
-asked this directly, and it deserves a real answer rather than an appeal to
-backwards-compatibility. A hard migration — read the config key once, write it into the
-store, stop honoring the config key — is genuinely cleaner and was seriously considered.
-It is rejected for one reason: **the migration step would itself have to write or
-invalidate a money-bearing config key, which is authority this spec is explicitly
-refusing to take.** An agent-held Bearer token must never reach money config; a migration
-that "helpfully" rewrites it on boot is exactly that reach, arriving through the back
-door. The OR is the smaller authority: it *reads* both, *writes* only the store, and can
-never disable what the operator set by hand.
-
-The cost is honestly stated: two inputs to one question, mitigated by MLE-1's enumerated
-states and by the fact that only one of the four needs operator attention. The
-`config-enabled` prompt is offered as a **one-tap operator action**, never an automatic
-rewrite.
-
-**It is a mirror, not a migration, and calling it a migration was wrong.** Since no route
-here may write `.instar/config.json`, the one-tap action can only copy the config value
-into the store — producing `both-enabled`, not a move off config. Review caught the
-overclaim. So the action is named **"mirror into store"** in the UI and the plan text, and
-it is explicit that the config key remains set and remains the reason disable cannot fully
-disable. Genuinely reaching a single source requires the operator to remove the config key
-by hand; the surface tells them so, and does not pretend a tap achieved it.
-
-### The construction problem — an enable that only pretends
-
-`moneyOn()` gates the routes, but the money layer's components (the booking ledger, the
-O(1) fail-closed gate, the caps store) are **constructed at server start** and only when
-the layer was already enabled. So flipping the flag alone yields a surface that reports
-`enabled: true` over machinery that is not running — every route behind it still refuses.
-An enable button that ignores this is a button that lies.
-
-The commit path therefore MUST, in order:
-
-1. Persist the operator-enabled flag (PIN-committed, plan-bound, audited).
-2. **Verify the money layer is genuinely constructed and serving** — not that the flag
-   reads true, but that the layer's own components answer, including the **enforcing
-   gate** (see the probe contract below).
-3. If it is not up, bring it up.
-4. Report the honest end state.
-
-#### The restart contract — a request cannot report on its own server's restart
-
-Step 3 is where this design could quietly become a lie. An HTTP request that restarts the
-process serving it cannot then report the post-restart result: the connection dies with
-the server. Cross-model review flagged the original wording ("restart, re-verify, report")
-as unimplementable-as-written. The mechanism is therefore pinned, in preference order:
-
-**PHASE 1 SHIPS `enable-pending-restart`. Hot construction is Phase 2.** An earlier draft
-made in-process construction the target path and the pending state a fallback. Review
-pushed back: hot construction is, in effect, a small lifecycle manager — phased publish,
-ordered rollback, idempotent cleanup of timers, watchers, clients and metrics — and the
-industry-standard alternative is far simpler: *persist the intent, let restart converge,
-expose honest pending status.* That is the right first build, and the reasoning is
-decisive here because **the operator's actual complaint is "there is no way to turn it
-on", not "turning it on takes a restart."** Phase 1 solves the reported problem end to
-end; Phase 2 removes a restart. Shipping the lifecycle manager first would risk the
-correctness of a money control to save the operator one restart.
-
-1. **`enable-pending-restart` — PHASE 1, what this build delivers.** The commit does
-   **NOT** restart anything synchronously. It persists the flag and returns
-   `{ lifecycleState: "enable-pending-restart", enforcementReady: false }` with plain
-   text: *"enabled — the money layer comes up on the next server restart; it is not
-   enforcing yet."* The readiness probe runs at construction, so the state that appears
-   after the restart is verified, not assumed.
-
-   **The restart must itself be completable from the phone, or Phase 1 fails the very
-   standard this spec cites.** Review caught that "the Spend tab offers the restart" was a
-   hand-wave: an unspecified restart leaves a remote operator holding a switch they cannot
-   finish flipping — the original complaint in a new costume. So the restart is specified
-   end to end, as part of Phase 1:
-
-   - **`POST /routing-spend/money-layer/restart`** — pre-gate (allowlisted), Bearer **plus**
-     PIN, same rate-limit and audit discipline as the commit route. It accepts only when
-     `lifecycleState === "enable-pending-restart"`, so it is not a general-purpose restart
-     button bolted onto the money surface.
-   - **Mechanism:** it uses the server's existing supervised-restart path (the same one the
-     auto-updater uses, under launchd keepalive) — no new restart machinery.
-   - **Failure contract:** if the restart cannot be initiated, it returns `503` naming the
-     reason and the state stays `enable-pending-restart`; it never reports success it
-     cannot observe. Because the response may be lost with the connection, the operator's
-     source of truth is the poll, not this response.
-   - **UI flow:** the Spend tab shows *enabled — not enforcing yet*, a **Restart now**
-     button, then a waiting state that polls `GET /routing-spend/enable-status` until it
-     reports `ready`/`enforcementReady: true`, or surfaces `repair-failed` with its failing
-     component. If the poll does not flip within a bounded window, the tab says so plainly
-     and offers a retry rather than spinning forever.
-   - **Audit, ordered against the handoff:** `restart requested` is appended and **flushed
-     BEFORE the supervisor handoff**, so a process that exits mid-restart still leaves
-     evidence that the operator asked. `initiated` is explicitly **best-effort** — the
-     process may die before writing it, and its absence must never be read as "the operator
-     never tried". `observed-ready` is written by the NEW process after its probe, and is
-     the only durable proof the restart achieved anything.
-   - **After connection loss:** the tab polls `GET /routing-spend/enable-status` on an
-     interval with a bounded overall window. `enable-pending-restart` persisting past the
-     window is reported as *"the restart does not appear to have completed"* with a retry —
-     never an indefinite spinner, and never an assumed success.
-
-   With that, the whole path — enable, restart, confirm enforcing — is completable from a
-   phone, which is the standard being claimed. Phase 2 removes the restart step; it does
-   not rescue Phase 1 from being incomplete.
-
-2. **In-process construction — PHASE 2, a later enhancement.** The lifecycle container
-   (`prepare/start/probe/commit/rollback`) below specifies it, and it is deliberately NOT
-   in this build's scope. It is written down now so Phase 2 does not have to rediscover
-   the rollback and registration ordering, and so a future implementer does not mistake
-   "construct it hot" for a small change.
-
-**What is forbidden:** returning `ready: true` on the strength of the flag alone, or on a
-restart whose outcome this request cannot observe. The response's `ready` field means
-"probed and answering", never "should be working now". A pending state that is honestly
-labelled is a good outcome; a success claim that outruns its evidence is the failure this
-whole spec exists to prevent.
-
-#### What Phase 1 must build, and what is Phase 2 design notes
-
-Review found Phase 1 and Phase 2 interleaved to the point where an implementer could not
-tell which behaviour was required now. The split is therefore explicit, and the
-lifecycle-container material below is **Phase 2 design notes, not Phase 1 requirements**:
-
-| Behaviour | Phase 1 (build now) | Phase 2 (later) |
+| Predicate | Means | Composed of |
 |---|---|---|
-| `disabled` / `enable-pending-restart` / `ready` / `repair-failed` states | **yes** — all four arise at boot/probe time | — |
-| `enabling` state, `423` response | no — cannot arise without hot construction | yes |
-| `500` construction error at commit | no — commit does not construct | yes |
-| process-local construction lock | no | yes |
-| `prepare/start/probe/commit/rollback` container + cleanup hooks | no | yes |
-| readiness probe (cap-gate) | **yes** — runs at boot construction | yes |
-| boot recovery rule | **yes** | yes |
-| restart route + poll flow | **yes** | removed/optional |
+| `intentEnabled` | the operator asked for the layer to be on | MLE-1 |
+| `servingReady` | the enforcement layer is up, so paid calls may be attempted | `intentEnabled && lifecycleState === "probed" && singleInstanceLockHeld` |
 
-**Phase 1 tests assert only Phase 1 behaviour.** A Phase 1 test suite that required
-`enabling` or the rollback hooks would be testing unbuilt machinery, and its passing would
-mean nothing.
+- **Paid spend is gated on `servingReady`**, never on `intentEnabled`, in addition to the
+  existing freeze and cap checks.
+- **The single-instance lock is revalidated on every paid call AND before every money
+  authority write or audit append** — not only on the spend path. §7's single-writer audit
+  discipline depends on one process, and several routes are pre-gate and reachable even when
+  the layer is off, so a process that lost the lock could otherwise still write. A lost lock
+  fails closed: spend refuses, authority writes refuse, and authoritative audit appends
+  refuse.
 
-**Phase 2 must plug into the existing server lifecycle, not invent a parallel one.**
-Review's point stands: prepare/start/probe/commit/rollback is a reinvention unless it is
-named as an adapter over what the server already does at construction. Phase 2's first
-task is therefore to identify and extend the existing component-construction path in
-`server.ts` rather than to add a second lifecycle system beside it. If that turns out to be
-infeasible, Phase 2 needs its own spec — it does not get to grow out of this one.
+  **The lost-lock case needs its own reporting path, or the refusal would be unrecordable** —
+  a refusal that cannot be audited because auditing is what is refused. So: when the lock is
+  absent, the failure is returned to the caller AND written to the ordinary server log as a
+  **non-authoritative** record explicitly marked as such. It is not an audit-channel row and
+  must never be presented as one. The audit trail stays trustworthy precisely by refusing to
+  accept rows it cannot vouch for.
+- **What "reads current state" means for each of the two sources**, since they change by
+  different mechanisms and an unstated answer here is exactly the symbol/state drift this
+  spec exists to prevent:
+  - **The store flag** is read live on every paid call. It is the source this surface writes,
+    so a disable must take effect on the very next call.
+  - **The config key** is read from the process's config snapshot; it is NOT re-read from
+    disk per call. **The refresh latency is explicitly NOT bounded by this spec** — it
+    depends on instar's existing config-invalidation behaviour, which varies by key and
+    call path. Rather than assert a bound this spec cannot guarantee, the contract is:
+    *a config-file edit is not an immediate control; use freeze for immediate effect.*
+    Every surface that shows `config-enabled` state renders it as **"as of `configSnapshotAt`"**,
+    so the operator is never shown a config-derived claim without its age, **and offers a
+    refresh action — split into INSPECT and ADOPT**, because collapsing them opens a hole:
 
-#### Lifecycle state machine and concurrency *(Phase 2 design notes except where marked)*
+    - **`POST /routing-spend/config-inspect`** (Bearer) reports what is on disk versus what
+      the process holds, and whether adopting it **would increase money authority**. It
+      adopts nothing and changes no state.
+    - **`POST /routing-spend/config-adopt`** applies the on-disk config to the process. When
+      adoption would move the layer from off toward on (`wouldIncreaseAuthority`), it
+      **requires the PIN**; when it would reduce or not change authority, Bearer alone
+      suffices — the halting direction stays cheap, exactly as freeze does, and for the same
+      reason: an agent that cannot stop its own overspend is the worse failure. A
+      Bearer-only adoption that turns config-enabled spend OFF is deliberately equivalent in
+      authority to disable, and is audited on the AUTHORITY channel (not the audit-only
+      channel) with its before/after — it changes what may spend, so it is an authority
+      event regardless of which direction it moved.
 
-In-process construction is where an under-specified design fails in practice, so the
-lifecycle is pinned rather than left to the implementation:
+    **`config-adopt` re-reads ONE key, not the whole config.** It adopts
+    `routingSpend.money.*` into the process snapshot and nothing else. A general config
+    reload would be a far broader authority than a money control — it could change session,
+    messaging or guard settings through a money route — so the scope is pinned to the keys
+    this spec owns. The earlier phrasing "changes no state" was wrong and is withdrawn: it
+    changes the process's money-config snapshot, which is precisely its purpose.
+
+    **Why the split is not ceremony:** `intentEnabled` reads partly from the process config
+    snapshot, so a Bearer-only "just re-read the file" would let the agent adopt a
+    `routingSpend.money.enabled: true` sitting on disk and move itself to `servingReady`
+    without a PIN — Bearer reaching money state through the back door, which is the exact
+    boundary this whole spec defends. Both are POSTs (they audit and rate-limit; a GET with
+    side effects gets fired by prefetch, caches and monitoring probes), pre-gate, and
+    rate-limited to once per 10s per machine. Without it, an operator who edits config while trying to recover has
+    no way to make their change visible — a bounded-staleness display with no refresh is a
+    dead end. `config-inspect` changes no state; `config-adopt` changes only the
+    process money-config snapshot.
+  - **This is stated to the operator rather than hidden:** the `config-enabled` surface says
+    a config-file edit is not an immediate control, and points at **freeze** for anything
+    that must take effect now. Freeze reads live, unconditionally.
+- **Route visibility** is an explicit allowlist, not a predicate doing double duty. The
+  single normative statement is the **route visibility matrix** in §2; no other section
+  adds or removes an exception.
+- **`moneyOn()` is removed, not redefined.** Its callsites migrate to whichever predicate
+  they meant; a lint fails the build if the name reappears.
+
+**`ready` means enforcement-ready, never provider-ready — and this must not drift.** The
+likely long-run failure is social, not technical: `enforcementReady` gets treated as "spend
+works". Two guards: UI and API copy stay constrained to *"spending controls are up and
+enforcing"*, and **T16 is required coverage near any future metered-path change**, so a
+change that widens what the probe implies has to confront the narrower claim.
+ It asserts: the cap gate is
+constructed, reachable from the metered path, and refusing over-cap attempts. Credentials,
+booking commit and downstream execution are separate concerns with their own failures. UI
+copy says *"spending controls are up and enforcing"* and never the bare word "ready".
+
+## 2. Routes
+
+All **seven** are **pre-gate** (the allowlist): they must work while the money layer is off,
+because they are the door to turning it on. Six mutate or act; `GET
+/routing-spend/enable-status` is a read and is allowlisted by the same mechanism.
+
+| Route | Auth | Body | Returns |
+|---|---|---|---|
+| `POST /routing-spend/plan` | Bearer | `{ action: <member of MONEY_LAYER_PREGATE_ACTIONS> }` | `{ planId, nonce, renderedText, action, sourceStateAtRender, machineId, machineNickname, expiresAt }` |
+| `POST /routing-spend/money-layer/commit` | Bearer **+** PIN | `{ pin, planId, nonce }` | `{ lifecycleState, enforcementReady, enableSources, storeCleared, probe, message }` |
+| `POST /routing-spend/money-layer/restart` | Bearer **+** PIN | `{ nonce }` | `{ accepted, message }` |
+| `POST /routing-spend/config-inspect` | Bearer | `{}` | `{ onDiskEnabled, snapshotEnabled, differs, wouldIncreaseAuthority, configSnapshotAt }` — READ ONLY, adopts nothing |
+| `POST /routing-spend/config-adopt` | Bearer **+** PIN when `wouldIncreaseAuthority`, else Bearer | `{ pin? }` | same shape as `enable-status`, after adopting the on-disk config |
+| `POST /routing-spend/money-layer/restart-nonce` | Bearer | `{}` | `{ nonce, expiresAt, confirmationText }` — refused (409) outside the three restartable states |
+| `GET /routing-spend/enable-status` | Bearer | — | `{ lifecycleState, enforcementReady, enableSources, configSnapshotAt, machineId, lastTransitionAt, failingComponent?, settlingCount, restartEligible }` — read-only, `Cache-Control: no-store`, mints nothing |
+
+### The action enum (defined once, referenced everywhere)
 
 ```
-disabled ──enable commit──▶ enabling ──probe ok──▶ ready
-                              │  │
-                              │  └──construction impossible──▶ enable-pending-restart
-                              └──probe fails / partial──▶ repair-failed
-
-disable commit ──▶ clears store flag, then RE-DERIVES from resolved intent:
-    intentEnabled now false ──▶ disabled
-    intentEnabled still true (config key set) ──▶ stays ready / repair-failed,
-                                                  with storeCleared: true
+MONEY_LAYER_PREGATE_ACTIONS = [
+  "money-layer-enable",              // enable from disabled
+  "money-layer-mirror-config",       // from config-enabled: copy config into the store,
+                                    // yielding both-enabled; does NOT clear the config key
+  "money-layer-disable",             // refused by the renderer while the config key is set
+  "money-layer-disable-store-only",  // the acknowledged variant, rendered in its place
+]
 ```
 
-**Disable does not transition to `disabled` by fiat.** An earlier diagram said "(any
-state) → disabled", which contradicted the rule that `lifecycleState` answers *can money
-move right now*. Disable clears the store flag and the state is then **re-derived**: it
-reaches `disabled` only when resolved intent has actually become false. When the config
-key still holds the layer on, the honest result is that the state does **not** change to
-disabled — and the operator is told so.
+**Four** public actions. Any statement of a count elsewhere refers to this enum; the commit
+route accepts a signed action **iff** it is a member of it. There is no internal-only
+variant — `money-layer-disable-store-only` is a public action precisely so that what the
+operator approved is visible in the signed plan and the audit log.
 
-- **`enabling` is serialized by a process-local lock.** Construction is once-only:
-  a second concurrent enable observes `enabling` and waits on the same outcome rather than
-  building a second set of components.
+**"Mirror into store" is its own action, `money-layer-mirror-config`.** Overloading
+`money-layer-enable` would have made one signed action mean different things depending on
+the source state when it was rendered — so a plan rendered in one state and committed in
+another could do something the operator did not approve. Each action means exactly one
+thing.
 
-  **Machine-local is not the same as process-local**, and the earlier draft conflated
-  them — a review round correctly refused the hand-wave. Two server processes on one
-  machine would share the store flag while holding independent construction state. This
-  design does **not** invent a new interprocess lock: instar already enforces **one server
-  process per agent home** via its existing per-agent single-instance lock (the same lock
-  that removed the duplicate-server multiplier from the fork-bomb work).
+**Every plan additionally carries the `enableSources.state` it was rendered under, in the
+signed material, and commit refuses (`409`) if that state has changed since.** The operator
+approves a decision made in a particular situation; if the situation moved, they should see
+the new plan rather than have the old one applied to it.
 
-  **That dependency is asserted here, and asserting it is not proving it** — review was
-  right to withhold trust, since a reviewer reading this document cannot see the lock's
-  source. A dependency this load-bearing must be checked at runtime, not cited:
+### Route visibility matrix (the single normative statement)
 
-  - **Phase 1 (required now):** the money layer verifies at startup that the single-instance
-    lock is genuinely **held by this process**, and records the result. If it is absent,
-    unverifiable, or held elsewhere, the layer refuses to construct and reports
-    `repair-failed` naming the reason — fail closed, because the alternative is two
-    processes racing on money state. A test asserts the refusal.
-  - The same check runs on the commit and status paths, so a lock that is lost while
-    running surfaces rather than being assumed to persist from boot.
-  - **If that invariant is ever relaxed**, this lifecycle must move to an interprocess lock;
-    this paragraph and the startup check are the markers saying so, and the check will fail
-    loudly rather than silently degrade.
-- **Partial construction rolls back — and "discarded" is not good enough for real server
-  components.** Review was right that dropping a reference does not stop a timer, close a
-  file watcher, unregister an event handler or metric, release a ledger handle, or shut
-  down a provider client. A "discarded" half-built layer that still holds those is a leak
-  at best and a phantom second layer at worst. Construction therefore runs through an
-  explicit **lifecycle container** with ordered phases:
+**`freeze` is ALWAYS visible — unconditionally, pre-gate, like the enable routes.**
 
-  | Phase | What may happen | Global visibility |
-  |---|---|---|
-  | `prepare` | allocate components; acquire handles | none — nothing registered globally |
-  | `start` | start internal machinery | still none |
-  | `probe` | cap-gate readiness probe | still none |
-  | `commit` | publish the layer; register metrics, timers, watchers, handlers | **only here** |
-  | `rollback` | idempotent cleanup of everything prepared/started | — |
+**Why Bearer-only denial is inside the boundary, analysed rather than assumed.** Freeze is
+an agent-reachable lever that can permanently deny spend, which deserves the same scrutiny
+the restart route got. It is accepted because the asymmetry is deliberate and load-bearing:
+**halting money must always be cheap; resuming it must not be.** A Bearer holder can stop
+spend (worst case: a denial-of-service on the agent's own paid capability, visible, audited,
+and reversible by the operator); a Bearer holder can NOT resume it — **unfreeze is
+PIN-gated**, unchanged from Increment B. Freeze calls are audited on the authority channel
+with the caller and reason, and rate-limited only to bound log volume, never to delay a
+stop. The failure this ordering prevents — an agent that cannot stop its own overspend
+because the stop was gated — is far worse than the one it permits.
 
-  **Global registration happens only after a successful probe.** Nothing outside the
-  container can observe a layer that has not proven itself, so a failed enable cannot
-  leave partially-registered machinery behind.
+An earlier draft made it conditional (`intentEnabled || constructedSpendMachineryExists ||
+settlingCount > 0`). That is wrong for the same reason the whole spec exists: under a stale
+config snapshot `intentEnabled` can read false while spend is in fact enabled, and the
+emergency stop would be hidden at exactly that moment. A brake whose availability is
+computed from possibly-stale state is not a brake. Freeze is therefore not gated on
+anything; when there is nothing to freeze it is a harmless no-op that says so.
 
-  **Every prepared component exposes an idempotent cleanup hook**, and `rollback` invokes
-  them in reverse order; a cleanup that throws is logged and the remaining cleanups still
-  run. Rollback is safe to call twice. Only then does the state become `repair-failed`,
-  carrying the failing component; it is re-enterable — pressing enable again retries from a
-  genuinely clean base rather than on top of leftovers.
-- **`GET /routing-spend/enable-status` observes this state machine directly**, so a status
-  read during construction returns `enabling`, never a stale `disabled` or an optimistic
-  `ready`.
-- **What persists, and what does not** — declared explicitly, because an under-specified
-  answer here lets a crash launder a failure into a benign-looking pending state:
+| Route group | Visible when |
+|---|---|
+| `plan` (allowlisted actions), `money-layer/commit`, `money-layer/restart`, `money-layer/restart-nonce`, `config-inspect`, `config-adopt`, `enable-status` | **always** (pre-gate) |
+| `freeze` | **always** (pre-gate, unconditional) |
+| `caps/log` — enable/disable/status rows only | **always** (pre-gate), Bearer |
+| `caps/log` — caps, arming, freeze, spend rows | `servingReady \|\| settlingCount > 0` |
+| read-only spend views: `summary`, `caps` | `servingReady \|\| settlingCount > 0` |
+| everything else under `/routing-spend/*` — caps adjust, arming, and all mutating routes | `servingReady` |
 
-  | Field | Persisted? | Why |
-  |---|---|---|
-  | operator-enabled flag | **yes** (caps store) | the operator's decision must survive a crash |
-  | `lifecycleState` | **no** — derived at boot | a stored `enabling` would be a lie after the process that was enabling died |
-  | `lastTransitionAt` | **yes** | needed to age a stuck state |
-  | last `repair-failed` + failing component | **yes** | see the recovery rule below |
+**`caps/log` is always visible, but only PARTLY.** The audit trail must survive a clean
+disable — a log that disappears when its subject is off is not a log. But making the WHOLE
+merged history Bearer-readable pre-gate would hand the agent caps, arming state, freeze
+history, spend figures and operational timing while the money layer is off, which quietly
+weakens the requester ≠ authorizer boundary the rest of this spec defends.
 
-  **Recovery rule at boot:** flag set + components constructed ⇒ probe ⇒ `ready` or
-  `repair-failed`. Flag set + components absent ⇒ `enable-pending-restart` — **unless** a
-  `repair-failed` record is stored and no successful enable has happened since, in which
-  case the state is `repair-failed`, carrying the stored failing component. Without that
-  exception a crashed repair would present as an innocuous "just needs a restart" and the
-  operator would restart into the same failure with no idea why. A failure must not be
-  forgotten by the act of crashing.
+So the log is **split by sensitivity, not by availability**: enable/disable/restart/status
+rows are pre-gate readable (they are the record of the operator's own switch actions, and
+the agent already initiates those plans); caps, arming, freeze and spend rows require
+`servingReady || settlingCount > 0` exactly like the other money views. Both remain one
+merged, time-ordered view for an operator whose read satisfies both conditions.
 
-#### Route contract
+**Sensitivity filtering happens BEFORE pagination**, and cursors are opaque — they encode no
+offset, index or count over the unfiltered set. Otherwise a pre-gate reader could infer the
+volume and timing of hidden spend and freeze rows from gaps in the cursor sequence, which is
+exactly the information the split exists to withhold. Totals and counts returned to a
+pre-gate reader describe the filtered set only.
 
-- `POST /routing-spend/plan` — body `{ action: "money-layer-enable" | "money-layer-disable" }`. Bearer. Pre-gate (allowlisted action). Returns `{ planId, nonce, renderedText, machineId, machineNickname, expiresAt }`.
-- `POST /routing-spend/money-layer/commit` — body `{ pin, planId, nonce }`. Pre-gate (allowlisted). **Before any effect, the route loads the stored plan and rejects it unless its SIGNED action is `money-layer-enable` or `money-layer-disable`.** The action is not in the request body, so without this check the pre-gate commit route would accept *any* valid plan id — including a caps-adjust plan — and apply it while the money layer is off, which would turn the bootstrap exemption into a hole around the whole gate. Refusal is `409`, and a test presents a caps-adjust plan to this route and asserts it is refused. **Requires the Bearer/session boundary IN ADDITION to the PIN** — the PIN is the authority, never the sole online secret. Dropping Bearer here would make a leaked-or-guessed six-digit PIN sufficient on its own, which is a weaker posture than the caps routes it copies. Failed PIN commits are rate-limited per machine and audited to `caps/log` (attempt count and machine, never the submitted value); repeated failures lock the commit path for a cooldown and raise one deduped attention item. Returns `{ lifecycleState, enforcementReady, enableSources, probe, message }`.
-- `GET /routing-spend/enable-status` — Bearer, pre-gate (allowlisted). Returns `{ lifecycleState, enforcementReady, enableSources, machineId, lastTransitionAt, failingComponent? }`.
+No other section adds or removes an exception. §1's "freeze reads live" describes *how* it
+reads state; this table alone says *when* each route is reachable.
 
-**The field is `enforcementReady`, never a bare `ready`.** A bare `ready` invites the
-ordinary reading "spending works", which it does not mean (see MLE-2). UI copy says
-"spending controls are up and enforcing" and never the word "ready" on its own.
+**Allowlist discipline.** The pre-gate exemption is keyed on the **action value**, expressed
+as one enumerated constant so the exempt set is greppable and testable — never a "the body
+looks like an enable" condition.
 
-**Two distinct state axes, never merged into one field.** `lifecycleState` is one of the
-five construction states (`disabled` / `enabling` / `ready` / `enable-pending-restart` /
-`repair-failed`); `enableSources.state` is one of MLE-1's four source states
-(`disabled` / `operator-enabled` / `config-enabled` / `both-enabled`).
+**The commit route loads the stored plan and rejects it unless its SIGNED action is one of
+the `MONEY_LAYER_PREGATE_ACTIONS` enum** (`409`), before any effect. The action is not in the request
+body, so without this check the pre-gate commit route would accept any valid plan id —
+including a caps-adjust plan — and apply it while the layer is off.
 
-**`lifecycleState` is derived from RESOLVED enablement, never from the store flag alone.**
-An earlier draft had a disable-with-config-true return `lifecycleState: "disabled"`
-alongside `enableSources.state: "config-enabled"`, and review correctly refused it: since
-`intentEnabled` is `store || config`, the layer in that state is still *enabled and spending*,
-so `disabled` is simply false. A field that reads "disabled" while money can move is the
-precise failure this spec was written to eliminate — and I reintroduced it while fixing
-something else. The rule is therefore:
+**Bearer is required in addition to the PIN.** The PIN is the authority; it must not also
+be the sole online secret.
 
-> `lifecycleState` answers **"can money move right now?"** — it is computed from
-> resolved intent, never from `store` alone. `storeCleared` is a separate boolean reporting
-> what the operator's action actually did.
+**Restart is deliberately operational authority, not plan-bound authority — and this is a
+named exception to the plan-binding discipline, not an oversight.** It changes no
+money state — it restarts a process — so binding it to a rendered plan would add ceremony
+without adding a decision for the operator to read. It is therefore PIN-gated and audited
+but not plan-bound, and the difference is stated rather than left as an inconsistency with
+§7's "authority writes are plan-bound". To close the gaps that plan-binding would otherwise
+have covered: the route takes a **single-use nonce** issued by `GET
+/routing-spend/enable-status` (replay/CSRF protection), the nonce expires on a short window
+(stale-PIN replay), and it is accepted only in `enable-pending-restart`, `probe-failed` or
+`construction-failed`.
 
-So a disable while config is true returns `lifecycleState: "ready"` (money can still
-move), `enableSources.state: "config-enabled"`, `storeCleared: true`, and a message
-saying plainly that the store flag was cleared but the config file still holds the layer
-on. The operator is told their disable did not disable. That is the whole point.
-- **Errors:** `400` malformed; `401` bad/absent PIN; `409` plan id unknown, expired, already consumed, or **submitted to a different machine than it was rendered on**; `423` an enable is already `enabling`; `500` construction error (state becomes `repair-failed`, and the response says so).
+**The operator approves the SERVER's words, not the client's.** The commit UI must display
+the canonical `renderedText` and action returned by the server, verbatim — never
+client-authored copy describing what the plan supposedly does. A client that paraphrases
+could show a reassuring label over a different signed action, which is the whole failure
+plan-binding exists to prevent. The **hash of `renderedText`** is audited with the commit,
+so what the operator was shown is recoverable afterwards rather than merely asserted.
 
-**Plan rendering is audited and rate-limited.** Plan creation is Bearer-authorized and now
-sits pre-gate, so the agent can render money plans before the layer is on. The PIN still
-holds all commit authority — but an unaudited, unlimited render lets an agent spam
-operator-visible money prompts, which is both a nuisance surface and a way to fatigue an
-operator into tapping. So every render is audited with its action and machine, and
-pre-gate renders are rate-limited per machine; exceeding the limit returns `429` and
-raises one deduped attention item rather than a stream.
+**Plans are machine-bound.** `machineId` is part of the signed plan material and named in
+the rendered text; a plan committed on a different machine is refused (`409`).
 
-**Audit-only appends are a separate channel from authority writes.** This spec leans
-repeatedly on the claim that `RoutingSpendCapsStore` is written only by a PIN-committed
-rendered plan — so letting Bearer-authorized plan *renders* append to the same `caps/log`
-would quietly falsify it, as review noted. Two channels, distinguished by schema and
-writer, not by convention:
+**Rate limits and lockout — concrete defaults, so tests and abuse analysis are not fuzzy.**
+All are config keys under `routingSpend.money.limits` and these are the shipped defaults:
 
-- **Authority writes** (the enable flag, caps, arm/freeze state): PIN-committed,
-  plan-bound. Unchanged.
+| Key | Default | Governs |
+|---|---|---|
+| `planRenderPerHour` | 20 / machine | pre-gate plan renders (`429` + one deduped attention item) |
+| `planTtlSeconds` | 600 | rendered plan expiry |
+| `restartNonceTtlSeconds` | 120 | `restartNonce` validity |
+| `restartCooldownSeconds` | 60 | minimum gap between accepted restarts |
+| `pinFailuresBeforeLockout` | 5 | failed commits/restarts before lockout |
+| `pinLockoutSeconds` | 900 | lockout duration, per machine |
+
+The mint route succeeds **only** in `enable-pending-restart`, `probe-failed` and
+`construction-failed` — the
+three states where restart is accepted — and is absent otherwise, so the surface cannot offer
+a restart the route would refuse. **The nonce is minted by `POST /routing-spend/money-layer/restart-nonce`, never by the GET.**
+An earlier draft had `enable-status` issue it — a read-only, cacheable, prefetchable route
+minting security-relevant state, which is the same mistake this spec rejected for
+`config-refresh` two sections earlier. `enable-status` now reports only `restartEligible`
+(a boolean) and carries `Cache-Control: no-store`. The mint route returns, alongside the
+nonce, a **canonical server-rendered confirmation string bound to that nonce**, which the UI must display verbatim before the restart is
+submitted — naming the machine and that the whole agent server restarts. This is the same
+discipline as plan-binding, minus the durable plan record: an accidental mobile tap has to
+pass a server-authored sentence describing what it actually does. It is single-use and
+expires on a short window; a consumed
+or expired nonce is `409` and the client re-reads status to obtain a fresh one.
+
+Restart is **rate-limited with a cooldown** per machine, and **failed restart attempts —
+bad PIN, stale nonce, wrong state — are audited** exactly like failed commits.
+
+**The security boundary is stated rather than implied: Bearer + PIN is the whole boundary.**
+The nonce is issued by a Bearer-only read and the Bearer token is agent-held, so the nonce
+is replay/CSRF protection, **not** a second authority — an attacker holding both Bearer and
+PIN can restart the server, bounded only by the cooldown. That is accepted deliberately: a
+restart moves no money, books no spend and changes no cap, so its worst case is availability
+damage the cooldown bounds, and the PIN-holder is the operator.
+
+**There is NO caller-identity binding on the nonce, and claiming one would be false.**
+An earlier draft said the nonce was bound to "the Bearer-token identity". Checked against
+the source: `authMiddleware` compares one shared agent token against one configured value —
+every Bearer caller collapses to a single identity, so binding to it isolates nothing and a
+test for it could not fail. The claim is withdrawn rather than restated more carefully.
+
+What the nonce actually provides is **replay protection, not caller isolation**: single-use,
+short TTL, valid only in the two restartable states, and spendable only alongside the PIN
+and the displayed confirmation string. Anyone holding the Bearer token and the PIN can
+restart the server; that is the accepted boundary, stated plainly in §2. Binding to a
+specific *dashboard* session is deliberately NOT required: the operator may legitimately
+drive this from the dashboard, a phone browser or a direct call, and hard-binding to one
+surface would recreate the mobile-incompleteness this spec exists to remove. A short TTL,
+single use, the two-state restriction and the displayed confirmation string are the whole
+boundary.
+
+**And availability damage is not nothing, so the copy must say so.** A restart interrupts
+this machine's whole server — unrelated operator workflows, in-flight non-money work, local
+agent sessions — not just the money layer. The button's text names that plainly (*"restarts
+the agent server on this machine"*) rather than reading like a money-layer-local action. Restart is **not** bound to
+a session or origin, and the spec does not claim it is.
+
+`settlingCount` is the number of in-flight calls/reservations still settling (§5). Because it
+unlocks read visibility, a stale positive would keep sensitive rows readable indefinitely, so
+it is pinned:
+
+- **Source of truth:** the ledger's live in-flight/reservation set — derived, never an
+  independently-incremented counter that can drift.
+- **Not persisted across restart.** A process restart ends its own in-flight work; the new
+  process derives the count from reservations the ledger can still account for, and anything
+  unaccountable is reconciled to settled rather than left pending.
+- **Bounded:** each in-flight entry carries a settle deadline; past it the entry is reconciled
+  (settled or abandoned, recorded either way) and stops counting.
+- **Tested** for the crashed and stuck cases (T24).
+
+**Errors:** `400` **syntactically invalid** input — an `action` outside the enum, malformed
+body · `401` bad/absent PIN · `409` a **well-formed but not-permitted** request: plan
+unknown/expired/consumed, signed action not on the pre-gate allowlist, wrong machine, stale
+nonce · `429` rate-limited · `503` restart could not be initiated.
+
+The `400`/`409` split is *syntax* versus *permission*: an unrecognised action string never
+named a real action (`400`); a validly-signed caps-adjust plan named a real action that is
+not allowed through the pre-gate door (`409`).
+
+## 3. States
+
+`lifecycleState` is the **construction/probe state** of the money layer, derived from
+resolved intent and construction — never from the store flag alone.
+
+**It is not by itself the answer to "can money move right now?"** That question is
+`servingReady`, which additionally requires the single-instance lock (MLE-2), so a process
+that loses the lock is `lifecycleState: "probed"` yet refuses spend. To remove any gap
+between what the surface reports and what the spend path enforces:
+
+> **`enforcementReady === servingReady`, by definition.** The status routes return the same
+> predicate the paid path consults — not a proxy for it. A surface that could report
+> enforcement-ready while the spend path disagreed would be the symbol-not-state failure
+> this spec is built to avoid.
+
+| State | Meaning |
+|---|---|
+| `disabled` | resolved intent is false |
+| `enable-pending-restart` | intent true, layer not constructed; comes up on restart |
+| `probed` | intent true, layer constructed, cap-gate probe passed |
+| `probe-failed` | intent true, components CONSTRUCTED, cap-gate probe failed; carries `failingComponent` |
+| `construction-failed` | intent true, components ABSENT or construction errored; carries `failingComponent` |
+
+**The lifecycle value is `probed`. The token `ready` is REJECTED legacy terminology and must
+not appear as a lifecycle enum value anywhere in code, tests, API output or UI** — a lint and
+T22 assert it is never emitted. (`enforcementReady` is a different, retained field name; the
+banned thing is the bare lifecycle *value*.) `ready` invites the reading "spend works", and a
+warning in prose is a weaker guard than simply not having the word. UI never renders a
+lifecycle enum value directly; it renders operator-facing copy derived from
+`enforcementReady`.
+
+`enableSources.state` (MLE-1) is a **separate axis** and the two are never merged.
+`storeCleared` is a third, independent boolean reporting what the operator's action did.
+
+The pair is what makes "I disabled it and it is still on" legible: a disable while the
+config key is set returns `lifecycleState: "probed"`, `enableSources.state: "config-enabled"`,
+`storeCleared: true`.
+
+**Persistence and boot recovery.**
+
+| Field | Persisted | Why |
+|---|---|---|
+| operator-enabled flag | yes | the operator's decision survives a crash |
+| `lifecycleState` | **no** — derived at boot | a stored in-progress state would be a lie after that process died |
+| `lastTransitionAt` | yes | ages a stuck state |
+| last failure state (`probe-failed` / `construction-failed`) + failing component | yes | see below |
+
+**Recovery rule:** flag set + components constructed ⇒ probe ⇒ `probed` or `probe-failed`.
+Flag set + components absent ⇒ `enable-pending-restart` — **unless** a failure record is
+stored with no successful enable since, in which case the state is the stored
+`construction-failed` (or `probe-failed`) carrying its component. A failure must not be
+forgotten by the act of crashing.
+
+## 4. Enable, and the restart that completes it
+
+The money layer's components are constructed at server start. Persisting the flag alone
+therefore yields a switch that reads on over machinery that is not running. **Phase 1 does
+not construct hot** (Appendix A); it persists intent and converges on restart, honestly
+labelled at every step.
+
+1. **Commit** persists the flag (PIN-committed, plan-bound, audited) and returns
+   `{ lifecycleState: "enable-pending-restart", enforcementReady: false }` with plain text:
+   *"enabled — the money layer comes up on the next server restart; it is not enforcing
+   yet."* It restarts nothing synchronously.
+
+2. **`POST /routing-spend/money-layer/restart`** accepts **only** when `lifecycleState` is
+   `enable-pending-restart`, `probe-failed` **or** `construction-failed` — the three states a restart can plausibly
+   clear. Refused in `disabled` and `probed`, so it is never a general-purpose restart button
+   on the money surface. It uses the server's existing supervised-restart path (the one the auto-updater
+   uses, under launchd keepalive); no new restart machinery. If the restart cannot be
+   initiated it returns `503` naming the reason and the state is unchanged.
+
+3. **The poll is the source of truth, not the response** — the connection may die with the
+   process. The Spend tab shows *enabled — not enforcing yet*, a **Restart now** button,
+   then polls `GET /routing-spend/enable-status` on an interval within a bounded window
+   until `enforcementReady: true`, or surfaces the failure state with its component. Past the
+   window it reports *"the restart does not appear to have completed"* and offers a retry —
+   never an indefinite spinner, never an assumed success.
+
+4. **Audit ordering against the handoff.** `restart requested` is appended **and flushed
+   before** the supervisor handoff, so a process that exits mid-restart still records that
+   the operator asked. `initiated` is explicitly best-effort; its absence must never be read
+   as "never tried". `observed-ready` is written by the *new* process after its probe and is
+   the only durable proof the restart achieved anything.
+
+**Re-pressing enable while the flag already reads true is NOT a no-op.** "Switch on,
+machinery down" is exactly the state this control exists to rescue the operator from. Enable
+is idempotent in intent — it never double-enables — but always re-verifies and re-repairs.
+
+**Recovering from a failure state** — the operator's path out is specified, because a
+terminal-looking state with no named action is a dead end:
+
+**The two failure states differ in what can fix them, which is why they are two states.**
+An earlier draft had a single combined failure state and claimed a retry commit could
+"re-run the probe"
+— impossible in Phase 1 when the components are absent, since Phase 1 does not construct hot.
+
+- **`probe-failed`** — components exist, so an enable commit CAN re-probe. The commit does not
+  re-persist the flag (already set); it re-runs the probe and returns the re-derived state:
+  `probed` if it now passes, `probe-failed` again with the current component if not.
+- **`construction-failed`** — components are absent, so **nothing a commit does can fix it in
+  Phase 1**. An enable commit in this state is accepted but honestly returns
+  `construction-failed` with the message that a restart is required; it never pretends to
+  probe. The restart route is the remedy.
+- **`POST .../restart` is accepted in `enable-pending-restart`, `probe-failed` and
+  `construction-failed`** — the three states a restart can plausibly clear. Refused in
+  `disabled` and `probed`.
+- The stored failure record is cleared only by a probe that actually passes — never by the
+  attempt itself, so a repeatedly-failing layer keeps reporting the same honest failure rather
+  than resetting to a clean-looking state on each try.
+
+**Enabling arms no door.** Every door stays `not-live` with `$0` committed until separately
+armed with the PIN. The enable is permission to *use* the arming flow, never a grant of spend.
+
+## 5. Disable, and what it does not do
+
+> **The one-line truth that qualifies every disable claim in this document:** *disable stops
+> new spending immediately **only when the store flag is the active enable source**. If the
+> config key is also set, spend remains enabled and **freeze is the emergency stop**.*
+
+- **Disable clears the STORE flag only.** No route here writes `.instar/config.json` —
+  `PATCHABLE_CONFIG_KEYS` stays untouched, because a route that can edit the money config
+  file is a larger authority than the one being added.
+- **When the config key is true**, the response and the Spend tab say plainly that the layer
+  is still enabled by a config-file setting, name the remediation, and **require the
+  separately-signed `money-layer-disable-store-only` action**: the renderer refuses plain
+  `money-layer-disable` in that state and renders the acknowledged variant instead, whose
+  first line states that this will NOT stop spending. The acknowledgement is carried in the
+  signed action itself rather than a checkbox beside it, so what the operator approved is
+  exactly what lands. In that state the UI leads with
+  **freeze** as the primary action and demotes disable to secondary — a button labelled
+  "disable" that leaves money flowing is an operator hazard however well documented.
+- **Disable never restarts the server.**
+- **Freeze and read-only settling visibility** are governed by the §2 matrix, not by prose
+  here. The reasoning: gating the emergency stop, or the spend log, on the healthy state
+  would remove the brake and the view precisely when the operator most needs them —
+  including the window after a disable when charges are still landing.
+
+**Freeze is checked live on every paid call, before provider execution or reservation, and
+a frozen key refuses regardless of `intentEnabled`, the config key, `lifecycleState`, or the
+single-instance lock.**
+
+**Which means the freeze check CANNOT live inside the constructed money layer.** If it did,
+a `construction-failed` layer would take the emergency brake down with it — the one state
+where the operator is most likely to reach for it. The check therefore lives in the
+**metered-call entry path itself**, ahead of the money layer and independent of whether that
+layer constructed: it reads the freeze set directly from the caps store on disk. This is
+called out explicitly so an implementer does not naturally place the brake inside the
+machinery it is meant to survive. This is stated as its own invariant because freeze is the control
+the rest of this spec points at as the emergency stop; a stop that is only checked at some
+layers is not one.
+
+**What makes disable real rather than cosmetic:** the metered-call path performs a
+**synchronous live enable check on every paid call**, reading current state rather than a
+value captured at construction. A constructed-but-disabled layer refuses at the point of
+spend. Disable is verified by its own probe: a dry-run call on the real metered path must
+refuse with the specific *money-layer-disabled* reason, or the result is `probe-failed`
+rather than success.
+
+**In-flight work at the moment of disable:**
+
+| Work | Outcome |
+|---|---|
+| not yet past the enable check | refused |
+| already in flight with the provider | **allowed to finish, and its spend IS booked** — killing it would spend the money without recording it |
+| queued but unstarted | dropped at the enable check |
+| reservation made before disable | settles normally; no new reservation granted |
+
+The disable response reports the count of in-flight calls still settling, so "disabled"
+never silently means "and a few more charges are still landing."
+
+## 6. The cap-gate readiness probe
+
+A **cap-gate** readiness probe — its name is its scope. It proves cap enforcement is wired
+and refusing; it does not exercise the full paid-call route end to end, and full-path
+coverage remains with the metered path's own integration tests.
+
+- **Sentinel:** a reserved keyRef (`__probe_sentinel__`), never a real paid door, registered
+  with a nominal cap and a `probe: true` marker, and structurally excluded from go-live.
+- **How a never-live sentinel reaches the cap gate:** the probe enters the metered path
+  **after** the go-live check and **before** the cap check, in dry-run mode.
+- **Why a bypass at all, rather than a test-mode provider or dependency injection.** Those
+  are the conventional answers and they are right for *tests* — T16 uses exactly that shape.
+  They cannot answer this question, though: readiness must be verified **in the running
+  production process, against the same wiring that will serve real calls**. A DI seam or a
+  fake ledger proves the code is correct in a harness; it cannot prove *this* process
+  constructed *its* gate and reachably wired it. That is why the probe exists at all, and why
+  the bypass is fenced as tightly as it is rather than avoided. The residual risk is
+  acknowledged: a bypass in metered execution is custom machinery, and T8 exists because
+  fencing it is the price of using it.
+- **The bypass is a capability, not a visibility convention.** It accepts a **closure-scoped
+  capability token** minted once at money-layer construction and handed only to the prober.
+  The token type has no exported constructor; possession is the authorization. Without the
+  token the path behaves exactly like the normal metered path, i.e. go-live is enforced.
+- **Preconditions asserted before the probe runs:** the sentinel resolves, its provider is
+  present, the request is well-formed — so those failure modes cannot be mistaken for
+  enforcement.
+- **The refusal's CAUSE is checked, not merely its occurrence.** Expected result is refusal
+  with the specific cap-exceeded reason. **Any other refusal reason ⇒ `unknown` ⇒ NOT
+  ready.** A refusal for the wrong reason is a probe failure, never a pass.
+- **Post-assertion:** committed spend for the sentinel is unchanged.
+
+## 7. Audit channels
+
+Two channels sharing one file, distinguished by **interface**, not convention:
+
+- **Authority writes** (enable flag, caps, arm/freeze state): PIN-committed, plan-bound.
 - **Audit-only appends** (plan rendered, PIN attempt failed, probe result, state
-  transition): append-only, strict schema, carry **no** authority fields, and are rejected
-  by the store if they attempt to set one.
+  transition, restart requested/observed): a **distinct handle offering only `append` and
+  `read`** — no update, no delete, no rewrite, structurally absent from the type rather
+  than refused at runtime. It carries no authority fields.
 
-**Append-only is enforced at the storage API boundary, not by schema validation alone.**
-Review flagged that mixing mutable authority state and append-only history behind one
-store is a known footgun, and schema checks are the weakest form of that guarantee — they
-constrain what a caller *sends*, not what the store *permits*. So the audit channel is a
-distinct handle whose interface offers only `append` and `read`: no update, no delete, no
-rewrite, structurally absent from the type rather than refused at runtime. The authority
-handle cannot append audit rows and the audit handle cannot touch authority state; a
-caller holding one cannot reach the other. They share a file for operator convenience —
-one readable history — and share nothing else.
+A caller holding one handle cannot reach the other. `GET /routing-spend/caps/log` presents
+one merged, time-ordered history with each entry tagged by channel.
 
-`GET /routing-spend/caps/log` continues to present a merged, time-ordered view — the
-operator sees one history — but each entry is tagged with its channel, so "what changed
-money state" and "what merely happened" are never confused when reading it back.
+**Durability, because the restart handoff depends on it.** The `restart requested` ordering
+guarantee in §4 is only worth as much as the append underneath it, so the audit channel
+reuses instar's existing append-only JSONL discipline rather than inventing storage:
+a **single process-local writer** — serialized through one append queue in the one server
+process the single-instance lock already guarantees — issuing one `write()` per record to an
+`O_APPEND` descriptor. Cross-process atomicity is therefore not relied upon at all, which is
+the honest position: `O_APPEND` atomicity for large records is filesystem-dependent, and this
+spec does not need it. Records are size-bounded; an oversize record is truncated with an
+explicit marker rather than split. The log is never rotated or renamed by this path, so no
+directory-fsync semantics are involved. **Append/fsync failure is a first-class outcome, not an assumed success.** If an
+authority-write's audit append fails, **the authority write is refused** — money state never
+changes without its record. If a non-authority audit append fails, the operation proceeds and
+the failure is reported to the caller and the server log. If the pre-handoff fsync fails, the
+restart is **not** initiated and returns `503`: an unrecorded restart is precisely the case
+the ordering exists to prevent. There is an explicit **flush/fsync before the
+supervisor handoff**
+— the one point where an unflushed buffer would lose the evidence. A truncated trailing
+line from an unclean exit is skipped on read with a logged warning rather than failing the
+whole log; no record is ever rewritten to "repair" it.
 
-**Plans are machine-bound.** The rendered plan text names the machine, and `machineId` is
-part of the signed plan material — a plan rendered on one machine is refused on another
-with `409`. Without this, a plan rendered on the laptop could be committed against the
-Mini, enabling spend on a machine whose operator never saw the plan. The UI shows the
-target machine so the operator is never approving an action for a machine they did not
-mean.
+**Tamper evidence is explicitly out of scope, and that is a scope statement rather than an
+oversight.** Append-only *by interface* is not append-only *on disk*: anyone with local
+admin access to the machine can edit the file. This log is an **operator trust record
+against accident and against the agent**, not a forensic record against a local
+administrator — and the operator IS the local administrator, so a hash chain would protect
+them from themselves rather than from a threat that exists. If this log ever needs to
+satisfy an external auditor, that is a different requirement and needs its own design.
 
-**Re-pressing enable when the flag already reads true must NOT be a no-op.** "Switch says
-on, machinery is down" is precisely the broken state this control exists to rescue the
-operator from; a no-op would leave them with a switch reading on, nothing working, and a
-button that politely does nothing. Enable is therefore idempotent in *intent* (it never
-double-enables) but always re-verifies and re-repairs.
+## 8. Required tests
 
-**Disable is not symmetric.** It clears the store flag immediately, and
-does **not** restart the server: a restart is a heavy, disruptive action to leave behind a
-credential the agent holds, and halting money must stay cheap. Doors shut instantly; the
-machinery is torn down on the next natural restart.
+| # | Assertion |
+|---|---|
+| T1a | An `action` value outside the enum is refused `400`. |
+| T1b | A validly-signed non-allowlisted plan action presented pre-gate is refused `409` and does NOT reach the gated handler. |
+| T2 | A caps-adjust plan presented to the money-layer commit route is refused (409). |
+| T3 | A plan rendered on machine A and committed on machine B is refused (409). |
+| T4 | Commit without Bearer is refused even with a correct PIN. |
+| T5 | Enable commit yields `enable-pending-restart` and constructs nothing. |
+| T6 | After construction, the probe passes only when the refusal reason is cap-exceeded; every other refusal reason yields not-ready. |
+| T7 | The probe books nothing — sentinel committed spend unchanged. |
+| T8 | No HTTP route can obtain a bypassed evaluation (negative integration test across all routes). |
+| T9 | Disable with config true returns `lifecycleState: "probed"`, `storeCleared: true`, and does not report success. |
+| T10 | A paid call refuses when the single-instance lock is not held by this process. |
+| T11 | Money layer refuses to construct when the single-instance lock is absent/unverifiable ⇒ `construction-failed`. |
+| T12 | Boot with a stored failure and no successful enable since yields that failure state, not `enable-pending-restart`. |
+| T12b | An enable commit in `construction-failed` returns `construction-failed` with a restart-required message and does NOT claim to have probed. |
+| T13 | Freeze is reachable in every state, including both failure states and `config-enabled`. |
+| T29 | `config-inspect` is Bearer-only, adopts nothing, and reports `wouldIncreaseAuthority` correctly. |
+| T30 | `config-adopt` is REFUSED without a PIN when `wouldIncreaseAuthority` is true, and accepted with Bearer alone when it is false. |
+| T31 | Restart is accepted in all three restartable states and refused in `disabled` and `probed`. |
+| T14 | The audit handle cannot write authority fields; the authority handle cannot append audit rows. |
+| T15 | The metered path re-reads enable state per call (constructed-but-disabled layer refuses). |
 
-**What makes disable real rather than hopeful.** Leaving the components constructed after
-a disable is only safe if the paid path itself re-checks. So:
+| T16 | **Required, and normative.** A real armed-door dry-run refuses over-cap through the full metered path (not the sentinel bypass), covering per-door routing the sentinel probe deliberately does not. It is tied to `enforcementReady` regression coverage: the sentinel probe is NOT comprehensive readiness, and T16 exists so a future implementer cannot treat it as such. |
+| T17 | Read-only spend/settling status stays reachable while `settlingCount > 0` after a disable. |
+| T18 | `GET /routing-spend/caps/log` is reachable in every state, including `disabled` with nothing settling. |
+| T19 | A frozen key refuses a paid call in every combination of `intentEnabled`, config key, `lifecycleState` and lock state. |
+| T20 | In-flight money reservations settle or recover correctly across a restart. |
+| T21 | The commit audit records the hash of the `renderedText` the operator was shown. |
+| T22 | No API response or UI string emits `ready` as a lifecycle value; only `probed` is emitted. |
+| T23 | A pre-gate `caps/log` read with Bearer only returns enable/disable/status rows — no caps, arming, freeze or spend rows. |
+| T24 | `settlingCount` returns to zero after a crash with in-flight reservations, and after a settle deadline passes. |
+| T25 | A plan rendered under one `enableSources.state` is refused (409) if committed after that state changed. |
+| T26 | An authority write or audit append is refused when the single-instance lock is not held, and the refusal appears in the server log marked non-authoritative — never as an audit row. |
+| T27 | A `restartNonce` is single-use: a second presentation is refused (409), and it is refused outside the three restartable states. |
+| T28 | `enable-status` returns `configSnapshotAt`, and every surface showing `config-enabled` renders it. |
 
-> **The one-line truth, which every other disable claim in this document is qualified by:**
-> *disable stops new spending immediately **only when the store flag is the active enable
-> source**. If the config key is also set, spend remains enabled and **freeze is the
-> emergency stop**.*
+Three tiers per the Testing Integrity Standard: unit (predicates, state derivation, probe
+cause-checking), integration (the four routes over HTTP), E2E (the feature is alive — enable
+→ restart → status reports enforcing).
 
-Review flagged that earlier drafts said "doors shut instantly" unqualified while also
-admitting the config-enabled exception — the reassuring sentence and the true one sat in
-different sections. The qualification now travels with the claim everywhere it appears,
-including in the plan text the operator reads before committing a disable.
+## Why not a durable job model for the restart handoff
 
-- **The metered-call path performs a synchronous enable check on every paid call**,
-  reading the live enable state — not a value captured at construction. A constructed-but-
-  disabled layer therefore refuses at the point of spend, which is the only place the
-  check matters. Without this the disable would be cosmetic, closing routes while the
-  spend path carried on; a third review round flagged exactly that gap.
-- **Disable is verified the same way enable is**, by its own synthetic probe: after a
-  disable, a dry-run call on the real metered path must refuse with the specific
-  *money-layer-disabled* reason. `ready: false` is asserted, not assumed, and a disable
-  whose probe does not confirm refusal reports `repair-failed` rather than success.
+The restart path specifies audit-before-handoff, a poll, and an `observed-ready` written by
+the new process — which resembles a small durable-workflow engine, and the alternative
+(a local job record with explicit states and retries) deserves an answer rather than a
+silent preference.
 
-**In-flight work at the moment of disable.** "Instantly" is a claim about new calls, and
-saying only that would leave the operator's actual question unanswered: what about the
-call already running? Declared, because a disable whose scope is vague is a disable nobody
-can rely on in an emergency:
-
-- **A call that has not yet passed the enable check is refused.** This is the common case
-  and the one "instantly" refers to.
-- **A call already in flight with the provider is allowed to finish, and its spend IS
-  booked.** Killing it mid-flight would spend the money without recording it — the worst
-  of both outcomes, since the provider has already been asked to do the work. The ledger
-  must record what was actually incurred.
-- **Queued-but-unstarted work is dropped** at the enable check, like any new call.
-- **Reservation/commit flows** that reserved before the disable settle their reservation
-  normally; no new reservation is granted.
-- The disable response reports the count of in-flight calls still settling, so "disabled"
-  never silently means "and a few more charges are still landing."
-
-The honest summary given to the operator: *when the store flag is the active source,
-disable stops new spending immediately; a call already sent to a provider finishes and is
-billed. If the config key is also set, disable does NOT stop spending — freeze does.* For
-any harder or faster stop, freeze is the existing instrument and remains Bearer-cheap.
-
-### The surface
-
-The Spend tab renders the switch as its own block, above the per-door arming UI, in the
-disabled state — so an operator who opens the tab sees *the thing they came to do*
-rather than an explanation of why the page is empty. Enabling reveals the existing
-arming flow unchanged. Disabling is the quieter, secondary action.
-
-### What it deliberately does NOT do
-
-- **It does not arm any door.** Enabling the layer changes no door's `goLiveState`;
-  every door stays `not-live` with `$0` committed until separately armed with the PIN.
-  The enable is permission to *use* the arming flow, never a grant of spend.
-- **It does not give the agent authority.** The Bearer token can render a plan; only
-  the PIN can commit one. `POST /routing-spend/freeze` stays Bearer, because halting
-  money must always be cheap — that asymmetry is preserved exactly.
-- **It does not change `PATCHABLE_CONFIG_KEYS`.**
-
-## Resolved decision — the operator's monthly intent
-
-Separately reported by the operator: they want "$100/month". The cap model has a
-**lifetime total** and a **daily rate**, and no calendar-month concept. The three
-honest options, none of which is free:
-
-1. **Daily-rate approximation** (~$3.30/day): no code change; does not stop a heavy
-   fortnight followed by a quiet one, and never sums to a month.
-2. **Lifetime as a pot** ($100, topped up): a genuine hard ceiling; requires the
-   operator to remember to refill, and a forgotten refill is a silent outage.
-3. **A real monthly cap**: a new cap dimension through the ledger, the gate, the plan
-   renderer and the caps view. Correct, and the largest change of the three.
-
-**DECIDED: Option 1 (daily-rate approximation), operator, 2026-08-16 14:26 PDT — "daily
-is fine for now".** This keeps the present build to the enable surface only; the cap
-model is untouched.
-
-**The honesty obligation this creates.** A daily rate is not a monthly cap and the surface
-must not imply otherwise. The plan text the operator reads before committing a daily cap
-must state plainly what it does and does not guarantee: a $3.30/day cap bounds any single
-day, and over a 30-day month bounds the worst case near $100 — but it does **not** cap a
-calendar month, and it does not prevent a heavy fortnight. The operator explicitly chose
-this shape "for now"; option 3 remains available as its own spec, and choosing it later
-changes only the cap dimension, not this enable surface. Nothing here forecloses it.
+It is rejected for this build because the handoff has exactly **one** step, **no** retry
+semantics worth modelling, and a **self-evident** terminal condition that the new process
+writes on its own. A job record would add durable state that can itself go stale, disagree
+with the derived lifecycle state, and require its own reconciliation — a second source of
+truth about readiness, which §1 spent an invariant eliminating. The operator-visible
+guarantee is already the strongest available one: **the poll observes the new process, not
+a record of intent.** If Phase 2 ever introduces multi-step or retrying transitions, a job
+model becomes the right shape; at one step it is machinery without a job to do.
 
 ## Decision points touched
 
-- **Adds** two plan actions and one PIN-gated commit route to the existing money
-  authority; the state lands OUTSIDE `PATCHABLE_CONFIG_KEYS`, in a store whose only
-  writer is a PIN-committed rendered plan.
-- **Replaces** `moneyOn()` with the two predicates of MLE-2 (`intentEnabled` /
-  `servingReady`), migrating every existing callsite to whichever it actually meant. The
-  config key stays honored, so an install that sets it today is unaffected.
-- **DOES touch, and the earlier draft was wrong to deny it.** The spec claimed it "does
-  not touch the metered call gate or the ledger" while simultaneously requiring every paid
-  call to re-check enable state and requiring a probe to traverse the real metered path.
-  Review caught the contradiction. The honest scope:
-  - **Metered call path / gate — MODIFIED.** A synchronous live enable check on every paid
-    call, plus the internal probe entry point. This is the load-bearing change; without it
-    disable is cosmetic.
-  - **Caps store — MODIFIED.** Holds the operator-enabled flag, the `repair-failed` record,
-    `lastTransitionAt`, and the probe sentinel fixture.
-  - **Ledger — MODIFIED (dry-run path only).** The sentinel evaluation runs in dry-run and
-    must be asserted to book nothing. Real booking behaviour is unchanged.
-  - **Per-door arming and the freeze asymmetry — GENUINELY UNTOUCHED.** Enabling arms no
-    door; freeze stays Bearer-cheap.
+- **Adds** the three plan actions of `MONEY_LAYER_PREGATE_ACTIONS`, one PIN-gated commit
+  route and one restart route to the money authority; the state lands OUTSIDE
+  `PATCHABLE_CONFIG_KEYS`.
+- **Replaces** `moneyOn()` with `intentEnabled` / `servingReady`.
+- **Modifies the metered call path** — a synchronous live enable check per paid call, plus
+  the capability-gated probe entry point. This is the load-bearing change; without it
+  disable is cosmetic.
+- **Modifies the caps store** — operator-enabled flag, failure record,
+  `lastTransitionAt`, probe sentinel, and the separate audit handle.
+- **Modifies the ledger (dry-run path only)** — the sentinel evaluation books nothing.
+- **Genuinely untouched:** per-door arming, the freeze asymmetry, `PATCHABLE_CONFIG_KEYS`.
 
-  Required tests follow this scope, not the old narrower claim: the metered path, caps
-  store, and ledger dry-run each carry tests for the behaviour added here.
-
-Classification (per **Judgment Within Floors**):
+Classification per **Judgment Within Floors**:
 
 | Decision point | Class | Justification |
 |---|---|---|
-| "May this commit apply?" (PIN + plan-id + nonce valid) | `invariant` | Authorization on money. There are no competing signals to weigh: either the operator's PIN authorized this exact rendered plan or it did not. Judgment here would be a weakness, not a strength. |
-| `intentEnabled` — did the operator ask for this on? | `invariant` | A pure OR over two declared sources (MLE-1). Deterministic by construction. |
-| `servingReady` — may money actually move? | `invariant` | `intentEnabled && lifecycleState === "ready"` (MLE-2). Deterministic; fails closed when readiness is `unknown`. |
-| "Is the money layer genuinely constructed and serving?" (the readiness probe) | `invariant` | A liveness check against the layer's own components, including the enforcing gate. Deterministic, and it fails CLOSED: unmeasurable ⇒ `unknown` ⇒ report not-ready and repair, never assume ready. |
-| "Do the two enable sources agree?" | `invariant` | Equality of two booleans. Disagreement is surfaced, never silently resolved by a tiebreak heuristic. |
+| May this commit apply? (PIN + plan id + nonce + signed action + machine) | `invariant` | Authorization on money. No competing signals: either the operator's PIN authorized this exact rendered plan or it did not. |
+| `intentEnabled` | `invariant` | A pure OR over two declared sources. |
+| `servingReady` | `invariant` | Conjunction of intent, lifecycle and lock. Fails closed when any input is `unknown`. |
+| Is the cap gate enforcing? (readiness probe) | `invariant` | A liveness check with a declared expected cause; unmeasurable ⇒ `unknown` ⇒ not ready. |
+| Which of MLE-1's four source states applies? | `invariant` | Equality over two booleans; surfaced, never tiebroken. |
 
-No judgment-candidate points. Every decision this spec adds is a deterministic
-authorization or liveness check on money — the class where static rules are correct and
-weighing competing signals would be a defect.
+No judgment-candidate points. Every decision added is a deterministic authorization or
+liveness check on money — the class where static rules are correct and weighing competing
+signals would be a defect.
 
 ## Verify the state, not its symbol (P20)
 
-The one detector this spec adds is the **cap-gate readiness probe**, declared per P20.
+The one detector added is the cap-gate readiness probe (§6).
 
-**Its name is its scope.** The probe enters the metered path after go-live and before the
-cap check, so it proves *cap enforcement is wired and refusing* — it does not exercise the
-full paid-call route end to end, and calling it an end-to-end probe would be the same
-overclaim this spec keeps catching elsewhere. Review pushed on the wording and was right.
-Full-path coverage is a separate, existing concern carried by the metered path's own
-integration tests, which this spec extends with the live enable check; the readiness probe
-deliberately does not duplicate them. What `ready` asserts is precisely: *the cap gate is
-constructed, reachable from the metered path, and refuses an over-cap attempt for the
-cap-exceeded reason.*
-
-- **Symbol read:** the money-layer components resolve as constructed on the server object.
-- **State claimed:** the money layer is genuinely running and will enforce caps.
-- **Independent corroboration:** "the gate object exists and answers" is itself only a
-  symbol — cross-model review pushed correctly on this. The probe's corroboration is a
-  **synthetic refusal**: a dry-run spend evaluation on a sentinel key, deliberately over
-  its cap, driven through the **real metered-call path** rather than by calling the gate
-  directly. Ready means *the path that spends money demonstrably refused an over-cap
-  attempt*. This proves the call path routes through the gate, which component-presence
-  cannot. The sentinel evaluation books nothing: it runs in the ledger's existing
-  dry-run mode and is asserted to leave committed spend unchanged.
-
-  **A refusal is not evidence unless its CAUSE is checked.** A second review round caught
-  that the metered path can refuse for many unrelated reasons — door not armed, unknown
-  key, missing provider, auth failure, malformed request — and any of those would make the
-  probe pass while proving nothing about cap enforcement. So the probe asserts on the
-  refusal's *classification*, not merely its occurrence:
-
-  - **Sentinel identity:** a reserved keyRef (`__probe_sentinel__`) that is never a real
-    paid door and can never be armed for live spend.
-
-    **How a never-live sentinel reaches the cap gate at all** — a review round caught the
-    tension here, and it is worth stating precisely, because an implementer left to guess
-    would build a probe that always fails for the wrong reason. The sentinel is a
-    **probe-only fixture in dry-run mode**: it is registered in the caps store with a
-    nominal cap and a `probe: true` marker, and the probe's evaluation deliberately
-    enters the metered path at the point **after** the go-live check and **before** the
-    cap check. It therefore traverses genuine cap enforcement without ever being live.
-    That bypass is scoped to the `probe: true` fixture and to dry-run mode, asserted by
-    test: a non-probe key presented on the probe path is refused, so the bypass cannot
-    become a route around go-live for anything real.
-
-    **A runtime check on a flag is too weak a boundary for a go-live bypass**, and review
-    was right to push here — twice. "Non-exported and non-routable" is better than a flag
-    check, but in a TypeScript codebase that boundary erodes quietly through barrel files,
-    test-only exports, and dependency injection; nothing structurally prevents a future
-    refactor from handing the bypass to route code. So the boundary is a **capability**,
-    not a visibility convention:
-
-    - The probe path accepts a **closure-scoped capability token** minted once, at
-      money-layer construction, and handed only to the readiness prober. The token type is
-      not constructible by route code — there is no exported constructor, and possession is
-      the authorization.
-    - No token ⇒ the probe path behaves exactly like the normal metered path, i.e. go-live
-      is enforced. The bypass does not exist for a caller that cannot present the token.
-    - **A negative integration test proves HTTP cannot reach it**: every route is exercised
-      against the sentinel and must fail to obtain a bypassed evaluation. A lint (no route
-      handler references the probe symbol) remains as a cheap early signal, but the test is
-      the authority.
-
-    The `probe: true` runtime check stays as defence in depth. The point of the change is
-    that the bypass is now unreachable by construction rather than by convention.
-  - **Preconditions asserted before the probe runs:** the sentinel resolves, its provider
-    is present, and the request is well-formed — so those failure modes are excluded up
-    front rather than being mistaken for enforcement.
-  - **Expected result:** refusal with the specific cap-exceeded reason code. Any other
-    refusal reason ⇒ `unknown` ⇒ NOT ready. A refusal for the wrong reason is treated as
-    a probe failure, never as a pass.
-  - **Post-assertion:** committed spend for the sentinel is unchanged.
-- **Symbol present, state absent:** components constructed from a stale pre-enable boot
-  could exist while the gate is not enforcing — which is why the gate is probed directly
-  rather than inferred from its siblings.
-- **State present, symbol absent / unmeasurable:** the probe returns `unknown`, never a
-  flattering default. `unknown` is treated as NOT-ready — the least-harmful action here is
-  to attempt the repair and report honestly, because a false "ready" opens spending while
-  a false "not ready" costs only a restart.
+- **Symbol:** the money-layer components resolve as constructed.
+- **State claimed:** cap enforcement is live on the path that spends.
+- **Corroboration:** a synthetic over-cap dry-run through the real metered path that must
+  refuse **for the cap-exceeded reason specifically** — component presence is explicitly
+  not sufficient evidence, and neither is a refusal of unknown cause.
+- **Symbol present, state absent:** components from a stale pre-enable boot could exist
+  while the gate is not enforcing — hence the probe, not an inference from siblings.
+- **State present, symbol absent / unmeasurable:** returns `unknown`, treated as NOT ready.
+  The least-harmful action is to report honestly and repair: a false "ready" opens spending;
+  a false "not ready" costs a restart.
 
 ## Multi-machine posture
 
-- **The operator-enabled flag + caps state** (`RoutingSpendCapsStore`): `machine-local`.
-  `machine-local-justification: physical-credential-locality` — the state authorizes
-  spending against provider credentials that physically live in one machine's config home,
-  and the dashboard PIN that commits it is per-machine and does not cross the mesh (the
-  same reason the existing money routes and the follow-me code-submit step are per-machine).
-  Replicating an enable across machines would grant spend authority on a machine whose
-  operator never approved it. Enabling is therefore a per-machine action, and the Spend
-  tab says so plainly rather than implying a fleet-wide switch.
-- **The Spend tab surface itself:** `proxied-on-read` — it renders whichever machine's
-  server is fronting it, and the existing pool-link machinery already resolves the holder.
-- **The enable/disable audit trail** (`caps/log`): `machine-local`, same justification —
-  it is the audit of a machine-local authorization and belongs with the state it records.
+- **Operator-enabled flag, caps state, audit trail:** `machine-local`.
+  `machine-local-justification: physical-credential-locality` — the state authorizes spending
+  against provider credentials that physically live in one machine's config home, and the
+  dashboard PIN that commits it is per-machine and does not cross the mesh. Replicating an
+  enable would grant spend authority on a machine whose operator never approved it. Enabling
+  is a per-machine action and the Spend tab says so rather than implying a fleet-wide switch.
+- **The Spend tab surface:** `proxied-on-read` — the existing pool-link machinery resolves
+  the holder.
 
 ## Frontloaded Decisions
 
-Every decision that would otherwise stop the build mid-run is closed here:
-
-1. **Build it at all** — YES (operator, 2026-08-16 14:26 PDT).
-2. **Cap shape** — daily-rate approximation (operator, same message). The cap model is untouched.
-3. **Where the enable state lives** — Option 1, `RoutingSpendCapsStore`.
-4. **Handling of the two sources** — OR for resolution; the four states of MLE-1 are enumerated and only `config-enabled` is surfaced for action. **Disable clears the STORE flag only.** It never writes `.instar/config.json`. When the config key is true, disable reports *still enabled by config* with the remediation named, and is never presented as a successful disable. (MLE-1.)
+1. **Build it** — yes (operator, 2026-08-16 14:26 PDT).
+2. **Cap shape** — daily-rate approximation (operator, same message); the cap model is untouched.
+3. **Where enable state lives** — `RoutingSpendCapsStore`.
+4. **Two sources** — OR; four enumerated states; disable clears the store flag only and
+   never writes config.
 5. **Enable when already enabled** — re-verify and repair, never a no-op.
-6. **Disable** — clears the store flag; stops new spending **only when the config key is not also enabling it**. Never restarts the server.
-7. **Freeze stays Bearer** — unchanged; halting money stays cheap.
-8. **Does the agent gain any new authority?** — No. Bearer renders plans; only the PIN commits.
+6. **Disable** — clears the store flag; stops new spending only when config is not also
+   enabling it; never restarts the server.
+7. **Freeze** — stays Bearer-cheap and exempt from `servingReady`.
+8. **Hot construction** — Phase 2, explicitly out of scope.
+9. **Agent authority** — unchanged. Bearer renders plans; only the PIN commits.
 
 ## Open questions
 
 *(none)* — both previously-open decisions were resolved by the operator on 2026-08-16.
 
+## Honest scope limit — Phase 1 cannot fully remediate `config-enabled` remotely
+
+Stated plainly rather than left for an operator to discover: if the money layer was enabled
+by the config-file key, **Phase 1 gives no remote way to turn it off.** Disable clears only
+the store flag; mirroring produces `both-enabled` and leaves config the stronger source; no
+route here writes `.instar/config.json`, deliberately.
+
+What a remote operator CAN do: **freeze**, which stops spend immediately and completely, and
+is always reachable. That is a real stop, not a consolation — but it is a different control
+from "off", and the surface says so instead of implying parity.
+
+To genuinely disable, the config key must be removed on the machine. The Spend tab therefore
+shows, in the `config-enabled` state, **the exact file path and key to remove** — so the
+operator can do it themselves, or hand the instruction to someone at the machine, without
+having to ask what to change. Making that removal remotely performable is a larger authority
+question and belongs to its own spec, not to this one.
+
 ## Risks
 
-- **The obvious one: this makes real spending easier to switch on.** Mitigated by
-  keeping the enable PIN-gated and plan-bound, by leaving every door disarmed on
-  enable, and by leaving freeze Bearer-cheap. The alternative — leaving it unreachable
-  — has its own failure mode, which is the operator hand-editing a JSON file on a
-  money-bearing config while reading instructions off a phone.
-- **Two sources of truth for one flag** (config key + store), which Option 1 makes real.
-  Naming one "authoritative" and surfacing both is NOT sufficient — an unchecked pair of
-  stores that answer the same question is precisely the drift the **Cross-Store Coherence
-  Is an Invariant** standard exists to prevent, and the Standards-Conformance Gate flagged
-  it on round 1. The invariant is therefore declared and checked, not merely documented:
+- **This makes real spending easier to switch on.** Mitigated by keeping the enable
+  PIN-gated and plan-bound, leaving every door disarmed on enable, and keeping freeze
+  Bearer-cheap. The alternative — leaving it unreachable — has its own failure mode: the
+  operator hand-editing a money-bearing JSON file while reading instructions off a phone.
+- **Two inputs to one question.** Mitigated by MLE-1's enumerated states, by only one of
+  four needing operator attention, and by the acknowledgement requirement on a
+  config-enabled disable. Honestly stated cost: a disable can fail to disable, and the
+  surface must say so every time.
+- **The daily rate is not a monthly cap.** A $3.30/day cap bounds any single day and bounds
+  a 30-day worst case near $100, but does not cap a calendar month and does not prevent a
+  heavy fortnight. The operator chose this shape "for now"; a real monthly cap remains
+  available as its own spec and nothing here forecloses it.
 
-  **Invariant MLE-1.** `intentEnabled` resolves to `store.operatorEnabled === true || config.routingSpend.money.enabled === true` — an OR, so neither source can silently *disable* what the other enabled, and no state exists in which the layer is live but both sources read false.
+---
 
-  **MLE-2 — intent is not permission to spend.** `moneyOn()` as a single predicate was
-  doing two jobs and could therefore lie: after a persisted flag but a *failed*
-  construction, it read `true` while money could not safely move. Rounds 5 and 6 both
-  surfaced symptoms of this before the cause was named. It is split:
+# Appendix A — Phase 2: hot construction *(non-normative, out of scope)*
 
-  | Predicate | Means | Composed of |
-  |---|---|---|
-  | `intentEnabled` | the operator asked for the layer to be on | store flag OR config key (MLE-1) |
-  | `servingReady` | the enforcement layer is up, so paid calls may be attempted | `intentEnabled && lifecycleState === "ready"` |
+Phase 1 converges on restart. Phase 2 would remove that restart by constructing the layer
+in place. It is recorded here so Phase 2 need not rediscover the ordering — not as
+requirements for this build.
 
-  **What `ready` does and does not promise.** `ready` means **enforcement-ready**: the cap
-  gate is constructed, reachable from the metered path, and refusing over-cap attempts. It
-  does **not** promise provider-ready — credentials, booking commit, and downstream
-  execution are separate concerns with their own failure modes, and a cap-gate probe
-  cannot speak for them. Review flagged that an operator-facing `ready` naturally reads as
-  "everything works", so the surface states the narrower meaning in words rather than
-  relying on the reader to infer it: *"spending controls are up and enforcing"* — never
-  *"payments are working"*. A provider that is broken while the gate is healthy shows up
-  as a failed call with its own reason, not as a false `ready`.
+**Phase 2 must plug into the existing server lifecycle, not invent a parallel one.** Its
+first task is to extend the existing component-construction path in `server.ts`. If that is
+infeasible, Phase 2 needs its own spec; it does not grow out of this one.
 
-  - **Paid spend is gated on `servingReady`** — never on `intentEnabled` — in addition to
-    the existing freeze and cap checks. A persisted intent with a failed construction
-    therefore spends nothing.
-  - **`servingReady` includes the single-instance-lock check on every paid call.** If that
-    lock is load-bearing against two processes racing money state, then checking it only at
-    startup/commit/status leaves the spend path — the one that actually moves money —
-    trusting a fact that may have expired. A lost lock fails closed: spend refuses.
-  - **Freeze is NOT subject to `servingReady`.** Freeze is Bearer-authorized and available
-    whenever intent or constructed spend machinery exists, explicitly including
-    `repair-failed` and `config-enabled`. Gating the emergency stop on the healthy state
-    would remove the brake exactly when it is most needed — and since a config-enabled
-    disable cannot stop spend, freeze is the operator's real stop in that case. It is named
-    as an explicit exception to the route-visibility rule, not left to "every other route".
-  - **Route visibility is gated on an explicit allowlist**, not on either predicate
-    doubling as an authorization: the two enable actions and the status read are the
-    pre-gate allowlist; every other `/routing-spend/*` route requires `servingReady`.
-  - **`moneyOn()` is removed rather than redefined.** Leaving the old name in place would
-    invite exactly the accidental reuse that caused this — a future callsite reaching for
-    the familiar predicate and getting intent when it needed permission. Its callsites are
-    migrated explicitly to whichever of the two they actually meant, and a lint fails the
-    build if the name reappears.
+Additional states: `enabling` (with `423` on concurrent enable) and `500` construction
+error. A process-local lock serializes construction — sufficient *only because* instar
+enforces one server process per agent home, which Phase 1 already verifies at runtime
+(T10/T11).
 
-  **Four named states, not a boolean "do they agree".** An earlier draft said both
-  "surface every difference" and "store-true + config-false is not worth surfacing",
-  which cannot both hold; cross-model review flagged the contradiction. The state is
-  therefore enumerated, and each state's operator-visibility is declared:
+Lifecycle container:
 
-  | store | config | State | Surfaced? |
-  |---|---|---|---|
-  | false | false | `disabled` | Normal. The Spend tab shows the enable control. |
-  | true | false | `operator-enabled` | Normal post-build state. Not a warning. |
-  | false | true | `config-enabled` (legacy) | **Yes** — labelled as set by config file, with a one-tap migration to store-set offered. |
-  | true | true | `both-enabled` | Informational only; shown in the detail view, not as a warning. |
+| Phase | What may happen | Global visibility |
+|---|---|---|
+| `prepare` | allocate components, acquire handles | none |
+| `start` | start internal machinery | none |
+| `probe` | cap-gate readiness probe | none |
+| `commit` | publish; register metrics, timers, watchers, handlers | **only here** |
+| `rollback` | idempotent cleanup, reverse order | — |
 
-  `GET /routing-spend/caps` reports `enableSources: { store, config, state }` carrying
-  that state name. There is no `agree` boolean, because "disagree" was the wrong frame:
-  only `config-enabled` needs the operator's attention, and it needs it as a migration
-  prompt rather than an alarm.
+Global registration only after a successful probe. Every prepared component exposes an
+idempotent cleanup hook; a cleanup that throws is logged and the rest still run; rollback is
+safe to call twice. "Discarded" is not sufficient — dropping a reference does not stop a
+timer, close a watcher, unregister a metric or shut down a provider client.
 
-  **Checked, on a cadence, not on hope.** The state is recomputed at (a) money-layer
-  construction, (b) every `GET /routing-spend/caps` read, and (c) each enable/disable
-  commit's post-verify step. Entering `config-enabled` is audited to `caps/log`.
+# Appendix B — Why the design is shaped this way *(non-normative)*
 
-  **Disable clears what it can, and says what it cannot.** The config key is deliberately
-  NOT writable by this path — `PATCHABLE_CONFIG_KEYS` stays untouched and no PIN commit
-  writes `.instar/config.json`, because a route that can edit the money config file is a
-  larger authority than the one being added. Therefore:
+Ten rounds of cross-model review (GPT-tier, via the agent's own codex CLI) shaped this
+design. The substantive corrections, recorded so they are not re-litigated:
 
-  - Disable **always** clears the store flag, immediately.
-  - If the config key is true, the layer is still on, and the disable response and the
-    Spend tab say exactly that: *"the layer is still enabled by a setting in the config
-    file on this machine; clearing the store flag alone will not turn it off"* — plus the
-    named remediation. It reports the true end state, never a success it did not achieve.
-  - The plan text rendered **before** the operator commits a disable already warns of this
-    when the config key is set, so the limitation is known at decision time rather than
-    discovered afterwards.
-  - **When config is true, the disable plan requires an explicit acknowledgement** — the
-    operator must confirm they understand this action will NOT stop spending — and the
-    surface routes them to **freeze** as the immediate stop, presented as the primary
-    action with disable demoted to secondary. A button labelled "disable" that leaves money
-    flowing is a genuine operator hazard however well documented, so in that state the UI
-    leads with the control that actually works.
-
-  This is a real, stated limitation of the daily-shape build, not a hidden one. It affects
-  only installs that set the legacy config key by hand — for which the migration prompt is
-  the honest fix.
-
-## Status
-
-Authored 2026-08-16 against live state on the operator's laptop (`routingSpend.money`
-absent from config; `/routing-spend/plan` returning 503; `routingSpend` verified absent
-from `PATCHABLE_CONFIG_KEYS`).
-
-**Approved by the operator 2026-08-16 14:26 PDT** (topic 46473): build it, with the
-daily-rate cap shape. Both previously-open decisions are now closed — storage is Option 1
-(`RoutingSpendCapsStore`), cap shape is the daily-rate approximation.
-
-Convergence review still outstanding; per the money layer's own rules no code lands
-against this spec until it carries the `review-convergence` tag as well as this approval.
+1. **The bootstrap exemption exists because the first draft reproduced the bug it fixes.**
+   The enable plan was rendered by a route behind the very gate being opened.
+2. **`moneyOn()` was split** because one predicate answered two questions — "did the
+   operator ask?" and "is it safe to spend?" — and could answer yes to the second when only
+   the first was true (persisted flag, failed construction).
+3. **`lifecycleState` derives from resolved intent** because a draft returned
+   `disabled` while the config key still enabled spend. A field reading "disabled" while
+   money can move is the exact failure this spec exists to eliminate.
+4. **The metered path re-checks per call** because a draft closed the routes and left the
+   spend path reading a construction-time value — a cosmetic disable.
+5. **The probe checks the refusal's cause** because a refusal alone can come from a dozen
+   unrelated failures, any of which would have read as success.
+6. **The probe bypass is a capability token**, not a non-exported function, because module
+   visibility erodes through barrel files, test exports and DI.
+7. **Phase 1 ships pending-restart** because hot construction is a lifecycle manager, and
+   the operator's complaint was "no way to turn it on", not "it takes a restart".
+8. **The restart is specified end to end** because "the tab offers a restart" left a remote
+   operator holding a switch they could not finish flipping — the original complaint in a
+   new costume.
+9. **The single-instance-lock dependency is checked at runtime** because asserting a
+   load-bearing invariant in prose is not proving it.
+10. **"Mirror into store", not "migration"** — since no route may write config, the one-tap
+    action can only produce `both-enabled`, not a move off config.
+11. **The audit channel is a separate handle** because schema validation constrains what a
+    caller sends, not what the store permits.
+12. **A config-enabled disable requires acknowledgement and leads with freeze**, because a
+    button labelled "disable" that leaves money flowing is a hazard however well documented.
