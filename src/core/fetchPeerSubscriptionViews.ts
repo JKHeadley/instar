@@ -39,6 +39,8 @@ interface RawAccount {
   id?: unknown;
   email?: unknown;
   status?: unknown;
+  provider?: unknown;
+  framework?: unknown;
 }
 
 function mapAccounts(raw: unknown): MachineAccountRow[] {
@@ -55,6 +57,12 @@ function mapAccounts(raw: unknown): MachineAccountRow[] {
       status: typeof r.status === 'string' ? r.status : 'active',
       // A peer reporting an account in its OWN plain pool holds it locally.
       locallyHeld: true,
+      // The holder's own account kind. A follow-me enrollment for an account this machine does
+      // NOT hold has no other source for it, and defaulting it to Claude sends a Codex account
+      // down the Claude sign-in flow — a login that can never succeed. Absent stays absent so the
+      // resolver can tell "unknown" from "Claude".
+      provider: typeof r.provider === 'string' && r.provider.length > 0 ? r.provider : undefined,
+      framework: typeof r.framework === 'string' && r.framework.length > 0 ? r.framework : undefined,
     });
   }
   return out;

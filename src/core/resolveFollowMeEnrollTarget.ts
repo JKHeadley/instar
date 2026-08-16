@@ -14,6 +14,26 @@
 
 import type { MachinePoolView } from './accountFollowMeDepth.js';
 
+/**
+ * Config-home prefix for a follow-me enrollment slot, by framework.
+ *
+ * Each CLI reads its own home, so the prefix is not cosmetic: a codex-cli credential written under
+ * a `.claude-followme-*` home is invisible to `codex`, and the enrollment can never complete. The
+ * default stays `.claude-followme-` so every existing claude-code slot keeps its exact path.
+ */
+export function followMeConfigHomePrefix(framework: string | undefined): string {
+  switch (framework) {
+    case 'codex-cli':
+      return '.codex-followme-';
+    case 'gemini-cli':
+      return '.gemini-followme-';
+    case 'pi-cli':
+      return '.pi-followme-';
+    default:
+      return '.claude-followme-';
+  }
+}
+
 /** A local SubscriptionPool account row, as the resolver needs it. */
 export interface LocalAccountRow {
   id: string;
@@ -46,7 +66,11 @@ export type ResolveFollowMeEnrollTargetResult =
     }
   | {
       resolved: false;
-      code: 'account-record-missing-email' | 'account-record-email-conflict' | 'subscription-account-not-found';
+      code:
+        | 'account-record-missing-email'
+        | 'account-record-email-conflict'
+        | 'account-record-kind-conflict'
+        | 'subscription-account-not-found';
       reason: string;
     };
 
@@ -80,7 +104,13 @@ export function resolveFollowMeEnrollTarget(
       if (row.accountId !== accountId) continue;
       found = true;
       if (typeof row.email === 'string' && row.email.trim().length > 0) {
-        candidates.push({ email: row.email.trim(), source: 'peer', row: { id: accountId } });
+        // Carry the holder's provider/framework. This machine does not hold a peer-only account,
+        // so the holder's row is the ONLY evidence of what kind of account it is.
+        candidates.push({
+          email: row.email.trim(),
+          source: 'peer',
+          row: { id: accountId, provider: row.provider, framework: row.framework },
+        });
       }
     }
   }
@@ -107,12 +137,35 @@ export function resolveFollowMeEnrollTarget(
       reason: 'This account has conflicting emails on your machines. Repair or re-enroll the account records, then try again.',
     };
   }
+  // The account's KIND (provider/framework) decides which sign-in flow runs and which config-home
+  // the credential lands in, so it gets the same agreement discipline as the email. Holders that
+  // state a kind must agree; a holder that omits it abstains rather than voting for the default.
+  const kinds = new Set(
+    candidates
+      .map((candidate) => candidate.row.provider)
+      .filter((provider): provider is string => typeof provider === 'string' && provider.length > 0)
+      .map((provider) => provider.toLowerCase()),
+  );
+  if (kinds.size > 1) {
+    return {
+      resolved: false,
+      code: 'account-record-kind-conflict',
+      reason: 'This account is recorded as a different kind of account on different machines. Repair or re-enroll the account records, then try again.',
+    };
+  }
+
   const selected = candidates.find((candidate) => candidate.source === 'local') ?? candidates[0]!;
+  // Prefer the local row, then ANY holder that states the kind. Falling back to the default only
+  // when nobody states it is the whole point: silently defaulting a peer-only Codex account to
+  // Claude is what sent it down a sign-in flow it could never complete.
+  const kindRow =
+    (local?.provider && local.provider.length > 0 ? local : undefined) ??
+    candidates.find((candidate) => typeof candidate.row.provider === 'string' && candidate.row.provider.length > 0)?.row;
   return {
     resolved: true,
     expectedEmail: selected.email,
-    provider: (local?.provider && local.provider.length > 0) ? local.provider : defaultProvider,
-    framework: (local?.framework && local.framework.length > 0) ? local.framework : defaultFramework,
+    provider: (kindRow?.provider && kindRow.provider.length > 0) ? kindRow.provider : defaultProvider,
+    framework: (kindRow?.framework && kindRow.framework.length > 0) ? kindRow.framework : defaultFramework,
     label: (local?.nickname && local.nickname.trim().length > 0) ? local.nickname.trim() : accountId,
   };
 }

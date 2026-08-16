@@ -1,0 +1,26 @@
+{
+  "ts": "2026-08-16T09:39:16.044Z",
+  "slug": "followme-provider-framework-carry",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 93,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/coordination/FollowMeConsumerBackoffStore.ts",
+      "src/core/accountFollowMeDepth.ts",
+      "src/core/fetchPeerSubscriptionViews.ts",
+      "src/core/resolveFollowMeEnrollTarget.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 86,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

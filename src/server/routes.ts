@@ -29573,7 +29573,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ctx.enrollmentWizard.abandon(inFlight.id);
         console.log(`[follow-me] enroll-start id=${accountId} outcome=superseded-dead-pane`);
       }
-      const { resolveFollowMeEnrollTarget } = await import('../core/resolveFollowMeEnrollTarget.js');
+      const { resolveFollowMeEnrollTarget, followMeConfigHomePrefix } = await import('../core/resolveFollowMeEnrollTarget.js');
       const localAccounts = ctx.subscriptionPool.list().map((a) => ({
         id: a.id, email: a.email, nickname: a.nickname, provider: a.provider, framework: a.framework,
       }));
@@ -29586,8 +29586,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
 
       // Allocate this account's own config-home slot on THIS machine (one home per credential).
+      // The prefix follows the account's FRAMEWORK: each CLI reads its own home (`~/.codex` for
+      // codex-cli, `~/.claude` for claude-code), so a codex credential written under a
+      // `.claude-followme-*` home is invisible to the CLI that needs it.
       const safeAccountId = accountId.replace(/[^a-z0-9-]/gi, '-');
-      const configHome = path.join(os.homedir(), `.claude-followme-${safeAccountId}`);
+      const configHome = path.join(os.homedir(), `${followMeConfigHomePrefix(target.framework)}${safeAccountId}`);
 
       // WS5.2 R6b — this IS the remote/cloud (follow-me) enrollment path, so use the
       // remote-aware kind selection (device-code single-code flow where supported) and
