@@ -18,6 +18,7 @@ import {
   writeCredentialsSerialized,
   DEFAULT_CREDENTIAL_SLOT,
 } from './CredentialProvider.js';
+import { credentialLocationResolver } from '../core/CredentialLocationResolver.js';
 
 interface AccountEntry {
   email: string;
@@ -83,6 +84,18 @@ export class AccountSwitcher {
    * - Full email also works
    */
   async switchAccount(target: string): Promise<SwitchResult> {
+    // §2.2 census #9: while credential re-pointing is enabled, the legacy account-switcher is
+    // DISABLED. It writes a cached (refresh-token-less) blob into the default keychain entry outside
+    // the location ledger — which would destroy the default slot's tenant lineage. The bookkept
+    // replacement is POST /credentials/set-default. NO-OP while dark (the switch proceeds as today).
+    if (credentialLocationResolver().isEnabled()) {
+      return {
+        success: false,
+        message: 'Account switching is now managed by credential re-pointing — use the set-default credential lever (POST /credentials/set-default) instead of the legacy switcher.',
+        previousAccount: null,
+        newAccount: null,
+      };
+    }
     const registry = this.loadRegistry();
     if (!registry) {
       return { success: false, message: 'Account registry not found', previousAccount: null, newAccount: null };
