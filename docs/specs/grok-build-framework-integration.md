@@ -44,6 +44,18 @@ and the tag records the decision.
   in later rounds are corrected in place, with the correction visible.
 - Nothing here should be read as "no further defects exist." The honest prior,
   from twenty-two rounds of evidence, is that more will be found.
+- **That prior was borne out within hours, and the record is kept here rather
+  than left as a prediction.** After acceptance, six further findings arrived —
+  every one from DRIVING the thing, none from re-reading it: five readiness
+  messages naming the wrong framework; an injection-recovery diagnosis blaming a
+  framework it could not know was running; the closed headless lane reaching
+  further than "scheduled jobs" (agent-to-agent ingress); that ingress being
+  UNBOOTSTRAPPABLE rather than merely blocked, by the same self-blocking-recovery
+  shape as §3.1's auth deadlock; grok's approve-all being USER-GLOBAL rather than
+  session-scoped (a mentee correction, in the more-dangerous direction); and a
+  guard whose escalation named only the broken reasons it declined.
+  Two of the six corrected claims made in THIS document. A reader deciding how
+  much weight to put on the tag should weight that ratio, not the round count.
 - The open items are enumerated rather than closed: the deferral table, the <!-- tracked: CMT-1317 -->
   builder-blocking unknowns table (§0.0), and the stall-matrix `declared-gap`
   rows are the live list.
