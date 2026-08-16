@@ -22,6 +22,17 @@ export interface MachineAccountRow {
   status: string;
   /** True iff this machine holds a REAL local login for it (has a config-home), not meta-only. */
   locallyHeld: boolean;
+  /**
+   * The holder's provider/framework for this account (e.g. `openai` / `codex-cli`).
+   *
+   * Carried because a follow-me enrollment for a PEER-ONLY account has no local row to read the
+   * account's kind from, and guessing it is not a cosmetic error: it selects the wrong sign-in
+   * flow and the wrong config-home, so the login can never complete and retries forever. Optional
+   * because an older peer's payload may omit it — the resolver treats absence as "unknown", never
+   * as "Claude".
+   */
+  provider?: string;
+  framework?: string;
 }
 
 export interface MachinePoolView {

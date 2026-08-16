@@ -130,7 +130,11 @@ export function followMeBackoffKey(accountId: string, targetMachineId: string): 
 export function classifyFollowMeFailure(status: number, code?: string): FollowMeFailureLane {
   if (
     status === 409 &&
-    (code === 'account-record-missing-email' || code === 'account-record-email-conflict')
+    (code === 'account-record-missing-email' ||
+      code === 'account-record-email-conflict' ||
+      // A kind conflict is the same shape of problem as an email conflict: the account records
+      // disagree, and only an operator repair fixes it. Retrying on a cadence cannot.
+      code === 'account-record-kind-conflict')
   ) return 'identity';
   return 'other';
 }

@@ -44,6 +44,26 @@ describe('fetchPeerSubscriptionViews (WS5.2 §5.1)', () => {
     expect(views).toEqual([]);
   });
 
+  // A follow-me enrollment for an account this machine does not hold has no local row to read the
+  // account's kind from, so dropping provider/framework here is what let a Codex account be signed
+  // in as a Claude one.
+  it('carries provider/framework through so a peer-only account keeps its kind', async () => {
+    const peers: PeerRef[] = [{ machineId: 'mini', nickname: 'the Mini', url: 'http://mini:4042' }];
+    const fetchImpl = vi.fn(async () => ok([
+      { id: 'codex-sagemindai', email: 'j@x.com', status: 'active', provider: 'openai', framework: 'codex-cli' },
+    ]));
+    const views = await fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetchImpl as never, authToken: 't' });
+    expect(views[0].accounts[0]).toMatchObject({ provider: 'openai', framework: 'codex-cli' });
+  });
+
+  it('leaves the kind absent when the peer omits it, rather than inventing one', async () => {
+    const peers: PeerRef[] = [{ machineId: 'old', nickname: 'Old', url: 'http://old:4042' }];
+    const fetchImpl = vi.fn(async () => ok([{ id: 'a1', email: 'j@x.com', status: 'active', provider: '', framework: 42 }]));
+    const views = await fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetchImpl as never, authToken: 't' });
+    expect(views[0].accounts[0].provider).toBeUndefined();
+    expect(views[0].accounts[0].framework).toBeUndefined();
+  });
+
   it('defensively ignores malformed account rows', async () => {
     const peers: PeerRef[] = [{ machineId: 'p', nickname: 'P', url: 'http://p:4042' }];
     const fetchImpl = vi.fn(async () => ok([{ noId: true }, { id: 'good', status: 'warming' }]));

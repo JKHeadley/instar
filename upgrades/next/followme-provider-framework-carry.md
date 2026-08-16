@@ -1,0 +1,62 @@
+# Upgrade Guide — vNEXT
+
+<!-- bump: patch -->
+
+## What Changed
+
+When an account is approved to follow you onto a second machine, that machine signs in for itself
+rather than receiving a copied login. To do that it first has to know which service the account
+belongs to. If the account existed only on the other machine, that lookup was throwing the answer
+away and assuming Claude every time.
+
+So a Codex account handed to a second machine was sent through Anthropic's sign-in flow, and filed
+under a folder the Codex program never reads. The sign-in could not finish, and because it never
+reached a finished state, the system kept starting it over — every few minutes, indefinitely.
+
+The account's service now travels with the account. The machine asking a peer what accounts it
+holds keeps the service it is told, and the sign-in that follows uses it. The folder each login is
+stored in is now named after the service too, so a Codex login lands where `codex` will find it.
+
+## What to Tell Your User
+
+- "If you added a Codex account on one machine and it never finished signing in on the other, that
+  was this. It was being sent to the wrong sign-in page."
+- "Your existing Claude accounts are untouched — same folders, same behaviour."
+- "If two of your machines have contradictory records for the same account, I now stop and tell you
+  instead of guessing, and I stop retrying something retrying cannot fix."
+
+## Summary of New Capabilities
+
+None. This is a bug fix to an existing flow — no new endpoint, no new configuration, no new
+permission.
+
+## Compatibility Notes
+
+**Existing Claude sign-in folders do not move.** The folder prefix is derived from the service, and
+`claude-code` resolves to the same `.claude-followme-*` prefix it always used. A test pins this
+specifically.
+
+**A machine running an older version is handled.** Older builds do not report the account's service
+at all. Absence is treated as "no opinion", not as a vote for Claude, so a mixed-version set of
+machines cannot manufacture a disagreement and cannot drag the answer back to the old guess.
+
+**One new refusal.** If two machines both state a service for the same account and disagree, the
+enrolment stops with `account-record-kind-conflict` on the existing 409 response shape rather than
+picking whichever machine answered first. It is routed into the same bounded retry budget that the
+existing "records disagree about the email address" refusal uses, so it parks for repair instead of
+retrying. In practice such records would already have failed the older email-agreement check.
+
+**Response shape is unchanged.** The 409 body still carries `error`, `code`, `accountId` and
+`repairRequired`; only a new possible `code` value is added.
+
+## Evidence
+
+Reproduced against live state before fixing: one machine held the account as `openai` / `codex-cli`
+under a `.codex-followme-*` folder, while the receiving machine had recorded it as `anthropic` /
+`claude-code` under `.claude-followme-*`, with the server log cycling between starting the login and
+holding it for a confirmation that flow could never produce.
+
+Nineteen unit tests and eleven integration tests over the full HTTP route, covering: the holder's
+service carried for a peer-only account, the local record preferred when this machine already holds
+it, disagreement failing closed, an older peer abstaining rather than voting, the folder prefix per
+service, and the `claude-code` prefix staying exactly as it was.
