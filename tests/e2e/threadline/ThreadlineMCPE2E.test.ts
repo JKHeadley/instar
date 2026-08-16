@@ -46,16 +46,14 @@ function cleanupDir(dir: string): void {
 }
 
 /**
- * Test-friendly ThreadResumeMap that skips JSONL file existence checks.
+ * Test-friendly ThreadResumeMap that skips the JSONL file-existence check.
+ * Phase 2a (CMT-497): ThreadResumeMap is a view over ConversationStore; the only
+ * thing tests need to bypass is the JSONL guard (no real Claude session files in
+ * tests), so override just that and use the real view logic.
  */
 class TestThreadResumeMap extends ThreadResumeMap {
-  get(threadId: string): import('../../../src/threadline/ThreadResumeMap.js').ThreadResumeEntry | null {
-    const filePath = (this as any).filePath;
-    try {
-      if (!fs.existsSync(filePath)) return null;
-      const map = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      return map[threadId] || null;
-    } catch { return null; }
+  protected jsonlExists(): boolean {
+    return true;
   }
 }
 
