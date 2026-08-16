@@ -17,6 +17,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
 import {
   buildInteractiveLaunch,
   buildHeadlessLaunch,
@@ -127,10 +128,18 @@ describe('framework arg-rendering matrix (audit completeness) — codex-instar I
         binaryPath: binaryPathFor(framework),
         prompt: distinctivePrompt,
       });
-      // The prompt should appear somewhere in argv. Frameworks have
-      // different positions (-p for Claude, positional for Codex), so we
-      // just check presence rather than position.
-      expect(spec.argv.some(a => a.includes(distinctivePrompt))).toBe(true);
+      // The invariant is DELIVERY, not location: the prompt must reach the
+      // framework rather than being silently dropped. Frameworks differ in how
+      // — `-p` for Claude, positional for Codex, and a private `--prompt-file`
+      // for grok, which deliberately keeps prompts off argv because `ps` exposes
+      // a command line to every local principal. So follow the file when the
+      // framework hands one over, and check presence rather than position.
+      const pfIdx = spec.argv.indexOf('--prompt-file');
+      const delivered =
+        pfIdx >= 0
+          ? fs.readFileSync(spec.argv[pfIdx + 1]!, 'utf8').includes(distinctivePrompt)
+          : spec.argv.some(a => a.includes(distinctivePrompt));
+      expect(delivered).toBe(true);
     });
   });
 

@@ -1091,7 +1091,11 @@ describe('grok headless lane structural gate (round-7 → opened 2026-08-16)', (
       prompt: 'hello',
     } as never);
     expect(spec.argv[0]).toBe('/bin/echo');
-    expect(spec.argv[spec.argv.indexOf('-p') + 1]).toBe('hello');
+    // The prompt travels in a private file, never argv — `ps` would otherwise
+    // expose every job prompt to any local principal. Read it back, because a
+    // path that merely LOOKS right is not evidence the prompt was delivered.
+    const pf = spec.argv[spec.argv.indexOf('--prompt-file') + 1]!;
+    expect(fs.readFileSync(pf, 'utf8')).toBe('hello');
   });
 
   it('CONTROL: a job spawn still cannot reach a metered API key', () => {

@@ -245,7 +245,9 @@ describe('round-12: a grok-DEFAULT agent still has a working job surface', () =>
     expect(headlessLaneIsClosed('grok-build')).toBe(false);
     const spec = buildHeadlessLaunch('grok-build', { binaryPath: '/stub/grok', prompt: 'x' });
     expect(spec.argv[0]).toBe('/stub/grok');
-    expect(spec.argv).toContain('-p');
+    // Prompts go through a private file rather than argv (see the headless-lane
+    // suite); the declaration-vs-builder agreement this test pins is unaffected.
+    expect(spec.argv).toContain('--prompt-file');
   });
 
   it('CONTROL: an OPEN lane is not declared closed (the fallback must not fire for claude/codex)', () => {

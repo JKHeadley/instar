@@ -523,6 +523,37 @@ raise no menu at all, so a probe using one looks exactly like a dead floor. Both
 menus above are now verbatim fixtures, and both new assertions were shown red
 against the old patterns while the ten existing ones stayed green.
 
+### The headless lane put job prompts on argv, against the standing instruction
+
+The instruction for this integration was prompts via `--prompt-file`, never argv.
+The headless builder I wrote used `-p <prompt>` anyway, under a carve-out I wrote
+into its own comment: "acceptable ONLY for internal scheduler-authored prompts".
+
+That carve-out does not survive contact with the reason for the rule. `ps` shows
+every process's full command line to any local principal, so a prompt passed as an
+argument is legible to anything running on the machine for the lifetime of the job
+— and job prompts carry task context. The exposure does not care who authored the
+string. The adapter lane in the same integration had already established
+`--prompt-file` for exactly this reason, with a documented lifecycle; the headless
+builder simply diverged from its sibling.
+
+Measured before switching (not assumed equivalent): `grok --model grok-4.6
+--prompt-file <path>` prints the response to stdout and exits 0 in ~3.4s — the same
+behaviour class as `-p`.
+
+Now written 0600 into a `mkdtemp` directory (unpredictable and per-call-owned; a
+fixed shared subdir under tmpdir is pre-creatable by another principal), reusing
+the adapter lane's `grok-scratch-` prefix so the crash-orphan sweeper that already
+exists there collects these too. grok reads the prompt at startup, so that
+sweeper's one-hour staleness gate cannot pull a file from under a running job.
+
+Three existing tests asserted the `-p` argv shape and were UPDATED rather than
+deleted, because one of them carries a real invariant that outlives the mechanism:
+the arg-rendering matrix's "no silent prompt drop" check now follows the file when
+a framework hands one over, so it still proves delivery instead of proving
+placement. The new assertions read the file back — a path that merely looks right
+is not evidence a prompt was delivered.
+
 ## Class-Closure Declaration
 
 **`unbounded-self-action` → `n/a`.**

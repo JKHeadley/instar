@@ -58,6 +58,10 @@ lane is open; the safety bound moved to the case it was actually about.
   safety for another's.
 - 19 Grok test files, 235 tests.
 
+Grok job prompts are written to a private owner-only file and handed over by path,
+rather than passed as a command-line argument. Command lines are visible to
+anything running on the same machine, and a job prompt carries task context.
+
 ## Compatibility Notes
 
 The job lane's original note proposed running Grok jobs in an empty scratch folder.

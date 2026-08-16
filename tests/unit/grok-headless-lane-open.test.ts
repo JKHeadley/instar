@@ -23,6 +23,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   buildHeadlessLaunch,
   headlessLaneIsClosed,
@@ -37,10 +39,46 @@ describe('grok-build headless lane', () => {
       prompt: 'run a health check',
     });
     expect(spec.argv[0]).toBe('/opt/grok/bin/grok');
-    expect(spec.argv).toContain('-p');
-    // The prompt is exactly ONE argv element after -p, so a leading-dash prompt
-    // can never be re-parsed as a flag.
-    expect(spec.argv[spec.argv.indexOf('-p') + 1]).toBe('run a health check');
+    expect(spec.argv).toContain('--prompt-file');
+  });
+
+  it('puts the prompt in a private FILE, never on argv', () => {
+    // argv is world-readable — `ps` shows every process's full command line to
+    // any local principal — so a prompt passed as `-p <text>` is legible to
+    // anything on the machine for the life of the job. The first cut of this
+    // builder did exactly that under a self-granted carve-out for "internal
+    // scheduler-authored prompts"; job prompts carry task context and the
+    // exposure does not care who wrote the string.
+    const secret = 'summarise the deploy log for topic 44867';
+    const spec = buildHeadlessLaunch('grok-build', {
+      binaryPath: '/opt/grok/bin/grok',
+      prompt: secret,
+    });
+    // Not anywhere on the command line — asserted over the WHOLE argv, not just
+    // the slot after the flag, so a future builder cannot reintroduce it
+    // elsewhere and still pass.
+    expect(spec.argv.join(' ')).not.toContain(secret);
+    expect(spec.argv).not.toContain('-p');
+    // ...and genuinely readable from the file the flag points at. Reading it
+    // back is what distinguishes a real handoff from a plausible-looking path.
+    const file = spec.argv[spec.argv.indexOf('--prompt-file') + 1]!;
+    expect(fs.readFileSync(file, 'utf8')).toBe(secret);
+  });
+
+  it('the prompt file is owner-only and in a per-call unpredictable directory', () => {
+    // 0600 because the point of moving off argv is that other local principals
+    // cannot read the prompt; a world-readable file would just relocate the
+    // exposure. mkdtemp because a fixed shared path under tmpdir is
+    // pre-creatable by another principal.
+    const a = buildHeadlessLaunch('grok-build', { binaryPath: '/opt/grok/bin/grok', prompt: 'x' });
+    const b = buildHeadlessLaunch('grok-build', { binaryPath: '/opt/grok/bin/grok', prompt: 'x' });
+    const fileA = a.argv[a.argv.indexOf('--prompt-file') + 1]!;
+    const fileB = b.argv[b.argv.indexOf('--prompt-file') + 1]!;
+    expect(fileA).not.toBe(fileB);
+    expect(fs.statSync(fileA).mode & 0o777).toBe(0o600);
+    // Same prefix the adapter lane uses, so the crash-orphan sweeper that
+    // already exists there collects these too rather than leaking dirs forever.
+    expect(path.basename(path.dirname(fileA)).startsWith('grok-scratch-')).toBe(true);
   });
 
   it('the lane reports itself OPEN', () => {

@@ -14,6 +14,8 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import { codexSupportsHookTrustBypass } from './codexCapabilities.js';
 import { GROK_ONESHOT_DENIED_TOOLS } from '../providers/adapters/grok-build/transport/grokSpawn.js';
@@ -1101,12 +1103,41 @@ function buildGrokHeadlessEnvOverrides(): Record<string, string> {
   };
 }
 
+/**
+ * Materialise a grok headless prompt into a private file and return its path.
+ *
+ * WHY A FILE AND NOT `-p <prompt>`. argv is world-readable: `ps` shows the full
+ * command line of every process on the machine to any local principal, so a
+ * prompt passed as an argument is legible to anything running on the box for the
+ * lifetime of the job. The adapter lane established `--prompt-file` for exactly
+ * this reason, and the standing instruction for this integration is prompts via
+ * `--prompt-file`, never argv. The first cut of the headless builder used `-p`
+ * anyway, under a self-granted carve-out for "internal scheduler-authored
+ * prompts" — but job prompts carry task context, and the exposure does not care
+ * who authored the string.
+ *
+ * Measured before adopting: `grok --model grok-4.6 --prompt-file <path>` prints
+ * the response to stdout and exits 0 in ~3.4s, the same behaviour class as `-p`.
+ *
+ * Lifecycle: 0600, inside a `mkdtemp` dir whose name is unpredictable and
+ * per-call-owned (a fixed shared subdir under tmpdir is pre-creatable by another
+ * principal). Deliberately the SAME `grok-scratch-` prefix the adapter lane uses,
+ * so the crash-orphan sweeper that already exists there collects these too. grok
+ * reads the prompt at startup, so the file is unneeded after spawn and the
+ * sweeper's one-hour staleness gate cannot pull it from under a running job.
+ */
+export function writeGrokPromptFile(prompt: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-scratch-'));
+  const file = path.join(dir, 'prompt.txt');
+  // `wx` fails rather than truncating if the path somehow already exists.
+  fs.writeFileSync(file, prompt, { mode: 0o600, flag: 'wx' });
+  return file;
+}
+
 const grokBuildHeadlessBuilder: HeadlessBuilder = (options) => {
-  // grok headless one-shot (spec §4.1). NOTE: this legacy spawn path passes
-  // the prompt as the -p argv value — acceptable ONLY for internal
-  // scheduler-authored prompts. The provider-registry adapter (the preferred
-  // path) uses --prompt-file. The prompt is exactly one argv element following
-  // `-p`, so a leading-dash prompt can't be re-parsed as a flag.
+  // grok headless one-shot (spec §4.1). The prompt goes through a private file,
+  // never argv — see writeGrokPromptFile for why, and for what was measured
+  // before switching.
   //
   // OPENED 2026-08-16 on an operator decision, and the bound MOVED rather than
   // being dropped. It previously refused outright, pending "a scratch cwd at the
@@ -1133,7 +1164,7 @@ const grokBuildHeadlessBuilder: HeadlessBuilder = (options) => {
   // this one did not, which is exactly why it was the one that broke.
   const resolved = resolveModelForFramework('grok-build', options.model);
   if (resolved) argv.push('--model', resolved);
-  argv.push('-p', options.prompt);
+  argv.push('--prompt-file', writeGrokPromptFile(options.prompt));
   return { argv, envOverrides: buildGrokHeadlessEnvOverrides() };
 };
 
