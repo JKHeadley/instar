@@ -717,3 +717,98 @@ describe('renderPendingLogins — expected-account, liveness, wording floors, ou
 function el(): HTMLElement {
   return doc.createElement('div');
 }
+
+/**
+ * Provider grouping (operator request, 2026-08-15): the accounts list was a flat
+ * interleaved run of Claude and Codex cards, distinguishable only by a small meta
+ * line on each card. Grouping makes the split scannable.
+ *
+ * The load-bearing property is NOT that grouping happens — it is that grouping
+ * RE-ASSOCIATES without RE-RANKING, and that a single-provider install is untouched.
+ */
+describe('renderAccounts — provider grouping', () => {
+  const acct = (id: string, provider: string) => ({
+    id, nickname: id, provider, framework: provider === 'openai' ? 'codex-cli' : 'claude-code',
+    status: 'active', configHome: `/h/${id}`,
+  });
+
+  const headings = (t: Element) =>
+    Array.from(t.querySelectorAll('.sub-provider-heading')).map((n) => n.textContent);
+  const order = (t: Element) =>
+    Array.from(t.querySelectorAll('.sub-provider-heading, .sub-account-nick')).map((n) => n.textContent);
+
+  it('THE POINT: mixed providers are grouped, each under its own heading', () => {
+    const t = doc.createElement('div');
+    renderAccounts(doc, t, [acct('a1', 'anthropic'), acct('c1', 'openai'), acct('a2', 'anthropic')], NOW);
+    expect(headings(t)).toEqual(['Claude', 'Codex']);
+    // Every Claude account sits under Claude; the Codex one does not get stranded.
+    expect(order(t)).toEqual(['Claude', 'a1', 'a2', 'Codex', 'c1']);
+  });
+
+  it('CONTROL: a single-provider list is UNCHANGED — no heading at all', () => {
+    // Most installs have one provider. Without this, "we grouped everything" would
+    // silently add a redundant heading to the common case.
+    const t = doc.createElement('div');
+    renderAccounts(doc, t, [acct('a1', 'anthropic'), acct('a2', 'anthropic')], NOW);
+    expect(headings(t)).toEqual([]);
+    expect(order(t)).toEqual(['a1', 'a2']);
+  });
+
+  it('accounts keep their ORDER within a group — grouping re-associates, it does not re-rank', () => {
+    // Pool order carries meaning the dashboard cannot see (enrolment order, which
+    // account is default). Sorting would silently discard it.
+    const t = doc.createElement('div');
+    renderAccounts(doc, t, [acct('zeta', 'anthropic'), acct('alpha', 'anthropic')], NOW);
+    expect(order(t)).toEqual(['zeta', 'alpha']);
+  });
+
+  it('groups appear in FIRST-APPEARANCE order, not alphabetical', () => {
+    const t = doc.createElement('div');
+    renderAccounts(doc, t, [acct('c1', 'openai'), acct('a1', 'anthropic')], NOW);
+    expect(headings(t)).toEqual(['Codex', 'Claude']);
+  });
+
+  it('every account still renders exactly once — grouping must not drop or duplicate', () => {
+    const t = doc.createElement('div');
+    const accounts = [acct('a1', 'anthropic'), acct('c1', 'openai'), acct('g1', 'google'), acct('a2', 'anthropic')];
+    renderAccounts(doc, t, accounts, NOW);
+    const nicks = Array.from(t.querySelectorAll('.sub-account-nick')).map((n) => n.textContent);
+    expect(nicks.sort()).toEqual(['a1', 'a2', 'c1', 'g1']);
+    expect(t.querySelectorAll('.sub-account').length).toBe(4);
+  });
+
+  it('SECURITY: a hostile provider string is sanitized in the heading, never raw', () => {
+    // The heading is the one NEW dynamic string reaching the DOM, so it inherits the
+    // module's contract: textContent only, sanitized, no injected element survives.
+    const t = doc.createElement('div');
+    renderAccounts(doc, t, [
+      acct('x', '<img src=x onerror=alert(1)>'),
+      acct('a1', 'anthropic'),
+    ], NOW);
+    // The property is that the value arrives as TEXT, not that the characters vanish.
+    // Asserting innerHTML lacks the substring would be wrong: correctly-escaped text
+    // still reads "onerror" inside &lt;img …&gt;, so that assertion fails on working code.
+    expect(t.querySelector('img')).toBeNull();
+    for (const node of Array.from(t.querySelectorAll('*'))) {
+      expect(node.hasAttribute('onerror')).toBe(false);
+    }
+    const heading = t.querySelector('.sub-provider-heading')!;
+    expect(heading.children.length).toBe(0); // text only — no injected element survived
+  });
+
+  it('an account with no provider still renders under an honest heading', () => {
+    const t = doc.createElement('div');
+    renderAccounts(doc, t, [{ id: 'n', nickname: 'n', status: 'active' }, acct('a1', 'anthropic')], NOW);
+    // It is grouped rather than dropped, and the label does not invent a provider.
+    expect(t.querySelectorAll('.sub-account').length).toBe(2);
+    expect(headings(t)).toContain('Other');
+  });
+
+  it('the in-use marker survives grouping', () => {
+    const t = doc.createElement('div');
+    renderAccounts(doc, t, [acct('a1', 'anthropic'), acct('c1', 'openai')], NOW, 'c1');
+    const inUse = t.querySelector('.sub-account-inuse');
+    expect(inUse).not.toBeNull();
+    expect(inUse!.textContent).toContain('c1');
+  });
+});
