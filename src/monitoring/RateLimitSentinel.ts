@@ -97,10 +97,11 @@ export interface RateLimitSentinelDeps {
   getClaudeSessionId?: (sessionName: string) => string | undefined;
 
   /**
-   * Resolve a session's framework ('openai-codex' | 'anthropic-*' | undefined). When it
-   * returns 'openai-codex', recovery-verification reads the codex rollout JSONL instead
-   * of the Claude transcript. Absent/non-codex → the existing Claude path is used
-   * unchanged (so Claude behavior is byte-for-byte preserved).
+   * Resolve a session's framework ('codex-cli' | 'claude-code' | undefined) — the value
+   * carried on a running session (SessionManager). When it returns 'codex-cli',
+   * recovery-verification reads the codex rollout JSONL instead of the Claude transcript.
+   * Absent/non-codex → the existing Claude path is used unchanged (so Claude behavior is
+   * byte-for-byte preserved).
    */
   getSessionFramework?: (sessionName: string) => string | undefined;
 
@@ -128,6 +129,14 @@ export interface RateLimitSentinelDeps {
 export interface RateLimitSentinelConfig {
   /** Master kill switch. When false, report() is a no-op. */
   enabled?: boolean;
+  /**
+   * #33 codex parity: enable the codex account-usage detection poll (server-side), which
+   * reports throttled codex sessions into the sentinel so its (framework-aware) recovery
+   * runs for codex exactly as it does for Claude. Ships DARK (default off / undefined) —
+   * the Claude detection triggers are unaffected; flip on after a live codex-throttle
+   * verification. Rollback = set false.
+   */
+  codexUsageDetection?: boolean;
   /** Escalating wait (ms) before each re-engagement attempt for a THROTTLE/rate-limit
    *  recovery. Last value repeats. */
   backoffScheduleMs?: number[];
@@ -149,6 +158,7 @@ export interface RateLimitSentinelConfig {
 
 const DEFAULTS: Required<RateLimitSentinelConfig> = {
   enabled: true,
+  codexUsageDetection: false, // #33 codex detection ships DARK
   backoffScheduleMs: [30_000, 60_000, 120_000, 300_000, 300_000, 300_000],
   transientApiBackoffScheduleMs: [5_000, 15_000, 30_000, 60_000, 120_000, 300_000],
   maxAttempts: 6,
@@ -185,6 +195,7 @@ export class RateLimitSentinel extends EventEmitter {
     this.deferIf = deps.deferIf;
     this.cfg = {
       enabled: config.enabled ?? DEFAULTS.enabled,
+      codexUsageDetection: config.codexUsageDetection ?? DEFAULTS.codexUsageDetection,
       backoffScheduleMs: config.backoffScheduleMs ?? DEFAULTS.backoffScheduleMs,
       transientApiBackoffScheduleMs: config.transientApiBackoffScheduleMs ?? DEFAULTS.transientApiBackoffScheduleMs,
       maxAttempts: config.maxAttempts ?? DEFAULTS.maxAttempts,
@@ -450,7 +461,7 @@ export class RateLimitSentinel extends EventEmitter {
     // growth-based recovery check works for codex exactly as it does for Claude. Only
     // taken when the session is codex AND a thread id resolves — otherwise fall through
     // to the unchanged Claude path below (Claude behavior is byte-for-byte preserved).
-    if (this.deps.getSessionFramework?.(sessionName) === 'openai-codex') {
+    if (this.deps.getSessionFramework?.(sessionName) === 'codex-cli') {
       try {
         const threadId = this.deps.getCodexThreadId?.(sessionName);
         if (threadId) {
