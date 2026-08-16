@@ -77,7 +77,6 @@ import {
 } from './attentionApi.js';
 import { dashboardRefreshFailure } from './DashboardRefreshDiagnostics.js';
 import { KNOWN_GEMINI_MODELS } from '../providers/adapters/gemini-cli/models.js';
-import { formatLocalTimestamp } from '../utils/localTime.js';
 
 const execFile = promisify(execFileCb);
 
@@ -10518,7 +10517,7 @@ export function createRoutes(ctx: RouteContext): Router {
               historyLines.push(``);
               for (const m of history) {
                 const sender = m.fromUser ? (m.senderName || 'User') : 'Agent';
-                const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
+                const ts = m.timestamp ? new Date(m.timestamp).toISOString().slice(11, 19) : '??:??';
                 const histText = (m.text || '').slice(0, 2000);
                 historyLines.push(`[${ts}] ${sender}: ${histText}`);
               }
@@ -11155,7 +11154,7 @@ export function createRoutes(ctx: RouteContext): Router {
                 const sender = m.fromUser
                   ? (m.senderName || 'User')
                   : 'Agent';
-                const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
+                const ts = m.timestamp ? new Date(m.timestamp).toISOString().slice(11, 19) : '??:??';
                 const histText = (m.text || '').slice(0, 2000);
                 historyLines.push(`[${ts}] ${sender}: ${histText}`);
               }
@@ -12853,29 +12852,6 @@ export function createRoutes(ctx: RouteContext): Router {
         (typeof body.channel !== 'string' || !APPRENTICESHIP_CYCLE_CHANNEL_SET.has(body.channel))
       ) {
         throw new Error(`channel must be one of: ${APPRENTICESHIP_CYCLE_CHANNELS.join(', ')}`);
-      }
-      // Anti-fabrication tooth for the transcript-audit gate: a block declaring
-      // ledger:'local' claims its findings were filed into THIS agent's framework
-      // ledger — so at least one claimed dedup key must actually resolve here.
-      // 'remote'/'dry-run'/'failed' declarations are accepted as declared (the
-      // declaration itself stays queryable for meta-analysis); shape validation
-      // happens in the store either way.
-      const audit = (body as Record<string, unknown>).transcriptAudit as Record<string, unknown> | undefined;
-      if (
-        audit && typeof audit === 'object' && !Array.isArray(audit) &&
-        audit.ledger === 'local' &&
-        Array.isArray(audit.findingDedupKeys) && audit.findingDedupKeys.length > 0 &&
-        ctx.frameworkIssueLedger
-      ) {
-        const keys = (audit.findingDedupKeys as unknown[]).filter((k): k is string => typeof k === 'string');
-        const resolved = keys.some((k) => ctx.frameworkIssueLedger!.hasDedupKey(k));
-        if (!resolved) {
-          throw new Error(
-            "transcriptAudit declares ledger:'local' with filed findings, but none of the claimed " +
-              'findingDedupKeys exist in this agent\'s framework ledger. Run the auditor without --dry-run ' +
-              "so findings actually file, or declare ledger:'remote'/'dry-run'/'failed' honestly.",
-          );
-        }
       }
       const cycle = ctx.apprenticeshipCycleStore.record({
         ...body,
@@ -18194,36 +18170,7 @@ export function createRoutes(ctx: RouteContext): Router {
   // The endpoints construct ephemeral policy/tracker/router instances
   // per call with the parameters in the query string. They do NOT
   // depend on adapters being registered against the global Registry —
-  // production-adapter registration happens at server boot
-  // (src/providers/bootRegistration.ts); GET /providers/registry below
-  // is the REAL-registry introspection surface.
-
-  // GET /providers/registry — what is ACTUALLY registered (June-15
-  // readiness diagnostic; truth T1 of the live-wiring spec). Names and
-  // capability flags only — never prompt content or credentials (T-04).
-  router.get('/providers/registry', async (_req, res) => {
-    try {
-      const { registry } = await import('../providers/registry.js');
-      const ids = registry.list();
-      const adapters = ids.map((id) => {
-        const adapter = registry.get(id);
-        return {
-          id,
-          capabilities: adapter ? Array.from(adapter.capabilities).sort() : [],
-        };
-      });
-      const policyInstalled = Boolean(
-        (registry as unknown as Record<symbol, boolean>)[
-          Symbol.for('instar.serverBoot.routingPolicyInstalled')
-        ],
-      );
-      res.json({ adapters, count: adapters.length, routingPolicyInstalled: policyInstalled });
-    } catch (err) {
-      // @silent-fallback-ok — not silent: the error is surfaced to the
-      // caller as an HTTP 500 with the message.
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-    }
-  });
+  // production-adapter registration is tracked separately.
 
   router.get('/providers/routing/decide', async (req, res) => {
     try {

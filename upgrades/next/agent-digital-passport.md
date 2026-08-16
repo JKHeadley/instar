@@ -1,6 +1,3 @@
-# Upgrade Guide — vNEXT
-
-<!-- assembled-by: assemble-next-md -->
 <!-- bump: minor -->
 
 ## What Changed

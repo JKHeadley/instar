@@ -270,32 +270,6 @@ async function addQuota(opts: { stateFile?: string }): Promise<void> {
 
 const program = new Command();
 
-function rejectUnknownTopLevelCommand(program: Command, argv: string[]): void {
-  const firstArg = argv[2];
-  if (!firstArg || firstArg.startsWith('-')) {
-    return;
-  }
-
-  if (firstArg === 'help') {
-    program.outputHelp();
-    process.exit(0);
-  }
-
-  const commandNames = new Set<string>();
-  for (const command of program.commands) {
-    commandNames.add(command.name());
-    for (const alias of command.aliases()) {
-      commandNames.add(alias);
-    }
-  }
-
-  if (!commandNames.has(firstArg)) {
-    console.error(`error: unknown command '${firstArg}'`);
-    console.error(`Run 'instar --help' for available commands.`);
-    process.exit(1);
-  }
-}
-
 program
   .name('instar')
   .description('Persistent autonomy infrastructure for AI agents')
@@ -2484,8 +2458,6 @@ program
   .requiredOption('--end <timestamp>', 'Window end timestamp (any Date.parse-compatible value)')
   .option('--limit <n>', 'Messages to read per topic (max 100)', (v) => parseInt(v, 10))
   .option('--base-url <url>', 'Instar server base URL (defaults to this project config port)')
-  .option('--history-base-url <url>', "Server holding the drive TRANSCRIPT when it is not this one (e.g. the mentee's server) — findings still file to --base-url's ledger")
-  .option('--history-auth-token <token>', 'Bearer token for --history-base-url reads (prefer the INSTAR_HISTORY_AUTH_TOKEN env var — flags are visible in ps)')
   .option('--dir <path>', 'Project directory to load config from')
   .option('--dry-run', 'Print report without filing framework-issue observations')
   .option('--json', 'Print structured JSON report')
@@ -2496,8 +2468,6 @@ program
     end: string;
     limit?: number;
     baseUrl?: string;
-    historyBaseUrl?: string;
-    historyAuthToken?: string;
     dir?: string;
     dryRun?: boolean;
     json?: boolean;
@@ -2541,5 +2511,4 @@ program
     return route(taskPrompt, opts);
   });
 
-rejectUnknownTopLevelCommand(program, process.argv);
 program.parse();

@@ -28,7 +28,7 @@ export interface SentinelBootCoordinator {
 }
 /** The slice of the live-tail source the boot wiring drives before flushing. */
 export interface SentinelBootLiveTail {
-  pushTick: (opts?: { force?: boolean }) => Promise<unknown>;
+  pushTick: () => Promise<unknown>;
 }
 /** The slice of the wire transport the boot wiring uses (outgoing side). */
 export interface SentinelBootWire {
@@ -77,9 +77,7 @@ export function createHandoffSentinelBootWiring(deps: HandoffSentinelBootDeps): 
   const getTopicHistory = (topic: number, limit: number) => deps.telegram.getTopicHistory(topic, limit);
 
   return createHandoffSentinelWiring({
-    // force: a handoff is a deliberate one-shot — it must bypass the cadence
-    // path's version gate and failure backoff and attempt the flush NOW.
-    pushTick: async () => { await deps.liveTailSource.pushTick({ force: true }); },
+    pushTick: async () => { await deps.liveTailSource.pushTick(); },
     getIngressPosition: () => deps.telegram.getIngressPosition(),
     getTopicHistory,
     activeTopic: () => pickActiveTopic(getKnownTopicIds, getTopicHistory),
