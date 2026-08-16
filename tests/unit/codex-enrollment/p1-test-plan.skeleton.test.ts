@@ -1,0 +1,99 @@
+/**
+ * P1 codex-enrollment — TEST SKELETON generated from the spec's test plan.
+ *
+ * WHY THIS EXISTS
+ *   The spec's `## Test plan` is prose. This turns it into an executable skeleton so the build starts
+ *   from structure rather than re-reading paragraphs — one `it.todo` per test-plan row, each carrying
+ *   its requirement ids and the row's assertion text.
+ *
+ * WHAT IT IS NOT
+ *   It asserts nothing. Every entry is `it.todo`, so this file is GREEN and PROVES NOTHING — which is
+ *   deliberate: a skeleton that PASSED would be worse than none, because it would read as coverage.
+ *   Each todo must be replaced by a real assertion during the build, never deleted.
+ *
+ * PROVENANCE
+ *   Generated 2026-08-04 from docs/specs/codex-enrollment-p1.md while that spec was FROZEN for review
+ *   round 20, at 71 requirements. **The spec is NOT converged and NOT approved** — this is
+ *   approval-independent scaffolding only. Regenerate if the test plan changes; do not hand-edit the
+ *   row list or it will drift from the plan exactly as this effort's other derived lists did.
+ */
+import { describe, it } from 'vitest';
+
+
+describe("Unit", () => {
+  // the persisted record carries exactly `attestedEmail`/`attestedAt`/`credentialIat`/`verdict` and nothing else; the "liveness unverified" …
+  it.todo("P1-R19 P1-R20 \u2014 attestation record & state model");
+  // a path UNDER a default home (`~/.codex/sessions`) is REFUSED while `~/.codexBACKUP` and an arbitrary operator-supplied path are …
+  it.todo("P1-R60 P1-R27 P1-R28 \u2014 case identity, the four canonical consumers, and allowlist CONTAINMENT");
+  // a `claude-code` logout that exits 0 is asserted to yield the **accepted-unwitnessed** wording, NOT the witnessed-success wording — the row …
+  it.todo("P1-R73 \u2014 the Claude accepted-unwitnessed residual");
+  // Table A is asserted to be a pure function of (framework, DISPOSITION CLASS) — where the disposition class is `(home class, marker …
+  it.todo("P1-R71 P1-R72 \u2014 the removal decision tables are the SINGLE source");
+  // a `claude-code` row at **the agent home** RUNS ITS LOGOUT, is **refused the delete** with `slotRetainedByDesign` set, has its row removed, …
+  it.todo("P1-R67 P1-R68 \u2014 the DELETE-refusal set is framework-blind");
+  // `~/.claude` and `~/.claude-echo-3` are ADMITTED while `~/.claude/backups` and `~/.claude/projects` are REFUSED (component glob, siblings …
+  it.todo("P1-R65 P1-R66 \u2014 Claude's matcher and the framework-blind predicate");
+  // the §7 protected-home check returns TRUE for `~/.codex/sessions` AND for `~/.claude/backups` — descendants of two DIFFERENT default homes, …
+  it.todo("P1-R60 \u2014 the protected-home DESCENDANT backstop");
+  // a `claude-code` and a `codex-cli` account bound to the same agent-home directory make that home `shared` **by the §3 definition**, and §7 …
+  it.todo("P1-R21 P1-R30 \u2014 shared home & exclusivity over legacy state");
+  // a refused codex enroll-start leaves NO reservation, and a subsequent `add()` on the same pair succeeds (the self-block regression); the …
+  it.todo("P1-R29 \u2014 reservation ordering");
+  // a fixture whose subscription claims are **null** (the measured healthy paid shape) ATTESTS — no entitlement gate; a validly-signed token …
+  it.todo("P1-R31 P1-R32 P1-R33 P1-R34 \u2014 identity: entitlement, parse, clock, discovery");
+  // each of `credential-too-old`, `signing-key-unresolved`, `jwks-unreachable`, `discovery-unreachable` and `discovery-untrusted` are each …
+  it.todo("P1-R35 P1-R36 \u2014 verdict/remedy split");
+  // a partial CLAUDE wipe still removes its row unconditionally (the ghost-row regression — `[P1-R24]` must not retain it); a Claude account …
+  it.todo("P1-R61 P1-R62 P1-R63 P1-R64 \u2014 framework scope is asserted per CLAUSE, not per table");
+  // the marker is written on the create-new path ONLY and writing it onto an already-existing leaf is REFUSED (the mark-everything inversion); …
+  it.todo("P1-R58 \u2014 the provenance marker binds OWNERSHIP, not an event");
+  // `DELETE /subscription-pool/:id` removes a row that the wipe ordering would have retained (the operator's manual delete is never gated); a …
+  it.todo("P1-R57 \u2014 the ordering binds the orchestrator, not the store");
+  // no codex path in P1 writes a marker, so the destructive branch is unreachable end-to-end; the branch's own behavior is exercised only …
+  it.todo("P1-R59 \u2014 P1 unreachability is asserted, not assumed");
+  // a slot WITHOUT P1's provenance marker takes the row-remove-only branch **even when its path matches the allocator's shape** (the …
+  it.todo("P1-R48 P1-R49 P1-R50 P1-R51 \u2014 removal is default-safe and provenance-gated");
+  // `discovery-unreachable` and `discovery-untrusted` are returned for their own causes and are DISTINCT, and the untrusted verdict's remedy …
+  it.todo("P1-R52 P1-R53 \u2014 verdict causes stay distinguishable");
+  // a logout that EXITS 0 while leaving `tokens` in the slot's `auth.json` yields `loggedOut: false` (the exit-code regression); an unreadable …
+  it.todo("P1-R22 P1-R23 P1-R24 P1-R25 \u2014 removal predicate & ordering");
+  // `matrix/start-cell` refuses an `openai/codex-cli` target BEFORE issuing a mandate, for a **peer** target column as well as self, and no …
+  it.todo("P1-R38 \u2014 FD-7 forwarder refusal");
+  // a codex account sharing an email with a Claude account does not make the Claude slot resolve ambiguous; a single-Claude-account agent that …
+  it.todo("P1-R8 P1-R9 \u2014 cross-framework isolation");
+  // expired-but-validly-signed ⇒ ATTESTS; stale `iat` ⇒ HOLD; `alg:none` / HS256-with-public-key / token-supplied `jku` / iss- or aud-mismatch …
+  it.todo("P1-R3 P1-R14 P1-R15 \u2014 oracle");
+  // missing-leaf accepted; missing-ancestor refused; in-jail symlink accepted; escaping symlink refused at each depth; post-validation swap …
+  it.todo("P1-R1 P1-R2 P1-R13 \u2014 jail, exclusivity, allowlists");
+  // match ⇒ validated, mismatch ⇒ held; a structurally-invalid email ⇒ `invalid-email-format` verdict (the gate never throws); a successful …
+  it.todo("P1-R11 \u2014 store chokepoint & eligibility**: a patch to an unjailed `configHome` refused; a duplicate\n  canonical pair refused; a legacy unjailed row refused at pin time with a **log line only, and the\n  test asserts NO attention item is created** (`[P1-R37]`); a freshly\n  direct-added codex account reads `unknown-fresh` AND is locally executable; its projection\n  round-trips through the existing status set unchanged, through the `provider`/`framework` enums,\n  **and \u2014 the enum that actually carries the skew \u2014 through `QUOTA_SOURCES`** `[P1-R45]` `[P1-R46]`\n  `[P1-R47]`. The receive validator rejects the WHOLE record on an unknown enum value, so a peer whose\n  mirror predates a value drops the account entirely (`known: false`, not known-but-unusable).\n\n  **Adjudicated by running it, because two reviewers disagreed and one was generalizing:**\n  `PROVIDERS`/`FRAMEWORKS` have carried `openai`/`codex-cli` since the replicated store's FIRST\n  commit, so those two carry **no skew at all**. `QUOTA_SOURCES` gained `'codex-rollout'` on\n  **2026-07-11 (#1431)** \u2014 three weeks before this spec \u2014 and it is the ONLY enum a codex account\n  newly populates (the codex poll branch writes that source unconditionally on the first successful\n  poll). **The minimum peer version is therefore the release carrying #1431, NOT \"any version with\n  the store\"** \u2014 stating the latter would close the PR deliverable with a false version while the\n  real skew ships undetected. **[P1-R45]**\n\n  FD-5's rollback story names what a rolled-back peer does with an existing codex record: the row is\n  KEPT (no load-path rejection) and its quota branch predates P1 so polling continues; placement and\n  swap exclude it correctly; but the framework-blind `subscriptionPool.size() > 1` load-shed wiring\n  gate RETURNS, silently re-introducing exactly the harm `[P1-R9]` removes. Full revert is removing\n  the row via `DELETE /subscription-pool/:id`, which has no provider gate. P1 is flagless-additive\n  and ships **no kill switch**; that removal IS the revert lever. **[P1-R46]** **[P1-R47]**\n- **Unit \u2014 S7");
+  // a codex session receives the pinned slot with no default-home fallback; a codex launch with no assignable framework refuses; an unknown- …
+  it.todo("P1-R5 P1-R6 P1-R16 \u2014 session pinning & attribution");
+  // a codex wipe invokes the logout with the codex slot variable and no Claude variable; **the logout disposition for every (framework, …
+  it.todo("P1-R7 P1-R17 P1-R70 \u2014 wipe/logout");
+});
+
+describe("Scope-boundary check", () => {
+  // run as the three-clause operative test (no new watcher, no new recurring notice source, no new attention item) over every operator-facing …
+  it.todo("P1-R54 \u2014 Scope-boundary check");
+});
+
+describe("Unit/Integration", () => {
+  // `generateClaudeMd()` and the migrator's pure-append branch emit the block BYTE-IDENTICALLY; an existing CLAUDE.md that ALREADY contains …
+  it.todo("P1-R40 P1-R41 P1-R42 P1-R43 P1-R44 \u2014 awareness document shape");
+});
+
+describe("PR-review enumeration (not automatable)", () => {
+  // each framework resolves its fields; unsupported refuses; an unresolved pair is `unsupported` before jail/exclusivity; `update()` refuses a …
+  it.todo("P1-R12 \u2014 **a PR-REVIEW CHECKLIST ITEM, not an automated test row,\n  and labelled as one so the suite is not credited with coverage it does not have.** Every occurrence\n  of tracked/deferred/residual/Non-goal must resolve to a register row or to one of the five stated\n  acceptances, run as an ENUMERATION over the document rather than a grep for the words \u2014 which is\n  precisely why it cannot be automated: the check is whether each occurrence's MEANING resolves, and a\n  word-match would pass a document where every one of them dangled. It also earns its place: this check\n  is what caught `[P1-R73]` shipping as an undeclared fifth residual. Listed in the PR deliverables.\n- **Unit \u2014 adapter & registry");
+});
+
+describe("Dashboard render", () => {
+  // the self column renders `[P1-R41]`'s self string VERBATIM and asserts the ABSENCE of the setup attribute; the peer column renders the peer …
+  it.todo("P1-R10 P1-R41 \u2014 Dashboard render");
+});
+
+describe("Integration", () => {
+  // the add route accepts a JWKS-attested codex account with a matching `email` and still 400s credential-field smuggling, an unjailed …
+  it.todo("P1-R18 \u2014 Integration");
+});
