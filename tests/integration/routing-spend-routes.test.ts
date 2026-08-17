@@ -146,7 +146,7 @@ function moneyCtx(opts: { moneyOn?: boolean } = {}): RouteContext {
 }
 
 describe('Increment B money routes (integration)', () => {
-  it('ALL money routes 503 when routingSpend.money.enabled is not explicitly true — even on a dev agent', async () => {
+  it('every MUTATING money route 503s when the layer is not enabled — even on a dev agent', async () => {
     const app = appWith(moneyCtx({ moneyOn: false }));
     for (const [method, url] of [
       ['post', '/routing-spend/plan'],
@@ -154,11 +154,27 @@ describe('Increment B money routes (integration)', () => {
       ['post', '/routing-spend/go-live'],
       ['post', '/routing-spend/unfreeze'],
       ['post', '/routing-spend/freeze'],
-      ['get', '/routing-spend/caps/log'],
     ] as const) {
       const res = await (request(app) as unknown as Record<string, (u: string) => request.Test>)[method](url);
       expect(res.status, `${method} ${url}`).toBe(503);
     }
+  });
+
+  it('the audit log is REACHABLE but RESTRICTED while the layer is dark', async () => {
+    // CONTRACT CHANGE (money-layer-operator-enable-surface §2, T18): this route
+    // used to 503 with the rest. It no longer does, deliberately — a log that
+    // disappears when its subject is off is not a log, and the operator needs
+    // to see WHY spending stopped precisely in the state where every mutating
+    // route refuses.
+    //
+    // Availability is not disclosure: the split is by SENSITIVITY. The caps
+    // half stays empty pre-gate, so the row types this test's siblings care
+    // about are still withheld.
+    const app = appWith(moneyCtx({ moneyOn: false }));
+    const res = await request(app).get('/routing-spend/caps/log');
+    expect(res.status).toBe(200);
+    expect(res.body.filtered).toBe(true);
+    expect(res.body.entries).toEqual([]);
   });
 
   it('the full PIN plan flow: render → commit applies EXACTLY the rendered fields', async () => {

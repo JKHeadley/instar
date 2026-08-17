@@ -1,0 +1,43 @@
+{
+  "ts": "2026-08-17T05:35:24.286Z",
+  "slug": "money-layer-operator-enable-surface",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 16,
+  "loc": 2510,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/MeteredSpendLedger.ts",
+      "src/core/MoneyLayerAuditLog.ts",
+      "src/core/MoneyLayerEnableStore.ts",
+      "src/core/MoneyLayerEnableSurface.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/RenderedPlanStore.ts",
+      "src/core/RoutingSpendCapsStore.ts",
+      "src/core/SingleInstanceLock.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/meteredCallEntry.ts",
+      "src/core/moneyLayerEnable.ts",
+      "src/core/moneyLayerProbe.ts",
+      "src/core/routingPriceAuthority.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 2496,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

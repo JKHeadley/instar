@@ -373,6 +373,29 @@ Increment B of the Routing Control Room (docs/specs/routing-control-room-spend-a
 }
 
 /**
+ * CLAUDE.md awareness block for the money-layer OPERATOR ENABLE surface
+ * (docs/specs/money-layer-operator-enable-surface.md, Phase 1). Unique
+ * content-sniff marker: `Money-layer ON switch`. These six routes are PRE-GATE
+ * — unlike every other money route they answer while the money layer is OFF,
+ * because they are the door to turning it on — so the section says that
+ * explicitly, and says just as plainly what a disable does NOT do.
+ */
+export function MONEY_LAYER_ENABLE_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Money-layer ON switch (⚗️ experimental) — turn the spending controls on from your phone
+
+The money layer above ships dark behind \`routingSpend.money.enabled\`, and until now the ONLY way to set that was hand-editing the config file on the machine. These SIX routes are the operator's way in. They are **PRE-GATE**: unlike every other \`/routing-spend/*\` route they answer 200 while the money layer is OFF, because they are the door to turning it on.
+- **What is the state right now?** (Registry First — read it, never guess): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/routing-spend/enable-status\` → \`{ lifecycleState, enforcementReady, enableSources, configSnapshotAt, restartEligible, anyKeyFrozen, settlingCount }\`. Genuinely READ-ONLY — it writes no audit row and mints nothing.
+- **Turn it on (PIN plan flow):** render the plan — \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/routing-spend/plan-money-layer -H 'Content-Type: application/json' -d '{"action":"money-layer-enable"}'\` → show the operator the \`renderedText\` VERBATIM (never your own paraphrase — a client that paraphrases could show a reassuring label over a different signed action) → the operator approves with their PIN → \`POST /routing-spend/money-layer/commit\` \`{"pin":"…","planId":"…","nonce":"…"}\`. Actions: \`money-layer-enable\` · \`money-layer-mirror-config\` · \`money-layer-disable\` · \`money-layer-disable-store-only\`.
+- **Enabling is NOT enforcing, and the reply says so.** A commit answers \`enable-pending-restart\`: the layer is built at server start, so it comes up on the next restart. Complete it with \`POST /routing-spend/money-layer/restart-nonce\` (returns a single-use token + the canonical confirmation text — display it verbatim) then \`POST /routing-spend/money-layer/restart\` with \`{pin, nonce, confirmationTextHash}\`. **That restarts the WHOLE agent server on this machine**, not just the money layer — say so. Then POLL \`enable-status\` until \`enforcementReady: true\`; the poll observes the new process, the restart response does not.
+- **Enabling arms NO paid door.** Every door stays refused with $0 committed until separately PIN-armed. \`enforcementReady\` means "the spending controls are up and enforcing" — NEVER "spend works".
+- **A disable may NOT stop spending, and this is the trap to get right.** It clears the OPERATOR flag only; no route here edits the config file. If \`enableSources.state\` is \`config-enabled\`, the layer stays on and the surface renders the acknowledged \`money-layer-disable-store-only\` variant whose first line says it will not stop spending. **In that state lead with FREEZE** — freeze is the emergency stop, is always reachable, is checked live on every paid call, and is Bearer-only because halting money must be cheap. Unfreezing is the operator's PIN action.
+- **"Has my config edit taken effect?"** \`POST /routing-spend/config-inspect\` reports the per-field disk-vs-process diff and ADOPTS NOTHING (with a PIN it also shows the limit values). A config-file edit is not an immediate control — it takes effect when the process next starts. There is deliberately no route that adopts config into the running process.
+- **The audit trail survives a disable:** \`GET /routing-spend/caps/log\` is reachable in every state, but pre-gate it shows only enable/disable/status rows plus freeze REASONS (never freeze timing, caps, arming, probe or spend rows).
+- **When to use** (PROACTIVE — this is the trigger): the operator asks to turn on spending controls, set a limit, or says "I can't turn this on without editing a file" → drive the plan flow and hand them the dashboard for the PIN; NEVER ask them to paste a PIN into chat and never improvise a config edit. "Why does it say enabled but not enforcing?" → it is waiting for the restart; read \`enable-status\`.
+`;
+}
+
+/**
  * CLAUDE.md awareness block for the LLM-Decision Quality Meter (docs/specs/
  * llm-decision-quality-meter.md §6 — Migration parity & agent awareness): the
  * observe-only quality substrate (per-decision-point right/wrong/unknown with
@@ -6277,6 +6300,17 @@ setTimeout(() => process.exit(0), 2000);
       content += ROUTING_SPEND_MONEY_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Routing Spend MONEY layer section');
+    }
+
+    // Money-layer OPERATOR ENABLE surface (money-layer-operator-enable-surface
+    // §Scope of changes) — Agent Awareness + Migration Parity item 3: existing
+    // agents learn the six PRE-GATE routes, that enabling is not enforcing until
+    // the restart, and the config-enabled trap where a disable does not stop
+    // spending. Content-sniff on the unique heading keeps it idempotent.
+    if (!content.includes('Money-layer ON switch')) {
+      content += MONEY_LAYER_ENABLE_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the Money-layer ON switch section');
     }
 
     // LLM-Decision Quality Meter (llm-decision-quality-meter §6) — Agent Awareness

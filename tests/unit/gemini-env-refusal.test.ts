@@ -11,6 +11,25 @@ import { describe, it, expect } from 'vitest';
 import { geminiEnvRefusal } from '../helpers/geminiEnvRefusal.js';
 
 describe('geminiEnvRefusal — recognises the CLI refusing on its own configuration', () => {
+  it('recognises a Workspace account that needs GOOGLE_CLOUD_PROJECT', () => {
+    // The CLI authenticates, then refuses on its own account configuration
+    // BEFORE it reads the prompt — the same class as an absent credential, and
+    // equally not a statement about instar's code.
+    const stderr = [
+      'Loaded cached credentials.',
+      'Error authenticating: ProjectIdRequiredError: This account requires setting the GOOGLE_CLOUD_PROJECT or GOOGLE_CLOUD_PROJECT_ID env var.',
+      'See https://goo.gle/gemini-cli-auth-docs#workspace-gca',
+    ].join('\n');
+    expect(geminiEnvRefusal(stderr)).toMatch(/GOOGLE_CLOUD_PROJECT/);
+  });
+
+  it('does NOT swallow a genuine provider break as environmental', () => {
+    // The guard only exists for the CLI declining on its own configuration. A
+    // real failure must still fail, or the alive test proves nothing.
+    expect(geminiEnvRefusal('TypeError: Cannot read properties of undefined (reading \'text\')')).toBeNull();
+    expect(geminiEnvRefusal('Gemini CLI exited 1 — model returned an empty body')).toBeNull();
+  });
+
   it('the exact message that made the suite red on 2026-08-14', () => {
     // Verbatim from the failing run, via the provider's thrown Error.
     const msg =

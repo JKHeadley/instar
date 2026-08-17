@@ -723,6 +723,46 @@ never the agent. With no mandate issued, every evaluation denies. Every decision
 - `POST /review/evaluate`
 - `POST /review/test`
 
+## /routing-spend (money-layer enable surface)
+
+The **six PRE-GATE routes** of the money-layer operator enable surface
+(`docs/specs/money-layer-operator-enable-surface.md`). Unlike every other
+`/routing-spend/*` route, these answer `200` while the money layer is OFF — they are the door
+to turning it on, and a surface only reachable once the thing it enables is already enabled
+would be a switch inside the locked room. Served by `MoneyLayerEnableSurface`, backed by
+`MoneyLayerEnableStore` (the durable operator flag + failure record) and `MoneyLayerAuditLog`
+(two channels distinguished by interface, sharing one JSONL).
+
+- `GET /routing-spend/enable-status` — Bearer. `{ lifecycleState, enforcementReady,
+  enableSources, configSnapshotAt, machineId, lastTransitionAt, failingComponent?,
+  settlingCount, restartEligible, anyKeyFrozen, freezeRecordProvisional }`. Genuinely
+  read-only: no audit append, no nonce mint, no observed-state update. `Cache-Control:
+  no-store`.
+- `POST /routing-spend/plan-money-layer` — Bearer. `{ action }` ∈ `money-layer-enable` ·
+  `money-layer-mirror-config` · `money-layer-disable` · `money-layer-disable-store-only`.
+  Returns `{ planId, nonce, renderedText, action, sourceStateAtRender, machineId,
+  machineNickname, expiresAt }`. Requires the single-instance lock. `400` for an action
+  outside the enum (syntax); `409` without the lock or with nothing to mirror.
+- `POST /routing-spend/money-layer/commit` — Bearer **+** PIN. `{ pin, planId, nonce }` →
+  `{ lifecycleState, enforcementReady, enableSources, storeCleared, probe, message }`. The
+  action is read from the STORED plan and refused unless it is on the pre-gate allowlist.
+  `401` bad PIN · `409` unknown/expired/consumed plan, wrong machine, source-state drift, or
+  lock not held · `429` PIN lockout.
+- `POST /routing-spend/money-layer/restart-nonce` — Bearer. `{}` → `{ nonce, expiresAt,
+  confirmationText }`. `409` outside the three restartable states.
+- `POST /routing-spend/money-layer/restart` — Bearer **+** PIN. `{ pin, nonce,
+  confirmationTextHash, force? }`. Uses the server's existing supervised-restart path; the
+  `restart-requested` audit row is flushed BEFORE the handoff, and a failed flush returns
+  `503` with the restart NOT initiated. `409` stale nonce / hash mismatch / wrong state /
+  money still settling · `429` cooldown (durable across the restart it authorizes).
+- `POST /routing-spend/config-inspect` — Bearer; **+ PIN** for the limit values. `{ pin? }` →
+  `{ differs, configSnapshotAt, fields, note }`. Non-adopting: it mutates no authority, config
+  or process state. There is deliberately no route that adopts on-disk config into the running
+  process.
+
+`GET /routing-spend/caps/log` is likewise reachable in every state, but a pre-gate reader sees
+only enable/disable/status rows plus redacted freeze reasons.
+
 ## /review-exchange
 
 ReviewExchange (coordination-mandate spec §7 G2.3): one mutual, mandate-gated

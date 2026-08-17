@@ -25,6 +25,21 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { PROBE_DOOR, PROBE_KEY_REF, withProbeDoor } from './moneyLayerProbe.js';
+
+/**
+ * The RESERVED cap-gate probe door is refused by EVERY generic caps mutator
+ * (docs/specs/money-layer-operator-enable-surface.md §6/T41). Generic registry
+ * code that does not know the door is special was named by the convergence
+ * check as the one residual risk of the probe-door design, so the refusal lives
+ * HERE — at the single mutation funnel every route goes through — rather than
+ * in each route.
+ */
+function refuseIfReservedProbe(op: string, keyRefOrDoor: string): void {
+  if (keyRefOrDoor === PROBE_KEY_REF || keyRefOrDoor === PROBE_DOOR) {
+    throw new Error(`'${keyRefOrDoor}' is the reserved cap-gate probe door — ${op} is refused on it`);
+  }
+}
 
 export interface KeyCapsRecord {
   provider: string;
@@ -172,6 +187,7 @@ export class RoutingSpendCapsStore {
 
   /** PIN path: adjust caps for a key (raise or lower; lowering bumps the lease epoch — A-M9). */
   adjustCaps(actor: string, expectedVersion: number, keyRef: string, provider: string, caps: { lifetimeCapUsd: number; dailyCapUsd: number }): CapsStoreFile {
+    refuseIfReservedProbe('re-pricing', keyRef);
     return this.mutate('caps-adjust', actor, expectedVersion, (f) => {
       const prev = f.caps[keyRef];
       const lowered =
@@ -191,6 +207,8 @@ export class RoutingSpendCapsStore {
 
   /** PIN path: arm/disarm a door + designate the metered-lease machine (FD-13). */
   setGoLive(actor: string, expectedVersion: number, door: string, rec: { enabled: boolean; keyRef: string; designatedMachineId: string }): CapsStoreFile {
+    refuseIfReservedProbe('arming/disarming', door);
+    refuseIfReservedProbe('arming/disarming', rec.keyRef);
     return this.mutate('go-live', actor, expectedVersion, (f) => {
       const prevEpoch = f.goLive[door]?.epoch ?? 0;
       f.goLive[door] = {
@@ -204,8 +222,37 @@ export class RoutingSpendCapsStore {
     });
   }
 
+  /**
+   * Install the RESERVED cap-gate probe door, idempotently
+   * (docs/specs/money-layer-operator-enable-surface.md §6).
+   *
+   * It is deliberately LIVE with a tiny POSITIVE cap, so the readiness probe is
+   * an ORDINARY metered call on the ORDINARY path — go-live passes because the
+   * door really is live, and the refusal is a genuine `cap-exceeded` from the
+   * real comparison rather than an `invalid-cap` short-circuit.
+   *
+   * Writes nothing when the door is already correct, so a server restart does
+   * not append an audit row per boot.
+   */
+  ensureProbeDoor(machineId: string): CapsStoreFile {
+    const before = this.read();
+    const wanted = withProbeDoor(before, machineId, new Date(this.now()).toISOString());
+    const capsSame = JSON.stringify(before.caps[PROBE_KEY_REF]) === JSON.stringify(wanted.caps[PROBE_KEY_REF]);
+    const goLiveSame =
+      before.goLive[PROBE_DOOR]?.enabled === true &&
+      before.goLive[PROBE_DOOR]?.keyRef === PROBE_KEY_REF &&
+      before.goLive[PROBE_DOOR]?.designatedMachineId === machineId;
+    if (capsSame && goLiveSame) return before;
+    return this.mutate('probe-door-ensure', 'system', null, (f) => {
+      const next = withProbeDoor(f, machineId, new Date(this.now()).toISOString());
+      f.caps[PROBE_KEY_REF] = next.caps[PROBE_KEY_REF];
+      f.goLive[PROBE_DOOR] = next.goLive[PROBE_DOOR];
+    });
+  }
+
   /** PIN path: unfreeze (releasing money is always the operator's). */
   unfreeze(actor: string, expectedVersion: number, keyRef: string): CapsStoreFile {
+    refuseIfReservedProbe('unfreezing', keyRef);
     return this.mutate('unfreeze', actor, expectedVersion, (f) => {
       const c = f.caps[keyRef];
       if (!c) throw new Error(`unfreeze: no caps record for '${keyRef}'`);
@@ -222,6 +269,9 @@ export class RoutingSpendCapsStore {
    * be frozen instantly.
    */
   freeze(actor: string, keyRef: string, defaults?: { provider: string; lifetimeCapUsd: number; dailyCapUsd: number }): CapsStoreFile {
+    // Freezing the probe door would break readiness for no safety gain: it holds
+    // a no-op provider and cannot spend in the first place.
+    refuseIfReservedProbe('freezing', keyRef);
     return this.mutate('freeze', actor, null, (f) => {
       const c = f.caps[keyRef];
       if (c) {

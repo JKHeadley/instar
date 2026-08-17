@@ -1,0 +1,111 @@
+---
+user_announcement:
+  - audience: user
+    maturity: experimental
+---
+
+## What Changed
+
+The spending-control layer (the booking ledger, the fail-closed cap gate and the
+PIN-gated cap controls) shipped dark behind `routingSpend.money.enabled`, and
+**nothing in instar could set that key**: no route writes it, and `routingSpend`
+is deliberately absent from `PATCHABLE_CONFIG_KEYS`. The only way to turn the
+layer on was hand-editing the config file on the machine.
+
+This adds the operator's way in — six routes that are deliberately **pre-gate**:
+unlike every other `/routing-spend/*` route they answer while the money layer is
+OFF, because they are the door to turning it on.
+
+| Route | What it does |
+|---|---|
+| `GET /routing-spend/enable-status` | the current state; genuinely read-only (no audit row, no nonce, no state write) |
+| `POST /routing-spend/plan-money-layer` | renders the plain-English plan the operator approves |
+| `POST /routing-spend/money-layer/commit` | applies it — Bearer **+** dashboard PIN, bound to the rendered plan |
+| `POST /routing-spend/money-layer/restart-nonce` | mints the single-use restart token + its confirmation text |
+| `POST /routing-spend/money-layer/restart` | completes the enable via the existing supervised restart |
+| `POST /routing-spend/config-inspect` | reports the disk-vs-process diff; adopts nothing |
+
+Three honesty properties are load-bearing rather than incidental:
+
+- **Enabling is not enforcing.** The layer is constructed at server start, so the
+  commit answers `enable-pending-restart` and says so. The **poll** is the source
+  of truth, never the restart response.
+- **Enabling arms no paid door.** Every door stays refused with `$0` committed
+  until separately PIN-armed.
+- **A disable may not stop spending.** It clears the operator flag only. If the
+  config key is also set, the layer stays on — and the surface renders a
+  separately-signed `money-layer-disable-store-only` action whose first line says
+  it will not stop spending, and points at **freeze** instead.
+
+Readiness is proven, not inferred: a reserved `__probe__` door that is genuinely
+live and cannot bill is exercised as an ordinary metered call, and readiness
+requires the refusal reason to be `cap-exceeded` specifically. Any other refusal
+means cap enforcement was never reached and is scored a failure.
+
+## What to Tell Your User
+
+You can now turn the spending controls on from your phone instead of editing a
+file on the machine — ask your agent to walk you through it, approve the plan it
+shows you with your dashboard PIN, and confirm the restart. Two things worth
+knowing while you do it. Switching it on does **not** start any spending: every
+paid service stays refused until you separately arm it. And switching it **off**
+only clears your own setting — if a setting in the config file is also turning it
+on, your agent will tell you plainly that the disable did not stop spending and
+point you at the emergency freeze instead.
+
+⚗️ **Experimental.** The dashboard screen for these controls is not built yet, so
+your agent drives them for you conversationally rather than you tapping a form.
+
+## Summary of New Capabilities
+
+- Turn the money layer on and off with the dashboard PIN, without editing config.
+- An honest lifecycle: `disabled` → `enable-pending-restart` → `probed`, with
+  `construction-failed` naming the missing component when a restart cannot help.
+- Readiness proven by a real refusal from the real cap gate, cause-checked.
+- An audit trail that survives a disable, split by sensitivity rather than hidden
+  wholesale.
+- The emergency freeze now records **why** spending stopped, visible even
+  pre-gate.
+
+## Evidence
+
+- **67 tests across three tiers** — 52 unit (predicates, state derivation, probe
+  cause-checking, the two audit channels), 15 integration over the real Express
+  stack, 8 E2E including the "200 not 503 with the money layer OFF" alive test
+  and a full lifecycle across a simulated process restart with real
+  ledger/caps/price/gate collaborators.
+- **Live end-to-end on a throwaway deploy of the built dist** (port 4041): the
+  status route answered 200 while `POST /routing-spend/plan` answered 503 in the
+  same state; a bad action → 400; a wrong PIN → 401; the right PIN →
+  `enable-pending-restart`; a restart without the confirmation hash → 409; with
+  it → 200 and the supervised-restart flag on disk. After a real process restart
+  **with the config key absent**, the status read
+  `{lifecycleState: "probed", enforcementReady: true, enableSources: {state: "operator-enabled"}}`,
+  the ledger booked nothing, and the audit trail carried `probe-result
+  {passed: true, refusalReason: "cap-exceeded"}` followed by
+  `restart-observed-ready`.
+- **Four defects the build found that 40 review rounds did not** — a `$0` probe
+  cap the gate refuses as `invalid-cap` before the comparison; a manifest-resident
+  synthetic price that is operator-editable, ages past its freshness SLA and is
+  absent on no-source installs; a construction predicate keyed on the config file
+  alone, so an operator's enable promised a restart would help and then
+  constructed nothing; and an impossible construction reported as
+  `enable-pending-restart`, sending the operator round a loop a restart cannot
+  end. The third and fourth were found by driving the flow against a real server.
+- **Eight further defects the independent cross-model second-pass review found**,
+  all fixed with regression guards — including an unlimited PIN-guessing oracle on
+  `config-inspect`, a plan that could commit an action its rendered text denied,
+  and an operator enable that left the emergency freeze answering 503. Full detail
+  in `upgrades/side-effects/money-layer-operator-enable-surface.md`.
+
+## Known Limits
+
+- **No dashboard form yet.** The routes are phone-reachable and the agent drives
+  them, but a form the operator taps unaided is not built.
+  <!-- tracked: CMT-money-enable-dashboard-ui -->
+- **Nothing in instar spends money today.** The only callers of the gate's admit
+  are the new metered-call entry path and the readiness probe. That entry path is
+  the chokepoint a future dispatch seam must come through — freeze first, live
+  enable check second — established now rather than retrofitted later.
+- **With no `dashboardPin` configured**, every commit and restart is refused as
+  `bad-pin`, which is correct but misleadingly worded.

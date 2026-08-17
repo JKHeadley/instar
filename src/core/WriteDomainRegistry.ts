@@ -423,6 +423,27 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/unfreeze', domain: 'machine-local', story: moneyStory });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/freeze', domain: 'machine-local', story: moneyStory });
 
+  // The money-layer OPERATOR ENABLE surface
+  // (docs/specs/money-layer-operator-enable-surface.md). Same machine-local
+  // domain and the same convergence story as the money layer it governs, and
+  // for a stronger reason than convenience: the dashboard PIN that commits
+  // these actions is a per-machine credential that cannot cross the mesh, and
+  // the single-instance lock they depend on is per-machine. There is
+  // deliberately no fleet-wide enable — each machine is enabled on its own, by
+  // its own PIN — so replicating this state would let a stale machine arm
+  // spending on another.
+  const moneyEnableStory: ConvergenceStory = {
+    logical: 'git-sync-excluded',
+    onSharedGitSyncedPath: false,
+    note:
+      'money-layer-operator-enable-surface §Multi-machine posture: the operator-enabled flag, the failure record and the two audit channels live in state/money-layer-enable.json + state/money-layer-audit.jsonl, both machine-local BY DESIGN. Plans carry machineId in their signed material and are refused (409) if committed on another machine.',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/plan-money-layer', domain: 'machine-local', story: moneyEnableStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/money-layer/commit', domain: 'machine-local', story: moneyEnableStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/money-layer/restart-nonce', domain: 'machine-local', story: moneyEnableStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/money-layer/restart', domain: 'machine-local', story: moneyEnableStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/routing-spend/config-inspect', domain: 'machine-local', story: moneyEnableStory });
+
   // ── Interactive working-set artifact recorder (intelligent-working-set-lazy-sync §F8) ──
   // Machine-local: POST /coherence/working-set/record writes THIS machine's OWN-ORIGIN interactive
   // artifact rows to .instar/working-set/artifacts.json. Logical state converges via the WS2
