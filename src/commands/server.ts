@@ -17253,7 +17253,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   posture: m.guardPosture ?? null,
                   postureAgeMs: m.guardPostureReceivedAt ? Date.now() - Date.parse(m.guardPostureReceivedAt) : null,
                 }));
-            } catch { return []; /* @silent-fallback-ok — pool not wired yet (boot order): peers none this tick, next tick reads the live registry */ }
+            } catch { return null; /* A failed registry read is unknown, not an honestly empty peer population. */ }
           },
           // Spec §2.4 deep-read fallback: ONLY for an ONLINE peer whose
           // heartbeat posture block is missing/stale — a plain GET /guards

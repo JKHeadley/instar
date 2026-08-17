@@ -15,8 +15,12 @@ import { BLIND_INPUT_CASE_IDS } from '../../scripts/checker-blind-input-cases.mj
 import {
   deriveCheckerPopulation,
   evaluateBlindInputCoverage,
+  evaluateCeilingRatchet,
 } from '../../scripts/lib/checker-blind-input-ratchet.mjs';
-import { MAX_UNCOVERED_CHECKERS } from '../../scripts/lint-checker-blind-input-coverage.mjs';
+import {
+  MAX_UNCOVERED_CHECKERS,
+  readProtectedCeiling,
+} from '../../scripts/lint-checker-blind-input-coverage.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -180,17 +184,70 @@ describe('checker blind-input class ratchet', () => {
   it('P5 missing population source throws NOT-PROVEN instead of returning clean', () => {
     expect(() => deriveCheckerPopulation(path.join(ROOT, '__missing__'))).toThrow(/population unavailable/);
   });
+
+  it('refuses to raise the legacy ceiling in the same change that raises debt', () => {
+    expect(evaluateCeilingRatchet({ currentCeiling: 91, protectedCeiling: 91 }))
+      .toMatchObject({ passed: true, reason: 'ceiling-held-or-lowered' });
+    expect(evaluateCeilingRatchet({ currentCeiling: 92, protectedCeiling: 91 }))
+      .toMatchObject({ passed: false, reason: 'ratchet-ceiling-raised' });
+  });
+
+  it('derives bootstrap authority from the protected tree, not a second candidate constant', () => {
+    const entry = fs.readFileSync(path.join(ROOT, 'scripts', 'lint-checker-blind-input-coverage.mjs'), 'utf8');
+    expect(entry).not.toContain('INITIAL_MAX_UNCOVERED_CHECKERS');
+    expect(entry).not.toContain('CHECKER_BLIND_INPUT_BASE_REF');
+    expect(readProtectedCeiling(ROOT)).toBe(MAX_UNCOVERED_CHECKERS);
+  });
 });
 
-describe('P3 — the ratchet own test rejects all three guard sabotages', () => {
+describe('P3 — the ratchet own test rejects all four guard sabotages', () => {
   const sourcePath = path.join(ROOT, 'scripts', 'lib', 'checker-blind-input-ratchet.mjs');
   const source = fs.readFileSync(sourcePath, 'utf8');
 
-  function exactImportExit(modulePath: string): number | null {
-    const code = `import { evaluateBlindInputCoverage } from ${JSON.stringify(pathToFileURL(modulePath).href)};\n` +
-      `const r = evaluateBlindInputCoverage({population:[],coverageIds:[],maxUncovered:0});\n` +
-      `if (r.passed) process.exit(7);`;
-    return spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8' }).status;
+  function guardOwnSuite(modulePath: string, dir: string) {
+    const suite = path.join(dir, 'guard-own.test.mjs');
+    fs.writeFileSync(suite, `
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { evaluateBlindInputCoverage } from ${JSON.stringify(pathToFileURL(modulePath).href)};
+test('empty population is not proof', () => {
+  assert.deepEqual(evaluateBlindInputCoverage({population:[],coverageIds:[],maxUncovered:0}), {
+    passed:false,reason:'empty-population',populationCount:0,coveredCount:0,uncovered:[]
+  });
+});
+test('unknown coverage id is rejected', () => {
+  assert.equal(evaluateBlindInputCoverage({population:['known'],coverageIds:['unknown'],maxUncovered:1}).passed, false);
+});
+test('new uncovered checker is named and rejected', () => {
+  const r = evaluateBlindInputCoverage({population:['legacy','new-checker'],coverageIds:['legacy'],maxUncovered:0});
+  assert.equal(r.passed, false);
+  assert.deepEqual(r.uncovered, ['new-checker']);
+});
+test('genuinely covered population passes', () => {
+  assert.equal(evaluateBlindInputCoverage({population:['known'],coverageIds:['known'],maxUncovered:0}).passed, true);
+});
+`);
+    return spawnSync(process.execPath, ['--test', suite], { encoding: 'utf8' });
+  }
+
+  function replaceGuardBody(body: string): string {
+    const signature = /export function evaluateBlindInputCoverage\(\{ population, coverageIds, maxUncovered \}\) \{/;
+    const match = signature.exec(body);
+    expect(match).not.toBeNull();
+    const open = (match?.index ?? 0) + (match?.[0].length ?? 0) - 1;
+    let depth = 0;
+    for (let i = open; i < body.length; i += 1) {
+      if (body[i] === '{') depth += 1;
+      if (body[i] === '}') depth -= 1;
+      if (depth === 0) {
+        return `${body.slice(0, open + 1)}\n  return { passed: true, reason: 'within-ratchet', populationCount: population.length, coveredCount: coverageIds.length, uncovered: [], maxUncovered };\n${body.slice(i)}`;
+      }
+    }
+    throw new Error('guard body did not close');
+  }
+
+  function decidingOutput(result: ReturnType<typeof spawnSync>): string {
+    return `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
   }
 
   it('3a DELETE', () => {
@@ -203,9 +260,9 @@ describe('P3 — the ratchet own test rejects all three guard sabotages', () => 
       // a raw destructive filesystem primitive in the test harness.
       fs.renameSync(file, `${file}.deleted`);
       expect(fs.existsSync(file)).toBe(false); // mutation-applied control
-      const testExit = exactImportExit(file);
-      console.log(`P3_3a_DELETE mutationApplied=true guardOwnTestExit=${testExit}`);
-      expect(testExit).not.toBe(0);
+      const result = guardOwnSuite(file, dir);
+      console.log(`P3_3a_DELETE mutationApplied=true guardOwnTestExit=${result.status}\n${decidingOutput(result)}`);
+      expect(result.status).not.toBe(0);
     } finally {
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'checker-p3:delete' });
     }
@@ -218,9 +275,9 @@ describe('P3 — the ratchet own test rejects all three guard sabotages', () => 
       const commented = source.split('\n').map((line) => `// ${line}`).join('\n');
       fs.writeFileSync(file, commented);
       expect(fs.readFileSync(file, 'utf8').split('\n').every((line) => line.startsWith('// '))).toBe(true);
-      const testExit = exactImportExit(file);
-      console.log(`P3_3b_COMMENT_OUT mutationApplied=true guardOwnTestExit=${testExit}`);
-      expect(testExit).not.toBe(0);
+      const result = guardOwnSuite(file, dir);
+      console.log(`P3_3b_COMMENT_OUT mutationApplied=true guardOwnTestExit=${result.status}\n${decidingOutput(result)}`);
+      expect(result.status).not.toBe(0);
     } finally {
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'checker-p3:comment' });
     }
@@ -234,11 +291,31 @@ describe('P3 — the ratchet own test rejects all three guard sabotages', () => 
       fs.writeFileSync(file, renamed);
       expect(renamed).toContain('evaluateBlindInputCoverageDisabled');
       expect(/\bevaluateBlindInputCoverage\b/.test(renamed)).toBe(false); // mutation applied; substring still exists
-      const testExit = exactImportExit(file);
-      console.log(`P3_3c_SUPERSTRING_RENAME mutationApplied=true guardOwnTestExit=${testExit}`);
-      expect(testExit).not.toBe(0);
+      const result = guardOwnSuite(file, dir);
+      console.log(`P3_3c_SUPERSTRING_RENAME mutationApplied=true guardOwnTestExit=${result.status}\n${decidingOutput(result)}`);
+      expect(result.status).not.toBe(0);
     } finally {
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'checker-p3:rename' });
+    }
+  });
+
+  it('3d TYPE-PRESERVING HOLLOW BODY returns a passing verdict', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'checker-p3-hollow-'));
+    const file = path.join(dir, 'guard.mjs');
+    try {
+      const hollow = replaceGuardBody(source);
+      fs.writeFileSync(file, hollow);
+      expect(hollow).toContain("return { passed: true, reason: 'within-ratchet'");
+      expect(hollow).toContain('export function evaluateBlindInputCoverage');
+      const result = guardOwnSuite(file, dir);
+      const output = decidingOutput(result);
+      console.log(`P3_3d_TYPE_PRESERVING_HOLLOW mutationApplied=true guardOwnTestExit=${result.status}\n${output}`);
+      expect(result.status).not.toBe(0);
+      expect(output).toContain('# tests 4');
+      expect(output).toContain('# fail 3');
+      expect(output).toMatch(/AssertionError|Expected values to be strictly equal/);
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'checker-p3:hollow' });
     }
   });
 });

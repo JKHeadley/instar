@@ -102,7 +102,8 @@ export interface GuardPostureProbeDeps {
   /** One-read local inventory (GET /guards source) or null when unavailable. */
   getLocalPosture: () => GuardInventoryResult | null;
   /** Heartbeat-sourced peer postures (durable last-known for offline peers). */
-  getPeerPostures: () => PeerPostureRead[];
+  /** null means the peer registry itself could not be inspected; [] means inspected and empty. */
+  getPeerPostures: () => PeerPostureRead[] | null;
   /**
    * Optional deep read — used ONLY for peers reported ONLINE whose posture is
    * null or stale. NEVER called for offline peers (spec §2.4).
@@ -409,7 +410,9 @@ export function createGuardPostureProbes(deps: GuardPostureProbeDeps): Probe[] {
       else unknownSources.push('local: posture unavailable');
 
       // ── Peers ──
-      for (const peer of deps.getPeerPostures()) {
+      const peers = deps.getPeerPostures();
+      if (peers === null) unknownSources.push('peer registry: posture population unavailable');
+      for (const peer of peers ?? []) {
         const label = peer.nickname ?? peer.machineId;
         const postureStale =
           peer.postureAgeMs !== null && peer.postureAgeMs > STALE_POSTURE_AGE_MS;

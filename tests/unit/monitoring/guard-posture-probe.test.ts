@@ -88,7 +88,7 @@ function hb(partial: Partial<HeartbeatGuardPosture> = {}): HeartbeatGuardPosture
 
 function makeProbe(opts: {
   local?: () => GuardInventoryResult | null;
-  peers?: () => PeerPostureRead[];
+  peers?: () => PeerPostureRead[] | null;
   deepReadPeer?: GuardPostureProbeDeps['deepReadPeer'];
   emitAttention?: GuardPostureProbeDeps['emitAttention'];
 }) {
@@ -152,6 +152,19 @@ describe('GuardPostureProbe — probe family conventions', () => {
     expect(result.error).toContain('local: posture unavailable');
     expect(result.error).toContain('peer unreachable');
     expect(emitted).toEqual([]);
+  });
+
+  it('distinguishes an unreadable peer registry from an inspected empty population', async () => {
+    const unreadable = makeProbe({ peers: () => null });
+    const empty = makeProbe({ peers: () => [] });
+
+    const unreadableResult = await unreadable.probe.run();
+    const emptyResult = await empty.probe.run();
+
+    expect(unreadableResult.passed).toBe(false);
+    expect(unreadableResult.description).toContain('NOT-PROVEN');
+    expect(unreadableResult.error).toContain('peer registry');
+    expect(emptyResult.passed).toBe(true);
   });
 });
 
