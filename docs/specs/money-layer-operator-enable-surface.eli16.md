@@ -51,8 +51,15 @@ does not complete, it tells you that instead of spinning forever.
 It also checks the right thing. "Is the limit working?" is answered by deliberately
 attempting a too-expensive test charge and confirming it gets refused — and specifically
 confirming it was refused *because of the spending limit*, not for some unrelated reason.
-A refusal for the wrong reason counts as a failure, not a pass. The test charge itself
-costs nothing and is verified to have spent nothing.
+A refusal for the wrong reason counts as a failure, not a pass.
+
+That test charge goes through a **fake supplier** that is genuinely switched on but cannot
+bill anything — it makes no call to anyone. An earlier version of this design instead sent
+the test through a private side-door in the payment path, which the review process objected
+to five separate times before an overall check singled it out as the biggest remaining risk.
+It's gone. The test charge now takes the ordinary route like any other charge, so there is
+no privileged path for anything to misuse, and two independent facts stop it costing money:
+the fake supplier can't bill, and its limit is zero.
 
 ## The awkward bit, stated rather than hidden
 

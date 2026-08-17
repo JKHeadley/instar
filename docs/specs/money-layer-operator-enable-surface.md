@@ -802,6 +802,7 @@ satisfy an external auditor, that is a different requirement and needs its own d
 | T38 | A plan rendered without the single-instance lock is refused; a plan whose render was not recorded under the lock is rejected at commit. |
 | T39 | Restart is refused when `confirmationTextHash` is absent or does not match the hash stored at mint. |
 | T40 | A Bearer-only `config-inspect` returns no `routingSpend.money.limits.*` values; with a PIN it does. |
+| T41 | **The reserved `__probe__` door's exclusions hold against generic caps-registry code**: it cannot be edited, deleted, armed or re-priced through any caps route; it is excluded from spend summaries, the operator arming UI and export; and a config/store migration preserves it unchanged. (Named by the convergence check as the one residual risk: generic registry code that does not know the door is special.) |
 | T36 | A freeze whose audit append fails still applies, and is reported as applied-with-provisional-record; an unfreeze whose append fails is REFUSED. |
 | T29 | `config-inspect` is Bearer-only, adopts nothing, and reports the per-field disk-vs-process diff correctly. |
 | T30 | No route adopts on-disk config into the running process; `config-inspect` leaves the process snapshot unchanged. |
