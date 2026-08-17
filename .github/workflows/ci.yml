@@ -93,10 +93,15 @@ jobs:
           else
             echo "required=0" >> "$GITHUB_OUTPUT"
           fi
+          git show "$BASE_SHA:docs/STANDARDS-REGISTRY.md" > "$RUNNER_TEMP/standards-registry-base.md"
+          git show "$BASE_SHA:.github/keyrings/telegram-principal-pub.pem" > "$RUNNER_TEMP/standards-direction-approver-base.pem"
       - run: node scripts/standards-coverage.mjs --check
         env:
           STANDARDS_AREA_AUDIT_BASE_FILE: ${{ runner.temp }}/standards-area-audits-base.json
           STANDARDS_AREA_AUDIT_BASE_REQUIRED: ${{ steps.area-audit-base.outputs.required }}
+          STANDARDS_DIRECTION_BASE_FILE: ${{ runner.temp }}/standards-registry-base.md
+          STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE: ${{ runner.temp }}/standards-direction-approver-base.pem
+          STANDARDS_DIRECTION_BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}
       - name: Migration consumer lockstep
         run: node scripts/lint-migration-consumer-completeness.js --diff-base "${{ github.event.pull_request.base.sha || github.event.before }}"
       - name: Upload coverage report
