@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-17T17:28:57.038Z",
+  "slug": "testing-integrity-route-enforcement",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 421,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      ".husky/pre-commit",
+      "scripts/lint-testing-integrity.mjs"
+    ],
+    "addedLines": 420,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
