@@ -383,7 +383,8 @@ Increment B of the Routing Control Room (docs/specs/routing-control-room-spend-a
 export function MONEY_LAYER_ENABLE_CLAUDEMD_SECTION(port: number): string {
   return `\n### Money-layer ON switch (⚗️ experimental) — turn the spending controls on from your phone
 
-The money layer above ships dark behind \`routingSpend.money.enabled\`, and until now the ONLY way to set that was hand-editing the config file on the machine. These SIX routes are the operator's way in. They are **PRE-GATE**: unlike every other \`/routing-spend/*\` route they answer 200 while the money layer is OFF, because they are the door to turning it on.
+The money layer above ships dark behind \`routingSpend.money.enabled\`, and until now the ONLY way to set that was hand-editing the config file on the machine. Six PRE-GATE routes are the operator's way in — unlike every other \`/routing-spend/*\` route they answer 200 while the money layer is OFF, because they are the door to turning it on.
+- **THE OPERATOR'S SURFACE IS THE DASHBOARD SPEND TAB, NOT A CURL.** The Spend tab carries the switch at the top: the plain-English state, the turn-on button, the server's own approval wording, the PIN box and the restart step — reachable from a phone. Send the operator the dashboard link + their PIN; the routes below are how I read state and drive the preview, never something to ask a human to type. (A PIN-gated route with no human surface is an incomplete feature — the Phase 1 ship had exactly that gap for a week.)
 - **What is the state right now?** (Registry First — read it, never guess): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/routing-spend/enable-status\` → \`{ lifecycleState, enforcementReady, enableSources, configSnapshotAt, restartEligible, anyKeyFrozen, settlingCount }\`. Genuinely READ-ONLY — it writes no audit row and mints nothing.
 - **Turn it on (PIN plan flow):** render the plan — \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/routing-spend/plan-money-layer -H 'Content-Type: application/json' -d '{"action":"money-layer-enable"}'\` → show the operator the \`renderedText\` VERBATIM (never your own paraphrase — a client that paraphrases could show a reassuring label over a different signed action) → the operator approves with their PIN → \`POST /routing-spend/money-layer/commit\` \`{"pin":"…","planId":"…","nonce":"…"}\`. Actions: \`money-layer-enable\` · \`money-layer-mirror-config\` · \`money-layer-disable\` · \`money-layer-disable-store-only\`.
 - **Enabling is NOT enforcing, and the reply says so.** A commit answers \`enable-pending-restart\`: the layer is built at server start, so it comes up on the next restart. Complete it with \`POST /routing-spend/money-layer/restart-nonce\` (returns a single-use token + the canonical confirmation text — display it verbatim) then \`POST /routing-spend/money-layer/restart\` with \`{pin, nonce, confirmationTextHash}\`. **That restarts the WHOLE agent server on this machine**, not just the money layer — say so. Then POLL \`enable-status\` until \`enforcementReady: true\`; the poll observes the new process, the restart response does not.
@@ -6311,6 +6312,25 @@ setTimeout(() => process.exit(0), 2000);
       content += MONEY_LAYER_ENABLE_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added the Money-layer ON switch section');
+    }
+
+    // Money-layer ON switch, Phase 2 (the dashboard UI). Agent Awareness + Migration
+    // Parity: agents that already carry the Phase 1 section learned six curl routes and
+    // no human surface, so they would still hand the operator a command line for a
+    // control that is now a button. Anchored insert, content-sniffed, idempotent.
+    if (
+      content.includes('Money-layer ON switch') &&
+      !content.includes('THE OPERATOR’S SURFACE IS THE DASHBOARD SPEND TAB') &&
+      !content.includes("THE OPERATOR'S SURFACE IS THE DASHBOARD SPEND TAB")
+    ) {
+      const anchor = 'because they are the door to turning it on.';
+      const dashboardBullet =
+        "\n- **THE OPERATOR'S SURFACE IS THE DASHBOARD SPEND TAB, NOT A CURL.** The Spend tab carries the switch at the top: the plain-English state, the turn-on button, the server's own approval wording, the PIN box and the restart step — reachable from a phone. Send the operator the dashboard link + their PIN; the routes below are how I read state and drive the preview, never something to ask a human to type. (A PIN-gated route with no human surface is an incomplete feature — the Phase 1 ship had exactly that gap for a week.)";
+      if (content.includes(anchor)) {
+        content = content.replace(anchor, anchor + dashboardBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added the dashboard Spend-tab surface to the Money-layer ON switch section');
+      }
     }
 
     // LLM-Decision Quality Meter (llm-decision-quality-meter §6) — Agent Awareness

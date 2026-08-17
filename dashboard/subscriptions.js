@@ -563,24 +563,41 @@ export function buildMatrixModel(poolScope, pendingScope, transient = {}) {
   }
 
   // Rows = union of account ids, displayed by email (FD8 — keyed by pool id, shown by email).
-  const accounts = new Map(); // accountId → { accountId, email }
+  // `provider` rides the row because the matrix GROUPS by it: the operator's report was
+  // seven interleaved account names with nothing saying which are Claude and which are
+  // Codex. It is carried, never inferred — a row that reaches the matrix only through a
+  // gap or a pending login has no provider on the wire, so it gets '' and lands in the
+  // honest "Other" group rather than being guessed into Claude.
+  const accounts = new Map(); // accountId → { accountId, email, provider }
   for (const a of accountRows) {
     const id = a && a.id;
     if (!id) continue;
-    if (!accounts.has(id)) accounts.set(id, { accountId: id, email: a.email || id });
-    else if (!accounts.get(id).email && a.email) accounts.get(id).email = a.email;
+    const provider = typeof (a && a.provider) === 'string' ? a.provider : '';
+    if (!accounts.has(id)) accounts.set(id, { accountId: id, email: a.email || id, provider });
+    else {
+      const rec = accounts.get(id);
+      if (!rec.email && a.email) rec.email = a.email;
+      // Pool scope carries one row per (account, machine); the same account on a second
+      // machine must not blank a provider the first row already established.
+      if (!rec.provider && provider) rec.provider = provider;
+    }
   }
   for (const gap of gapRows) {
     const id = gap && gap.accountId;
     if (id && !accounts.has(id)) accounts.set(id, {
       accountId: id,
       email: gap.nickname || id,
+      provider: typeof (gap && gap.provider) === 'string' ? gap.provider : '',
     });
   }
   // A pending matrix login can reference an account not yet in any pool row — surface its row too.
   for (const l of pendingRows) {
     const id = l && l.id;
-    if (id && !accounts.has(id)) accounts.set(id, { accountId: id, email: id });
+    if (id && !accounts.has(id)) accounts.set(id, {
+      accountId: id,
+      email: id,
+      provider: typeof (l && l.provider) === 'string' ? l.provider : '',
+    });
   }
 
   // (accountId, machineId) → active|needs-reauth, from a CURRENTLY-REACHABLE machine only.
@@ -749,6 +766,23 @@ export function appendCellSignInFlow(doc, cell, flow, now = Date.now()) {
   cell.appendChild(cancelBtn);
 }
 
+/**
+ * Group matrix ROWS by their account's provider, reusing the account-card grouping so the
+ * two surfaces cannot drift apart. Returns a flat list of `{__providerHeading}` markers and
+ * `{__row}` wrappers, keeping the renderer to one loop.
+ *
+ * A row whose provider never arrived on the wire keeps its place under the honest "Other"
+ * heading — grouping must never invent a provider for a row it cannot classify.
+ */
+export function groupMatrixRowsByProvider(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const wrapped = list.map((r) => ({
+    provider: (r && r.account && typeof r.account.provider === 'string') ? r.account.provider : '',
+    __row: r,
+  }));
+  return groupAccountsByProvider(wrapped);
+}
+
 /** Render the account × machine grid. `target` is replaced. Each empty (reachable) cell
  *  gets a "Set up" button carrying its (accountId, machineId) as data-* attributes for the
  *  controller's delegated tap handler. Offline columns are disabled; no state is fabricated. */
@@ -775,7 +809,24 @@ export function renderAccountMatrix(doc, target, poolScope, pendingScope, transi
 
   const tbody = doc.createElement('tbody');
   const now = Date.now();
-  for (const row of model.rows) {
+  // GROUPED BY PROVIDER. The operator's report: seven account names in one flat column
+  // with nothing distinguishing Claude from Codex. The account CARDS above already
+  // grouped; this grid did not, and this grid is the one that is read. It reuses
+  // groupAccountsByProvider so both surfaces obey the same two rules — first-appearance
+  // order (never re-ranked) and NO heading at all when there is only one provider.
+  for (const entry of groupMatrixRowsByProvider(model.rows)) {
+    if (entry && entry.__providerHeading) {
+      const gtr = doc.createElement('tr');
+      const gth = el(doc, 'th', 'sub-matrix-group', entry.__providerHeading);
+      // Span the account column + every machine column so the heading reads as a band
+      // across the grid rather than a stray cell.
+      gth.setAttribute('colspan', String(model.machines.length + 1));
+      gth.setAttribute('scope', 'colgroup');
+      gtr.appendChild(gth);
+      tbody.appendChild(gtr);
+      continue;
+    }
+    const row = entry.__row;
     const tr = doc.createElement('tr');
     tr.appendChild(el(doc, 'th', 'sub-matrix-acct', sanitizeForDisplay(row.account.email, 'label')));
     for (const c of row.cells) {
