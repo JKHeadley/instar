@@ -681,21 +681,46 @@ running. It is removed, and the risk with it.
 |---|---|
 | keyRef | `__probe__` — reserved; refused as a user-supplied keyRef everywhere |
 | provider | `null-provider` — a built-in no-op that performs NO network call and returns a fixed synthetic response |
-| **evaluation price** | fixed **positive** synthetic price (`$1.00`), in the price manifest, not operator-editable — used ONLY for cap evaluation |
+| **evaluation price** | fixed **positive** synthetic price (`$1.00`/Mtok), **code-defined — NOT in the price manifest** (see the build-time correction below), not operator-editable — used ONLY for cap evaluation |
 | `goLiveState` | **live** — deliberately, so the go-live check PASSES |
-| dailyCap / lifetimeCap | `$0` |
+| dailyCap / lifetimeCap | a tiny **positive** value (`$0.01`) — NOT `$0`, see below |
 | actual booked spend | always `$0` — the gate refuses before execution, and the provider cannot bill in any case |
 
 The probe is then an **ordinary metered call on the ordinary path**: go-live passes because
 the door really is live; the cap check evaluates the request at its **positive** synthetic
-price of `$1.00` against a `$0` cap and therefore refuses with `cap-exceeded`. Nothing is
+price of `$1.00`/Mtok (a $2.00 reservation over the 1M-in/1M-out probe request) against the
+`$0.01` cap and therefore refuses with `cap-exceeded`. Nothing is
 skipped, nothing is privileged, and the thing being proven — *the cap gate refuses on the
 path that spends* — is proven by the path that spends.
 
 **The positive price is load-bearing and an earlier draft got this wrong.** With a `$0`
 price, `$0` usage does not exceed a `$0` cap, so the probe would never trip the gate and
 readiness could never pass — the check would have been permanently broken in a way that
-reads as "not ready" rather than as a defect. The price is what the gate *evaluates*; it is
+reads as "not ready" rather than as a defect.
+
+**The cap must also be positive, and this was found at BUILD time, not by review.** The
+real gate (`MeteredSpendGate.admit`, step 3) refuses a key whose caps are `<= 0` with
+`invalid-cap` — *"a cap of 0/absent admits nothing"* — BEFORE it ever reaches the cap
+comparison. A `$0` cap would therefore have refused for the WRONG REASON, and §6's own
+cause-check would have correctly scored that as a probe failure: readiness could never pass.
+The same class of defect as the `$0`-price error above, surviving 40 rounds of review
+because reviewers read the spec and not `MeteredSpendGate.ts`. The probe door's caps are
+therefore `$0.01`, and its `$1.00` evaluation price reserves far above that, so the refusal
+is a genuine `cap-exceeded` from the real comparison. **T6 asserts the reason is
+`cap-exceeded` specifically, which is what makes this failure impossible to ship silently.**
+
+**A THIRD build-time correction: the synthetic price is CODE-DEFINED, not a manifest
+entry.** The table above said "in the price manifest". Building it showed that placement to
+be wrong three ways at once, each of which is a live failure mode rather than a preference:
+a manifest entry IS operator-editable, which contradicts this table's own
+"not operator-editable" requirement in the same row; a manifest point carries an
+`effectiveAt` and therefore AGES past the freshness SLA, after which the probe refuses for a
+PRICE reason rather than the cap reason it exists to prove — readiness would work for weeks
+and then quietly stop, reading as a fault rather than as rot; and the manifest lives under
+`scripts/`, which a no-source install does not ship at all, so the probe could never pass
+there. `RoutingPriceAuthority.resolve()` therefore short-circuits the reserved door onto a
+code constant that is canonical, never stale and unreachable by any caps or config route.
+The rationale is recorded in `moneyLayerProbe.ts` beside the constant. The price is what the gate *evaluates*; it is
 never what the ledger *books*, because the gate refuses before execution and the provider
 cannot bill regardless. Both facts are asserted (T7).
 
@@ -703,7 +728,7 @@ cannot bill regardless. Both facts are asserted (T7).
 inside metered execution could be reached by something other than the prober — through a
 refactor, a barrel file, DI, or a leaked token. That branch no longer exists. The probe door
 is protected by two independent structural facts instead: its provider **cannot** perform a
-billable operation (it makes no call), and its cap is `$0` (so the gate refuses it even if
+billable operation (it makes no call), and its cap is `$0.01` against a $2.00 evaluation (so the gate refuses it even if
 the provider were swapped). Either alone prevents spend; both must fail together to bill,
 and neither is reachable by editing spec-local code.
 
@@ -866,7 +891,7 @@ weighing competing signals would be a defect.
 - **Modifies the metered call path** — a synchronous live enable check per paid call, and a
   live freeze check ahead of the money layer. This is the load-bearing change; without it
   disable is cosmetic. **No privileged probe entry point is added**: the probe is an ordinary
-  metered call against the reserved `$0` `__probe__` door (§6).
+  metered call against the reserved `$0.01`-cap `__probe__` door (§6).
 - **Modifies the caps store** — the reserved `__probe__` door, operator-enabled flag, failure record,
   `lastTransitionAt`, probe sentinel, and the separate audit handle.
 - **Modifies the ledger (dry-run path only)** — the sentinel evaluation books nothing.

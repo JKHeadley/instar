@@ -66,6 +66,7 @@ function defaultSubscriptionIdentityOracle(): CompositeCredentialIdentityOracle 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { MoneyLayerRefusal, MONEY_LAYER_LIMIT_DEFAULTS } from '../core/MoneyLayerEnableSurface.js';
 import type { SessionManager, SessionTerminateAuthority } from '../core/SessionManager.js';
 import {
   KNOWN_CLAUDE_MODEL_IDS,
@@ -1161,6 +1162,17 @@ export interface RouteContext {
   routingSpendCapsStore?: import('../core/RoutingSpendCapsStore.js').RoutingSpendCapsStore | null;
   meteredSpendGate?: import('../core/MeteredSpendGate.js').MeteredSpendGate | null;
   spendPlanStore?: import('../core/RenderedPlanStore.js').RenderedPlanStore | null;
+  /**
+   * The money-layer OPERATOR ENABLE surface
+   * (docs/specs/money-layer-operator-enable-surface.md). Unlike every field
+   * above it, this is present whether or not the money layer is enabled — its
+   * six routes are PRE-GATE, because they are the door to turning it on.
+   */
+  moneyLayerEnableSurface?: import('../core/MoneyLayerEnableSurface.js').MoneyLayerEnableSurface | null;
+  /** The audit log behind that surface — flushed before the restart supervisor handoff (§4/§7). */
+  moneyLayerAudit?: import('../core/MoneyLayerAuditLog.js').MoneyLayerAuditLog | null;
+  /** Initiate the server's existing SUPERVISED restart (the auto-updater's path, under launchd keepalive). No new restart machinery. */
+  requestSupervisedRestart?: (reason: string) => Promise<boolean> | boolean;
   /** Durable per-IP PIN-attempt lockout (S2-1) — undefined/null degrades to in-memory-only. */
   pinAttemptStore?: import('../core/PinAttemptStore.js').PinAttemptStore | null;
   /** Layer 1c provider-report store (reporting-only; FD-21 — never a gate input). Null when the spend view is dark. */
@@ -12691,7 +12703,252 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // STOP is Bearer (freeze); ARM/RAISE/UNFREEZE/PROMOTE are PIN behind a canonical
   // server-rendered plan (S2-3: the commit derives SOLELY from the rendered plan).
 
-  const moneyOn = (): boolean => ctx.config.routingSpend?.money?.enabled === true;
+  // ── The money-layer OPERATOR ENABLE surface — SIX PRE-GATE ROUTES ────────
+  // docs/specs/money-layer-operator-enable-surface.md §2.
+  //
+  // These six are the ALLOWLIST: they must work while the money layer is OFF,
+  // because they are the door to turning it on. They are deliberately declared
+  // ABOVE `moneyOn()` so no future edit can accidentally fold them behind the
+  // gate they exist to open.
+
+  /** Verify the operator PIN. Returns TRUE only on a match; the SURFACE owns lockout + audit. */
+  function moneyLayerPinValid(body: unknown): boolean {
+    const expected = ctx.config.dashboardPin;
+    if (!expected) return false;
+    const pin = (body as { pin?: unknown } | undefined)?.pin;
+    if (typeof pin !== 'string' || !pin) return false;
+    const ha = createHash('sha256').update(pin).digest();
+    const hb = createHash('sha256').update(expected).digest();
+    return ha.length === hb.length && timingSafeEqual(ha, hb);
+  }
+
+  /** Translate a MoneyLayerRefusal into its HTTP shape; rethrow anything else. */
+  function sendMoneyLayerError(res: import('express').Response, err: unknown): void {
+    if (err instanceof MoneyLayerRefusal) {
+      res.status(err.status).json({ error: err.code, message: err.message });
+      return;
+    }
+    console.error('[money-layer] unexpected error on a pre-gate route:', err);
+    res.status(503).json({ error: 'money-layer-surface-error', message: err instanceof Error ? err.message : String(err) });
+  }
+
+  /** The surface, or a 503 that says the surface itself failed to construct — never a silent null. */
+  function moneySurface(res: import('express').Response) {
+    const s = ctx.moneyLayerEnableSurface;
+    if (!s) {
+      res.status(503).json({ error: 'money-layer-surface-unavailable', message: 'the money-layer enable surface failed to construct on this machine — see the server log' });
+      return null;
+    }
+    return s;
+  }
+
+  /**
+   * READ-ONLY. Writes NOTHING: no audit row, no lastObservedSourceState update,
+   * and it mints no nonce (T32). `Cache-Control: no-store` because it carries
+   * security-relevant state.
+   */
+  router.get('/routing-spend/enable-status', (req, res) => {
+    const surface = moneySurface(res);
+    if (!surface) return;
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json(surface.status());
+    } catch (err) {
+      sendMoneyLayerError(res, err);
+    }
+  });
+
+  /** Render a canonical plan (Bearer). Rendering is not authority — the PIN commit is. */
+  router.post('/routing-spend/plan-money-layer', (req, res) => {
+    const surface = moneySurface(res);
+    if (!surface) return;
+    try {
+      res.json(surface.renderPlan((req.body ?? {}).action));
+    } catch (err) {
+      sendMoneyLayerError(res, err);
+    }
+  });
+
+  /**
+   * PIN-gated commit. The action comes from the STORED PLAN, never the request
+   * body, and is rejected unless its SIGNED action is on the pre-gate allowlist
+   * — without that check this route would accept any valid plan id, including a
+   * caps-adjust plan, and apply it while the layer is off (T1b/T2).
+   */
+  router.post('/routing-spend/money-layer/commit', async (req, res) => {
+    const surface = moneySurface(res);
+    if (!surface) return;
+    const b = req.body ?? {};
+    try {
+      const out = await surface.commit({ pin: String(b.pin ?? ''), planId: b.planId, nonce: b.nonce, pinValid: moneyLayerPinValid(b) });
+      res.json(out);
+    } catch (err) {
+      sendMoneyLayerError(res, err);
+    }
+  });
+
+  /** Mint the single-use restart nonce + its canonical confirmation text (Bearer). Refused outside the three restartable states. */
+  router.post('/routing-spend/money-layer/restart-nonce', (req, res) => {
+    const surface = moneySurface(res);
+    if (!surface) return;
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json(surface.mintRestartNonce());
+    } catch (err) {
+      sendMoneyLayerError(res, err);
+    }
+  });
+
+  /**
+   * PIN-gated restart. NOT plan-bound — a named exception to the plan-binding
+   * discipline, because it changes no money state. The gaps plan-binding would
+   * have covered are closed by the single-use nonce, its short TTL, the
+   * three-state restriction, the cooldown and the confirmation-text hash.
+   *
+   * ORDERING IS LOAD-BEARING: `restart requested` is appended and FLUSHED
+   * BEFORE the supervisor handoff, so a process that exits mid-restart still
+   * records that the operator asked. If the flush fails the restart is NOT
+   * initiated and this answers 503 — an unrecorded restart is precisely the
+   * case the ordering exists to prevent.
+   */
+  router.post('/routing-spend/money-layer/restart', async (req, res) => {
+    const surface = moneySurface(res);
+    if (!surface) return;
+    const b = req.body ?? {};
+    try {
+      surface.acceptRestart({
+        pinValid: moneyLayerPinValid(b),
+        nonce: b.nonce,
+        confirmationTextHash: b.confirmationTextHash,
+        force: b.force === true,
+      });
+    } catch (err) {
+      sendMoneyLayerError(res, err);
+      return;
+    }
+    try {
+      await ctx.moneyLayerAudit?.flush();
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      res.status(503).json({ accepted: false, error: 'audit-flush-failed', message: `the restart was NOT initiated because its record could not be flushed first: ${detail}` });
+      return;
+    }
+    const initiated = ctx.requestSupervisedRestart ? await ctx.requestSupervisedRestart('money-layer enable — operator-requested restart') : false;
+    if (!initiated) {
+      res.status(503).json({ accepted: false, error: 'restart-not-initiated', message: 'the restart request could not be written — the state is unchanged' });
+      return;
+    }
+    surface.noteRestartInitiated();
+    res.json({
+      accepted: true,
+      message: 'restart requested — the agent server on this machine restarts under its supervisor. Poll the enable status until it reports the spending controls are up and enforcing.',
+    });
+  });
+
+  /**
+   * NON-ADOPTING inspection: reports the per-field disk-vs-process diff and
+   * adopts NOTHING. It mutates no authority, config or process state; it DOES
+   * append an audit row and advance rate-limit state, which is why it is a POST
+   * and why it is not called read-only — that term is reserved for
+   * `GET /enable-status`, which writes nothing at all.
+   *
+   * There is deliberately NO route that adopts on-disk config into the running
+   * process. A config edit is picked up the way every other config value is: by
+   * the process reading it at start.
+   *
+   * BEARER ALONE SEES ONLY `routingSpend.money.enabled`. The cap values under
+   * `routingSpend.money.limits.*` are the same data the log filter withholds
+   * from a pre-gate reader, so returning them here would hand the agent through
+   * one route exactly what another denies it — the boundary is only as strong
+   * as its leakiest surface (T40).
+   */
+  router.post('/routing-spend/config-inspect', (req, res) => {
+    const surface = moneySurface(res);
+    if (!surface) return;
+    // SECOND-PASS FINDING 1 — this PIN answer goes through the surface's ONE
+    // lockout funnel. Comparing it inline (as this route used to) made it an
+    // unlimited oracle for the credential that commits money and restarts the
+    // server. A lockout here answers 429 rather than silently withholding the
+    // limits, so a locked-out caller is told, not misled.
+    let withPin = false;
+    try {
+      withPin = surface.checkPin(moneyLayerPinValid(req.body ?? {}), 'config-inspect');
+    } catch (err) {
+      // @silent-fallback-ok: not a fallback at all — the error is RETURNED to
+      // the caller (a 429 lockout, typically) and the handler stops. Nothing
+      // continues on a degraded value.
+      sendMoneyLayerError(res, err);
+      return;
+    }
+    try {
+      const status = surface.status();
+      const processMoney = (ctx.config as { routingSpend?: { money?: Record<string, unknown> } }).routingSpend?.money ?? {};
+      let onDiskMoney: Record<string, unknown> = {};
+      let readError: string | null = null;
+      try {
+        const raw = JSON.parse(fs.readFileSync(path.join(ctx.config.stateDir, 'config.json'), 'utf-8')) as {
+          routingSpend?: { money?: Record<string, unknown> };
+        };
+        onDiskMoney = raw.routingSpend?.money ?? {};
+      } catch (err) {
+        // A concurrent partial write yields an honest readError rather than a
+        // diff — the route reports that it could not compare, never a guess.
+        readError = err instanceof Error ? err.message : String(err);
+      }
+      const fields: Array<{ path: string; current: unknown; onDisk: unknown }> = [
+        { path: 'routingSpend.money.enabled', current: processMoney.enabled ?? false, onDisk: onDiskMoney.enabled ?? false },
+      ];
+      if (withPin) {
+        const pl = (processMoney.limits ?? {}) as Record<string, unknown>;
+        const dl = (onDiskMoney.limits ?? {}) as Record<string, unknown>;
+        for (const k of Object.keys({ ...MONEY_LAYER_LIMIT_DEFAULTS, ...pl, ...dl })) {
+          fields.push({ path: `routingSpend.money.limits.${k}`, current: pl[k] ?? (MONEY_LAYER_LIMIT_DEFAULTS as Record<string, number>)[k], onDisk: dl[k] ?? (MONEY_LAYER_LIMIT_DEFAULTS as Record<string, number>)[k] });
+        }
+      }
+      const differs = fields.some((f) => JSON.stringify(f.current) !== JSON.stringify(f.onDisk));
+      ctx.moneyLayerAudit?.auditOnly().append('config-inspect', withPin ? 'operator' : 'bearer', { differs, withPin, fieldCount: fields.length });
+      res.json({
+        differs,
+        configSnapshotAt: status.configSnapshotAt,
+        fields,
+        ...(readError ? { readError } : {}),
+        note: differs
+          ? 'a config-file edit is NOT an immediate control — it takes effect when the process next starts. For an immediate stop, use freeze.'
+          : 'the running process matches the file on disk.',
+        ...(withPin ? {} : { limitsWithheld: 'cap values require the operator PIN' }),
+      });
+    } catch (err) {
+      sendMoneyLayerError(res, err);
+    }
+  });
+
+  /**
+   * Is the money layer ENABLED on this machine?
+   *
+   * This is MLE-1's OR — the config key **or** the operator's durable flag —
+   * NOT the config key alone. Second-pass finding 3: with a config-only
+   * predicate here, an operator who enabled the layer through the new PIN
+   * surface got a machine that constructed the layer and reported
+   * `enforcementReady: true`, while `/routing-spend/plan`, caps adjustment,
+   * arming, unfreeze AND THE EMERGENCY FREEZE all still answered 503. The
+   * operator's own switch would not have opened the controls it exists to
+   * open, and the advertised emergency stop would have been unreachable in
+   * exactly the state the operator had just armed.
+   *
+   * It reads the surface (whose store half is live per call) and falls back to
+   * the config key when no surface exists, so a partial context degrades to the
+   * previous behaviour rather than to "off".
+   */
+  const moneyOn = (): boolean => {
+    if (ctx.config.routingSpend?.money?.enabled === true) return true;
+    try {
+      return ctx.moneyLayerEnableSurface?.enableSources().store === true;
+    } catch {
+      // @silent-fallback-ok: an unreadable enable store cannot assert intent;
+      // FALSE withholds the money surfaces rather than opening them.
+      return false;
+    }
+  };
 
   /** Compose the caps view from the PIN store + the ledger's committed totals (falls back to the honest pre-B view). */
   function composeCapsView() {
@@ -12856,23 +13113,89 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: 'keyRef required' });
       return;
     }
+    const caller = `bearer:${req.ip ?? 'unknown'}`;
+    const reason = typeof (req.body ?? {}).reason === 'string' ? String((req.body ?? {}).reason).slice(0, 300) : 'not stated';
     try {
       const def = DEFAULT_METERED_CAPS[keyRef];
-      const after = ctx.routingSpendCapsStore.freeze(`bearer:${req.ip ?? 'unknown'}`, keyRef, def);
-      res.json({ ok: true, frozen: keyRef, store: after });
+      const after = ctx.routingSpendCapsStore.freeze(caller, keyRef, def);
+      // SECOND-PASS FINDING 5 — the freeze marker is authoritative and has
+      // already landed; THIS is the record of it on the money-layer authority
+      // channel, and it is what makes the pre-gate "why did spending stop?"
+      // view (keyRef + caller + reason, timing withheld) contain anything at
+      // all. Without this call the redaction machinery was unwired: the
+      // operator could see the stop but never the cause.
+      //
+      // Best-effort BY DESIGN and the one named exception to audit coupling:
+      // refusing a freeze because its row could not be written would let a
+      // logging failure disable the emergency stop.
+      const recorded = ctx.moneyLayerEnableSurface?.recordFreeze(keyRef, caller, reason) ?? null;
+      res.json({
+        ok: true,
+        frozen: keyRef,
+        store: after,
+        ...(recorded === false ? { recordProvisional: true, note: 'the freeze APPLIED; its audit record could not be written and is provisional' } : {}),
+      });
     } catch (err) {
       res.status(500).json({ error: String(err instanceof Error ? err.message : err) });
     }
   });
 
   /** Bearer-read audited cap-change log (before+after per change). */
+  /**
+   * ALWAYS REACHABLE, but only PARTLY (T18/T23).
+   *
+   * The audit trail must survive a clean disable — a log that disappears when
+   * its subject is off is not a log. But making the WHOLE merged history
+   * Bearer-readable pre-gate would hand the agent caps, arming state, freeze
+   * history, spend figures and operational timing while the money layer is off,
+   * which quietly weakens the requester ≠ authorizer boundary the rest of this
+   * design defends.
+   *
+   * So the log is split by SENSITIVITY, not by AVAILABILITY, with the row types
+   * enumerated in MONEY_AUDIT_ROW_TYPES rather than described by category.
+   * Filtering happens BEFORE pagination, and the totals returned to a pre-gate
+   * reader describe the FILTERED set only — otherwise the volume and timing of
+   * hidden rows could be inferred from gaps in the sequence.
+   */
   router.get('/routing-spend/caps/log', (req, res) => {
-    if (!moneyOn() || !ctx.routingSpendCapsStore) {
-      res.status(503).json({ error: 'routing-spend money layer not enabled (routingSpend.money.enabled — an explicit operator enable; dark by default per FD-16)' });
-      return;
-    }
+    const surface = ctx.moneyLayerEnableSurface ?? null;
     const limit = req.query.limit ? Number(req.query.limit) : 100;
-    res.json({ entries: ctx.routingSpendCapsStore.auditLog(Number.isFinite(limit) && limit > 0 ? limit : 100) });
+    const bounded = Number.isFinite(limit) && limit > 0 ? limit : 100;
+    // FULL visibility requires servingReady, OR money still settling after a
+    // disable — gating the spend log on the healthy state would remove the view
+    // precisely when the operator most needs it.
+    //
+    // WHERE THE FULL/RESTRICTED LINE SITS, and why it is `moneyOn()` rather
+    // than the spec's literal `servingReady`. The split exists to stop a Bearer
+    // holder reading caps, arming, spend and freeze timing WHILE THE MONEY
+    // LAYER IS OFF. Keying it on `servingReady` would additionally withhold
+    // those rows from an operator whose layer is ON but not yet probed — the
+    // state where they most need the log — while withholding nothing from an
+    // attacker, because `GET /routing-spend/caps` and `/summary` already serve
+    // the same caps data under `moneyOn()`. A boundary is only as strong as its
+    // leakiest surface, so a stricter line HERE buys no secrecy and costs real
+    // visibility. `settlingCount > 0` keeps the view open through the window
+    // after a disable when charges are still landing, exactly as the spec
+    // requires.
+    let full = false;
+    try {
+      full = moneyOn() || (surface ? surface.status().settlingCount > 0 : false);
+    } catch {
+      // @silent-fallback-ok: an unreadable surface answers with the RESTRICTED
+      // view, which is the fail-closed direction for a sensitivity split.
+      full = false;
+    }
+    const enableRows = surface ? surface.readAuditLog({ pregateOnly: !full, limit: bounded }) : { rows: [], total: 0, filtered: true };
+    const capsRows = full && moneyOn() && ctx.routingSpendCapsStore ? ctx.routingSpendCapsStore.auditLog(bounded) : [];
+    res.json({
+      entries: capsRows,
+      moneyLayerEntries: enableRows.rows,
+      total: enableRows.total,
+      filtered: enableRows.filtered,
+      ...(enableRows.filtered
+        ? { note: 'restricted view: enable/disable/status rows and redacted freeze reasons only. Caps, arming, spend rows and freeze timing require the spending controls to be up and enforcing.' }
+        : {}),
+    });
   });
 
   // ── Release-readiness (Layer B of release-readiness-visibility) ──────

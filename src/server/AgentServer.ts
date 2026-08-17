@@ -161,6 +161,11 @@ import { MeteredSpendLedger } from '../core/MeteredSpendLedger.js';
 import { RoutingSpendCapsStore } from '../core/RoutingSpendCapsStore.js';
 import { MeteredSpendGate } from '../core/MeteredSpendGate.js';
 import { RenderedPlanStore } from '../core/RenderedPlanStore.js';
+import { MoneyLayerEnableStore } from '../core/MoneyLayerEnableStore.js';
+import { MoneyLayerAuditLog } from '../core/MoneyLayerAuditLog.js';
+import { MoneyLayerEnableSurface } from '../core/MoneyLayerEnableSurface.js';
+import { PROBE_DOOR, PROBE_KEY_REF } from '../core/moneyLayerProbe.js';
+import { moneyLayerShouldConstruct } from '../core/moneyLayerEnable.js';
 import { PinAttemptStore } from '../core/PinAttemptStore.js';
 import { SpendAlertResolver, buildStalePriceAlert } from '../core/SpendAlertResolver.js';
 import { SpendAlertDispatcher } from '../core/SpendAlertDispatcher.js';
@@ -328,6 +333,20 @@ export class AgentServer {
   /** Benchmark-Divergence Detector analyzer (benchmark-divergence-detector FD8) — null when the ledger failed. */
   private benchmarkDivergenceAnalyzer: BenchmarkDivergenceAnalyzer | null = null;
   private routingPriceAuthority: RoutingPriceAuthority | null = null;
+  /**
+   * The money-layer operator enable surface. Constructed UNCONDITIONALLY — its
+   * routes are the pre-gate door to turning the money layer on
+   * (docs/specs/money-layer-operator-enable-surface.md).
+   */
+  private moneyLayerEnableSurface: MoneyLayerEnableSurface | null = null;
+  private moneyLayerAudit: MoneyLayerAuditLog | null = null;
+  /** Read EARLY — the operator flag is half of MLE-1 and decides whether the money layer constructs at all. */
+  private moneyLayerEnableStore: MoneyLayerEnableStore | null = null;
+  /** Set when money-layer construction was ATTEMPTED and FAILED — distinguishes `construction-failed` from `enable-pending-restart`. */
+  private moneyConstructionFailure: string | null = null;
+  /** When THIS process's config snapshot was taken, so a config-derived claim is never shown without its age (MLE-1). */
+  private readonly configSnapshotAt: string = new Date().toISOString();
+
   /** Increment B money layer — all null unless routingSpend.money.enabled === true (FD-16). */
   private meteredSpendLedger: MeteredSpendLedger | null = null;
   private routingSpendCapsStore: RoutingSpendCapsStore | null = null;
@@ -712,6 +731,15 @@ export class AgentServer {
     resolvePeerUrls?: () => Array<{ machineId: string; url: string }>;
     /** Guard runtime registry (GUARD-POSTURE-ENDPOINT-SPEC §2.1) — behind GET /guards. */
     guardRegistry?: import('../monitoring/GuardRegistry.js').GuardRegistry;
+    /**
+     * The boot-acquired single-instance lock. The money surfaces REVALIDATE it
+     * against disk on every paid call and before every authority write or audit
+     * append (money-layer-operator-enable-surface MLE-2) — §7's single-writer
+     * audit discipline depends on there being one process, and several money
+     * routes are pre-gate and reachable even when the layer is off, so a process
+     * that LOST the lock could otherwise still write. Absent ⇒ fails closed.
+     */
+    singleInstanceLock?: import('../core/SingleInstanceLock.js').SingleInstanceLock;
     /** EVERY registered, non-revoked machine (URL or not) — the /guards?scope=pool accounting boundary. */
     listPoolMachines?: () => Array<{ machineId: string; nickname?: string; lastKnownUrl?: string | null }>;
     /** WS4.4 "links that survive machine boundaries" — fronting proxy + holder verification handle (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4). */
@@ -1466,19 +1494,39 @@ export class AgentServer {
         const moneyCfg = (options.config as {
           routingSpend?: { money?: { enabled?: boolean; reserveTtlMs?: number } };
         }).routingSpend?.money;
-        if (moneyCfg?.enabled === true) {
+        // MLE-1: intent is an OR over TWO sources — the config key AND the
+        // operator's durable flag. Constructing on the config key alone would
+        // make the whole enable surface inert: the operator's PIN-committed
+        // enable would persist, promise "the layer comes up on the next server
+        // restart", and then the restart would construct nothing, leaving the
+        // state stuck at `enable-pending-restart` forever. That defect was found
+        // by running the flow against a real server, not by reading the spec.
+        this.moneyLayerEnableStore = new MoneyLayerEnableStore({ stateDir: options.config.stateDir });
+        const moneyIntentEnabled = moneyLayerShouldConstruct({
+          configEnabled: moneyCfg?.enabled === true,
+          operatorEnabled: this.moneyLayerEnableStore.operatorEnabled(),
+        });
+        if (moneyIntentEnabled) {
           try {
             this.meteredSpendLedger = new MeteredSpendLedger({
               stateDir: options.config.stateDir,
-              reserveTtlMs: moneyCfg.reserveTtlMs,
+              reserveTtlMs: moneyCfg?.reserveTtlMs,
             });
             this.routingSpendCapsStore = new RoutingSpendCapsStore({
               stateDir: options.config.stateDir,
-              knownKeyRefs: new Set(Object.keys(DEFAULT_METERED_CAPS)),
-              knownDoors: new Set([...METERED_ROUTING_DOORS] as string[]),
+              // The RESERVED cap-gate probe door is a known keyRef/door so the
+              // schema validator accepts it. It is deliberately NOT added to
+              // METERED_ROUTING_DOORS / DEFAULT_METERED_CAPS: those drive the
+              // operator's arming UI, the spend summaries and the bench coverage
+              // map, and the probe door must appear in none of them (T41).
+              knownKeyRefs: new Set([...Object.keys(DEFAULT_METERED_CAPS), PROBE_KEY_REF]),
+              knownDoors: new Set([...METERED_ROUTING_DOORS, PROBE_DOOR] as string[]),
             });
             this.spendPlanStore = new RenderedPlanStore();
             const machineId = (options.config as { machineId?: string }).machineId ?? 'single-machine';
+            // The reserved cap-gate probe door, installed idempotently so the
+            // readiness probe has an ordinary live door to be refused by.
+            this.routingSpendCapsStore.ensureProbeDoor(machineId);
             const poolOn = (options.config as {
               multiMachine?: { sessionPool?: { enabled?: boolean; stage?: string } };
             }).multiMachine?.sessionPool?.enabled === true;
@@ -1557,8 +1605,26 @@ export class AgentServer {
             this.routingSpendCapsStore = null;
             this.meteredSpendGate = null;
             this.spendPlanStore = null;
+            // The enable surface must know construction was ATTEMPTED and FAILED,
+            // so it reports `construction-failed` with a component rather than the
+            // clean-looking `enable-pending-restart` (§3).
+            this.moneyConstructionFailure = String(err);
+          }
+          // Construction can also fail WITHOUT throwing: the gate is only built
+          // when the Increment-A price authority exists, and that rides its own
+          // dev gate. Left unrecorded, the surface would report
+          // `enable-pending-restart` — telling the operator a restart will fix
+          // something a restart cannot fix, because the missing dependency will
+          // still be missing. Naming the component is the honest answer, and
+          // this case was found by driving the flow on a real server where the
+          // price authority happened to be dark.
+          if (!this.moneyConstructionFailure && this.meteredSpendGate === null) {
+            this.moneyConstructionFailure = this.routingPriceAuthority === null
+              ? 'routing-price-authority-absent (the Increment-A spend view is dark on this agent, so the cap gate cannot be built)'
+              : 'metered-spend-gate-absent';
           }
         }
+
 
         // ── Increment C alert layer (routing-control-room-spend §Surface 2 Alerts).
         // dryRun-FIRST live-on-dev (FD-16): `routingSpend.alerts.enabled` rides the
@@ -1706,6 +1772,70 @@ export class AgentServer {
         console.warn('[instar] feature-metrics-ledger init failed (non-fatal):', err);
         this.featureMetricsLedger = null;
       }
+    }
+
+    // NOTE ON PLACEMENT — this block is deliberately OUTSIDE the feature-metrics
+    // try/catch above. It used to sit inside it, which meant an unrelated
+    // FeatureMetricsLedger failure jumped straight to that catch and left the
+    // enable surface null — the money layer's only door silently missing
+    // because an observability ledger failed. Found by the second-pass
+    // reviewer. Its own try/catch below is the ONLY thing that may disable it.
+    // ── The money-layer OPERATOR ENABLE SURFACE
+    // (docs/specs/money-layer-operator-enable-surface.md, Phase 1).
+    //
+    // CONSTRUCTED UNCONDITIONALLY, unlike the layer it governs. Its six
+    // routes are PRE-GATE: they must work while the money layer is off,
+    // because they are the door to turning it on. A surface built only when
+    // the thing it enables is already enabled would be a switch inside the
+    // locked room — which is exactly the gap this feature closes.
+    try {
+      const enableStore = this.moneyLayerEnableStore ?? new MoneyLayerEnableStore({ stateDir: options.config.stateDir });
+      this.moneyLayerEnableStore = enableStore;
+      const enableAudit = new MoneyLayerAuditLog({ stateDir: options.config.stateDir });
+      const surfaceMachineId = (options.config as { machineId?: string }).machineId ?? 'single-machine';
+      this.moneyLayerAudit = enableAudit;
+      this.moneyLayerEnableSurface = new MoneyLayerEnableSurface({
+        store: enableStore,
+        audit: enableAudit,
+        machineId: surfaceMachineId,
+        machineNickname: (options.config as { machineNickname?: string }).machineNickname ?? null,
+        configEnabled: () => (options.config as { routingSpend?: { money?: { enabled?: boolean } } }).routingSpend?.money?.enabled === true,
+        configSnapshotAt: () => this.configSnapshotAt,
+        componentsConstructed: () => this.meteredSpendGate !== null && this.meteredSpendLedger !== null,
+        gate: () => this.meteredSpendGate,
+        capsSnapshot: () => {
+          try {
+            return this.routingSpendCapsStore?.read() ?? null;
+          } catch (err) {
+            // @silent-fallback-ok: NULL is the HONEST value here, not a guess —
+            // the probe's precondition check turns it into an explicit
+            // `caps-store-unreadable` failure rather than a pass (P20). Logged
+            // so an unreadable money store is never invisible.
+            console.error(`[instar] money-layer caps snapshot unreadable — the readiness probe will report caps-store-unreadable: ${String(err)}`);
+            return null;
+          }
+        },
+        // Revalidated against DISK, never a remembered boolean: a successor
+        // that reclaimed the lock does not update our in-memory belief.
+        lockHeld: () => options.singleInstanceLock?.revalidate() ?? false,
+        settlingCount: () => this.meteredSpendLedger?.outstandingReserveCount() ?? 0,
+        limits: (options.config as { routingSpend?: { money?: { limits?: Record<string, number> } } }).routingSpend?.money?.limits,
+      });
+      if (this.moneyConstructionFailure) {
+        enableStore.recordFailure('construction-failed', `money-layer-init:${this.moneyConstructionFailure.slice(0, 200)}`);
+      }
+      // Boot reconciliation: derive the honest state, probe if the components
+      // are up, and audit the transition. Never blocks startup.
+      void this.moneyLayerEnableSurface.onBoot().catch((err) => {
+        console.error('[instar] money-layer enable surface boot reconciliation failed:', err);
+      });
+    } catch (err) {
+      // @silent-fallback-ok: NOT silent — it logs loudly, and the null is
+      // surfaced to the operator as an explicit 503 naming
+      // `money-layer-surface-unavailable` rather than a quiet absence. Boot
+      // must not die because one surface failed to construct.
+      console.error('[instar] money-layer enable surface init FAILED (its routes will 503):', err);
+      this.moneyLayerEnableSurface = null;
     }
 
     // Close-the-Loop action reach: the dated overdue checker cannot see pending
@@ -3591,6 +3721,9 @@ export class AgentServer {
       routingSpendCapsStore: this.routingSpendCapsStore,
       meteredSpendGate: this.meteredSpendGate,
       spendPlanStore: this.spendPlanStore,
+      moneyLayerEnableSurface: this.moneyLayerEnableSurface,
+      moneyLayerAudit: this.moneyLayerAudit,
+      requestSupervisedRestart: (reason: string) => this.requestSupervisedRestart(reason),
       pinAttemptStore: this.pinAttemptStore,
       providerCostReportStore: this.providerCostReportStore,
       resourceLedger: this.resourceLedger,
@@ -5115,6 +5248,40 @@ export class AgentServer {
       },
       getConfig,
     );
+  }
+
+  /**
+   * Initiate the server's EXISTING supervised restart — the same
+   * `state/restart-requested.json` flag the auto-updater writes, which the
+   * supervisor (launchd keepalive) and the ForegroundRestartWatcher already act
+   * on. Deliberately NO new restart machinery
+   * (docs/specs/money-layer-operator-enable-surface.md §4).
+   *
+   * Returns FALSE when the request could not be written, so the caller answers
+   * `503` naming the reason and leaves the state unchanged rather than
+   * reporting a restart that will never happen.
+   */
+  private requestSupervisedRestart(reason: string): boolean {
+    try {
+      const flagPath = path.join(this.config.stateDir, 'state', 'restart-requested.json');
+      fs.mkdirSync(path.dirname(flagPath), { recursive: true });
+      const data = {
+        requestedAt: new Date().toISOString(),
+        requestedBy: 'money-layer-enable',
+        reason,
+        plannedRestart: true, // maintenance, not a crash — the supervisor reads this
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        pid: process.pid,
+      };
+      const tmp = `${flagPath}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+      fs.renameSync(tmp, flagPath);
+      console.log(`[instar] supervised restart requested by the money-layer enable surface (${reason})`);
+      return true;
+    } catch (err) {
+      console.error(`[instar] money-layer restart request could not be written: ${String(err)}`);
+      return false;
+    }
   }
 
   /**

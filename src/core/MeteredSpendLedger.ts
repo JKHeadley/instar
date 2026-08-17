@@ -309,6 +309,31 @@ export class MeteredSpendLedger {
     return [...keys].map((k) => this.currentTotals(k));
   }
 
+  /**
+   * How many reservations are still in flight — the `settlingCount` the enable
+   * surface reports (money-layer-operator-enable-surface §2).
+   *
+   * DERIVED from the live reserve set, never an independently-incremented
+   * counter that can drift. Because a stale positive would keep sensitive audit
+   * rows readable indefinitely, it is BOUNDED: an entry past its settle
+   * deadline (the TTL) is excluded here and reconciled by the expiry sweep, so
+   * a crashed or stuck call cannot pin the count above zero forever (T24).
+   *
+   * NOT persisted across restart: a process restart ends its own in-flight
+   * work, and the new process folds from rows the ledger can still account for.
+   */
+  outstandingReserveCount(): number {
+    this.checkHighWater();
+    const nowMs = this.now();
+    let n = 0;
+    for (const st of this.reserves.values()) {
+      if (st.state !== 'reserved') continue;
+      if (nowMs - st.reservedAtMs > this.ttlMs) continue; // past the settle deadline — reconciled, stops counting
+      n++;
+    }
+    return n;
+  }
+
   // ── Fold internals ─────────────────────────────────────────────────
 
   /** Apply one row to the in-memory fold. */

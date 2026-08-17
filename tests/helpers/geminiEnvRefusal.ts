@@ -66,6 +66,16 @@ const ENVIRONMENTAL_REFUSALS: ReadonlyArray<{ reason: string; pattern: RegExp }>
     reason: 'quota exhausted',
     pattern: /QUOTA_EXHAUSTED|exhausted your capacity|\bquota\b/i,
   },
+  {
+    // A Workspace / Google-Cloud-Assist account that refuses before it reads the
+    // prompt because it needs a project id in the environment. Same class as the
+    // two above and the same reasoning: the CLI has declined on its OWN
+    // configuration, so there is nothing here to assert about instar's code.
+    // Missing from this list until 2026-08-16, which made an unrelated red on
+    // every machine whose gemini login happens to be a Workspace account.
+    reason: 'account needs a Google Cloud project id in the environment (GOOGLE_CLOUD_PROJECT); the child env is key-free by design',
+    pattern: /ProjectIdRequiredError|GOOGLE_CLOUD_PROJECT(?:_ID)?\s+env|setting the GOOGLE_CLOUD_PROJECT/i,
+  },
 ];
 
 /**

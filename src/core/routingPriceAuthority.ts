@@ -31,6 +31,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { CLI_ROUTING_DOORS, METERED_ROUTING_DOORS } from '../data/llmBenchCoverage.js';
+import { PROBE_DOOR, PROBE_PRICE_PER_MTOK } from './moneyLayerProbe.js';
 
 /** A reviewed/observed price point (USD per MILLION tokens), effective-dated. */
 export interface RoutingPricePoint {
@@ -358,6 +359,34 @@ export class RoutingPriceAuthority {
    * doorClass-based subscription-$0 default; else no-matching-point (loud).
    */
   resolve(door: string, modelId: string, tsMs: number): PriceResolution {
+    // The RESERVED cap-gate probe door resolves to a CODE-DEFINED synthetic
+    // price, deliberately not a manifest entry
+    // (docs/specs/money-layer-operator-enable-surface.md §6, and the divergence
+    // recorded in moneyLayerProbe.ts). A manifest point would be
+    // operator-editable, would AGE into `priceStale` so the probe would
+    // eventually refuse for a PRICE reason rather than the cap reason it exists
+    // to prove, and would be absent on a no-source install. This point is
+    // therefore canonical, never stale, and unreachable by any caps or config
+    // route. It is evaluation-only: the gate refuses before execution and the
+    // probe's provider makes no network call, so it can never be BOOKED.
+    if (door === PROBE_DOOR) {
+      return {
+        door,
+        modelId: canonicalModelId(modelId),
+        doorClass: 'metered',
+        priceBasis: 'canonical',
+        point: {
+          door,
+          modelId: canonicalModelId(modelId),
+          inPerMtok: PROBE_PRICE_PER_MTOK,
+          outPerMtok: PROBE_PRICE_PER_MTOK,
+          effectiveAt: dayAlignedIso(tsMs),
+          source: 'code-defined-probe-door',
+        },
+        priceStale: false,
+        newestPointAgeDays: 0,
+      };
+    }
     const cls = doorClassOf(door);
     const key = RoutingPriceAuthority.key(door, modelId);
     const newestAgeDays = this.newestCanonicalAgeDays(door, tsMs);

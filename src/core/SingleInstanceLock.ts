@@ -260,6 +260,25 @@ export class SingleInstanceLock {
     }
   }
 
+  /**
+   * Re-read the lock FILE and confirm THIS process still owns it.
+   *
+   * `held` alone is an in-memory belief formed at acquire time; a successor that
+   * reclaimed the lock (auto-heal, a forced override, a manual delete) does not
+   * update it. The money surfaces revalidate on every paid call and before every
+   * authority write or audit append (money-layer-operator-enable-surface MLE-2),
+   * so they need OWNERSHIP CHECKED AGAINST DISK, not remembered.
+   *
+   * FAILS CLOSED: an unreadable or absent lock file returns FALSE. A caller that
+   * cannot prove it is the owner is not the owner.
+   */
+  revalidate(): boolean {
+    if (!this.held) return false;
+    const rec = this.readLock();
+    if (!rec) return false;
+    return rec.pid === process.pid && rec.hostname === this.host;
+  }
+
   /** Refresh the heartbeat (optional — the lock is primarily pid-guarded). */
   heartbeat(): void {
     if (!this.held) return;

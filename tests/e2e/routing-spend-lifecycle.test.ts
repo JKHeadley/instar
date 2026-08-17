@@ -212,14 +212,34 @@ describe('Routing Control Room MONEY layer stays DARK by default (FD-16)', () =>
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/e2e/routing-spend-lifecycle.test.ts' });
   });
 
-  it('every money route 503s on a dev agent without the explicit enable', async () => {
+  it('every MUTATING money route 503s on a dev agent without the explicit enable', async () => {
     const app = server.getApp();
     for (const url of ['/routing-spend/plan', '/routing-spend/freeze']) {
       const res = await request(app).post(url).set({ Authorization: `Bearer ${AUTH}` }).send({});
       expect(res.status, url).toBe(503);
     }
+  });
+
+  it('the audit log is REACHABLE but restricted while the layer is dark', async () => {
+    // CONTRACT CHANGE (money-layer-operator-enable-surface §2, T18): this route
+    // used to 503 while the money layer was dark. It no longer does, and the
+    // reason is deliberate — a log that disappears when its subject is off is
+    // not a log, and the operator needs to see WHY spending stopped even in the
+    // state where everything else is refused.
+    //
+    // Availability is not the same as disclosure: the split is by SENSITIVITY.
+    // Pre-gate the response carries enable/disable/status rows and redacted
+    // freeze reasons only — never caps, arming, probe, spend rows, or freeze
+    // timing — and `filtered: true` says so.
+    const app = server.getApp();
     const log = await request(app).get('/routing-spend/caps/log').set({ Authorization: `Bearer ${AUTH}` });
-    expect(log.status).toBe(503);
+    expect(log.status).toBe(200);
+    expect(log.body.filtered).toBe(true);
+    // The sensitive half is genuinely withheld, not merely relabelled.
+    expect(log.body.entries).toEqual([]);
+    for (const row of log.body.moneyLayerEntries ?? []) {
+      expect(['caps-adjusted', 'door-armed', 'probe-result', 'spend', 'pin-attempt-failed']).not.toContain(row.type);
+    }
   });
 });
 

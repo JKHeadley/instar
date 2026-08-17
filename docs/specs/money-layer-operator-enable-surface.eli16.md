@@ -97,3 +97,36 @@ log that cannot be edited afterwards.
 
 The alternative — leaving it unreachable — has its own failure mode, which is you editing a
 money-bearing settings file by hand while reading instructions off a phone screen.
+
+
+---
+
+## What building it changed (added after the design was approved)
+
+The design above was reviewed to convergence over forty rounds and then built. Building it
+contradicted the design four times, and an independent adversarial reviewer found eight more
+problems in the finished code. All twelve are fixed. This section exists so the overview
+matches what shipped rather than what was planned.
+
+**Four the build found.** Two were the same shape: the readiness check tests the door by
+attempting a pretend charge, and the design got both the price and the limit wrong in ways
+that would have made the check fail *for the wrong reason* — permanently, while reading as a
+state rather than a bug. A third was found only by running it on a real server: the switch
+would have done nothing at all. Your approval would have been saved, the screen would have
+promised "it comes up on the next restart", and the restart would have built nothing, forever,
+with no error anywhere. The fourth, same run: when the machinery genuinely cannot be built,
+it said "waiting for a restart" — a loop with no exit.
+
+**Eight an independent reviewer found.** A different model family, given the code and told to
+be adversarial. Two were critical: one of the six controls let anyone holding the agent's
+ordinary access token guess your PIN without limit; and one action wrote durable permission to
+spend behind text that promised no change. The worst of the rest: turning the switch on did not
+open the controls it exists to open — including the emergency stop, which answered "unavailable"
+in exactly the state you had just armed.
+
+**What to take from it.** Forty rounds of review, sixty-seven passing tests, and a live run all
+proved different things and none substituted for another. Review caught design problems. Tests
+proved it works. Running it caught what neither could see. And an adversary caught what all
+three missed, because they were all asking "does this work?" rather than "how do I break it?"
+For anything touching money or authority, treat all four as required rather than any one as
+sufficient.

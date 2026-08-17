@@ -25,7 +25,19 @@ import crypto from 'node:crypto';
 
 export const PLAN_TTL_MS = 10 * 60 * 1000;
 
-export type PlanAction = 'caps-adjust' | 'go-live' | 'unfreeze' | 'price-promote';
+export type PlanAction =
+  | 'caps-adjust'
+  | 'go-live'
+  | 'unfreeze'
+  | 'price-promote'
+  // The money-layer PRE-GATE actions (docs/specs/money-layer-operator-enable-surface.md
+  // §2). They render through the same store deliberately — one plan machinery, so
+  // the pre-gate commit route's allowlist check is what separates them, not a
+  // parallel implementation that could drift from this one.
+  | 'money-layer-enable'
+  | 'money-layer-mirror-config'
+  | 'money-layer-disable'
+  | 'money-layer-disable-store-only';
 
 export interface RenderedPlan {
   planId: string;
