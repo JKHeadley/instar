@@ -58,7 +58,71 @@ until the operator PIN-arms it, one door at a time.
   — PIN-gated commits of a rendered plan (arm/disarm designates the metered-lease machine).
 - `POST /routing-spend/freeze` — Bearer, set-true-only, instant: halting money is always cheap;
   releasing it is always the operator's.
-- `GET /routing-spend/caps/log` — the audited cap-change history.
+- `GET /routing-spend/caps/log` — the audited cap-change history. **Reachable in every state**,
+  including while the layer is dark, but split by SENSITIVITY: a pre-gate reader sees
+  enable/disable/status rows and freeze REASONS, never freeze timing, caps, arming, probe or spend
+  rows. A log that disappears when its subject is off is not a log, and "why did spending stop?" is
+  exactly the question you have when everything else is refused.
+
+## Turning the money layer on — the operator ON switch
+
+The money layer above ships dark behind `routingSpend.money.enabled`, and for a long time
+**nothing in instar could set that key**: no route wrote it, and `routingSpend` is deliberately
+absent from `PATCHABLE_CONFIG_KEYS` so a Bearer holder can never arm spending. The only way in was
+hand-editing the config file on the machine — a switch locked inside the room it unlocks.
+
+These **six routes are PRE-GATE**: unlike every other `/routing-spend/*` route they answer `200`
+while the money layer is OFF, because they are the door to turning it on.
+
+- `GET /routing-spend/enable-status` — the current state: `lifecycleState`, `enforcementReady`,
+  `enableSources`, `configSnapshotAt`, `restartEligible`, `anyKeyFrozen`, `settlingCount`.
+  Genuinely read-only — it appends no audit row, mints no nonce and updates no observed state, so
+  dashboard polling can never drive log volume.
+- `POST /routing-spend/plan-money-layer` — renders the canonical plain-English plan for one of four
+  actions: `money-layer-enable` · `money-layer-mirror-config` · `money-layer-disable` ·
+  `money-layer-disable-store-only`. Requires the single-instance lock: a rendered plan is
+  authorization material, so a non-owner process must not be able to mint one.
+- `POST /routing-spend/money-layer/commit` — Bearer **+** dashboard PIN. The action comes from the
+  STORED PLAN, never the request body, and is refused unless it is on the pre-gate allowlist — so a
+  validly-signed caps-adjust plan cannot be walked through this door. Refused too if the
+  enable-source state moved since the plan was rendered, or if the plan was rendered for another
+  machine.
+- `POST /routing-spend/money-layer/restart-nonce` → `POST /routing-spend/money-layer/restart` —
+  Bearer **+** PIN, a single-use nonce, a durable cooldown, and the hash of the canonical
+  confirmation text (which names the blast radius plainly: this restarts the WHOLE agent server on
+  that machine, not just the money layer). Accepted only in the three states a restart can
+  plausibly clear.
+- `POST /routing-spend/config-inspect` — reports the per-field disk-vs-process diff and **adopts
+  nothing**. Bearer alone sees only `routingSpend.money.enabled`; the cap values need the PIN,
+  because they are the same data the log filter withholds from a pre-gate reader.
+
+### Three things it refuses to pretend
+
+- **Enabling is not enforcing.** The layer's components are constructed at server start, so a
+  commit answers `enable-pending-restart` and says so. The **poll** is the source of truth, never
+  the restart response — the connection may die with the process.
+- **Enabling arms no paid door.** Every door stays refused with `$0` committed until separately
+  PIN-armed. `enforcementReady` means *the spending controls are up and enforcing*, never
+  *spend works*.
+- **A disable may not stop spending.** It clears the operator flag only; no route here writes the
+  config file. When the config key is also set, the surface renders the separately-signed
+  `money-layer-disable-store-only` variant whose first line states it will **not** stop spending,
+  and leads with **freeze** instead. A button labelled "disable" that leaves money flowing is an
+  operator hazard however well documented.
+
+### How readiness is proven
+
+Not inferred from non-null objects. A reserved `__probe__` door — genuinely live, with a no-op
+provider and a `$0.01` cap — is exercised as an **ordinary metered call**, and readiness requires
+the refusal reason to be `cap-exceeded` **specifically**. Any other refusal means cap enforcement
+was never reached, and an admit means the gate let a `$2.00` reservation through a `$0.01` cap; both
+are failures. The reserved door is refused by every generic caps mutator, excluded from the spend
+summaries and the arming UI, and never accepted as a user-supplied keyRef.
+
+Spec: `docs/specs/money-layer-operator-enable-surface.md`.
+
+**Honest limit:** the dashboard form for these controls is not built yet. The routes are
+phone-reachable and the agent drives them conversationally, but there is no screen to tap unaided.
 
 ## The alert layer (Increment C — dryRun-first, live on development agents)
 
