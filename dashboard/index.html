@@ -8989,6 +8989,10 @@
       btns.appendChild(mkBtn('Preview cap change', 'spend-arm-btn', () => previewSpendPlan('caps-adjust')));
       btns.appendChild(mkBtn('Preview go live', 'spend-arm-btn', () => previewSpendPlan('go-live')));
       btns.appendChild(mkBtn('Freeze this door', 'spend-arm-btn spend-arm-btn-freeze', freezeSpendDoor));
+      // Freeze is always available and needs no PIN — so its REVERSE has to be reachable from
+      // the same screen, or the operator can stop spending here and has nowhere to resume it.
+      // Unfreeze is PIN-gated on purpose: releasing money is the operator's, halting it is cheap.
+      btns.appendChild(mkBtn('Unfreeze this door', 'spend-arm-btn', () => previewSpendPlan('unfreeze')));
       root.appendChild(btns);
 
       const planBox = document.createElement('div');
@@ -9043,7 +9047,12 @@
       if (!row) { setSpendArmStatus('Pick a door first.'); return; }
 
       let fields;
-      if (action === 'caps-adjust') {
+      if (action === 'unfreeze') {
+        // Say so here rather than posting a plan the server would refuse: "that door isn't
+        // frozen" is an answer; a 400 from the commit is a puzzle.
+        if (!row.frozen) { setSpendArmStatus('That door isn’t frozen — there is nothing to release.'); return; }
+        fields = { keyRef: row.keyRef };
+      } else if (action === 'caps-adjust') {
         const num = (id) => {
           const raw = (document.getElementById(id) || {}).value;
           return raw === '' || raw === undefined ? '' : Number(raw);
@@ -9079,8 +9088,13 @@
       const pinEl = document.getElementById('spendArmPin');
       const pin = pinEl ? pinEl.value : '';
       if (!pin) { setSpendArmStatus('Enter your dashboard PIN to approve.'); return; }
+      // Each action has its OWN commit route and each refuses a plan signed for a different
+      // one. Posting everything to caps/adjust made "go live" — arming a door, the point of
+      // this panel — fail with a 400 after the operator had already entered their PIN.
+      const route = M.commitRoute(__spendPendingPlan);
+      if (!route) { setSpendArmStatus('That approval is no longer valid. Preview the change again.'); return; }
       try {
-        await apiFetch('/routing-spend/caps/adjust', {
+        await apiFetch(route, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(M.commitRequest(__spendPendingPlan, pin)),

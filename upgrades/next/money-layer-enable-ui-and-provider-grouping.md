@@ -43,7 +43,22 @@ Three honesty properties are carried into the copy rather than left to the reade
 No lifecycle enum value is ever rendered to the operator; the copy is derived and
 tested against the internal names leaking.
 
-**2. The subscriptions grid groups by provider.** The account *cards* already grouped —
+**2. Arming a door actually works now.** With the switch built, the panel behind it was
+driven end to end on a throwaway agent — and *arming a door*, half of what was asked for,
+did not work. The panel posted **every** approval to the cap-adjust route; the server has
+one commit route per action and refuses a plan signed for a different one, so "go live"
+rendered its plan, took the PIN, and answered 400. Setting a cap was the one action that
+happened to match its route. Fixed at the cause: `POST /routing-spend/plan` now returns the
+plan's `action`, and the panel derives the commit route from what was **rendered** rather
+than from the button pressed.
+
+Freeze also gained its reverse. Freeze is always offered and needs no PIN — halting money
+should be cheap — but there was no unfreeze on the screen, so an operator could stop a door
+from the dashboard and have nowhere to resume it. Unfreeze is now a button, PIN-gated
+(releasing money is the operator's), and answers plainly when a door is not frozen instead
+of posting a plan the server would refuse.
+
+**3. The subscriptions grid groups by provider.** The account *cards* already grouped —
 a Claude heading and a Codex heading. The account × machine *grid* underneath, which is
 the surface an operator with several accounts actually reads, did not: seven rows of
 account names with nothing telling the providers apart. It now carries a provider band,
@@ -78,14 +93,24 @@ paid service is live yet, so there is nothing to spend until you deliberately ar
   the restart that closes the gap.
 - A disable that cannot stop spending is reported as exactly that, with freeze offered
   instead of a false success.
+- Arm a paid door from the dashboard — previously the button rendered its approval and then
+  failed after you had entered your PIN.
+- Unfreeze from the same screen you froze on.
 - The Subscriptions account × machine grid labels its provider groups.
 
 ## Evidence
 
-- **121 tests** — 30 unit over the new module's pure functions and renderers, 18 wiring
-  tests asserting the page actually mounts and imports it (a module nothing imports is the
-  defect this release fixes, wearing a green tick), and 73 over the subscriptions
-  renderers including 7 new ones for the grid grouping.
+- **158 tests** — 30 over the new module's pure functions and renderers, 18 wiring tests
+  asserting the page actually mounts and imports it (a module nothing imports is the defect
+  this release fixes, wearing a green tick), 37 over the arming panel including 8 new for
+  the commit-route fix, and 73 over the subscriptions renderers including 7 new for the grid
+  grouping.
+- **The whole operator loop driven on a throwaway agent against a real server** — turn on,
+  wrong PIN refused, right PIN accepted, restart, came back `enforcing`; set a cap of $100
+  lifetime / $3 daily and read it back; armed the door (400 before the fix, 200 after);
+  froze it with no PIN; unfroze it with one. The unit tests were green on the arming panel
+  before and after, because none of them knew a second commit route existed — only driving
+  it as an operator found that.
 - **Mutation-checked, not just green:** reverting the grid grouping fails exactly 3 of the
   new tests and nothing else; reverting the commit-outcome ordering fails exactly the test
   that found it.
@@ -103,9 +128,9 @@ paid service is live yet, so there is nothing to spend until you deliberately ar
 
 ## Known Limits
 
-- **Setting a cap and taking a door live are still the arming panel's job**, below the
-  switch. This release makes that panel reachable — it was previously behind a switch with
-  no on-position — but does not redesign it.
+- **Disarming a door is API-only.** The panel offers arm, freeze and unfreeze. Freeze is the
+  stop control — instant, no PIN — and it now has its reverse on the same screen, so nothing
+  you can reach from the dashboard leaves you stuck there.
 - **The restart step needs a secure page.** Approving a restart hashes the confirmation
   text in the browser, which needs `https` or `localhost`. On a plain `http://<LAN-IP>`
   dashboard the panel refuses that one step and names the remedy rather than sending an

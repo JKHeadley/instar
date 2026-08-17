@@ -13005,7 +13005,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           `lifetime cap ${current ? `$${current.lifetimeCapUsd.toFixed(2)} → ` : ''}$${lifetimeCapUsd.toFixed(2)}. ` +
           `No other field changes. ${current && (lifetimeCapUsd < current.lifetimeCapUsd || dailyCapUsd < current.dailyCapUsd) ? 'This LOWERS a cap — the lease epoch bumps and the gate clamps on its next read.' : ''}`;
         const plan = ctx.spendPlanStore.render('caps-adjust', renderedText, { keyRef, provider, lifetimeCapUsd, dailyCapUsd }, { capsStore: storeVersion });
-        res.json({ planId: plan.planId, nonce: plan.nonce, renderedText: plan.renderedText, expiresAt: new Date(plan.expiresAt).toISOString() });
+        // `action` rides the response so the client can post the commit to the route that
+        // ACTION names. Without it the dashboard had to guess, guessed the caps route for
+        // everything, and a go-live commit was refused 400 by the plan-binding check —
+        // arming a door was unreachable from the panel built to arm doors.
+        res.json({ planId: plan.planId, nonce: plan.nonce, action: plan.action, renderedText: plan.renderedText, expiresAt: new Date(plan.expiresAt).toISOString() });
         return;
       }
       if (action === 'go-live') {
@@ -13021,7 +13025,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           : `DISARM paid door '${door}' (key '${keyRef}'). New metered admissions on this door stop immediately; in-flight ` +
             `reserved calls settle their real cost. No cap values change in this action.`;
         const plan = ctx.spendPlanStore.render('go-live', renderedText, { door, keyRef, enabled, designatedMachineId: machineId }, { capsStore: storeVersion });
-        res.json({ planId: plan.planId, nonce: plan.nonce, renderedText: plan.renderedText, expiresAt: new Date(plan.expiresAt).toISOString() });
+        // `action` rides the response so the client can post the commit to the route that
+        // ACTION names. Without it the dashboard had to guess, guessed the caps route for
+        // everything, and a go-live commit was refused 400 by the plan-binding check —
+        // arming a door was unreachable from the panel built to arm doors.
+        res.json({ planId: plan.planId, nonce: plan.nonce, action: plan.action, renderedText: plan.renderedText, expiresAt: new Date(plan.expiresAt).toISOString() });
         return;
       }
       if (action === 'unfreeze') {
@@ -13029,7 +13037,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (typeof keyRef !== 'string' || !keyRef.trim()) throw new Error('keyRef required');
         const renderedText = `UNFREEZE key '${keyRef}' — new metered admissions on its doors resume, subject to its caps. No cap values change in this action.`;
         const plan = ctx.spendPlanStore.render('unfreeze', renderedText, { keyRef }, { capsStore: storeVersion });
-        res.json({ planId: plan.planId, nonce: plan.nonce, renderedText: plan.renderedText, expiresAt: new Date(plan.expiresAt).toISOString() });
+        // `action` rides the response so the client can post the commit to the route that
+        // ACTION names. Without it the dashboard had to guess, guessed the caps route for
+        // everything, and a go-live commit was refused 400 by the plan-binding check —
+        // arming a door was unreachable from the panel built to arm doors.
+        res.json({ planId: plan.planId, nonce: plan.nonce, action: plan.action, renderedText: plan.renderedText, expiresAt: new Date(plan.expiresAt).toISOString() });
         return;
       }
       res.status(400).json({ error: `unknown plan action '${String(action)}' (caps-adjust | go-live | unfreeze)` });

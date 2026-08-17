@@ -13,14 +13,18 @@ Two dashboard-only changes, on disjoint surfaces, both from one operator report:
 
 **(2) Provider grouping in the account×machine grid.** `renderAccounts` (the cards) already grouped by provider; `renderAccountMatrix` (the grid the operator actually reads) did not — seven rows of account names with nothing telling Claude from Codex. `buildMatrixModel` now carries each account's `provider` and the grid renders a provider band, reusing `groupAccountsByProvider` so both surfaces obey the same two rules (first-appearance order, and **no** band at all on a single-provider install).
 
-Files: `dashboard/money-layer-enable.js` (new), `dashboard/index.html`, `dashboard/subscriptions.js`, `src/core/PostUpdateMigrator.ts` (CLAUDE.md awareness + migration), plus three test files.
+**(3) Two defects in the arming panel the switch unlocks, found by driving it.** With the switch working, the panel behind it was driven end to end on a throwaway agent — and *arming a door*, which is half of what the operator asked for, did not work. The panel posted **every** rendered plan to `/routing-spend/caps/adjust`; the server has one commit route per action and each refuses a plan signed for a different one, so "Preview go live" rendered correctly, took the operator's PIN, and answered 400. Setting a cap was the one action that happened to match. Fixed at the cause: `/routing-spend/plan` now returns the plan's `action`, and `commitRoute(plan)` derives the route from what was **rendered** rather than from the button pressed. Separately, **Freeze** (always offered, no PIN) had no reverse on the screen — an operator could halt a door from the dashboard and have nowhere to resume it. Unfreeze is now a button, PIN-gated, and says so client-side when a door is not frozen instead of posting a plan the server would refuse.
+
+Files: `dashboard/money-layer-enable.js` (new), `dashboard/index.html`, `dashboard/spend-arming.js`, `dashboard/subscriptions.js`, `src/server/routes.ts` (the additive `action` field on the three arming plan responses), `src/core/PostUpdateMigrator.ts` (CLAUDE.md awareness + migration), plus four test files.
 
 ## Decision-point inventory
 
 - `MoneyLayerEnableSurface.commit` / `.acceptRestart` (server) — **pass-through** — the PIN gate, the plan binding, the nonce and the confirmation-hash check are untouched; the client only supplies what they already required.
 - `RenderedPlanStore` plan binding — **pass-through** — the commit sends `{planId, nonce, pin}` only. No form field can reach the applied action.
 - `groupAccountsByProvider` (client, presentation) — **pass-through** — reused unchanged; the new `groupMatrixRowsByProvider` wraps it rather than re-deriving grouping rules.
-- No new server-side decision point is added. No route, gate, sentinel or authority changes behavior.
+- `commitMoneyPlan`'s per-route action check (server) — **pass-through** — unchanged; it was doing its job correctly and is what caught the client's wrong route. The client now names the right route instead of relying on the refusal.
+- `POST /routing-spend/plan` response (server) — **modify, additive only** — gains an `action` field. No gate, validation or applied behavior changes; it stops the client from having to guess.
+- No new server-side decision point is added. No gate, sentinel or authority changes behavior.
 
 ---
 
@@ -41,6 +45,7 @@ No block/allow surface is added — every refusal comes from server routes that 
 
 - **The page cannot verify the machine it is talking to is the one the operator means.** On a multi-machine pool the dashboard is fronted by one machine and the money layer is single-writer; the panel prints the machine nickname from the status payload so the operator can see it, but a mis-fronted dashboard is not detected here. Server-side, plan rendering already requires the single-instance lock and the commit re-checks the render-time machine, so the failure is refused rather than mis-applied — the gap is only that the client cannot pre-empt it.
 - **A restart that never comes back is reported honestly but not diagnosed.** After 20 polls (~60s) the panel says the server has not come back and to refresh — it does not distinguish "still restarting" from "failed to boot". The reap/lifeline surfaces own that; duplicating it here would be a second, dumber diagnosis.
+- **Disarming a door is still API-only.** The panel offers arm, freeze and unfreeze; `enabled: false` (disarm) is reachable via `POST /routing-spend/plan` but has no button. The operator's stop control is freeze, which is instant, needs no PIN, and now has its reverse on the same screen — so no state is reachable from the dashboard that cannot be left from the dashboard.
 - **Provider grouping cannot classify what the wire never carried.** A row that reaches the grid only via a pending login or an email-gap has no provider and lands under "Other". That is the honest outcome; inferring a provider from an account id would guess, and the guess would be wrong precisely on the unfamiliar accounts the operator is trying to tell apart.
 
 ---
@@ -125,7 +130,11 @@ The subscriptions grid is the opposite posture and already correct: **proxied-on
 
 ## Conclusion
 
-The review found no design change to make and one real bug, caught by writing the tests rather than by reading the code: `nextStepAfterCommit` reported a store-only disable under a config enable as "done" because it checked `enforcementReady` before checking what the operator's action actually did. That is the precise misreading the whole enable surface exists to prevent, reproduced in the one function whose job was to prevent it — fixed, with the ordering and its reason recorded in a comment, and pinned by a test.
+The review found no design change to make, and driving the result found three real defects — two of them in code this change did not write.
+
+The order matters: the unit tests were green on the arming panel, and stayed green, because none of them knew a second commit route existed. Only driving the panel as an operator — turn on, restart, set a cap, arm the door — surfaced the 400. Had this PR shipped the switch alone, it would have handed the operator a working cap control and a broken door control, on the exact request that asked for both.
+
+It also found one real bug in the new code, caught by writing the tests rather than by reading the code: `nextStepAfterCommit` reported a store-only disable under a config enable as "done" because it checked `enforcementReady` before checking what the operator's action actually did. That is the precise misreading the whole enable surface exists to prevent, reproduced in the one function whose job was to prevent it — fixed, with the ordering and its reason recorded in a comment, and pinned by a test.
 
 The load-bearing structural decision is the load order: the switch renders before the gated fetches, so the control that fixes a 503 does not vanish inside one. That is pinned by a test rather than by a comment, because the previous version of this exact lesson — a PIN-gated route with no human surface — shipped fully specced, fully tested and unreachable for a week.
 
@@ -150,7 +159,23 @@ Live verification against the running agent server on this machine (v1.3.1176, m
 - The approval box's rendered text is **byte-identical** to the server's `renderedText` (asserted, not eyeballed).
 - `POST /routing-spend/money-layer/commit` with a wrong PIN → **401 `bad-pin`**, and a re-read of `enable-status` shows the state **unchanged**.
 
-Tests: `tests/unit/money-layer-enable-ui.test.ts` (30), `tests/unit/dashboard-moneyLayerEnableWiring.test.ts` (18), `tests/unit/subscriptions-render.test.ts` (73, incl. 7 new). Mutation-checked: reverting the grid grouping fails exactly 3 of the new tests and nothing else; reverting the `nextStepAfterCommit` ordering fails exactly the test that found it.
+**The whole operator loop, driven on a throwaway agent against a real server** (fresh `instar init`, its own PIN, the built dist), using the shipped dashboard modules — the same code the browser runs:
+
+| step | result |
+|---|---|
+| arming panel while the layer is OFF | `503` → the panel's honest "this is your switch" copy, not a generic error |
+| plan → wrong PIN → right PIN | `200` → `401 bad-pin` → `200` *"enabled — the money layer comes up on the next server restart; it is not enforcing yet"* |
+| the panel's next step | `restart` (not "done"), headline *"Switched on — waiting for a restart to take effect"* |
+| restart nonce → wrong hash → right hash | `200` → `409 confirmation-hash-mismatch` → `200 accepted` |
+| after the restart | `lifecycleState: "probed"`, `enforcementReady: true` → headline *"Spending controls are up and enforcing"* |
+| set a cap ($100 lifetime / $3 daily) | wrong PIN `403` → right PIN `200` → caps read back `$100` / `$3` |
+| arm the door | **before the fix `400`; after the fix `200`**, `goLiveState: live` |
+| freeze (no PIN) | `200` → *"Frozen — spending is halted"* |
+| unfreeze (PIN) | wrong PIN `403` → right PIN `200` → *"Live — this door can spend"* |
+
+One finding worth recording from that run: on an agent where the Increment-A spend view is dark, the enable resolves to `construction-failed` with `failingComponent: money-layer-init:routing-price-authority-absent`. The panel reports that honestly and names the component rather than showing a green light.
+
+Tests: `tests/unit/money-layer-enable-ui.test.ts` (30), `tests/unit/dashboard-moneyLayerEnableWiring.test.ts` (18), `tests/unit/spend-arming.test.ts` (37, incl. 8 new), `tests/unit/subscriptions-render.test.ts` (73, incl. 7 new). Mutation-checked: reverting the grid grouping fails exactly 3 of the new tests and nothing else; reverting the `nextStepAfterCommit` ordering fails exactly the test that found it. The pre-existing wiring test that pinned the literal caps route was **pinning the defect** — it now asserts the route is derived from the plan.
 
 ---
 
