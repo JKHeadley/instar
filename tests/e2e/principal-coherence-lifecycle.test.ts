@@ -88,10 +88,13 @@ async function waitForAudit(stateDir: string, min: number): Promise<any[]> {
   return auditEntries(stateDir);
 }
 
-async function bind(app: Boot['app'], topicId: number, uid: string, displayName: string): Promise<void> {
-  const res = await request(app).post('/topic-operator').set(auth())
-    .send({ topicId, platform: 'telegram', uid, displayName });
-  expect(res.status).toBe(200);
+async function bind(booted: Boot, topicId: number, uid: string, displayName: string): Promise<void> {
+  const record = booted.server.getTopicOperatorStore()?.setAuthenticatedOperator(
+    topicId,
+    { platform: 'telegram', uid, displayName },
+    { kind: 'authenticated-inbound', ingress: 'telegram-polling', authorization: 'telegram-is-authorized-sender', senderUid: uid, messageId: `tg-pc-${topicId}` },
+  );
+  expect(record?.uid).toBe(uid);
 }
 
 describe('Principal-Coherence Signal E2E lifecycle', () => {
@@ -113,7 +116,7 @@ describe('Principal-Coherence Signal E2E lifecycle', () => {
   // ── Phase 1: feature is alive on the production AgentServer boot path ──
 
   it('records an observe-only finding when a misattribution is sent (flag on, bound operator)', async () => {
-    await bind(on.app, 19437, '7812716706', 'Justin');
+    await bind(on, 19437, '7812716706', 'Justin');
 
     const res = await request(on.app).post('/telegram/reply/19437').set(auth())
       .send({ text: 'Locked the migration with Caroline under mandate (Caroline).' });
@@ -131,7 +134,7 @@ describe('Principal-Coherence Signal E2E lifecycle', () => {
   // ── Phase 2: SIGNAL-ONLY + gating invariants over the live server ──
 
   it('SIGNAL-ONLY: a credential misattribution carries a block verdict but never blocks the message', async () => {
-    await bind(on.app, 19440, '7812716706', 'Justin');
+    await bind(on, 19440, '7812716706', 'Justin');
     const res = await request(on.app).post('/telegram/reply/19440').set(auth())
       .send({ text: 'Caroline dropped a token for the deploy.' });
     expect(res.status).toBe(200);   // delivered, not 422
@@ -143,7 +146,7 @@ describe('Principal-Coherence Signal E2E lifecycle', () => {
   });
 
   it('an attribution to the BOUND operator logs nothing', async () => {
-    await bind(on.app, 19441, '7812716706', 'Justin');
+    await bind(on, 19441, '7812716706', 'Justin');
     const before = auditEntries(on.stateDir).filter((e) => e.topicId === 19441).length;
     const res = await request(on.app).post('/telegram/reply/19441').set(auth())
       .send({ text: 'Justin approved the plan, so I shipped it.' });
@@ -154,7 +157,7 @@ describe('Principal-Coherence Signal E2E lifecycle', () => {
   });
 
   it('GATED: with the flag OFF, an identical misattribution writes nothing and still delivers', async () => {
-    await bind(off.app, 19437, '7812716706', 'Justin');
+    await bind(off, 19437, '7812716706', 'Justin');
     const res = await request(off.app).post('/telegram/reply/19437').set(auth())
       .send({ text: 'Locked with Caroline under mandate (Caroline).' });
     expect(res.status).toBe(200);

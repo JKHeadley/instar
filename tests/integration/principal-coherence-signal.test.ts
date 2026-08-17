@@ -60,12 +60,14 @@ function build(opts: { enabled: boolean }): Built {
   return { dir, server, delivered };
 }
 
-/** Bind a verified operator for a topic over the wire (the WRITE side). */
+/** Seed the real store with path-derived authenticated evidence. */
 async function bindOperator(server: AgentServer, topicId: number, uid: string, displayName: string): Promise<void> {
-  const res = await request(server.getApp()).post('/topic-operator').set(auth())
-    .send({ topicId, platform: 'telegram', uid, displayName });
-  expect(res.status).toBe(200);
-  expect(res.body.bound).toBe(true);
+  const record = server.getTopicOperatorStore()?.setAuthenticatedOperator(
+    topicId,
+    { platform: 'telegram', uid, displayName },
+    { kind: 'authenticated-inbound', ingress: 'telegram-polling', authorization: 'telegram-is-authorized-sender', senderUid: uid, messageId: `tg-pc-int-${topicId}` },
+  );
+  expect(record?.uid).toBe(uid);
 }
 
 function auditPath(dir: string): string {

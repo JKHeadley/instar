@@ -101,7 +101,11 @@ describe('bias-to-action wiring-integrity', () => {
 
     beforeEach(() => {
       opStore = new TopicOperatorStore(tmpDir);
-      opStore.setOperator(TOPIC, { platform: 'telegram', uid: String(OPERATOR_UID), displayName: 'Op' });
+      opStore.setAuthenticatedOperator(
+        TOPIC,
+        { platform: 'telegram', uid: String(OPERATOR_UID), displayName: 'Op' },
+        { kind: 'authenticated-inbound', ingress: 'telegram-polling', authorization: 'telegram-is-authorized-sender', senderUid: String(OPERATOR_UID), messageId: 'tg-bta' },
+      );
     });
 
     // Mirror EXACTLY how routes.ts builds the resolver deps from getTopicHistory.

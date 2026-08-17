@@ -99,9 +99,9 @@ describe('polling-path operator auto-bind (increment 2e)', () => {
     expect(calls.handleCommand).toBe(1);
   });
 
-  it('store.setOperator THROWS → caught, routing continues (fail-soft)', async () => {
+  it('store.setAuthenticatedOperator THROWS → caught, routing continues (fail-soft)', async () => {
     const { adapter, raw, calls } = makeAdapter(() => true);
-    const broken = { setOperator: () => { throw new Error('disk full'); } } as unknown as TopicOperatorStore;
+    const broken = { setAuthenticatedOperator: () => { throw new Error('disk full'); } } as unknown as TopicOperatorStore;
     wireTelegramRouting(adapter, {} as SessionManager, undefined, undefined, undefined, undefined, undefined, () => broken);
 
     await raw.onTopicMessage!(makeMessage({ uid: 7812716706 }));

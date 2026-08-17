@@ -244,7 +244,11 @@ describe('context-aware review E2E — feature alive on the production init path
   });
 
   it('DEV boot: a REAL TopicOperatorStore binding flips the mode to verified-operator with the principal tag (wiring integrity, Know Your Principal)', async () => {
-    dev.operatorStore.setOperator(TOPIC, { platform: 'telegram', uid: '42', displayName: 'Justin' });
+    dev.operatorStore.setAuthenticatedOperator(
+      TOPIC,
+      { platform: 'telegram', uid: '42', displayName: 'Justin' },
+      { kind: 'authenticated-inbound', ingress: 'telegram-polling', authorization: 'telegram-is-authorized-sender', senderUid: '42', messageId: 'tg-review-context' },
+    );
     dev.prompts.length = 0;
     await request(dev.app)
       .post('/review/evaluate')

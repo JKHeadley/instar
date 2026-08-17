@@ -898,9 +898,9 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: ({ ctx }) => ({
       enabled: !!ctx.topicOperatorStore,
       endpoints: [
-        'POST /topic-operator — bind a topic operator from the AUTHENTICATED sender { topicId, platform?, uid (required), displayName? }; a blank uid is refused (a content name is never accepted)',
-        'GET /topic-operator — all bound operators (names + uids)',
-        'GET /topic-operator/:topicId — one topic\'s verified operator, or null when unbound',
+        'POST /topic-operator — record a manual operator assertion { topicId, platform?, uid (required), displayName? }; inspectable, but NEVER verified authentication evidence',
+        'GET /topic-operator — verified operators plus separately labelled raw bindings',
+        'GET /topic-operator/:topicId — one topic\'s verified operator (or null) plus its raw binding for inspection',
         'GET /topic-operator/session-context?topicId=N — the <topic-operator> session-start injection block ({ present:false } when unbound)',
       ],
     }),

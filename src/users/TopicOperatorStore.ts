@@ -9,10 +9,10 @@
  * operator there would force a project binding on every topic). Operator
  * identity is its own concern.
  *
- * SAFETY — the operator is established ONLY from `PrincipalGuard.establishOperator`
- * (the authenticated sender uid). There is no path that accepts a name from
- * content as the operator — the "Caroline" identity-bleed failure mode is
- * impossible by construction.
+ * SAFETY — an operator is VERIFIED only when the binding carries evidence from
+ * a real authenticated inbound path. The manual API remains available for
+ * compatibility, but its records are assertions and every verified-reader
+ * method refuses them. A provenance string is not evidence by itself.
  *
  * Persistence: `state/topic-operators.json` (per-machine, like the other
  * file-backed stores). Pure aside from that one JSON file; unit-testable with a
@@ -35,28 +35,80 @@ import { establishOperator, type VerifiedOperator } from '../core/PrincipalGuard
  * projection {platform, uid, names, boundAt} keyed on sha256(topicId + ":" + verified-uid).
  */
 export interface TopicOperatorReplicationEmitter {
-  /** Emit a `put` for a freshly-bound (or re-bound) topic operator (called from setOperator). */
+  /** Emit a `put` for a freshly authenticated topic operator. Assertions never emit. */
   emitPut(topicId: number | string, record: TopicOperator): void;
 }
 
-/** The stored operator record for a topic. */
-export interface TopicOperator {
+export type AuthenticatedTopicOperatorIngress =
+  | 'telegram-lifeline-forward'
+  | 'telegram-polling';
+
+/** Evidence minted only by an ingress path after its real authorization check. */
+export interface AuthenticatedTopicOperatorEvidence {
+  kind: 'authenticated-inbound';
+  ingress: AuthenticatedTopicOperatorIngress;
+  authorization: 'telegram-is-authorized-sender';
+  senderUid: string;
+  messageId: string;
+}
+
+export interface AssertedTopicOperatorEvidence {
+  kind: 'operator-api-assertion';
+  route: 'POST /topic-operator';
+}
+
+/** Raw persisted shape. Legacy records may lack establishmentEvidence entirely. */
+export interface TopicOperatorBinding {
   /** The channel the operator is verified on. */
   platform: 'telegram' | 'whatsapp' | 'slack' | string;
-  /** The platform-verified sender id (the authority). */
+  /** The claimed platform sender id. It is authoritative only on TopicOperator. */
   uid: string;
   /** Display name(s), lowercased — for matching the agent's prose. */
   names: string[];
   /** ISO timestamp the binding was established (caller-provided, since Date is
    *  unavailable in some sandboxes; defaults to '' when omitted). */
   boundAt: string;
-  /** Provenance: always 'authenticated-inbound' (never a content name). */
+  /** Honest provenance for the path that wrote this record. */
+  boundFrom: 'authenticated-inbound' | 'operator-api-assertion' | string;
+  /** Path-derived evidence. Absent on legacy records, which are not verified. */
+  establishmentEvidence?: AuthenticatedTopicOperatorEvidence | AssertedTopicOperatorEvidence;
+}
+
+/** A binding accepted by the independent verified-reader oracle. */
+export interface TopicOperator extends TopicOperatorBinding {
   boundFrom: 'authenticated-inbound';
+  establishmentEvidence: AuthenticatedTopicOperatorEvidence;
+}
+
+/** A durable compatibility record that carries no operator authority. */
+export interface AssertedTopicOperator extends TopicOperatorBinding {
+  boundFrom: 'operator-api-assertion';
+  establishmentEvidence: AssertedTopicOperatorEvidence;
+}
+
+/**
+ * Independent oracle for persisted binding trust. In particular, the legacy
+ * `boundFrom: authenticated-inbound` self-report is insufficient: evidence must
+ * exist, name a real ingress, match the bound uid, and identify an inbound
+ * message. Malformed/unknown input is always not verified.
+ */
+export function isVerifiedTopicOperatorBinding(value: unknown): value is TopicOperator {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Partial<TopicOperatorBinding>;
+  if (record.boundFrom !== 'authenticated-inbound') return false;
+  if (typeof record.uid !== 'string' || !record.uid.trim()) return false;
+  const evidence = record.establishmentEvidence;
+  if (!evidence || evidence.kind !== 'authenticated-inbound') return false;
+  if (evidence.authorization !== 'telegram-is-authorized-sender') return false;
+  if (evidence.ingress !== 'telegram-lifeline-forward' && evidence.ingress !== 'telegram-polling') return false;
+  if (typeof evidence.senderUid !== 'string' || evidence.senderUid.trim() !== record.uid.trim()) return false;
+  if (typeof evidence.messageId !== 'string' || !evidence.messageId.trim()) return false;
+  return true;
 }
 
 export class TopicOperatorStore {
   private readonly file: string;
-  private cache: Record<string, TopicOperator> | null = null;
+  private cache: Record<string, TopicOperatorBinding> | null = null;
   /** WS2.6 topic-operator-record replication emitter (injected, dark by default). Absent ⇒ strict no-op. */
   private operatorReplication: TopicOperatorReplicationEmitter | null = null;
 
@@ -68,17 +120,23 @@ export class TopicOperatorStore {
    * Late-bind the WS2.6 topic-operator-record replication emitter (server.ts constructs the
    * journal/clock AFTER the store). Idempotent; passing undefined/null detaches (back to
    * single-machine no-op). The emit funnel checks `this.operatorReplication` per bind, so
-   * attaching mid-life takes effect on the next setOperator.
+   * attaching mid-life takes effect on the next setAuthenticatedOperator.
    */
   setOperatorReplicationEmitter(emitter: TopicOperatorReplicationEmitter | null | undefined): void {
     this.operatorReplication = emitter ?? null;
   }
 
-  private load(): Record<string, TopicOperator> {
+  private load(): Record<string, TopicOperatorBinding> {
     if (this.cache) return this.cache;
     try {
       if (fs.existsSync(this.file)) {
-        this.cache = JSON.parse(fs.readFileSync(this.file, 'utf-8'));
+        const parsed: unknown = JSON.parse(fs.readFileSync(this.file, 'utf-8'));
+        // The persisted boundary is untrusted. Valid JSON can still have the
+        // wrong top-level shape (`null`, array, scalar); none of those proves a
+        // binding population, and caching one would make verified reads throw.
+        this.cache = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+          ? parsed as Record<string, TopicOperatorBinding>
+          : {};
         return this.cache!;
       }
     } catch {
@@ -89,31 +147,83 @@ export class TopicOperatorStore {
     return this.cache;
   }
 
-  private save(map: Record<string, TopicOperator>): void {
+  private save(map: Record<string, TopicOperatorBinding>): void {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     fs.writeFileSync(this.file, JSON.stringify(map, null, 2));
     this.cache = map;
   }
 
   /**
-   * Establish (or replace) a topic's operator from the AUTHENTICATED sender.
-   * Returns the stored record, or null if the uid is blank (which is refused —
-   * an operator cannot be established without a verified id, and a content name
-   * is never accepted).
+   * Compatibility writer for the manual API. This deliberately records an
+   * assertion, not a verified operator. Verified readers will refuse it.
    */
   setOperator(
     topicId: number | string,
     input: { platform: string; uid: string; displayName?: string; boundAt?: string },
+  ): AssertedTopicOperator | null {
+    const verified: VerifiedOperator | null = establishOperator(input.uid, input.displayName);
+    if (!verified) return null;
+    const record: AssertedTopicOperator = {
+      platform: input.platform || 'telegram',
+      uid: verified.uid,
+      names: verified.names,
+      boundAt: input.boundAt ?? '',
+      boundFrom: 'operator-api-assertion',
+      establishmentEvidence: {
+        kind: 'operator-api-assertion',
+        route: 'POST /topic-operator',
+      },
+    };
+    return this.persistBinding(topicId, record, false) as AssertedTopicOperator;
+  }
+
+  /**
+   * Establish (or replace) a verified operator after a real ingress path has
+   * independently authenticated + authorized the sender. Evidence is validated
+   * against the bound uid and a concrete inbound message before persistence.
+   */
+  setAuthenticatedOperator(
+    topicId: number | string,
+    input: { platform: string; uid: string; displayName?: string; boundAt?: string },
+    evidence: AuthenticatedTopicOperatorEvidence,
   ): TopicOperator | null {
     const verified: VerifiedOperator | null = establishOperator(input.uid, input.displayName);
     if (!verified) return null;
-    const record: TopicOperator = {
+    const candidate: TopicOperator = {
       platform: input.platform || 'telegram',
       uid: verified.uid,
       names: verified.names,
       boundAt: input.boundAt ?? '',
       boundFrom: 'authenticated-inbound',
+      establishmentEvidence: {
+        ...evidence,
+        senderUid: String(evidence?.senderUid ?? '').trim(),
+        messageId: String(evidence?.messageId ?? '').trim(),
+      },
     };
+    if (!isVerifiedTopicOperatorBinding(candidate)) return null;
+    // Preserve the evidence for the message that actually ESTABLISHED this
+    // operator. Later authorized messages from the same principal prove
+    // continuity but are not a new establishment and must not cause a write on
+    // every inbound message.
+    const existing = this.getOperator(topicId);
+    if (
+      existing &&
+      existing.platform === candidate.platform &&
+      existing.uid === candidate.uid &&
+      JSON.stringify(existing.names) === JSON.stringify(candidate.names) &&
+      existing.boundAt === candidate.boundAt
+    ) {
+      return existing;
+    }
+    return this.persistBinding(topicId, candidate, true) as TopicOperator;
+  }
+
+  private persistBinding(
+    topicId: number | string,
+    record: TopicOperatorBinding,
+    replicate: boolean,
+  ): TopicOperatorBinding {
     // Idempotency guard: both inbound ingress paths (lifeline-forward #909 and
     // the polling seam, increment 2e) re-bind on EVERY message from the operator.
     // When the stored record is already identical, skip the disk write — the
@@ -132,8 +242,8 @@ export class TopicOperatorStore {
     // changed. The emitter swallows its own errors, but we wrap defensively so a replication fault
     // can NEVER break a local operator bind. This emits the LOCAL authoritative binding to peers;
     // it never receives one (a replicated record is never authoritative — the invariant).
-    const emitter = this.operatorReplication;
-    if (emitter) {
+    const emitter = replicate ? this.operatorReplication : null;
+    if (emitter && isVerifiedTopicOperatorBinding(record)) {
       try {
         emitter.emitPut(topicId, record);
       } catch {
@@ -145,9 +255,15 @@ export class TopicOperatorStore {
     return record;
   }
 
-  /** Read a topic's verified operator, or null if unbound. */
-  getOperator(topicId: number | string): TopicOperator | null {
+  /** Raw binding inspection. This carries no authority. */
+  getBinding(topicId: number | string): TopicOperatorBinding | null {
     return this.load()[String(topicId)] ?? null;
+  }
+
+  /** Read a topic's verified operator, or null if unbound/asserted/legacy. */
+  getOperator(topicId: number | string): TopicOperator | null {
+    const binding = this.getBinding(topicId);
+    return isVerifiedTopicOperatorBinding(binding) ? binding : null;
   }
 
   /** Convert a stored record back to the PrincipalGuard `VerifiedOperator`
@@ -157,8 +273,17 @@ export class TopicOperatorStore {
     return op ? { uid: op.uid, names: op.names } : null;
   }
 
-  /** All bound topics → operator. */
+  /** All VERIFIED bound topics → operator. Assertions and legacy rows excluded. */
   all(): Record<string, TopicOperator> {
+    const verified: Record<string, TopicOperator> = {};
+    for (const [topicId, binding] of Object.entries(this.load())) {
+      if (isVerifiedTopicOperatorBinding(binding)) verified[topicId] = binding;
+    }
+    return verified;
+  }
+
+  /** All raw bindings for inspection only. */
+  allBindings(): Record<string, TopicOperatorBinding> {
     return { ...this.load() };
   }
 

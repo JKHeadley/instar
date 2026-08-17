@@ -132,11 +132,12 @@ describe('Topic Profile E2E lifecycle', () => {
   // ── Phase 2: write → read → durable persistence over the live server ──
 
   it('binds an operator, then a §5.2(d) framework write lands LIVE under the shipped fleet regime', async () => {
-    const bind = await request(app)
-      .post('/topic-operator')
-      .set(auth())
-      .send({ topicId: Number(TOPIC), platform: 'telegram', uid: '7812716706', displayName: 'Justin' });
-    expect(bind.status).toBe(200);
+    const bind = server.getTopicOperatorStore()?.setAuthenticatedOperator(
+      Number(TOPIC),
+      { platform: 'telegram', uid: '7812716706', displayName: 'Justin' },
+      { kind: 'authenticated-inbound', ingress: 'telegram-polling', authorization: 'telegram-is-authorized-sender', senderUid: '7812716706', messageId: 'tg-profile-e2e' },
+    );
+    expect(bind?.uid).toBe('7812716706');
 
     const write = await request(app)
       .post(`/topic-profile/${TOPIC}`)

@@ -8,7 +8,7 @@
  *       (the local userId never crosses the wire);
  *   (2) UserManager.removeUser() fires an op:delete tombstone keyed on the SAME channel set
  *       (resurrection guard);
- *   (3) TopicOperatorStore.setOperator() fires a `put` on a real bind (the idempotent re-bind is
+ *   (3) TopicOperatorStore.setAuthenticatedOperator() fires a `put` on a real bind (the idempotent re-bind is
  *       NOT re-emitted);
  *   (4) THE BLOCKER: a replicated topic-operator record never reaches getOperator() authority —
  *       the seam only EMITS the local binding, it never RECEIVES one;
@@ -128,15 +128,27 @@ describe('WS2.6 user-record + topic-operator-record emit funnels (integration)',
     expect(userDeletes).toContain(key);
   });
 
-  it('(3) setOperator() fires a put on a real bind; an idempotent re-bind is NOT re-emitted', () => {
+  it('(3) setAuthenticatedOperator() fires a put on a real bind; an idempotent re-bind is NOT re-emitted', () => {
     opPuts.length = 0;
-    const bound = operators.setOperator(13481, { platform: 'telegram', uid: '999', displayName: 'Justin', boundAt: '2026-06-01T00:00:00.000Z' });
+    const evidence = { kind: 'authenticated-inbound' as const, ingress: 'telegram-polling' as const, authorization: 'telegram-is-authorized-sender' as const, senderUid: '999', messageId: 'tg-13481' };
+    const bound = operators.setAuthenticatedOperator(13481, { platform: 'telegram', uid: '999', displayName: 'Justin', boundAt: '2026-06-01T00:00:00.000Z' }, evidence);
     expect(bound).not.toBeNull();
     const key = deriveTopicOperatorRecordKey(13481, '999')!;
     expect(opPuts.some((p) => p.key === key && p.uid === '999')).toBe(true);
     // Identical re-bind → idempotent skip → no second emission.
     opPuts.length = 0;
-    operators.setOperator(13481, { platform: 'telegram', uid: '999', displayName: 'Justin', boundAt: '2026-06-01T00:00:00.000Z' });
+    operators.setAuthenticatedOperator(13481, { platform: 'telegram', uid: '999', displayName: 'Justin', boundAt: '2026-06-01T00:00:00.000Z' }, { ...evidence, messageId: 'tg-13481-repeat' });
+    expect(opPuts).toHaveLength(0);
+  });
+
+  it('(3b) a manual assertion is durable locally but NEVER emitted as a verified operator', () => {
+    opPuts.length = 0;
+    const asserted = operators.setOperator(13482, {
+      platform: 'telegram', uid: 'asserted-only', displayName: 'Caroline',
+    });
+    expect(asserted?.boundFrom).toBe('operator-api-assertion');
+    expect(operators.getBinding(13482)?.uid).toBe('asserted-only');
+    expect(operators.getOperator(13482)).toBeNull();
     expect(opPuts).toHaveLength(0);
   });
 

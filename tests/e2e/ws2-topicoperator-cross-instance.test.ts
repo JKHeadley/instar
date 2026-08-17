@@ -114,7 +114,8 @@ describe('E2E — a topic-operator binding on A is readable on B (WS2.6 send-sid
   });
 
   it('setOperator on A becomes readable through B\'s union reader as a foreign-origin record (topicId+uid keyed)', () => {
-    a.ops.setOperator(13481, { platform: 'telegram', uid: '999', displayName: 'Justin', boundAt: '2026-06-15T00:00:00.000Z' });
+    a.ops.setAuthenticatedOperator(13481, { platform: 'telegram', uid: '999', displayName: 'Justin', boundAt: '2026-06-15T00:00:00.000Z' },
+      { kind: 'authenticated-inbound', ingress: 'telegram-polling', authorization: 'telegram-is-authorized-sender', senderUid: '999', messageId: 'tg-13481' });
     const rk = deriveTopicOperatorRecordKey(13481, '999')!;
 
     expect(b.unionReader.read(TOPIC_OPERATOR_STORE_KEY, rk).value).toBeNull();
@@ -131,13 +132,15 @@ describe('E2E — a topic-operator binding on A is readable on B (WS2.6 send-sid
   });
 
   it('a re-bind of the same operator (idempotent setOperator) replicates the latest record without a delete path', () => {
-    a.ops.setOperator(20905, { platform: 'telegram', uid: '777', displayName: 'Justin', boundAt: '2026-06-15T00:00:00.000Z' });
+    a.ops.setAuthenticatedOperator(20905, { platform: 'telegram', uid: '777', displayName: 'Justin', boundAt: '2026-06-15T00:00:00.000Z' },
+      { kind: 'authenticated-inbound', ingress: 'telegram-polling', authorization: 'telegram-is-authorized-sender', senderUid: '777', messageId: 'tg-20905-a' });
     const rk = deriveTopicOperatorRecordKey(20905, '777')!;
     let cursor = replicate(a, A, b, 0);
     expect(b.unionReader.read(TOPIC_OPERATOR_STORE_KEY, rk).value).not.toBeNull();
 
     // Re-bind with a later boundAt — a new put re-emits (put-only store; no tombstone exists).
-    a.ops.setOperator(20905, { platform: 'telegram', uid: '777', displayName: 'Justin', boundAt: '2026-06-15T12:00:00.000Z' });
+    a.ops.setAuthenticatedOperator(20905, { platform: 'telegram', uid: '777', displayName: 'Justin', boundAt: '2026-06-15T12:00:00.000Z' },
+      { kind: 'authenticated-inbound', ingress: 'telegram-polling', authorization: 'telegram-is-authorized-sender', senderUid: '777', messageId: 'tg-20905-b' });
     cursor = replicate(a, A, b, cursor);
 
     const result = b.unionReader.read(TOPIC_OPERATOR_STORE_KEY, rk);

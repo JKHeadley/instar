@@ -2387,10 +2387,22 @@ export function wireTelegramRouting(
     try {
       const opStore = getTopicOperatorStore?.() ?? null;
       if (opStore && telegramUserId && telegram.isAuthorizedSender(telegramUserId)) {
-        opStore.setOperator(topicId, {
+        // A lifeline-forwarded Message.id may contain a Date.now fallback used
+        // only for internal routing. Establishment evidence must use the raw
+        // Telegram id carried separately; absent stays absent and fails closed.
+        const evidenceMessageId = msg.metadata?.viaLifeline === true
+          ? String(msg.metadata?.telegramMessageId ?? '')
+          : String(msg.id ?? '');
+        opStore.setAuthenticatedOperator(topicId, {
           platform: 'telegram',
           uid: String(telegramUserId),
           displayName: (msg.metadata?.firstName as string) ?? undefined,
+        }, {
+          kind: 'authenticated-inbound',
+          ingress: 'telegram-polling',
+          authorization: 'telegram-is-authorized-sender',
+          senderUid: String(telegramUserId),
+          messageId: evidenceMessageId,
         });
       }
     } catch (err) {
@@ -4708,7 +4720,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // recordKey is sha256(topicId + ":" + verified-uid), NEVER a content-name
     // (TopicOperatorReplicatedStore.deriveTopicOperatorRecordKey). THE LOAD-BEARING INVARIANT: a
     // replicated topic-operator record is UNTRUSTED peer data — NEVER this machine's authoritative
-    // answer to "who is my verified operator?" (only the local authenticated setOperator binds it).
+    // answer to "who is my verified operator?" (only the local authenticated setAuthenticatedOperator binds it).
     const { TOPIC_OPERATOR_KIND_REGISTRATION } = await import('../core/TopicOperatorReplicatedStore.js');
     replicatedKindRegistry.register(TOPIC_OPERATOR_KIND_REGISTRATION);
 
@@ -12378,7 +12390,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // origin the union is a strict no-op. tierOf returns HIGH (append-both-and-flag). THE
     // LOAD-BEARING INVARIANT: the READ layer is ADVISORY — a replicated topic-operator record is a
     // HINT about what a peer machine bound, NEVER this machine's authoritative principal (only the
-    // local authenticated setOperator binds it; there is no apply path back into TopicOperatorStore).
+    // local authenticated setAuthenticatedOperator binds it; there is no apply path back into TopicOperatorStore).
     const { TopicOperatorStore: _TOSForUnion } = await import('../users/TopicOperatorStore.js');
     const { topicOperatorTierOf, topicOperatorToOriginRecord, deriveTopicOperatorRecordKey, TOPIC_OPERATOR_STORE_KEY } = await import('../core/TopicOperatorReplicatedStore.js');
     const topicOperatorUnionReader = new ReplicatedStoreReader({

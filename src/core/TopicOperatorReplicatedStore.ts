@@ -10,7 +10,7 @@
  * THE LOAD-BEARING SAFETY INVARIANT (the WHOLE point of this kind — Know Your Principal):
  *   A replicated topic-operator record is UNTRUSTED PEER DATA. It must NEVER become this
  *   machine's authoritative answer to "who is my verified operator?". The LOCAL auth-derived
- *   binding (TopicOperatorStore.setOperator from an AUTHENTICATED sender) is ALWAYS
+ *   binding (TopicOperatorStore.setAuthenticatedOperator from an AUTHENTICATED sender) is ALWAYS
  *   authoritative; the replicated record is ADVISORY CONTEXT ONLY — rendered as quoted
  *   untrusted data — and a replicated record can NEVER establish or override an operator. This
  *   store deliberately exposes NO setter/applier into TopicOperatorStore; it only produces a
@@ -52,7 +52,7 @@
  *      READ layer (a replicated topic-operator record is a HINT, never the authoritative
  *      principal — the UNTRUSTED-REPLICATED-OPERATOR invariant).
  *   3. (= the invariant) a replicated record NEVER establishes/overrides the local
- *      authoritative binding; only a local authenticated setOperator does.
+ *      authoritative binding; only a local authenticated setAuthenticatedOperator does.
  *   4. disclosure-min projection = `{platform, uid, names, boundAt}` (no extra local internal
  *      fields).
  *

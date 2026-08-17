@@ -77,7 +77,7 @@ export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecyc
 // topic-operator-record's live in TopicOperatorReplicatedStore.ts (recordKey = sha256(topicId + ":" +
 // verified-uid), NEVER a content-name). THE LOAD-BEARING SAFETY INVARIANT (topic-operator): a
 // replicated topic-operator record is UNTRUSTED peer data — NEVER this machine's authoritative answer
-// to "who is my verified operator?" (only the local authenticated setOperator binds the principal).
+// to "who is my verified operator?" (only the local authenticated setAuthenticatedOperator binds the principal).
 // Additive — readers ignore unknown kinds.
 // 'evolution-action-record' added for WS2.5 (multi-machine-replicated-store-foundation): the
 // FIFTH replicated-store consumer and the FOURTH memory-family kind, riding the same HLC

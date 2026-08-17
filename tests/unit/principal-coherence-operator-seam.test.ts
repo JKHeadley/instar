@@ -29,7 +29,8 @@ afterEach(() => { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true,
 describe('Principal-Coherence seam — store.asVerifiedOperator → evaluatePrincipalCoherence', () => {
   it('an attribution to the BOUND operator resolves and produces NO finding', () => {
     const store = new TopicOperatorStore(dir);
-    store.setOperator(701, { platform: 'telegram', uid: '55501', displayName: 'Justin' });
+    store.setAuthenticatedOperator(701, { platform: 'telegram', uid: '55501', displayName: 'Justin' },
+      { kind: 'authenticated-inbound', ingress: 'telegram-polling', authorization: 'telegram-is-authorized-sender', senderUid: '55501', messageId: 'tg-701' });
     const operator = store.asVerifiedOperator(701);
 
     const findings = evaluatePrincipalCoherence('Justin approved the plan, so I shipped it.', operator);
@@ -38,7 +39,8 @@ describe('Principal-Coherence seam — store.asVerifiedOperator → evaluatePrin
 
   it('an attribution to an OUTSIDER produces a finding (the Caroline failure)', () => {
     const store = new TopicOperatorStore(dir);
-    store.setOperator(702, { platform: 'telegram', uid: '55502', displayName: 'Justin' });
+    store.setAuthenticatedOperator(702, { platform: 'telegram', uid: '55502', displayName: 'Justin' },
+      { kind: 'authenticated-inbound', ingress: 'telegram-polling', authorization: 'telegram-is-authorized-sender', senderUid: '55502', messageId: 'tg-702' });
     const operator = store.asVerifiedOperator(702);
 
     const findings = evaluatePrincipalCoherence('Caroline approved the migration.', operator);
@@ -62,7 +64,8 @@ describe('Principal-Coherence seam — store.asVerifiedOperator → evaluatePrin
 
   it('a credential attribution to an outsider carries a BLOCK verdict through the seam', () => {
     const store = new TopicOperatorStore(dir);
-    store.setOperator(704, { platform: 'telegram', uid: '55504', displayName: 'Justin' });
+    store.setAuthenticatedOperator(704, { platform: 'telegram', uid: '55504', displayName: 'Justin' },
+      { kind: 'authenticated-inbound', ingress: 'telegram-polling', authorization: 'telegram-is-authorized-sender', senderUid: '55504', messageId: 'tg-704' });
     const operator = store.asVerifiedOperator(704);
 
     const findings = evaluatePrincipalCoherence('Caroline dropped a token for the deploy.', operator);

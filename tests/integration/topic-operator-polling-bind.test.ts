@@ -46,6 +46,16 @@ function inbound(uid: number, firstName: string, topicId = 19437): Message {
   } as Message;
 }
 
+function authEvidence(uid: string, messageId = 'tg-seed') {
+  return {
+    kind: 'authenticated-inbound' as const,
+    ingress: 'telegram-polling' as const,
+    authorization: 'telegram-is-authorized-sender' as const,
+    senderUid: uid,
+    messageId,
+  };
+}
+
 describe('increment 2e — polling-path bind, integration', () => {
   it('CAROLINE REPLAY: the authorized operator binds; an unauthorized "Caroline" in the same topic cannot displace them', async () => {
     const store = new TopicOperatorStore(dir);
@@ -67,7 +77,11 @@ describe('increment 2e — polling-path bind, integration', () => {
     const store = new TopicOperatorStore(dir);
     // Pre-existing binding made through the server's instance (e.g. the
     // POST /topic-operator route or the lifeline auto-bind).
-    store.setOperator(111, { platform: 'telegram', uid: '555', displayName: 'Alice' });
+    store.setAuthenticatedOperator(
+      111,
+      { platform: 'telegram', uid: '555', displayName: 'Alice' },
+      authEvidence('555'),
+    );
 
     const { adapter, raw } = makeAdapter([OPERATOR_UID]);
     wireTelegramRouting(adapter, {} as SessionManager, undefined, undefined, undefined, undefined, undefined, () => store);

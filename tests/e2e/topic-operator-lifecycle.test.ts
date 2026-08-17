@@ -7,7 +7,7 @@
  *             in AgentServer's constructor whenever stateDir is available). This is
  *             the single most important assertion — it proves the route returns 200
  *             (not 503), i.e. `ctx.topicOperatorStore` is a REAL store, not null.
- *   Phase 2 — The full bind → read → session-context lifecycle over the live server,
+ *   Phase 2 — assertion → authenticated bind → read → session-context lifecycle over the live server,
  *             plus the durable-write proof (state/topic-operators.json on disk) and
  *             the load-bearing security invariant: a blank uid is refused (a content
  *             name can never become the operator through the production surface).
@@ -67,6 +67,7 @@ describe('Topic Operator binding E2E lifecycle', () => {
     const res = await request(app).get('/topic-operator').set(auth());
     expect(res.status).toBe(200);
     expect(res.body.operators).toEqual({});
+    expect(res.body.bindings).toEqual({});
   });
 
   it('GET /topic-operator/session-context returns 200 { present:false } when unbound', async () => {
@@ -77,13 +78,23 @@ describe('Topic Operator binding E2E lifecycle', () => {
 
   // ── Phase 2: the full bind → read → inject lifecycle over the live server ──
 
-  it('binds an operator from the authenticated uid and reads it back across routes', async () => {
+  it('keeps the manual route asserted, then reads a path-evidenced authenticated binding', async () => {
     const bind = await request(app)
       .post('/topic-operator')
       .set(auth())
       .send({ topicId: 19437, platform: 'telegram', uid: '7812716706', displayName: 'Justin' });
     expect(bind.status).toBe(200);
-    expect(bind.body.operator.uid).toBe('7812716706');
+    expect(bind.body.operator.boundFrom).toBe('operator-api-assertion');
+
+    const asserted = await request(app).get('/topic-operator/19437').set(auth());
+    expect(asserted.body.operator).toBeNull();
+    expect(asserted.body.binding.uid).toBe('7812716706');
+
+    server.getTopicOperatorStore()!.setAuthenticatedOperator(
+      19437,
+      { platform: 'telegram', uid: '7812716706', displayName: 'Justin' },
+      { kind: 'authenticated-inbound', ingress: 'telegram-polling', authorization: 'telegram-is-authorized-sender', senderUid: '7812716706', messageId: 'tg-e2e-live' },
+    );
 
     const one = await request(app).get('/topic-operator/19437').set(auth());
     expect(one.body.operator.uid).toBe('7812716706');
@@ -107,6 +118,7 @@ describe('Topic Operator binding E2E lifecycle', () => {
     const stored = JSON.parse(fs.readFileSync(file, 'utf-8'));
     expect(stored['19437'].uid).toBe('7812716706');
     expect(stored['19437'].boundFrom).toBe('authenticated-inbound');
+    expect(stored['19437'].establishmentEvidence.messageId).toBe('tg-e2e-live');
   });
 
   it('refuses a blank uid — a content name can never establish an operator over the wire', async () => {

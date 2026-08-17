@@ -20,9 +20,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRoutes } from '../../src/server/routes.js';
 import type { RouteContext } from '../../src/server/routes.js';
+import { wireTelegramRouting } from '../../src/commands/server.js';
 import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
 import { TopicOperatorStore } from '../../src/users/TopicOperatorStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import type { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
+import type { SessionManager } from '../../src/core/SessionManager.js';
+import type { Message } from '../../src/core/types.js';
 
 let tmpDir: string;
 let store: TopicOperatorStore | null;
@@ -32,13 +36,26 @@ function makeAdapter(authorized: Array<number | string>) {
   return {
     isAuthorizedSender: (uid: number | string) => authorized.map(String).includes(String(uid)),
     logInboundMessage: () => undefined,
-    onTopicMessage: () => undefined,
+    onTopicMessage: (() => undefined) as null | ((msg: Message) => Promise<void> | void),
+    handleCommand: async () => true,
     dispatchAgentMessageHook: async (m: { text: string }) => /^\[a2a:/.test(m.text),
   };
 }
 
-function mountForwardRoute(telegram: unknown, withStore: boolean): express.Express {
+function mountForwardRoute(telegram: unknown, withStore: boolean, wirePollingSeam = false): express.Express {
   store = withStore ? new TopicOperatorStore(path.join(tmpDir, '.instar', 'state')) : null;
+  if (wirePollingSeam) {
+    wireTelegramRouting(
+      telegram as TelegramAdapter,
+      {} as SessionManager,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => store,
+    );
+  }
   const ctx = {
     config: { projectName: 't', projectDir: tmpDir, stateDir: path.join(tmpDir, '.instar'), port: 0, authToken: '' } as any,
     sessionManager: { listRunningSessions: () => [], isSessionAlive: () => false } as any,
@@ -76,6 +93,13 @@ describe('/internal/telegram-forward → topic-operator auto-bind (integration)'
     expect(op?.uid).toBe('7812716706');
     expect(op?.names).toEqual(['justin']);
     expect(op?.boundFrom).toBe('authenticated-inbound');
+    expect(op?.establishmentEvidence).toEqual({
+      kind: 'authenticated-inbound',
+      ingress: 'telegram-lifeline-forward',
+      authorization: 'telegram-is-authorized-sender',
+      senderUid: '7812716706',
+      messageId: '700',
+    });
   });
 
   it('does NOT bind an UNAUTHORIZED sender (the Caroline-class guard over the wire)', async () => {
@@ -102,5 +126,28 @@ describe('/internal/telegram-forward → topic-operator auto-bind (integration)'
     const res = await request(app).post('/internal/telegram-forward').set('Authorization', 'Bearer test')
       .send({ topicId: 19437, text: 'hello', fromUserId: 7812716706, messageId: 703 });
     expect(res.status).toBe(200);
+  });
+
+  it('keeps the real lifeline→polling convergence evidence-bound when a Telegram message id exists', async () => {
+    const app = mountForwardRoute(makeAdapter([7812716706]), true, true);
+    const res = await request(app).post('/internal/telegram-forward').set('Authorization', 'Bearer test')
+      .send({ topicId: 19437, text: '/status', fromUserId: 7812716706, fromFirstName: 'Justin', messageId: 704 });
+    expect(res.status).toBe(200);
+    expect(store!.getOperator(19437)?.establishmentEvidence).toEqual({
+      kind: 'authenticated-inbound',
+      ingress: 'telegram-lifeline-forward',
+      authorization: 'telegram-is-authorized-sender',
+      senderUid: '7812716706',
+      messageId: '704',
+    });
+  });
+
+  it('P5: missing Telegram message id stays not-proven across the real lifeline→polling convergence', async () => {
+    const app = mountForwardRoute(makeAdapter([7812716706]), true, true);
+    const res = await request(app).post('/internal/telegram-forward').set('Authorization', 'Bearer test')
+      .send({ topicId: 19437, text: '/status', fromUserId: 7812716706, fromFirstName: 'Justin' });
+    expect(res.status).toBe(200);
+    expect(store!.getBinding(19437)).toBeNull();
+    expect(store!.getOperator(19437)).toBeNull();
   });
 });
