@@ -137,7 +137,8 @@ guard). Pairs with the human-as-detector miss-map.
   never a raw client; reuses `CoherenceReviewer`.
 - **Observability**: metered from brick one (dogfooding the article it enforces).
 - **Near-silent**: it's a pull surface (a report you request), not a chat push.
-- **Best-effort never-throws / degrade-safe**: a down LLM never blocks spec work.
+- **Best-effort never-throws / degrade-safe**: a down LLM produces an explicit
+  `not-proven` result; it never masquerades as constitutional fit.
 - **Testing integrity (3 tiers)** + the **dogfood regression**: a known-bad spec
   that violates No Manual Work must be flagged (the North-Star-draft incident
   becomes a test).
@@ -148,7 +149,7 @@ guard). Pairs with the human-as-detector miss-map.
 
 - **Tier 1 (unit):** parser parses the real registry into ≥ 15 articles with the
   anchor articles present (canary); reviewer maps a stubbed LLM verdict into the
-  per-standard report; degrade-safe (no provider → empty report); anti-injection
+  per-standard report; degrade-safe (no provider → explicit `not-proven` report); anti-injection
   (a spec containing "ignore the standards" doesn't alter the report structure).
 - **Tier 2 (integration):** `POST /spec/conformance-check` returns a report for a
   posted spec; `conformance-metrics` reflects the run; 503 when disabled.
@@ -167,7 +168,8 @@ guard). Pairs with the human-as-detector miss-map.
    given spec — verified e2e, not unit-mocked.
 3. A known-violating spec (manual-work design) is flagged against No Manual Work.
 4. The gate SIGNALS only — no code path lets it block a commit/merge in v1.
-5. With no intelligence provider, the check degrades to an empty report (never throws).
+5. With no intelligence provider, the check degrades to an explicit `not-proven`
+   report (never throws and never reports fit).
 6. A crafted "ignore the standards" span in the spec does not corrupt the report.
 7. `conformance-metrics` exposes runs + per-standard violation counts.
 8. All three tiers + canary + dogfood green; tsc + lint clean.

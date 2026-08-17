@@ -83,6 +83,7 @@ describe('Human-as-Detector routes (integration)', () => {
     expect(res.status).toBe(200);
     expect(res.body.byLayer).toEqual([]);
     expect(res.body.recent).toEqual([]);
+    expect(res.body.captureFailures).toEqual([]);
   });
 
   it('surfaces a recorded correction in the heat map and recent list', async () => {
@@ -115,5 +116,22 @@ describe('Human-as-Detector routes (integration)', () => {
     expect(res.status).toBe(200);
     expect(res.body.byLayer).toEqual([]);
     expect(res.body.recent).toEqual([]);
+  });
+
+  it('surfaces a persistence failure as a failed-capture record', async () => {
+    fs.writeFileSync(path.join(stateDir, 'metrics'), 'not a directory');
+    const log = HumanAsDetectorLog.getInstance();
+    const signal = log.observe({ text: "that's wrong", source: 'telegram', topicId: 29723 });
+    expect(signal).not.toBeNull();
+
+    const res = await request(app).get('/human-as-detector/summary');
+    expect(res.status).toBe(200);
+    expect(res.body.captureFailures).toEqual([
+      expect.objectContaining({
+        reason: 'persistence-write-failed',
+        topicId: 29723,
+        category: 'factual-correction',
+      }),
+    ]);
   });
 });
