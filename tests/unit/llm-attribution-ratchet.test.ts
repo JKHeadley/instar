@@ -22,6 +22,7 @@ import {
   // eslint-disable-next-line import/no-relative-packages
 } from '../../scripts/lint-llm-attribution.js';
 import { categoryForComponent } from '../../src/core/componentCategories.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -67,9 +68,10 @@ describe('ratchet — the three pinned lists', () => {
   });
 
   it('the full-repo lint is clean (zero-baseline holds)', () => {
-    const { real, stale } = runLint(walkSrc(), { checkStale: true });
+    const { real, stale, blind } = runLint(walkSrc(), { checkStale: true });
     expect(real).toEqual([]);
     expect(stale).toEqual([]);
+    expect(blind).toEqual([]);
   });
 
   it('package.json wires lint:llm-attribution into the lint chain', () => {
@@ -93,6 +95,30 @@ describe('lint self-test — the lexical heuristic', () => {
     const v = flag(`await this.intelligence.evaluate(prompt, { model: 'fast' });`);
     expect(v).toHaveLength(1);
     expect(v[0].receiver).toContain('intelligence');
+  });
+
+  it('returns NOT-PROVEN evidence for an unreadable file instead of a clean result', () => {
+    const dir = fs.mkdtempSync(path.join(ROOT, 'src', '.llm-attribution-blind-'));
+    const file = path.join(dir, 'fixture.ts');
+    fs.writeFileSync(file, `await provider.evaluate('untagged');\n`);
+    try {
+      expect(runLint([file]).real).toHaveLength(1); // readable control bites
+      fs.chmodSync(file, 0o000);
+      const result = runLint([file]);
+      expect(result.real).toEqual([]);
+      expect(result.blind).toHaveLength(1);
+      expect(result.blind[0]).toMatchObject({
+        file: expect.stringContaining('fixture.ts'),
+        reason: expect.stringContaining('file-unreadable'),
+      });
+    } finally {
+      try { fs.chmodSync(file, 0o600); } catch { /* cleanup below handles absence */ }
+      SafeFsExecutor.safeRmSync(dir, {
+        recursive: true,
+        force: true,
+        operation: 'llm-attribution-ratchet.test.ts:blind-fixture-cleanup',
+      });
+    }
   });
 
   it('flags attribution: {} (empty)', () => {

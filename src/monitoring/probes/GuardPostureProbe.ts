@@ -401,10 +401,12 @@ export function createGuardPostureProbes(deps: GuardPostureProbeDeps): Probe[] {
 
       const current: CurrentAnomaly[] = [];
       const postures = new Map<string, string>();
+      const unknownSources: string[] = [];
 
       // ── Local machine ──
       const localInv = deps.getLocalPosture();
       if (localInv) evaluateInventory('local', 'local', localInv, current, postures);
+      else unknownSources.push('local: posture unavailable');
 
       // ── Peers ──
       for (const peer of deps.getPeerPostures()) {
@@ -413,6 +415,7 @@ export function createGuardPostureProbes(deps: GuardPostureProbeDeps): Probe[] {
           peer.postureAgeMs !== null && peer.postureAgeMs > STALE_POSTURE_AGE_MS;
 
         let evaluated = false;
+        let deepReadFailure: string | null = null;
         if (peer.online && deps.deepReadPeer && (peer.posture === null || postureStale)) {
           // ONLINE peer with a missing/stale heartbeat block — the only case
           // the deep read may fire (never offline peers: a permanently-dark
@@ -427,17 +430,27 @@ export function createGuardPostureProbes(deps: GuardPostureProbeDeps): Probe[] {
                 peer.machineId, label, interpreted.heartbeat, current, postures, state.guardHistory,
               );
               evaluated = true;
+            } else {
+              deepReadFailure = 'deep read returned no interpretable posture';
             }
-          } catch {
-            // Deep read failed — fall back to last-known posture below.
+          } catch (err) {
+            // A durable last-known posture remains usable. Without one, this is
+            // an explicit blind source and the probe must return NOT-PROVEN.
+            deepReadFailure = `deep read failed: ${err instanceof Error ? err.message : String(err)}`;
           }
         }
         if (!evaluated && peer.posture) {
           // Heartbeat (or durable last-known, for offline peers) is the input.
           evaluateHeartbeat(peer.machineId, label, peer.posture, current, postures, state.guardHistory);
+          evaluated = true;
         }
-        // No posture ever received and no deep read: unknown — no anomaly to
-        // raise from nothing (the pool surface renders "guards: unknown").
+        if (!evaluated) {
+          const reason = deepReadFailure
+            ?? (peer.online
+              ? (deps.deepReadPeer ? 'posture unavailable after deep read' : 'posture unavailable and no deep reader configured')
+              : 'offline with no durable last-known posture');
+          unknownSources.push(`${label}: ${reason}`);
+        }
       }
 
       // ── Flap awareness — record posture deltas between our own ticks ──
@@ -592,6 +605,7 @@ export function createGuardPostureProbes(deps: GuardPostureProbeDeps): Probe[] {
         openEpisode: state.openEpisodeId,
         loadBearingGapEpisode: state.lbOpenEpisodeId,
         emittedThisTick,
+        unknownSources,
       };
 
       if (alertable.length > 0) {
@@ -609,6 +623,20 @@ export function createGuardPostureProbes(deps: GuardPostureProbeDeps): Probe[] {
             'A diverged-from-default off is the load-shed signature — re-enable deliberately (send the FULL config block; PATCH /config merges one level deep)',
             'off-runtime-divergent means the live runtime contradicts an on-config — restart the component or its server',
             'A load-bearing-gap means a critical path depends on a dark guard — graduate it, let it soak, OR record an owned accept: POST /guards/:key/accept-fallback {reason, owner} (dashboard PIN)',
+          ],
+        };
+      }
+
+      if (unknownSources.length > 0) {
+        return {
+          ...base,
+          passed: false,
+          description: `Guard-posture NOT-PROVEN — ${unknownSources.length} source(s) could not be inspected`,
+          error: unknownSources.join('; '),
+          diagnostics,
+          remediation: [
+            'Restore the local /guards inventory or the peer posture/deep-read path',
+            'Re-run the probe; an unavailable posture is never a clean no-anomaly result',
           ],
         };
       }

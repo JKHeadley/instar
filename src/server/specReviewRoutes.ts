@@ -167,8 +167,9 @@ export function createSpecReviewRoutes(deps: {
 
     // Constitutional Traceability (Part C): attach the fit verdict for the spec's
     // named parent constitutional standard. parentPrinciple comes from the request
-    // body or the spec's frontmatter; when present, judgeFit returns fit/weak/none
-    // (and fails open to 'fit' when the reviewer is degraded). Absent → no fit field
+    // body or the spec's frontmatter; when present, judgeFit returns
+    // fit/weak/none/not-proven (reviewer degradation is never promoted to fit).
+    // Absent → no fit field
     // (the caller — e.g. the pre-commit gate — treats a missing parent as block).
     const parentPrinciple = (typeof req.body?.parentPrinciple === 'string' && req.body.parentPrinciple.trim())
       ? req.body.parentPrinciple.trim()
