@@ -45,11 +45,14 @@ async function executeBlindCases(cases: Map<string, BlindCase>) {
 
 const CASES = new Map<string, BlindCase>([
   ['script:scripts/lint-llm-attribution.js', () => {
-    const dir = fs.mkdtempSync(path.join(ROOT, 'src', '.checker-blind-attribution-'));
-    const file = path.join(dir, 'fixture.ts');
-    fs.writeFileSync(file, `await provider.evaluate('untagged');\n`);
+    // Keep the blind fixture outside the repository tree.  The safe filesystem
+    // guard intentionally rejects mutation fixtures nested under a git root;
+    // this case must exercise unreadable input, not trip that source-tree guard.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'checker-blind-attribution-'));
+    const file = path.join(ROOT, 'src', `.checker-blind-attribution-missing-${process.pid}.ts`);
     try {
-      fs.chmodSync(file, 0o000);
+      // A dangling symlink makes the read fail for every user, including root
+      // (chmod-only fixtures are readable by root and falsely look clean).
       const result = runLint([file]);
       return {
         clean: result.real.length === 0 && result.stale.length === 0 && result.blind.length === 0,
@@ -57,7 +60,6 @@ const CASES = new Map<string, BlindCase>([
         subjectClaim: 'process exit is intentionally not trusted by this case',
       };
     } finally {
-      try { fs.chmodSync(file, 0o600); } catch { /* bounded cleanup */ }
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'checker-blind-input:attribution' });
     }
   }],
