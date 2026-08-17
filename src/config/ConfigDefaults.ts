@@ -1748,7 +1748,7 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       // sha256(topicId + ":" + verified-uid), NEVER a content-name. THE LOAD-BEARING SAFETY
       // INVARIANT: a replicated topic-operator record is UNTRUSTED peer data — NEVER this
       // machine's authoritative answer to "who is my verified operator?" (only the local
-      // authenticated setOperator binds the principal; Know-Your-Principal).
+      // authenticated setAuthenticatedOperator binds the principal; Know-Your-Principal).
       topicOperator: {
         dryRun: false,
       },

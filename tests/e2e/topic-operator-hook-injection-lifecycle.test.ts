@@ -112,7 +112,11 @@ describe('Topic Operator session-start hook injection E2E', () => {
   });
 
   it('Phase 2 — emits the <topic-operator> block when the topic has a VERIFIED operator', async () => {
-    opStore.setOperator(19437, { platform: 'telegram', uid: '7812716706', displayName: 'Justin' });
+    opStore.setAuthenticatedOperator(
+      19437,
+      { platform: 'telegram', uid: '7812716706', displayName: 'Justin' },
+      { kind: 'authenticated-inbound', ingress: 'telegram-polling', authorization: 'telegram-is-authorized-sender', senderUid: '7812716706', messageId: 'tg-hook-injection' },
+    );
     const out = await runBlock(19437);
     expect(out).toContain('<topic-operator');
     expect(out).toContain('Justin is the VERIFIED operator');

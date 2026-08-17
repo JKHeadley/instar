@@ -1,0 +1,35 @@
+{
+  "ts": "2026-08-17T17:33:10.176Z",
+  "slug": "topic-operator-evidence",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 259,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/TopicOperatorReplicatedStore.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/users/TopicOperatorStore.ts"
+    ],
+    "addedLines": 206,
+    "deletedLines": 53
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

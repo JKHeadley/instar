@@ -18,6 +18,10 @@
  *    matches the binding uid is tagged `verifiedOperator: true` (rendered
  *    `USER(verified-operator):`); non-matching and uid-less rows render plain
  *    `USER:` (weak corroboration by the prompt contract).
+ *  - PENDING topic (a raw binding exists but is not verified):
+ *    'weak-corroboration-only'. This is the legacy/assertion migration window:
+ *    absence of a verified uid must not be misread as "never bound" and upgrade
+ *    one observed sender into a licensing principal.
  *  - UNBOUND topic: 'single-sender' ONLY when EVERY user-role row in the
  *    window carries an authenticated uid AND exactly ONE distinct uid appears
  *    (R4-L1: "at most one" would misread a zero-uid window as licensed).
@@ -48,6 +52,11 @@ export interface ConversationContextProviderResult {
   askLicenseMode: AskLicenseMode;
 }
 
+export interface ConversationTopicOperatorStore {
+  getOperator(topicId: number | string): { uid: string } | null;
+  getBinding(topicId: number | string): unknown | null;
+}
+
 /**
  * Compute the provider result from raw rows + the topic's verified-operator
  * binding (null when the topic is unbound). Pure and synchronous.
@@ -55,6 +64,7 @@ export interface ConversationContextProviderResult {
 export function buildConversationContext(
   rows: ConversationSourceRow[],
   operator: { uid: string } | null,
+  bindingState: 'none' | 'pending-reverification' = 'none',
 ): ConversationContextProviderResult {
   const boundUid = operator && typeof operator.uid === 'string' && operator.uid.length > 0
     ? operator.uid
@@ -83,6 +93,11 @@ export function buildConversationContext(
     // Bound topic: the binding IS the license authority. Uid-less rows are
     // already rendered plain USER: (weak corroboration) by the tag rule above.
     askLicenseMode = 'verified-operator';
+  } else if (bindingState === 'pending-reverification') {
+    // A raw-but-unverified row proves only that this topic is not safely
+    // classifiable as never-bound. It conveys no uid authority, so no row is
+    // tagged; it merely prevents the more permissive single-sender fallback.
+    askLicenseMode = 'weak-corroboration-only';
   } else {
     const userRows = rows.filter((r) => r.fromUser);
     const uids = new Set<string>();
@@ -100,4 +115,21 @@ export function buildConversationContext(
   }
 
   return { messages, askLicenseMode };
+}
+
+/**
+ * Live store seam. Keeping the verified/raw distinction here means production
+ * and its lifecycle test cannot independently (and silently) reimplement the
+ * migration-window classification.
+ */
+export function buildConversationContextForTopic(
+  rows: ConversationSourceRow[],
+  store: ConversationTopicOperatorStore | null,
+  topicId: number | string,
+): ConversationContextProviderResult {
+  const operator = store?.getOperator(topicId) ?? null;
+  const bindingState = operator === null && store?.getBinding(topicId) != null
+    ? 'pending-reverification'
+    : 'none';
+  return buildConversationContext(rows, operator, bindingState);
 }

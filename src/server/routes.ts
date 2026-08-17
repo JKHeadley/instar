@@ -7791,7 +7791,10 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'topic-operator store not initialized' });
       return;
     }
-    res.json({ operators: ctx.topicOperatorStore.all() });
+    res.json({
+      operators: ctx.topicOperatorStore.all(),
+      bindings: ctx.topicOperatorStore.allBindings(),
+    });
   });
 
   // One topic's verified operator, or null when unbound.
@@ -7800,13 +7803,16 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'topic-operator store not initialized' });
       return;
     }
-    res.json({ operator: ctx.topicOperatorStore.getOperator(req.params.topicId) });
+    res.json({
+      operator: ctx.topicOperatorStore.getOperator(req.params.topicId),
+      binding: ctx.topicOperatorStore.getBinding(req.params.topicId),
+    });
   });
 
-  // Bind a topic's operator from the AUTHENTICATED sender. The `uid` is the
-  // authority and is REQUIRED — a blank uid is refused (an operator cannot be
-  // established without a verified id, and `displayName` is never authoritative,
-  // only used to match the operator's name in the agent's own prose).
+  // Compatibility/manual binding route. Bearer authentication identifies an
+  // agent/API caller, NOT the human sender named in body.uid, so this route
+  // records an assertion and never a verified operator. Real authenticated
+  // bindings are minted only by the inbound Telegram paths below.
   router.post('/topic-operator', (req, res) => {
     if (!ctx.topicOperatorStore) {
       res.status(503).json({ error: 'topic-operator store not initialized' });
@@ -7824,8 +7830,7 @@ export function createRoutes(ctx: RouteContext): Router {
       boundAt: typeof boundAt === 'string' ? boundAt : undefined,
     });
     if (!record) {
-      // establishOperator refused a blank uid — a content name is never accepted.
-      res.status(400).json({ error: 'A verified sender uid is required to establish an operator' });
+      res.status(400).json({ error: 'A non-blank asserted sender uid is required to record a binding' });
       return;
     }
     res.json({ bound: true, topicId: Number(topicId), operator: record });
@@ -22573,10 +22578,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         && typeof topicId === 'number') {
       try {
         if (ctx.telegram?.isAuthorizedSender?.(fromUserId)) {
-          ctx.topicOperatorStore.setOperator(topicId, {
+          ctx.topicOperatorStore.setAuthenticatedOperator(topicId, {
             platform: 'telegram',
             uid: String(fromUserId),
             displayName: typeof fromFirstName === 'string' ? fromFirstName : undefined,
+          }, {
+            kind: 'authenticated-inbound',
+            ingress: 'telegram-lifeline-forward',
+            authorization: 'telegram-is-authorized-sender',
+            senderUid: String(fromUserId),
+            messageId: String(messageId ?? ''),
           });
         }
       } catch (err) {
@@ -22599,6 +22610,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           firstName: fromFirstName,
           messageThreadId: topicId,
           viaLifeline: true,
+          // Preserve the platform message id separately from Message.id. The
+          // latter has a Date.now fallback for routing/dedupe compatibility and
+          // must NEVER be laundered into operator-establishment evidence.
+          telegramMessageId: messageId !== undefined && messageId !== null
+            ? String(messageId)
+            : '',
           // TOPIC-PROFILE-SPEC §10.1 round-5: forwarded content never matches
           // any profile-ingress recognition. An upgraded lifeline sets this;
           // its absence (older lifeline) reads as not-forwarded.

@@ -2069,10 +2069,9 @@ export class AgentServer {
     }
 
     // Verified per-topic operator binding (Know Your Principal #898, increment 2).
-    // The store is the authoritative answer to "who is this topic's operator?" —
-    // established ONLY from the authenticated sender uid (a content name can never
-    // become the operator by construction; the "Caroline" identity-bleed failure
-    // mode is structurally impossible). Own try/catch so it can never cascade into
+    // The store's VERIFIED readers are the authoritative answer to "who is this
+    // topic's operator?" — only path-evidenced authenticated bindings pass; manual
+    // assertions and legacy evidence-less rows fail closed. Own try/catch so it can never cascade into
     // server boot; an empty store is fail-safe (the guard then treats every
     // attribution as unverifiable).
     try {

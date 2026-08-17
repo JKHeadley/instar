@@ -11,7 +11,7 @@
  *  3. §12 union-reader-cannot-be-bypassed — the merged read routes THROUGH the union reader.
  *  4. THE BLOCKER (untrusted-replicated-operator-never-authoritative) — a peer-originated
  *     topic-operator record NEVER changes the local TopicOperatorStore.getOperator() authority;
- *     only a local authenticated setOperator does.
+ *     only a local authenticated setAuthenticatedOperator does.
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -182,7 +182,8 @@ describe('WS2.6 dark-ship strict no-op (no emitter ⇒ byte-identical single-mac
   it('TopicOperatorStore with NO replication emitter binds exactly as before (no emission attempt)', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ws26-darkT-'));
     const tos = new TopicOperatorStore(dir); // no setOperatorReplicationEmitter ⇒ dark
-    const bound = tos.setOperator(42, { platform: 'telegram', uid: '999', displayName: 'Justin', boundAt: '2026-06-01T00:00:00.000Z' });
+    const bound = tos.setAuthenticatedOperator(42, { platform: 'telegram', uid: '999', displayName: 'Justin', boundAt: '2026-06-01T00:00:00.000Z' },
+      { kind: 'authenticated-inbound', ingress: 'telegram-polling', authorization: 'telegram-is-authorized-sender', senderUid: '999', messageId: 'tg-wiring-dark' });
     expect(bound).not.toBeNull();
     expect(tos.getOperator(42)?.uid).toBe('999');
     expect(fs.existsSync(path.join(dir, 'topic-operators.json'))).toBe(true);
@@ -210,8 +211,9 @@ describe('WS2.6 THE BLOCKER — untrusted-replicated-operator-never-authoritativ
     // The local authority is UNCHANGED — still no operator (a replicated record never binds).
     expect(store.getOperator(42)).toBeNull();
 
-    // ONLY a local authenticated setOperator binds the principal.
-    const bound = store.setOperator(42, { platform: 'telegram', uid: '999', displayName: 'Justin', boundAt: '2026-06-02T00:00:00.000Z' });
+    // ONLY a local authenticated setAuthenticatedOperator binds the principal.
+    const bound = store.setAuthenticatedOperator(42, { platform: 'telegram', uid: '999', displayName: 'Justin', boundAt: '2026-06-02T00:00:00.000Z' },
+      { kind: 'authenticated-inbound', ingress: 'telegram-polling', authorization: 'telegram-is-authorized-sender', senderUid: '999', messageId: 'tg-wiring-live' });
     expect(bound).not.toBeNull();
     expect(store.getOperator(42)?.uid).toBe('999'); // the LOCAL uid, never the peer's 777888
 
