@@ -3,7 +3,7 @@
 **Version / slug:** `no-clean-when-blind`
 **Date:** `2026-08-17`
 **Author:** `Instar Agent (instar-codey)`
-**Second-pass reviewer:** `not run — this session's governing policy prohibits spawning reviewer subagents unless the operator explicitly requests delegation`
+**Second-pass reviewer:** `independent read-only reviewer; first pass raised a protected-base override bypass, corrected and resubmitted`
 
 ## Summary of the change
 
@@ -12,7 +12,8 @@ results: attribution input reads, guard-posture source reads, semantic
 conformance calls, and Human-as-Detector persistence. A recursive code-derived
 checker-population ratchet in `scripts/lib/checker-blind-input-ratchet.mjs` is
 wired into `npm run lint`; it refuses empty/unreadable populations, freezes the
-legacy uncovered count at 91, and executes the five registered blind-input cases.
+legacy uncovered count at 91, refuses any candidate-tree attempt to raise that
+ceiling above the protected base, and executes the five registered blind-input cases.
 The standards contract and its operator-facing read surface are updated to make
 not-proven a first-class result rather than allowing consumers to infer fit from
 an empty finding list.
@@ -21,6 +22,7 @@ an empty finding list.
 
 - `scripts/lint-llm-attribution.js` — modify — unreadable or unavailable input is a failing not-proven lint result.
 - `GuardPostureProbe` — modify — unknown local/peer evidence produces a failed probe signal.
+- `commands/server` guard-posture adapter — modify — a failed peer-registry read returns `null`, distinct from an inspected empty peer population.
 - `StandardsConformanceReviewer.review/judgeFit` — modify — unavailable judgment returns not-proven, never fit.
 - `HumanAsDetectorLog.observe` — modify — a write failure preserves the correction signal and adds capture-failure evidence.
 - `lint-checker-blind-input-coverage.mjs` — add — deterministic repository invariant preventing uncovered checker-population growth.
@@ -83,6 +85,23 @@ not-proven.
 - **Races:** attribution discovery/read races are now explicit blind results. Human detector state remains in the existing synchronous in-process store.
 - **Feedback loops:** none. No change retries, restarts, or writes back into checker discovery.
 
+### Consumer walk: empty/unknown does not erase a constraint
+
+- `GuardPostureProbe` feeds `SystemReviewer`, which treats `passed:false` as a
+  failed probe. During this walk, the server adapter's peer-registry exception
+  was found returning `[]`; that would mean “no peers” and could still produce a
+  clean result. It now returns `null`, which the probe records as NOT-PROVEN. A
+  regression test distinguishes unreadable from genuinely empty.
+- The standards route transports `conclusion:'not-proven'` and
+  `fit.verdict:'not-proven'`. The CLI checks `report.degraded` before the empty
+  findings branch and prints “advisory, not authoritative”; it never renders the
+  outage as a clean fit. This surface remains non-blocking for drafting by design.
+- Human-as-Detector callers still receive the classified correction signal. The
+  new absence is only durable-capture evidence, surfaced by the health route;
+  no authority check interprets it as “no constraint.”
+- Attribution lint blindness exits nonzero directly; there is no intermediate
+  nullable result for a downstream consumer to reinterpret.
+
 ## 6. External surfaces
 
 The standards response adds `conclusion` and may return `not-proven`; the fit
@@ -122,19 +141,26 @@ known debt is explicitly counted at 91 and cannot increase unnoticed.
 
 ## Second-pass review
 
-**Reviewer:** not run under the session's no-subagent policy
-**Independent read of the artifact:** reduced assurance, stated rather than fabricated
+**Reviewer:** independent read-only reviewer
+**First-pass concern:** `CHECKER_BLIND_INPUT_BASE_REF` let candidate-controlled
+pipeline input redefine the protected base as `HEAD`, so a candidate could raise
+the ceiling and debt together. The override was removed; the guard now accepts
+only `upstream/main` and `origin/main`, and its own test asserts the override
+name is absent.
 
-The artifact was re-read against the live diff, the approved
-`guard-enumeration-fail-visible` specification, and
-`docs/signal-vs-authority.md`. No independent reviewer identity is claimed.
+**Final verdict:** concur with the corrected diff. The reviewer verified that
+only the fixed remote-main refs can supply the protected ceiling, the stricter
+of the historical constant and protected-tree value wins, and the regression
+assertion prevents the candidate-controlled override from returning. No other
+high-impact side effect was found.
 
 ## Evidence pointers
 
 - `scratchpad/phaseB/REPORT-S3.md` in the dispatch checkout contains commands, exit codes, and before/after output.
 - `tests/unit/checker-blind-input-ratchet.test.ts` contains the executable class cases and P1–P5 anti-gaming tests.
-- Focused tier runs: 90 behavioral tests, 14 integration tests, and 8 E2E tests passed.
-- `npm run lint` executed the class ratchet and all ten of its tests.
+- Focused post-consumer-audit run: 106 tests passed across seven changed-surface files.
+- The standards-coverage ratchet passed all 35 tests after the Building family audit refresh.
+- `npm run lint:checker-blind-input` executed the class ratchet and all 13 tests.
 
 ## Class-Closure Declaration (display-only mirror)
 

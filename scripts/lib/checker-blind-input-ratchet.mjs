@@ -26,6 +26,13 @@ function candidateKind(relativePath) {
   return null;
 }
 
+/** Apply the production census rule to a repository-relative path. */
+export function checkerIdForCandidatePath(relativePath) {
+  const normalized = relativePath.split(path.sep).join('/');
+  const kind = candidateKind(normalized);
+  return kind ? checkerIdFor(kind, normalized) : null;
+}
+
 function walk(root, dir, out) {
   let entries;
   try {
@@ -41,14 +48,14 @@ function walk(root, dir, out) {
       continue;
     }
     const rel = path.relative(root, full).split(path.sep).join('/');
-    const kind = candidateKind(rel);
-    if (!kind) continue;
+    const id = checkerIdForCandidatePath(rel);
+    if (!id) continue;
     try {
       fs.readFileSync(full, 'utf8');
     } catch (error) {
       throw new Error(`checker population unavailable: cannot read ${rel}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    out.push({ id: checkerIdFor(kind, rel), kind, relativePath: rel });
+    out.push({ id, kind: id.slice(0, id.indexOf(':')), relativePath: rel });
   }
 }
 
@@ -100,5 +107,19 @@ export function evaluateBlindInputCoverage({ population, coverageIds, maxUncover
     coveredCount: covered.size,
     uncovered,
     maxUncovered,
+  };
+}
+
+/** A legacy-debt ceiling is allowed to stay level or fall, never rise. */
+export function evaluateCeilingRatchet({ currentCeiling, protectedCeiling }) {
+  if (!Number.isSafeInteger(currentCeiling) || currentCeiling < 0 ||
+      !Number.isSafeInteger(protectedCeiling) || protectedCeiling < 0) {
+    return { passed: false, reason: 'invalid-ratchet-ceiling', currentCeiling, protectedCeiling };
+  }
+  return {
+    passed: currentCeiling <= protectedCeiling,
+    reason: currentCeiling <= protectedCeiling ? 'ceiling-held-or-lowered' : 'ratchet-ceiling-raised',
+    currentCeiling,
+    protectedCeiling,
   };
 }

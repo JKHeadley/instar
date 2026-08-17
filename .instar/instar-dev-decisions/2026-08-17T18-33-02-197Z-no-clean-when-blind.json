@@ -1,0 +1,25 @@
+{
+  "ts": "2026-08-17T18:33:02.197Z",
+  "slug": "no-clean-when-blind",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 88,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lib/checker-blind-input-ratchet.mjs",
+      "scripts/lint-checker-blind-input-coverage.mjs",
+      "src/commands/server.ts",
+      "src/monitoring/probes/GuardPostureProbe.ts"
+    ],
+    "addedLines": 81,
+    "deletedLines": 7
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

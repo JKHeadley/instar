@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-08-13T17:48:50.000Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-13c.json",
-      "auditSha256": "89a056b6d6804b3df6a9664acdcd16e3b0c876cce142257cff5d4db6a04bc8e8",
-      "areaSha256": "58f1bf9ba210af353cad2fe8a8fe8f7a7114ae3735829cf82e8b16a5da38d34d",
+      "lastAuditedAt": "2026-08-17T18:17:47.000Z",
+      "auditRef": "docs/audits/phase-b-s3-building-family-review.json",
+      "auditSha256": "18920d4b192569758879aaeedd5e2349e76a145258c644b1624377b9982418d7",
+      "areaSha256": "be634f1b61e0ef5ab4fcc1ed6cb212852c63178f7ec95b999326cecfcbf4bda7",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
