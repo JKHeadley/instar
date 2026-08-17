@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-17T17:49:11.337Z",
+  "slug": "topic-operator-evidence",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 38,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/conversationContextWiring.ts"
+    ],
+    "addedLines": 35,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

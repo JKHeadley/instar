@@ -68,6 +68,29 @@ No new static heuristic at a competing-signals decision point. There are no comp
 - **Replication:** asserted bindings never emit. Evidence-bearing local bindings use the existing best-effort advisory emitter. Replicated rows still have no apply path into the local authoritative store.
 - **Consumers:** session context, principal-coherence, bias-to-action, topic profiles, and review context already call verified-reader methods. Their fixtures now use `setAuthenticatedOperator`, making the source of their authority explicit.
 
+### Migration-window empty-read audit
+
+The legacy-row window was traced through every production consumer rather than inferred from the store's authority posture:
+
+| Consumer | Empty verified read | Behaviour relative to a verified row |
+|---|---|---|
+| Tone recipient classification | Classifies the recipient as `external`. | **Stricter**: takes the documented safe review/fail-direction side. |
+| Standing-authorization resolution | Returns `present:false`; no prior grant reaches B17. | **Looser only for sending another approval ask**: a redundant ask is no longer rejected as a false blocker. It grants no action authority. Raw legacy uid cannot safely recover the historical grant, so this bounded self-healing regression remains documented until re-verification. |
+| Principal-coherence observation | Treats attributions as unverifiable. | **Stricter signal / enforcement-neutral**: can produce more observe-only findings; it cannot block or rewrite. |
+| Scope-accretion ratification | Sender can never equal a null operator uid. | **Stricter**: conversational ratification is refused. |
+| Matrix acceptance | Sender can never equal a null operator uid. | **Stricter**: conversational acceptance is refused; PIN acceptance remains separate. |
+| Remote attention acknowledgement principal | Falls back to the literal annotation `operator`. | **Enforcement-neutral, provenance weaker**: Bearer auth is the route authority and the header is explicitly annotation-only; precedence checks are unchanged. |
+| Pool-transfer topic-pin provenance | Records the already Bearer-authorized mutation as agent provenance. | **Enforcement-neutral, provenance weaker**: mutation admission is unchanged; no operator claim is fabricated. |
+| Topic-profile writes | `boundOperator` returns null. | **Stricter**: token and Telegram writes both return `no-bound-operator`. |
+| Goal-realignment priority intake | Supplies an empty operator uid, which cannot equal the sender uid. | **Stricter**: the message is excluded as `unverified-sender`. |
+| Replicated topic-operator union origin | Materializes no local origin record. | **Stricter / less disclosure**: no advisory record is exposed; it has no apply path into local authority. |
+| Outbound-review conversation context | Before the follow-up fix, null fell through to `single-sender` for a one-sender history. It now checks `getBinding`: raw-present + verified-absent forces `weak-corroboration-only`, with no row tagged as operator. | **Was looser; fixed to stricter**. A real provider-path E2E test pins the distinction. |
+| Mesh sender-validation arm | Has no operator bypass. Degenerate registry still delivers as before; populated registry still validates the actual sender; corrupt/unresolvable cases lose the operator exception. | **Same or stricter**: never admits a sender that the verified-row case would reject. |
+| Nickname-relocation topic-pin provenance | Records the direct authenticated command as agent provenance. | **Enforcement-neutral, provenance weaker**: relocation admission is unchanged; no operator claim is fabricated. |
+| Replicated PUT emission | No old row is emitted during the window; the next authenticated bind emits normally. | **Enforcement-neutral**: emission is a post-bind side effect, not an admission fallback. |
+
+The two read-only HTTP/session surfaces are not authority consumers: session context reports `present:false`, and the inspection routes return `operator:null` alongside the retained raw `binding`. They expose the pending distinction without granting it authority.
+
 ## 6. External surfaces
 
 - `POST /topic-operator` still returns 200 for a non-blank uid, but its returned row is labelled `operator-api-assertion` rather than `authenticated-inbound`.
@@ -94,7 +117,7 @@ No dashboard, approval page, form, or other operator surface is changed — not 
 - **Hot-fix release:** the safest rollback retains `isVerifiedTopicOperatorBinding` and the asserted/manual distinction while reverting surrounding response-shape or documentation changes. Reverting the predicate itself reopens the security defect.
 - **Data migration:** assertion rows may exist after shipment. A complete code revert to the old reader would interpret any such row according to the old loose semantics. Therefore a full rollback must first remove/quarantine `operator-api-assertion` rows or retain a compatibility reader that refuses them.
 - **Agent state repair:** no reset is required for evidence-bearing rows. Legacy rows heal on the next authorized inbound message.
-- **User visibility:** during rollout, legacy topics can temporarily lack verified operator context. That is a safe loss of authority, not a guessed replacement.
+- **User visibility:** during rollout, legacy topics can temporarily lack verified operator context. Authority-bearing consumers refuse it. The one outbound-review path that could have reinterpreted absence as a single-sender license now uses raw-binding presence to force weak corroboration; standing authorization may temporarily allow a redundant approval ask because an unverifiable legacy uid cannot safely recover a prior grant.
 
 ## Conclusion
 
@@ -108,6 +131,8 @@ The change closes the exact provenance-laundering path: a body uid remains recor
 Concur with the review. The first pass found four blocking defects: a synthetic lifeline message id could be laundered through the polling writer; adapter P3b's C2 check was contradictory; valid JSON `null` could throw at the store boundary; and the artifact carried trailing whitespace. All four were corrected. The re-review drove the real route into `wireTelegramRouting`, confirmed present raw ids preserve lifeline evidence and missing raw ids leave both raw and verified bindings absent, checked P3b/P5's repaired mutations, and confirmed null/array/malformed/legacy inputs resolve to not-proven. Independent verification passed 4 targeted files / 37 tests, `npx tsc --noEmit`, and `git diff --check`.
 
 This is `/instar-dev` Phase 5 concurrence only. It is not the separate Phase B instrument verdict or an `EFFECTIVE` certification.
+
+Follow-up concurrence after the migration-window consumer audit: the reviewer confirmed that production and E2E now share `buildConversationContextForTopic`; raw-present/verified-absent forces weak corroboration while genuinely never-bound single-sender behaviour is preserved. The reviewer independently traced the standing-authorization redundant-ask limitation, annotation-only remote ack fallback, same-or-stricter mesh validation, and provenance-only pin fallbacks, and found the fourteen-row classification supported. Five focused unit files passed (73/73), with TypeScript and diff checks clean. The E2E was statically reviewed because the machine's capacity-one suite lane timed out before tests started; S4's own real E2E execution passed 7/7 and its type-preserving hollow control failed the substantive route assertion. This remains Phase 5 concurrence, not Phase B instrument certification.
 
 ## Evidence pointers
 

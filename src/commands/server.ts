@@ -17778,7 +17778,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     if (config.responseReview?.enabled) {
       if (sharedIntelligence) {
         const { CoherenceGate } = await import('../core/CoherenceGate.js');
-        const { buildConversationContext } = await import('../core/conversationContextWiring.js');
+        const { buildConversationContextForTopic } = await import('../core/conversationContextWiring.js');
         // Context-aware reviewers (context-aware-outbound-review §D10): the
         // WIRING layer resolves the dev-gate (resolveDevAgentGate needs the
         // top-level developmentAgent flag, which the gate never receives) and
@@ -17829,8 +17829,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           conversationContextProvider: (topicId, limit) => {
             if (!topicMemory) return { messages: [], askLicenseMode: 'weak-corroboration-only' as const };
             const rows = topicMemory.getRecentMessages(topicId, limit);
-            const operator = _agentServerRef?.getTopicOperatorStore()?.getOperator(topicId) ?? null;
-            return buildConversationContext(rows, operator);
+            const operatorStore = _agentServerRef?.getTopicOperatorStore() ?? null;
+            return buildConversationContextForTopic(rows, operatorStore, topicId);
           },
         });
         console.log(pc.green(`  Response review pipeline: enabled via shared IntelligenceProvider (${Object.keys(config.responseReview.reviewers ?? {}).length} reviewers configured)`));

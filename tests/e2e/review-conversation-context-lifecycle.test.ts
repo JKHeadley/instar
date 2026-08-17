@@ -35,7 +35,7 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { CoherenceGate } from '../../src/core/CoherenceGate.js';
 import { ResponseReviewDecisionLog } from '../../src/core/ResponseReviewDecisionLog.js';
 import { ReviewCanaryBattery } from '../../src/monitoring/ReviewCanaryBattery.js';
-import { buildConversationContext } from '../../src/core/conversationContextWiring.js';
+import { buildConversationContextForTopic } from '../../src/core/conversationContextWiring.js';
 import { resolveDevAgentGate } from '../../src/core/devAgentGate.js';
 import { LiveConfig } from '../../src/config/LiveConfig.js';
 import { TopicMemory } from '../../src/memory/TopicMemory.js';
@@ -44,6 +44,7 @@ import type { InstarConfig, ResponseReviewConfig } from '../../src/core/types.js
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const TOPIC = 3141;
+const PENDING_TOPIC = 3142;
 const ASK = 'send me the worktree keep/delete list so I can review it';
 
 function createMockSessionManager() {
@@ -139,8 +140,7 @@ async function boot(opts: { auth: string; developmentAgent: boolean }) {
     }),
     conversationContextProvider: (topicId, limit) => {
       const rows = topicMemory.getRecentMessages(topicId, limit);
-      const operator = operatorStore.getOperator(topicId);
-      return buildConversationContext(rows, operator);
+      return buildConversationContextForTopic(rows, operatorStore, topicId);
     },
   });
 
@@ -210,6 +210,11 @@ describe('context-aware review E2E — feature alive on the production init path
           timestamp: new Date(Date.now() - 30_000).toISOString(),
           sessionName: 'e2e', telegramUserId: 42, privacyScope: 'private',
         },
+        {
+          messageId: 7002, topicId: PENDING_TOPIC, text: ASK, fromUser: true,
+          timestamp: new Date(Date.now() - 30_000).toISOString(),
+          sessionName: 'e2e-pending', telegramUserId: 42, privacyScope: 'private',
+        },
       ]);
     }
   });
@@ -261,6 +266,24 @@ describe('context-aware review E2E — feature alive on the production init path
     const tone = dev.prompts.find(isTonePrompt)!;
     expect(tone).toContain('ask-license mode: verified-operator');
     expect(tone).toContain(`USER(verified-operator): ${JSON.stringify(ASK)}`);
+  });
+
+  it('DEV boot: a raw unverified binding cannot fall through to the looser single-sender license', async () => {
+    dev.operatorStore.setOperator(PENDING_TOPIC, {
+      platform: 'telegram', uid: '42', displayName: 'asserted only',
+    });
+    dev.prompts.length = 0;
+    await request(dev.app)
+      .post('/review/evaluate')
+      .set('Authorization', `Bearer ${dev.auth}`)
+      .send({
+        message: 'Pending re-verification.', sessionId: 'e2e-pending',
+        context: { channel: 'telegram', topicId: PENDING_TOPIC, recipientType: 'primary-user' },
+      })
+      .expect(200);
+    const tone = dev.prompts.find(isTonePrompt)!;
+    expect(tone).toContain('ask-license mode: weak-corroboration-only');
+    expect(tone).not.toContain(`USER(verified-operator): ${JSON.stringify(ASK)}`);
   });
 
   it('DEV boot: POST /review/canary-battery/run is ALIVE (200, not 503) and honest about the mocked reviewer (inconclusive, recorded)', async () => {

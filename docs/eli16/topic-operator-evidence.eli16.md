@@ -18,6 +18,8 @@ The manual API remains available so existing tools can record and inspect a prop
 
 Legacy rows that say `authenticated-inbound` but carry no evidence are treated as not proven. They are not deleted. The next authorized Telegram message for that topic writes a new evidence-bearing binding through the normal live path.
 
+While waiting for that message, the old row is still visible as “something was recorded here.” That fact cannot identify the operator, but it prevents outbound-review code from treating the topic as brand new and giving a lone recent sender more authority than they should have.
+
 ## Why this is safer
 
 A provenance string is testimony; it is not evidence. The new predicate does not trust the row's label by itself. It requires a recognized authenticated ingress, the named authorization decision, a matching sender uid, and a non-blank message id. Missing, malformed, mismatched, asserted, and legacy inputs all resolve to “not verified.”

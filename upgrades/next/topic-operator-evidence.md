@@ -20,6 +20,8 @@ Your topic's verified operator is still bound automatically from authorized Tele
 
 If a topic temporarily shows no verified operator after upgrading, send an ordinary authorized message in that topic. That lets the live Telegram path re-establish the binding with evidence. Instar will not guess in the meantime.
 
+During that window, outbound review also treats a raw legacy row as pending re-verification instead of treating the topic as brand new. A lone recent sender therefore remains weak corroboration; the old uid is not trusted. A prior standing-authorization grant cannot be recovered safely from that old uid, so the agent may ask for approval again until the next authorized message heals the binding.
+
 ## Summary of New Capabilities
 
 - Distinguish a real authenticated operator binding from a manual assertion in durable state and API reads.

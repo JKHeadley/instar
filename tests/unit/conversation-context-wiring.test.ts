@@ -7,7 +7,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildConversationContext } from '../../src/core/conversationContextWiring.js';
+import {
+  buildConversationContext,
+  buildConversationContextForTopic,
+} from '../../src/core/conversationContextWiring.js';
 import { renderUntrustedConversation } from '../../src/core/untrustedConversationContext.js';
 
 const row = (text: string, fromUser: boolean, telegramUserId?: number | null) => ({
@@ -69,6 +72,31 @@ describe('buildConversationContext — ask-license mode (boundary 6 side B)', ()
       null,
     );
     expect(out.askLicenseMode).toBe('single-sender');
+  });
+
+  it('raw-but-unverified binding + one sender → weak-corroboration-only during re-verification', () => {
+    const out = buildConversationContext(
+      [row('ask 1', true, 42), row('ask 2', true, 42)],
+      null,
+      'pending-reverification',
+    );
+    expect(out.askLicenseMode).toBe('weak-corroboration-only');
+    expect(out.messages.every((message) => message.verifiedOperator !== true)).toBe(true);
+  });
+
+  it('live store seam distinguishes pending re-verification from never bound', () => {
+    const rows = [row('ask', true, 42)];
+    const pending = buildConversationContextForTopic(rows, {
+      getOperator: () => null,
+      getBinding: () => ({ uid: '42', boundFrom: 'authenticated-inbound' }),
+    }, 23);
+    const neverBound = buildConversationContextForTopic(rows, {
+      getOperator: () => null,
+      getBinding: () => null,
+    }, 23);
+
+    expect(pending.askLicenseMode).toBe('weak-corroboration-only');
+    expect(neverBound.askLicenseMode).toBe('single-sender');
   });
 
   it('unbound + 2+ distinct sender uids → weak-corroboration-only (the shared-unbound shape)', () => {
