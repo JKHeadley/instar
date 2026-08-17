@@ -23,6 +23,7 @@ import {
   renderPlanPreview,
   armableDoors,
   doorStateWords,
+  commitRoute,
 } from '../../dashboard/spend-arming.js';
 
 let doc: Document;
@@ -230,13 +231,65 @@ describe('spend arming — production wiring', () => {
     expect(html).not.toMatch(/go-live control are a later increment/);
   });
 
-  it('the commit posts to the PIN-gated route, and the preview does not', () => {
-    expect(html).toContain("apiFetch('/routing-spend/caps/adjust'");
+  it('the commit posts to the route the PLAN names, and the preview does not', () => {
+    // This used to pin the literal caps route — which is what the panel always posted to,
+    // and therefore pinned the defect: a go-live plan committed there is refused 400 by the
+    // server's plan-binding check. The route must be derived from the rendered plan.
+    expect(html).toContain('M.commitRoute(__spendPendingPlan)');
+    expect(html).toContain('await apiFetch(route, {');
+    expect(html).not.toContain("apiFetch('/routing-spend/caps/adjust'");
     expect(html).toContain("apiFetch('/routing-spend/plan'");
+  });
+
+  it('a plan with no resolvable route is refused client-side rather than mis-posted', () => {
+    expect(html).toContain("if (!route) { setSpendArmStatus(");
+  });
+
+  it('freeze has a reachable REVERSE on the same screen', () => {
+    // Freeze needs no PIN and is always offered. Without unfreeze here, an operator could
+    // halt a door from the dashboard and have nowhere to resume it — a stop control with no
+    // start control is not a finished operator surface.
+    expect(html).toContain("previewSpendPlan('unfreeze')");
+    expect(html).toContain('Unfreeze this door');
+  });
+
+  it('unfreeze on a door that is not frozen is answered, not posted', () => {
+    expect(html).toMatch(/isn.t frozen — there is nothing to release/);
   });
 
   it('the PIN field is a password input and is cleared after use', () => {
     expect(html).toContain("p.type = 'password'");
     expect(html).toMatch(/pinEl\.value = ''/);
+  });
+});
+
+describe('commitRoute — the defect that made "arm a door" unreachable', () => {
+  it('THE POINT: a go-live plan commits to the go-live route, not the caps route', () => {
+    // The panel posted every plan to /routing-spend/caps/adjust. The server refuses a plan
+    // whose signed action is not that route's own, so "Preview go live" rendered fine, took
+    // the operator's PIN, and answered 400 — arming a door was unreachable from the screen
+    // built to arm doors. Verified live against a real server before this fix.
+    expect(commitRoute({ action: 'go-live' })).toBe('/routing-spend/go-live');
+  });
+
+  it('a caps-adjust plan still commits to the caps route', () => {
+    expect(commitRoute({ action: 'caps-adjust' })).toBe('/routing-spend/caps/adjust');
+  });
+
+  it('an unfreeze plan commits to the unfreeze route', () => {
+    expect(commitRoute({ action: 'unfreeze' })).toBe('/routing-spend/unfreeze');
+  });
+
+  it('the route follows the PLAN, not the button — the server may substitute the action', () => {
+    // A plan requested as one action can be rendered as another; the commit must follow what
+    // was actually rendered and approved.
+    expect(commitRoute({ requestedAction: 'caps-adjust', action: 'go-live' })).toBe('/routing-spend/go-live');
+  });
+
+  it('an unknown or missing action gets NO route rather than a default one', () => {
+    // Defaulting to the caps route is precisely how the defect happened.
+    expect(commitRoute({ action: 'money-layer-enable' })).toBeNull();
+    expect(commitRoute({})).toBeNull();
+    expect(commitRoute(null)).toBeNull();
   });
 });

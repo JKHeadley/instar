@@ -23,6 +23,7 @@ import {
   renderPendingLogins,
   renderDisabled,
   renderAccountMatrix,
+  groupMatrixRowsByProvider,
   buildMatrixModel,
   renderOutcomeCard,
 } from '../../dashboard/subscriptions.js';
@@ -810,5 +811,103 @@ describe('renderAccounts — provider grouping', () => {
     const inUse = t.querySelector('.sub-account-inuse');
     expect(inUse).not.toBeNull();
     expect(inUse!.textContent).toContain('c1');
+  });
+});
+
+// ── the grid groups by provider (the operator's second report) ──────────────
+describe('renderAccountMatrix — provider grouping', () => {
+  const el2 = () => doc.createElement('div');
+  const pending = { enabled: true, logins: [] };
+  const mixedPool = {
+    enabled: true,
+    accounts: [
+      { id: 'a1', email: 'a1@x.com', provider: 'anthropic', status: 'active', machineId: 'm1', machineNickname: 'Laptop' },
+      { id: 'c1', email: 'c1@x.com', provider: 'openai', status: 'active', machineId: 'm1', machineNickname: 'Laptop' },
+      { id: 'a2', email: 'a2@x.com', provider: 'anthropic', status: 'active', machineId: 'm1', machineNickname: 'Laptop' },
+    ],
+    pool: { selfMachineId: 'm1', failed: [] },
+    scope: 'pool',
+  };
+
+  it('THE POINT: Claude and Codex rows carry a provider band, and same-provider rows sit together', () => {
+    const t = el2();
+    renderAccountMatrix(doc, t, mixedPool, pending, {});
+    const bands = Array.from(t.querySelectorAll('.sub-matrix-group')).map((n) => n.textContent);
+    expect(bands).toEqual(['Claude', 'Codex']);
+    // a2 (anthropic) must be re-associated under the Claude band, not left after Codex.
+    const rowText = Array.from(t.querySelectorAll('tbody tr')).map((r) => r.textContent || '');
+    const claudeAt = rowText.findIndex((x) => x.startsWith('Claude'));
+    const codexAt = rowText.findIndex((x) => x.startsWith('Codex'));
+    const a2At = rowText.findIndex((x) => x.includes('a2@x.com'));
+    expect(claudeAt).toBeLessThan(a2At);
+    expect(a2At).toBeLessThan(codexAt);
+  });
+
+  it('the band spans the whole grid so it reads as a band, not a stray cell', () => {
+    const t = el2();
+    renderAccountMatrix(doc, t, mixedPool, pending, {});
+    const band = t.querySelector('.sub-matrix-group')!;
+    // account column + one column per machine
+    expect(band.getAttribute('colspan')).toBe('2');
+  });
+
+  it('CONTROL: a single-provider install gets NO band at all', () => {
+    const t = el2();
+    renderAccountMatrix(doc, t, {
+      enabled: true,
+      accounts: [{ id: 'a1', email: 'a1@x.com', provider: 'anthropic', status: 'active', machineId: 'm1', machineNickname: 'Laptop' }],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    }, pending, {});
+    expect(t.querySelector('.sub-matrix-group')).toBeNull();
+  });
+
+  it('the same account seen on a SECOND machine keeps its provider', () => {
+    // Pool scope carries one row per (account, machine). A later row without a provider
+    // must not blank the one the first row established, or the account falls into "Other".
+    const model = buildMatrixModel({
+      enabled: true,
+      accounts: [
+        { id: 'a1', email: 'a1@x.com', provider: 'anthropic', status: 'active', machineId: 'm1', machineNickname: 'Laptop' },
+        { id: 'a1', email: 'a1@x.com', status: 'active', machineId: 'm2', machineNickname: 'Mini' },
+      ],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    }, pending, {});
+    expect(model.accounts.find((a) => a.accountId === 'a1')!.provider).toBe('anthropic');
+  });
+
+  it('a row whose provider never arrived is grouped honestly, never guessed', () => {
+    const t = el2();
+    renderAccountMatrix(doc, t, {
+      enabled: true,
+      accounts: [
+        { id: 'a1', email: 'a1@x.com', provider: 'anthropic', status: 'active', machineId: 'm1', machineNickname: 'Laptop' },
+        { id: 'u1', email: 'u1@x.com', status: 'active', machineId: 'm1', machineNickname: 'Laptop' },
+      ],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    }, pending, {});
+    const bands = Array.from(t.querySelectorAll('.sub-matrix-group')).map((n) => n.textContent);
+    expect(bands).toEqual(['Claude', 'Other']);
+  });
+
+  it('grouping is text-only — a hostile provider string cannot reach the DOM as markup', () => {
+    const t = el2();
+    renderAccountMatrix(doc, t, {
+      enabled: true,
+      accounts: [
+        { id: 'a1', email: 'a1@x.com', provider: 'anthropic', status: 'active', machineId: 'm1', machineNickname: 'Laptop' },
+        { id: 'x1', email: 'x1@x.com', provider: '<img src=x onerror=alert(1)>', status: 'active', machineId: 'm1', machineNickname: 'Laptop' },
+      ],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    }, pending, {});
+    expect(t.querySelector('img')).toBeNull();
+    for (const band of Array.from(t.querySelectorAll('.sub-matrix-group'))) {
+      expect(band.children.length).toBe(0);
+    }
+  });
+
+  it('groupMatrixRowsByProvider keeps every row — grouping re-associates, never drops', () => {
+    const model = buildMatrixModel(mixedPool, pending, {});
+    const grouped = groupMatrixRowsByProvider(model.rows);
+    expect(grouped.filter((g) => g.__row).length).toBe(model.rows.length);
   });
 });

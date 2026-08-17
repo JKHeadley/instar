@@ -3540,10 +3540,21 @@
       <div class="tab-purpose">
         What the internal AI calls cost, and where the paid-door caps sit. The dollar figures are a
         <b>reporting</b> view — immutable token counts priced against a reviewed price list on read, so a
-        price correction reflows automatically. <b>No paid door is live yet</b>, so metered spend is $0;
-        subscription/CLI doors are <b>$0 (not per-token billed)</b>. The spend figures above are a report;
-        the controls below set a door's ceilings and take it live, and each of those takes your PIN.
+        price correction reflows automatically. <b>A paid door spends nothing until you arm it below</b>,
+        so metered spend stays $0 until then; subscription/CLI doors are <b>$0 (not per-token billed)</b>.
+        The spend figures above are a report; the controls below set a door's ceilings and take it live,
+        and each of those takes your PIN.
+        <!-- This used to state flatly "No paid door is live yet". That was true only while no operator
+             could arm one; it becomes FALSE the moment they use the controls directly beneath it, and a
+             false statement on the money screen is worse than a vague one. The per-door state is
+             rendered live below and is the authority. -->
       </div>
+
+      <!-- The operator's ON SWITCH (money-layer-operator-enable-surface.md, Phase 2 UI).
+           FIRST on the tab and rendered from the PRE-GATE routes, which answer while the
+           layer is off — everything below it is gated on this switch, so when it is off
+           the rest of the tab can only 503 and would otherwise read as broken. -->
+      <div id="moneyLayerEnable" class="spend-arm-root"></div>
 
       <!-- Glance floors F10/F11 (topic 29836, Phase 3): the shared component renders
            the headline + totals tiles + drill-down here. "Metered / paid door / reflows"
@@ -3660,7 +3671,26 @@
       .spend-arm-plan-text { font-size:14px; line-height:1.5; padding:12px; border-radius:8px;
         border:1px solid var(--border,#2a2a2a); white-space:pre-wrap; word-break:break-word; }
       .spend-arm-plan-expiry, .spend-arm-note { font-size:12px; opacity:.7; }
+      .spend-arm-status { font-size:13px; opacity:.85; line-height:1.5; }
+      .spend-arm-pin-row { display:flex; flex-direction:column; gap:8px; margin-top:10px; }
+      .spend-arm-pin { width:100%; box-sizing:border-box; min-height:44px; padding:10px 12px;
+        font-size:16px; border:1px solid var(--border,#2a2a2a); border-radius:8px;
+        background:transparent; color:inherit; }
       @media (max-width:520px) { .spend-arm-btn { flex:1 1 100%; } }
+
+      /* The operator's ON SWITCH for the spending controls. Colour carries the ONE fact
+         that matters — enforcing vs not — and never implies that spending is armed. */
+      .mle-state { border:1px solid var(--border,#2a2a2a); border-left-width:4px; border-radius:8px;
+        padding:12px 14px; display:flex; flex-direction:column; gap:6px; }
+      .mle-state-enforcing { border-left-color:#16a34a; }
+      .mle-state-pending-restart { border-left-color:#eab308; }
+      .mle-state-failed { border-left-color:#dc2626; }
+      .mle-state-off { border-left-color:var(--border,#2a2a2a); }
+      .mle-headline { font-size:15px; font-weight:600; }
+      .mle-detail { font-size:13px; opacity:.8; line-height:1.5; }
+      .mle-config-notice { font-size:13px; line-height:1.5; color:#f59e0b; }
+      .mle-machine { font-size:12px; opacity:.6; }
+      .mle-actions { display:flex; flex-wrap:wrap; gap:8px; }
 
       /* Provider group heading — only rendered when more than one provider is
          enrolled, so a single-provider install looks exactly as it did before. */
@@ -3695,6 +3725,10 @@
       #subMatrix { width:100%; min-width:0; overflow-x:auto; }
       .sub-matrix th, .sub-matrix td { border:1px solid var(--border,#2a2a2a); padding:8px 10px; text-align:center; vertical-align:top; }
       .sub-matrix-acct { text-align:left; font-weight:600; word-break:break-all; }
+      /* Provider band inside the grid — same rule as the cards above: it exists only when
+         more than one provider is enrolled, so a single-provider install is unchanged. */
+      .sub-matrix-group { text-align:left; font-size:11px; font-weight:700; letter-spacing:.06em;
+        text-transform:uppercase; opacity:.75; background:var(--panel-alt,rgba(255,255,255,.04)); }
       .sub-matrix-mach { font-weight:600; }
       .sub-matrix-off { opacity:.55; }
       .sub-matrix-cell.sub-matrix-offline { opacity:.5; }
@@ -6013,6 +6047,12 @@
       const glanceRoot = document.getElementById('spendGlance');
       if (!glanceRoot) return;
       const grain = (document.getElementById('spendGrain') || {}).value || 'day';
+
+      // The switch renders FIRST and independently: its routes answer while the layer is
+      // off, and every fetch below is gated on the layer being on. Rendering it after the
+      // gated calls would mean the one control that can fix a 503 disappears whenever the
+      // 503 happens — which is exactly the state the operator is in when they need it.
+      loadMoneyLayerEnable();
 
       const glance = await loadGlanceModule();
       if (!glance) { glanceRoot.textContent = 'Loading the glance view failed — refresh to retry.'; return; }
@@ -8667,6 +8707,210 @@
       return __glanceModule;
     }
 
+    // ── Spend tab — the operator's ON SWITCH (money-layer enable, Phase 2 UI) ──
+    // The six pre-gate routes answer 200 while the money layer is OFF; that is what makes
+    // this panel possible at all. Flow: read status → plan (Bearer, no PIN) → the SERVER's
+    // words shown verbatim → PIN commit → if it is now switched on but not yet built, the
+    // restart step → poll status until it reports enforcing.
+    let __mleModule = null;
+    async function loadMleModule() {
+      if (!__mleModule) {
+        try { __mleModule = await import('/dashboard/money-layer-enable.js'); }
+        catch (e) { console.error('[money-layer-enable] module load failed', e); return null; }
+      }
+      return __mleModule;
+    }
+
+    // The plan (or restart nonce) currently awaiting the operator's PIN. Cleared on every
+    // re-render so a PIN can never be applied to an approval that has since gone stale.
+    let __mlePendingPlan = null;
+    let __mlePendingRestart = null;
+
+    function setMleStatus(text) {
+      const n = document.getElementById('mleStatus');
+      if (n) n.textContent = text || '';
+    }
+
+    async function loadMoneyLayerEnable() {
+      const root = document.getElementById('moneyLayerEnable');
+      if (!root) return;
+      const M = await loadMleModule();
+      if (!M) { root.textContent = 'Loading the spending-control switch failed — refresh to retry.'; return; }
+
+      let status = null;
+      try {
+        status = await apiFetch('/routing-spend/enable-status');
+      } catch (err) {
+        root.replaceChildren();
+        const note = document.createElement('div');
+        note.className = 'spend-arm-note';
+        note.textContent = M.enableNote(err && err.message);
+        root.appendChild(note);
+        return;
+      }
+
+      __mlePendingPlan = null;
+      __mlePendingRestart = null;
+      root.replaceChildren();
+
+      const h = document.createElement('h3');
+      h.className = 'spend-arm-h';
+      h.textContent = 'Spending controls';
+      root.appendChild(h);
+
+      const panel = document.createElement('div');
+      root.appendChild(panel);
+      M.renderEnablePanel(document, panel, status, { onAction: (action) => onMleAction(action) });
+
+      const approval = document.createElement('div');
+      approval.id = 'mleApproval';
+      root.appendChild(approval);
+
+      const st = document.createElement('div');
+      st.id = 'mleStatus';
+      st.className = 'spend-arm-status';
+      root.appendChild(st);
+    }
+
+    /** Render the PIN box + Approve button under whichever approval is pending. */
+    function mleShowPinBox(label, onApprove) {
+      const holder = document.getElementById('mleApproval');
+      if (!holder) return;
+      const row = document.createElement('div');
+      row.className = 'spend-arm-pin-row';
+      const pin = document.createElement('input');
+      pin.type = 'password';
+      pin.inputMode = 'numeric';
+      pin.id = 'mlePin';
+      pin.className = 'spend-arm-pin';
+      pin.placeholder = 'Dashboard PIN';
+      pin.autocomplete = 'off';
+      const go = document.createElement('button');
+      go.className = 'spend-arm-btn spend-arm-btn-commit';
+      go.textContent = label;
+      go.addEventListener('click', () => onApprove((pin.value || '').trim()));
+      row.appendChild(pin);
+      row.appendChild(go);
+      holder.appendChild(row);
+    }
+
+    async function onMleAction(action) {
+      const M = await loadMleModule();
+      if (!M) return;
+      setMleStatus('');
+      if (action === '__restart') { return mleStartRestart(); }
+      const holder = document.getElementById('mleApproval');
+      if (!holder) return;
+      try {
+        const plan = await apiFetch('/routing-spend/plan-money-layer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(M.planRequest(action)),
+        });
+        __mlePendingPlan = plan;
+        __mlePendingRestart = null;
+        // The SERVER's words, verbatim — including the case where it substituted the
+        // acknowledged "this will not stop spending" variant for a plain disable.
+        M.renderPlanApproval(document, holder, plan);
+        mleShowPinBox('Approve with PIN', (pinValue) => mleCommit(pinValue));
+      } catch (err) {
+        holder.replaceChildren();
+        setMleStatus(M.enableNote(err && err.message));
+      }
+    }
+
+    async function mleCommit(pinValue) {
+      const M = await loadMleModule();
+      if (!M || !__mlePendingPlan) { setMleStatus('Preview a change first.'); return; }
+      if (!pinValue) { setMleStatus('Enter your dashboard PIN to approve.'); return; }
+      try {
+        const out = await apiFetch('/routing-spend/money-layer/commit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(M.commitRequest(__mlePendingPlan, pinValue)),
+        });
+        __mlePendingPlan = null;
+        // The server's own message is the report — it is the only thing that knows whether
+        // this enabled, half-enabled, or cleared a flag that did not stop spending.
+        setMleStatus(out && out.message ? String(out.message) : 'Applied.');
+        const next = M.nextStepAfterCommit(out);
+        await loadMoneyLayerEnable();
+        setMleStatus(out && out.message ? String(out.message) : 'Applied.');
+        if (next === 'restart') mleStartRestart();
+      } catch (err) {
+        setMleStatus(M.enableNote(err && err.message));
+      }
+    }
+
+    async function mleStartRestart() {
+      const M = await loadMleModule();
+      if (!M) return;
+      const holder = document.getElementById('mleApproval');
+      if (!holder) return;
+      try {
+        const mint = await apiFetch('/routing-spend/money-layer/restart-nonce', { method: 'POST' });
+        __mlePendingRestart = mint;
+        __mlePendingPlan = null;
+        M.renderRestartConfirmation(document, holder, mint);
+        mleShowPinBox('Restart with PIN', (pinValue) => mleCommitRestart(pinValue));
+      } catch (err) {
+        holder.replaceChildren();
+        setMleStatus(M.enableNote(err && err.message));
+      }
+    }
+
+    async function mleCommitRestart(pinValue) {
+      const M = await loadMleModule();
+      if (!M || !__mlePendingRestart) { setMleStatus('Start the restart step first.'); return; }
+      if (!pinValue) { setMleStatus('Enter your dashboard PIN to approve.'); return; }
+      let hash;
+      try {
+        // The hash is taken over the text that was DISPLAYED, which is what binds the
+        // restart to words the operator actually saw.
+        hash = await M.sha256Hex(__mlePendingRestart.confirmationText);
+      } catch {
+        setMleStatus('This page can’t approve a restart over a plain http address — open the ' +
+          'dashboard on its https link (or on this machine directly) and try again. Nothing has changed.');
+        return;
+      }
+      try {
+        const out = await apiFetch('/routing-spend/money-layer/restart', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(M.restartRequest(__mlePendingRestart.nonce, hash, pinValue)),
+        });
+        __mlePendingRestart = null;
+        const holder = document.getElementById('mleApproval');
+        if (holder) holder.replaceChildren();
+        setMleStatus(out && out.message ? String(out.message) : 'Restart requested.');
+        // The restart response cannot observe the NEW process, so the panel keeps checking
+        // until the status it reads says the controls are enforcing.
+        mlePollAfterRestart(0);
+      } catch (err) {
+        setMleStatus(M.enableNote(err && err.message));
+      }
+    }
+
+    function mlePollAfterRestart(attempt) {
+      if (attempt > 20) {
+        setMleStatus('The server has not come back yet. Refresh this tab in a moment to see ' +
+          'whether the spending controls are enforcing.');
+        return;
+      }
+      setTimeout(async () => {
+        let status = null;
+        try { status = await apiFetch('/routing-spend/enable-status'); }
+        catch { return mlePollAfterRestart(attempt + 1); }   /* @silent-fallback-ok — the server is restarting; keep waiting */
+        await loadMoneyLayerEnable();
+        if (status && status.enforcementReady === true) {
+          setMleStatus('Spending controls are up and enforcing. Nothing is armed yet — arm a door below.');
+          loadRoutingSpend();
+        } else {
+          mlePollAfterRestart(attempt + 1);
+        }
+      }, 3000);
+    }
+
     // ── Spend tab — paid-door arming (Increment B UI) ──
     // Two PIN-committed steps (set both ceilings, then go live), each previewed as the
     // SERVER's rendered wording before the PIN box appears. The commit posts only the
@@ -8750,6 +8994,10 @@
       btns.appendChild(mkBtn('Preview cap change', 'spend-arm-btn', () => previewSpendPlan('caps-adjust')));
       btns.appendChild(mkBtn('Preview go live', 'spend-arm-btn', () => previewSpendPlan('go-live')));
       btns.appendChild(mkBtn('Freeze this door', 'spend-arm-btn spend-arm-btn-freeze', freezeSpendDoor));
+      // Freeze is always available and needs no PIN — so its REVERSE has to be reachable from
+      // the same screen, or the operator can stop spending here and has nowhere to resume it.
+      // Unfreeze is PIN-gated on purpose: releasing money is the operator's, halting it is cheap.
+      btns.appendChild(mkBtn('Unfreeze this door', 'spend-arm-btn', () => previewSpendPlan('unfreeze')));
       root.appendChild(btns);
 
       const planBox = document.createElement('div');
@@ -8804,7 +9052,12 @@
       if (!row) { setSpendArmStatus('Pick a door first.'); return; }
 
       let fields;
-      if (action === 'caps-adjust') {
+      if (action === 'unfreeze') {
+        // Say so here rather than posting a plan the server would refuse: "that door isn't
+        // frozen" is an answer; a 400 from the commit is a puzzle.
+        if (!row.frozen) { setSpendArmStatus('That door isn’t frozen — there is nothing to release.'); return; }
+        fields = { keyRef: row.keyRef };
+      } else if (action === 'caps-adjust') {
         const num = (id) => {
           const raw = (document.getElementById(id) || {}).value;
           return raw === '' || raw === undefined ? '' : Number(raw);
@@ -8840,8 +9093,13 @@
       const pinEl = document.getElementById('spendArmPin');
       const pin = pinEl ? pinEl.value : '';
       if (!pin) { setSpendArmStatus('Enter your dashboard PIN to approve.'); return; }
+      // Each action has its OWN commit route and each refuses a plan signed for a different
+      // one. Posting everything to caps/adjust made "go live" — arming a door, the point of
+      // this panel — fail with a 400 after the operator had already entered their PIN.
+      const route = M.commitRoute(__spendPendingPlan);
+      if (!route) { setSpendArmStatus('That approval is no longer valid. Preview the change again.'); return; }
       try {
-        await apiFetch('/routing-spend/caps/adjust', {
+        await apiFetch(route, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(M.commitRequest(__spendPendingPlan, pin)),

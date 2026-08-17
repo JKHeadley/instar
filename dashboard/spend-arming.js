@@ -123,6 +123,31 @@ export function commitRequest(plan, pin) {
   return { planId: (plan || {}).planId, nonce: (plan || {}).nonce, pin };
 }
 
+/**
+ * WHICH route commits a rendered plan.
+ *
+ * The server has one commit route per action and each REFUSES a plan whose signed action
+ * is not its own — the plan-binding discipline, working exactly as designed. The dashboard
+ * posted every plan to `/routing-spend/caps/adjust`, so "Preview go live" rendered its plan
+ * correctly, took the operator's PIN, and then failed with a 400 they could do nothing
+ * about: arming a door — the whole point of the panel — was unreachable from the screen
+ * built to do it. Found by driving the panel against a real server, not by a test; the unit
+ * tests were green because none of them knew a second route existed.
+ *
+ * Derived from the PLAN's action, never from the button that was pressed: the server may
+ * substitute a different action than the one requested, and the commit must follow what was
+ * actually rendered and approved.
+ */
+export function commitRoute(plan) {
+  const action = plan && typeof plan.action === 'string' ? plan.action : '';
+  if (action === 'go-live') return '/routing-spend/go-live';
+  if (action === 'unfreeze') return '/routing-spend/unfreeze';
+  if (action === 'caps-adjust') return '/routing-spend/caps/adjust';
+  // An unknown action gets NO route rather than a default one: posting an unrecognised plan
+  // to the caps route is how this defect happened, and the server would refuse it anyway.
+  return null;
+}
+
 /** Render the server's plan text for approval. The text is the server's, shown verbatim. */
 export function renderPlanPreview(doc, target, plan) {
   if (!target) return;
