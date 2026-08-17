@@ -7,6 +7,15 @@ parent-principle: "Mobile-Complete Operator Actions — A PIN-Gated Route With N
 eli16-overview: "docs/specs/money-layer-operator-enable-surface.eli16.md"
 approved: true
 approved-by: "operator (Justin), conversational approval in topic 46473, 2026-08-16 14:26 PDT"
+review-convergence: "2026-08-17T00:08:55.184Z"
+review-iterations: 40
+review-completed-at: "2026-08-17T00:08:55.184Z"
+review-report: "docs/specs/reports/money-layer-operator-enable-surface-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 9
+cheap-to-change-tags: 0
+contested-then-cleared: 0
 ---
 
 # Routing Spend — an operator surface for the money-layer master switch
@@ -844,7 +853,11 @@ guarantee is already the strongest available one: **the poll observes the new pr
 a record of intent.** If Phase 2 ever introduces multi-step or retrying transitions, a job
 model becomes the right shape; at one step it is machinery without a job to do.
 
-## Decision points touched
+## Scope of changes
+
+No judgment-candidate decision points are introduced: every decision added is a deterministic
+authorization or liveness check on money — the class where static rules are correct and
+weighing competing signals would be a defect.
 
 - **Adds** the three plan actions of `MONEY_LAYER_PREGATE_ACTIONS`, one PIN-gated commit
   route and one restart route to the money authority; the state lands OUTSIDE
@@ -859,7 +872,7 @@ model becomes the right shape; at one step it is machinery without a job to do.
 - **Modifies the ledger (dry-run path only)** — the sentinel evaluation books nothing.
 - **Genuinely untouched:** per-door arming, the freeze asymmetry, `PATCHABLE_CONFIG_KEYS`.
 
-Classification per **Judgment Within Floors**:
+## Decision points touched
 
 | Decision point | Class | Justification |
 |---|---|---|
@@ -868,10 +881,6 @@ Classification per **Judgment Within Floors**:
 | `servingReady` | `invariant` | Conjunction of intent, lifecycle and lock. Fails closed when any input is `unknown`. |
 | Is the cap gate enforcing? (readiness probe) | `invariant` | A liveness check with a declared expected cause; unmeasurable ⇒ `unknown` ⇒ not ready. |
 | Which of MLE-1's four source states applies? | `invariant` | Equality over two booleans; surfaced, never tiebroken. |
-
-No judgment-candidate points. Every decision added is a deterministic authorization or
-liveness check on money — the class where static rules are correct and weighing competing
-signals would be a defect.
 
 ## Verify the state, not its symbol (P20)
 
@@ -915,7 +924,7 @@ The one detector added is the cap-gate readiness probe (§6).
 
 ## Open questions
 
-*(none)* — both previously-open decisions were resolved by the operator on 2026-08-16.
+*(none)*
 
 ## Honest scope limit — Phase 1 cannot fully remediate `config-enabled` remotely
 
@@ -939,6 +948,27 @@ shows, in the `config-enabled` state, **the exact file path and key to remove** 
 operator can do it themselves, or hand the instruction to someone at the machine, without
 having to ask what to change. Making that removal remotely performable is a larger authority
 question and belongs to its own spec, not to this one.
+
+## Maturation plan
+
+- **test-agent-live:** the feature is exercised end-to-end on a throwaway agent home
+  (`/test-as-self`): enable → restart → status reports enforcing → probe refuses for the
+  cap-exceeded reason → disable → freeze. No real provider is involved; the `__probe__` door
+  is the only door armed.
+- **dev-agent-live:** live on this development agent with the money layer's own
+  `routingSpend.money.enabled` still OFF by operator choice — the enable SURFACE is live and
+  usable, so the operator can actually turn it on from a phone, which is the entire point of
+  the feature. Nothing about being live here spends money: enabling arms no door.
+- **fleet:** ships to the fleet in the same posture — the surface is present, the money layer
+  remains off until each operator enables it on their own machine with their own PIN. There
+  is deliberately no dark flag on the SURFACE itself: a dark enable-surface would recreate the
+  exact unreachability this spec exists to remove.
+- **graduation criterion:** the operator has completed enable → restart → confirmed-enforcing
+  → disable at least once from a phone on the dev agent, with the audit log showing the
+  matching rows, and T1–T41 green in CI.
+- **dark-window:** none for the surface (see fleet above). The MONEY LAYER it switches on
+  remains operator-gated indefinitely and is not on a maturation track — that is a standing
+  operator decision per machine, not a rollout stage.
 
 ## Risks
 
