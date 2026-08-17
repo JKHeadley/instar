@@ -1,0 +1,52 @@
+<!-- bump: patch -->
+
+## What Changed
+
+The standards-coverage pipeline now treats every Rule-bearing article as a
+stable identity across protected main and a candidate change. Additions and
+removals are mechanical facts; edits carry an explicit direction ratified by an
+independently held Ed25519 key over the exact before/after bytes. Aggregate and
+family floors retain removed identities in their continuity denominator, so a
+smaller constitution cannot improve its score.
+
+The approver public key is read from protected main. Candidate key replacement
+is never signature authority, and candidate pin drift is refused even when the
+registry is unchanged, closing both one-change and two-change goalpost moves.
+Legacy heading renames intentionally appear as remove-plus-add and require the
+same independent review.
+
+## What to Tell Your User
+
+This is an internal governance hardening change. It does not add or alter an
+end-user action. It makes changes to Instar's own rulebook accountable: removing
+or weakening a rule can no longer make the score look better or pass on the
+changer's word alone.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|------------|
+| Direction-aware rulebook review | Automatic in fleet pull-request checks |
+| Removal-safe standards scoring | Automatic in the standards coverage report |
+| Protected approver-key continuity | Automatic; candidate key drift is refused |
+
+## Evidence
+
+On the live release baseline, deleting one article raised coverage from 0.7386
+to 0.7471 and a foundational weakening passed after the changer refreshed its
+own family attestation. Through the wired pipeline after this change, deletion
+reports REMOVAL while retaining 65/88, weakening reports WEAKENING after the old
+refresh, candidate key/signature replacement is refused, and a pin-only change
+is refused before it can become the next trust root. The pristine pipeline
+passes; the focused suites pass 53/53, including all four negative controls. The
+type-preserving hollow compiles, runs all three behavioral contracts, and loses
+on three assertion mismatches.
+
+## Known Limits
+
+The repository currently carries a comments-only approver-key placeholder, so
+standards amendments fail closed until a separately authorized protected-main
+control-plane action installs a real public key. Its private key must remain
+outside the repository, agent-readable credential stores, and build environments.
+Cryptography proves who ratified exact bytes; it does not prove that the human
+semantic judgment was wise.

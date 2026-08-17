@@ -208,11 +208,27 @@ function runCheck(env: Record<string, string> = {}): { code: number; out: string
 }
 
 function runFullCheck(): { code: number; out: string } {
+  const registryPath = path.join(repo, 'docs', 'STANDARDS-REGISTRY.md');
+  const basePath = path.join(repo, '.standards-direction-base.md');
+  const baseApproverPath = path.join(repo, '.standards-direction-approver-base.pem');
+  fs.writeFileSync(basePath, fs.existsSync(registryPath) ? fs.readFileSync(registryPath) : '# missing registry\n');
+  const fixtureApproverPin = 'fixture trust root; no signature is required for an unchanged registry\n';
+  fs.writeFileSync(baseApproverPath, fixtureApproverPin);
+  write('docs/standards-direction-approvals.json', '{\n  "schemaVersion": 1,\n  "approvals": []\n}\n');
+  write('.github/keyrings/telegram-principal-pub.pem', fixtureApproverPin);
   try {
     return {
       code: 0,
       out: execFileSync('node', [SCRIPT, '--check'], {
-        cwd: repo, encoding: 'utf8', env: { ...process.env, STANDARDS_COVERAGE_ROOT: repo },
+        cwd: repo,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          STANDARDS_COVERAGE_ROOT: repo,
+          STANDARDS_DIRECTION_BASE_FILE: basePath,
+          STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE: baseApproverPath,
+          STANDARDS_DIRECTION_BASE_REVISION: 'fixture-protected-base',
+        },
       }),
     };
   } catch (error) {
@@ -273,10 +289,15 @@ describe('standards-coverage ratchet script', () => {
       '          else',
       '            echo "required=0" >> "$GITHUB_OUTPUT"',
       '          fi',
+      '          git show "$BASE_SHA:docs/STANDARDS-REGISTRY.md" > "$RUNNER_TEMP/standards-registry-base.md"',
+      '          git show "$BASE_SHA:.github/keyrings/telegram-principal-pub.pem" > "$RUNNER_TEMP/standards-direction-approver-base.pem"',
       '      - run: node scripts/standards-coverage.mjs --check',
       '        env:',
       '          STANDARDS_AREA_AUDIT_BASE_FILE: ${{ runner.temp }}/standards-area-audits-base.json',
       '          STANDARDS_AREA_AUDIT_BASE_REQUIRED: ${{ steps.area-audit-base.outputs.required }}',
+      '          STANDARDS_DIRECTION_BASE_FILE: ${{ runner.temp }}/standards-registry-base.md',
+      '          STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE: ${{ runner.temp }}/standards-direction-approver-base.pem',
+      "          STANDARDS_DIRECTION_BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}",
     ].join('\n'));
     fs.rmSync(path.join(repo, 'docs', 'standards-registry-area-audits.json'));
     refreshAreaAudits();

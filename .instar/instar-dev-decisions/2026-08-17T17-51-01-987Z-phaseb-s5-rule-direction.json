@@ -1,0 +1,35 @@
+{
+  "ts": "2026-08-17T17:51:01.987Z",
+  "slug": "phaseb-s5-rule-direction",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 551,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/standards-coverage.mjs",
+      "scripts/standards-direction-guard.mjs"
+    ],
+    "addedLines": 542,
+    "deletedLines": 9
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The existing coverage design bound candidate-authored review evidence to changed bytes but never modeled article continuity, amendment direction, or independent ratification."
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "scripts/standards-direction-guard.mjs#evaluateStandardsDirection",
+      "howCaught": "The old family refresh is only candidate self-report; without an exact independently signed direction record, removals and weakenings remain refused, and candidate trust-root drift is separately blocked."
+    },
+    "component": "standards-coverage"
+  },
+  "verdict": "pass"
+}

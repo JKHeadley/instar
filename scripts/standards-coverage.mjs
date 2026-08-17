@@ -54,6 +54,13 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { articleIds, parseRegistryStructure } from './standards-registry-article-core.mjs';
+import {
+  evaluateStandardsDirection,
+  readCandidateApproverKey,
+  readDirectionApprovalLedger,
+  resolveProtectedApproverKey,
+  resolveProtectedBaseRegistry,
+} from './standards-direction-guard.mjs';
 import { parseFrontmatter, validateAuditReport } from './write-audit-convergence.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -105,6 +112,8 @@ const AREA_AUDITS_PATH = path.join(ROOT, 'docs', 'standards-registry-area-audits
 const AREA_MODEL_AUDIT_PATH = path.join(ROOT, 'docs', 'standards-registry-area-model-audit.json');
 const CI_WORKFLOW_PATH = path.join(ROOT, '.github', 'workflows', 'ci.yml');
 const OUT_PATH = path.join(ROOT, '.instar', 'standards-coverage.json');
+const DIRECTION_APPROVALS_PATH = path.join(ROOT, 'docs', 'standards-direction-approvals.json');
+const DIRECTION_APPROVER_KEY_PATH = path.join(ROOT, '.github', 'keyrings', 'telegram-principal-pub.pem');
 
 // ── Hardcoded committed floors (the read baseline; output file is never it) ──
 const numEnv = (env, def) => {
@@ -575,6 +584,9 @@ function validateRootSelfWiring() {
   const checkEnv = {
     STANDARDS_AREA_AUDIT_BASE_FILE: '${{ runner.temp }}/standards-area-audits-base.json',
     STANDARDS_AREA_AUDIT_BASE_REQUIRED: '${{ steps.area-audit-base.outputs.required }}',
+    STANDARDS_DIRECTION_BASE_FILE: '${{ runner.temp }}/standards-registry-base.md',
+    STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE: '${{ runner.temp }}/standards-direction-approver-base.pem',
+    STANDARDS_DIRECTION_BASE_REVISION: "${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}",
   };
   if (!exactKeys(job, ['name', 'runs-on', 'steps']) ||
     job.name !== 'Standards Enforcement Coverage' || job['runs-on'] !== 'ubuntu-latest' ||
@@ -595,6 +607,8 @@ function validateRootSelfWiring() {
     'else',
     '  echo "required=0" >> "$GITHUB_OUTPUT"',
     'fi',
+    'git show "$BASE_SHA:docs/STANDARDS-REGISTRY.md" > "$RUNNER_TEMP/standards-registry-base.md"',
+    'git show "$BASE_SHA:.github/keyrings/telegram-principal-pub.pem" > "$RUNNER_TEMP/standards-direction-approver-base.pem"',
     '',
   ].join('\n');
   const expectedBaseSha = "${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}";
@@ -1237,8 +1251,69 @@ function compute() {
         capturedSections: 0,
         unrecognizedSections: [],
       },
+      directionGuard: {
+        status: ALLOW_PARTIAL_REGISTRY ? 'not-assessed' : 'not-proven',
+        errors: ALLOW_PARTIAL_REGISTRY ? [] : ['candidate standards registry is unavailable'],
+        changes: [],
+        trustRoot: { origin: 'protected-base', source: null, revision: null, candidateTreeIgnored: true },
+        population: { protectedBase: 0, candidate: 0, continuity: 0, additions: [], removals: [], byFamily: {} },
+      },
     };
   }
+
+  const directionGuard = (() => {
+    if (ALLOW_PARTIAL_REGISTRY) {
+      return {
+        status: 'not-assessed', errors: [], changes: [],
+        trustRoot: { origin: 'not-assessed', source: null, revision: null, candidateTreeIgnored: true },
+        population: { protectedBase: 0, candidate: 0, continuity: 0, additions: [], removals: [], byFamily: {} },
+      };
+    }
+    const base = resolveProtectedBaseRegistry({
+      root: ROOT,
+      explicitFile: Object.hasOwn(process.env, 'STANDARDS_DIRECTION_BASE_FILE')
+        ? process.env.STANDARDS_DIRECTION_BASE_FILE
+        : undefined,
+      explicitRevision: process.env.STANDARDS_DIRECTION_BASE_REVISION,
+    });
+    if (base.errors.length > 0 || base.markdown === null) {
+      return {
+        status: 'not-proven', errors: base.errors, changes: [],
+        trustRoot: { origin: 'protected-base', source: null, revision: null, candidateTreeIgnored: true },
+        population: { protectedBase: 0, candidate: 0, continuity: 0, additions: [], removals: [], byFamily: {} },
+      };
+    }
+    const approvals = readDirectionApprovalLedger(DIRECTION_APPROVALS_PATH);
+    const candidateKey = readCandidateApproverKey(DIRECTION_APPROVER_KEY_PATH);
+    const key = resolveProtectedApproverKey({
+      root: ROOT,
+      explicitFile: Object.hasOwn(process.env, 'STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE')
+        ? process.env.STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE
+        : undefined,
+      explicitRevision: process.env.STANDARDS_DIRECTION_BASE_REVISION,
+    });
+    if (key.revision !== base.revision) {
+      key.errors.push('protected-base registry and approver trust root resolved from different revisions');
+    }
+    const assessed = evaluateStandardsDirection({
+      baseMarkdown: base.markdown,
+      candidateMarkdown: markdown,
+      approvalLedger: approvals.value,
+      approverPublicKeyPem: key.pem,
+      candidateApproverPublicKeyPem: candidateKey.pem,
+      baseRevision: base.revision ?? 'unknown-protected-base',
+    });
+    assessed.errors.unshift(...approvals.errors, ...candidateKey.errors, ...key.errors);
+    if (assessed.errors.length > 0) assessed.status = 'not-proven';
+    assessed.trustRoot = {
+      origin: 'protected-base',
+      source: key.source,
+      revision: key.revision,
+      candidateTreeIgnored: true,
+      candidateTreeDriftBlocked: true,
+    };
+    return assessed;
+  })();
 
   const { articles, enforcementScope, areaSha256, areaSectionCounts } = parseRegistry(canonicalText(markdown));
   const routeTable = loadRouteTable();
@@ -1297,7 +1372,9 @@ function compute() {
 
   const total = articles.length;
   const enforced = byKind.ratchet + byKind.gate + byKind.lint;
-  const enforcedRatio = total === 0 ? 1 : Number((enforced / total).toFixed(4));
+  const continuityTotal = directionGuard.population?.continuity || total;
+  const currentPopulationEnforcedRatio = total === 0 ? 1 : Number((enforced / total).toFixed(4));
+  const enforcedRatio = continuityTotal === 0 ? 1 : Number((enforced / continuityTotal).toFixed(4));
   const areaNames = [...areaTallies.keys()].sort();
   const loadedAreaAudits = loadAreaAuditLedger(areaNames);
   const loadedAreaModelAudit = loadAreaModelAudit(areaNames);
@@ -1323,7 +1400,9 @@ function compute() {
     const audit = isPlainObject(loadedAreaAudits.ledger?.areas?.[areaName])
       ? loadedAreaAudits.ledger.areas[areaName]
       : null;
-    const ratio = tally.total === 0 ? 1 : Number((tally.enforced / tally.total).toFixed(4));
+    const areaContinuityTotal = directionGuard.population?.byFamily?.[areaName]?.continuity || tally.total;
+    const currentPopulationRatio = tally.total === 0 ? 1 : Number((tally.enforced / tally.total).toFixed(4));
+    const ratio = areaContinuityTotal === 0 ? 1 : Number((tally.enforced / areaContinuityTotal).toFixed(4));
     const auditCurrent = typeof audit?.areaSha256 === 'string' && audit.areaSha256 === areaSha256[areaName];
     if (audit && !auditCurrent) {
       areaAuditErrors.push(
@@ -1333,9 +1412,11 @@ function compute() {
     if (auditCurrent) currentAreaAudits += 1;
     areas[areaName] = {
       total: tally.total,
+      continuityTotal: areaContinuityTotal,
       enforced: tally.enforced,
       byKind: tally.byKind,
       refResolutionRatio: ratio,
+      currentPopulationRefResolutionRatio: currentPopulationRatio,
       gaps: tally.gaps,
       currentAreaSha256: areaSha256[areaName],
       lastAuditedAt: typeof audit?.lastAuditedAt === 'string' ? audit.lastAuditedAt : null,
@@ -1365,7 +1446,8 @@ function compute() {
     generatedAt: new Date().toISOString(),
     registryFound: true,
     rootSelfWiring,
-    total, byKind, enforcedRatio, gaps, enforcementScope, areas,
+    total, continuityTotal, byKind, enforcedRatio, currentPopulationEnforcedRatio,
+    gaps, enforcementScope, areas, directionGuard,
     areaAudit: {
       status: areaAuditErrors.length === 0 ? 'current' : 'invalid',
       path: path.relative(ROOT, AREA_AUDITS_PATH),
@@ -1470,7 +1552,7 @@ function recordAreaAudit(report, selection, auditRef) {
     if (canonicalTimestamp(oldTimestamp) && Date.parse(lastAuditedAt) < Date.parse(oldTimestamp)) {
       throw new Error(`lastAuditedAt for ${area} may not move backward`);
     }
-    const measuredFloor = { enforced: measurement.enforced, total: measurement.total };
+    const measuredFloor = { enforced: measurement.enforced, total: measurement.continuityTotal ?? measurement.total };
     const oldFloor = existing.areas?.[area]?.refResolutionFloor;
     const rebaselining = typeof REBASELINE_REASON === 'string' && REBASELINE_REASON.trim().length > 0;
     const refResolutionFloor = !rebaselining
@@ -1600,15 +1682,21 @@ function main() {
     process.stdout.write(JSON.stringify(report, null, 2) + '\n');
   } else if (!QUIET) {
     console.error(`[standards-coverage] registry=${report.registryFound} total=${report.total} ` +
+      `continuity-total=${report.continuityTotal ?? report.total} ` +
       `enforced-ratio=${report.enforcedRatio} (ratchet ${report.byKind.ratchet} / gate ${report.byKind.gate} / ` +
       `lint ${report.byKind.lint} / spec-only ${report.byKind['spec-only']} / gap ${report.byKind['documented-only']}) ` +
       `false-claims=${report.falseClaimCount} ` +
       `dangling=${report.danglingCount} ` +
       `unrecognized-sections=${report.enforcementScope.unrecognizedSections.length}`);
     console.error(`[standards-coverage] floors: enforced-ratio>=${FLOORS.enforcedRatio} dangling<=${FLOORS.danglingCeiling} false-claims<=${FLOORS.falseClaimCeiling} unrecognized-sections<=${FLOORS.unrecognizedSectionCeiling}`);
+    console.error(`[standards-coverage] direction-guard=${report.directionGuard.status} ` +
+      `base=${report.directionGuard.baseRevision ?? 'not-assessed'} ` +
+      `trust-root=${report.directionGuard.trustRoot?.origin ?? 'unknown'} ` +
+      `candidate-pin-ignored-as-authority=${report.directionGuard.trustRoot?.candidateTreeIgnored === true} ` +
+      `candidate-pin-drift-blocked=${report.directionGuard.trustRoot?.candidateTreeDriftBlocked === true}`);
     for (const [area, measurement] of Object.entries(report.areas)) {
       console.error(
-        `[standards-coverage] area="${area}" total=${measurement.total} ` +
+        `[standards-coverage] area="${area}" total=${measurement.total} continuity-total=${measurement.continuityTotal ?? measurement.total} ` +
         `ref-resolution-ratio=${measurement.refResolutionRatio} ` +
         `floor=${measurement.refResolutionFloor ? `${measurement.refResolutionFloor.enforced}/${measurement.refResolutionFloor.total}` : 'missing'} ` +
         `last-audited=${measurement.lastAuditedAt ?? 'missing'} audit-ref=${measurement.auditRef ?? 'missing'} ` +
@@ -1621,6 +1709,9 @@ function main() {
     for (const error of report.areaModelAudit.errors) {
       console.error(`[standards-coverage] AREA MODEL AUDIT — ${error}`);
     }
+    for (const error of report.directionGuard.errors) {
+      console.error(`[standards-coverage] DIRECTION GUARD — ${error}`);
+    }
     for (const fc of report.falseClaims) {
       console.error(`[standards-coverage] FALSE CLAIM — "${fc.standard}" asserts running machinery (${fc.claims.map((c) => `"${c}"`).join(', ')}) but names no resolvable guard.`);
     }
@@ -1629,15 +1720,18 @@ function main() {
   if (CHECK) {
     const failures = [];
     const aggregateEnforced = report.byKind.ratchet + report.byKind.gate + report.byKind.lint;
-    if (report.total > 0 && ratioBelowNumericFloor(aggregateEnforced, report.total, FLOORS.enforcedRatio)) {
-      failures.push(`enforced ratio ${aggregateEnforced}/${report.total} (${report.enforcedRatio}) < floor ${FLOORS.enforcedRatio}`);
+    const continuityDenominator = report.continuityTotal ?? report.total;
+    if (continuityDenominator > 0 && ratioBelowNumericFloor(aggregateEnforced, continuityDenominator, FLOORS.enforcedRatio)) {
+      failures.push(`enforced ratio ${aggregateEnforced}/${continuityDenominator} (${report.enforcedRatio}) < floor ${FLOORS.enforcedRatio}`);
     }
+    for (const error of report.directionGuard.errors) failures.push(`direction guard: ${error}`);
     for (const error of report.areaAudit.errors) failures.push(error);
     for (const error of report.areaModelAudit.errors) failures.push(error);
     for (const [area, measurement] of Object.entries(report.areas)) {
-      if (ratioBelowFloor(measurement.enforced, measurement.total, measurement.refResolutionFloor)) {
+      const areaContinuityDenominator = measurement.continuityTotal ?? measurement.total;
+      if (ratioBelowFloor(measurement.enforced, areaContinuityDenominator, measurement.refResolutionFloor)) {
         failures.push(
-          `area "${area}" ref-resolution ratio ${measurement.enforced}/${measurement.total} < floor ` +
+          `area "${area}" ref-resolution ratio ${measurement.enforced}/${areaContinuityDenominator} < floor ` +
           `${measurement.refResolutionFloor.enforced}/${measurement.refResolutionFloor.total}`,
         );
       }
