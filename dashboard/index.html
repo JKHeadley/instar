@@ -3540,9 +3540,14 @@
       <div class="tab-purpose">
         What the internal AI calls cost, and where the paid-door caps sit. The dollar figures are a
         <b>reporting</b> view — immutable token counts priced against a reviewed price list on read, so a
-        price correction reflows automatically. <b>No paid door is live yet</b>, so metered spend is $0;
-        subscription/CLI doors are <b>$0 (not per-token billed)</b>. The spend figures above are a report;
-        the controls below set a door's ceilings and take it live, and each of those takes your PIN.
+        price correction reflows automatically. <b>A paid door spends nothing until you arm it below</b>,
+        so metered spend stays $0 until then; subscription/CLI doors are <b>$0 (not per-token billed)</b>.
+        The spend figures above are a report; the controls below set a door's ceilings and take it live,
+        and each of those takes your PIN.
+        <!-- This used to state flatly "No paid door is live yet". That was true only while no operator
+             could arm one; it becomes FALSE the moment they use the controls directly beneath it, and a
+             false statement on the money screen is worse than a vague one. The per-door state is
+             rendered live below and is the authority. -->
       </div>
 
       <!-- The operator's ON SWITCH (money-layer-operator-enable-surface.md, Phase 2 UI).

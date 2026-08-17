@@ -58,6 +58,9 @@ from the dashboard and have nowhere to resume it. Unfreeze is now a button, PIN-
 (releasing money is the operator's), and answers plainly when a door is not frozen instead
 of posting a plan the server would refuse.
 
+The tab's standing description also stopped asserting **"No paid door is live yet"** — true only
+while nobody could arm one, and false the moment you use the controls beneath it.
+
 **3. The subscriptions grid groups by provider.** The account *cards* already grouped —
 a Claude heading and a Codex heading. The account × machine *grid* underneath, which is
 the surface an operator with several accounts actually reads, did not: seven rows of
