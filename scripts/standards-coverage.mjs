@@ -353,11 +353,16 @@ function parseRegistry(markdown) {
 function measuredArticles(markdown, parsedArticles) {
   const inventory = inventoryStandardsArticles(markdown);
   return {
-    articles: parsedArticles.map((article, index) => ({
-      ...article,
-      id: inventory.articles[index]?.id ?? null,
-      refs: extractRefs(article),
-    })),
+    articles: parsedArticles.map((article, index) => {
+      const identity = inventory.articles[index];
+      return {
+        ...article,
+        id: identity?.id ?? null,
+        ruleSha256: identity?.ruleSha256 ?? null,
+        articleSha256: identity?.articleSha256 ?? null,
+        refs: extractRefs(article),
+      };
+    }),
     errors: inventory.errors,
   };
 }
@@ -1436,17 +1441,21 @@ function compute() {
     }
     const area = areaTallies.get(a.family);
     const dangling = [];
+    let resolvedReferenceCount = 0;
     for (const ref of refs.files) {
       const verified = fs.existsSync(path.join(ROOT, ref));
       if (!verified) dangling.push(ref);
+      else resolvedReferenceCount += 1;
     }
     for (const ref of refs.routes) {
       const verified = routeTable.has(ref);
       if (!verified) dangling.push(ref);
+      else resolvedReferenceCount += 1;
     }
     for (const ref of refs.markers) {
       const verified = symbolIndex.has(ref);
       if (!verified) dangling.push(ref);
+      else resolvedReferenceCount += 1;
     }
     const kind = measuredById.get(a.id)?.strength ?? 'documented-only';
     byKind[kind] += 1;
@@ -1456,9 +1465,13 @@ function compute() {
     if (kind === 'documented-only') {
       gaps.push(a.name);
       area.gaps.push(a.name);
-      // A gap that ASSERTS running machinery is a false claim, not an honest gap.
-      const claims = detectEnforcementClaims(a);
-      if (claims.length > 0) falseClaims.push({ standard: a.name, claims });
+      // False-claim detection asks whether named machinery resolves at all. That is
+      // deliberately separate from the stronger measurement question of whether
+      // its behavior has relevance + fail-direction proof.
+      if (resolvedReferenceCount === 0) {
+        const claims = detectEnforcementClaims(a);
+        if (claims.length > 0) falseClaims.push({ standard: a.name, claims });
+      }
     }
     if (dangling.length > 0) { danglingByStandard.push({ standard: a.name, refs: dangling.sort() }); danglingCount += dangling.length; }
   }
