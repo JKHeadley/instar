@@ -74,6 +74,18 @@ const args = new Set(process.argv.slice(2));
 const CHECK = args.has('--check');
 const JSON_ONLY = args.has('--json');
 const QUIET = args.has('--quiet');
+const unavailableExecutionAuthority = (reason) => ({
+  mode: 'unavailable',
+  operationalOnCanonicalMain: false,
+  runnerPresentInSnapshot: false,
+  verdictLedgerPresentInSnapshot: false,
+  runnerDigestBoundByVerdictLedger: false,
+  requiredCanonicalAdmissions: [
+    'scripts/lib/standards-enforcement-node-test-runner.mjs',
+    "docs/standards-enforcement-verdicts.json with a schema-v3 record binding the admitted runner's exact SHA-256",
+  ],
+  statement: `Protected execution authority is NOT established: ${reason}. Canonical main must admit the protected runner and a valid schema-v3 verdict record binding its exact SHA-256 before protected digest authority is operational.`,
+});
 /**
  * `--rebaseline-floor="<reason>"` — the ONLY way a family's enforcement floor may go
  * DOWN, and it exists because of a specific operator ruling (Justin, 2026-08-08).
@@ -1274,7 +1286,13 @@ async function compute() {
       measurement: {
         status: 'not-proven',
         errors: ['candidate rule population is empty or unreadable'],
-        basis: { source: null, protectedMainSha: null, baseRevision: null, candidateTreeMayRaiseStrength: false },
+        basis: {
+          source: null,
+          protectedMainSha: null,
+          baseRevision: null,
+          candidateTreeMayRaiseStrength: false,
+          executionAuthority: unavailableExecutionAuthority('the candidate rule population is empty or unreadable'),
+        },
         population: { protectedBase: 0, candidate: 0, continuity: 0, additions: [], removals: [], byFamily: {} },
         protectedFloor: { enforced: 0, total: 0, ratio: null, byKind: { ratchet: 0, gate: 0, lint: 0, 'spec-only': 0, 'documented-only': 0 }, byFamily: {} },
         unverifiedReferences: [],
@@ -1408,7 +1426,13 @@ async function compute() {
     measurement = {
       status: 'not-proven',
       errors: [error instanceof Error ? error.message : String(error)],
-      basis: { source: null, protectedMainSha: null, baseRevision: null, candidateTreeMayRaiseStrength: false },
+      basis: {
+        source: null,
+        protectedMainSha: null,
+        baseRevision: null,
+        candidateTreeMayRaiseStrength: false,
+        executionAuthority: unavailableExecutionAuthority('the protected measurement snapshot could not be resolved'),
+      },
       population: { protectedBase: 0, candidate: articles.length, continuity: 0, additions: [], removals: [], byFamily: {} },
       protectedFloor: { enforced: 0, total: 0, ratio: null, byKind: { ratchet: 0, gate: 0, lint: 0, 'spec-only': 0, 'documented-only': 0 }, byFamily: {} },
       unverifiedReferences: [],
@@ -1804,6 +1828,11 @@ async function main() {
       `protected-population=${report.measurement.population.protectedBase} ` +
       `candidate-population=${report.measurement.population.candidate} ` +
       `unverified-references=${report.measurement.unverifiedReferences.length}`);
+    const executionAuthority = report.measurement.basis.executionAuthority ??
+      unavailableExecutionAuthority('the report did not contain an execution-authority record');
+    console.error(`[standards-coverage] protected-execution-authority=${executionAuthority.mode} ` +
+      `operational-on-canonical-main=${executionAuthority.operationalOnCanonicalMain} ` +
+      `statement=${JSON.stringify(executionAuthority.statement)}`);
     console.error(`[standards-coverage] protected-strength-floor=${report.measurement.protectedFloor.enforced}/${report.measurement.protectedFloor.total} ` +
       `ratio=${report.measurement.protectedFloor.ratio} candidate-may-raise=false`);
     for (const error of report.measurement.errors) {

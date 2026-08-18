@@ -10,7 +10,7 @@ import {
 } from "../../scratchpad/phaseB/authenticated-execution-receipt.mjs";
 import { SafeFsExecutor } from "../../dist/core/SafeFsExecutor.js";
 
-const ARTIFACT_SCHEMA = "standards-enforcement-observed-execution/v3";
+const ARTIFACT_SCHEMA = "standards-enforcement-observed-execution/v4";
 const RUNNER = "node-test-events-v1";
 const RUNNER_REF = "scripts/lib/standards-enforcement-node-test-runner.mjs";
 const OBSERVATION_SCHEMA = "standards-enforcement-node-test-events/v1";
@@ -30,6 +30,20 @@ function canonical(value) {
       .join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+function deepFreeze(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  for (const key of Reflect.ownKeys(value)) deepFreeze(value[key], seen);
+  return Object.freeze(value);
+}
+
+function isDeepFrozen(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== "object" || seen.has(value)) return true;
+  if (!Object.isFrozen(value)) return false;
+  seen.add(value);
+  return Reflect.ownKeys(value).every((key) => isDeepFrozen(value[key], seen));
 }
 
 function safeRepoPath(rel) {
@@ -403,6 +417,8 @@ function artifactFor(
       testsRun: cleanAuthentication.observation.testsRun,
       passed: cleanAuthentication.observation.passed,
       failed: cleanAuthentication.observation.failed,
+      assertionFailures: cleanAuthentication.observation.assertionFailures,
+      decidingOutput: cleanAuthentication.observation.decidingMessage,
       outputSha256: clean.outputSha256,
     },
     mutated: {
@@ -425,10 +441,12 @@ function artifactFor(
       testsRun: confirmationAuthentication.observation.testsRun,
       passed: confirmationAuthentication.observation.passed,
       failed: confirmationAuthentication.observation.failed,
+      assertionFailures: confirmationAuthentication.observation.assertionFailures,
+      decidingOutput: confirmationAuthentication.observation.decidingMessage,
       outputSha256: confirmation.outputSha256,
     },
   };
-  const artifact = Object.freeze({
+  const artifact = deepFreeze({
     ...payload,
     artifactSha256: sha256(canonical(payload)),
   });
@@ -716,34 +734,76 @@ export async function verifyProtectedExecutionProof({
   }
 }
 
-export function isLiveAuthenticatedExecutionArtifact(artifact) {
-  const liveRun = (run) => {
+function artifactContentIsInternallyConsistent(artifact) {
+  if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) return false;
+  if (!isDeepFrozen(artifact) || artifact.schema !== ARTIFACT_SCHEMA) return false;
+  if (!SHA256_RE.test(artifact.artifactSha256 ?? "")) return false;
+  const { artifactSha256, ...payload } = artifact;
+  if (artifactSha256 !== sha256(canonical(payload))) return false;
+  if (
+    artifact.observer?.runner !== RUNNER ||
+    !SHA256_RE.test(artifact.observer?.runnerSha256 ?? "") ||
+    artifact.observer?.structuredSource !== "node:test TestsStream" ||
+    !Array.isArray(artifact.observer?.argv) ||
+    artifact.subject?.mutationLanded !== true
+  )
+    return false;
+
+  const consistentRun = (run, expectedKind) => {
     const event = run?.observationEvent;
     const receipt = run?.receipt;
+    const observation = event?.observation;
     return Boolean(
       event &&
       receipt &&
-      isLiveAuthenticatedObserverEvent(event) &&
-      isLiveAuthenticatedReceipt(receipt) &&
-      validObservation(event.observation, artifact.observer?.ref) &&
-      run.observationSha256 === sha256(canonical(event.observation)) &&
+      validObservation(observation, artifact.observer?.ref) &&
+      run.observationSha256 === sha256(canonical(observation)) &&
       event.observationSha256 === run.observationSha256 &&
+      run.testsRun === observation.testsRun &&
+      run.passed === observation.passed &&
+      run.failed === observation.failed &&
+      run.assertionFailures === observation.assertionFailures &&
+      run.decidingOutput === observation.decidingMessage &&
+      run.exitCode === receipt.childExitCode &&
+      event.kind === expectedKind &&
       receipt.observerSession === event.observerSession &&
       receipt.observerEventSequence === event.sequence &&
       receipt.observerEventSignatureHash === sha256(event.signature) &&
-      receipt.kind === event.kind
+      receipt.kind === event.kind &&
+      receipt.guardId === event.guardId &&
+      receipt.observerPid === event.observerPid &&
+      receipt.childPid === event.observerPid &&
+      canonical(receipt.argv?.slice(1)) === canonical(event.argv)
     );
   };
+
   return Boolean(
-    artifact &&
-    typeof artifact === "object" &&
-    liveArtifacts.has(artifact) &&
-    liveRun(artifact.clean) &&
-    liveRun(artifact.mutated) &&
-    liveRun(artifact.confirmation),
+    canonical(artifact.observer.argv) === canonical(artifact.clean?.receipt?.argv) &&
+    consistentRun(artifact.clean, "clean-observer-exit") &&
+    consistentRun(artifact.mutated, "mutated-observer-exit") &&
+    consistentRun(artifact.confirmation, "confirmation-clean-observer-exit")
   );
 }
 
+export function isLiveAuthenticatedExecutionArtifact(artifact) {
+  const liveRun = (run) => Boolean(
+    isLiveAuthenticatedObserverEvent(run?.observationEvent) &&
+    isLiveAuthenticatedReceipt(run?.receipt)
+  );
+  return Boolean(
+    liveArtifacts.has(artifact) &&
+    artifactContentIsInternallyConsistent(artifact) &&
+    liveRun(artifact.clean) &&
+    liveRun(artifact.mutated) &&
+    liveRun(artifact.confirmation)
+  );
+}
+
+export const __testing = Object.freeze({
+  artifactContentIsInternallyConsistent,
+});
+
 export const STANDARDS_EXECUTION_ARTIFACT_SCHEMA = ARTIFACT_SCHEMA;
 export const STANDARDS_EXECUTION_RUNNER = RUNNER;
+export const STANDARDS_EXECUTION_RUNNER_REF = RUNNER_REF;
 export const STANDARDS_EXECUTION_DEFAULT_TIMEOUT_MS = DEFAULT_OBSERVER_TIMEOUT_MS;

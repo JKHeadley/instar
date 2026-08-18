@@ -21,3 +21,5 @@ The live protected baseline measures 0 of 88 rules at proven ratchet, gate, or l
 ## Known Limits
 
 This change measures protected, behaviorally observed enforcement evidence and uses structural inspection only to explain why an uncertified reference is hollow or unverified. The first pinned runner supports direct Node tests only. It does not itself certify a live guard or alter CI wiring. Independent J7 re-certification of the shared H1 receipt core and independent judge evaluation of this measurement remain pending.
+
+The protected-digest path is **prospective, not operational authority on canonical main** as of W3.8. Canonical main does not yet carry either `scripts/lib/standards-enforcement-node-test-runner.mjs` or `docs/standards-enforcement-verdicts.json`. Operational authority begins only after a merge decision admits both the runner bytes and a structurally valid schema-v3 ledger record whose execution plan binds the exact admitted runner SHA-256. The machine-readable report repeats that state under `measurement.basis.executionAuthority`; test fixtures are labeled stand-ins and cannot satisfy the canonical-main condition.

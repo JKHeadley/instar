@@ -1,0 +1,33 @@
+{
+  "ts": "2026-08-18T21:31:53.969Z",
+  "slug": "w38-live-artifact-closure",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 172,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lib/standards-enforcement-execution-verifier.mjs",
+      "scripts/lib/standards-enforcement-measurement.mjs",
+      "scripts/standards-coverage.mjs"
+    ],
+    "addedLines": 158,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "tests/unit/standards-enforcement-measurement.test.ts",
+      "howCaught": "W38_C4 requires the genuine live artifact and all nested copies to remain frozen; W38_C5 re-addresses every copied observation-field tamper and requires both internal consistency and the exported live predicate to reject it; W38_C6 refuses operational status for fixtures or incomplete canonical admissions."
+    },
+    "component": "standards-enforcement-measurement"
+  },
+  "verdict": "pass"
+}
