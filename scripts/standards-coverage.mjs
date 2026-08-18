@@ -56,11 +56,17 @@ import yaml from 'js-yaml';
 import { articleIds, parseRegistryStructure } from './standards-registry-article-core.mjs';
 import {
   evaluateStandardsDirection,
+  inventoryStandardsArticles,
   readCandidateApproverKey,
   readDirectionApprovalLedger,
   resolveProtectedApproverKey,
   resolveProtectedBaseRegistry,
 } from './standards-direction-guard.mjs';
+import {
+  measureAnchoredEnforcement,
+  resolveProtectedMeasurementSnapshot,
+  routeTableFromSnapshot,
+} from './lib/standards-enforcement-measurement.mjs';
 import { parseFrontmatter, validateAuditReport } from './write-audit-convergence.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -98,6 +104,7 @@ const AUDIT_REF_ARG = [...args].find((arg) => arg.startsWith('--audit-ref='));
 const AUDIT_REF = AUDIT_REF_ARG?.slice('--audit-ref='.length) ?? null;
 const RECORD_AREA_MODEL = args.has('--record-area-model-audit');
 const ALLOW_PARTIAL_REGISTRY = args.has('--allow-partial-registry');
+const REQUIRE_ROOT = !ALLOW_PARTIAL_REGISTRY || args.has('--require-root');
 const ADMIT_NEW_AREAS = args.has('--admit-new-areas');
 
 function resolveRoot() {
@@ -343,6 +350,23 @@ function parseRegistry(markdown) {
   };
 }
 
+function measuredArticles(markdown, parsedArticles) {
+  const inventory = inventoryStandardsArticles(markdown);
+  return {
+    articles: parsedArticles.map((article, index) => {
+      const identity = inventory.articles[index];
+      return {
+        ...article,
+        id: identity?.id ?? null,
+        ruleSha256: identity?.ruleSha256 ?? null,
+        articleSha256: identity?.articleSha256 ?? null,
+        refs: extractRefs(article),
+      };
+    }),
+    errors: inventory.errors,
+  };
+}
+
 const FILE_RE = /`([a-zA-Z0-9_./-]+\.(?:ts|js|mjs|cjs|md|json|sh))`/g;
 const ROUTE_RE = /`(GET|POST|PUT|DELETE|PATCH)\s+(\/[a-zA-Z0-9/_:-]+)`/g;
 const MARKER_RE = /\b([A-Z][A-Z0-9]{2,}_[A-Z0-9_]{2,})\b/g;
@@ -421,18 +445,6 @@ function detectEnforcementClaims(a) {
     hits.push(m[0].trim());
   }
   return dedupe(hits).sort();
-}
-
-const KIND_RANK = { ratchet: 4, gate: 3, lint: 2, 'spec-only': 1 };
-function classifyFileGuard(ref) {
-  const base = ref.split('/').pop() ?? ref;
-  if (/\.test\.(ts|js|mjs)$/.test(base) || base.startsWith('no-') || /-coverage\.(mjs|js)$/.test(base)) return 'ratchet';
-  if (ref.startsWith('scripts/') && base.startsWith('lint-')) return 'lint';
-  if (ref.startsWith('.husky/') || /precommit/i.test(base)) return 'gate';
-  if (ref.startsWith('scripts/')) return 'lint';
-  if (ref.startsWith('docs/')) return 'spec-only';
-  if (ref.startsWith('src/')) return 'gate';
-  return 'spec-only';
 }
 
 // ── Per-area audit facts + floors ────────────────────────────────────────────
@@ -1211,7 +1223,7 @@ function buildSymbolIndex(wanted) {
   return found;
 }
 
-function compute() {
+async function compute() {
   let markdown = null;
   try { markdown = fs.readFileSync(REGISTRY_PATH, 'utf-8'); } catch { markdown = null; }
   if (markdown === null) {
@@ -1221,7 +1233,8 @@ function compute() {
       generatedAt: new Date().toISOString(),
       registryFound: false,
       total: 0, byKind: { ratchet: 0, gate: 0, lint: 0, 'spec-only': 0, 'documented-only': 0 },
-      enforcedRatio: 1, gaps: [], falseClaimCount: 0, falseClaims: [],
+      continuityTotal: 0, enforcedRatio: null, currentPopulationEnforcedRatio: null,
+      gaps: [], falseClaimCount: 0, falseClaims: [],
       danglingCount: 0, danglingByStandard: [],
       areas: {},
       areaAudit: {
@@ -1230,7 +1243,7 @@ function compute() {
         schemaVersion: AREA_AUDIT_SCHEMA_VERSION,
         currentCount: 0,
         totalAreas: 0,
-        errors: ALLOW_PARTIAL_REGISTRY ? [] : ['standards registry missing (use --allow-partial-registry only for a deliberate partial checkout)'],
+        errors: REQUIRE_ROOT ? ['standards registry missing (use --allow-partial-registry only for a deliberate partial checkout)'] : [],
       },
       areaModelAudit: {
         status: 'not-assessed',
@@ -1252,11 +1265,20 @@ function compute() {
         unrecognizedSections: [],
       },
       directionGuard: {
-        status: ALLOW_PARTIAL_REGISTRY ? 'not-assessed' : 'not-proven',
-        errors: ALLOW_PARTIAL_REGISTRY ? [] : ['candidate standards registry is unavailable'],
+        status: REQUIRE_ROOT ? 'not-proven' : 'not-assessed',
+        errors: REQUIRE_ROOT ? ['candidate standards registry is unavailable'] : [],
         changes: [],
         trustRoot: { origin: 'protected-base', source: null, revision: null, candidateTreeIgnored: true },
         population: { protectedBase: 0, candidate: 0, continuity: 0, additions: [], removals: [], byFamily: {} },
+      },
+      measurement: {
+        status: 'not-proven',
+        errors: ['candidate rule population is empty or unreadable'],
+        basis: { source: null, protectedMainSha: null, baseRevision: null, candidateTreeMayRaiseStrength: false },
+        population: { protectedBase: 0, candidate: 0, continuity: 0, additions: [], removals: [], byFamily: {} },
+        protectedFloor: { enforced: 0, total: 0, ratio: null, byKind: { ratchet: 0, gate: 0, lint: 0, 'spec-only': 0, 'documented-only': 0 }, byFamily: {} },
+        unverifiedReferences: [],
+        articles: [],
       },
     };
   }
@@ -1315,12 +1337,91 @@ function compute() {
     return assessed;
   })();
 
-  const { articles, enforcementScope, areaSha256, areaSectionCounts } = parseRegistry(canonicalText(markdown));
+  const parsedCandidate = parseRegistry(canonicalText(markdown));
+  const candidateMeasured = measuredArticles(canonicalText(markdown), parsedCandidate.articles);
+  const { enforcementScope, areaSha256, areaSectionCounts } = parsedCandidate;
+  const articles = candidateMeasured.articles;
   const routeTable = loadRouteTable();
-  const extracted = articles.map((a) => ({ a, refs: extractRefs(a) }));
+  const extracted = articles.map((a) => ({ a, refs: a.refs }));
   const wanted = new Set();
   for (const { refs } of extracted) for (const m of refs.markers) wanted.add(m);
   const symbolIndex = buildSymbolIndex(wanted);
+
+  let measurement;
+  try {
+    const fixtureRoot = ALLOW_PARTIAL_REGISTRY
+      ? (process.env.STANDARDS_ENFORCEMENT_BASE_ROOT || ROOT)
+      : null;
+    const snapshot = resolveProtectedMeasurementSnapshot({ root: ROOT, fixtureRoot });
+    const protectedMarkdown = snapshot.readFile('docs/STANDARDS-REGISTRY.md');
+    if (protectedMarkdown === null) throw new Error('protected rule population is empty or unreadable');
+    const parsedProtected = parseRegistry(canonicalText(protectedMarkdown));
+    const protectedMeasured = measuredArticles(canonicalText(protectedMarkdown), parsedProtected.articles);
+    const protectedRouteTable = routeTableFromSnapshot(snapshot);
+    measurement = await measureAnchoredEnforcement({
+      root: ROOT,
+      protectedArticles: protectedMeasured.articles,
+      candidateArticles: articles,
+      snapshot,
+      protectedRouteExists: (ref) => protectedRouteTable.has(ref),
+      candidateRouteExists: (ref) => routeTable.has(ref),
+      protectedMarkerExists: (ref) => snapshot.hasMarker(ref),
+      candidateMarkerExists: (ref) => symbolIndex.has(ref),
+    });
+    const protectedBaseline = await measureAnchoredEnforcement({
+      root: ROOT,
+      protectedArticles: protectedMeasured.articles,
+      candidateArticles: protectedMeasured.articles,
+      snapshot,
+      protectedRouteExists: (ref) => protectedRouteTable.has(ref),
+      candidateRouteExists: (ref) => protectedRouteTable.has(ref),
+      protectedMarkerExists: (ref) => snapshot.hasMarker(ref),
+      candidateMarkerExists: (ref) => snapshot.hasMarker(ref),
+      candidateReadFile: (ref) => snapshot.readFile(ref),
+    });
+    const summarize = (articleResults) => {
+      const byKind = { ratchet: 0, gate: 0, lint: 0, 'spec-only': 0, 'documented-only': 0 };
+      const byFamily = Object.create(null);
+      for (const article of articleResults) {
+        byKind[article.strength] += 1;
+        if (!byFamily[article.family]) byFamily[article.family] = { enforced: 0, total: 0 };
+        byFamily[article.family].total += 1;
+        if (['ratchet', 'gate', 'lint'].includes(article.strength)) byFamily[article.family].enforced += 1;
+      }
+      const enforced = byKind.ratchet + byKind.gate + byKind.lint;
+      return {
+        enforced,
+        total: articleResults.length,
+        ratio: articleResults.length === 0 ? null : Number((enforced / articleResults.length).toFixed(4)),
+        byKind,
+        byFamily,
+      };
+    };
+    measurement.protectedFloor = summarize(protectedBaseline.articles);
+    measurement.errors.unshift(...protectedBaseline.errors.map((error) => `protected baseline: ${error}`));
+    measurement.errors.unshift(
+      ...protectedMeasured.errors.map((error) => `protected census: ${error}`),
+      ...candidateMeasured.errors.map((error) => `candidate census: ${error}`),
+    );
+    if (measurement.errors.length > 0) measurement.status = 'not-proven';
+  } catch (error) {
+    measurement = {
+      status: 'not-proven',
+      errors: [error instanceof Error ? error.message : String(error)],
+      basis: { source: null, protectedMainSha: null, baseRevision: null, candidateTreeMayRaiseStrength: false },
+      population: { protectedBase: 0, candidate: articles.length, continuity: 0, additions: [], removals: [], byFamily: {} },
+      protectedFloor: { enforced: 0, total: 0, ratio: null, byKind: { ratchet: 0, gate: 0, lint: 0, 'spec-only': 0, 'documented-only': 0 }, byFamily: {} },
+      unverifiedReferences: [],
+      articles: articles.map((article) => ({
+        id: article.id,
+        family: article.family,
+        name: article.name,
+        strength: 'documented-only',
+        references: [],
+      })),
+    };
+  }
+  const measuredById = new Map(measurement.articles.map((article) => [article.id, article]));
 
   const byKind = { ratchet: 0, gate: 0, lint: 0, 'spec-only': 0, 'documented-only': 0 };
   const areaTallies = new Map();
@@ -1339,23 +1440,24 @@ function compute() {
       });
     }
     const area = areaTallies.get(a.family);
-    const guards = [];
     const dangling = [];
+    let resolvedReferenceCount = 0;
     for (const ref of refs.files) {
       const verified = fs.existsSync(path.join(ROOT, ref));
-      if (verified) guards.push(classifyFileGuard(ref)); else dangling.push(ref);
+      if (!verified) dangling.push(ref);
+      else resolvedReferenceCount += 1;
     }
     for (const ref of refs.routes) {
       const verified = routeTable.has(ref);
-      if (verified) guards.push('gate'); else dangling.push(ref);
+      if (!verified) dangling.push(ref);
+      else resolvedReferenceCount += 1;
     }
     for (const ref of refs.markers) {
       const verified = symbolIndex.has(ref);
-      if (verified) guards.push('gate'); else dangling.push(ref);
+      if (!verified) dangling.push(ref);
+      else resolvedReferenceCount += 1;
     }
-    let best = null;
-    for (const g of guards) { if (best === null || KIND_RANK[g] > KIND_RANK[best]) best = g; }
-    const kind = best ?? 'documented-only';
+    const kind = measuredById.get(a.id)?.strength ?? 'documented-only';
     byKind[kind] += 1;
     area.total += 1;
     area.byKind[kind] += 1;
@@ -1363,23 +1465,27 @@ function compute() {
     if (kind === 'documented-only') {
       gaps.push(a.name);
       area.gaps.push(a.name);
-      // A gap that ASSERTS running machinery is a false claim, not an honest gap.
-      const claims = detectEnforcementClaims(a);
-      if (claims.length > 0) falseClaims.push({ standard: a.name, claims });
+      // False-claim detection asks whether named machinery resolves at all. That is
+      // deliberately separate from the stronger measurement question of whether
+      // its behavior has relevance + fail-direction proof.
+      if (resolvedReferenceCount === 0) {
+        const claims = detectEnforcementClaims(a);
+        if (claims.length > 0) falseClaims.push({ standard: a.name, claims });
+      }
     }
     if (dangling.length > 0) { danglingByStandard.push({ standard: a.name, refs: dangling.sort() }); danglingCount += dangling.length; }
   }
 
   const total = articles.length;
   const enforced = byKind.ratchet + byKind.gate + byKind.lint;
-  const continuityTotal = directionGuard.population?.continuity || total;
-  const currentPopulationEnforcedRatio = total === 0 ? 1 : Number((enforced / total).toFixed(4));
-  const enforcedRatio = continuityTotal === 0 ? 1 : Number((enforced / continuityTotal).toFixed(4));
+  const continuityTotal = measurement.population.continuity;
+  const currentPopulationEnforcedRatio = total === 0 ? null : Number((enforced / total).toFixed(4));
+  const enforcedRatio = continuityTotal === 0 ? null : Number((enforced / continuityTotal).toFixed(4));
   const areaNames = [...areaTallies.keys()].sort();
   const loadedAreaAudits = loadAreaAuditLedger(areaNames);
   const loadedAreaModelAudit = loadAreaModelAudit(areaNames);
   const baseComparison = compareLedgerToBase(loadedAreaAudits.ledger);
-  const rootSelfWiring = ALLOW_PARTIAL_REGISTRY
+  const rootSelfWiring = !REQUIRE_ROOT && !areaTallies.has('The Root')
     ? { status: 'not-assessed', errors: [] }
     : validateRootSelfWiring();
   const areaAuditErrors = [
@@ -1387,7 +1493,7 @@ function compute() {
     ...baseComparison.errors,
     ...rootSelfWiring.errors,
   ];
-  if (!ALLOW_PARTIAL_REGISTRY) {
+  if (REQUIRE_ROOT) {
     if (total === 0) areaAuditErrors.push('standards registry contains no structurally parsed standards');
     if (areaSectionCounts['The Root'] !== 1 || !areaTallies.has('The Root')) {
       areaAuditErrors.push('standards registry must contain exactly one Rule-bearing The Root family section');
@@ -1400,9 +1506,9 @@ function compute() {
     const audit = isPlainObject(loadedAreaAudits.ledger?.areas?.[areaName])
       ? loadedAreaAudits.ledger.areas[areaName]
       : null;
-    const areaContinuityTotal = directionGuard.population?.byFamily?.[areaName]?.continuity || tally.total;
-    const currentPopulationRatio = tally.total === 0 ? 1 : Number((tally.enforced / tally.total).toFixed(4));
-    const ratio = areaContinuityTotal === 0 ? 1 : Number((tally.enforced / areaContinuityTotal).toFixed(4));
+    const areaContinuityTotal = measurement.population.byFamily?.[areaName]?.continuity ?? tally.total;
+    const currentPopulationRatio = tally.total === 0 ? null : Number((tally.enforced / tally.total).toFixed(4));
+    const ratio = areaContinuityTotal === 0 ? null : Number((tally.enforced / areaContinuityTotal).toFixed(4));
     const auditCurrent = typeof audit?.areaSha256 === 'string' && audit.areaSha256 === areaSha256[areaName];
     if (audit && !auditCurrent) {
       areaAuditErrors.push(
@@ -1447,7 +1553,7 @@ function compute() {
     registryFound: true,
     rootSelfWiring,
     total, continuityTotal, byKind, enforcedRatio, currentPopulationEnforcedRatio,
-    gaps, enforcementScope, areas, directionGuard,
+    gaps, enforcementScope, areas, directionGuard, measurement,
     areaAudit: {
       status: areaAuditErrors.length === 0 ? 'current' : 'invalid',
       path: path.relative(ROOT, AREA_AUDITS_PATH),
@@ -1641,12 +1747,12 @@ function recordAreaModelAudit(report, auditRef) {
   fs.renameSync(tmp, AREA_MODEL_AUDIT_PATH);
 }
 
-function main() {
-  let report = compute();
+async function main() {
+  let report = await compute();
   if (RECORD_AREA_ARG !== undefined) {
     try {
       recordAreaAudit(report, RECORD_AREA, AUDIT_REF);
-      report = compute();
+      report = await compute();
     } catch (error) {
       process.stderr.write(`❌ standards-coverage record failed: ${error instanceof Error ? error.message : String(error)}\n`);
       process.exit(1);
@@ -1655,7 +1761,7 @@ function main() {
   if (RECORD_AREA_MODEL) {
     try {
       recordAreaModelAudit(report, AUDIT_REF);
-      report = compute();
+      report = await compute();
     } catch (error) {
       process.stderr.write(`❌ standards-coverage area-model record failed: ${error instanceof Error ? error.message : String(error)}\n`);
       process.exit(1);
@@ -1688,7 +1794,21 @@ function main() {
       `false-claims=${report.falseClaimCount} ` +
       `dangling=${report.danglingCount} ` +
       `unrecognized-sections=${report.enforcementScope.unrecognizedSections.length}`);
-    console.error(`[standards-coverage] floors: enforced-ratio>=${FLOORS.enforcedRatio} dangling<=${FLOORS.danglingCeiling} false-claims<=${FLOORS.falseClaimCeiling} unrecognized-sections<=${FLOORS.unrecognizedSectionCeiling}`);
+    console.error(`[standards-coverage] legacy-ref-resolution-floor=${FLOORS.enforcedRatio} ` +
+      `explicit-headline-override=${Object.hasOwn(process.env, 'STANDARDS_ENFORCED_RATIO_FLOOR') ? FLOORS.enforcedRatio : 'none'} ` +
+      `dangling<=${FLOORS.danglingCeiling} false-claims<=${FLOORS.falseClaimCeiling} ` +
+      `unrecognized-sections<=${FLOORS.unrecognizedSectionCeiling}`);
+    console.error(`[standards-coverage] measurement=${report.measurement.status} ` +
+      `base=${report.measurement.basis.baseRevision ?? 'unavailable'} ` +
+      `source=${report.measurement.basis.source ?? 'unavailable'} ` +
+      `protected-population=${report.measurement.population.protectedBase} ` +
+      `candidate-population=${report.measurement.population.candidate} ` +
+      `unverified-references=${report.measurement.unverifiedReferences.length}`);
+    console.error(`[standards-coverage] protected-strength-floor=${report.measurement.protectedFloor.enforced}/${report.measurement.protectedFloor.total} ` +
+      `ratio=${report.measurement.protectedFloor.ratio} candidate-may-raise=false`);
+    for (const error of report.measurement.errors) {
+      console.error(`[standards-coverage] MEASUREMENT — ${error}`);
+    }
     console.error(`[standards-coverage] direction-guard=${report.directionGuard.status} ` +
       `base=${report.directionGuard.baseRevision ?? 'not-assessed'} ` +
       `trust-root=${report.directionGuard.trustRoot?.origin ?? 'unknown'} ` +
@@ -1720,20 +1840,45 @@ function main() {
   if (CHECK) {
     const failures = [];
     const aggregateEnforced = report.byKind.ratchet + report.byKind.gate + report.byKind.lint;
-    const continuityDenominator = report.continuityTotal ?? report.total;
-    if (continuityDenominator > 0 && ratioBelowNumericFloor(aggregateEnforced, continuityDenominator, FLOORS.enforcedRatio)) {
-      failures.push(`enforced ratio ${aggregateEnforced}/${continuityDenominator} (${report.enforcedRatio}) < floor ${FLOORS.enforcedRatio}`);
+    const continuityDenominator = report.continuityTotal;
+    for (const error of report.measurement.errors) failures.push(`measurement: ${error}`);
+    if (!Number.isInteger(continuityDenominator) || continuityDenominator <= 0 || report.enforcedRatio === null) {
+      failures.push('measurement population is empty or unreadable (zero-of-zero is never clean)');
+    }
+    const protectedFloor = report.measurement.protectedFloor;
+    if (protectedFloor.total > 0 && continuityDenominator > 0 &&
+      aggregateEnforced * protectedFloor.total < protectedFloor.enforced * continuityDenominator) {
+      failures.push(
+        `proven-strength ratio ${aggregateEnforced}/${continuityDenominator} (${report.enforcedRatio}) < protected floor ` +
+        `${protectedFloor.enforced}/${protectedFloor.total} (${protectedFloor.ratio})`,
+      );
+    }
+    if (Object.hasOwn(process.env, 'STANDARDS_ENFORCED_RATIO_FLOOR') && continuityDenominator > 0 &&
+      ratioBelowNumericFloor(aggregateEnforced, continuityDenominator, FLOORS.enforcedRatio)) {
+      failures.push(`enforced ratio ${aggregateEnforced}/${continuityDenominator} (${report.enforcedRatio}) < explicit floor ${FLOORS.enforcedRatio}`);
     }
     for (const error of report.directionGuard.errors) failures.push(`direction guard: ${error}`);
     for (const error of report.areaAudit.errors) failures.push(error);
     for (const error of report.areaModelAudit.errors) failures.push(error);
-    for (const [area, measurement] of Object.entries(report.areas)) {
-      const areaContinuityDenominator = measurement.continuityTotal ?? measurement.total;
-      if (ratioBelowFloor(measurement.enforced, areaContinuityDenominator, measurement.refResolutionFloor)) {
-        failures.push(
-          `area "${area}" ref-resolution ratio ${measurement.enforced}/${areaContinuityDenominator} < floor ` +
-          `${measurement.refResolutionFloor.enforced}/${measurement.refResolutionFloor.total}`,
-        );
+    for (const [area, areaMeasurement] of Object.entries(report.areas)) {
+      const areaContinuityDenominator = areaMeasurement.continuityTotal ?? areaMeasurement.total;
+      const areaFloor = report.measurement.protectedFloor.byFamily[area];
+      const belowProtected = areaFloor && areaFloor.total > 0 && areaContinuityDenominator > 0 &&
+        areaMeasurement.enforced * areaFloor.total < areaFloor.enforced * areaContinuityDenominator;
+      const belowFixtureLedger = ALLOW_PARTIAL_REGISTRY &&
+        ratioBelowFloor(areaMeasurement.enforced, areaContinuityDenominator, areaMeasurement.refResolutionFloor);
+      if (belowProtected || belowFixtureLedger) {
+        if (belowProtected) {
+          failures.push(
+            `area "${area}" proven-strength ratio ${areaMeasurement.enforced}/${areaContinuityDenominator} < protected floor ` +
+            `${areaFloor.enforced}/${areaFloor.total}`,
+          );
+        } else {
+          failures.push(
+            `area "${area}" ref-resolution ratio ${areaMeasurement.enforced}/${areaContinuityDenominator} < floor ` +
+            `${areaMeasurement.refResolutionFloor.enforced}/${areaMeasurement.refResolutionFloor.total}`,
+          );
+        }
       }
     }
     if (report.danglingCount > FLOORS.danglingCeiling) {
@@ -1762,4 +1907,4 @@ function main() {
   }
 }
 
-main();
+await main();

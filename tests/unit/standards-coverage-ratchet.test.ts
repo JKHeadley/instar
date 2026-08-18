@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { computeCoverage } from '../../src/core/StandardsEnforcementAuditor.js';
 import { parseRegistryStructure } from '../../scripts/standards-registry-article-core.mjs';
+import { inventoryStandardsArticles } from '../../scripts/standards-direction-guard.mjs';
 import { stampConverged, validateAuditReport } from '../../scripts/write-audit-convergence.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -158,9 +159,25 @@ function writeAreaModelEvidence(
 
 function refreshAreaAudits(floor?: number): void {
   auditCounter += 1;
+  const proofPath = path.join(repo, 'docs', 'standards-enforcement-verdicts.json');
+  if (fs.existsSync(proofPath)) {
+    const currentById = new Map(inventoryStandardsArticles(
+      fs.readFileSync(path.join(repo, 'docs/STANDARDS-REGISTRY.md'), 'utf8'),
+    ).articles.map((entry) => [entry.id, entry]));
+    const ledger = JSON.parse(fs.readFileSync(proofPath, 'utf8')) as {
+      schemaVersion: number;
+      records: Array<{ articleId: string; articleSha256: string }>;
+    };
+    ledger.records = ledger.records.filter((record) =>
+      currentById.get(record.articleId)?.articleSha256 === record.articleSha256);
+    fs.writeFileSync(proofPath, `${JSON.stringify(ledger, null, 2)}\n`);
+  }
   const auditRef = `docs/audits/family-review-${auditCounter}.json`;
   writeAuditEvidence(auditRef);
-  runScript(['--record-area-audit=all', '--admit-new-areas', `--audit-ref=${auditRef}`, '--quiet']);
+  runScript(
+    ['--record-area-audit=all', '--admit-new-areas', `--audit-ref=${auditRef}`, '--quiet'],
+    { STANDARDS_ENFORCED_RATIO_FLOOR: '0' },
+  );
   const modelAuditRef = `docs/audits/family-model-review-${auditCounter}.json`;
   writeAreaModelEvidence(modelAuditRef);
   runScript(['--record-area-model-audit', `--audit-ref=${modelAuditRef}`, '--quiet']);
@@ -174,13 +191,57 @@ function refreshAreaAudits(floor?: number): void {
   fs.writeFileSync(auditPath, `${JSON.stringify(ledger, null, 2)}\n`);
 }
 
+function writeFixtureEnforcementProof(): void {
+  const registry = fs.readFileSync(path.join(repo, 'docs/STANDARDS-REGISTRY.md'), 'utf8');
+  const protectedArticles = inventoryStandardsArticles(registry).articles;
+  const ref = 'tests/unit/widget.test.ts';
+  const subjectRef = 'src/widget.ts';
+  const observerContent = fs.readFileSync(path.join(repo, ref), 'utf8');
+  const subjectContent = fs.readFileSync(path.join(repo, subjectRef), 'utf8');
+  const sha = (value: string): string => crypto.createHash('sha256').update(value).digest('hex');
+  write('docs/standards-enforcement-verdicts.json', `${JSON.stringify({
+    schemaVersion: 3,
+    records: protectedArticles.map((protectedArticle) => ({
+      articleId: protectedArticle.id,
+      articleSha256: protectedArticle.articleSha256,
+      ref,
+      sha256: sha(observerContent),
+      verdict: 'EFFECTIVE',
+      proof: {
+        schemaVersion: 2,
+        execution: {
+          runner: 'node-test-events-v1',
+          argv: ['node', 'scripts/lib/standards-enforcement-node-test-runner.mjs', ref],
+          workspaceRefs: [subjectRef, ref].sort(),
+        },
+        relevance: {
+          articleId: protectedArticle.id,
+          ruleSha256: protectedArticle.ruleSha256,
+          observerRef: ref,
+          observerSha256: sha(observerContent),
+          subjectRef,
+          subjectBeforeSha256: sha(subjectContent),
+        },
+        mutation: {
+          mutationId: 'widget-guarded-false',
+          subjectRef,
+          search: 'true',
+          replacement: 'false',
+          subjectAfterSha256: sha('export const widgetGuarded = false;\n'),
+        },
+      },
+    })),
+  }, null, 2)}\n`);
+}
+
 beforeEach(() => {
   repo = fs.mkdtempSync(path.join(os.tmpdir(), 'std-ratchet-'));
   auditCounter = 0;
   // A repo whose ONLY standard is guarded by a real ratchet test on disk → ratio 1,
   // zero dangling. src/ present so resolveRoot picks the repo.
   write('src/server/routes.ts', "router.get('/x', (req,res)=>{});\n");
-  write('tests/unit/widget.test.ts', '// ratchet\n');
+  write('src/widget.ts', 'export const widgetGuarded = true;\n');
+  write('tests/unit/widget.test.ts', "import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { widgetGuarded } from '../../src/widget.ts';\ntest('observes the guarded widget rule', () => assert.equal(widgetGuarded, true));\n");
   write('docs/specs/reports/family-review.md', '# Family review\n\nFixture convergence evidence.\n');
   write('docs/STANDARDS-REGISTRY.md', [
     '## Building',
@@ -190,6 +251,7 @@ beforeEach(() => {
     '**Applied through.** Enforced by `tests/unit/widget.test.ts`.',
     '',
   ].join('\n'));
+  writeFixtureEnforcementProof();
   refreshAreaAudits();
 });
 afterEach(() => { fs.rmSync(repo, { recursive: true, force: true }); });
@@ -207,6 +269,29 @@ function runCheck(env: Record<string, string> = {}): { code: number; out: string
   }
 }
 
+function runJson(env: Record<string, string> = {}): Record<string, unknown> {
+  return JSON.parse(execFileSync('node', [SCRIPT, '--allow-partial-registry', '--json'], {
+    cwd: repo,
+    encoding: 'utf8',
+    env: { ...process.env, STANDARDS_COVERAGE_ROOT: repo, ...env },
+  })) as Record<string, unknown>;
+}
+
+function snapshotMeasurementBase(): string {
+  const baseRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'std-measurement-base-'));
+  const copy = (rel: string): void => {
+    const source = path.join(repo, rel);
+    const target = path.join(baseRoot, rel);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(source, target);
+  };
+  copy('docs/STANDARDS-REGISTRY.md');
+  copy('docs/standards-enforcement-verdicts.json');
+  copy('src/widget.ts');
+  copy('tests/unit/widget.test.ts');
+  return baseRoot;
+}
+
 function runFullCheck(): { code: number; out: string } {
   const registryPath = path.join(repo, 'docs', 'STANDARDS-REGISTRY.md');
   const basePath = path.join(repo, '.standards-direction-base.md');
@@ -219,7 +304,7 @@ function runFullCheck(): { code: number; out: string } {
   try {
     return {
       code: 0,
-      out: execFileSync('node', [SCRIPT, '--check'], {
+      out: execFileSync('node', [SCRIPT, '--allow-partial-registry', '--require-root', '--check'], {
         cwd: repo,
         encoding: 'utf8',
         env: {
@@ -257,7 +342,7 @@ describe('standards-coverage ratchet script', () => {
       '**Rule.** r.',
       '**In practice.** `scripts/standards-coverage.mjs` is wired by `.github/workflows/ci.yml`.',
     ].join('\n'));
-    write('scripts/standards-coverage.mjs', '// fixture path referenced by the registry\n');
+    write('scripts/standards-coverage.mjs', "if (process.argv.includes('--check')) { process.exitCode = 1; }\n");
     write('.github/workflows/ci.yml', [
       'on:',
       '  push:',
@@ -435,6 +520,70 @@ describe('standards-coverage ratchet script', () => {
     expect(r.out).toContain('enforced ratio');
   });
 
+  it('C3a refuses to improve the headline when an unenforced protected rule is deleted', () => {
+    fs.appendFileSync(
+      path.join(repo, 'docs', 'STANDARDS-REGISTRY.md'),
+      '\n### Protected Gap\n**Rule.** r.\n**In practice.** no guard yet.\n',
+    );
+    const baseRoot = snapshotMeasurementBase();
+    const env = { STANDARDS_ENFORCEMENT_BASE_ROOT: baseRoot };
+    const before = runJson(env) as { enforcedRatio: number };
+    write('docs/STANDARDS-REGISTRY.md', fs.readFileSync(path.join(repo, 'docs', 'STANDARDS-REGISTRY.md'), 'utf8')
+      .replace('\n### Protected Gap\n**Rule.** r.\n**In practice.** no guard yet.\n', '\n'));
+    expect(fs.readFileSync(path.join(repo, 'docs', 'STANDARDS-REGISTRY.md'), 'utf8')).not.toContain('### Protected Gap');
+    const after = runJson(env) as {
+      enforcedRatio: number;
+      measurement?: { errors?: string[]; population?: { removals?: string[] } };
+    };
+
+    expect(after.enforcedRatio).toBeLessThanOrEqual(before.enforcedRatio);
+    expect(after.measurement?.population?.removals).toHaveLength(1);
+    expect(after.measurement?.errors?.join('\n')).toContain('population shrank by 1 (direction: removal)');
+    console.log(`W34_C3A before=${before.enforcedRatio} after=${after.enforcedRatio} removals=${after.measurement?.population?.removals?.length} deciding="${after.measurement?.errors?.[0]}"`);
+    fs.rmSync(baseRoot, { recursive: true, force: true });
+  });
+
+  it('C3b drops a protected ratchet reference when the candidate keeps the path but empties the file', () => {
+    const baseRoot = snapshotMeasurementBase();
+    write('tests/unit/widget.test.ts', '');
+    expect(fs.statSync(path.join(repo, 'tests/unit/widget.test.ts')).size).toBe(0);
+    const report = runJson({ STANDARDS_ENFORCEMENT_BASE_ROOT: baseRoot }) as {
+      byKind: Record<string, number>;
+      measurement?: { unverifiedReferences?: Array<{ ref: string; reason: string }> };
+    };
+
+    expect(report.byKind.ratchet).toBe(0);
+    expect(report.measurement?.unverifiedReferences).toContainEqual(expect.objectContaining({
+      ref: 'tests/unit/widget.test.ts',
+      reason: 'candidate-reference-empty',
+    }));
+    console.log(`W34_C3B landed=size-0 ratchet=${report.byKind.ratchet} deciding="candidate-reference-empty"`);
+    fs.rmSync(baseRoot, { recursive: true, force: true });
+  });
+
+  it('C3c does not count a new rule citing a new hollow reference as enforced', () => {
+    const baseRoot = snapshotMeasurementBase();
+    write('tests/unit/hollow.test.ts', '// prose saying this is a test, with no executable assertion\n');
+    fs.appendFileSync(
+      path.join(repo, 'docs', 'STANDARDS-REGISTRY.md'),
+      '\n### Hollow Addition\n**Rule.** r.\n**Applied through.** `tests/unit/hollow.test.ts`.\n',
+    );
+    expect(fs.readFileSync(path.join(repo, 'docs/STANDARDS-REGISTRY.md'), 'utf8')).toContain('### Hollow Addition');
+    expect(fs.readFileSync(path.join(repo, 'tests/unit/hollow.test.ts'), 'utf8')).not.toMatch(/\bit\s*\(/);
+    const report = runJson({ STANDARDS_ENFORCEMENT_BASE_ROOT: baseRoot }) as {
+      byKind: Record<string, number>;
+      measurement?: { unverifiedReferences?: Array<{ ref: string; reason: string }> };
+    };
+
+    expect(report.byKind.ratchet).toBe(1);
+    expect(report.measurement?.unverifiedReferences).toContainEqual(expect.objectContaining({
+      ref: 'tests/unit/hollow.test.ts',
+      reason: 'reference-not-in-protected-census',
+    }));
+    console.log(`W34_C3C landed=hollow-addition ratchet=${report.byKind.ratchet} deciding="reference-not-in-protected-census"`);
+    fs.rmSync(baseRoot, { recursive: true, force: true });
+  });
+
   it('FAILS the regressed family even while a dominant family keeps the aggregate above its floor', () => {
     write('docs/STANDARDS-REGISTRY.md', [
       '## Building',
@@ -448,6 +597,7 @@ describe('standards-coverage ratchet script', () => {
       '**Rule.** r.',
       '**Applied through.** `tests/unit/widget.test.ts`.',
     ].join('\n'));
+    writeFixtureEnforcementProof();
     refreshAreaAudits();
 
     const registryPath = path.join(repo, 'docs', 'STANDARDS-REGISTRY.md');
@@ -807,6 +957,7 @@ describe('standards-coverage ratchet script', () => {
       '- `tests/unit/widget.test.ts`.',
       '**Earned from.** `tests/unit/missing-provenance.test.ts`.',
     ].join('\n'));
+    writeFixtureEnforcementProof();
     refreshAreaAudits();
     expect(runCheck({ STANDARDS_ENFORCED_RATIO_FLOOR: '1' }).code).toBe(0);
 
@@ -832,7 +983,7 @@ describe('standards-coverage ratchet script', () => {
     expect(r.out).toContain('Mystery evidence');
   });
 
-  it('the self-contained CI parser stays classification-compatible with the library parser', () => {
+  it('keeps parser scope compatible while the protected measurement supersedes existence classification', () => {
     const realRoot = path.resolve(__dirname, '../..');
     const cli = JSON.parse(execFileSync('node', [SCRIPT, '--json'], {
       cwd: realRoot,
@@ -845,21 +996,14 @@ describe('standards-coverage ratchet script', () => {
     });
 
     expect(cli.total).toBe(library.summary.total);
-    expect(cli.byKind).toEqual(library.summary.byKind);
-    expect(cli.enforcedRatio).toBe(library.summary.enforcedRatio);
-    expect(cli.gaps).toEqual(library.summary.gaps);
     expect(cli.danglingCount).toBe(library.summary.danglingCount);
     expect(cli.enforcementScope).toEqual(library.summary.registry.enforcementScope);
-    expect(Object.fromEntries(Object.entries(cli.areas).map(([area, value]) => {
-      const measurement = value as { total: number; enforced: number; byKind: Record<string, number>; refResolutionRatio: number; gaps: string[] };
-      return [area, {
-        total: measurement.total,
-        enforced: measurement.enforced,
-        byKind: measurement.byKind,
-        refResolutionRatio: measurement.refResolutionRatio,
-        gaps: measurement.gaps,
-      }];
-    }))).toEqual(library.summary.areas);
+    expect(cli.measurement).toEqual(expect.objectContaining({
+      status: 'proven',
+      basis: expect.objectContaining({ candidateTreeMayRaiseStrength: false }),
+      population: expect.objectContaining({ protectedBase: 88, candidate: 88, continuity: 88 }),
+    }));
+    expect(cli.enforcedRatio).toBeLessThan(library.summary.enforcedRatio);
   });
 
   it('the live registry closes all six family audits and includes the singleton Root at 1/1', () => {
@@ -913,8 +1057,14 @@ describe('standards-coverage ratchet script', () => {
     // rather than being diluted. These are UPDATED, not relaxed: the count and ratio are re-derived
     // from the live registry, and the area-audit records below were refreshed by a review that
     // genuinely accepts, exactly as the comment above requires.
+    //
+    // 2026-08-18: the prior 0.6591 was structural credit: an assertion that merely executed could
+    // raise the numerator without observing the cited rule. Proven strength now requires protected,
+    // rule-bound relevance plus a landed violation that makes the same test fail by assertion. The
+    // protected baseline has no such ledger yet, so its honest value is 0/88; the legacy per-area
+    // floors remain visible separately and are not rewritten into evidence they never established.
     expect(report.total).toBe(88);
-    expect(report.enforcedRatio).toBe(0.7386);
+    expect(report.enforcedRatio).toBe(0);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',
     ]);
@@ -927,12 +1077,12 @@ describe('standards-coverage ratchet script', () => {
     expect(report.areaModelAudit.currentAreaSetSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(report.areas['The Root']).toEqual(expect.objectContaining({
       total: 1,
-      enforced: 1,
-      refResolutionRatio: 1,
+      enforced: 0,
+      refResolutionRatio: 0,
       refResolutionRatioFloor: 1,
       auditCurrent: true,
     }));
-    expect(report.areas['The Root'].byKind.ratchet).toBe(1);
+    expect(report.areas['The Root'].byKind['documented-only']).toBe(1);
   });
 
   it('the cadence workflow mutates only its bot-authored exact-marker issue', () => {
@@ -971,8 +1121,9 @@ describe('standards-coverage ratchet script', () => {
       '\n### Claims And Cites\n**Rule.** r.\n**In practice.** A scheduled coherence audit walks the list on every machine daily, enforced by `tests/unit/widget.test.ts`.\n',
     );
     refreshAreaAudits();
-    const r = runCheck({ STANDARDS_FALSE_CLAIM_CEILING: '0', STANDARDS_ENFORCED_RATIO_FLOOR: '0' });
-    expect(r.code).toBe(0);
+    const report = runJson() as { falseClaimCount: number; falseClaims: unknown[] };
+    expect(report.falseClaims).toEqual([]);
+    expect(report.falseClaimCount).toBe(0);
   });
 
   it('does NOT flag a PRESCRIPTIVE requirement (a rule, not a claim of fact)', () => {
@@ -1010,9 +1161,9 @@ describe('standards-coverage ratchet script', () => {
     expect(runCheck().code).toBe(0);
   });
 
-  it('fails closed on a missing full-checkout registry and requires an explicit partial-checkout opt-out', () => {
+  it('fails closed on a missing population even under the explicit partial-checkout mode', () => {
     fs.rmSync(path.join(repo, 'docs', 'STANDARDS-REGISTRY.md'));
     expect(runFullCheck().out).toContain('standards registry missing');
-    expect(runCheck({ STANDARDS_ENFORCED_RATIO_FLOOR: '1' }).code).toBe(0);
+    expect(runCheck({ STANDARDS_ENFORCED_RATIO_FLOOR: '1' }).code).toBe(1);
   });
 });

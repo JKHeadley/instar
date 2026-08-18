@@ -1,0 +1,33 @@
+{
+  "ts": "2026-08-18T14:10:11.297Z",
+  "slug": "w36-structured-test-observation",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 264,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lib/standards-enforcement-execution-verifier.mjs",
+      "scripts/lib/standards-enforcement-measurement.mjs",
+      "scripts/lib/standards-enforcement-node-test-runner.mjs"
+    ],
+    "addedLines": 204,
+    "deletedLines": 60
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/standards-enforcement-measurement.test.ts",
+      "howCaught": "The exact Node 25.6.1 control injects contradictory hash-prefixed and information-glyph renderer summaries; TestsStream still observes exactly one real clean, mutated, and confirmation test, vacuous controls remain NOT-PROVEN, and only structured ERR_ASSERTION reaches ratchet."
+    },
+    "component": "standards-enforcement-measurement"
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,33 @@
+{
+  "ts": "2026-08-18T13:10:04.501Z",
+  "slug": "w35-observed-enforcement-proof",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 723,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lib/standards-enforcement-execution-verifier.mjs",
+      "scripts/lib/standards-enforcement-measurement.mjs",
+      "scripts/standards-coverage.mjs"
+    ],
+    "addedLines": 690,
+    "deletedLines": 33
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/standards-enforcement-measurement.test.ts",
+      "howCaught": "C3A, C3B, and host-external-state C3C execute real protected mutations plus pristine confirmation; hollow claims remain NOT-PROVEN while only genuine assertion discrimination that resets cleanly promotes, and C3D proves inherited output pipes cannot defeat the UNKNOWN timeout."
+    },
+    "component": "standards-enforcement-measurement"
+  },
+  "verdict": "pass"
+}
