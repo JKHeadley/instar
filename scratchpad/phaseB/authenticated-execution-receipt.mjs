@@ -2,7 +2,9 @@ import crypto from 'node:crypto';
 import { MessageChannel, Worker, isMainThread, workerData } from 'node:worker_threads';
 
 const SCHEMA = 'phaseB-authenticated-execution-receipt/v1';
+const OBSERVER_EVENT_SCHEMA = 'phaseB-authenticated-observer-event/v1';
 const liveAuthenticatedReceipts = new WeakSet();
+const liveAuthenticatedObserverEvents = new WeakSet();
 
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -36,6 +38,9 @@ function normalizeObservation(authorityId, issuer, observation) {
     startedAt: String(observation.startedAt ?? ''),
     childExitedAt: String(observation.childExitedAt ?? ''),
     emittedAfterChildExit: observation.emittedAfterChildExit === true,
+    observerSession: String(observation.observerSession ?? ''),
+    observerEventSequence: Number.isSafeInteger(observation.observerEventSequence) ? observation.observerEventSequence : null,
+    observerEventSignatureHash: String(observation.observerEventSignatureHash ?? ''),
   };
 }
 
@@ -45,6 +50,7 @@ function startAuthorityWorker(port) {
   let issuer = null;
   const issued = new Map();
   const consumed = new Set();
+  const observers = new Map();
   const reply = (requestId, result, error = null) => port.postMessage({ requestId, result, error });
   port.on('message', (message) => {
     try {
@@ -59,10 +65,86 @@ function startAuthorityWorker(port) {
       }
       if (!key) throw new Error('receipt authority is unavailable');
       if (message?.type === 'issue') {
+        if (message.observation?.observerSession) {
+          const observer = observers.get(message.observation.observerSession);
+          const eventBound = observer
+            && observer.lastSequence === message.observation.observerEventSequence
+            && observer.observerPid === message.observation.observerPid
+            && observer.lastKind === message.observation.kind
+            && observer.lastSignatureHash === message.observation.observerEventSignatureHash;
+          if (!eventBound) throw new Error('receipt observation is not bound to the last authenticated observer event');
+        }
         const payload = normalizeObservation(authorityId, issuer, message.observation);
         const mac = crypto.createHmac('sha256', key).update(canonical(payload)).digest('hex');
         issued.set(payload.nonce, mac);
         reply(message.requestId, { ...payload, mac });
+        return;
+      }
+      if (message?.type === 'pin-observer') {
+        const event = message.event;
+        const expected = message.expected ?? {};
+        const payload = event && typeof event === 'object'
+          ? Object.fromEntries(Object.entries(event).filter(([field]) => field !== 'signature'))
+          : null;
+        const publicKey = typeof event?.publicKey === 'string'
+          ? crypto.createPublicKey({ key: Buffer.from(event.publicKey, 'base64'), format: 'der', type: 'spki' })
+          : null;
+        const signature = typeof event?.signature === 'string' ? Buffer.from(event.signature, 'base64') : Buffer.alloc(0);
+        const signatureValid = Boolean(payload && publicKey && signature.length > 0
+          && crypto.verify(null, Buffer.from(canonical(payload)), publicKey, signature));
+        const expectedValid = Object.entries(expected).every(([field, value]) => canonical(event?.[field]) === canonical(value));
+        const valid = Boolean(payload)
+          && event.eventSchema === OBSERVER_EVENT_SCHEMA
+          && event.source === 'fix-verifier-observer'
+          && event.kind === 'observer-ready'
+          && Number.isSafeInteger(event.sequence)
+          && event.sequence === 1
+          && typeof event.observerSession === 'string'
+          && event.observerSession.length > 0
+          && !observers.has(event.observerSession)
+          && signatureValid
+          && expectedValid;
+        if (valid) {
+          observers.set(event.observerSession, {
+            publicKey,
+            lastSequence: 1,
+            observerPid: event.observerPid,
+            guardId: event.guardId,
+            nodeEntry: event.nodeEntry,
+            lastKind: event.kind,
+            lastSignatureHash: crypto.createHash('sha256').update(event.signature).digest('hex'),
+          });
+        }
+        reply(message.requestId, { valid });
+        return;
+      }
+      if (message?.type === 'verify-observer-event') {
+        const event = message.event;
+        const expected = message.expected ?? {};
+        const state = observers.get(event?.observerSession);
+        const payload = event && typeof event === 'object'
+          ? Object.fromEntries(Object.entries(event).filter(([field]) => field !== 'signature'))
+          : null;
+        const signature = typeof event?.signature === 'string' ? Buffer.from(event.signature, 'base64') : Buffer.alloc(0);
+        const signatureValid = Boolean(payload && state && signature.length > 0
+          && crypto.verify(null, Buffer.from(canonical(payload)), state.publicKey, signature));
+        const expectedValid = Object.entries(expected).every(([field, value]) => canonical(event?.[field]) === canonical(value));
+        const valid = Boolean(payload && state)
+          && event.eventSchema === OBSERVER_EVENT_SCHEMA
+          && event.source === 'fix-verifier-observer'
+          && event.observerPid === state.observerPid
+          && event.guardId === state.guardId
+          && event.nodeEntry === state.nodeEntry
+          && Number.isSafeInteger(event.sequence)
+          && event.sequence === state.lastSequence + 1
+          && signatureValid
+          && expectedValid;
+        if (valid) {
+          state.lastSequence = event.sequence;
+          state.lastKind = event.kind;
+          state.lastSignatureHash = crypto.createHash('sha256').update(event.signature).digest('hex');
+        }
+        reply(message.requestId, { valid });
         return;
       }
       if (message?.type === 'verify') {
@@ -95,6 +177,7 @@ function startAuthorityWorker(port) {
         key = null;
         issued.clear();
         consumed.clear();
+        observers.clear();
         reply(message.requestId, { closed: true });
         port.close();
         return;
@@ -152,6 +235,26 @@ export async function createAuthenticatedReceiptAuthority({ issuer }) {
       if (closed) throw new Error('receipt authority is unavailable');
       return request('issue', { observation });
     },
+    async pinObserverEvent(event, expected = {}) {
+      if (closed) return false;
+      const result = await request('pin-observer', { event, expected });
+      if (result.valid && event && typeof event === 'object') {
+        if (Array.isArray(event.argv)) Object.freeze(event.argv);
+        Object.freeze(event);
+        liveAuthenticatedObserverEvents.add(event);
+      }
+      return result.valid;
+    },
+    async authenticateObserverEvent(event, expected = {}) {
+      if (closed) return false;
+      const result = await request('verify-observer-event', { event, expected });
+      if (result.valid && event && typeof event === 'object') {
+        if (Array.isArray(event.argv)) Object.freeze(event.argv);
+        Object.freeze(event);
+        liveAuthenticatedObserverEvents.add(event);
+      }
+      return result.valid;
+    },
     async authenticate(receipt, expected = {}) {
       if (closed) return false;
       const result = await request('verify', { receipt, expected });
@@ -177,4 +280,9 @@ export function isLiveAuthenticatedReceipt(receipt) {
   return Boolean(receipt && typeof receipt === 'object' && liveAuthenticatedReceipts.has(receipt));
 }
 
+export function isLiveAuthenticatedObserverEvent(event) {
+  return Boolean(event && typeof event === 'object' && liveAuthenticatedObserverEvents.has(event));
+}
+
 export const AUTHENTICATED_RECEIPT_SCHEMA = SCHEMA;
+export const AUTHENTICATED_OBSERVER_EVENT_SCHEMA = OBSERVER_EVENT_SCHEMA;

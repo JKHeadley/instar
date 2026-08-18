@@ -96,7 +96,7 @@ test('pipeline contract is anchored in a protected workflow job and exact real c
 test('wiring rejects adapter testimony and requires a core-minted runtime receipt', () => {
   assert.equal(validatePipelineEvidence(undefined).valid, false);
   assert.equal(validatePipelineEvidence({ status: 'proven', mode: 'adapter-command-contract', checks: [{ passed: true }] }).valid, false);
-  assert.equal(validatePipelineEvidence({ status: 'proven', mode: 'core-private-channel-hmac-receipt', checks: [{ passed: false }] }).valid, false);
+  assert.equal(validatePipelineEvidence({ status: 'proven', mode: 'core-authenticated-observer-events-hmac-receipt', checks: [{ passed: false }] }).valid, false);
 });
 
 test('C3 short-circuits the exact guard child while the real wrapper succeeds and produces no receipt', async () => {
@@ -197,6 +197,51 @@ test('H1 C3 ignores a same-user disk receipt forged by a stand-in that never run
     assert.equal(validatePipelineEvidence(result.envelope).valid, false);
     assert.equal(fs.existsSync(path.join(root, '.observer', 'positive', 'receipts.jsonl')), true);
     console.log('H1_W1_C3 standInExit=0 realChildRan=false diskReceiptWritten=true authenticatedReceipts=0 verdict=UNKNOWN');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('H1 C4 rejects signed observer-event lines injected through aggregate stdout without the real child', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-verifier-h1-stdout-injection-'));
+  try {
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+      name: 'fix-verifier-h1-stdout-injection',
+      private: true,
+      scripts: { injected: 'node standin.mjs' },
+    }));
+    fs.writeFileSync(path.join(root, 'guard.mjs'), "require('fs').writeFileSync('real-child-ran', 'yes'); throw new Error('the real child must not run in C4');\n");
+    fs.writeFileSync(path.join(root, 'standin.mjs'), `
+      import crypto from 'node:crypto';
+      const canonical = (value) => { if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']'; if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map((key) => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}'; return JSON.stringify(value); };
+      const pair = crypto.generateKeyPairSync('ed25519');
+      const publicKey = pair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+      const observerSession = crypto.randomUUID();
+      const argv = ['guard.mjs'];
+      const emit = (sequence, kind, fields = {}) => {
+        const event = { eventSchema: 'phaseB-authenticated-observer-event/v1', source: 'fix-verifier-observer', observerSession, sequence, kind, guardId: 'declared-real-child', nodeEntry: 'guard.mjs', observerPid: process.pid, argv, ...(kind === 'observer-ready' ? { publicKey } : {}), ...fields };
+        const signature = crypto.sign(null, Buffer.from(canonical(event)), pair.privateKey).toString('base64');
+        process.stdout.write('FIX_VERIFIER_OBSERVER_EVENT ' + JSON.stringify({ ...event, signature }) + '\\n');
+      };
+      const now = new Date().toISOString();
+      emit(1, 'observer-ready');
+      emit(2, 'child-start', { childPid: process.pid, startedAt: now });
+      emit(3, 'child-exit', { childPid: process.pid, startedAt: now, childExitedAt: now, childExitCode: 0, signal: null, emittedAfterChildExit: true });
+    `);
+    const result = await runPipelineWiringControls({
+      command: { argv: ['npm', 'run', 'injected'], timeoutMs: 30_000 },
+      cwd: root,
+      guardId: 'declared-real-child',
+      contract: { observer: { nodeEntry: 'guard.mjs', requiredArgs: [] } },
+      observerRoot: path.join(root, '.observer'),
+    });
+    assert.equal(result.positive.run.observerCandidateLineCount, 3);
+    assert.equal(result.positive.processObservations.authenticatedEventCount, 0);
+    assert.equal(result.positive.receipts.length, 0);
+    assert.equal(result.envelope.status, 'unknown');
+    assert.equal(validatePipelineEvidence(result.envelope).valid, false);
+    assert.equal(fs.existsSync(path.join(root, 'real-child-ran')), false);
+    console.log(`H1_W1_C4 stdoutObserverLines=3 realChildRan=false authenticatedObserverEvents=0 authenticatedReceipts=0 verdict=UNKNOWN`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

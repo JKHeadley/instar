@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { load as parseYaml } from 'js-yaml';
 import {
   createAuthenticatedReceiptAuthority,
+  isLiveAuthenticatedObserverEvent,
   isLiveAuthenticatedReceipt,
 } from './authenticated-execution-receipt.mjs';
 
@@ -168,6 +169,8 @@ function streamingSpawn(argv, options = {}, onObserverEvent = () => {}) {
     let stdout = '';
     let stderr = '';
     let stdoutLines = '';
+    let observerCandidateLineCount = 0;
+    let observerEventChain = Promise.resolve();
     let observerError = null;
     let timedOut = false;
     let settled = false;
@@ -194,9 +197,17 @@ function streamingSpawn(argv, options = {}, onObserverEvent = () => {}) {
         const line = stdoutLines.slice(0, newline);
         stdoutLines = stdoutLines.slice(newline + 1);
         if (!line.startsWith('FIX_VERIFIER_OBSERVER_EVENT ')) continue;
-        try { onObserverEvent(JSON.parse(line.slice('FIX_VERIFIER_OBSERVER_EVENT '.length)), child.pid); }
-        catch (error) {
-          observerError = error instanceof Error ? error.message : String(error);
+        observerCandidateLineCount += 1;
+        try {
+          const event = JSON.parse(line.slice('FIX_VERIFIER_OBSERVER_EVENT '.length));
+          observerEventChain = observerEventChain
+            .then(() => onObserverEvent(event, child.pid))
+            .catch((error) => {
+              observerError ??= error instanceof Error ? error.message : String(error);
+              try { child.kill('SIGTERM'); } catch {}
+            });
+        } catch (error) {
+          observerError ??= error instanceof Error ? error.message : String(error);
           try { child.kill('SIGTERM'); } catch {}
         }
       }
@@ -214,17 +225,19 @@ function streamingSpawn(argv, options = {}, onObserverEvent = () => {}) {
       try { child.kill('SIGTERM'); } catch {}
       setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 2_000).unref();
     }, options.timeoutMs ?? 30_000);
-    child.once('exit', (code, signal) => {
+    child.once('exit', async (code, signal) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
       consumeLines();
+      await observerEventChain;
       const combined = `${stdout}${stderr}`;
       resolve({
         argv, cwd: options.cwd, startedAt, endedAt: isoNow(), durationMs: Date.now() - startedMs,
         pid: child.pid, exitCode: typeof code === 'number' ? code : null, signal: signal ?? null,
         spawnError: null, timedOut, stdout: clip(stdout), stderr: clip(stderr),
         outputSha256: sha256(combined), observerError,
+        observerCandidateLineCount,
         exitProvenance: 'direct child status from spawn; shell=false; nested observer pids validated live with ps',
       });
     });
@@ -444,7 +457,7 @@ export function validatePipelineContract(contract, commandArgv, protectedWorkflo
 }
 
 function observerSource({ realNode, cwd, guardId, nodeEntry, requiredArgs, shortCircuit }) {
-  return `#!${realNode}\n`
+  return `import crypto from 'node:crypto';\n`
     + `import fs from 'node:fs';\n`
     + `import path from 'node:path';\n`
     + `import { spawn } from 'node:child_process';\n`
@@ -452,9 +465,14 @@ function observerSource({ realNode, cwd, guardId, nodeEntry, requiredArgs, short
     + `const cwd = ${JSON.stringify(cwd)};\n`
     + `const expected = ${JSON.stringify(path.resolve(cwd, nodeEntry))};\n`
     + `const required = ${JSON.stringify(requiredArgs)};\n`
+    + `const canonical = (value) => { if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']'; if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map((key) => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}'; return JSON.stringify(value); };\n`
+    + `const keyPair = crypto.generateKeyPairSync('ed25519');\n`
+    + `const publicKey = keyPair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');\n`
+    + `const observerSession = crypto.randomUUID();\n`
+    + `let sequence = 0;\n`
     + `const resolve = (value) => { try { return fs.realpathSync(path.resolve(cwd, value)); } catch { return path.resolve(cwd, value); } };\n`
     + `const target = argv.length > 0 && resolve(argv[0]) === resolve(expected) && required.every((item) => argv.includes(item));\n`
-    + `const emit = (kind, fields = {}) => process.stdout.write('FIX_VERIFIER_OBSERVER_EVENT ' + JSON.stringify({ source: 'fix-verifier-observer', kind, guardId: ${JSON.stringify(guardId)}, nodeEntry: ${JSON.stringify(nodeEntry)}, observerPid: process.pid, argv, ...fields }) + '\\n');\n`
+    + `const emit = (kind, fields = {}) => { const event = { eventSchema: 'phaseB-authenticated-observer-event/v1', source: 'fix-verifier-observer', observerSession, sequence: ++sequence, kind, guardId: ${JSON.stringify(guardId)}, nodeEntry: ${JSON.stringify(nodeEntry)}, observerPid: process.pid, argv, ...(kind === 'observer-ready' ? { publicKey } : {}), ...fields }; const signature = crypto.sign(null, Buffer.from(canonical(event)), keyPair.privateKey).toString('base64'); process.stdout.write('FIX_VERIFIER_OBSERVER_EVENT ' + JSON.stringify({ ...event, signature }) + '\\n'); };\n`
     + `if (target) {\n`
     + `  emit('observer-ready');\n`
     + `  process.kill(process.pid, 'SIGSTOP');\n`
@@ -487,14 +505,18 @@ async function runObservedPipelinePass({ command, cwd, guardId, contract, observ
   const root = path.join(observerRoot, label);
   fs.mkdirSync(root, { recursive: true });
   const wrapper = path.join(root, 'node');
-  fs.writeFileSync(wrapper, observerSource({
+  const observerProgram = path.join(root, 'authenticated-observer.mjs');
+  fs.writeFileSync(observerProgram, observerSource({
     realNode: process.execPath,
     cwd,
     guardId,
     nodeEntry: contract.observer.nodeEntry,
     requiredArgs: contract.observer.requiredArgs,
     shortCircuit,
-  }), { mode: 0o755 });
+  }), { mode: 0o600 });
+  fs.writeFileSync(wrapper,
+    `#!/bin/sh\nunset NODE_OPTIONS\nexec "${process.execPath}" "${observerProgram}" "$@"\n`,
+    { mode: 0o755 });
   const events = [];
   let observerReady = null;
   let validatedChildStart = null;
@@ -506,23 +528,37 @@ async function runObservedPipelinePass({ command, cwd, guardId, contract, observ
     cwd,
     timeoutMs: command.timeoutMs,
     env: { ...process.env, CI: '1', PATH: `${root}${path.delimiter}${process.env.PATH ?? ''}` },
-  }, (event, pipelinePid) => {
-    events.push(event);
+  }, async (event, pipelinePid) => {
     if (event?.source !== 'fix-verifier-observer' || event.guardId !== guardId || event.nodeEntry !== contract.observer.nodeEntry) {
       throw new Error('observer event identity is invalid');
     }
     if (event.kind === 'observer-ready') {
+      if (observerReady) throw new Error('duplicate observer-ready event is not allowed');
       const record = processRecord(event.observerPid);
       const argvValid = Array.isArray(event.argv)
         && event.argv.length > 0
         && (() => { try { return fs.realpathSync(path.resolve(cwd, event.argv[0])) === fs.realpathSync(expectedEntry); } catch { return false; } })()
         && contract.observer.requiredArgs.every((item) => event.argv.includes(item));
-      const valid = record?.command.includes(wrapper) && descendantOf(event.observerPid, pipelinePid) && argvValid;
-      observerReady = { event, valid, processRecord: record };
-      continueStopped(event.observerPid);
+      const valid = record?.command.includes(observerProgram) && descendantOf(event.observerPid, pipelinePid) && argvValid;
       if (!valid) throw new Error('observer-ready process identity was not the instrument wrapper in the pipeline descendant tree');
+      const authenticated = await authority.pinObserverEvent(event, {
+        kind: 'observer-ready', guardId, nodeEntry: contract.observer.nodeEntry, observerPid: event.observerPid,
+      });
+      if (!authenticated || !isLiveAuthenticatedObserverEvent(event)) throw new Error('observer-ready event was not authenticated by the private authority');
+      events.push(event);
+      observerReady = { event, valid, authenticated, processRecord: record };
+      continueStopped(event.observerPid);
       return;
     }
+    if (!observerReady?.authenticated) throw new Error('observer event arrived before an authenticated observer-ready event');
+    const authenticated = await authority.authenticateObserverEvent(event, {
+      guardId,
+      nodeEntry: contract.observer.nodeEntry,
+      observerPid: observerReady.event.observerPid,
+      observerSession: observerReady.event.observerSession,
+    });
+    if (!authenticated || !isLiveAuthenticatedObserverEvent(event)) throw new Error('observer event signature was not authenticated by the private authority');
+    events.push(event);
     if (event.kind === 'child-start') {
       const record = processRecord(event.childPid);
       const valid = observerReady?.valid === true
@@ -530,13 +566,21 @@ async function runObservedPipelinePass({ command, cwd, guardId, contract, observ
         && descendantOf(event.childPid, pipelinePid)
         && record.command.includes(contract.observer.nodeEntry)
         && Array.isArray(event.argv)
-        && event.argv.length > 0;
-      validatedChildStart = { event, valid, processRecord: record };
-      continueStopped(event.childPid);
+        && event.argv.length > 0
+        && JSON.stringify(event.argv) === JSON.stringify(observerReady.event.argv);
       if (!valid) throw new Error('observed child pid was not the exact declared descendant process');
+      validatedChildStart = { event, valid, authenticated, processRecord: record };
+      continueStopped(event.childPid);
       return;
     }
-    if (event.kind === 'child-exit') childExit = event;
+    if (event.kind === 'child-exit') {
+      if (!validatedChildStart?.authenticated
+          || event.childPid !== validatedChildStart.event.childPid
+          || JSON.stringify(event.argv) !== JSON.stringify(validatedChildStart.event.argv)) {
+        throw new Error('child-exit event was not bound to the authenticated child-start event');
+      }
+      childExit = event;
+    }
     if (event.kind === 'short-circuit') shortCircuitEvent = event;
   });
   const receipts = [];
@@ -550,6 +594,9 @@ async function runObservedPipelinePass({ command, cwd, guardId, contract, observ
       childPid: childExit.childPid, childExitCode: childExit.childExitCode, signal: childExit.signal,
       argv: childExit.argv, startedAt: childExit.startedAt, childExitedAt: childExit.childExitedAt,
       emittedAfterChildExit: true,
+      observerSession: childExit.observerSession,
+      observerEventSequence: childExit.sequence,
+      observerEventSignatureHash: sha256(childExit.signature),
     });
     if (await authority.authenticate(receipt, { guardId, kind: 'child-exit', childPid: childExit.childPid, childExitCode: 0 })) {
       receipts.push(receipt);
@@ -561,8 +608,11 @@ async function runObservedPipelinePass({ command, cwd, guardId, contract, observ
     const receipt = await authority.issue({
       guardId, kind: 'short-circuit', observerPid: shortCircuitEvent.observerPid,
       childPid: shortCircuitEvent.observerPid, childExitCode: 0, signal: null,
-      argv: [wrapper, ...shortCircuitEvent.argv], startedAt: shortCircuitEvent.shortCircuitedAt,
+      argv: [observerProgram, ...shortCircuitEvent.argv], startedAt: shortCircuitEvent.shortCircuitedAt,
       childExitedAt: run.endedAt, emittedAfterChildExit: true,
+      observerSession: shortCircuitEvent.observerSession,
+      observerEventSequence: shortCircuitEvent.sequence,
+      observerEventSignatureHash: sha256(shortCircuitEvent.signature),
     });
     if (await authority.authenticate(receipt, { guardId, kind: 'short-circuit', childPid: shortCircuitEvent.observerPid })) {
       shortCircuitReceipt = receipt;
@@ -570,11 +620,15 @@ async function runObservedPipelinePass({ command, cwd, guardId, contract, observ
   }
   return {
     run,
-    observer: { wrapper, nodeEntry: contract.observer.nodeEntry, requiredArgs: contract.observer.requiredArgs },
+    observer: { wrapper, observerProgram, nodeEntry: contract.observer.nodeEntry, requiredArgs: contract.observer.requiredArgs },
     receipts,
     shortCircuitEvents: shortCircuitEvent ? [shortCircuitEvent] : [],
     shortCircuitReceipt,
-    processObservations: { observerReady, validatedChildStart, childExit, eventCount: events.length },
+    processObservations: {
+      observerReady, validatedChildStart, childExit,
+      authenticatedEventCount: events.length,
+      stdoutCandidateEventLineCount: run.observerCandidateLineCount,
+    },
   };
 }
 
@@ -620,7 +674,7 @@ export async function runPipelineWiringControls({ command, cwd, guardId, contrac
     envelope: {
       source: 'fix-verifier-core',
       status,
-      mode: 'core-private-channel-hmac-receipt',
+      mode: 'core-authenticated-observer-events-hmac-receipt',
       authorityId: receipt?.authorityId ?? null,
       receipt,
       C3: {
@@ -634,7 +688,7 @@ export async function runPipelineWiringControls({ command, cwd, guardId, contrac
   };
 }
 
-const PIPELINE_MODES = new Set(['core-private-channel-hmac-receipt']);
+const PIPELINE_MODES = new Set(['core-authenticated-observer-events-hmac-receipt']);
 export function validatePipelineEvidence(evidence) {
   if (!evidence || typeof evidence !== 'object') return { valid: false, reason: 'pipeline evidence is not an object' };
   if (evidence.source !== 'fix-verifier-core' || evidence.status !== 'proven' || !PIPELINE_MODES.has(evidence.mode)) return { valid: false, reason: 'pipeline evidence is not a core-minted proven envelope' };
@@ -921,7 +975,7 @@ async function measure(args) {
         outcome: wiringOutcome,
         declaredEntryPoint: guard.pipelineEntryPoint,
         establishedBy: wired
-          ? 'the core authenticated the exact live manifest-pinned guard child after it exited through the protected workflow command; C3 wrapper success produced no guard receipt'
+          ? 'the core authenticated the signed, strictly sequenced observer events for the exact live manifest-pinned guard child, then bound the HMAC receipt to its signed exit event; C3 wrapper success produced no guard receipt'
           : 'no valid core-authenticated post-child receipt relationship was established',
         protectedBase: protectedBaseEvidence,
         contract: pipelineContractValidation,
