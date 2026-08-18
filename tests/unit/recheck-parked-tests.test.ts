@@ -47,11 +47,24 @@ type SyntheticRun = {
   verdict: string;
 };
 
+function copyProductionScript(dir: string): void {
+  fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+  fs.copyFileSync(SCRIPT, path.join(dir, 'scripts/recheck-parked-tests.mjs'));
+
+  // The production script uses the repository's destructive-filesystem funnel for temporary
+  // report cleanup. Synthetic repositories copy the exact compiled runtime dependencies rather
+  // than substituting a weaker cleanup implementation.
+  const distCore = path.join(dir, 'dist', 'core');
+  fs.mkdirSync(distCore, { recursive: true });
+  for (const file of ['SafeFsExecutor.js', 'SafeGitExecutor.js', 'SourceTreeGuard.js']) {
+    fs.copyFileSync(path.join(ROOT, 'dist', 'core', file), path.join(distCore, file));
+  }
+}
+
 function writeSyntheticRepo(mode: SyntheticMode, testBody: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recheck-outcome-'));
-  fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'tests'), { recursive: true });
-  fs.copyFileSync(SCRIPT, path.join(dir, 'scripts/recheck-parked-tests.mjs'));
+  copyProductionScript(dir);
   fs.writeFileSync(path.join(dir, 'vitest.push.config.ts'), [
     'const FLAKY_TESTS = [',
     "  'tests/outcome.test.ts',",
@@ -176,8 +189,7 @@ describe('parked-test re-check', () => {
         "  'tests/unit/beta.test.ts',",
         '];',
       ].join('\n'));
-      fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
-      fs.copyFileSync(SCRIPT, path.join(dir, 'scripts/recheck-parked-tests.mjs'));
+      copyProductionScript(dir);
 
       const res = spawnSync(process.execPath, ['scripts/recheck-parked-tests.mjs', '--missing-only', '--json'], {
         cwd: dir, encoding: 'utf-8', timeout: 60_000,

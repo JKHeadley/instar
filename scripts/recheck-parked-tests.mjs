@@ -54,6 +54,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { SafeFsExecutor } from '../dist/core/SafeFsExecutor.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG = path.join(ROOT, 'vitest.push.config.ts');
@@ -118,6 +119,12 @@ function runResult(outcome, reason, status, structured = null) {
   };
 }
 
+/**
+ * Classify only completed machine-readable evidence. Human reporter text is operator context,
+ * never verdict input; an absent, malformed, or internally inconsistent report stays unknown.
+ * This distinction improves the signal only — the script's unconditional exit-zero contract
+ * remains the authority boundary.
+ */
 function classifyStructuredResult(raw, status) {
   let report;
   try {
@@ -195,7 +202,11 @@ function runOnce(file) {
     }
     return classifyStructuredResult(raw, res.status);
   } finally {
-    fs.rmSync(reportDir, { recursive: true, force: true });
+    SafeFsExecutor.safeRmSync(reportDir, {
+      recursive: true,
+      force: true,
+      operation: 'scripts/recheck-parked-tests.mjs:structured-report-cleanup',
+    });
   }
 }
 
