@@ -13,6 +13,7 @@ import {
   validateRelevanceEvidence,
   validatePipelineEvidence,
   runPipelineWiringControls,
+  sameRealFile,
 } from './fix-verifier.mjs';
 
 function evidence(overrides = {}) {
@@ -93,6 +94,18 @@ test('pipeline contract is anchored in a protected workflow job and exact real c
   assert.equal(validatePipelineContract(contract, ['npm', 'run', 'lint'], 'jobs:\n  lint:\n    steps:\n      - run: npm run test\n').valid, false);
 });
 
+test('declared-entry realpath equality refuses every resolution failure', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-verifier-w4-resolution-failure-'));
+  try {
+    fs.writeFileSync(path.join(root, 'present.mjs'), 'export {};\n');
+    assert.equal(sameRealFile('missing.mjs', 'missing.mjs', root), false);
+    assert.equal(sameRealFile('present.mjs', 'missing.mjs', root), false);
+    assert.equal(sameRealFile('', 'present.mjs', root), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('wiring rejects adapter testimony and requires a core-minted runtime receipt', () => {
   assert.equal(validatePipelineEvidence(undefined).valid, false);
   assert.equal(validatePipelineEvidence({ status: 'proven', mode: 'adapter-command-contract', checks: [{ passed: true }] }).valid, false);
@@ -128,6 +141,78 @@ test('C3 short-circuits the exact guard child while the real wrapper succeeds an
     assert.equal(result.C3.outcome, 'proven');
     assert.equal(result.envelope.status, 'proven');
     assert.equal(validatePipelineEvidence(result.envelope).valid, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('W4 positive accepts shim and module spellings only when they resolve to the same real entry', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-verifier-w4-same-entry-'));
+  try {
+    const binDir = path.join(root, 'node_modules', '.bin');
+    const moduleDir = path.join(root, 'node_modules', 'vitest');
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.mkdirSync(moduleDir, { recursive: true });
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+      name: 'fix-verifier-w4-same-entry',
+      private: true,
+      scripts: { wired: 'node node_modules/.bin/vitest' },
+    }));
+    fs.writeFileSync(path.join(moduleDir, 'vitest.mjs'), "console.log('[w4-positive] real module ran');\n");
+    fs.symlinkSync('../vitest/vitest.mjs', path.join(binDir, 'vitest'));
+
+    const result = await runPipelineWiringControls({
+      command: { argv: ['npm', 'run', 'wired'], timeoutMs: 30_000 },
+      cwd: root,
+      guardId: 'w4-same-real-entry',
+      contract: { observer: { nodeEntry: 'node_modules/vitest/vitest.mjs', requiredArgs: [] } },
+      observerRoot: path.join(root, '.observer'),
+    });
+
+    assert.equal(fs.realpathSync(path.join(binDir, 'vitest')), fs.realpathSync(path.join(moduleDir, 'vitest.mjs')));
+    assert.equal(result.positive.run.exitCode, 0);
+    assert.equal(result.positive.receipts.length, 1);
+    assert.equal(result.C3.outcome, 'proven');
+    assert.equal(result.envelope.status, 'proven');
+    console.log('W4_POSITIVE shimRealPathEqualsModule=true authenticatedReceipts=1 verdict=PROVEN');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('W4 negative refuses a shim to a same-named real file in another directory', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-verifier-w4-wrong-entry-'));
+  try {
+    const binDir = path.join(root, 'node_modules', '.bin');
+    const declaredDir = path.join(root, 'node_modules', 'vitest');
+    const wrongDir = path.join(root, 'node_modules', 'other');
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.mkdirSync(declaredDir, { recursive: true });
+    fs.mkdirSync(wrongDir, { recursive: true });
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+      name: 'fix-verifier-w4-wrong-entry',
+      private: true,
+      scripts: { wired: 'node node_modules/.bin/vitest' },
+    }));
+    fs.writeFileSync(path.join(declaredDir, 'vitest.mjs'), "throw new Error('declared entry must not run');\n");
+    fs.writeFileSync(path.join(wrongDir, 'vitest.mjs'), "console.log('[w4-negative] wrong same-named module ran');\n");
+    fs.symlinkSync('../other/vitest.mjs', path.join(binDir, 'vitest'));
+
+    const result = await runPipelineWiringControls({
+      command: { argv: ['npm', 'run', 'wired'], timeoutMs: 30_000 },
+      cwd: root,
+      guardId: 'w4-wrong-real-entry',
+      contract: { observer: { nodeEntry: 'node_modules/vitest/vitest.mjs', requiredArgs: [] } },
+      observerRoot: path.join(root, '.observer'),
+    });
+
+    assert.notEqual(fs.realpathSync(path.join(binDir, 'vitest')), fs.realpathSync(path.join(declaredDir, 'vitest.mjs')));
+    assert.equal(result.positive.run.exitCode, 0);
+    assert.equal(result.positive.receipts.length, 0);
+    assert.equal(result.C3.shortCircuitEvents.length, 0);
+    assert.equal(result.envelope.status, 'unknown');
+    assert.equal(validatePipelineEvidence(result.envelope).valid, false);
+    console.log('W4_NEGATIVE symlinkTargetsDifferentSameNamedFile=true authenticatedReceipts=0 verdict=UNKNOWN');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

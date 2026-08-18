@@ -403,6 +403,17 @@ function safeRelativeFile(value) {
   return typeof value === 'string' && value.length > 0 && !path.isAbsolute(value) && !value.split('/').includes('..');
 }
 
+export function sameRealFile(left, right, cwd = process.cwd()) {
+  if (typeof left !== 'string' || left.length === 0 || typeof right !== 'string' || right.length === 0) return false;
+  try {
+    const leftRealPath = fs.realpathSync(path.resolve(cwd, left));
+    const rightRealPath = fs.realpathSync(path.resolve(cwd, right));
+    return leftRealPath === rightRealPath;
+  } catch {
+    return false;
+  }
+}
+
 export function validatePipelineContract(contract, commandArgv, protectedWorkflowText) {
   const problems = [];
   if (!contract || typeof contract !== 'object' || Array.isArray(contract)) {
@@ -470,8 +481,10 @@ function observerSource({ realNode, cwd, guardId, nodeEntry, requiredArgs, short
     + `const publicKey = keyPair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');\n`
     + `const observerSession = crypto.randomUUID();\n`
     + `let sequence = 0;\n`
-    + `const resolve = (value) => { try { return fs.realpathSync(path.resolve(cwd, value)); } catch { return path.resolve(cwd, value); } };\n`
-    + `const target = argv.length > 0 && resolve(argv[0]) === resolve(expected) && required.every((item) => argv.includes(item));\n`
+    + `const resolveReal = (value) => { try { return fs.realpathSync(path.resolve(cwd, value)); } catch { return null; } };\n`
+    + `const observedReal = argv.length > 0 ? resolveReal(argv[0]) : null;\n`
+    + `const expectedReal = resolveReal(expected);\n`
+    + `const target = observedReal !== null && expectedReal !== null && observedReal === expectedReal && required.every((item) => argv.includes(item));\n`
     + `const emit = (kind, fields = {}) => { const event = { eventSchema: 'phaseB-authenticated-observer-event/v1', source: 'fix-verifier-observer', observerSession, sequence: ++sequence, kind, guardId: ${JSON.stringify(guardId)}, nodeEntry: ${JSON.stringify(nodeEntry)}, observerPid: process.pid, argv, ...(kind === 'observer-ready' ? { publicKey } : {}), ...fields }; const signature = crypto.sign(null, Buffer.from(canonical(event)), keyPair.privateKey).toString('base64'); process.stdout.write('FIX_VERIFIER_OBSERVER_EVENT ' + JSON.stringify({ ...event, signature }) + '\\n'); };\n`
     + `if (target) {\n`
     + `  emit('observer-ready');\n`
@@ -537,7 +550,7 @@ async function runObservedPipelinePass({ command, cwd, guardId, contract, observ
       const record = processRecord(event.observerPid);
       const argvValid = Array.isArray(event.argv)
         && event.argv.length > 0
-        && (() => { try { return fs.realpathSync(path.resolve(cwd, event.argv[0])) === fs.realpathSync(expectedEntry); } catch { return false; } })()
+        && sameRealFile(event.argv[0], expectedEntry, cwd)
         && contract.observer.requiredArgs.every((item) => event.argv.includes(item));
       const valid = record?.command.includes(observerProgram) && descendantOf(event.observerPid, pipelinePid) && argvValid;
       if (!valid) throw new Error('observer-ready process identity was not the instrument wrapper in the pipeline descendant tree');
@@ -564,9 +577,9 @@ async function runObservedPipelinePass({ command, cwd, guardId, contract, observ
       const valid = observerReady?.valid === true
         && record?.ppid === event.observerPid
         && descendantOf(event.childPid, pipelinePid)
-        && record.command.includes(contract.observer.nodeEntry)
         && Array.isArray(event.argv)
         && event.argv.length > 0
+        && sameRealFile(event.argv[0], expectedEntry, cwd)
         && JSON.stringify(event.argv) === JSON.stringify(observerReady.event.argv);
       if (!valid) throw new Error('observed child pid was not the exact declared descendant process');
       validatedChildStart = { event, valid, authenticated, processRecord: record };
