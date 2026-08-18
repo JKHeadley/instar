@@ -486,3 +486,29 @@ full guard suite: Test Files 1 passed (1); Tests 13 passed (13)
 
 The non-gating `better-sqlite3` notice remained unrelated and explicitly said
 nothing was blocked or skipped because of it.
+
+## 2026-08-18 07:12:35 -0700 (PDT) — F4 authenticated wiring result
+
+F4 measured clean committed target
+`e64e3a2497d59a4d3aec0f8eb4e04589e4912f58` with the current W4-R
+regular-file instrument SHA-256
+`c9fab8034effc8f64c525073f85c7c04c1fd5cca9c0b2324203632ea34145b3a`.
+Protected main remained
+`248ed7177f5bf416aa7bdad9763741478195e1fc`, and target porcelain was
+unchanged by measurement.
+
+The real protected-workflow lint exited 0. Its observer authenticated the
+ordered ready, child-start, and child-exit events for the declared regular-file
+entry and minted exactly one post-child receipt. The C3 wrapper authenticated
+its own short-circuit event, exited 0, and minted zero guard-execution receipts.
+The verdict line, verbatim, was:
+
+```text
+[fix-verifier-wiring] authenticated guard=checker-blind-input-coverage entry=scripts/lint-checker-blind-input-coverage.mjs childPid=27613 childExit=0
+```
+
+After verdict: wiring **PROVEN**, wiring-only rung **WIRED**.
+
+Evidence:
+`scratchpad/phaseB/evidence/F4-checker-blind-input-coverage.json`, SHA-256
+`9e4c5b82810b06792fafe3d1b85fe0a0a86d49b1ba110ba8841ee4a3fcbb9627`.
