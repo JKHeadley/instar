@@ -7,8 +7,8 @@
 ```text
 branch: phaseb/w38-live-artifact-closure
 base:   60642c7ea9986eda24027d31071487a6e93eca8d (phaseb/w37-authenticated-structured-observation)
-implementation commit: pending first commit
-pull request: pending
+implementation commit: 4af2e56e944fe0c0b918590d0c0540fedf2913ae
+pull request: https://github.com/JKHeadley/instar/pull/1939
 ```
 
 ## What changed
@@ -96,12 +96,13 @@ This is a read and a record only. W3.8 does not make or imply the merge decision
 Node 25.6.1 measurement: 19/19 passed
 Node 22.18.0 measurement: 19/19 passed
 affected standards-coverage ratchet: 38/38 passed
+required pre-push affected set: 57/57 passed (2 files, 608.95s)
 node --check (three changed .mjs files): exit 0
 tsc --noEmit: exit 0
 git diff --check: exit 0
 ```
 
-The full measurement runs retained W35 C3a/C3b/C3c/C3d, W37 C2, W36 C1, and W37 C1. The affected coverage suite exercised its real subprocess fixtures for 520.78 seconds and printed `test-stand-in` or `unavailable`, never operational, for noncanonical/missing state.
+The full measurement runs retained W35 C3a/C3b/C3c/C3d, W37 C2, W36 C1, and W37 C1. The affected coverage suite exercised its real subprocess fixtures for 520.78 seconds and printed `test-stand-in` or `unavailable`, never operational, for noncanonical/missing state. The non-force push gate independently reran both affected files as 57 tests and pushed only after all 57 passed.
 
 The sandboxed first targeted Vitest invocation failed before assertion because Vite could not create its transient bundled-config file inside the agent-home worktree. The identical permitted invocation then ran; this is recorded as setup failure, not test evidence. The native `better-sqlite3` notice is unrelated and non-blocking for these files; no SQLite-backed assertion ran. No dependency install or rebuild was performed.
 
