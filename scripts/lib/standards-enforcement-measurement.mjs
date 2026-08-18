@@ -7,6 +7,7 @@ import ts from 'typescript';
 import {
   isLiveAuthenticatedExecutionArtifact,
   STANDARDS_EXECUTION_RUNNER,
+  STANDARDS_EXECUTION_RUNNER_REF,
   verifyProtectedExecutionProof,
 } from './standards-enforcement-execution-verifier.mjs';
 
@@ -162,6 +163,59 @@ export function resolveProtectedMeasurementSnapshot({ root, fixtureRoot = null }
       return git(root, ['grep', '-q', '-w', '--fixed-strings', marker, baseRevision, '--', 'src']) !== null;
     },
   };
+}
+
+export function describeProtectedExecutionAuthority(snapshot) {
+  const canonicalSnapshot = snapshot?.source === 'canonical-server-content-addressed-merge-base';
+  let runnerContent = null;
+  let verdictLedgerContent = null;
+  let runnerPresentInSnapshot = false;
+  let verdictLedgerPresentInSnapshot = false;
+  let runnerDigestBoundByVerdictLedger = false;
+  try {
+    runnerContent = snapshot?.readFile?.(STANDARDS_EXECUTION_RUNNER_REF) ?? null;
+    verdictLedgerContent = snapshot?.readFile?.(PROTECTED_VERDICTS_PATH) ?? null;
+    runnerPresentInSnapshot = typeof runnerContent === 'string';
+    verdictLedgerPresentInSnapshot = typeof verdictLedgerContent === 'string';
+    if (runnerPresentInSnapshot && verdictLedgerPresentInSnapshot) {
+      const ledger = JSON.parse(verdictLedgerContent);
+      const runnerSha256 = sha256(runnerContent);
+      runnerDigestBoundByVerdictLedger = Boolean(
+        exactKeys(ledger, ['schemaVersion', 'records']) &&
+        ledger.schemaVersion === PROTECTED_VERDICT_SCHEMA_VERSION &&
+        Array.isArray(ledger.records) &&
+        ledger.records.some((record, index) =>
+          validProofRecord(record, index) === null &&
+          record.proof.execution.runnerSha256 === runnerSha256)
+      );
+    }
+  } catch {
+    runnerDigestBoundByVerdictLedger = false;
+  }
+  const operationalOnCanonicalMain = canonicalSnapshot && runnerPresentInSnapshot && runnerDigestBoundByVerdictLedger;
+  const mode = operationalOnCanonicalMain ? 'operational' : canonicalSnapshot ? 'prospective' : 'test-stand-in';
+  const requiredCanonicalAdmissions = operationalOnCanonicalMain
+    ? []
+    : canonicalSnapshot
+      ? [
+          ...(!runnerPresentInSnapshot ? [STANDARDS_EXECUTION_RUNNER_REF] : []),
+          ...(!runnerDigestBoundByVerdictLedger ? [`${PROTECTED_VERDICTS_PATH} with a schema-v3 record binding the admitted runner's exact SHA-256`] : []),
+        ]
+      : [STANDARDS_EXECUTION_RUNNER_REF, `${PROTECTED_VERDICTS_PATH} with a schema-v3 record binding the admitted runner's exact SHA-256`];
+  const statement = operationalOnCanonicalMain
+    ? 'Protected execution authority is operational: canonical main supplies both the runner bytes and schema-v3 verdict ledger.'
+    : mode === 'prospective'
+      ? `Protected execution authority is NOT operational on canonical main; admit ${requiredCanonicalAdmissions.join(' and ')} before claiming protected digest authority.`
+      : `This explicit test fixture is a stand-in only; protection is NOT operational authority on canonical main until ${STANDARDS_EXECUTION_RUNNER_REF} and ${PROTECTED_VERDICTS_PATH} are admitted there.`;
+  return Object.freeze({
+    mode,
+    operationalOnCanonicalMain,
+    runnerPresentInSnapshot,
+    verdictLedgerPresentInSnapshot,
+    runnerDigestBoundByVerdictLedger,
+    requiredCanonicalAdmissions: Object.freeze(requiredCanonicalAdmissions),
+    statement,
+  });
 }
 
 export function routeTableFromSnapshot(snapshot) {
@@ -580,6 +634,7 @@ export async function measureAnchoredEnforcement({
       protectedMainSha: snapshot.protectedMainSha,
       baseRevision: snapshot.baseRevision,
       candidateTreeMayRaiseStrength: false,
+      executionAuthority: describeProtectedExecutionAuthority(snapshot),
     },
     population: {
       protectedBase: protectedById.size,

@@ -5,11 +5,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  describeProtectedExecutionAuthority,
   gradeFileReference,
   measureAnchoredEnforcement,
   resolveProtectedMeasurementSnapshot,
 } from '../../scripts/lib/standards-enforcement-measurement.mjs';
-import { verifyProtectedExecutionProof } from '../../scripts/lib/standards-enforcement-execution-verifier.mjs';
+import {
+  __testing as executionVerifierTesting,
+  isLiveAuthenticatedExecutionArtifact,
+  verifyProtectedExecutionProof,
+} from '../../scripts/lib/standards-enforcement-execution-verifier.mjs';
 
 const roots: string[] = [];
 const makeRoot = (): string => {
@@ -23,6 +28,32 @@ const write = (root: string, rel: string, content: string): void => {
   fs.writeFileSync(full, content);
 };
 const digest = (value: string): string => crypto.createHash('sha256').update(value).digest('hex');
+const canonical = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+};
+const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
+  if (value === null || typeof value !== 'object' || seen.has(value)) return value;
+  seen.add(value);
+  for (const key of Reflect.ownKeys(value)) deepFreeze((value as Record<PropertyKey, unknown>)[key], seen);
+  return Object.freeze(value);
+};
+const isDeepFrozen = (value: unknown, seen = new WeakSet<object>()): boolean => {
+  if (value === null || typeof value !== 'object' || seen.has(value)) return true;
+  if (!Object.isFrozen(value)) return false;
+  seen.add(value);
+  return Reflect.ownKeys(value).every((key) =>
+    isDeepFrozen((value as Record<PropertyKey, unknown>)[key], seen));
+};
+const readdressAndFreeze = <T extends { artifactSha256: string }>(artifact: T): T => {
+  const { artifactSha256: _oldAddress, ...payload } = artifact;
+  artifact.artifactSha256 = digest(canonical(payload));
+  return deepFreeze(artifact);
+};
 const RUNNER_REF = 'scripts/lib/standards-enforcement-node-test-runner.mjs';
 const TRUSTED_RUNNER_SHA256 = '04795f8857d8bb08ccf7c0a18103b7233ef644b395ac9bd576d9726e98da57f2';
 const trustedRunnerContent = fs.readFileSync(path.resolve(RUNNER_REF), 'utf8');
@@ -85,6 +116,32 @@ const certifiedRecord = (
   },
   });
 };
+
+async function genuineObservedArtifact() {
+  const base = makeRoot();
+  const ref = 'tests/unit/w38-artifact.test.mjs';
+  const subjectRef = 'src/w38-artifact-subject.mjs';
+  const subjectContent = 'export const guarded = true;\n';
+  const content = [
+    "import assert from 'node:assert/strict';",
+    "import test from 'node:test';",
+    "import { guarded } from '../../src/w38-artifact-subject.mjs';",
+    "test('observes subject', () => assert.equal(guarded, true));",
+    '',
+  ].join('\n');
+  const protectedArticle = article('rule-w38', [ref]);
+  const record = certifiedRecord(base, protectedArticle, ref, content, subjectRef, subjectContent);
+  write(base, ref, content);
+  write(base, subjectRef, subjectContent);
+
+  const observed = await verifyProtectedExecutionProof({
+    record,
+    snapshot: resolveProtectedMeasurementSnapshot({ root: base, fixtureRoot: base }),
+  });
+  expect(observed.status).toBe('proven');
+  expect(observed.artifact).not.toBeNull();
+  return observed.artifact!;
+}
 
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
@@ -444,6 +501,144 @@ describe('protected standards enforcement measurement', () => {
     });
     expect(fs.existsSync(markerPath)).toBe(false);
     console.log(`W37_C2 expectedRunnerSha256=${TRUSTED_RUNNER_SHA256} actualRunnerSha256=${forgedRunnerSha256} runnerExecuted=false summarySchema=standards-enforcement-node-test-events/v1 outcome=UNKNOWN artifact=null deciding="protected structured test runner digest mismatch"`);
+  });
+
+  it('W38_C4 blocks mutation of copied observation fields before reusable validation', async () => {
+    const artifact = await genuineObservedArtifact();
+    const originalTestsRun = artifact.clean.testsRun;
+    let mutationBlocked = false;
+    try {
+      artifact.clean.testsRun = 999;
+    } catch (error) {
+      mutationBlocked = error instanceof TypeError;
+    }
+    const liveAfterMutationAttempt = isLiveAuthenticatedExecutionArtifact(artifact);
+
+    console.log(`W38_C4 mutationBlocked=${mutationBlocked} originalTestsRun=${originalTestsRun} currentTestsRun=${artifact.clean.testsRun} predicate=${liveAfterMutationAttempt}`);
+    expect(mutationBlocked).toBe(true);
+    expect(artifact.clean.testsRun).toBe(originalTestsRun);
+    expect(isDeepFrozen(artifact)).toBe(true);
+    expect(liveAfterMutationAttempt).toBe(true);
+  });
+
+  it('W38_C5 rejects every re-addressed copied-observation tamper', async () => {
+    const artifact = await genuineObservedArtifact();
+    expect(executionVerifierTesting.artifactContentIsInternallyConsistent(artifact)).toBe(true);
+
+    const tamperCases: Array<[string, (copy: any) => void]> = [];
+    for (const runName of ['clean', 'mutated', 'confirmation'] as const) {
+      tamperCases.push(
+        [`${runName}.testsRun`, (copy) => { copy[runName].testsRun += 1; }],
+        [`${runName}.passed`, (copy) => { copy[runName].passed += 1; }],
+        [`${runName}.failed`, (copy) => { copy[runName].failed += 1; }],
+        [`${runName}.assertionFailures`, (copy) => { copy[runName].assertionFailures += 1; }],
+        [`${runName}.decidingOutput`, (copy) => { copy[runName].decidingOutput = 'forged classification'; }],
+      );
+    }
+
+    for (const [label, tamper] of tamperCases) {
+      const copy = structuredClone(artifact);
+      tamper(copy);
+      readdressAndFreeze(copy);
+      expect(
+        executionVerifierTesting.artifactContentIsInternallyConsistent(copy),
+        `${label} must remain linked to the signed observation even after re-addressing`,
+      ).toBe(false);
+      expect(isLiveAuthenticatedExecutionArtifact(copy)).toBe(false);
+    }
+
+    const wrongAddress = structuredClone(artifact);
+    wrongAddress.artifactSha256 = '0'.repeat(64);
+    deepFreeze(wrongAddress);
+    expect(executionVerifierTesting.artifactContentIsInternallyConsistent(wrongAddress)).toBe(false);
+    expect(isLiveAuthenticatedExecutionArtifact(wrongAddress)).toBe(false);
+    console.log(`W38_C5 copiedObservationTampers=${tamperCases.length} readdressed=true allRejected=true wrongContentAddressRejected=true`);
+  });
+
+  it('W38_C6 labels fixtures as stand-ins and requires both canonical admissions', () => {
+    const snapshot = (source: string, files: Record<string, string>) => ({
+      source,
+      readFile: (ref: string) => files[ref] ?? null,
+    });
+    const runnerRef = 'scripts/lib/standards-enforcement-node-test-runner.mjs';
+    const ledgerRef = 'docs/standards-enforcement-verdicts.json';
+    const runnerContent = 'protected runner bytes';
+    const boundRecord = {
+      articleId: 'rule-w38-authority',
+      articleSha256: digest('fixture article'),
+      ref: 'tests/unit/w38-authority.test.mjs',
+      sha256: digest('fixture observer'),
+      verdict: 'EFFECTIVE',
+      proof: {
+        schemaVersion: 2,
+        execution: {
+          runner: 'node-test-events-v1',
+          runnerSha256: digest(runnerContent),
+          argv: ['node', runnerRef, 'tests/unit/w38-authority.test.mjs'],
+          workspaceRefs: ['src/w38-authority-subject.mjs', 'tests/unit/w38-authority.test.mjs'],
+        },
+        relevance: {
+          articleId: 'rule-w38-authority',
+          ruleSha256: digest('fixture rule'),
+          observerRef: 'tests/unit/w38-authority.test.mjs',
+          observerSha256: digest('fixture observer'),
+          subjectRef: 'src/w38-authority-subject.mjs',
+          subjectBeforeSha256: digest('before'),
+        },
+        mutation: {
+          mutationId: 'violate-w38-authority',
+          subjectRef: 'src/w38-authority-subject.mjs',
+          search: 'true',
+          replacement: 'false',
+          subjectAfterSha256: digest('after'),
+        },
+      },
+    };
+    const boundLedger = JSON.stringify({
+      schemaVersion: 3,
+      records: [boundRecord],
+    });
+    const mismatchedLedger = JSON.stringify({
+      schemaVersion: 3,
+      records: [{
+        ...boundRecord,
+        proof: {
+          ...boundRecord.proof,
+          execution: { ...boundRecord.proof.execution, runnerSha256: digest('other runner') },
+        },
+      }],
+    });
+
+    const standIn = describeProtectedExecutionAuthority(snapshot('explicit-test-fixture', { [runnerRef]: runnerContent, [ledgerRef]: boundLedger }));
+    const neither = describeProtectedExecutionAuthority(snapshot('canonical-server-content-addressed-merge-base', {}));
+    const runnerOnly = describeProtectedExecutionAuthority(snapshot('canonical-server-content-addressed-merge-base', { [runnerRef]: runnerContent }));
+    const ledgerOnly = describeProtectedExecutionAuthority(snapshot('canonical-server-content-addressed-merge-base', { [ledgerRef]: boundLedger }));
+    const emptyLedger = describeProtectedExecutionAuthority(snapshot('canonical-server-content-addressed-merge-base', {
+      [runnerRef]: runnerContent,
+      [ledgerRef]: JSON.stringify({ schemaVersion: 3, records: [] }),
+    }));
+    const mismatched = describeProtectedExecutionAuthority(snapshot('canonical-server-content-addressed-merge-base', {
+      [runnerRef]: runnerContent,
+      [ledgerRef]: mismatchedLedger,
+    }));
+    const both = describeProtectedExecutionAuthority(snapshot('canonical-server-content-addressed-merge-base', { [runnerRef]: runnerContent, [ledgerRef]: boundLedger }));
+
+    expect(standIn).toEqual(expect.objectContaining({ mode: 'test-stand-in', operationalOnCanonicalMain: false }));
+    expect(standIn.statement).toContain('stand-in only');
+    expect(neither).toEqual(expect.objectContaining({ mode: 'prospective', operationalOnCanonicalMain: false }));
+    expect(neither.requiredCanonicalAdmissions[0]).toBe(runnerRef);
+    expect(neither.requiredCanonicalAdmissions[1]).toContain(ledgerRef);
+    expect(runnerOnly.requiredCanonicalAdmissions).toHaveLength(1);
+    expect(runnerOnly.requiredCanonicalAdmissions[0]).toContain(ledgerRef);
+    expect(ledgerOnly.requiredCanonicalAdmissions[0]).toBe(runnerRef);
+    expect(ledgerOnly.requiredCanonicalAdmissions[1]).toContain(ledgerRef);
+    expect(emptyLedger).toEqual(expect.objectContaining({ mode: 'prospective', runnerDigestBoundByVerdictLedger: false }));
+    expect(emptyLedger.requiredCanonicalAdmissions[0]).toContain('schema-v3 record');
+    expect(mismatched).toEqual(expect.objectContaining({ mode: 'prospective', runnerDigestBoundByVerdictLedger: false }));
+    expect(both).toEqual(expect.objectContaining({ mode: 'operational', operationalOnCanonicalMain: true }));
+    expect(both.runnerDigestBoundByVerdictLedger).toBe(true);
+    expect(both.requiredCanonicalAdmissions).toEqual([]);
+    console.log(`W38_C6 fixtureMode=${standIn.mode} canonicalNeither=${neither.mode} runnerOnly=${runnerOnly.mode} ledgerOnly=${ledgerOnly.mode} emptyLedger=${emptyLedger.mode} mismatchedDigest=${mismatched.mode} canonicalBoundRecord=${both.mode}`);
   });
 
   it('caps candidate strength at the protected article/reference census', async () => {
