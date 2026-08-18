@@ -23,15 +23,19 @@ import {
 import {
   MAX_UNCOVERED_CHECKERS,
   readProtectedStateAt,
+  validateCoreExecutionReceipts,
 } from '../../scripts/lint-checker-blind-input-coverage.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const CASE_WORKER = process.env.INSTAR_CHECKER_BLIND_CORE_WORKER
+  ?? path.join(ROOT, 'tests', 'helpers', 'checker-blind-input-case-worker.ts');
+const VITE_NODE = path.join(ROOT, 'node_modules', '.bin', 'vite-node');
 
 interface BlindObservation {
   /** Independent test oracle: true means the checker reported clean while blind. */
   clean: boolean;
-  /** Calls observed at the real checker boundary; enrollment alone is not proof. */
-  invocations: number;
+  /** Candidate testimony retained only for the attack fixture; never credited. */
+  invocations?: number;
   evidence: unknown;
   /** Optional subject testimony; deliberately ignored by the oracle. */
   subjectClaim?: string;
@@ -42,26 +46,47 @@ interface BlindCase {
   blind: () => Promise<BlindObservation> | BlindObservation;
 }
 
-async function executeBlindCases(cases: Map<string, BlindCase>, { emitProof = false } = {}) {
+function runObservedCaseChild(id: string, phase: 'control' | 'blind') {
+  const child = spawnSync(VITE_NODE, ['--script', CASE_WORKER, id, phase], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    env: process.env,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  return {
+    passed: child.status === 0 && !child.error,
+    exitCode: child.status,
+    output: `${child.stdout ?? ''}${child.stderr ?? ''}`.trim(),
+    spawnError: child.error?.message ?? null,
+  };
+}
+
+async function executeBlindCases(cases: Map<string, BlindCase>, { requireObservedChildren = true } = {}) {
   const failures: Array<{ id: string; phase: 'control' | 'blind'; reason: string; evidence: unknown }> = [];
   const provenIds: string[] = [];
   for (const [id, run] of cases) {
     const control = await run.control();
     const blind = await run.blind();
-    if (!control.clean || control.invocations < 1) {
-      failures.push({ id, phase: 'control', reason: !control.clean ? 'control-not-clean' : 'checker-not-invoked', evidence: control.evidence });
+    const controlChild = requireObservedChildren ? runObservedCaseChild(id, 'control') : { passed: true };
+    const blindChild = requireObservedChildren ? runObservedCaseChild(id, 'blind') : { passed: true };
+    if (!control.clean || !controlChild.passed) {
+      failures.push({
+        id,
+        phase: 'control',
+        reason: !control.clean ? 'control-not-clean' : 'checker-not-observed',
+        evidence: !controlChild.passed ? controlChild : control.evidence,
+      });
     }
-    if (blind.clean || blind.invocations < 1) {
-      failures.push({ id, phase: 'blind', reason: blind.clean ? 'blind-input-accepted' : 'checker-not-invoked', evidence: blind.evidence });
+    if (blind.clean || !blindChild.passed) {
+      failures.push({
+        id,
+        phase: 'blind',
+        reason: blind.clean ? 'blind-input-accepted' : 'checker-not-observed',
+        evidence: !blindChild.passed ? blindChild : blind.evidence,
+      });
     }
-    if (control.clean && !blind.clean && control.invocations >= 1 && blind.invocations >= 1) {
+    if (control.clean && !blind.clean && controlChild.passed && blindChild.passed) {
       provenIds.push(id);
-      if (emitProof) {
-        console.log(`CHECKER_BLIND_EXECUTION ${JSON.stringify({
-          id, control: 'clean', blind: 'refused',
-          controlInvocations: control.invocations, blindInvocations: blind.invocations,
-        })}`);
-      }
     }
   }
   return { failures, provenIds };
@@ -259,7 +284,7 @@ describe('checker blind-input class ratchet', () => {
 
   it('executes every declared blind case and none reports clean', async () => {
     expect([...CASES.keys()].sort()).toEqual([...BLIND_INPUT_CASE_IDS].sort());
-    const execution = await executeBlindCases(CASES, { emitProof: true });
+    const execution = await executeBlindCases(CASES);
     expect(execution.failures).toEqual([]);
     expect(execution.provenIds.sort()).toEqual([...BLIND_INPUT_CASE_IDS].sort());
   });
@@ -270,7 +295,7 @@ describe('checker blind-input class ratchet', () => {
       control: () => ({ clean: true, invocations: 1, evidence: 'control' }),
       blind: () => ({ clean: true, invocations: 1, evidence: 'inert body' }),
     });
-    expect((await executeBlindCases(hollow)).failures).toContainEqual({
+    expect((await executeBlindCases(hollow, { requireObservedChildren: false })).failures).toContainEqual({
       id: 'script:scripts/lint-llm-attribution.js',
       phase: 'blind',
       reason: 'blind-input-accepted',
@@ -278,28 +303,61 @@ describe('checker blind-input class ratchet', () => {
     });
   });
 
-  it('refuses a hollow enrolled case that never invokes its checker', async () => {
+  it('refuses a never-invoked checker even when candidate testimony says invocations 1', async () => {
     const hollow = new Map<string, BlindCase>([[
       'script:scripts/lint-new-but-never-invoked.mjs',
       {
-        control: () => ({ clean: true, invocations: 0, evidence: 'constant-clean' }),
-        blind: () => ({ clean: false, invocations: 0, evidence: 'constant-refusal' }),
+        control: () => ({ clean: true, invocations: 1, evidence: 'forged-positive-counter' }),
+        blind: () => ({ clean: false, invocations: 1, evidence: 'forged-positive-counter' }),
       },
     ]]);
     expect((await executeBlindCases(hollow)).failures).toEqual([
-      {
+      expect.objectContaining({
         id: 'script:scripts/lint-new-but-never-invoked.mjs',
         phase: 'control',
-        reason: 'checker-not-invoked',
-        evidence: 'constant-clean',
-      },
-      {
+        reason: 'checker-not-observed',
+      }),
+      expect.objectContaining({
         id: 'script:scripts/lint-new-but-never-invoked.mjs',
         phase: 'blind',
-        reason: 'checker-not-invoked',
-        evidence: 'constant-refusal',
-      },
+        reason: 'checker-not-observed',
+      }),
     ]);
+  });
+
+  it('credits only a complete pair of core-minted post-exit receipts', () => {
+    const tokenHash = 'core-token-hash';
+    const record = (phase: 'control' | 'blind') => ({
+      source: 'checker-blind-core', tokenSha256: tokenHash,
+      id: 'script:scripts/lint-real.mjs', phase,
+      nodeEntry: 'node_modules/vite-node/vite-node.mjs',
+      worker: 'core-generated-checker-case-worker.ts',
+      childExitCode: 0, signal: null, emittedAfterChildExit: true,
+    });
+    expect(validateCoreExecutionReceipts({
+      records: [record('control'), record('blind')],
+      tokenHash,
+      declaredIds: ['script:scripts/lint-real.mjs'],
+    })).toMatchObject({ passed: true, invalid: [], missing: [] });
+  });
+
+  it('rejects candidate-authored execution testimony without core receipts', () => {
+    expect(validateCoreExecutionReceipts({
+      records: [{
+        source: 'CHECKER_BLIND_EXECUTION',
+        id: 'script:scripts/lint-never-invoked.mjs',
+        phase: 'control', invocations: 1,
+      }],
+      tokenHash: 'unavailable-to-candidate',
+      declaredIds: ['script:scripts/lint-never-invoked.mjs'],
+    })).toMatchObject({
+      passed: false,
+      invalid: [expect.objectContaining({ invocations: 1 })],
+      missing: [
+        'script:scripts/lint-never-invoked.mjs\0control',
+        'script:scripts/lint-never-invoked.mjs\0blind',
+      ],
+    });
   });
 
   it('P2 subject self-report is ignored by the independent oracle', async () => {
@@ -310,7 +368,7 @@ describe('checker blind-input class ratchet', () => {
         blind: () => ({ clean: false, invocations: 1, subjectClaim: 'clean', evidence: { inputReadable: false } }),
       },
     ]]);
-    expect((await executeBlindCases(liar)).failures).toEqual([]);
+    expect((await executeBlindCases(liar, { requireObservedChildren: false })).failures).toEqual([]);
   });
 
   it('P4a empty population is an error, never 0/0 clean', () => {
@@ -361,7 +419,7 @@ describe('checker blind-input class ratchet', () => {
     })).toBe(1);
   });
 
-  it('P5 missing population source throws NOT-PROVEN instead of returning clean', () => {
+  it('P5 missing population source is unavailable evidence, never a clean result', () => {
     expect(() => deriveCheckerPopulation(path.join(ROOT, '__missing__'))).toThrow(/population unavailable/);
   });
 
