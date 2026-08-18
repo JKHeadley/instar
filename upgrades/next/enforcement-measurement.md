@@ -10,6 +10,8 @@ The standards-coverage report now measures enforcement against a closed rule cen
 
 Completed observer counts and assertion direction now come from the structured `TestsStream` returned by `node:test.run()`, not from TAP/spec/glyph summary text. This closes a supported-runtime split where Node 22 passed all controls but Node 25.6.1 produced `null` counts and refused even a genuine observer. Misleading renderer text is ignored.
 
+The structured collector is content-addressed by protected authority, compared before materialization and execution, and its signed exact observation is bound into the authenticated child-exit receipt. An exact-schema digest-mismatched collector is refused before execution with UNKNOWN and no artifact.
+
 References are graded on the existing ratchet, gate, lint, spec-only, and documented-only ladder. A protected verdict may supersede structural grading only when its plan binds the cited rule to an independent subject and the measurement boundary itself runs the same real check in three independently materialized pristine workspaces: clean, mutated, then pristine confirmation. The mutation lands only in the second; that run must fail by assertion and the third must reset to passing. All three bounded exits carry authenticated child-exit receipts. The ledger can no longer declare its own exit codes, test counts, failure kind, deciding output, or output hashes. Every declared workspace input must byte-match the candidate tree before protected proof carries forward; candidate-authored verdict records are ignored. Empty or unreadable populations fail measurement rather than reporting 100%.
 
 ## Evidence

@@ -23,6 +23,12 @@ const write = (root: string, rel: string, content: string): void => {
   fs.writeFileSync(full, content);
 };
 const digest = (value: string): string => crypto.createHash('sha256').update(value).digest('hex');
+const RUNNER_REF = 'scripts/lib/standards-enforcement-node-test-runner.mjs';
+const TRUSTED_RUNNER_SHA256 = '04795f8857d8bb08ccf7c0a18103b7233ef644b395ac9bd576d9726e98da57f2';
+const trustedRunnerContent = fs.readFileSync(path.resolve(RUNNER_REF), 'utf8');
+if (digest(trustedRunnerContent) !== TRUSTED_RUNNER_SHA256) {
+  throw new Error('trusted structured test runner digest does not match the independently reviewed bytes');
+}
 const article = (id: string, files: string[]) => {
   const rule = `fixture rule ${id}`;
   return {
@@ -35,6 +41,7 @@ const article = (id: string, files: string[]) => {
   };
 };
 const certifiedRecord = (
+  protectedRoot: string,
   protectedArticle: ReturnType<typeof article>,
   ref: string,
   observerContent: string,
@@ -45,6 +52,7 @@ const certifiedRecord = (
   mutationReplacement = 'false',
 ) => {
   const subjectAfter = subjectContent.replace(mutationSearch, mutationReplacement);
+  write(protectedRoot, RUNNER_REF, trustedRunnerContent);
   return ({
   articleId: protectedArticle.id,
   articleSha256: protectedArticle.articleSha256,
@@ -55,6 +63,7 @@ const certifiedRecord = (
     schemaVersion: 2,
     execution: {
       runner: 'node-test-events-v1',
+      runnerSha256: TRUSTED_RUNNER_SHA256,
       argv: ['node', 'scripts/lib/standards-enforcement-node-test-runner.mjs', ref],
       workspaceRefs: [...new Set([ref, subjectRef])].sort(),
     },
@@ -113,7 +122,7 @@ describe('protected standards enforcement measurement', () => {
     write(candidate, subjectRef, subjectContent);
     write(base, 'docs/standards-enforcement-verdicts.json', `${JSON.stringify({
       schemaVersion: 3,
-      records: [certifiedRecord(protectedArticle, ref, content, subjectRef, subjectContent)],
+      records: [certifiedRecord(base, protectedArticle, ref, content, subjectRef, subjectContent)],
     })}\n`);
     expect(fs.readFileSync(path.join(candidate, ref), 'utf8')).toContain('expect(true).toBe(true)');
     const result = await measureAnchoredEnforcement({
@@ -159,7 +168,7 @@ describe('protected standards enforcement measurement', () => {
     }
     write(base, 'docs/standards-enforcement-verdicts.json', `${JSON.stringify({
       schemaVersion: 3,
-      records: [certifiedRecord(protectedArticle, ref, content, subjectRef, subjectContent)],
+      records: [certifiedRecord(base, protectedArticle, ref, content, subjectRef, subjectContent)],
     })}\n`);
 
     const result = await measureAnchoredEnforcement({
@@ -204,7 +213,7 @@ describe('protected standards enforcement measurement', () => {
     }
     write(base, 'docs/standards-enforcement-verdicts.json', `${JSON.stringify({
       schemaVersion: 3,
-      records: [certifiedRecord(protectedArticle, ref, content, subjectRef, subjectContent)],
+      records: [certifiedRecord(base, protectedArticle, ref, content, subjectRef, subjectContent)],
     })}\n`);
 
     const result = await measureAnchoredEnforcement({
@@ -245,7 +254,7 @@ describe('protected standards enforcement measurement', () => {
       '',
     ].join('\n');
     const protectedArticle = article('rule-a', [ref]);
-    const record = certifiedRecord(protectedArticle, ref, content, subjectRef, subjectContent);
+    const record = certifiedRecord(base, protectedArticle, ref, content, subjectRef, subjectContent);
     record.proof.execution.workspaceRefs = [helperRef, subjectRef, ref].sort();
     for (const root of [base, candidate]) {
       write(root, ref, content);
@@ -286,7 +295,7 @@ describe('protected standards enforcement measurement', () => {
       '',
     ].join('\n');
     const protectedArticle = article('rule-a', [ref]);
-    const record = certifiedRecord(protectedArticle, ref, content, subjectRef, subjectContent);
+    const record = certifiedRecord(base, protectedArticle, ref, content, subjectRef, subjectContent);
     record.proof.mutation.subjectAfterSha256 = digest('wrong but well-shaped after bytes');
     for (const root of [base, candidate]) {
       write(root, ref, content);
@@ -323,7 +332,7 @@ describe('protected standards enforcement measurement', () => {
       '',
     ].join('\n');
     const protectedArticle = article('rule-a', [ref]);
-    const record = certifiedRecord(protectedArticle, ref, content, subjectRef, subjectContent);
+    const record = certifiedRecord(base, protectedArticle, ref, content, subjectRef, subjectContent);
     write(base, ref, content);
     write(base, subjectRef, subjectContent);
     const snapshot = resolveProtectedMeasurementSnapshot({ root: base, fixtureRoot: base });
@@ -354,7 +363,7 @@ describe('protected standards enforcement measurement', () => {
       '',
     ].join('\n');
     const protectedArticle = article('rule-a', [ref]);
-    const record = certifiedRecord(protectedArticle, ref, content, subjectRef, subjectContent);
+    const record = certifiedRecord(base, protectedArticle, ref, content, subjectRef, subjectContent);
     write(base, ref, content);
     write(base, subjectRef, subjectContent);
     const snapshot = resolveProtectedMeasurementSnapshot({ root: base, fixtureRoot: base });
@@ -374,6 +383,67 @@ describe('protected standards enforcement measurement', () => {
     });
     expect(elapsedMs).toBeLessThan(1_000);
     console.log(`W35_C3D descendantHoldsStdio=true timeoutMs=100 elapsedMs=${elapsedMs} property=UNKNOWN deciding="clean observer execution timed out"`);
+  });
+
+  it('C2 refuses an exact-schema summary from a digest-mismatched runner before execution', async () => {
+    const base = makeRoot();
+    const ref = 'tests/unit/untrusted-runner-target.test.mjs';
+    const subjectRef = 'src/untrusted-runner-subject.mjs';
+    const markerRef = 'untrusted-runner-executed';
+    const markerPath = path.join(base, markerRef);
+    const subjectContent = 'export const guarded = true;\n';
+    const content = [
+      "import assert from 'node:assert/strict';",
+      "import test from 'node:test';",
+      "import { guarded } from '../../src/untrusted-runner-subject.mjs';",
+      "test('observes subject', () => assert.equal(guarded, true));",
+      '',
+    ].join('\n');
+    const protectedArticle = article('rule-a', [ref]);
+    const record = certifiedRecord(base, protectedArticle, ref, content, subjectRef, subjectContent);
+    write(base, ref, content);
+    write(base, subjectRef, subjectContent);
+    const forgedRunner = [
+      "import fs from 'node:fs';",
+      "const marker = process.env.W37_UNTRUSTED_RUNNER_MARKER;",
+      "if (!marker) throw new Error('untrusted runner marker is required');",
+      "fs.writeFileSync(marker, 'executed');",
+      `process.send?.(${JSON.stringify({
+        schema: 'standards-enforcement-node-test-events/v1',
+        source: 'node:test TestsStream',
+        observerRef: ref,
+        testsRun: 999,
+        passed: 999,
+        failed: 0,
+        assertionFailures: 0,
+        decidingMessage: '',
+      })});`,
+      '',
+    ].join('\n');
+    write(base, RUNNER_REF, forgedRunner);
+    const forgedRunnerSha256 = digest(forgedRunner);
+    expect(forgedRunnerSha256).not.toBe(TRUSTED_RUNNER_SHA256);
+
+    const previousMarker = process.env.W37_UNTRUSTED_RUNNER_MARKER;
+    process.env.W37_UNTRUSTED_RUNNER_MARKER = markerPath;
+    let observed;
+    try {
+      observed = await verifyProtectedExecutionProof({
+        record,
+        snapshot: resolveProtectedMeasurementSnapshot({ root: base, fixtureRoot: base }),
+      });
+    } finally {
+      if (previousMarker === undefined) delete process.env.W37_UNTRUSTED_RUNNER_MARKER;
+      else process.env.W37_UNTRUSTED_RUNNER_MARKER = previousMarker;
+    }
+
+    expect(observed).toEqual({
+      status: 'unknown',
+      reason: `protected structured test runner digest mismatch: expected=${TRUSTED_RUNNER_SHA256} actual=${forgedRunnerSha256}`,
+      artifact: null,
+    });
+    expect(fs.existsSync(markerPath)).toBe(false);
+    console.log(`W37_C2 expectedRunnerSha256=${TRUSTED_RUNNER_SHA256} actualRunnerSha256=${forgedRunnerSha256} runnerExecuted=false summarySchema=standards-enforcement-node-test-events/v1 outcome=UNKNOWN artifact=null deciding="protected structured test runner digest mismatch"`);
   });
 
   it('caps candidate strength at the protected article/reference census', async () => {
@@ -419,7 +489,7 @@ describe('protected standards enforcement measurement', () => {
     write(candidate, subjectRef, subjectContent);
     write(base, 'docs/standards-enforcement-verdicts.json', `${JSON.stringify({
       schemaVersion: 3,
-      records: [certifiedRecord(protectedArticle, ref, content, subjectRef, subjectContent)],
+      records: [certifiedRecord(base, protectedArticle, ref, content, subjectRef, subjectContent)],
     })}\n`);
     write(candidate, 'docs/standards-enforcement-verdicts.json', `${JSON.stringify({
       schemaVersion: 3,
@@ -438,7 +508,8 @@ describe('protected standards enforcement measurement', () => {
       evidenceStatus: 'proven',
       execution: expect.objectContaining({
         observationSource: 'node:test TestsStream',
-        runnerSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        runnerSha256: TRUSTED_RUNNER_SHA256,
+        observationsReceiptBound: true,
         cleanExitCode: 0,
         cleanTestsRun: 1,
         mutatedExitCode: 1,
@@ -451,6 +522,7 @@ describe('protected standards enforcement measurement', () => {
     }));
     expect(result.articles[0].references[0].execution?.decidingOutput).not.toContain('999');
     console.log('W36_C1 source="node:test TestsStream" misleadingRendererCounts=ignored mutationLanded=true cleanExit=0 cleanTests=1 mutatedExit=1 mutatedTests=1 confirmationExit=0 confirmationTests=1 failureKind=assertion artifact=authenticated verdict=ratchet');
+    console.log(`W37_C1 protectedRunnerSha256=${TRUSTED_RUNNER_SHA256} digestCompared=true protectedRunnerMaterialized=true observationsReceiptBound=true verdict=ratchet`);
   });
 
   it('rejects a proof that mutates its observer instead of an independent rule subject', async () => {
@@ -459,7 +531,7 @@ describe('protected standards enforcement measurement', () => {
     const ref = 'tests/unit/certified.test.ts';
     const content = "import { expect, it } from 'vitest'; it('observes', () => expect(subject).toBe(true));\n";
     const protectedArticle = article('rule-a', [ref]);
-    const record = certifiedRecord(protectedArticle, ref, content, ref, content);
+    const record = certifiedRecord(base, protectedArticle, ref, content, ref, content);
     record.proof.execution.workspaceRefs = ['src/unused.ts', ref].sort();
     write(base, ref, content);
     write(candidate, ref, content);
@@ -487,7 +559,7 @@ describe('protected standards enforcement measurement', () => {
     const content = "import { expect, it } from 'vitest'; it('observes', () => expect(subject).toBe(true));\n";
     const subjectContent = 'export const subject = true;\n';
     const protectedArticle = article('rule-a', [ref]);
-    const record = certifiedRecord(protectedArticle, ref, content, subjectRef, subjectContent);
+    const record = certifiedRecord(base, protectedArticle, ref, content, subjectRef, subjectContent);
     (record.proof as typeof record.proof & { control: unknown }).control = {
       exitCode: 0,
       testsRun: 1,
@@ -532,7 +604,7 @@ describe('protected standards enforcement measurement', () => {
     write(candidate, subjectRef, subjectContent);
     write(base, 'docs/standards-enforcement-verdicts.json', `${JSON.stringify({
       schemaVersion: 3,
-      records: [certifiedRecord(protectedArticle, ref, content, subjectRef, subjectContent)],
+      records: [certifiedRecord(base, protectedArticle, ref, content, subjectRef, subjectContent)],
     })}\n`);
     const result = await measureAnchoredEnforcement({
       root: candidate,
@@ -561,7 +633,7 @@ describe('protected standards enforcement measurement', () => {
     write(base, subjectRef, subjectContent);
     write(base, 'docs/standards-enforcement-verdicts.json', `${JSON.stringify({
       schemaVersion: 3,
-      records: [certifiedRecord(protectedArticle, ref, content, subjectRef, subjectContent)],
+      records: [certifiedRecord(base, protectedArticle, ref, content, subjectRef, subjectContent)],
     })}\n`);
     const result = await measureAnchoredEnforcement({
       root: candidate,

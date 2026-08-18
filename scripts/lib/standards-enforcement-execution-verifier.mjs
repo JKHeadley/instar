@@ -3,19 +3,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import {
   createAuthenticatedReceiptAuthority,
+  isLiveAuthenticatedObserverEvent,
   isLiveAuthenticatedReceipt,
 } from "../../scratchpad/phaseB/authenticated-execution-receipt.mjs";
 import { SafeFsExecutor } from "../../dist/core/SafeFsExecutor.js";
 
-const ARTIFACT_SCHEMA = "standards-enforcement-observed-execution/v2";
+const ARTIFACT_SCHEMA = "standards-enforcement-observed-execution/v3";
 const RUNNER = "node-test-events-v1";
 const RUNNER_REF = "scripts/lib/standards-enforcement-node-test-runner.mjs";
-const RUNNER_PATH = fileURLToPath(
-  new URL("./standards-enforcement-node-test-runner.mjs", import.meta.url),
-);
 const OBSERVATION_SCHEMA = "standards-enforcement-node-test-events/v1";
 const DEFAULT_OBSERVER_TIMEOUT_MS = 15_000;
 const SHA256_RE = /^[a-f0-9]{64}$/;
@@ -23,16 +20,6 @@ const liveArtifacts = new WeakSet();
 
 const sha256 = (value) =>
   crypto.createHash("sha256").update(value).digest("hex");
-
-function runnerDigest() {
-  const stat = fs.lstatSync(RUNNER_PATH);
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new Error("structured test runner must be a regular non-symlink file");
-  }
-  return sha256(fs.readFileSync(RUNNER_PATH));
-}
-
-const RUNNER_SHA256 = runnerDigest();
 
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -120,12 +107,41 @@ function runObserver(
   observerRef,
   guardId,
   kind,
+  expectedRunnerSha256,
   timeoutMs = DEFAULT_OBSERVER_TIMEOUT_MS,
 ) {
+  const runnerPath = path.join(workspace, RUNNER_REF);
+  try {
+    const stat = fs.lstatSync(runnerPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error("protected structured test runner is not a regular file");
+    }
+    const actualRunnerSha256 = sha256(fs.readFileSync(runnerPath));
+    if (actualRunnerSha256 !== expectedRunnerSha256) {
+      throw new Error(
+        `protected structured test runner digest changed before execution: expected=${expectedRunnerSha256} actual=${actualRunnerSha256}`,
+      );
+    }
+  } catch (error) {
+    return Promise.resolve({
+      guardId,
+      kind,
+      observerRef,
+      runnerError: error instanceof Error ? error.message : String(error),
+      timedOut: false,
+    });
+  }
   return new Promise((resolve) => {
-    const argv = [process.execPath, RUNNER_PATH, observerRef];
+    const argv = [
+      process.execPath,
+      runnerPath,
+      observerRef,
+      guardId,
+      kind,
+      RUNNER_REF,
+    ];
     const startedAt = new Date().toISOString();
-    const child = spawn(process.execPath, [RUNNER_PATH, observerRef], {
+    const child = spawn(process.execPath, argv.slice(1), {
       cwd: workspace,
       env: scrubbedChildEnv(),
       stdio: ["ignore", "pipe", "pipe", "ipc"],
@@ -136,7 +152,7 @@ function runObserver(
     let spawnError = null;
     let timedOut = false;
     let settled = false;
-    const observations = [];
+    const events = [];
     const finish = (exitCode, signal, emittedAfterChildExit) => {
       if (settled) return;
       settled = true;
@@ -148,6 +164,7 @@ function runObserver(
       resolve({
         guardId,
         kind,
+        observerRef,
         childPid: child.pid,
         childExitCode: exitCode,
         signal,
@@ -157,11 +174,8 @@ function runObserver(
         emittedAfterChildExit,
         output,
         outputSha256: sha256(output),
-        observation:
-          observations.length === 1 &&
-          validObservation(observations[0], observerRef)
-            ? observations[0]
-            : null,
+        events,
+        runnerError: null,
         spawnError,
         timedOut,
       });
@@ -185,7 +199,7 @@ function runObserver(
     timer.unref();
     child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
     child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
-    child.on("message", (message) => observations.push(message));
+    child.on("message", (message) => events.push(message));
     child.on("error", (error) => {
       spawnError = error;
     });
@@ -195,6 +209,7 @@ function runObserver(
 
 async function authenticateRun(authority, run) {
   if (
+    run.runnerError ||
     run.spawnError ||
     !Number.isSafeInteger(run.childPid) ||
     run.childPid <= 0 ||
@@ -202,15 +217,61 @@ async function authenticateRun(authority, run) {
     run.childExitCode < 0
   )
     return null;
+  if (run.events.length !== 2) return null;
+  const [readyEvent, observationEvent] = run.events;
+  if (
+    readyEvent?.kind !== "observer-ready" ||
+    readyEvent?.runKind !== run.kind ||
+    observationEvent?.kind !== run.kind ||
+    !validObservation(observationEvent?.observation, run.observerRef) ||
+    observationEvent.observationSha256 !==
+      sha256(canonical(observationEvent.observation))
+  )
+    return null;
+  const readyExpected = {
+    kind: "observer-ready",
+    guardId: run.guardId,
+    nodeEntry: RUNNER_REF,
+    observerPid: run.childPid,
+    runKind: run.kind,
+    argv: run.argv.slice(1),
+  };
+  if (
+    !(await authority.pinObserverEvent(readyEvent, readyExpected)) ||
+    !isLiveAuthenticatedObserverEvent(readyEvent)
+  )
+    return null;
+  const observationExpected = {
+    kind: run.kind,
+    guardId: run.guardId,
+    nodeEntry: RUNNER_REF,
+    observerPid: run.childPid,
+    observerSession: readyEvent.observerSession,
+    argv: run.argv.slice(1),
+    observation: observationEvent.observation,
+    observationSha256: observationEvent.observationSha256,
+  };
+  if (
+    !(await authority.authenticateObserverEvent(
+      observationEvent,
+      observationExpected,
+    )) ||
+    !isLiveAuthenticatedObserverEvent(observationEvent)
+  )
+    return null;
   const expected = {
     guardId: run.guardId,
     kind: run.kind,
+    observerPid: run.childPid,
     childPid: run.childPid,
     childExitCode: run.childExitCode,
     argv: run.argv,
     startedAt: run.startedAt,
     childExitedAt: run.childExitedAt,
     emittedAfterChildExit: true,
+    observerSession: observationEvent.observerSession,
+    observerEventSequence: observationEvent.sequence,
+    observerEventSignatureHash: sha256(observationEvent.signature),
   };
   const receipt = await authority.issue(expected);
   if (
@@ -218,7 +279,12 @@ async function authenticateRun(authority, run) {
     !isLiveAuthenticatedReceipt(receipt)
   )
     return null;
-  return receipt;
+  return Object.freeze({
+    receipt,
+    observation: Object.freeze({ ...observationEvent.observation }),
+    observationEvent,
+    observationSha256: observationEvent.observationSha256,
+  });
 }
 
 function validatePlan(record) {
@@ -227,6 +293,7 @@ function validatePlan(record) {
   const relevance = record.proof.relevance;
   if (
     execution.runner !== RUNNER ||
+    !SHA256_RE.test(execution.runnerSha256) ||
     JSON.stringify(execution.argv) !==
       JSON.stringify(["node", RUNNER_REF, record.ref])
   ) {
@@ -239,6 +306,7 @@ function validatePlan(record) {
     new Set(execution.workspaceRefs).size !== execution.workspaceRefs.length ||
     JSON.stringify([...execution.workspaceRefs].sort()) !==
       JSON.stringify(execution.workspaceRefs) ||
+    execution.workspaceRefs.includes(RUNNER_REF) ||
     !execution.workspaceRefs.includes(record.ref) ||
     !execution.workspaceRefs.includes(relevance.subjectRef)
   ) {
@@ -259,7 +327,7 @@ function validatePlan(record) {
   return null;
 }
 
-function materialize(snapshot, refs) {
+function materialize(snapshot, refs, trustedRunnerContent) {
   const workspace = fs.mkdtempSync(
     path.join(os.tmpdir(), "standards-enforcement-observed-"),
   );
@@ -272,6 +340,9 @@ function materialize(snapshot, refs) {
       fs.mkdirSync(path.dirname(full), { recursive: true });
       fs.writeFileSync(full, content, { flag: "wx" });
     }
+    const runnerPath = path.join(workspace, RUNNER_REF);
+    fs.mkdirSync(path.dirname(runnerPath), { recursive: true });
+    fs.writeFileSync(runnerPath, trustedRunnerContent, { flag: "wx" });
     return { workspace, error: null };
   } catch (error) {
     return {
@@ -302,9 +373,9 @@ function artifactFor(
   clean,
   mutated,
   confirmation,
-  cleanReceipt,
-  mutatedReceipt,
-  confirmationReceipt,
+  cleanAuthentication,
+  mutatedAuthentication,
+  confirmationAuthentication,
   mutationLanded,
 ) {
   const payload = {
@@ -313,7 +384,7 @@ function artifactFor(
       ref: record.ref,
       sha256: record.sha256,
       runner: RUNNER,
-      runnerSha256: RUNNER_SHA256,
+      runnerSha256: record.proof.execution.runnerSha256,
       structuredSource: "node:test TestsStream",
       argv: clean.argv,
     },
@@ -325,29 +396,35 @@ function artifactFor(
       mutationLanded,
     },
     clean: {
-      receipt: cleanReceipt,
+      receipt: cleanAuthentication.receipt,
+      observationEvent: cleanAuthentication.observationEvent,
+      observationSha256: cleanAuthentication.observationSha256,
       exitCode: clean.childExitCode,
-      testsRun: clean.observation.testsRun,
-      passed: clean.observation.passed,
-      failed: clean.observation.failed,
+      testsRun: cleanAuthentication.observation.testsRun,
+      passed: cleanAuthentication.observation.passed,
+      failed: cleanAuthentication.observation.failed,
       outputSha256: clean.outputSha256,
     },
     mutated: {
-      receipt: mutatedReceipt,
+      receipt: mutatedAuthentication.receipt,
+      observationEvent: mutatedAuthentication.observationEvent,
+      observationSha256: mutatedAuthentication.observationSha256,
       exitCode: mutated.childExitCode,
-      testsRun: mutated.observation.testsRun,
-      passed: mutated.observation.passed,
-      failed: mutated.observation.failed,
-      assertionFailures: mutated.observation.assertionFailures,
+      testsRun: mutatedAuthentication.observation.testsRun,
+      passed: mutatedAuthentication.observation.passed,
+      failed: mutatedAuthentication.observation.failed,
+      assertionFailures: mutatedAuthentication.observation.assertionFailures,
       outputSha256: mutated.outputSha256,
-      decidingOutput: mutated.observation.decidingMessage,
+      decidingOutput: mutatedAuthentication.observation.decidingMessage,
     },
     confirmation: {
-      receipt: confirmationReceipt,
+      receipt: confirmationAuthentication.receipt,
+      observationEvent: confirmationAuthentication.observationEvent,
+      observationSha256: confirmationAuthentication.observationSha256,
       exitCode: confirmation.childExitCode,
-      testsRun: confirmation.observation.testsRun,
-      passed: confirmation.observation.passed,
-      failed: confirmation.observation.failed,
+      testsRun: confirmationAuthentication.observation.testsRun,
+      passed: confirmationAuthentication.observation.passed,
+      failed: confirmationAuthentication.observation.failed,
       outputSha256: confirmation.outputSha256,
     },
   };
@@ -377,11 +454,30 @@ export async function verifyProtectedExecutionProof({
   let mutatedWorkspace = null;
   let confirmationWorkspace = null;
   let authority = null;
-  const guardId = `${record.articleId}\0${record.ref}\0${record.proof.mutation.mutationId}`;
+  const guardId = sha256(canonical({
+    articleId: record.articleId,
+    mutationId: record.proof.mutation.mutationId,
+    ref: record.ref,
+  }));
   try {
+    const trustedRunnerContent = snapshot.readFile(RUNNER_REF);
+    if (trustedRunnerContent === null)
+      return {
+        status: "unknown",
+        reason: "protected structured test runner is unavailable",
+        artifact: null,
+      };
+    const actualRunnerSha256 = sha256(trustedRunnerContent);
+    if (actualRunnerSha256 !== record.proof.execution.runnerSha256)
+      return {
+        status: "unknown",
+        reason: `protected structured test runner digest mismatch: expected=${record.proof.execution.runnerSha256} actual=${actualRunnerSha256}`,
+        artifact: null,
+      };
     const cleanMaterialization = materialize(
       snapshot,
       record.proof.execution.workspaceRefs,
+      trustedRunnerContent,
     );
     cleanWorkspace = cleanMaterialization.workspace;
     if (cleanMaterialization.error)
@@ -394,6 +490,7 @@ export async function verifyProtectedExecutionProof({
     const mutatedMaterialization = materialize(
       snapshot,
       record.proof.execution.workspaceRefs,
+      trustedRunnerContent,
     );
     mutatedWorkspace = mutatedMaterialization.workspace;
     if (mutatedMaterialization.error)
@@ -406,6 +503,7 @@ export async function verifyProtectedExecutionProof({
     const confirmationMaterialization = materialize(
       snapshot,
       record.proof.execution.workspaceRefs,
+      trustedRunnerContent,
     );
     confirmationWorkspace = confirmationMaterialization.workspace;
     if (confirmationMaterialization.error)
@@ -423,25 +521,22 @@ export async function verifyProtectedExecutionProof({
       record.ref,
       guardId,
       "clean-observer-exit",
+      record.proof.execution.runnerSha256,
       observerTimeoutMs,
     );
+    if (clean.runnerError)
+      return { status: "unknown", reason: clean.runnerError, artifact: null };
     if (clean.timedOut)
       return {
         status: "unknown",
         reason: "clean observer execution timed out",
         artifact: null,
       };
-    const cleanReceipt = await authenticateRun(authority, clean);
-    if (!cleanReceipt)
+    const cleanAuthentication = await authenticateRun(authority, clean);
+    if (!cleanAuthentication)
       return {
         status: "unknown",
-        reason: "clean observer execution could not be authenticated",
-        artifact: null,
-      };
-    if (clean.observation === null)
-      return {
-        status: "unknown",
-        reason: "clean structured test observation unavailable",
+        reason: "clean structured test observation could not be authenticated",
         artifact: null,
       };
 
@@ -485,25 +580,22 @@ export async function verifyProtectedExecutionProof({
       record.ref,
       guardId,
       "mutated-observer-exit",
+      record.proof.execution.runnerSha256,
       observerTimeoutMs,
     );
+    if (mutated.runnerError)
+      return { status: "unknown", reason: mutated.runnerError, artifact: null };
     if (mutated.timedOut)
       return {
         status: "unknown",
         reason: "mutated observer execution timed out",
         artifact: null,
       };
-    const mutatedReceipt = await authenticateRun(authority, mutated);
-    if (!mutatedReceipt)
+    const mutatedAuthentication = await authenticateRun(authority, mutated);
+    if (!mutatedAuthentication)
       return {
         status: "unknown",
-        reason: "mutated observer execution could not be authenticated",
-        artifact: null,
-      };
-    if (mutated.observation === null)
-      return {
-        status: "unknown",
-        reason: "mutated structured test observation unavailable",
+        reason: "mutated structured test observation could not be authenticated",
         artifact: null,
       };
 
@@ -512,25 +604,29 @@ export async function verifyProtectedExecutionProof({
       record.ref,
       guardId,
       "confirmation-clean-observer-exit",
+      record.proof.execution.runnerSha256,
       observerTimeoutMs,
     );
+    if (confirmation.runnerError)
+      return {
+        status: "unknown",
+        reason: confirmation.runnerError,
+        artifact: null,
+      };
     if (confirmation.timedOut)
       return {
         status: "unknown",
         reason: "confirmation observer execution timed out",
         artifact: null,
       };
-    const confirmationReceipt = await authenticateRun(authority, confirmation);
-    if (!confirmationReceipt)
+    const confirmationAuthentication = await authenticateRun(
+      authority,
+      confirmation,
+    );
+    if (!confirmationAuthentication)
       return {
         status: "unknown",
-        reason: "confirmation observer execution could not be authenticated",
-        artifact: null,
-      };
-    if (confirmation.observation === null)
-      return {
-        status: "unknown",
-        reason: "confirmation structured test observation unavailable",
+        reason: "confirmation structured test observation could not be authenticated",
         artifact: null,
       };
 
@@ -539,28 +635,31 @@ export async function verifyProtectedExecutionProof({
       clean,
       mutated,
       confirmation,
-      cleanReceipt,
-      mutatedReceipt,
-      confirmationReceipt,
+      cleanAuthentication,
+      mutatedAuthentication,
+      confirmationAuthentication,
       mutationLanded,
     );
+    const cleanObservation = cleanAuthentication.observation;
+    const mutatedObservation = mutatedAuthentication.observation;
+    const confirmationObservation = confirmationAuthentication.observation;
     const cleanPassed =
       clean.childExitCode === 0 &&
-      clean.observation.testsRun > 0 &&
-      clean.observation.failed === 0;
+      cleanObservation.testsRun > 0 &&
+      cleanObservation.failed === 0;
     const sameTestsRan =
-      Number.isInteger(clean.observation.testsRun) &&
-      clean.observation.testsRun === mutated.observation.testsRun &&
-      clean.observation.testsRun === confirmation.observation.testsRun;
+      Number.isInteger(cleanObservation.testsRun) &&
+      cleanObservation.testsRun === mutatedObservation.testsRun &&
+      cleanObservation.testsRun === confirmationObservation.testsRun;
     const confirmationPassed =
       confirmation.childExitCode === 0 &&
-      confirmation.observation.testsRun > 0 &&
-      confirmation.observation.failed === 0;
+      confirmationObservation.testsRun > 0 &&
+      confirmationObservation.failed === 0;
     const assertionFailure =
       mutated.childExitCode !== 0 &&
-      mutated.observation.testsRun > 0 &&
-      mutated.observation.failed > 0 &&
-      mutated.observation.assertionFailures > 0;
+      mutatedObservation.testsRun > 0 &&
+      mutatedObservation.failed > 0 &&
+      mutatedObservation.assertionFailures > 0;
     if (!cleanPassed)
       return {
         status: "not-proven",
@@ -618,13 +717,30 @@ export async function verifyProtectedExecutionProof({
 }
 
 export function isLiveAuthenticatedExecutionArtifact(artifact) {
+  const liveRun = (run) => {
+    const event = run?.observationEvent;
+    const receipt = run?.receipt;
+    return Boolean(
+      event &&
+      receipt &&
+      isLiveAuthenticatedObserverEvent(event) &&
+      isLiveAuthenticatedReceipt(receipt) &&
+      validObservation(event.observation, artifact.observer?.ref) &&
+      run.observationSha256 === sha256(canonical(event.observation)) &&
+      event.observationSha256 === run.observationSha256 &&
+      receipt.observerSession === event.observerSession &&
+      receipt.observerEventSequence === event.sequence &&
+      receipt.observerEventSignatureHash === sha256(event.signature) &&
+      receipt.kind === event.kind
+    );
+  };
   return Boolean(
     artifact &&
     typeof artifact === "object" &&
     liveArtifacts.has(artifact) &&
-    isLiveAuthenticatedReceipt(artifact.clean?.receipt) &&
-    isLiveAuthenticatedReceipt(artifact.mutated?.receipt) &&
-    isLiveAuthenticatedReceipt(artifact.confirmation?.receipt),
+    liveRun(artifact.clean) &&
+    liveRun(artifact.mutated) &&
+    liveRun(artifact.confirmation),
   );
 }
 

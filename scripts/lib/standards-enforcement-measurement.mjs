@@ -278,8 +278,9 @@ function validProofRecord(record, index) {
     return `record ${index} proof envelope is malformed`;
   }
   const execution = proof.execution;
-  if (!exactKeys(execution, ['runner', 'argv', 'workspaceRefs']) ||
+  if (!exactKeys(execution, ['runner', 'runnerSha256', 'argv', 'workspaceRefs']) ||
     execution.runner !== STANDARDS_EXECUTION_RUNNER ||
+    !SHA256_RE.test(execution.runnerSha256) ||
     JSON.stringify(execution.argv) !== JSON.stringify([
       'node',
       'scripts/lib/standards-enforcement-node-test-runner.mjs',
@@ -501,6 +502,10 @@ export async function measureAnchoredEnforcement({
                     execution: {
                       observationSource: artifact.observer.structuredSource,
                       runnerSha256: artifact.observer.runnerSha256,
+                      observationsReceiptBound: true,
+                      cleanObservationSha256: artifact.clean.observationSha256,
+                      mutatedObservationSha256: artifact.mutated.observationSha256,
+                      confirmationObservationSha256: artifact.confirmation.observationSha256,
                       cleanExitCode: artifact.clean.exitCode,
                       cleanTestsRun: artifact.clean.testsRun,
                       mutatedExitCode: artifact.mutated.exitCode,
@@ -523,6 +528,10 @@ export async function measureAnchoredEnforcement({
                       execution: {
                         observationSource: artifact.observer.structuredSource,
                         runnerSha256: artifact.observer.runnerSha256,
+                        observationsReceiptBound: true,
+                        cleanObservationSha256: artifact.clean.observationSha256,
+                        mutatedObservationSha256: artifact.mutated.observationSha256,
+                        confirmationObservationSha256: artifact.confirmation.observationSha256,
                         cleanExitCode: artifact.clean.exitCode,
                         cleanTestsRun: artifact.clean.testsRun,
                         mutatedExitCode: artifact.mutated.exitCode,
