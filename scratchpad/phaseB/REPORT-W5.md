@@ -397,3 +397,35 @@ Remaining work after another explicit restart:
 
 No wiring proof, push, pull request, merge, or auto-merge action was started in
 this resumed interval.
+
+## 2026-08-18 06:46:07 -0700 (PDT) — F3-R authenticated wiring result
+
+The normal commit gate completed without bypass and ran the real guard lint to
+success:
+
+```text
+checker-blind-input: executable blind cases passed
+```
+
+F3-R then ran the checker-instrument wiring-only proof against clean committed
+target `52bc14b6b26044a431d22e8608f017d05c7d95cf`, using the current repaired W4-R
+instrument SHA-256
+`c9fab8034effc8f64c525073f85c7c04c1fd5cca9c0b2324203632ea34145b3a`.
+Protected main resolved to
+`248ed7177f5bf416aa7bdad9763741478195e1fc`, and the target remained unchanged
+by measurement.
+
+The real positive lint run authenticated three signed observer events, exited
+0, and minted exactly one authenticated post-child receipt. C3 authenticated
+the observer short-circuit and minted zero guard execution receipts. The proof
+verdict line, verbatim, was:
+
+```text
+[fix-verifier-wiring] authenticated guard=checker-blind-input-coverage entry=scripts/lint-checker-blind-input-coverage.mjs childPid=6097 childExit=0
+```
+
+After verdict: wiring **PROVEN**, wiring-only rung **WIRED**.
+
+Evidence:
+`scratchpad/phaseB/evidence/F3R-checker-blind-input-coverage.json`, SHA-256
+`f800130157168f2d3871e8d6c2e140b94cd1b734c61730b234aa9ddefa83d35d`.

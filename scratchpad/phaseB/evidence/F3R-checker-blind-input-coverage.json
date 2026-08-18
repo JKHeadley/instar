@@ -1,0 +1,929 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-08-18T13:45:54.769Z",
+  "instrument": {
+    "path": "/Users/justin/.instar/agents/instar-codey/.worktrees/phaseb-w4-r-regular-file-identity/scratchpad/phaseB/fix-verifier.mjs",
+    "sha256": "c9fab8034effc8f64c525073f85c7c04c1fd5cca9c0b2324203632ea34145b3a",
+    "manifest": {
+      "path": "/Users/justin/.instar/agents/instar-codey/.worktrees/phaseb-w4-r-regular-file-identity/scratchpad/phaseB/fix-verifier.manifest.json",
+      "sha256": "a3ae19ae23bae375f48de04d51aa9f17e674e20783bdfd0d9dd5b5815b864677",
+      "adapterRegistryChecked": true,
+      "count": 8,
+      "ids": [
+        "audit-convergence-validator",
+        "checker-blind-input-coverage",
+        "guard-posture-probe",
+        "lint-llm-attribution",
+        "self-action-convergence",
+        "standards-direction-guard",
+        "testing-integrity-route-enforcement",
+        "topic-operator-evidence"
+      ]
+    },
+    "adapter": {
+      "path": "/Users/justin/.instar/agents/instar-codey/.worktrees/phaseb-w4-r-regular-file-identity/scratchpad/phaseB/adapters/checker-blind-input-coverage.mjs",
+      "sha256": "e3f66283ba3d265d0ebdc7fe56198200a45cbabbcc62369156c0c4d660c7fa77"
+    }
+  },
+  "guardId": "checker-blind-input-coverage",
+  "description": "Production-derived checker census, blind-input cases, and one-way legacy-debt ceiling.",
+  "fixture": "none",
+  "measurementScope": "wiring-only",
+  "target": {
+    "tree": "/Users/justin/.instar/agents/instar-codey/.worktrees/phaseb-f3-checker-instrument-harness",
+    "requestedCommit": "52bc14b6b26044a431d22e8608f017d05c7d95cf",
+    "commit": "52bc14b6b26044a431d22e8608f017d05c7d95cf",
+    "remote": {
+      "name": "upstream",
+      "url": "https://github.com/JKHeadley/instar.git"
+    },
+    "dirtyAtStart": false,
+    "porcelainAtStart": []
+  },
+  "adapterRegistry": {
+    "source": "/Users/justin/.instar/agents/instar-codey/.worktrees/phaseb-w4-r-regular-file-identity/scratchpad/phaseB/fix-verifier.manifest.json",
+    "sourceSha256": "a3ae19ae23bae375f48de04d51aa9f17e674e20783bdfd0d9dd5b5815b864677",
+    "schemaChecked": true,
+    "semanticRole": "list of implemented adapters; never a guard census or coverage denominator",
+    "nonEmpty": true,
+    "adaptedGuardCount": 8,
+    "ids": [
+      "audit-convergence-validator",
+      "checker-blind-input-coverage",
+      "guard-posture-probe",
+      "lint-llm-attribution",
+      "self-action-convergence",
+      "standards-direction-guard",
+      "testing-integrity-route-enforcement",
+      "topic-operator-evidence"
+    ]
+  },
+  "coverageAggregate": {
+    "emitted": false,
+    "ratio": null,
+    "denominator": null,
+    "notMeasured": null,
+    "reason": "this command verifies one requested guard; adapter registration is not the real guard census"
+  },
+  "existence": {
+    "outcome": "proven",
+    "files": [
+      {
+        "path": "scripts/lint-checker-blind-input-coverage.mjs",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "scripts/lib/checker-blind-input-ratchet.mjs",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "tests/unit/checker-blind-input-ratchet.test.ts",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "scripts/lint-llm-attribution.js",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "scripts/checker-blind-input-cases.mjs",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      }
+    ]
+  },
+  "wiring": {
+    "outcome": "proven",
+    "declaredEntryPoint": ".github/workflows/ci.yml -> npm run lint",
+    "establishedBy": "the core authenticated the signed, strictly sequenced observer events for the exact live manifest-pinned guard child, then bound the HMAC receipt to its signed exit event; C3 wrapper success produced no guard receipt",
+    "protectedBase": {
+      "remoteUrl": "https://github.com/JKHeadley/instar.git",
+      "ref": "refs/heads/main",
+      "commit": "248ed7177f5bf416aa7bdad9763741478195e1fc",
+      "serverResolved": true,
+      "fetchMatchesServer": true,
+      "workflowPath": ".github/workflows/ci.yml",
+      "workflowSha256": "be9f8f5393854f15793424613fa46da4701b4808219cb173a0d9da1aa649ef71",
+      "mergeBase": "248ed7177f5bf416aa7bdad9763741478195e1fc"
+    },
+    "contract": {
+      "valid": true,
+      "reason": null,
+      "checks": [
+        {
+          "check": "protected remote URL is instrument-pinned",
+          "passed": true
+        },
+        {
+          "check": "protected branch ref is instrument-pinned",
+          "passed": true
+        },
+        {
+          "check": "adapter command invokes the pinned real entry",
+          "passed": true
+        },
+        {
+          "check": "protected workflow job declares the pinned command",
+          "passed": true
+        },
+        {
+          "check": "observer target is a safe exact child entry",
+          "passed": true
+        }
+      ],
+      "normalizedInvocation": [
+        "npm",
+        "run",
+        "lint"
+      ]
+    },
+    "pipelineEvidence": {
+      "source": "fix-verifier-core",
+      "status": "proven",
+      "mode": "core-authenticated-observer-events-hmac-receipt",
+      "authorityId": "71c443b8-c95f-464a-86cf-4f5f07be173f",
+      "receipt": {
+        "schema": "phaseB-authenticated-execution-receipt/v1",
+        "authorityId": "71c443b8-c95f-464a-86cf-4f5f07be173f",
+        "issuer": "fix-verifier:checker-blind-input-coverage",
+        "nonce": "b2190c48-b73a-4765-9196-55031bfdf972",
+        "guardId": "checker-blind-input-coverage",
+        "kind": "child-exit",
+        "observerPid": 6020,
+        "childPid": 6097,
+        "childExitCode": 0,
+        "signal": null,
+        "argv": [
+          "scripts/lint-checker-blind-input-coverage.mjs"
+        ],
+        "argvHash": "ee8d981ca55fa9fbff4a431bffc2bd8c540e3d1cc95546b03c2c592206608fba",
+        "startedAt": "2026-08-18T13:44:16.073Z",
+        "childExitedAt": "2026-08-18T13:44:52.032Z",
+        "emittedAfterChildExit": true,
+        "observerSession": "6beb4263-77b5-4c47-82c0-80a16365cbed",
+        "observerEventSequence": 3,
+        "observerEventSignatureHash": "068de2daa262a58ae4549af785c9a954d42228dae708ee76411b4c62f10d6a59",
+        "mac": "6f6af71e6ad0624e376f37c26b4efbedee6a4ac9d7751445b0a545200910f8c6"
+      },
+      "C3": {
+        "outcome": "proven",
+        "receiptCount": 0,
+        "shortCircuitEvent": {
+          "eventSchema": "phaseB-authenticated-observer-event/v1",
+          "source": "fix-verifier-observer",
+          "observerSession": "e0b7de1c-5ef2-4930-a90c-b070e8dde062",
+          "sequence": 2,
+          "kind": "short-circuit",
+          "guardId": "checker-blind-input-coverage",
+          "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+          "observerPid": 62917,
+          "argv": [
+            "scripts/lint-checker-blind-input-coverage.mjs"
+          ],
+          "shortCircuitedAt": "2026-08-18T13:45:54.576Z",
+          "signature": "lpnOPPSKAN8c0gg2CWhGjlursU+7MPxDJx4oMdg1z+WKRzCTQKSYKgkNIhAxtLjZo2vraArvNLsfi1qcZ+vVDg=="
+        },
+        "shortCircuitReceipt": {
+          "schema": "phaseB-authenticated-execution-receipt/v1",
+          "authorityId": "71c443b8-c95f-464a-86cf-4f5f07be173f",
+          "issuer": "fix-verifier:checker-blind-input-coverage",
+          "nonce": "d02ac889-b5c2-4042-aff1-f0c2a84f2169",
+          "guardId": "checker-blind-input-coverage",
+          "kind": "short-circuit",
+          "observerPid": 62917,
+          "childPid": 62917,
+          "childExitCode": 0,
+          "signal": null,
+          "argv": [
+            "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/pipeline-observer/c3/authenticated-observer.mjs",
+            "scripts/lint-checker-blind-input-coverage.mjs"
+          ],
+          "argvHash": "0bd892c2b6c9d8cb06fe204b3a789c99035121f344cabc3063cdcbde4e719d5d",
+          "startedAt": "2026-08-18T13:45:54.576Z",
+          "childExitedAt": "2026-08-18T13:45:54.585Z",
+          "emittedAfterChildExit": true,
+          "observerSession": "e0b7de1c-5ef2-4930-a90c-b070e8dde062",
+          "observerEventSequence": 2,
+          "observerEventSignatureHash": "4526a5b4cbef1e467cfe4d57ddd08adf42985efc54aa778a54a2b07b06993321",
+          "mac": "01fed297e384d1444d9de0f6041fce73d936c7a10f35228bd3826e459759ed69"
+        }
+      },
+      "checks": [
+        {
+          "check": "real declared pipeline wrapper exited successfully",
+          "passed": true
+        },
+        {
+          "check": "private-channel authority authenticated exactly one post-child receipt",
+          "passed": true
+        },
+        {
+          "check": "C3 wrapper still exited successfully",
+          "passed": true
+        },
+        {
+          "check": "C3 authenticated the instrument observer short-circuit",
+          "passed": true
+        },
+        {
+          "check": "C3 produced no guard execution receipt",
+          "passed": true
+        }
+      ]
+    },
+    "run": {
+      "authorityId": "71c443b8-c95f-464a-86cf-4f5f07be173f",
+      "positive": {
+        "run": {
+          "argv": [
+            "npm",
+            "run",
+            "lint"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/01-pipeline-wiring",
+          "startedAt": "2026-08-18T13:43:18.842Z",
+          "endedAt": "2026-08-18T13:44:52.040Z",
+          "durationMs": 93198,
+          "pid": 67964,
+          "exitCode": 0,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "\n> instar@1.3.1180 lint\n> tsc --noEmit && node scripts/lint-no-direct-destructive.js && node scripts/lint-no-direct-llm-http.js && node scripts/lint-no-direct-url-log.js && node scripts/lint-no-unfunneled-topic-creation.js && node scripts/lint-no-unfunneled-headless-launch.js && node scripts/lint-no-unfunneled-tmux-literal-send.js && node scripts/lint-no-unbounded-llm-spawn.js && node scripts/lint-no-unregistered-self-action.js && node scripts/lint-no-unfunneled-credential-write.js && node scripts/lint-state-registry.js && node scripts/lint-store-retention-declared.js && node scripts/lint-no-wholefile-sync-read.js && node scripts/lint-cas-emit-placement.js && node scripts/lint-journal-actuation-ban.js && node scripts/lint-no-blocking-process-scans.js && node scripts/lint-sync-subprocess-chokepoint.js && node scripts/lint-dev-agent-dark-gate.js && node scripts/lint-guard-manifest.js && node scripts/lint-llm-attribution.js && node scripts/lint-no-mainthread-cartographer-walk.js && node scripts/lint-scrape-fixture-realness.js && node scripts/check-codex-rule1-drift.js && node scripts/lint-routing-registry-freshness.js && node scripts/lint-no-opus-claude-cli-gating.js && node scripts/lint-model-registry-freshness.mjs && node scripts/lint-no-unreachable-messaging-gate.js && node scripts/lint-telegram-egress-boundary.mjs && node scripts/lint-nature-chains.mjs && node scripts/lint-emit-without-admit.js && node scripts/lint-migration-consumer-completeness.js && node scripts/lint-canonical-pipeline-completeness.mjs && node scripts/lint-expected-capacity-degradations.js && node scripts/lint-rollout-evidence-resolvable.js && node scripts/lint-no-direct-standards-registry-path.mjs && node scripts/lint-blocking-decisions-declared.mjs && node scripts/lint-no-duplicate-definitions.mjs && node scripts/lint-dispatch-withholds-answer.mjs && node scripts/lint-recall-surface-names-match-mechanism.mjs && node scripts/lint-registry-insertion-placement.mjs && node scripts/lint-standard-code-backreference.mjs && node scripts/lint-registry-tree-parentage.mjs && node scripts/lint-single-governing-obligation.mjs && node scripts/lint-documented-only-countdown.mjs && node scripts/lint-deferral-carrier-resolvable.mjs --staged --enforce && node scripts/generate-standards-hierarchy.mjs --check && node scripts/lint-framework-list-completeness.mjs && node scripts/lint-checker-blind-input-coverage.mjs\n\n[lint-no-direct-url-log] ✓ no credentialed-URL logging found\nlint-no-unfunneled-topic-creation: clean\nlint-no-unfunneled-headless-launch: clean\n✓ tmux literal sends funnelled (scanned 1660 files, 0 unfunneled)\nlint-no-unbounded-llm-spawn: clean\nlint-no-unregistered-self-action: report-only — 25 controller-shape emitter(s) scanned, 19 unregistered.\n  src/core/CaffeinateManager.ts:97 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/core/UpgradeNotifyManager.ts:123 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/core/WorktreeManager.ts:506 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/messaging/SpawnRequestManager.ts:1051 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ActiveWorkSilenceSentinel.ts:203 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/AgentWorktreeReaper.ts:196 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/CollaborationRedriveEngine.ts:322 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ContextWedgeSentinel.ts:321 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/McpProcessReaper.ts:158 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/OrphanProcessReaper.ts:547 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/QuotaManager.ts:419 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/RateLimitSentinel.ts:295 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ReleaseReadinessSentinel.ts:289 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SessionMonitor.ts:335 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SessionWatchdog.ts:429 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SocketDisconnectSentinel.ts:175 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/WorktreeReaper.ts:72 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/threadline/HeartbeatWatchdog.ts:259 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/tunnel/TunnelManager.ts:128 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  (report-only — no build failure; the enforcing flip is gated on prGate.classClosure.dryRun:false after a measured clean soak.)\nlint-no-unfunneled-credential-write: clean\nlint-state-registry: clean (104 registry categories)\nlint-store-retention-declared: OK — 29 stores retentioned, 75 grandfathered (retrofit backlog, may only shrink).\nlint-no-wholefile-sync-read: OK — 0 literal hit(s), all grandfathered (0 baselined).\nlint-cas-emit-placement: clean (14 CAS call site(s), all paired)\nlint-journal-actuation-ban: clean (8 actuator modules, none load the reader)\nlint-no-blocking-process-scans: clean\nlint-sync-subprocess-chokepoint: clean — 95 raw sync spawn(s), all grandfathered (142 baselined).\nlint-dev-agent-dark-gate: clean\nlint-guard-manifest: clean\nlint-no-mainthr\n...[8429 chars omitted]...\nders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-delete-qw3sXz/guard-own.test.mjs (122.072042ms)\nℹ tests 1\nℹ suites 0\nℹ pass 0\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 133.044542\n\n✖ failing tests:\n\ntest at ../../../../../../../../var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-delete-qw3sXz/guard-own.test.mjs:1:1\n✖ /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-delete-qw3sXz/guard-own.test.mjs (122.072042ms)\n  'test failed'\n\nstdout | tests/unit/checker-blind-input-ratchet.test.ts > P3 — the ratchet own test rejects all four guard sabotages > 3b COMMENT OUT every executable line\nP3_3b_COMMENT_OUT mutationApplied=true guardOwnTestExit=1\nfile:///private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-comment-TfoSmI/guard-own.test.mjs:4\nimport { evaluateBlindInputCoverage } from \"file:///var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-comment-TfoSmI/guard.mjs\";\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^\nSyntaxError: The requested module 'file:///var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-comment-TfoSmI/guard.mjs' does not provide an export named 'evaluateBlindInputCoverage'\n    at #asyncInstantiate (node:internal/modules/esm/module_job:319:21)\n    at async ModuleJob.run (node:internal/modules/esm/module_job:422:5)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:655:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)\n\nNode.js v25.6.1\n✖ /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-comment-TfoSmI/guard-own.test.mjs (142.123125ms)\nℹ tests 1\nℹ suites 0\nℹ pass 0\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 153.32575\n\n✖ failing tests:\n\ntest at ../../../../../../../../var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-comment-TfoSmI/guard-own.test.mjs:1:1\n✖ /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-comment-TfoSmI/guard-own.test.mjs (142.123125ms)\n  'test failed'\n\nstdout | tests/unit/checker-blind-input-ratchet.test.ts > P3 — the ratchet own test rejects all four guard sabotages > 3c SUPERSTRING RENAME of the exact guard symbol\nP3_3c_SUPERSTRING_RENAME mutationApplied=true guardOwnTestExit=1\nfile:///private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-rename-S5gzBK/guard-own.test.mjs:4\nimport { evaluateBlindInputCoverage } from \"file:///var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-rename-S5gzBK/guard.mjs\";\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^\nSyntaxError: The requested module 'file:///var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-rename-S5gzBK/guard.mjs' does not provide an export named 'evaluateBlindInputCoverage'\n    at #asyncInstantiate (node:internal/modules/esm/module_job:319:21)\n    at async ModuleJob.run (node:internal/modules/esm/module_job:422:5)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:655:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)\n\nNode.js v25.6.1\n✖ /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-rename-S5gzBK/guard-own.test.mjs (151.643417ms)\nℹ tests 1\nℹ suites 0\nℹ pass 0\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 162.829542\n\n✖ failing tests:\n\ntest at ../../../../../../../../var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-rename-S5gzBK/guard-own.test.mjs:1:1\n✖ /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-rename-S5gzBK/guard-own.test.mjs (151.643417ms)\n  'test failed'\n\nstdout | tests/unit/checker-blind-input-ratchet.test.ts > P3 — the ratchet own test rejects all four guard sabotages > 3d TYPE-PRESERVING HOLLOW BODY returns a passing verdict\nP3_3d_TYPE_PRESERVING_HOLLOW mutationApplied=true guardOwnTestExit=1\n✖ empty population is not proof (4.84775ms)\n✖ unknown coverage id is rejected (0.310875ms)\n✖ new uncovered checker is named and rejected (0.184042ms)\n✔ genuinely covered population passes (0.171875ms)\nℹ tests 4\nℹ suites 0\nℹ pass 1\nℹ fail 3\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 171.46825\n\n✖ failing tests:\n\ntest at ../../checker-p3-hollow-4IXvEG/guard-own.test.mjs:5:1\n✖ empty population is not proof (4.84775ms)\n  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n  + actual - expected\n  \n    {\n      coveredCount: 0,\n  +   maxUncovered: 0,\n  +   passed: true,\n  -   passed: false,\n      populationCount: 0,\n  +   reason: 'within-ratchet',\n  -   reason: 'empty-population',\n      uncovered: []\n    }\n  \n      at TestContext.<anonymous> (file:///private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-hollow-4IXvEG/guard-own.test.mjs:6:10)\n      at Test.runInAsyncScope (node:async_hooks:226:14)\n      at Test.run (node:internal/test_runner/test:1118:25)\n      at Test.start (node:internal/test_runner/test:1015:17)\n      at startSubtestAfterBootstrap (node:internal/test_runner/harness:358:17) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: { passed: true, reason: 'within-ratchet', populationCount: 0, coveredCount: 0, uncovered: [], maxUncovered: 0 },\n    expected: { passed: false, reason: 'empty-population', populationCount: 0, coveredCount: 0, uncovered: [] },\n    operator: 'deepStrictEqual',\n    diff: 'simple'\n  }\n\ntest at ../../checker-p3-hollow-4IXvEG/guard-own.test.mjs:10:1\n✖ unknown coverage id is rejected (0.310875ms)\n  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  true !== false\n  \n      at TestContext.<anonymous> (file:///private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-hollow-4IXvEG/guard-own.test.mjs:11:10)\n      at Test.runInAsyncScope (node:async_hooks:226:14)\n      at Test.run (node:internal/test_runner/test:1118:25)\n      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)\n      at Test.postRun (node:internal/test_runner/test:1247:19)\n      at Test.run (node:internal/test_runner/test:1175:12)\n      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:358:3) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: true,\n    expected: false,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n\ntest at ../../checker-p3-hollow-4IXvEG/guard-own.test.mjs:13:1\n✖ new uncovered checker is named and rejected (0.184042ms)\n  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  true !== false\n  \n      at TestContext.<anonymous> (file:///private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-hollow-4IXvEG/guard-own.test.mjs:15:10)\n      at Test.runInAsyncScope (node:async_hooks:226:14)\n      at Test.run (node:internal/test_runner/test:1118:25)\n      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)\n      at Test.postRun (node:internal/test_runner/test:1247:19)\n      at Test.run (node:internal/test_runner/test:1175:12)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: true,\n    expected: false,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n\n ✓ tests/unit/checker-blind-input-ratchet.test.ts (13 tests) 1264ms\n\n Test Files  1 passed (1)\n      Tests  13 passed (13)\n   Start at  06:44:17\n   Duration  34.78s (transform 365ms, setup 4ms, collect 133ms, tests 1.26s, environment 0ms, prepare 90ms)\n\nchecker-blind-input: executable blind cases passed\nFIX_VERIFIER_OBSERVER_EVENT {\"eventSchema\":\"phaseB-authenticated-observer-event/v1\",\"source\":\"fix-verifier-observer\",\"observerSession\":\"6beb4263-77b5-4c47-82c0-80a16365cbed\",\"sequence\":3,\"kind\":\"child-exit\",\"guardId\":\"checker-blind-input-coverage\",\"nodeEntry\":\"scripts/lint-checker-blind-input-coverage.mjs\",\"observerPid\":6020,\"argv\":[\"scripts/lint-checker-blind-input-coverage.mjs\"],\"childPid\":6097,\"startedAt\":\"2026-08-18T13:44:16.073Z\",\"childExitedAt\":\"2026-08-18T13:44:52.032Z\",\"childExitCode\":0,\"signal\":null,\"emittedAfterChildExit\":true,\"signature\":\"lRlPTzfX2gSs51EL/rHjgejSWPXkZohQcTKzwfO237b1hvut8t5HUzYPF2SWJijKas8XIoMi/xAi7jdBmvW3AA==\"}\n",
+            "truncated": true,
+            "originalChars": 24429
+          },
+          "stderr": {
+            "text": "  ⚠️  register-or-justify: 70 exported parse*/scrape* symbol(s) in src/ are not in SCRAPE_PARSERS.\n      If they consume untrusted real-world text, register them (spec change) or justify out-of-scope in the PR:\n        • parseWorktreeGitPointer (src/core/AgentWorktreeDetector.ts)\n        • parseCapabilityDigest (src/core/CapabilityRegistry.ts)\n        • parseJsonResult (src/core/ClaudeCliIntelligenceProvider.ts)\n        • parseContinuationTasks (src/core/CodexTaskContinuationStore.ts)\n        • parseHlc (src/core/HybridLogicalClock.ts)\n        • parseHlcKey (src/core/HybridLogicalClock.ts)\n        • parseInstrumentAssessment (src/core/InstrumentAssessment.ts)\n        • parseMoveIntentResponse (src/core/MoveIntentClassifier.ts)\n        • parseIdentityLayer (src/core/OrgIntentIdentityLayer.ts)\n        • parsePlanDoc (src/core/PlanDocParser.ts)\n        • parseProfileIntentResponse (src/core/ProfileIntentClassifier.ts)\n        • parseSafeYaml (src/core/SafeYaml.ts)\n        • parseProcTimeToSeconds (src/core/SessionManager.ts)\n        • parseSlackRoutingKey (src/core/SlackForwardBridge.ts)\n        • parseStandardsRegistryDetailed (src/core/StandardsRegistryParser.ts)\n        • parseStandardsRegistry (src/core/StandardsRegistryParser.ts)\n        • parseArcCheckResponse (src/core/TopicIntentArcCheck.ts)\n        • parseExtractorResponse (src/core/TopicIntentExtractor.ts)\n        • parseExtractorAnalysis (src/core/TopicIntentExtractor.ts)\n        • parseUsherResponse (src/core/Usher.ts)\n        • ...and 50 more\n\n[test-runner-bound] targeted-lane slot acquired (posture: enforcing, cap 6, pid 6370)\n",
+            "truncated": false,
+            "originalChars": 1615
+          },
+          "outputSha256": "d053ade55be1022c27f79ef32f1823e1a275e5561419d5a3dedc1474c04cf23f",
+          "observerError": null,
+          "observerCandidateLineCount": 3,
+          "exitProvenance": "direct child status from spawn; shell=false; nested observer pids validated live with ps"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/pipeline-observer/positive/node",
+          "observerProgram": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/pipeline-observer/positive/authenticated-observer.mjs",
+          "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+          "requiredArgs": []
+        },
+        "receipts": [
+          {
+            "schema": "phaseB-authenticated-execution-receipt/v1",
+            "authorityId": "71c443b8-c95f-464a-86cf-4f5f07be173f",
+            "issuer": "fix-verifier:checker-blind-input-coverage",
+            "nonce": "b2190c48-b73a-4765-9196-55031bfdf972",
+            "guardId": "checker-blind-input-coverage",
+            "kind": "child-exit",
+            "observerPid": 6020,
+            "childPid": 6097,
+            "childExitCode": 0,
+            "signal": null,
+            "argv": [
+              "scripts/lint-checker-blind-input-coverage.mjs"
+            ],
+            "argvHash": "ee8d981ca55fa9fbff4a431bffc2bd8c540e3d1cc95546b03c2c592206608fba",
+            "startedAt": "2026-08-18T13:44:16.073Z",
+            "childExitedAt": "2026-08-18T13:44:52.032Z",
+            "emittedAfterChildExit": true,
+            "observerSession": "6beb4263-77b5-4c47-82c0-80a16365cbed",
+            "observerEventSequence": 3,
+            "observerEventSignatureHash": "068de2daa262a58ae4549af785c9a954d42228dae708ee76411b4c62f10d6a59",
+            "mac": "6f6af71e6ad0624e376f37c26b4efbedee6a4ac9d7751445b0a545200910f8c6"
+          }
+        ],
+        "shortCircuitEvents": [],
+        "shortCircuitReceipt": null,
+        "processObservations": {
+          "observerReady": {
+            "event": {
+              "eventSchema": "phaseB-authenticated-observer-event/v1",
+              "source": "fix-verifier-observer",
+              "observerSession": "6beb4263-77b5-4c47-82c0-80a16365cbed",
+              "sequence": 1,
+              "kind": "observer-ready",
+              "guardId": "checker-blind-input-coverage",
+              "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+              "observerPid": 6020,
+              "argv": [
+                "scripts/lint-checker-blind-input-coverage.mjs"
+              ],
+              "publicKey": "MCowBQYDK2VwAyEAsAX1hKsBrkahhGIilHsv44IOriY79jOv0zT9IaI/k1w=",
+              "signature": "SUwt633cMn/R2nhNloNXNHdKVqdCUmjpc8vGPJwP8odxUp7Y/IARigD+9R3OCz7iuLxIl/GYziLBtHoRigCKDg=="
+            },
+            "valid": true,
+            "authenticated": true,
+            "processRecord": {
+              "pid": 6020,
+              "ppid": 68288,
+              "command": "/opt/homebrew/Cellar/node/25.6.1/bin/node /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/pipeline-observer/positive/authenticated-observer.mjs scripts/lint-checker-blind-input-coverage.mjs"
+            }
+          },
+          "validatedChildStart": {
+            "event": {
+              "eventSchema": "phaseB-authenticated-observer-event/v1",
+              "source": "fix-verifier-observer",
+              "observerSession": "6beb4263-77b5-4c47-82c0-80a16365cbed",
+              "sequence": 2,
+              "kind": "child-start",
+              "guardId": "checker-blind-input-coverage",
+              "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+              "observerPid": 6020,
+              "argv": [
+                "scripts/lint-checker-blind-input-coverage.mjs"
+              ],
+              "childPid": 6097,
+              "startedAt": "2026-08-18T13:44:16.073Z",
+              "signature": "4NNVvrJxISwK8P6b88HHH9rMDyNiXsa3vXTCQgALRPNRRaaFK/AgSgRS44KcE/ABul6XVY5ewp1JKNWFQaRwBg=="
+            },
+            "valid": true,
+            "authenticated": true,
+            "processRecord": {
+              "pid": 6097,
+              "ppid": 6020,
+              "command": "/opt/homebrew/Cellar/node/25.6.1/bin/node scripts/lint-checker-blind-input-coverage.mjs"
+            }
+          },
+          "childExit": {
+            "eventSchema": "phaseB-authenticated-observer-event/v1",
+            "source": "fix-verifier-observer",
+            "observerSession": "6beb4263-77b5-4c47-82c0-80a16365cbed",
+            "sequence": 3,
+            "kind": "child-exit",
+            "guardId": "checker-blind-input-coverage",
+            "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+            "observerPid": 6020,
+            "argv": [
+              "scripts/lint-checker-blind-input-coverage.mjs"
+            ],
+            "childPid": 6097,
+            "startedAt": "2026-08-18T13:44:16.073Z",
+            "childExitedAt": "2026-08-18T13:44:52.032Z",
+            "childExitCode": 0,
+            "signal": null,
+            "emittedAfterChildExit": true,
+            "signature": "lRlPTzfX2gSs51EL/rHjgejSWPXkZohQcTKzwfO237b1hvut8t5HUzYPF2SWJijKas8XIoMi/xAi7jdBmvW3AA=="
+          },
+          "authenticatedEventCount": 3,
+          "stdoutCandidateEventLineCount": 3
+        }
+      },
+      "C3": {
+        "run": {
+          "argv": [
+            "npm",
+            "run",
+            "lint"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/01-pipeline-wiring",
+          "startedAt": "2026-08-18T13:44:52.042Z",
+          "endedAt": "2026-08-18T13:45:54.585Z",
+          "durationMs": 62543,
+          "pid": 27100,
+          "exitCode": 0,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "\n> instar@1.3.1180 lint\n> tsc --noEmit && node scripts/lint-no-direct-destructive.js && node scripts/lint-no-direct-llm-http.js && node scripts/lint-no-direct-url-log.js && node scripts/lint-no-unfunneled-topic-creation.js && node scripts/lint-no-unfunneled-headless-launch.js && node scripts/lint-no-unfunneled-tmux-literal-send.js && node scripts/lint-no-unbounded-llm-spawn.js && node scripts/lint-no-unregistered-self-action.js && node scripts/lint-no-unfunneled-credential-write.js && node scripts/lint-state-registry.js && node scripts/lint-store-retention-declared.js && node scripts/lint-no-wholefile-sync-read.js && node scripts/lint-cas-emit-placement.js && node scripts/lint-journal-actuation-ban.js && node scripts/lint-no-blocking-process-scans.js && node scripts/lint-sync-subprocess-chokepoint.js && node scripts/lint-dev-agent-dark-gate.js && node scripts/lint-guard-manifest.js && node scripts/lint-llm-attribution.js && node scripts/lint-no-mainthread-cartographer-walk.js && node scripts/lint-scrape-fixture-realness.js && node scripts/check-codex-rule1-drift.js && node scripts/lint-routing-registry-freshness.js && node scripts/lint-no-opus-claude-cli-gating.js && node scripts/lint-model-registry-freshness.mjs && node scripts/lint-no-unreachable-messaging-gate.js && node scripts/lint-telegram-egress-boundary.mjs && node scripts/lint-nature-chains.mjs && node scripts/lint-emit-without-admit.js && node scripts/lint-migration-consumer-completeness.js && node scripts/lint-canonical-pipeline-completeness.mjs && node scripts/lint-expected-capacity-degradations.js && node scripts/lint-rollout-evidence-resolvable.js && node scripts/lint-no-direct-standards-registry-path.mjs && node scripts/lint-blocking-decisions-declared.mjs && node scripts/lint-no-duplicate-definitions.mjs && node scripts/lint-dispatch-withholds-answer.mjs && node scripts/lint-recall-surface-names-match-mechanism.mjs && node scripts/lint-registry-insertion-placement.mjs && node scripts/lint-standard-code-backreference.mjs && node scripts/lint-registry-tree-parentage.mjs && node scripts/lint-single-governing-obligation.mjs && node scripts/lint-documented-only-countdown.mjs && node scripts/lint-deferral-carrier-resolvable.mjs --staged --enforce && node scripts/generate-standards-hierarchy.mjs --check && node scripts/lint-framework-list-completeness.mjs && node scripts/lint-checker-blind-input-coverage.mjs\n\n[lint-no-direct-url-log] ✓ no credentialed-URL logging found\nlint-no-unfunneled-topic-creation: clean\nlint-no-unfunneled-headless-launch: clean\n✓ tmux literal sends funnelled (scanned 1660 files, 0 unfunneled)\nlint-no-unbounded-llm-spawn: clean\nlint-no-unregistered-self-action: report-only — 25 controller-shape emitter(s) scanned, 19 unregistered.\n  src/core/CaffeinateManager.ts:97 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/core/UpgradeNotifyManager.ts:123 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/core/WorktreeManager.ts:506 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/messaging/SpawnRequestManager.ts:1051 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ActiveWorkSilenceSentinel.ts:203 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/AgentWorktreeReaper.ts:196 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/CollaborationRedriveEngine.ts:322 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ContextWedgeSentinel.ts:321 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/McpProcessReaper.ts:158 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/OrphanProcessReaper.ts:547 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/QuotaManager.ts:419 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/RateLimitSentinel.ts:295 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ReleaseReadinessSentinel.ts:289 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SessionMonitor.ts:335 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SessionWatchdog.ts:429 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SocketDisconnectSentinel.ts:175 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/WorktreeReaper.ts:72 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/threadline/HeartbeatWatchdog.ts:259 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/tunnel/TunnelManager.ts:128 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  (report-only — no build failure; the enforcing flip is gated on prGate.classClosure.dryRun:false after a measured clean soak.)\nlint-no-unfunneled-credential-write: clean\nlint-state-registry: clean (104 registry categories)\nlint-store-retention-declared: OK — 29 stores retentioned, 75 grandfathered (retrofit backlog, may only shrink).\nlint-no-wholefile-sync-read: OK — 0 literal hit(s), all grandfathered (0 baselined).\nlint-cas-emit-placement: clean (14 CAS call site(s), all paired)\nlint-journal-actuation-ban: clean (8 actuator modules, none load the reader)\nlint-no-blocking-process-scans: clean\nlint-sync-subprocess-chokepoint: clean — 95 raw sync spawn(s), all grandfathered (142 baselined).\nlint-dev-agent-dark-gate: clean\nlint-guard-manifest: clean\nlint-no-mainthread-cartographer-walk: clean\n  ✅ parseGroqPricingHtml — realness fixture + feeds-and-asserts test OK (parses the REAL groq.com/pricing table bytes)\n  ✅ parseGooglePricingHtml — realness fixture + feeds-and-asserts test OK (parses the REAL ai.google.dev/pricing flash-lite card bytes (PAID text rate, never audio/free))\n  ✅ FrameworkLoginDriver.parseArtifact — realness fixture + feeds-and-asserts test OK (parses the REAL wrapped Mac Mini login pane)\n  ✅ parseProcTable — realness fixture + feeds-and-asserts test OK (parses the REAL captured ps process table byte-for-byte)\n  ✅ parseProbeResponse — realness fixture + feeds-and-asserts test OK (classifies the REAL captured /mesh/rpc probe responses byte-for-byte)\n  ✅ parseTailscaleStatus — realness fixture + feeds-and-asserts test OK (parses the REAL captured tailscale status --json byte-for-byte)\n  ✅ parseReceivePathMessage — realness fixture + feeds-and-asserts test OK (parses the REAL captured Telegram receive-path message objects)\n  ✅ parseRatificationConfirmation — realness fixture + feeds-and-asserts test OK (binds a REAL reply-anchored confirmation to the enumerated set (message-id chain))\n  ✅ parseDeferTrigger — realness fixture + feeds-and-asserts test OK (matches defer-intent vocabulary in the REAL captured trigger message)\n  ✅ parseDeclaredDeliverables — realness fixture + feeds-and-asserts test OK (a REAL pathless condition text declares NOTHING)\n  ✅ parsePorcelainStatus — realness fixture + feeds-and-asserts test OK (maps REAL git status --porcelain output per the R42 mapping)\n  ✅ runLayerBScan — realness fixture + feeds-and-asserts test OK (flags the REAL incident prose and stays silent on the REAL fenced clean tail)\n[codex-rule1-drift] ✓ config.ts is compliant with spec 12 Rule 1 (Phase A)\nlint-routing-registry-freshness: OK — every COMPONENT_CATEGORY key has a registry row.\nlint-no-opus-claude-cli-gating: OK — R1/R2 clamp intact; no config routes a gating call to Opus×claude-CLI.\n\u001b[1m[lint-model-registry-freshness]\u001b[0m enforcement=strict\n  \u001b[32mok\u001b[0m   Staleness OK: reviewed 2026-08-18 (0d ago, window 45d).\n  \u001b[32mok\u001b[0m   Drift OK: gemini-cli 'gemini-capable-tier' -> 'gemini-3.1-pro-preview' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: codex-cli 'codex-capable-tier' -> 'gpt-5.5' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: anthropic-headless 'anthropic-headless-capable-tier' -> 'claude-opus-4-8' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-tier-escalation-default-escalated' -> 'claude-opus-4-8' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-tier-escalation-default-escalated' -> 'claude-fable-5' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-clean-door-reviewer-default' -> 'claude-fable-5' (in derived frontier set).\n\u001b[32mPASS\u001b[0m — model registry pins fresh and in-allowlist.\nlint-no-unreachable-messaging-gate: clean\nlint-telegram-egress-boundary: clean — Telegram Bot API egress is confined to src/messaging/telegram-egress.ts, which checks the serialised body before sending.\nlint-nature-chains: OK — FD4 harness-door ban clean (claude-code FAST/SORT/JUDGE is the pinned reserve 'claude-sonnet-4-6', no Fable), AND the FD4.2 R-rule structural exclusions (R3–R8) all hold.\n[lint-emit-without-admit] OK — 1659 file(s) scanned, 0 violations.\nlint-migration-consumer-completeness: clean\nlint-canonical-pipeline-completeness: clean (structural coverage evidence only)\n[capacity-enforcement-contracts] PASS\nlint-rollout-evidence-resolvable: clean — 8 guarded endpoint spec(s) (5 active, 3 composed), 8 resolving, 0 accepted-unresolved.\n✓ lint-no-direct-standards-registry-path: the resolver is the only path constructor.\nlint-blocking-decisions-declared: clean — 26 file(s) in the population, 12/12 declared blocking (shrink-only), 14 content-pinned as non-blocking.\nlint-no-duplicate-definitions: clean — 15 family heading(s), 88 article(s), 2 article ID(s), no duplicate definitions.\nlint-dispatch-withholds-answer: clean — 7 templated dispatch(es) carry the complete withhold-the-answer protocol. (Ad-hoc dispatches are out of scope; see the header.)\nlint-recall-surface-names-match-mechanism: clean — 2 advertised recall surface(s); /semantic/search/hybrid → .searchHybrid (meaning), /semantic/search → .search (literal).\nlint-registry-insertion-placement: clean — 88 article(s), 77 declaring a placement, 11 grandfathered (shrink-only).\nlint-standard-code-backreference: clean — 50 cited file(s), 23 naming a standard back, 27 grandfathered (shrink-only).\nlint-registry-tree-parentage: clean — 88 article(s), 39 declared parent-child relation(s), all resolving and bidirectional.\nlint-single-governing-obligation: clean — 8 obligation(s), each with one declared governing article and 10 deferring article(s).\nlint-documented-only-countdown: clean — 3 article countdown(s) + 36 sub-obligation countdown(s), all unexpired; soonest 2026-09-07 (\"The Body and the Mind\").\nlint-deferral-carrier-resolvable: clean — 0 marker(s), each resolving to an inlined carrier excerpt. NOTE: this verifies the carrier is CHECKABLE, not that it COVERS the deferral — semantic coverage is the reviewer's job (see the header for why no similarity metric was shippable).\ngenerate-standards-hierarchy --check: clean — 39 declared relation(s) rendered, block current.\n[framework-list] self-test passed (both detectors fire on a known-stale list; the subset marker suppresses); compared 5 framework list(s) (0 literal-union, 2 named-type, 3 declared-subset) across 1660 files.\n[framework-list] OK — every annotated list covers its own declared type.\nFIX_VERIFIER_OBSERVER_EVENT {\"eventSchema\":\"phaseB-authenticated-observer-event/v1\",\"source\":\"fix-verifier-observer\",\"observerSession\":\"e0b7de1c-5ef2-4930-a90c-b070e8dde062\",\"sequence\":1,\"kind\":\"observer-ready\",\"guardId\":\"checker-blind-input-coverage\",\"nodeEntry\":\"scripts/lint-checker-blind-input-coverage.mjs\",\"observerPid\":62917,\"argv\":[\"scripts/lint-checker-blind-input-coverage.mjs\"],\"publicKey\":\"MCowBQYDK2VwAyEAn1If3oS4HEeyOmMyHuDNg9rKfHZoolN0zLuJc6vwGqQ=\",\"signature\":\"j/srClQUfYT5dpCzr2OXVoD8Es8sYC/Zd1GbegPivZom1ODJB7qXBxBKrhygWZC+ukBw2d6G9pWfZLO7UdGsDw==\"}\nFIX_VERIFIER_OBSERVER_EVENT {\"eventSchema\":\"phaseB-authenticated-observer-event/v1\",\"source\":\"fix-verifier-observer\",\"observerSession\":\"e0b7de1c-5ef2-4930-a90c-b070e8dde062\",\"sequence\":2,\"kind\":\"short-circuit\",\"guardId\":\"checker-blind-input-coverage\",\"nodeEntry\":\"scripts/lint-checker-blind-input-coverage.mjs\",\"observerPid\":62917,\"argv\":[\"scripts/lint-checker-blind-input-coverage.mjs\"],\"shortCircuitedAt\":\"2026-08-18T13:45:54.576Z\",\"signature\":\"lpnOPPSKAN8c0gg2CWhGjlursU+7MPxDJx4oMdg1z+WKRzCTQKSYKgkNIhAxtLjZo2vraArvNLsfi1qcZ+vVDg==\"}\n[fix-verifier-C3] authenticated observer short-circuited guard=checker-blind-input-coverage entry=scripts/lint-checker-blind-input-coverage.mjs\n",
+            "truncated": false,
+            "originalChars": 14882
+          },
+          "stderr": {
+            "text": "  ⚠️  register-or-justify: 70 exported parse*/scrape* symbol(s) in src/ are not in SCRAPE_PARSERS.\n      If they consume untrusted real-world text, register them (spec change) or justify out-of-scope in the PR:\n        • parseWorktreeGitPointer (src/core/AgentWorktreeDetector.ts)\n        • parseCapabilityDigest (src/core/CapabilityRegistry.ts)\n        • parseJsonResult (src/core/ClaudeCliIntelligenceProvider.ts)\n        • parseContinuationTasks (src/core/CodexTaskContinuationStore.ts)\n        • parseHlc (src/core/HybridLogicalClock.ts)\n        • parseHlcKey (src/core/HybridLogicalClock.ts)\n        • parseInstrumentAssessment (src/core/InstrumentAssessment.ts)\n        • parseMoveIntentResponse (src/core/MoveIntentClassifier.ts)\n        • parseIdentityLayer (src/core/OrgIntentIdentityLayer.ts)\n        • parsePlanDoc (src/core/PlanDocParser.ts)\n        • parseProfileIntentResponse (src/core/ProfileIntentClassifier.ts)\n        • parseSafeYaml (src/core/SafeYaml.ts)\n        • parseProcTimeToSeconds (src/core/SessionManager.ts)\n        • parseSlackRoutingKey (src/core/SlackForwardBridge.ts)\n        • parseStandardsRegistryDetailed (src/core/StandardsRegistryParser.ts)\n        • parseStandardsRegistry (src/core/StandardsRegistryParser.ts)\n        • parseArcCheckResponse (src/core/TopicIntentArcCheck.ts)\n        • parseExtractorResponse (src/core/TopicIntentExtractor.ts)\n        • parseExtractorAnalysis (src/core/TopicIntentExtractor.ts)\n        • parseUsherResponse (src/core/Usher.ts)\n        • ...and 50 more\n\n",
+            "truncated": false,
+            "originalChars": 1529
+          },
+          "outputSha256": "da449880e673cfb642623f4b058b03978f4002f77402bbc49682bbf59e25e486",
+          "observerError": null,
+          "observerCandidateLineCount": 2,
+          "exitProvenance": "direct child status from spawn; shell=false; nested observer pids validated live with ps"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/pipeline-observer/c3/node",
+          "observerProgram": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/pipeline-observer/c3/authenticated-observer.mjs",
+          "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+          "requiredArgs": []
+        },
+        "receipts": [],
+        "shortCircuitEvents": [
+          {
+            "eventSchema": "phaseB-authenticated-observer-event/v1",
+            "source": "fix-verifier-observer",
+            "observerSession": "e0b7de1c-5ef2-4930-a90c-b070e8dde062",
+            "sequence": 2,
+            "kind": "short-circuit",
+            "guardId": "checker-blind-input-coverage",
+            "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+            "observerPid": 62917,
+            "argv": [
+              "scripts/lint-checker-blind-input-coverage.mjs"
+            ],
+            "shortCircuitedAt": "2026-08-18T13:45:54.576Z",
+            "signature": "lpnOPPSKAN8c0gg2CWhGjlursU+7MPxDJx4oMdg1z+WKRzCTQKSYKgkNIhAxtLjZo2vraArvNLsfi1qcZ+vVDg=="
+          }
+        ],
+        "shortCircuitReceipt": {
+          "schema": "phaseB-authenticated-execution-receipt/v1",
+          "authorityId": "71c443b8-c95f-464a-86cf-4f5f07be173f",
+          "issuer": "fix-verifier:checker-blind-input-coverage",
+          "nonce": "d02ac889-b5c2-4042-aff1-f0c2a84f2169",
+          "guardId": "checker-blind-input-coverage",
+          "kind": "short-circuit",
+          "observerPid": 62917,
+          "childPid": 62917,
+          "childExitCode": 0,
+          "signal": null,
+          "argv": [
+            "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/pipeline-observer/c3/authenticated-observer.mjs",
+            "scripts/lint-checker-blind-input-coverage.mjs"
+          ],
+          "argvHash": "0bd892c2b6c9d8cb06fe204b3a789c99035121f344cabc3063cdcbde4e719d5d",
+          "startedAt": "2026-08-18T13:45:54.576Z",
+          "childExitedAt": "2026-08-18T13:45:54.585Z",
+          "emittedAfterChildExit": true,
+          "observerSession": "e0b7de1c-5ef2-4930-a90c-b070e8dde062",
+          "observerEventSequence": 2,
+          "observerEventSignatureHash": "4526a5b4cbef1e467cfe4d57ddd08adf42985efc54aa778a54a2b07b06993321",
+          "mac": "01fed297e384d1444d9de0f6041fce73d936c7a10f35228bd3826e459759ed69"
+        },
+        "processObservations": {
+          "observerReady": {
+            "event": {
+              "eventSchema": "phaseB-authenticated-observer-event/v1",
+              "source": "fix-verifier-observer",
+              "observerSession": "e0b7de1c-5ef2-4930-a90c-b070e8dde062",
+              "sequence": 1,
+              "kind": "observer-ready",
+              "guardId": "checker-blind-input-coverage",
+              "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+              "observerPid": 62917,
+              "argv": [
+                "scripts/lint-checker-blind-input-coverage.mjs"
+              ],
+              "publicKey": "MCowBQYDK2VwAyEAn1If3oS4HEeyOmMyHuDNg9rKfHZoolN0zLuJc6vwGqQ=",
+              "signature": "j/srClQUfYT5dpCzr2OXVoD8Es8sYC/Zd1GbegPivZom1ODJB7qXBxBKrhygWZC+ukBw2d6G9pWfZLO7UdGsDw=="
+            },
+            "valid": true,
+            "authenticated": true,
+            "processRecord": {
+              "pid": 62917,
+              "ppid": 27367,
+              "command": "/opt/homebrew/Cellar/node/25.6.1/bin/node /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/pipeline-observer/c3/authenticated-observer.mjs scripts/lint-checker-blind-input-coverage.mjs"
+            }
+          },
+          "validatedChildStart": null,
+          "childExit": null,
+          "authenticatedEventCount": 2,
+          "stdoutCandidateEventLineCount": 2
+        },
+        "outcome": "proven"
+      },
+      "envelope": {
+        "source": "fix-verifier-core",
+        "status": "proven",
+        "mode": "core-authenticated-observer-events-hmac-receipt",
+        "authorityId": "71c443b8-c95f-464a-86cf-4f5f07be173f",
+        "receipt": {
+          "schema": "phaseB-authenticated-execution-receipt/v1",
+          "authorityId": "71c443b8-c95f-464a-86cf-4f5f07be173f",
+          "issuer": "fix-verifier:checker-blind-input-coverage",
+          "nonce": "b2190c48-b73a-4765-9196-55031bfdf972",
+          "guardId": "checker-blind-input-coverage",
+          "kind": "child-exit",
+          "observerPid": 6020,
+          "childPid": 6097,
+          "childExitCode": 0,
+          "signal": null,
+          "argv": [
+            "scripts/lint-checker-blind-input-coverage.mjs"
+          ],
+          "argvHash": "ee8d981ca55fa9fbff4a431bffc2bd8c540e3d1cc95546b03c2c592206608fba",
+          "startedAt": "2026-08-18T13:44:16.073Z",
+          "childExitedAt": "2026-08-18T13:44:52.032Z",
+          "emittedAfterChildExit": true,
+          "observerSession": "6beb4263-77b5-4c47-82c0-80a16365cbed",
+          "observerEventSequence": 3,
+          "observerEventSignatureHash": "068de2daa262a58ae4549af785c9a954d42228dae708ee76411b4c62f10d6a59",
+          "mac": "6f6af71e6ad0624e376f37c26b4efbedee6a4ac9d7751445b0a545200910f8c6"
+        },
+        "C3": {
+          "outcome": "proven",
+          "receiptCount": 0,
+          "shortCircuitEvent": {
+            "eventSchema": "phaseB-authenticated-observer-event/v1",
+            "source": "fix-verifier-observer",
+            "observerSession": "e0b7de1c-5ef2-4930-a90c-b070e8dde062",
+            "sequence": 2,
+            "kind": "short-circuit",
+            "guardId": "checker-blind-input-coverage",
+            "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+            "observerPid": 62917,
+            "argv": [
+              "scripts/lint-checker-blind-input-coverage.mjs"
+            ],
+            "shortCircuitedAt": "2026-08-18T13:45:54.576Z",
+            "signature": "lpnOPPSKAN8c0gg2CWhGjlursU+7MPxDJx4oMdg1z+WKRzCTQKSYKgkNIhAxtLjZo2vraArvNLsfi1qcZ+vVDg=="
+          },
+          "shortCircuitReceipt": {
+            "schema": "phaseB-authenticated-execution-receipt/v1",
+            "authorityId": "71c443b8-c95f-464a-86cf-4f5f07be173f",
+            "issuer": "fix-verifier:checker-blind-input-coverage",
+            "nonce": "d02ac889-b5c2-4042-aff1-f0c2a84f2169",
+            "guardId": "checker-blind-input-coverage",
+            "kind": "short-circuit",
+            "observerPid": 62917,
+            "childPid": 62917,
+            "childExitCode": 0,
+            "signal": null,
+            "argv": [
+              "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/pipeline-observer/c3/authenticated-observer.mjs",
+              "scripts/lint-checker-blind-input-coverage.mjs"
+            ],
+            "argvHash": "0bd892c2b6c9d8cb06fe204b3a789c99035121f344cabc3063cdcbde4e719d5d",
+            "startedAt": "2026-08-18T13:45:54.576Z",
+            "childExitedAt": "2026-08-18T13:45:54.585Z",
+            "emittedAfterChildExit": true,
+            "observerSession": "e0b7de1c-5ef2-4930-a90c-b070e8dde062",
+            "observerEventSequence": 2,
+            "observerEventSignatureHash": "4526a5b4cbef1e467cfe4d57ddd08adf42985efc54aa778a54a2b07b06993321",
+            "mac": "01fed297e384d1444d9de0f6041fce73d936c7a10f35228bd3826e459759ed69"
+          }
+        },
+        "checks": [
+          {
+            "check": "real declared pipeline wrapper exited successfully",
+            "passed": true
+          },
+          {
+            "check": "private-channel authority authenticated exactly one post-child receipt",
+            "passed": true
+          },
+          {
+            "check": "C3 wrapper still exited successfully",
+            "passed": true
+          },
+          {
+            "check": "C3 authenticated the instrument observer short-circuit",
+            "passed": true
+          },
+          {
+            "check": "C3 produced no guard execution receipt",
+            "passed": true
+          }
+        ]
+      }
+    }
+  },
+  "controls": {
+    "C1": {
+      "outcome": "proven",
+      "required": "untouched guard passes through the real protected-workflow entry and emits the post-child receipt",
+      "run": {
+        "run": {
+          "argv": [
+            "npm",
+            "run",
+            "lint"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/01-pipeline-wiring",
+          "startedAt": "2026-08-18T13:43:18.842Z",
+          "endedAt": "2026-08-18T13:44:52.040Z",
+          "durationMs": 93198,
+          "pid": 67964,
+          "exitCode": 0,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "\n> instar@1.3.1180 lint\n> tsc --noEmit && node scripts/lint-no-direct-destructive.js && node scripts/lint-no-direct-llm-http.js && node scripts/lint-no-direct-url-log.js && node scripts/lint-no-unfunneled-topic-creation.js && node scripts/lint-no-unfunneled-headless-launch.js && node scripts/lint-no-unfunneled-tmux-literal-send.js && node scripts/lint-no-unbounded-llm-spawn.js && node scripts/lint-no-unregistered-self-action.js && node scripts/lint-no-unfunneled-credential-write.js && node scripts/lint-state-registry.js && node scripts/lint-store-retention-declared.js && node scripts/lint-no-wholefile-sync-read.js && node scripts/lint-cas-emit-placement.js && node scripts/lint-journal-actuation-ban.js && node scripts/lint-no-blocking-process-scans.js && node scripts/lint-sync-subprocess-chokepoint.js && node scripts/lint-dev-agent-dark-gate.js && node scripts/lint-guard-manifest.js && node scripts/lint-llm-attribution.js && node scripts/lint-no-mainthread-cartographer-walk.js && node scripts/lint-scrape-fixture-realness.js && node scripts/check-codex-rule1-drift.js && node scripts/lint-routing-registry-freshness.js && node scripts/lint-no-opus-claude-cli-gating.js && node scripts/lint-model-registry-freshness.mjs && node scripts/lint-no-unreachable-messaging-gate.js && node scripts/lint-telegram-egress-boundary.mjs && node scripts/lint-nature-chains.mjs && node scripts/lint-emit-without-admit.js && node scripts/lint-migration-consumer-completeness.js && node scripts/lint-canonical-pipeline-completeness.mjs && node scripts/lint-expected-capacity-degradations.js && node scripts/lint-rollout-evidence-resolvable.js && node scripts/lint-no-direct-standards-registry-path.mjs && node scripts/lint-blocking-decisions-declared.mjs && node scripts/lint-no-duplicate-definitions.mjs && node scripts/lint-dispatch-withholds-answer.mjs && node scripts/lint-recall-surface-names-match-mechanism.mjs && node scripts/lint-registry-insertion-placement.mjs && node scripts/lint-standard-code-backreference.mjs && node scripts/lint-registry-tree-parentage.mjs && node scripts/lint-single-governing-obligation.mjs && node scripts/lint-documented-only-countdown.mjs && node scripts/lint-deferral-carrier-resolvable.mjs --staged --enforce && node scripts/generate-standards-hierarchy.mjs --check && node scripts/lint-framework-list-completeness.mjs && node scripts/lint-checker-blind-input-coverage.mjs\n\n[lint-no-direct-url-log] ✓ no credentialed-URL logging found\nlint-no-unfunneled-topic-creation: clean\nlint-no-unfunneled-headless-launch: clean\n✓ tmux literal sends funnelled (scanned 1660 files, 0 unfunneled)\nlint-no-unbounded-llm-spawn: clean\nlint-no-unregistered-self-action: report-only — 25 controller-shape emitter(s) scanned, 19 unregistered.\n  src/core/CaffeinateManager.ts:97 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/core/UpgradeNotifyManager.ts:123 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/core/WorktreeManager.ts:506 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/messaging/SpawnRequestManager.ts:1051 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ActiveWorkSilenceSentinel.ts:203 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/AgentWorktreeReaper.ts:196 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/CollaborationRedriveEngine.ts:322 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ContextWedgeSentinel.ts:321 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/McpProcessReaper.ts:158 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/OrphanProcessReaper.ts:547 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/QuotaManager.ts:419 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/RateLimitSentinel.ts:295 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ReleaseReadinessSentinel.ts:289 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SessionMonitor.ts:335 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SessionWatchdog.ts:429 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SocketDisconnectSentinel.ts:175 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/WorktreeReaper.ts:72 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/threadline/HeartbeatWatchdog.ts:259 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/tunnel/TunnelManager.ts:128 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  (report-only — no build failure; the enforcing flip is gated on prGate.classClosure.dryRun:false after a measured clean soak.)\nlint-no-unfunneled-credential-write: clean\nlint-state-registry: clean (104 registry categories)\nlint-store-retention-declared: OK — 29 stores retentioned, 75 grandfathered (retrofit backlog, may only shrink).\nlint-no-wholefile-sync-read: OK — 0 literal hit(s), all grandfathered (0 baselined).\nlint-cas-emit-placement: clean (14 CAS call site(s), all paired)\nlint-journal-actuation-ban: clean (8 actuator modules, none load the reader)\nlint-no-blocking-process-scans: clean\nlint-sync-subprocess-chokepoint: clean — 95 raw sync spawn(s), all grandfathered (142 baselined).\nlint-dev-agent-dark-gate: clean\nlint-guard-manifest: clean\nlint-no-mainthr\n...[8429 chars omitted]...\nders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-delete-qw3sXz/guard-own.test.mjs (122.072042ms)\nℹ tests 1\nℹ suites 0\nℹ pass 0\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 133.044542\n\n✖ failing tests:\n\ntest at ../../../../../../../../var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-delete-qw3sXz/guard-own.test.mjs:1:1\n✖ /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-delete-qw3sXz/guard-own.test.mjs (122.072042ms)\n  'test failed'\n\nstdout | tests/unit/checker-blind-input-ratchet.test.ts > P3 — the ratchet own test rejects all four guard sabotages > 3b COMMENT OUT every executable line\nP3_3b_COMMENT_OUT mutationApplied=true guardOwnTestExit=1\nfile:///private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-comment-TfoSmI/guard-own.test.mjs:4\nimport { evaluateBlindInputCoverage } from \"file:///var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-comment-TfoSmI/guard.mjs\";\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^\nSyntaxError: The requested module 'file:///var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-comment-TfoSmI/guard.mjs' does not provide an export named 'evaluateBlindInputCoverage'\n    at #asyncInstantiate (node:internal/modules/esm/module_job:319:21)\n    at async ModuleJob.run (node:internal/modules/esm/module_job:422:5)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:655:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)\n\nNode.js v25.6.1\n✖ /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-comment-TfoSmI/guard-own.test.mjs (142.123125ms)\nℹ tests 1\nℹ suites 0\nℹ pass 0\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 153.32575\n\n✖ failing tests:\n\ntest at ../../../../../../../../var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-comment-TfoSmI/guard-own.test.mjs:1:1\n✖ /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-comment-TfoSmI/guard-own.test.mjs (142.123125ms)\n  'test failed'\n\nstdout | tests/unit/checker-blind-input-ratchet.test.ts > P3 — the ratchet own test rejects all four guard sabotages > 3c SUPERSTRING RENAME of the exact guard symbol\nP3_3c_SUPERSTRING_RENAME mutationApplied=true guardOwnTestExit=1\nfile:///private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-rename-S5gzBK/guard-own.test.mjs:4\nimport { evaluateBlindInputCoverage } from \"file:///var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-rename-S5gzBK/guard.mjs\";\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^\nSyntaxError: The requested module 'file:///var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-rename-S5gzBK/guard.mjs' does not provide an export named 'evaluateBlindInputCoverage'\n    at #asyncInstantiate (node:internal/modules/esm/module_job:319:21)\n    at async ModuleJob.run (node:internal/modules/esm/module_job:422:5)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:655:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)\n\nNode.js v25.6.1\n✖ /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-rename-S5gzBK/guard-own.test.mjs (151.643417ms)\nℹ tests 1\nℹ suites 0\nℹ pass 0\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 162.829542\n\n✖ failing tests:\n\ntest at ../../../../../../../../var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-rename-S5gzBK/guard-own.test.mjs:1:1\n✖ /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-rename-S5gzBK/guard-own.test.mjs (151.643417ms)\n  'test failed'\n\nstdout | tests/unit/checker-blind-input-ratchet.test.ts > P3 — the ratchet own test rejects all four guard sabotages > 3d TYPE-PRESERVING HOLLOW BODY returns a passing verdict\nP3_3d_TYPE_PRESERVING_HOLLOW mutationApplied=true guardOwnTestExit=1\n✖ empty population is not proof (4.84775ms)\n✖ unknown coverage id is rejected (0.310875ms)\n✖ new uncovered checker is named and rejected (0.184042ms)\n✔ genuinely covered population passes (0.171875ms)\nℹ tests 4\nℹ suites 0\nℹ pass 1\nℹ fail 3\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 171.46825\n\n✖ failing tests:\n\ntest at ../../checker-p3-hollow-4IXvEG/guard-own.test.mjs:5:1\n✖ empty population is not proof (4.84775ms)\n  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n  + actual - expected\n  \n    {\n      coveredCount: 0,\n  +   maxUncovered: 0,\n  +   passed: true,\n  -   passed: false,\n      populationCount: 0,\n  +   reason: 'within-ratchet',\n  -   reason: 'empty-population',\n      uncovered: []\n    }\n  \n      at TestContext.<anonymous> (file:///private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-hollow-4IXvEG/guard-own.test.mjs:6:10)\n      at Test.runInAsyncScope (node:async_hooks:226:14)\n      at Test.run (node:internal/test_runner/test:1118:25)\n      at Test.start (node:internal/test_runner/test:1015:17)\n      at startSubtestAfterBootstrap (node:internal/test_runner/harness:358:17) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: { passed: true, reason: 'within-ratchet', populationCount: 0, coveredCount: 0, uncovered: [], maxUncovered: 0 },\n    expected: { passed: false, reason: 'empty-population', populationCount: 0, coveredCount: 0, uncovered: [] },\n    operator: 'deepStrictEqual',\n    diff: 'simple'\n  }\n\ntest at ../../checker-p3-hollow-4IXvEG/guard-own.test.mjs:10:1\n✖ unknown coverage id is rejected (0.310875ms)\n  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  true !== false\n  \n      at TestContext.<anonymous> (file:///private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-hollow-4IXvEG/guard-own.test.mjs:11:10)\n      at Test.runInAsyncScope (node:async_hooks:226:14)\n      at Test.run (node:internal/test_runner/test:1118:25)\n      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)\n      at Test.postRun (node:internal/test_runner/test:1247:19)\n      at Test.run (node:internal/test_runner/test:1175:12)\n      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:358:3) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: true,\n    expected: false,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n\ntest at ../../checker-p3-hollow-4IXvEG/guard-own.test.mjs:13:1\n✖ new uncovered checker is named and rejected (0.184042ms)\n  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  true !== false\n  \n      at TestContext.<anonymous> (file:///private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/checker-p3-hollow-4IXvEG/guard-own.test.mjs:15:10)\n      at Test.runInAsyncScope (node:async_hooks:226:14)\n      at Test.run (node:internal/test_runner/test:1118:25)\n      at Test.processPendingSubtests (node:internal/test_runner/test:787:18)\n      at Test.postRun (node:internal/test_runner/test:1247:19)\n      at Test.run (node:internal/test_runner/test:1175:12)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: true,\n    expected: false,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n\n ✓ tests/unit/checker-blind-input-ratchet.test.ts (13 tests) 1264ms\n\n Test Files  1 passed (1)\n      Tests  13 passed (13)\n   Start at  06:44:17\n   Duration  34.78s (transform 365ms, setup 4ms, collect 133ms, tests 1.26s, environment 0ms, prepare 90ms)\n\nchecker-blind-input: executable blind cases passed\nFIX_VERIFIER_OBSERVER_EVENT {\"eventSchema\":\"phaseB-authenticated-observer-event/v1\",\"source\":\"fix-verifier-observer\",\"observerSession\":\"6beb4263-77b5-4c47-82c0-80a16365cbed\",\"sequence\":3,\"kind\":\"child-exit\",\"guardId\":\"checker-blind-input-coverage\",\"nodeEntry\":\"scripts/lint-checker-blind-input-coverage.mjs\",\"observerPid\":6020,\"argv\":[\"scripts/lint-checker-blind-input-coverage.mjs\"],\"childPid\":6097,\"startedAt\":\"2026-08-18T13:44:16.073Z\",\"childExitedAt\":\"2026-08-18T13:44:52.032Z\",\"childExitCode\":0,\"signal\":null,\"emittedAfterChildExit\":true,\"signature\":\"lRlPTzfX2gSs51EL/rHjgejSWPXkZohQcTKzwfO237b1hvut8t5HUzYPF2SWJijKas8XIoMi/xAi7jdBmvW3AA==\"}\n",
+            "truncated": true,
+            "originalChars": 24429
+          },
+          "stderr": {
+            "text": "  ⚠️  register-or-justify: 70 exported parse*/scrape* symbol(s) in src/ are not in SCRAPE_PARSERS.\n      If they consume untrusted real-world text, register them (spec change) or justify out-of-scope in the PR:\n        • parseWorktreeGitPointer (src/core/AgentWorktreeDetector.ts)\n        • parseCapabilityDigest (src/core/CapabilityRegistry.ts)\n        • parseJsonResult (src/core/ClaudeCliIntelligenceProvider.ts)\n        • parseContinuationTasks (src/core/CodexTaskContinuationStore.ts)\n        • parseHlc (src/core/HybridLogicalClock.ts)\n        • parseHlcKey (src/core/HybridLogicalClock.ts)\n        • parseInstrumentAssessment (src/core/InstrumentAssessment.ts)\n        • parseMoveIntentResponse (src/core/MoveIntentClassifier.ts)\n        • parseIdentityLayer (src/core/OrgIntentIdentityLayer.ts)\n        • parsePlanDoc (src/core/PlanDocParser.ts)\n        • parseProfileIntentResponse (src/core/ProfileIntentClassifier.ts)\n        • parseSafeYaml (src/core/SafeYaml.ts)\n        • parseProcTimeToSeconds (src/core/SessionManager.ts)\n        • parseSlackRoutingKey (src/core/SlackForwardBridge.ts)\n        • parseStandardsRegistryDetailed (src/core/StandardsRegistryParser.ts)\n        • parseStandardsRegistry (src/core/StandardsRegistryParser.ts)\n        • parseArcCheckResponse (src/core/TopicIntentArcCheck.ts)\n        • parseExtractorResponse (src/core/TopicIntentExtractor.ts)\n        • parseExtractorAnalysis (src/core/TopicIntentExtractor.ts)\n        • parseUsherResponse (src/core/Usher.ts)\n        • ...and 50 more\n\n[test-runner-bound] targeted-lane slot acquired (posture: enforcing, cap 6, pid 6370)\n",
+            "truncated": false,
+            "originalChars": 1615
+          },
+          "outputSha256": "d053ade55be1022c27f79ef32f1823e1a275e5561419d5a3dedc1474c04cf23f",
+          "observerError": null,
+          "observerCandidateLineCount": 3,
+          "exitProvenance": "direct child status from spawn; shell=false; nested observer pids validated live with ps"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/pipeline-observer/positive/node",
+          "observerProgram": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/pipeline-observer/positive/authenticated-observer.mjs",
+          "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+          "requiredArgs": []
+        },
+        "receipts": [
+          {
+            "schema": "phaseB-authenticated-execution-receipt/v1",
+            "authorityId": "71c443b8-c95f-464a-86cf-4f5f07be173f",
+            "issuer": "fix-verifier:checker-blind-input-coverage",
+            "nonce": "b2190c48-b73a-4765-9196-55031bfdf972",
+            "guardId": "checker-blind-input-coverage",
+            "kind": "child-exit",
+            "observerPid": 6020,
+            "childPid": 6097,
+            "childExitCode": 0,
+            "signal": null,
+            "argv": [
+              "scripts/lint-checker-blind-input-coverage.mjs"
+            ],
+            "argvHash": "ee8d981ca55fa9fbff4a431bffc2bd8c540e3d1cc95546b03c2c592206608fba",
+            "startedAt": "2026-08-18T13:44:16.073Z",
+            "childExitedAt": "2026-08-18T13:44:52.032Z",
+            "emittedAfterChildExit": true,
+            "observerSession": "6beb4263-77b5-4c47-82c0-80a16365cbed",
+            "observerEventSequence": 3,
+            "observerEventSignatureHash": "068de2daa262a58ae4549af785c9a954d42228dae708ee76411b4c62f10d6a59",
+            "mac": "6f6af71e6ad0624e376f37c26b4efbedee6a4ac9d7751445b0a545200910f8c6"
+          }
+        ],
+        "shortCircuitEvents": [],
+        "shortCircuitReceipt": null,
+        "processObservations": {
+          "observerReady": {
+            "event": {
+              "eventSchema": "phaseB-authenticated-observer-event/v1",
+              "source": "fix-verifier-observer",
+              "observerSession": "6beb4263-77b5-4c47-82c0-80a16365cbed",
+              "sequence": 1,
+              "kind": "observer-ready",
+              "guardId": "checker-blind-input-coverage",
+              "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+              "observerPid": 6020,
+              "argv": [
+                "scripts/lint-checker-blind-input-coverage.mjs"
+              ],
+              "publicKey": "MCowBQYDK2VwAyEAsAX1hKsBrkahhGIilHsv44IOriY79jOv0zT9IaI/k1w=",
+              "signature": "SUwt633cMn/R2nhNloNXNHdKVqdCUmjpc8vGPJwP8odxUp7Y/IARigD+9R3OCz7iuLxIl/GYziLBtHoRigCKDg=="
+            },
+            "valid": true,
+            "authenticated": true,
+            "processRecord": {
+              "pid": 6020,
+              "ppid": 68288,
+              "command": "/opt/homebrew/Cellar/node/25.6.1/bin/node /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/pipeline-observer/positive/authenticated-observer.mjs scripts/lint-checker-blind-input-coverage.mjs"
+            }
+          },
+          "validatedChildStart": {
+            "event": {
+              "eventSchema": "phaseB-authenticated-observer-event/v1",
+              "source": "fix-verifier-observer",
+              "observerSession": "6beb4263-77b5-4c47-82c0-80a16365cbed",
+              "sequence": 2,
+              "kind": "child-start",
+              "guardId": "checker-blind-input-coverage",
+              "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+              "observerPid": 6020,
+              "argv": [
+                "scripts/lint-checker-blind-input-coverage.mjs"
+              ],
+              "childPid": 6097,
+              "startedAt": "2026-08-18T13:44:16.073Z",
+              "signature": "4NNVvrJxISwK8P6b88HHH9rMDyNiXsa3vXTCQgALRPNRRaaFK/AgSgRS44KcE/ABul6XVY5ewp1JKNWFQaRwBg=="
+            },
+            "valid": true,
+            "authenticated": true,
+            "processRecord": {
+              "pid": 6097,
+              "ppid": 6020,
+              "command": "/opt/homebrew/Cellar/node/25.6.1/bin/node scripts/lint-checker-blind-input-coverage.mjs"
+            }
+          },
+          "childExit": {
+            "eventSchema": "phaseB-authenticated-observer-event/v1",
+            "source": "fix-verifier-observer",
+            "observerSession": "6beb4263-77b5-4c47-82c0-80a16365cbed",
+            "sequence": 3,
+            "kind": "child-exit",
+            "guardId": "checker-blind-input-coverage",
+            "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+            "observerPid": 6020,
+            "argv": [
+              "scripts/lint-checker-blind-input-coverage.mjs"
+            ],
+            "childPid": 6097,
+            "startedAt": "2026-08-18T13:44:16.073Z",
+            "childExitedAt": "2026-08-18T13:44:52.032Z",
+            "childExitCode": 0,
+            "signal": null,
+            "emittedAfterChildExit": true,
+            "signature": "lRlPTzfX2gSs51EL/rHjgejSWPXkZohQcTKzwfO237b1hvut8t5HUzYPF2SWJijKas8XIoMi/xAi7jdBmvW3AA=="
+          },
+          "authenticatedEventCount": 3,
+          "stdoutCandidateEventLineCount": 3
+        }
+      }
+    },
+    "C2": {
+      "outcome": "proven",
+      "required": "the C3 short-circuit is independently recorded against the exact observed child before its result is interpreted",
+      "perMutation": {
+        "C3-exact-child-short-circuit": "proven"
+      }
+    },
+    "C3": {
+      "outcome": "proven",
+      "required": "the real wrapper succeeds while the exact guard child is skipped, and no execution receipt exists",
+      "run": {
+        "run": {
+          "argv": [
+            "npm",
+            "run",
+            "lint"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/01-pipeline-wiring",
+          "startedAt": "2026-08-18T13:44:52.042Z",
+          "endedAt": "2026-08-18T13:45:54.585Z",
+          "durationMs": 62543,
+          "pid": 27100,
+          "exitCode": 0,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "\n> instar@1.3.1180 lint\n> tsc --noEmit && node scripts/lint-no-direct-destructive.js && node scripts/lint-no-direct-llm-http.js && node scripts/lint-no-direct-url-log.js && node scripts/lint-no-unfunneled-topic-creation.js && node scripts/lint-no-unfunneled-headless-launch.js && node scripts/lint-no-unfunneled-tmux-literal-send.js && node scripts/lint-no-unbounded-llm-spawn.js && node scripts/lint-no-unregistered-self-action.js && node scripts/lint-no-unfunneled-credential-write.js && node scripts/lint-state-registry.js && node scripts/lint-store-retention-declared.js && node scripts/lint-no-wholefile-sync-read.js && node scripts/lint-cas-emit-placement.js && node scripts/lint-journal-actuation-ban.js && node scripts/lint-no-blocking-process-scans.js && node scripts/lint-sync-subprocess-chokepoint.js && node scripts/lint-dev-agent-dark-gate.js && node scripts/lint-guard-manifest.js && node scripts/lint-llm-attribution.js && node scripts/lint-no-mainthread-cartographer-walk.js && node scripts/lint-scrape-fixture-realness.js && node scripts/check-codex-rule1-drift.js && node scripts/lint-routing-registry-freshness.js && node scripts/lint-no-opus-claude-cli-gating.js && node scripts/lint-model-registry-freshness.mjs && node scripts/lint-no-unreachable-messaging-gate.js && node scripts/lint-telegram-egress-boundary.mjs && node scripts/lint-nature-chains.mjs && node scripts/lint-emit-without-admit.js && node scripts/lint-migration-consumer-completeness.js && node scripts/lint-canonical-pipeline-completeness.mjs && node scripts/lint-expected-capacity-degradations.js && node scripts/lint-rollout-evidence-resolvable.js && node scripts/lint-no-direct-standards-registry-path.mjs && node scripts/lint-blocking-decisions-declared.mjs && node scripts/lint-no-duplicate-definitions.mjs && node scripts/lint-dispatch-withholds-answer.mjs && node scripts/lint-recall-surface-names-match-mechanism.mjs && node scripts/lint-registry-insertion-placement.mjs && node scripts/lint-standard-code-backreference.mjs && node scripts/lint-registry-tree-parentage.mjs && node scripts/lint-single-governing-obligation.mjs && node scripts/lint-documented-only-countdown.mjs && node scripts/lint-deferral-carrier-resolvable.mjs --staged --enforce && node scripts/generate-standards-hierarchy.mjs --check && node scripts/lint-framework-list-completeness.mjs && node scripts/lint-checker-blind-input-coverage.mjs\n\n[lint-no-direct-url-log] ✓ no credentialed-URL logging found\nlint-no-unfunneled-topic-creation: clean\nlint-no-unfunneled-headless-launch: clean\n✓ tmux literal sends funnelled (scanned 1660 files, 0 unfunneled)\nlint-no-unbounded-llm-spawn: clean\nlint-no-unregistered-self-action: report-only — 25 controller-shape emitter(s) scanned, 19 unregistered.\n  src/core/CaffeinateManager.ts:97 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/core/UpgradeNotifyManager.ts:123 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/core/WorktreeManager.ts:506 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/messaging/SpawnRequestManager.ts:1051 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ActiveWorkSilenceSentinel.ts:203 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/AgentWorktreeReaper.ts:196 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/CollaborationRedriveEngine.ts:322 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ContextWedgeSentinel.ts:321 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/McpProcessReaper.ts:158 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/OrphanProcessReaper.ts:547 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/QuotaManager.ts:419 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/RateLimitSentinel.ts:295 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ReleaseReadinessSentinel.ts:289 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SessionMonitor.ts:335 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SessionWatchdog.ts:429 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SocketDisconnectSentinel.ts:175 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/WorktreeReaper.ts:72 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/threadline/HeartbeatWatchdog.ts:259 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/tunnel/TunnelManager.ts:128 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  (report-only — no build failure; the enforcing flip is gated on prGate.classClosure.dryRun:false after a measured clean soak.)\nlint-no-unfunneled-credential-write: clean\nlint-state-registry: clean (104 registry categories)\nlint-store-retention-declared: OK — 29 stores retentioned, 75 grandfathered (retrofit backlog, may only shrink).\nlint-no-wholefile-sync-read: OK — 0 literal hit(s), all grandfathered (0 baselined).\nlint-cas-emit-placement: clean (14 CAS call site(s), all paired)\nlint-journal-actuation-ban: clean (8 actuator modules, none load the reader)\nlint-no-blocking-process-scans: clean\nlint-sync-subprocess-chokepoint: clean — 95 raw sync spawn(s), all grandfathered (142 baselined).\nlint-dev-agent-dark-gate: clean\nlint-guard-manifest: clean\nlint-no-mainthread-cartographer-walk: clean\n  ✅ parseGroqPricingHtml — realness fixture + feeds-and-asserts test OK (parses the REAL groq.com/pricing table bytes)\n  ✅ parseGooglePricingHtml — realness fixture + feeds-and-asserts test OK (parses the REAL ai.google.dev/pricing flash-lite card bytes (PAID text rate, never audio/free))\n  ✅ FrameworkLoginDriver.parseArtifact — realness fixture + feeds-and-asserts test OK (parses the REAL wrapped Mac Mini login pane)\n  ✅ parseProcTable — realness fixture + feeds-and-asserts test OK (parses the REAL captured ps process table byte-for-byte)\n  ✅ parseProbeResponse — realness fixture + feeds-and-asserts test OK (classifies the REAL captured /mesh/rpc probe responses byte-for-byte)\n  ✅ parseTailscaleStatus — realness fixture + feeds-and-asserts test OK (parses the REAL captured tailscale status --json byte-for-byte)\n  ✅ parseReceivePathMessage — realness fixture + feeds-and-asserts test OK (parses the REAL captured Telegram receive-path message objects)\n  ✅ parseRatificationConfirmation — realness fixture + feeds-and-asserts test OK (binds a REAL reply-anchored confirmation to the enumerated set (message-id chain))\n  ✅ parseDeferTrigger — realness fixture + feeds-and-asserts test OK (matches defer-intent vocabulary in the REAL captured trigger message)\n  ✅ parseDeclaredDeliverables — realness fixture + feeds-and-asserts test OK (a REAL pathless condition text declares NOTHING)\n  ✅ parsePorcelainStatus — realness fixture + feeds-and-asserts test OK (maps REAL git status --porcelain output per the R42 mapping)\n  ✅ runLayerBScan — realness fixture + feeds-and-asserts test OK (flags the REAL incident prose and stays silent on the REAL fenced clean tail)\n[codex-rule1-drift] ✓ config.ts is compliant with spec 12 Rule 1 (Phase A)\nlint-routing-registry-freshness: OK — every COMPONENT_CATEGORY key has a registry row.\nlint-no-opus-claude-cli-gating: OK — R1/R2 clamp intact; no config routes a gating call to Opus×claude-CLI.\n\u001b[1m[lint-model-registry-freshness]\u001b[0m enforcement=strict\n  \u001b[32mok\u001b[0m   Staleness OK: reviewed 2026-08-18 (0d ago, window 45d).\n  \u001b[32mok\u001b[0m   Drift OK: gemini-cli 'gemini-capable-tier' -> 'gemini-3.1-pro-preview' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: codex-cli 'codex-capable-tier' -> 'gpt-5.5' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: anthropic-headless 'anthropic-headless-capable-tier' -> 'claude-opus-4-8' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-tier-escalation-default-escalated' -> 'claude-opus-4-8' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-tier-escalation-default-escalated' -> 'claude-fable-5' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-clean-door-reviewer-default' -> 'claude-fable-5' (in derived frontier set).\n\u001b[32mPASS\u001b[0m — model registry pins fresh and in-allowlist.\nlint-no-unreachable-messaging-gate: clean\nlint-telegram-egress-boundary: clean — Telegram Bot API egress is confined to src/messaging/telegram-egress.ts, which checks the serialised body before sending.\nlint-nature-chains: OK — FD4 harness-door ban clean (claude-code FAST/SORT/JUDGE is the pinned reserve 'claude-sonnet-4-6', no Fable), AND the FD4.2 R-rule structural exclusions (R3–R8) all hold.\n[lint-emit-without-admit] OK — 1659 file(s) scanned, 0 violations.\nlint-migration-consumer-completeness: clean\nlint-canonical-pipeline-completeness: clean (structural coverage evidence only)\n[capacity-enforcement-contracts] PASS\nlint-rollout-evidence-resolvable: clean — 8 guarded endpoint spec(s) (5 active, 3 composed), 8 resolving, 0 accepted-unresolved.\n✓ lint-no-direct-standards-registry-path: the resolver is the only path constructor.\nlint-blocking-decisions-declared: clean — 26 file(s) in the population, 12/12 declared blocking (shrink-only), 14 content-pinned as non-blocking.\nlint-no-duplicate-definitions: clean — 15 family heading(s), 88 article(s), 2 article ID(s), no duplicate definitions.\nlint-dispatch-withholds-answer: clean — 7 templated dispatch(es) carry the complete withhold-the-answer protocol. (Ad-hoc dispatches are out of scope; see the header.)\nlint-recall-surface-names-match-mechanism: clean — 2 advertised recall surface(s); /semantic/search/hybrid → .searchHybrid (meaning), /semantic/search → .search (literal).\nlint-registry-insertion-placement: clean — 88 article(s), 77 declaring a placement, 11 grandfathered (shrink-only).\nlint-standard-code-backreference: clean — 50 cited file(s), 23 naming a standard back, 27 grandfathered (shrink-only).\nlint-registry-tree-parentage: clean — 88 article(s), 39 declared parent-child relation(s), all resolving and bidirectional.\nlint-single-governing-obligation: clean — 8 obligation(s), each with one declared governing article and 10 deferring article(s).\nlint-documented-only-countdown: clean — 3 article countdown(s) + 36 sub-obligation countdown(s), all unexpired; soonest 2026-09-07 (\"The Body and the Mind\").\nlint-deferral-carrier-resolvable: clean — 0 marker(s), each resolving to an inlined carrier excerpt. NOTE: this verifies the carrier is CHECKABLE, not that it COVERS the deferral — semantic coverage is the reviewer's job (see the header for why no similarity metric was shippable).\ngenerate-standards-hierarchy --check: clean — 39 declared relation(s) rendered, block current.\n[framework-list] self-test passed (both detectors fire on a known-stale list; the subset marker suppresses); compared 5 framework list(s) (0 literal-union, 2 named-type, 3 declared-subset) across 1660 files.\n[framework-list] OK — every annotated list covers its own declared type.\nFIX_VERIFIER_OBSERVER_EVENT {\"eventSchema\":\"phaseB-authenticated-observer-event/v1\",\"source\":\"fix-verifier-observer\",\"observerSession\":\"e0b7de1c-5ef2-4930-a90c-b070e8dde062\",\"sequence\":1,\"kind\":\"observer-ready\",\"guardId\":\"checker-blind-input-coverage\",\"nodeEntry\":\"scripts/lint-checker-blind-input-coverage.mjs\",\"observerPid\":62917,\"argv\":[\"scripts/lint-checker-blind-input-coverage.mjs\"],\"publicKey\":\"MCowBQYDK2VwAyEAn1If3oS4HEeyOmMyHuDNg9rKfHZoolN0zLuJc6vwGqQ=\",\"signature\":\"j/srClQUfYT5dpCzr2OXVoD8Es8sYC/Zd1GbegPivZom1ODJB7qXBxBKrhygWZC+ukBw2d6G9pWfZLO7UdGsDw==\"}\nFIX_VERIFIER_OBSERVER_EVENT {\"eventSchema\":\"phaseB-authenticated-observer-event/v1\",\"source\":\"fix-verifier-observer\",\"observerSession\":\"e0b7de1c-5ef2-4930-a90c-b070e8dde062\",\"sequence\":2,\"kind\":\"short-circuit\",\"guardId\":\"checker-blind-input-coverage\",\"nodeEntry\":\"scripts/lint-checker-blind-input-coverage.mjs\",\"observerPid\":62917,\"argv\":[\"scripts/lint-checker-blind-input-coverage.mjs\"],\"shortCircuitedAt\":\"2026-08-18T13:45:54.576Z\",\"signature\":\"lpnOPPSKAN8c0gg2CWhGjlursU+7MPxDJx4oMdg1z+WKRzCTQKSYKgkNIhAxtLjZo2vraArvNLsfi1qcZ+vVDg==\"}\n[fix-verifier-C3] authenticated observer short-circuited guard=checker-blind-input-coverage entry=scripts/lint-checker-blind-input-coverage.mjs\n",
+            "truncated": false,
+            "originalChars": 14882
+          },
+          "stderr": {
+            "text": "  ⚠️  register-or-justify: 70 exported parse*/scrape* symbol(s) in src/ are not in SCRAPE_PARSERS.\n      If they consume untrusted real-world text, register them (spec change) or justify out-of-scope in the PR:\n        • parseWorktreeGitPointer (src/core/AgentWorktreeDetector.ts)\n        • parseCapabilityDigest (src/core/CapabilityRegistry.ts)\n        • parseJsonResult (src/core/ClaudeCliIntelligenceProvider.ts)\n        • parseContinuationTasks (src/core/CodexTaskContinuationStore.ts)\n        • parseHlc (src/core/HybridLogicalClock.ts)\n        • parseHlcKey (src/core/HybridLogicalClock.ts)\n        • parseInstrumentAssessment (src/core/InstrumentAssessment.ts)\n        • parseMoveIntentResponse (src/core/MoveIntentClassifier.ts)\n        • parseIdentityLayer (src/core/OrgIntentIdentityLayer.ts)\n        • parsePlanDoc (src/core/PlanDocParser.ts)\n        • parseProfileIntentResponse (src/core/ProfileIntentClassifier.ts)\n        • parseSafeYaml (src/core/SafeYaml.ts)\n        • parseProcTimeToSeconds (src/core/SessionManager.ts)\n        • parseSlackRoutingKey (src/core/SlackForwardBridge.ts)\n        • parseStandardsRegistryDetailed (src/core/StandardsRegistryParser.ts)\n        • parseStandardsRegistry (src/core/StandardsRegistryParser.ts)\n        • parseArcCheckResponse (src/core/TopicIntentArcCheck.ts)\n        • parseExtractorResponse (src/core/TopicIntentExtractor.ts)\n        • parseExtractorAnalysis (src/core/TopicIntentExtractor.ts)\n        • parseUsherResponse (src/core/Usher.ts)\n        • ...and 50 more\n\n",
+            "truncated": false,
+            "originalChars": 1529
+          },
+          "outputSha256": "da449880e673cfb642623f4b058b03978f4002f77402bbc49682bbf59e25e486",
+          "observerError": null,
+          "observerCandidateLineCount": 2,
+          "exitProvenance": "direct child status from spawn; shell=false; nested observer pids validated live with ps"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/pipeline-observer/c3/node",
+          "observerProgram": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/pipeline-observer/c3/authenticated-observer.mjs",
+          "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+          "requiredArgs": []
+        },
+        "receipts": [],
+        "shortCircuitEvents": [
+          {
+            "eventSchema": "phaseB-authenticated-observer-event/v1",
+            "source": "fix-verifier-observer",
+            "observerSession": "e0b7de1c-5ef2-4930-a90c-b070e8dde062",
+            "sequence": 2,
+            "kind": "short-circuit",
+            "guardId": "checker-blind-input-coverage",
+            "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+            "observerPid": 62917,
+            "argv": [
+              "scripts/lint-checker-blind-input-coverage.mjs"
+            ],
+            "shortCircuitedAt": "2026-08-18T13:45:54.576Z",
+            "signature": "lpnOPPSKAN8c0gg2CWhGjlursU+7MPxDJx4oMdg1z+WKRzCTQKSYKgkNIhAxtLjZo2vraArvNLsfi1qcZ+vVDg=="
+          }
+        ],
+        "shortCircuitReceipt": {
+          "schema": "phaseB-authenticated-execution-receipt/v1",
+          "authorityId": "71c443b8-c95f-464a-86cf-4f5f07be173f",
+          "issuer": "fix-verifier:checker-blind-input-coverage",
+          "nonce": "d02ac889-b5c2-4042-aff1-f0c2a84f2169",
+          "guardId": "checker-blind-input-coverage",
+          "kind": "short-circuit",
+          "observerPid": 62917,
+          "childPid": 62917,
+          "childExitCode": 0,
+          "signal": null,
+          "argv": [
+            "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/pipeline-observer/c3/authenticated-observer.mjs",
+            "scripts/lint-checker-blind-input-coverage.mjs"
+          ],
+          "argvHash": "0bd892c2b6c9d8cb06fe204b3a789c99035121f344cabc3063cdcbde4e719d5d",
+          "startedAt": "2026-08-18T13:45:54.576Z",
+          "childExitedAt": "2026-08-18T13:45:54.585Z",
+          "emittedAfterChildExit": true,
+          "observerSession": "e0b7de1c-5ef2-4930-a90c-b070e8dde062",
+          "observerEventSequence": 2,
+          "observerEventSignatureHash": "4526a5b4cbef1e467cfe4d57ddd08adf42985efc54aa778a54a2b07b06993321",
+          "mac": "01fed297e384d1444d9de0f6041fce73d936c7a10f35228bd3826e459759ed69"
+        },
+        "processObservations": {
+          "observerReady": {
+            "event": {
+              "eventSchema": "phaseB-authenticated-observer-event/v1",
+              "source": "fix-verifier-observer",
+              "observerSession": "e0b7de1c-5ef2-4930-a90c-b070e8dde062",
+              "sequence": 1,
+              "kind": "observer-ready",
+              "guardId": "checker-blind-input-coverage",
+              "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+              "observerPid": 62917,
+              "argv": [
+                "scripts/lint-checker-blind-input-coverage.mjs"
+              ],
+              "publicKey": "MCowBQYDK2VwAyEAn1If3oS4HEeyOmMyHuDNg9rKfHZoolN0zLuJc6vwGqQ=",
+              "signature": "j/srClQUfYT5dpCzr2OXVoD8Es8sYC/Zd1GbegPivZom1ODJB7qXBxBKrhygWZC+ukBw2d6G9pWfZLO7UdGsDw=="
+            },
+            "valid": true,
+            "authenticated": true,
+            "processRecord": {
+              "pid": 62917,
+              "ppid": 27367,
+              "command": "/opt/homebrew/Cellar/node/25.6.1/bin/node /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/pipeline-observer/c3/authenticated-observer.mjs scripts/lint-checker-blind-input-coverage.mjs"
+            }
+          },
+          "validatedChildStart": null,
+          "childExit": null,
+          "authenticatedEventCount": 2,
+          "stdoutCandidateEventLineCount": 2
+        },
+        "outcome": "proven"
+      }
+    }
+  },
+  "properties": {
+    "P1": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P2": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P3": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P4": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P5": {
+      "outcome": "unknown",
+      "mutations": []
+    }
+  },
+  "effectiveAgainst": [],
+  "rung": "wired",
+  "mutations": [],
+  "isolation": {
+    "method": "throwaway clones from an isolation seed; server-resolved protected base installed as origin/main, upstream/main, and main; dependency-only node_modules symlink",
+    "tempRoot": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe",
+    "copies": [
+      {
+        "label": "pipeline-wiring",
+        "root": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-IPxCMe/01-pipeline-wiring",
+        "commit": "52bc14b6b26044a431d22e8608f017d05c7d95cf"
+      }
+    ],
+    "fixtureEvidence": [],
+    "protectedBase": {
+      "remoteUrl": "https://github.com/JKHeadley/instar.git",
+      "ref": "refs/heads/main",
+      "commit": "248ed7177f5bf416aa7bdad9763741478195e1fc",
+      "serverResolved": true,
+      "fetchMatchesServer": true,
+      "workflowPath": ".github/workflows/ci.yml",
+      "workflowSha256": "be9f8f5393854f15793424613fa46da4701b4808219cb173a0d9da1aa649ef71",
+      "mergeBase": "248ed7177f5bf416aa7bdad9763741478195e1fc"
+    },
+    "targetPorcelainUnchanged": true,
+    "cleanup": "removed before record emission"
+  },
+  "dependencies": {
+    "mode": "provided",
+    "path": "/Users/justin/.instar/agents/instar-codey/.worktrees/phaseb-h1-authenticated-execution-receipts/node_modules",
+    "prepared": true
+  }
+}
