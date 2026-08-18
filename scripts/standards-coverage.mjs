@@ -1223,7 +1223,7 @@ function buildSymbolIndex(wanted) {
   return found;
 }
 
-function compute() {
+async function compute() {
   let markdown = null;
   try { markdown = fs.readFileSync(REGISTRY_PATH, 'utf-8'); } catch { markdown = null; }
   if (markdown === null) {
@@ -1358,7 +1358,7 @@ function compute() {
     const parsedProtected = parseRegistry(canonicalText(protectedMarkdown));
     const protectedMeasured = measuredArticles(canonicalText(protectedMarkdown), parsedProtected.articles);
     const protectedRouteTable = routeTableFromSnapshot(snapshot);
-    measurement = measureAnchoredEnforcement({
+    measurement = await measureAnchoredEnforcement({
       root: ROOT,
       protectedArticles: protectedMeasured.articles,
       candidateArticles: articles,
@@ -1368,7 +1368,7 @@ function compute() {
       protectedMarkerExists: (ref) => snapshot.hasMarker(ref),
       candidateMarkerExists: (ref) => symbolIndex.has(ref),
     });
-    const protectedBaseline = measureAnchoredEnforcement({
+    const protectedBaseline = await measureAnchoredEnforcement({
       root: ROOT,
       protectedArticles: protectedMeasured.articles,
       candidateArticles: protectedMeasured.articles,
@@ -1747,12 +1747,12 @@ function recordAreaModelAudit(report, auditRef) {
   fs.renameSync(tmp, AREA_MODEL_AUDIT_PATH);
 }
 
-function main() {
-  let report = compute();
+async function main() {
+  let report = await compute();
   if (RECORD_AREA_ARG !== undefined) {
     try {
       recordAreaAudit(report, RECORD_AREA, AUDIT_REF);
-      report = compute();
+      report = await compute();
     } catch (error) {
       process.stderr.write(`❌ standards-coverage record failed: ${error instanceof Error ? error.message : String(error)}\n`);
       process.exit(1);
@@ -1761,7 +1761,7 @@ function main() {
   if (RECORD_AREA_MODEL) {
     try {
       recordAreaModelAudit(report, AUDIT_REF);
-      report = compute();
+      report = await compute();
     } catch (error) {
       process.stderr.write(`❌ standards-coverage area-model record failed: ${error instanceof Error ? error.message : String(error)}\n`);
       process.exit(1);
@@ -1907,4 +1907,4 @@ function main() {
   }
 }
 
-main();
+await main();

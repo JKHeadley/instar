@@ -4,11 +4,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import ts from 'typescript';
+import {
+  isLiveAuthenticatedExecutionArtifact,
+  STANDARDS_EXECUTION_RUNNER,
+  verifyProtectedExecutionProof,
+} from './standards-enforcement-execution-verifier.mjs';
 
 export const CANONICAL_PROTECTED_REMOTE = 'https://github.com/JKHeadley/instar.git';
 export const PROTECTED_MAIN_REF = 'refs/heads/main';
 export const PROTECTED_VERDICTS_PATH = 'docs/standards-enforcement-verdicts.json';
-export const PROTECTED_VERDICT_SCHEMA_VERSION = 2;
+export const PROTECTED_VERDICT_SCHEMA_VERSION = 3;
 const SYSTEM_GIT = '/usr/bin/git';
 const SHA256_RE = /^[a-f0-9]{64}$/;
 const STRENGTH_RANK = {
@@ -269,9 +274,18 @@ function validProofRecord(record, index) {
     return `record ${index} is malformed`;
   }
   const proof = record.proof;
-  if (!exactKeys(proof, ['schemaVersion', 'observerCommandSha256', 'relevance', 'control', 'violation']) ||
-    proof.schemaVersion !== 1 || !SHA256_RE.test(proof.observerCommandSha256)) {
+  if (!exactKeys(proof, ['schemaVersion', 'execution', 'relevance', 'mutation']) || proof.schemaVersion !== 2) {
     return `record ${index} proof envelope is malformed`;
+  }
+  const execution = proof.execution;
+  if (!exactKeys(execution, ['runner', 'argv', 'workspaceRefs']) ||
+    execution.runner !== STANDARDS_EXECUTION_RUNNER ||
+    JSON.stringify(execution.argv) !== JSON.stringify(['node', '--test', record.ref]) ||
+    !Array.isArray(execution.workspaceRefs) || execution.workspaceRefs.length < 2 ||
+    execution.workspaceRefs.some((ref) => !safeRepoPath(ref)) ||
+    new Set(execution.workspaceRefs).size !== execution.workspaceRefs.length ||
+    JSON.stringify([...execution.workspaceRefs].sort()) !== JSON.stringify(execution.workspaceRefs)) {
+    return `record ${index} execution plan is malformed or is not the pinned runner`;
   }
   const relevance = proof.relevance;
   if (!exactKeys(relevance, [
@@ -282,23 +296,16 @@ function validProofRecord(record, index) {
     relevance.subjectRef === PROTECTED_VERDICTS_PATH || !SHA256_RE.test(relevance.subjectBeforeSha256)) {
     return `record ${index} relevance envelope is malformed or crosses the subject/observer boundary`;
   }
-  const control = proof.control;
-  if (!exactKeys(control, ['exitCode', 'testsRun', 'outputSha256']) || control.exitCode !== 0 ||
-    !Number.isInteger(control.testsRun) || control.testsRun < 1 || !SHA256_RE.test(control.outputSha256)) {
-    return `record ${index} clean control evidence is malformed`;
+  if (!execution.workspaceRefs.includes(record.ref) || !execution.workspaceRefs.includes(relevance.subjectRef)) {
+    return `record ${index} execution workspace omits the observer or subject`;
   }
-  const violation = proof.violation;
-  if (!exactKeys(violation, [
-    'mutationId', 'subjectAfterSha256', 'landed', 'exitCode', 'testsRun', 'failureKind',
-    'outputSha256', 'decidingOutput',
-  ]) || typeof violation.mutationId !== 'string' || violation.mutationId.trim().length < 3 ||
-    !SHA256_RE.test(violation.subjectAfterSha256) ||
-    violation.subjectAfterSha256 === relevance.subjectBeforeSha256 || violation.landed !== true ||
-    !Number.isInteger(violation.exitCode) || violation.exitCode === 0 ||
-    violation.testsRun !== control.testsRun || violation.failureKind !== 'assertion' ||
-    !SHA256_RE.test(violation.outputSha256) || violation.outputSha256 === control.outputSha256 ||
-    typeof violation.decidingOutput !== 'string' || violation.decidingOutput.trim().length < 10) {
-    return `record ${index} fail-direction evidence is malformed or did not execute the same tests to an assertion failure`;
+  const mutation = proof.mutation;
+  if (!exactKeys(mutation, ['mutationId', 'subjectRef', 'search', 'replacement', 'subjectAfterSha256']) ||
+    typeof mutation.mutationId !== 'string' || mutation.mutationId.trim().length < 3 ||
+    mutation.subjectRef !== relevance.subjectRef || typeof mutation.search !== 'string' || mutation.search.length === 0 ||
+    typeof mutation.replacement !== 'string' || mutation.replacement === mutation.search ||
+    !SHA256_RE.test(mutation.subjectAfterSha256) || mutation.subjectAfterSha256 === relevance.subjectBeforeSha256) {
+    return `record ${index} subject mutation is malformed or crosses the relevance boundary`;
   }
   return null;
 }
@@ -339,7 +346,7 @@ const refKey = (kind, ref) => `${kind}\0${ref}`;
  * contain sorted `files/routes/markers`. Only a reference already associated with
  * the same protected article may contribute. Candidate-only testimony is unverified.
  */
-export function measureAnchoredEnforcement({
+export async function measureAnchoredEnforcement({
   root,
   protectedArticles,
   candidateArticles,
@@ -448,11 +455,79 @@ export function measureAnchoredEnforcement({
               } else if (candidateSubject === null || sha256(candidateSubject) !== certified.proof.relevance.subjectBeforeSha256) {
                 result = { proven: false, strength: 'documented-only', reason: 'certified-subject-changed' };
               } else {
-                result = {
-                  proven: true,
-                  strength: verdictStrength(certified.verdict),
-                  reason: `protected-certified-${certified.verdict.toLowerCase()}-with-relevance-and-fail-direction`,
-                };
+                let unavailableWorkspaceRef = null;
+                let changedWorkspaceRef = null;
+                for (const workspaceRef of certified.proof.execution.workspaceRefs) {
+                  const protectedInput = snapshot.readFile(workspaceRef);
+                  const candidateInput = readCandidateFile(workspaceRef);
+                  if (protectedInput === null) {
+                    unavailableWorkspaceRef = workspaceRef;
+                    break;
+                  }
+                  if (candidateInput === null || sha256(candidateInput) !== sha256(protectedInput)) {
+                    changedWorkspaceRef = workspaceRef;
+                    break;
+                  }
+                }
+                if (unavailableWorkspaceRef !== null) {
+                  result = {
+                    proven: false,
+                    strength: 'documented-only',
+                    reason: `protected-execution-workspace-input-unknown:${unavailableWorkspaceRef}`,
+                    evidenceStatus: 'unknown',
+                  };
+                } else if (changedWorkspaceRef !== null) {
+                  result = {
+                    proven: false,
+                    strength: 'documented-only',
+                    reason: `candidate-execution-workspace-input-changed:${changedWorkspaceRef}`,
+                    evidenceStatus: 'not-proven',
+                  };
+                } else {
+                  const observed = await verifyProtectedExecutionProof({ record: certified, snapshot });
+                const artifact = observed.artifact;
+                const liveArtifact = artifact !== null && isLiveAuthenticatedExecutionArtifact(artifact);
+                if (observed.status === 'proven' && liveArtifact) {
+                  result = {
+                    proven: true,
+                    strength: verdictStrength(certified.verdict),
+                    reason: `protected-observed-${certified.verdict.toLowerCase()}-with-authenticated-fail-direction`,
+                    evidenceStatus: 'proven',
+                    executionArtifactSha256: artifact.artifactSha256,
+                    execution: {
+                      cleanExitCode: artifact.clean.exitCode,
+                      cleanTestsRun: artifact.clean.testsRun,
+                      mutatedExitCode: artifact.mutated.exitCode,
+                      mutatedTestsRun: artifact.mutated.testsRun,
+                      confirmationExitCode: artifact.confirmation.exitCode,
+                      confirmationTestsRun: artifact.confirmation.testsRun,
+                      mutationLanded: artifact.subject.mutationLanded,
+                      decidingOutput: artifact.mutated.decidingOutput,
+                    },
+                  };
+                } else {
+                  const evidenceStatus = observed.status === 'unknown' ? 'unknown' : 'not-proven';
+                  result = {
+                    proven: false,
+                    strength: 'documented-only',
+                    reason: `protected-execution-proof-${evidenceStatus}:${observed.reason}`,
+                    evidenceStatus,
+                    ...(liveArtifact ? {
+                      executionArtifactSha256: artifact.artifactSha256,
+                      execution: {
+                        cleanExitCode: artifact.clean.exitCode,
+                        cleanTestsRun: artifact.clean.testsRun,
+                        mutatedExitCode: artifact.mutated.exitCode,
+                        mutatedTestsRun: artifact.mutated.testsRun,
+                        confirmationExitCode: artifact.confirmation.exitCode,
+                        confirmationTestsRun: artifact.confirmation.testsRun,
+                        mutationLanded: artifact.subject.mutationLanded,
+                        decidingOutput: artifact.mutated.decidingOutput,
+                      },
+                    } : {}),
+                  };
+                }
+                }
               }
             } else {
               result = !protectedGrade.proven && protectedGrade.reason === 'reference-structurally-hollow'

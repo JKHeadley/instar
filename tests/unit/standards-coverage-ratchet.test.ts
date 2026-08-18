@@ -200,7 +200,7 @@ function writeFixtureEnforcementProof(): void {
   const subjectContent = fs.readFileSync(path.join(repo, subjectRef), 'utf8');
   const sha = (value: string): string => crypto.createHash('sha256').update(value).digest('hex');
   write('docs/standards-enforcement-verdicts.json', `${JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 3,
     records: protectedArticles.map((protectedArticle) => ({
       articleId: protectedArticle.id,
       articleSha256: protectedArticle.articleSha256,
@@ -208,8 +208,12 @@ function writeFixtureEnforcementProof(): void {
       sha256: sha(observerContent),
       verdict: 'EFFECTIVE',
       proof: {
-        schemaVersion: 1,
-        observerCommandSha256: sha('npx vitest run tests/unit/widget.test.ts'),
+        schemaVersion: 2,
+        execution: {
+          runner: 'node-test-tap-v1',
+          argv: ['node', '--test', ref],
+          workspaceRefs: [subjectRef, ref].sort(),
+        },
         relevance: {
           articleId: protectedArticle.id,
           ruleSha256: protectedArticle.ruleSha256,
@@ -218,16 +222,12 @@ function writeFixtureEnforcementProof(): void {
           subjectRef,
           subjectBeforeSha256: sha(subjectContent),
         },
-        control: { exitCode: 0, testsRun: 1, outputSha256: sha('1 test passed') },
-        violation: {
+        mutation: {
           mutationId: 'widget-guarded-false',
+          subjectRef,
+          search: 'true',
+          replacement: 'false',
           subjectAfterSha256: sha('export const widgetGuarded = false;\n'),
-          landed: true,
-          exitCode: 1,
-          testsRun: 1,
-          failureKind: 'assertion',
-          outputSha256: sha('expected true, received false'),
-          decidingOutput: 'AssertionError: expected false to be true',
         },
       },
     })),
@@ -241,7 +241,7 @@ beforeEach(() => {
   // zero dangling. src/ present so resolveRoot picks the repo.
   write('src/server/routes.ts', "router.get('/x', (req,res)=>{});\n");
   write('src/widget.ts', 'export const widgetGuarded = true;\n');
-  write('tests/unit/widget.test.ts', "import { expect, it } from 'vitest';\nimport { widgetGuarded } from '../../src/widget.js';\nit('observes the guarded widget rule', () => expect(widgetGuarded).toBe(true));\n");
+  write('tests/unit/widget.test.ts', "import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { widgetGuarded } from '../../src/widget.ts';\ntest('observes the guarded widget rule', () => assert.equal(widgetGuarded, true));\n");
   write('docs/specs/reports/family-review.md', '# Family review\n\nFixture convergence evidence.\n');
   write('docs/STANDARDS-REGISTRY.md', [
     '## Building',
