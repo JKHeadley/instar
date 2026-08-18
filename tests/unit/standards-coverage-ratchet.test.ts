@@ -21,6 +21,12 @@ import { stampConverged, validateAuditReport } from '../../scripts/write-audit-c
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.resolve(__dirname, '../../scripts/standards-coverage.mjs');
+const RUNNER_REF = 'scripts/lib/standards-enforcement-node-test-runner.mjs';
+const TRUSTED_RUNNER_SHA256 = '04795f8857d8bb08ccf7c0a18103b7233ef644b395ac9bd576d9726e98da57f2';
+const trustedRunnerContent = fs.readFileSync(path.resolve(__dirname, `../../${RUNNER_REF}`), 'utf8');
+if (crypto.createHash('sha256').update(trustedRunnerContent).digest('hex') !== TRUSTED_RUNNER_SHA256) {
+  throw new Error('trusted structured test runner digest does not match the independently reviewed bytes');
+}
 
 let repo: string;
 let auditCounter: number;
@@ -211,6 +217,7 @@ function writeFixtureEnforcementProof(): void {
         schemaVersion: 2,
         execution: {
           runner: 'node-test-events-v1',
+          runnerSha256: TRUSTED_RUNNER_SHA256,
           argv: ['node', 'scripts/lib/standards-enforcement-node-test-runner.mjs', ref],
           workspaceRefs: [subjectRef, ref].sort(),
         },
@@ -242,6 +249,7 @@ beforeEach(() => {
   write('src/server/routes.ts', "router.get('/x', (req,res)=>{});\n");
   write('src/widget.ts', 'export const widgetGuarded = true;\n');
   write('tests/unit/widget.test.ts', "import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { widgetGuarded } from '../../src/widget.ts';\ntest('observes the guarded widget rule', () => assert.equal(widgetGuarded, true));\n");
+  write(RUNNER_REF, trustedRunnerContent);
   write('docs/specs/reports/family-review.md', '# Family review\n\nFixture convergence evidence.\n');
   write('docs/STANDARDS-REGISTRY.md', [
     '## Building',
@@ -289,6 +297,7 @@ function snapshotMeasurementBase(): string {
   copy('docs/standards-enforcement-verdicts.json');
   copy('src/widget.ts');
   copy('tests/unit/widget.test.ts');
+  copy(RUNNER_REF);
   return baseRoot;
 }
 

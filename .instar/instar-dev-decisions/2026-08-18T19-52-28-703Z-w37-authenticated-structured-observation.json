@@ -1,0 +1,37 @@
+{
+  "ts": "2026-08-18T19:52:28.703Z",
+  "slug": "w37-authenticated-structured-observation",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 367,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lib/standards-enforcement-execution-verifier.mjs",
+      "scripts/lib/standards-enforcement-measurement.mjs",
+      "scripts/lib/standards-enforcement-node-test-runner.mjs"
+    ],
+    "addedLines": 276,
+    "deletedLines": 91
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [1933],
+    "notes": "J18 found that W3.6's branch-owned structured-event collector authored promotion facts while H1 authenticated only child-exit metadata; its recorded runner digest was not an authority comparison."
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "tests/unit/standards-enforcement-measurement.test.ts",
+      "howCaught": "An exact-schema collector forgery with a marker write is rejected by a protected expected-digest mismatch before execution, returns UNKNOWN, and mints no artifact; the genuine receipt-bound collector still preserves C1/C3 discrimination and both renderer-forgery controls."
+    },
+    "component": "standards-enforcement-measurement"
+  },
+  "verdict": "pass"
+}
