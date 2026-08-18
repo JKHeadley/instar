@@ -121,3 +121,29 @@ tests/unit/standards-coverage-ratchet.test.ts sha256=8755cbb96b975f3283ce42adc5c
 ```
 
 State: **BUILT WITH HAND EVIDENCE, NOT MACHINE-CERTIFIED**. The builder does not call this FIXED or EFFECTIVE; the independent judge must re-gate it.
+
+## 2026-08-18 02:11:50 -0700 (PDT) — Branch published; PR open and unmerged
+
+```text
+implementation-commit=a4ec1719968c949d28f6b5532de201aa1f91ebd5
+branch=phaseb/w34-enforcement-measurement
+fork-push=origin/phaseb/w34-enforcement-measurement
+pull-request=https://github.com/JKHeadley/instar/pull/1925
+pull-request-number=1925
+pull-request-state=OPEN
+base=JKHeadley/instar main
+merge=NOT PERFORMED
+```
+
+First normal push attempt, deciding output:
+
+```text
+Test Files  no tests
+Tests       no tests
+TestRunnerCapacityTimeoutError: [test-runner-bound] could not START within budget (600000ms, suite lane) — this is NOT a test failure; 1 holder(s): [pid 61347]
+Serialized Error: { code: 'INSTAR_TEST_CAPACITY_TIMEOUT', exitCode: 75 }
+```
+
+The holder was a live Vitest process in another agent worktree. The limit was not raised, disabled, or reclaimed. Because the exact affected set had already passed as 38/38 plus 5/5 on the current source, the unchanged retry used the repository-documented `INSTAR_PRE_PUSH_SKIP=1` test-only opt-out. The pre-push release and fixture-pollution gates still ran and passed; CI remains authoritative.
+
+PR body states **BUILT WITH HAND EVIDENCE, NOT MACHINE-CERTIFIED**, records the unrelated model-registry staleness finding and capacity-only push result, and reserves FIXED/EFFECTIVE for the independent judge.
