@@ -8,6 +8,7 @@ import ts from 'typescript';
 export const CANONICAL_PROTECTED_REMOTE = 'https://github.com/JKHeadley/instar.git';
 export const PROTECTED_MAIN_REF = 'refs/heads/main';
 export const PROTECTED_VERDICTS_PATH = 'docs/standards-enforcement-verdicts.json';
+export const PROTECTED_VERDICT_SCHEMA_VERSION = 2;
 const SYSTEM_GIT = '/usr/bin/git';
 const SHA256_RE = /^[a-f0-9]{64}$/;
 const STRENGTH_RANK = {
@@ -239,25 +240,67 @@ export function gradeFileReference(ref, content) {
   const expected = inferredStrength(ref);
   if (expected === 'spec-only') {
     return content.trim().length >= 20
-      ? { proven: true, strength: 'spec-only', reason: 'protected-substantive-spec' }
+      ? { proven: false, strength: 'documented-only', observedStrength: 'spec-only', reason: 'protected-relevance-proof-missing' }
       : { proven: false, strength: 'documented-only', reason: 'reference-structurally-hollow' };
   }
   if (!/\.(?:ts|tsx|js|mjs|cjs)$/.test(ref)) {
     const shellGate = /(^|\n)\s*(?:exit\s+[1-9]|return\s+[1-9])/m.test(content) && /(^|\n)\s*(?:if|case)\b/m.test(content);
     return shellGate
-      ? { proven: true, strength: expected, reason: 'protected-conditional-failure-path' }
+      ? { proven: false, strength: 'documented-only', observedStrength: expected, reason: 'protected-relevance-proof-missing' }
       : { proven: false, strength: 'documented-only', reason: 'reference-structurally-hollow' };
   }
   const facts = analyzeProgram(content, ref);
   if (expected === 'ratchet' && /\.test\./.test(ref)) {
     return facts.test && facts.assertion
-      ? { proven: true, strength: 'ratchet', reason: 'protected-executable-test-assertion' }
+      ? { proven: false, strength: 'documented-only', observedStrength: 'ratchet', reason: 'protected-relevance-proof-missing' }
       : { proven: false, strength: 'documented-only', reason: 'reference-structurally-hollow' };
   }
   if (facts.conditional && facts.failure) {
-    return { proven: true, strength: expected, reason: 'protected-conditional-failure-path' };
+    return { proven: false, strength: 'documented-only', observedStrength: expected, reason: 'protected-relevance-proof-missing' };
   }
   return { proven: false, strength: 'documented-only', reason: 'reference-structurally-hollow' };
+}
+
+function validProofRecord(record, index) {
+  if (!exactKeys(record, ['articleId', 'articleSha256', 'proof', 'ref', 'sha256', 'verdict']) ||
+    typeof record.articleId !== 'string' || record.articleId.length < 3 ||
+    !SHA256_RE.test(record.articleSha256) || !safeRepoPath(record.ref) ||
+    !SHA256_RE.test(record.sha256) || !['EFFECTIVE', 'WIRED', 'EXISTS'].includes(record.verdict)) {
+    return `record ${index} is malformed`;
+  }
+  const proof = record.proof;
+  if (!exactKeys(proof, ['schemaVersion', 'observerCommandSha256', 'relevance', 'control', 'violation']) ||
+    proof.schemaVersion !== 1 || !SHA256_RE.test(proof.observerCommandSha256)) {
+    return `record ${index} proof envelope is malformed`;
+  }
+  const relevance = proof.relevance;
+  if (!exactKeys(relevance, [
+    'articleId', 'ruleSha256', 'observerRef', 'observerSha256', 'subjectRef', 'subjectBeforeSha256',
+  ]) || relevance.articleId !== record.articleId || !SHA256_RE.test(relevance.ruleSha256) ||
+    relevance.observerRef !== record.ref || relevance.observerSha256 !== record.sha256 ||
+    !safeRepoPath(relevance.subjectRef) || relevance.subjectRef === record.ref ||
+    relevance.subjectRef === PROTECTED_VERDICTS_PATH || !SHA256_RE.test(relevance.subjectBeforeSha256)) {
+    return `record ${index} relevance envelope is malformed or crosses the subject/observer boundary`;
+  }
+  const control = proof.control;
+  if (!exactKeys(control, ['exitCode', 'testsRun', 'outputSha256']) || control.exitCode !== 0 ||
+    !Number.isInteger(control.testsRun) || control.testsRun < 1 || !SHA256_RE.test(control.outputSha256)) {
+    return `record ${index} clean control evidence is malformed`;
+  }
+  const violation = proof.violation;
+  if (!exactKeys(violation, [
+    'mutationId', 'subjectAfterSha256', 'landed', 'exitCode', 'testsRun', 'failureKind',
+    'outputSha256', 'decidingOutput',
+  ]) || typeof violation.mutationId !== 'string' || violation.mutationId.trim().length < 3 ||
+    !SHA256_RE.test(violation.subjectAfterSha256) ||
+    violation.subjectAfterSha256 === relevance.subjectBeforeSha256 || violation.landed !== true ||
+    !Number.isInteger(violation.exitCode) || violation.exitCode === 0 ||
+    violation.testsRun !== control.testsRun || violation.failureKind !== 'assertion' ||
+    !SHA256_RE.test(violation.outputSha256) || violation.outputSha256 === control.outputSha256 ||
+    typeof violation.decidingOutput !== 'string' || violation.decidingOutput.trim().length < 10) {
+    return `record ${index} fail-direction evidence is malformed or did not execute the same tests to an assertion failure`;
+  }
+  return null;
 }
 
 function readProtectedVerdicts(snapshot) {
@@ -265,17 +308,17 @@ function readProtectedVerdicts(snapshot) {
   if (text === null) return { records: new Map(), errors: [] };
   try {
     const value = JSON.parse(text);
-    if (!exactKeys(value, ['schemaVersion', 'records']) || value.schemaVersion !== 1 || !Array.isArray(value.records)) {
-      throw new Error('must contain exactly schemaVersion: 1 and records[]');
+    if (!exactKeys(value, ['schemaVersion', 'records']) ||
+      value.schemaVersion !== PROTECTED_VERDICT_SCHEMA_VERSION || !Array.isArray(value.records)) {
+      throw new Error(`must contain exactly schemaVersion: ${PROTECTED_VERDICT_SCHEMA_VERSION} and records[]`);
     }
     const records = new Map();
     for (const [index, record] of value.records.entries()) {
-      if (!exactKeys(record, ['ref', 'sha256', 'verdict']) || !safeRepoPath(record.ref) ||
-        !SHA256_RE.test(record.sha256) || !['EFFECTIVE', 'WIRED', 'EXISTS'].includes(record.verdict)) {
-        throw new Error(`record ${index} is malformed`);
-      }
-      if (records.has(record.ref)) throw new Error(`duplicate ref ${record.ref}`);
-      records.set(record.ref, record);
+      const error = validProofRecord(record, index);
+      if (error) throw new Error(error);
+      const key = `${record.articleId}\0${record.ref}`;
+      if (records.has(key)) throw new Error(`duplicate article/reference proof ${record.articleId} -> ${record.ref}`);
+      records.set(key, record);
     }
     return { records, errors: [] };
   } catch (error) {
@@ -381,27 +424,49 @@ export function measureAnchoredEnforcement({
           } else {
             const protectedGrade = gradeFileReference(ref, protectedContent);
             const candidateGrade = gradeFileReference(ref, candidateContent);
-            const certified = protectedVerdicts.records.get(ref);
+            const certified = protectedVerdicts.records.get(`${id}\0${ref}`);
             if (certified && protectedContent !== null && certified.sha256 !== sha256(protectedContent)) {
               errors.push(`protected verdict digest mismatch for ${ref}`);
               result = { proven: false, strength: 'documented-only', reason: 'protected-verdict-digest-mismatch' };
             } else if (certified && protectedContent !== null && sha256(candidateContent) !== certified.sha256) {
               result = { proven: false, strength: 'documented-only', reason: 'certified-reference-changed' };
+            } else if (certified && (
+              certified.articleSha256 !== protectedArticle.articleSha256 ||
+              certified.proof.relevance.ruleSha256 !== protectedArticle.ruleSha256
+            )) {
+              errors.push(`protected relevance proof article digest mismatch for ${id} -> ${ref}`);
+              result = { proven: false, strength: 'documented-only', reason: 'protected-relevance-proof-article-mismatch' };
+            } else if (certified && candidate.ruleSha256 !== certified.proof.relevance.ruleSha256) {
+              result = { proven: false, strength: 'documented-only', reason: 'candidate-cited-rule-changed' };
             } else if (certified) {
-              result = { proven: true, strength: verdictStrength(certified.verdict), reason: `protected-certified-${certified.verdict.toLowerCase()}` };
-            } else if (!protectedGrade.proven) {
-              result = protectedGrade;
-            } else if (!candidateGrade.proven) {
-              result = candidateGrade;
+              const subjectRef = certified.proof.relevance.subjectRef;
+              const protectedSubject = snapshot.readFile(subjectRef);
+              const candidateSubject = readCandidateFile(subjectRef);
+              if (protectedSubject === null || sha256(protectedSubject) !== certified.proof.relevance.subjectBeforeSha256) {
+                errors.push(`protected relevance proof subject digest mismatch for ${id} -> ${ref}`);
+                result = { proven: false, strength: 'documented-only', reason: 'protected-relevance-proof-subject-mismatch' };
+              } else if (candidateSubject === null || sha256(candidateSubject) !== certified.proof.relevance.subjectBeforeSha256) {
+                result = { proven: false, strength: 'documented-only', reason: 'certified-subject-changed' };
+              } else {
+                result = {
+                  proven: true,
+                  strength: verdictStrength(certified.verdict),
+                  reason: `protected-certified-${certified.verdict.toLowerCase()}-with-relevance-and-fail-direction`,
+                };
+              }
             } else {
-              result = { proven: true, strength: weaker(protectedGrade.strength, candidateGrade.strength), reason: 'protected-strength-floor-preserved' };
+              result = !protectedGrade.proven && protectedGrade.reason === 'reference-structurally-hollow'
+                ? protectedGrade
+                : candidateGrade.reason === 'reference-structurally-hollow'
+                  ? candidateGrade
+                  : { proven: false, strength: 'documented-only', reason: 'protected-relevance-proof-missing' };
             }
           }
         } else {
           const onProtected = kind === 'routes' ? protectedRouteExists(ref) : protectedMarkerExists(ref);
           const onCandidate = kind === 'routes' ? candidateRouteExists(ref) : candidateMarkerExists(ref);
           result = onProtected && onCandidate
-            ? { proven: true, strength: 'gate', reason: 'protected-structural-reference-preserved' }
+            ? { proven: false, strength: 'documented-only', reason: 'protected-relevance-proof-missing' }
             : { proven: false, strength: 'documented-only', reason: onCandidate ? 'protected-reference-unresolved' : 'candidate-reference-unresolved' };
         }
         references.push({ kind, ref, ...result });
