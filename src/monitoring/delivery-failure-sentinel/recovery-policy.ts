@@ -27,7 +27,16 @@ export type RecoveryAction =
   | 'escalate'
   | 'finalize-success'
   | 'finalize-tone-gated'
-  | 'finalize-ambiguous';
+  | 'finalize-ambiguous'
+  /**
+   * The duplicate-session stand-down muzzle refused the send (409
+   * `standing-down`, docs/specs/duplicate-session-standdown.md). TERMINAL and
+   * SILENT: distinct from `escalate` precisely because escalation would emit the
+   * "I had a reply for you but couldn't deliver it" loss notice about a
+   * conversation that is alive and being answered on the owner machine. Nothing
+   * was lost, so nothing is reported.
+   */
+  | 'finalize-standing-down';
 
 export interface PolicyDecision {
   action: RecoveryAction;
@@ -140,6 +149,8 @@ function parseErrorCode(body: string | null | undefined): string | null {
  *   408                           → finalize-ambiguous (no retry)
  *   422                           → finalize-tone-gated (re-gate path
  *                                    in §3d step 3 already triggered)
+ *   409 standing-down             → finalize-standing-down (terminal, SILENT —
+ *                                    the muzzled copy's send; the owner answers)
  *   400 / 401 / 404               → escalate (terminal client error)
  *   403 / agent_id_mismatch       → retry (operator may have rotated
  *                                    config; respects §3c backoff)
@@ -198,6 +209,20 @@ export function evaluatePolicy(input: PolicyInput): PolicyDecision {
     const code = parseErrorCode(input.responseBody ?? null);
     if (code === DELIVERY_IN_FLIGHT_ERROR) {
       return scheduleRetryOrEscalate(input, now, 'delivery_in_flight');
+    }
+    // The duplicate-session stand-down muzzle refused the send: this copy is
+    // standing down because the conversation is served on another machine.
+    // TERMINAL like every other 409 — but deliberately NOT `escalate`, because
+    // escalation emits the user-facing "I had a reply for you but couldn't
+    // deliver it" notice, and nothing was lost: the owner copy is answering.
+    // Keyed on the STRUCTURED error code, so an unrelated 409 keeps the
+    // deployed default-deny direction above.
+    if (code === 'standing-down') {
+      return {
+        action: 'finalize-standing-down',
+        reason: 'http_409_standing_down',
+        attemptOrdinal: input.attempts,
+      };
     }
     return {
       action: 'escalate',

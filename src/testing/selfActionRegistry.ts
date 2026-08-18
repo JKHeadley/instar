@@ -1053,7 +1053,103 @@ const undatedActionResurfacer: SelfActionController = {
   },
 };
 
+/**
+ * standdown-maintenance — the duplicate-session stand-down's NOTIFY-class
+ * emissions (docs/specs/duplicate-session-standdown.md; SessionReaper.#standDownTick
+ * + StandDownRegistry) under the pathological pressure: a topic whose duplicate
+ * REAPPEARS immediately after every clean retirement, a model that retries its
+ * blocked calls forever, and a user actively messaging the muzzled copy.
+ *
+ * Why this SETTLES (horizon-independent, not merely paced):
+ *  - every attention item carries a STABLE id per (topic, kind) —
+ *    standdown-churn:T, standdown-latched:T, standdown-expired:T:S,
+ *    standdown-mutual-muzzle:T, standdown-health — and the attention store
+ *    dedupes on id, so sustained pressure yields at most ONE of each;
+ *  - the per-episode tmux/user notices key on the EPISODE, and a new episode
+ *    after any release/expire requires a STRICTLY NEWER ownership epoch (the
+ *    admission latch). Under fixed pressure the epoch never advances, so after
+ *    the first release→latch no further episode can mint and the notice count
+ *    freezes;
+ *  - the clean-close flap cycle (spawn→register→drain→close) deliberately emits
+ *    NO notify action at all (normal-path silence) — its visibility is the
+ *    deduped churn item, not a stream.
+ */
+const standDownMaintenance: SelfActionController = {
+  id: 'standdown-maintenance',
+  actionVerb: 'standdown-notify',
+  models: 'src/monitoring/SessionReaper.ts (#standDownTick — deduped per-(topic,kind) attention ids; per-episode notice budgets with epoch-gated re-admission; silent clean-close cycles)',
+  modelsPath: 'src/monitoring/SessionReaper.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    // Entries, episode latches, notice budgets and the churn window all live in
+    // the durable StandDownRegistry file; a restart reloads them, so a bounce
+    // cannot re-mint a notice, reset the latch, or re-raise a deduped item.
+    restartUnderPressure(f, sink) {
+      return makeStandDownPressureLoop(f.durableState, sink);
+    },
+  },
+  // The full deduped set for one flapping topic: 1 per-episode user notice
+  // (first episode, before the latch) + churn + latched + expired + health.
+  boundK: 5,
+  perTargetBoundK: 1, // each emission lands on its own stable dedup id
+  ticks: 120,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    // The REAL registry is durable from the first write, so the fresh arm
+    // writes the same durable state the restart arm reads — with a private map
+    // here, pre-restart emissions would be forgotten and re-raised, which is
+    // exactly the bounce-re-mints-a-notice defect the durable file prevents.
+    return makeStandDownPressureLoop(f.durableState, sink);
+  },
+};
+
+/** One loop body shared by the fresh and restart-surviving harness arms, so the
+ *  restart model cannot drift from the fresh one (the state map IS the durable
+ *  registry file in miniature). */
+function makeStandDownPressureLoop(d: Map<string, unknown>, sink: ActionSink): { tick(): void } {
+  const CYCLE_TICKS = 4;      // dwell(2) + corroborated drain(2)
+  const CHURN_THRESHOLD = 3;  // closedEpisodeChurnThreshold default
+  if (!d.has('sd:tick')) d.set('sd:tick', 0);
+  if (!d.has('sd:closed')) d.set('sd:closed', 0);
+  if (!d.has('sd:raised')) d.set('sd:raised', new Set<string>());
+  if (!d.has('sd:latched')) d.set('sd:latched', false);
+  const raiseOnce = (id: string) => {
+    const raised = d.get('sd:raised') as Set<string>;
+    if (raised.has(id)) return; // the attention store dedupes on the item id
+    raised.add(id);
+    sink.emit({ verb: 'standdown-notify', target: id });
+  };
+  return {
+    tick() {
+      sink.considered += 1;
+      const tickN = (d.get('sd:tick') as number) + 1;
+      d.set('sd:tick', tickN);
+      if (d.get('sd:latched') as boolean) {
+        // The admission latch holds: the producer's unchanged verdict (same
+        // ownership epoch) cannot re-mint the episode. The latch-blocked
+        // attempts keep climbing and raise their ONE deduped item.
+        raiseOnce('attention:standdown-latched');
+        return;
+      }
+      if (tickN % CYCLE_TICKS !== 0) return;
+      const closed = (d.get('sd:closed') as number) + 1;
+      d.set('sd:closed', closed);
+      // Clean-close cycles are SILENT (normal-path silence); their visibility is
+      // the deduped churn item once the threshold crosses.
+      if (closed > CHURN_THRESHOLD) raiseOnce('attention:standdown-churn');
+      // Then the user messages the muzzled copy: divert is unwired → immediate
+      // release → the episode LATCHES (armLatch: true on an adjudicated
+      // release) — one per-episode user notice went out first.
+      if (closed === CHURN_THRESHOLD + 2) {
+        raiseOnce('notice:session-episode-1');
+        d.set('sd:latched', true);
+      }
+    },
+  };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  standDownMaintenance,
   evolutionActionExpirySweep,
   spendReconSweep,
   spendDoorDarkBrakes,

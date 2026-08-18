@@ -37,6 +37,9 @@ function localSlackRelayReadiness(stateDir: string): { ready: true } | { ready: 
   return slackReplyRelayReadiness(stateDir, template);
 }
 import { buildAspInboundClassifier } from '../core/AspInboundClassifier.js';
+import { StandDownRegistry } from '../core/StandDownRegistry.js';
+import { BASELINE_PROCESS_PATTERNS } from '../core/baselineProcessPatterns.js';
+import { StandDownAudit } from '../core/StandDownAudit.js';
 import { resolveStandardsRegistry } from '../core/standardsRegistryPath.js';
 import { chunkLiteralForTmux, buildLiteralSendArgs } from '../core/tmuxLiteralSend.js';
 import { parseStandardsRegistry } from '../core/StandardsRegistryParser.js';
@@ -971,6 +974,10 @@ let _hasDurableLeaseAuthority: (() => boolean) | null = null;
 // (deferral-ceiling / episode-cap notices); assigned where the telegram adapter
 // exists. Items are episode-keyed and deduped by the attention store.
 let _meshAttentionRaise: ((item: { id: string; title: string; body: string; priority: string; sourceContext: string }) => void) | null = null;
+/** Late-bound handle on the duplicate-session stand-down registry. The delivery
+ *  funnel is constructed BEFORE the registry (which needs the session manager),
+ *  so the funnel closes over this getter rather than the value. */
+let _standDownRegistryRef: () => import('../core/StandDownRegistry.js').StandDownRegistry | null = () => null;
 // U4.4 offer transport (assigned where the MeshRpcClient exists). Null = no
 // mesh client yet → sendOffer reports 'timeout' and the holder keeps holding.
 // U4.4 — used consent-token keys on the RECEIVING side (single-use; the token
@@ -8317,6 +8324,56 @@ export async function startServer(options: StartOptions): Promise<void> {
         await _slackAdapter.sendToChannel(channelId, text, threadTs ? { thread_ts: threadTs } : undefined);
       },
       isSystemChannel: (channelId) => _slackAdapter?.isSystemChannel(channelId) ?? false,
+      // Stand-down muzzle, minted-id (Slack) arm. The id>0 arm is muzzled at the
+      // /telegram/reply route this funnel calls into; a minted conversation never
+      // traverses that route, so its refusal is wired here. Late-bound over
+      // `_standDownRegistryRef` because the registry is constructed further down.
+      standDownRefusal: (conversationId) => {
+        // HONEST SCOPE (round-5 review, B6): this arm is structurally UNREACHABLE
+        // in v1. Entries are only produced with a topicId resolved through the
+        // TELEGRAM session→topic binding, and no minted (negative) conversation
+        // id can ever appear there — a Slack-bound duplicate never gets an entry
+        // in the first place, so there is nothing for this lookup to find. It is
+        // wired anyway, deliberately: the seam is the CORRECT shape for the day a
+        // producer covers Slack-bound sessions, and an inert lookup costs one map
+        // read. What it is NOT is live parity with the Telegram arm, and neither
+        // the artifact nor the spec claims that any more. <!-- tracked: CMT-2031 -->
+        try {
+          const reg = _standDownRegistryRef();
+          if (!reg) return null;
+          const entry = reg.getByTopic(conversationId);
+          if (!entry) return null;
+          // The SAME fire-time ownership re-check the Telegram arm performs.
+          // Without it the minted (Slack) arm's muzzle only lifted through the
+          // 2-tick reverify hysteresis, so the bound this design claims on
+          // over-blocking held for one conversation kind and not the other.
+          // Unresolvable reads RELEASE, and — as at the Telegram arm — an
+          // unresolvable read arms no latch.
+          const ownershipReadable = !!sessionOwnershipRegistry && !!_meshSelfId;
+          const currentOwner = sessionOwnershipRegistry?.ownerOf(String(conversationId)) ?? null;
+          if (!ownershipReadable || currentOwner == null || currentOwner === _meshSelfId) {
+            const returned = ownershipReadable && currentOwner === _meshSelfId;
+            reg.release(
+              entry.sessionName,
+              returned ? 'ownership-returned-at-send' : 'ownership-unresolvable-at-send',
+              { armLatch: returned },
+            );
+            _standDownAudit?.endEpisode(entry.sessionName);
+            return null;
+          }
+          // The evidence row is written for a dryRun entry too — the soak's
+          // false-positive count needs per-call context, and writing it only on
+          // the Telegram arm made that evidence exist for one conversation kind
+          // and not the other.
+          reg.countRefusedSend(conversationId);
+          _standDownAudit?.enforcement({
+            transition: 'refused-send', sessionName: entry.sessionName, topicId: conversationId,
+            dryRun: entry.dryRun, episodeId: entry.episodeId,
+          });
+          if (!reg.isEnforcing(entry)) return null; // dryRun: recorded, not refused
+          return { ownerMachineId: entry.ownerMachineId };
+        } catch { return null; /* @silent-fallback-ok — never block a real delivery on a lookup failure */ }
+      },
       auditWouldDeliver: (line) => console.log(pc.dim(`  ${line}`)),
       onAttention: (dedupeKey, title, body) => {
         try {
@@ -14494,6 +14551,39 @@ export async function startServer(options: StartOptions): Promise<void> {
         };
 
         presenceProxy = new PresenceProxy({
+          // Stand-down honesty: a frozen copy must not narrate "actively working"
+          // about a conversation another machine is answering.
+          standDown: {
+            entryForTopic: (topicId: number) => {
+              try {
+                const reg = _standDownRegistryRef();
+                const entry = reg?.getByTopic(topicId) ?? null;
+                if (!entry) return null;
+                return { ownerMachineId: entry.ownerMachineId, enforcing: reg!.isEnforcing(entry) };
+              } catch { return null; }
+            },
+            hasProxyNotice: (topicId: number) => {
+              try {
+                const reg = _standDownRegistryRef();
+                const entry = reg?.getByTopic(topicId) ?? null;
+                return entry ? reg!.hasNotice(entry.sessionName, 'user') : false;
+              } catch { return false; }
+            },
+            sendDeterministic: async (topicId: number, text: string) => {
+              try { await telegram?.sendToTopic(topicId, text); return true; }
+              catch { return false; }
+            },
+            claimProxyNotice: (topicId: number) => {
+              try {
+                const reg = _standDownRegistryRef();
+                const entry = reg?.getByTopic(topicId) ?? null;
+                // The USER channel's own budget — distinct from the tmux line
+                // injected into the muzzled session, so neither can silence the
+                // other.
+                return entry ? reg!.claimNotice(entry.sessionName, 'user') : false;
+              } catch { return false; }
+            },
+          },
           stateDir: config.stateDir,
           intelligence: sharedIntelligence,
           // WS3 one-voice gate: only this topic's owner machine speaks 🔭.
@@ -14561,13 +14651,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             // PresenceProxy tier 3 falls through to LLM assessment when the session
             // is idle at its prompt. Without this filtering, the Claude node process
             // alone makes tier 3 conclude "working" and skip stall detection.
+            // The shared baseline list (ONE definition — baselineProcessPatterns.ts)
+            // plus this consumer's two extra entries: PresenceProxy's tier-3 filter
+            // must also exclude the Claude main process itself, which the shared
+            // list deliberately does not (the drain predicate handles it by tree
+            // position, not by name). This was the third hand-copy of the list.
             const BASELINE_PATTERNS = [
-              /\bplaywright-mcp\b/,
-              /\bplaywright\/mcp\b/,
-              /\bmcp-stdio-entry\b/,
-              /\bmcp.*server\b/i,
-              /\bcaffeinate\b/,
-              /\bnpm exec\b.*mcp/,
+              ...BASELINE_PROCESS_PATTERNS,
               /\bclaude\b/,
               /\bnode\b.*\bclaude\b/,
             ];
@@ -19222,6 +19312,94 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.green('  SessionReaper closeoutLivenessGate ON (post-transfer closeout liveness-gated — live)'));
     }
 
+    // ── Duplicate-session stand-down (docs/specs/duplicate-session-standdown.md) ──
+    // Dev-gated (LIVE on a development agent, DARK on the fleet) and dryRun-FIRST
+    // even on dev. Construction is CHEAP and side-effect-light (two small files),
+    // but it is skipped entirely when the gate is off so a fleet agent pays
+    // nothing and every /standdown route 503s honestly.
+    const _standDownEnabled = resolveDevAgentGate(config.monitoring?.standDown?.enabled, config);
+    // DECLARED BEFORE the registry, deliberately. The registry's constructor runs
+    // #load() synchronously, and the corrupt-file branch emits a `degraded-boot`
+    // audit row — so with the sink declared after, that callback dereferenced a
+    // `const` in its temporal dead zone, threw, and the row was swallowed by the
+    // audit helper's own catch. The ONE transition the design most wants durable
+    // ("minutes of un-enforced stand-downs must be VISIBLE") was the one that
+    // structurally could not land.
+    const _standDownAudit: StandDownAudit | null = _standDownEnabled
+      ? new StandDownAudit({ stateDir: config.stateDir, log: (line: string) => console.log(pc.dim(`  ${line}`)) })
+      : null;
+    const _standDownRegistry = _standDownEnabled
+      ? new StandDownRegistry(
+        {
+          stateDir: config.stateDir,
+          audit: (row: Record<string, unknown>) => _standDownAudit?.transition(row),
+          log: (line: string) => console.log(pc.dim(`  ${line}`)),
+        },
+        {
+          standDownTtlMinutes: config.monitoring?.standDown?.standDownTtlMinutes ?? 60,
+          unprovableFrameworkTtlMinutes: config.monitoring?.standDown?.unprovableFrameworkTtlMinutes ?? 15,
+          drainConfirmTicks: config.monitoring?.standDown?.drainConfirmTicks ?? 2,
+          releaseHysteresisTicks: config.monitoring?.standDown?.releaseHysteresisTicks ?? 2,
+          latchBlockedAttentionThreshold: config.monitoring?.standDown?.latchBlockedAttentionThreshold ?? 5,
+          closedEpisodeChurnThreshold: config.monitoring?.standDown?.closedEpisodeChurnThreshold ?? 3,
+          expiredEpisodeHealthThreshold: config.monitoring?.standDown?.expiredEpisodeHealthThreshold ?? 2,
+        },
+      )
+      : null;
+    if (_standDownRegistry) {
+      // TWO config couplings worth shouting about rather than debugging later.
+      //
+      // (1) The producer lives INSIDE the gated closeout path — the legacy
+      // closeout supplies neither ownerMachineId nor the admission evidence — so
+      // with the liveness gate off, standDown.enabled is silently inert: no
+      // entry can ever be created and nothing says so.
+      const _closeoutGateOnForStandDown = resolveDevAgentGate(config.monitoring?.sessionReaper?.closeoutLivenessGate, config);
+      if (!_closeoutGateOnForStandDown) {
+        console.warn(pc.yellow(
+          '  [standdown] monitoring.standDown resolves ENABLED but sessionReaper.closeoutLivenessGate resolves OFF — '
+          + 'the stand-down producer only runs on the gated closeout path, so no stand-down can ever be registered. '
+          + 'Enable the liveness gate (or accept that this feature is inert on this agent).',
+        ));
+      }
+      // (2) The admission validator refuses an assertion whose LIVENESS PROOF is
+      // older than MAX_LIVENESS_EVIDENCE_AGE_MS (a code constant — loosening a
+      // safety bound must not be config-reachable), while the closeout snapshot's
+      // own staleness bound is 2x the reaper tick. Past a ~150s tick the snapshot
+      // is routinely older than the ceiling and EVERY registration refuses
+      // `liveness-proof-stale` — a total feature outage whose cause has nothing
+      // to do with duplicates.
+      const tickSec = config.monitoring?.sessionReaper?.tickIntervalSec ?? 120;
+      if (tickSec * 2 * 1000 >= 300_000) {
+        console.warn(pc.yellow(
+          `  [standdown] sessionReaper.tickIntervalSec=${tickSec} makes the closeout liveness snapshot `
+          + `(2x tick = ${tickSec * 2}s) older than the admission validator's 300s evidence ceiling — `
+          + 'every stand-down registration will refuse liveness-proof-stale. Lower the tick to re-enable.',
+        ));
+      }
+    }
+    _standDownRegistryRef = () => _standDownRegistry;
+    if (_standDownRegistry) {
+      // The authority's OWN confirmation of a drained close (P20): the reaper's
+      // claim buys nothing; SessionManager asks this probe directly.
+      sessionManager.setStandDownDrainProbe((tmuxSession) => {
+        try { return _standDownRegistry.getBySession(tmuxSession)?.state === 'drained'; } catch { return false; }
+      });
+      const degraded = _standDownRegistry.degradedBoot;
+      if (degraded.degraded) {
+        // A KNOWN fail-open window (minutes, until the producers re-derive their
+        // verdicts) must be visible rather than silent.
+        try {
+          _meshAttentionRaise?.({
+            id: 'standdown-degraded-boot',
+            title: 'Stand-down records were lost at startup',
+            body: `The duplicate-session stand-down registry could not be read at boot (${degraded.reason}), so it started empty. For the next few minutes a duplicate session may not be held quiet; it re-establishes itself automatically.`,
+            priority: 'medium',
+            sourceContext: 'standdown',
+          });
+        } catch { /* @silent-fallback-ok — the degraded row on GET /standdown is the durable record */ }
+      }
+    }
+
     const sessionReaper = new SessionReaper(
       {
         ...reapGuardDeps,
@@ -19349,6 +19527,181 @@ export async function startServer(options: StartOptions): Promise<void> {
             }).catch(() => { /* @silent-fallback-ok — escalation is best-effort; the breaker-open audit row is the durable record */ });
           } catch { /* @silent-fallback-ok — telegram not wired yet (TDZ window) → audit-only */ }
         },
+        // ── Duplicate-session stand-down producer deps ──
+        selfMachineId: () => _meshSelfId ?? null,
+        standDown: _standDownRegistry
+          ? {
+            register: (req, selfId) => {
+              const r = _standDownRegistry.register(req, selfId);
+              return r.ok ? { ok: true as const, created: r.created } : { ok: false as const, refusal: r.refusal };
+            },
+            entryFor: (name) => _standDownRegistry.getBySession(name),
+            liveEntries: () => _standDownRegistry.list(),
+            observeDrain: (name, drained, observedAt) => _standDownRegistry.observeDrain(name, drained, observedAt),
+            markClosed: (name) => { _standDownRegistry.markClosed(name); _standDownAudit?.endEpisode(name); },
+            dropVanished: (name) => { _standDownRegistry.dropVanished(name); _standDownAudit?.endEpisode(name); },
+            closedEpisodeCount: (topicId) => _standDownRegistry.closedEpisodeCount(topicId),
+            closedEpisodeChurnThreshold: () => _standDownRegistry.config.closedEpisodeChurnThreshold,
+            // Every ENTRY-REMOVING transition resets the audit coalescing bucket,
+            // not just markClosed. Left populated, a later episode on the same
+            // (session, tool) key enters at suppressed > 0 and its FIRST
+            // enforcement row is dropped — and that first row is exactly the
+            // soak's evidence that a new episode began.
+            reverify: (name, ok, why) => {
+              const out = _standDownRegistry.reverify(name, ok, why);
+              if (out === 'released') _standDownAudit?.endEpisode(name);
+              return out;
+            },
+            release: (name, why, opts) => { _standDownRegistry.release(name, why, opts); _standDownAudit?.endEpisode(name); },
+            expire: (name) => _standDownRegistry.expire(name),
+            refreshMarker: () => _standDownRegistry.refreshMarker(),
+            recordCanaryHit: (name, detail) => _standDownRegistry.recordCanaryHit(name, detail),
+            health: () => _standDownRegistry.health(),
+            claimLatchAttention: () => _standDownRegistry.claimLatchAttention(),
+            pruneLatches: (epochs) => _standDownRegistry.pruneLatches(epochs),
+          }
+          : undefined,
+        // The anti-mutual-muzzle pool view. Reads the CACHED peer standdown
+        // snapshots the pool poll-cache already holds — this callsite performs no
+        // fan-out of its own, so it costs nothing on a tick where the registry is
+        // empty (the caller only asks when a local entry exists). `null` means the
+        // pool view could not be determined, which the tiebreak treats as
+        // release-worthy after the grace ticks: silence is the worse failure.
+        everyLiveCopyMuzzled: async (topicId: number) => {
+          try {
+            const peers = _resolvePeerUrls?.() ?? [];
+            if (peers.length === 0) return false; // single machine ⇒ never mutual
+            const { classifyPeerStandDownView } = await import('../core/standDownDrain.js');
+            const results = await Promise.all(peers.map(async (p) => {
+              // A registry-KNOWN-offline peer (a sleeping laptop) is a definite
+              // "no live copy here" — see classifyPeerStandDownView for the full
+              // table and the ≥3-machine-pool reasoning behind each row.
+              const cap = machinePoolRegistry?.getCapacity(p.machineId);
+              if (cap && cap.online === false) return classifyPeerStandDownView({ kind: 'offline' }, topicId);
+              const fetchPeer = async () => {
+                const r = await fetch(`${p.url}/standdown`, {
+                  headers: { Authorization: `Bearer ${config.authToken}` },
+                  signal: AbortSignal.timeout(3000),
+                });
+                if (r.status === 503) return { featureDark: true as const };
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                return (await r.json()) as {
+                  featureDark?: false;
+                  entries?: Array<{ topicId?: number; state?: string }>;
+                  liveTopics?: number[];
+                };
+              };
+              try {
+                // Rides the shared pool poll-cache, so a peer is fetched at most
+                // once per interval no matter how many topics ask. The CALLER
+                // only asks when a local entry exists, so an empty registry costs
+                // zero peer HTTP — the steady state on every machine.
+                const body = _poolPollCache
+                  ? (await _poolPollCache.fetchPeer(p.machineId, '/standdown', fetchPeer)).body
+                  : await fetchPeer();
+                if (body && 'featureDark' in body && body.featureDark) {
+                  return classifyPeerStandDownView({ kind: 'feature-dark' }, topicId);
+                }
+                return classifyPeerStandDownView(
+                  { kind: 'ok', entries: body?.entries ?? [], liveTopics: body?.liveTopics ?? [] },
+                  topicId,
+                );
+              } catch { return classifyPeerStandDownView({ kind: 'unreachable' }, topicId); }
+            }));
+            // A peer we could not read makes the whole answer UNKNOWN — never
+            // "not muzzled", which would silently disable the tiebreak, and never
+            // "muzzled", which would release on no evidence.
+            if (results.some((r) => r === null)) return null;
+            // Any peer genuinely SPEAKING for this topic means someone has a
+            // voice; only "every live copy is muzzled" is the silence state.
+            if (results.some((r) => r === 'speaking')) return false;
+            return results.some((r) => r === 'muzzled');
+          } catch { return null; }
+        },
+        claimStandDownNotice: (name, channel) => {
+          try { return _standDownRegistry?.claimNotice(name, channel) ?? false; } catch { return false; }
+        },
+        // Framework capability, answered without probing (the drain observations
+        // themselves are a tmux capture + full process listing + 512KB read).
+        drainProvable: (session) => {
+          try {
+            const fw = session.framework ?? sessionManager.frameworkForSession(session.tmuxSession);
+            return !fw || fw === 'claude-code';
+          } catch { return false; }
+        },
+        injectNotice: (tmuxSession, text) => {
+          try { sessionManager.injectMessage(tmuxSession, text, { firstParty: { source: 'standdown-notice' } }); }
+          catch { /* @silent-fallback-ok — the hook's block message is the load-bearing channel */ }
+        },
+        // divertInboundToOwner is DELIBERATELY UNWIRED in v1, and that is a
+        // behavioral statement, not an omission. The durable inbound queue
+        // exposes no "hand this topic's freshest message to that machine"
+        // capability today (QueueDrainLoop moves inbound when OWNERSHIP moves;
+        // it has no per-message divert), and it ships dark on the fleet besides.
+        // A stub that returned true would claim a delivery that never happened —
+        // the worst possible lie for a message a person is waiting on.
+        //
+        // The contract handles this exactly right: an undivertable fresh local
+        // inbound RELEASES the muzzle so this copy answers. That is the spec's
+        // own named fallback for a dark queue (reachability wins), so on every
+        // install today a user who messages the muzzled copy gets an answer from
+        // it rather than silence. The seam stays in the interface for when the
+        // queue gains a real divert. <!-- tracked: CMT-2031 -->
+        // Read LIVE per tick so a config edit applies with no restart.
+        standDownConfig: () => {
+          try {
+            const sd = liveConfig?.get<{ enabled?: boolean; dryRun?: boolean }>('monitoring.standDown', {}) ?? {};
+            return {
+              enabled: resolveDevAgentGate(sd.enabled, config) && !!_standDownRegistry,
+              // dryRun defaults TRUE: enforcement is an explicit operator flip.
+              dryRun: sd.dryRun !== false,
+            };
+          } catch { return { enabled: false, dryRun: true }; }
+        },
+        ownershipEpochFor: (topicId) => {
+          try { return sessionOwnershipRegistry?.read(String(topicId))?.ownershipEpoch ?? null; } catch { return null; }
+        },
+        // Contested REAL work → the registration REFUSES and escalates. These are
+        // the SAME signals the ReapGuard uses, read through the same deps, so the
+        // refusal cannot disagree with the guard about what "working" means.
+        contestedWork: (session, topicId) => {
+          try {
+            if (reapGuardDeps.activeSubagentCount(session.claudeSessionId) > 0) return 'active-subagent';
+            // Distinguish the two so the attention item can be honest about WHY
+            // nothing was stopped: an autonomous run is the operator's, and
+            // suspending it is a consent-gated decision this machine may not make.
+            try {
+              const runFile = path.join(config.stateDir, 'autonomous', `${topicId}.local.md`);
+              if (fs.existsSync(runFile) && (Date.now() - fs.statSync(runFile).mtimeMs) < 30 * 60_000) return 'autonomous-run';
+            } catch { /* fall through to the shared signal below */ }
+            if (reapGuardDeps.buildOrAutonomousActive(topicId)) return 'structural-long-work';
+            return null;
+          } catch { return 'structural-long-work'; /* @silent-fallback-ok — cannot tell ⇒ treat as contested ⇒ refuse to muzzle (safe) */ }
+        },
+        drainObservations: (session, drainBoundaryAt) => {
+          try {
+            // Claude Code only: the transcript + idle-prompt probes this needs do
+            // not exist for the other frameworks, and a fabricated observation is
+            // worse than an honest "unprovable" (which routes to the TTL path).
+            const fw = sessionManager.frameworkForSession(session.tmuxSession);
+            if (fw && fw !== 'claude-code') return null;
+              return sessionManager.standDownDrainObservations(session, drainBoundaryAt);
+          } catch { return null; }
+        },
+        raiseStandDownAttention: (item) => {
+          try {
+            if (!telegram) return;
+            void telegram.createAttentionItem({
+              id: item.id,
+              title: item.title,
+              summary: item.summary,
+              description: item.description,
+              category: 'sessions',
+              priority: item.priority === 'high' ? 'HIGH' : 'NORMAL',
+              sourceContext: 'session-reaper:standdown',
+            }).catch(() => { /* @silent-fallback-ok — the standdown.jsonl row is the durable record */ });
+          } catch { /* @silent-fallback-ok — telegram not wired yet (TDZ window) → audit-only */ }
+        },
         audit: reaperAuditSink(config.stateDir),
       },
       // developmentAgent gate (standard_development_agent_dark_feature_gate):
@@ -19368,6 +19721,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           // the reaper's gated/legacy branch matches the snapshot construction
           // above (both read resolveDevAgentGate(...closeoutLivenessGate)).
           closeoutLivenessGate: _closeoutLivenessGate,
+          // The stand-down tiebreak grace lives under `monitoring.standDown` in
+          // config (where it is documented) but is consumed off the REAPER's cfg.
+          // Without this line the documented key was unreachable and the value
+          // silently stayed at the reaper default — a config knob that reads as
+          // available and does nothing.
+          standDownMutualMuzzleGraceTicks:
+            config.monitoring?.standDown?.mutualMuzzleGraceTicks ?? 2,
         };
       })(),
     );
@@ -25140,7 +25500,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       })),
     });
 
-    const server = new AgentServer({ config, singleInstanceLock, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, getLastRelayEvent: threadlineGetLastRelayEvent, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, singleInstanceLock, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, getLastRelayEvent: threadlineGetLastRelayEvent, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     server.setWorkQueue(workQueue);
     if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
       const { CLASS_REVIEW_STORE_KEY, classReviewFromOriginRecord } = await import('../core/ClassReviewReplicatedStore.js');

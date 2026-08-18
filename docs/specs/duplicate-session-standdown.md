@@ -19,6 +19,10 @@ review-iterations: 2
 review-completed-at: "2026-08-18T04:48:47.478Z"
 review-report: "docs/specs/reports/duplicate-session-standdown-convergence.md"
 cross-model-review: "codex-cli:gpt-5.5"
+approved: true
+approved-by: Justin
+approved-via: "Telegram topic 46473 (2026-08-17 23:01 PDT): conversational approval — 'Approved' — following the ELI16 overview + convergence report handoff at 21:49 PDT. Operator had previously chosen the stand-down primitive over the rejected terminate/kill (2026-08-17 21:13 PDT) and confirmed the generality requirement (not scoped to topic 46473)."
+approved-at: "2026-08-18T06:01:00Z"
 single-run-completable: true
 frontloaded-decisions: 8
 cheap-to-change-tags: 1
@@ -522,11 +526,11 @@ rather than dark-forever.
    tracked increments, not silent gaps. <!-- tracked: CMT-2031 -->
 8. **The dryRun→enforce flip is the operator's, on named soak evidence.**
 
-## Deferral carriers (frozen excerpts)
+## Deferral carriers (frozen excerpts) <!-- tracked: CMT-2031 -->
 
-Each deferral marker above names a registered commitment; the carrier's immutable text is
-inlined so a reader can check coverage without API access. The machine-checked ledger is
-`docs/specs/carriers/duplicate-session-standdown.json`.
+Each deferral marker above names a registered commitment <!-- tracked: CMT-2031 -->; the
+carrier's immutable text is inlined so a reader can check coverage without API access. The
+machine-checked ledger is `docs/specs/carriers/duplicate-session-standdown.json`.
 
 > **CMT-2031** — Deliver the stand-down v1 residual increments: (1) codex-cli tool-muzzle coverage via installCodexHooks (v1 muzzles non-claude frameworks on voice only); (2) sender-identity stamping in the relay payload (INSTAR_SESSION_NAME as attribution) so the funnel refusal can key on the sender; (3) forwarding the muzzled copy composed-but-refused reply text and referenced-context to the owner machine (v1 ab
 >

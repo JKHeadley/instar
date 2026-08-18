@@ -241,6 +241,24 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       flatlineMs: 75 * 60_000,
       tickMs: 15 * 60_000,
     },
+    // Duplicate-session stand-down (docs/specs/duplicate-session-standdown.md).
+    // DEV-GATED: `enabled` is DELIBERATELY OMITTED (not hardcoded false) so
+    // resolveDevAgentGate decides — LIVE on a development agent, DARK on the
+    // fleet. Registered in DEV_GATED_FEATURES (`standDown`). `dryRun: true` ships
+    // even on the dev agent: the enforcement flip rests on a measured
+    // false-positive count over the soak window, and that decision is the
+    // operator's — never a mid-rollout stop-and-ask.
+    standDown: {
+      dryRun: true,
+      standDownTtlMinutes: 60,
+      unprovableFrameworkTtlMinutes: 15,
+      drainConfirmTicks: 2,
+      releaseHysteresisTicks: 2,
+      mutualMuzzleGraceTicks: 2,
+      latchBlockedAttentionThreshold: 5,
+      closedEpisodeChurnThreshold: 3,
+      expiredEpisodeHealthThreshold: 2,
+    },
     // U4.5 — Rope-Health Alerts (docs/specs/u4-5-rope-health-alerts.md §5).
     // DEV-GATED: `enabled` is DELIBERATELY OMITTED (not hardcoded false) so
     // resolveDevAgentGate decides at runtime — LIVE on a development agent day

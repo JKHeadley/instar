@@ -73,3 +73,20 @@ wrong.
 Nothing new — he chose this direction on 2026-08-17. Approving this spec means: build it as
 described. Tuning numbers (the one-hour patience window, the quiet-check counts) are
 deliberately changeable later without another review.
+
+## What changed between approval and shipping (post-approval note, 2026-08-18)
+
+The build went through five independent adversarial review rounds plus a closing
+verification pass: 48 findings, all fixed, none found by the author. Three would have
+made the feature silently inert (a wrong file path, a wrong credential, a counter that
+counted requests instead of completions); one round-4 cluster would have inverted the
+safety promise and let a genuinely working session be closed. Every fix carries a
+regression test that derives its expected values from the production code rather than
+restating them — the lesson of this build is that a hand-written test value is free to
+agree with broken code.
+
+Two honest scope notes that were NOT in the approved draft: Slack-bound duplicates are
+not covered in v1 (neither muzzle half — declared and tracked, alongside the already-
+declared non-Claude-framework gap), and the tool-muzzle requires the session to have
+been spawned by instar (which is how every real session starts). Nothing in the approved
+behaviour changed; the review made the claims match the code.

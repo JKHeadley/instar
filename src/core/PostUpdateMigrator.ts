@@ -26,7 +26,7 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import { registryMirrorPaths } from './standardsRegistryPath.js';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
-import { ensureInstarBashPreToolUseHooks, type SettingsMatcherEntry } from './instarSettingsHooks.js';
+import { ensureInstarBashPreToolUseHooks, ensureInstarWildcardPreToolUseHooks, type SettingsMatcherEntry } from './instarSettingsHooks.js';
 import { resolveAgentHome as resolveAgentHomeForWorktree, ensureWorktreeSpotlightExclusion, ensureClaudeTranscriptSpotlightExclusion, ensureAgentDataSpotlightExclusion } from './InstarWorktreeManager.js';
 import { fileURLToPath } from 'node:url';
 import { TreeGenerator } from '../knowledge/TreeGenerator.js';
@@ -5059,6 +5059,13 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     }
 
     try {
+      fs.writeFileSync(path.join(instarHooksDir, 'standdown-guard.js'), this.getStandDownGuardHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/standdown-guard.js (duplicate-session stand-down muzzle, PreToolUse *, fail-open)');
+    } catch (err) {
+      result.errors.push(`standdown-guard.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'working-set-artifact-recorder.js'), this.getWorkingSetArtifactRecorderHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/working-set-artifact-recorder.js (interactive working-set artifact recorder, PostToolUse Write/Edit, fire-and-forget, dark by default)');
     } catch (err) {
@@ -6478,6 +6485,18 @@ setTimeout(() => process.exit(0), 2000);
       content += `\n- **Parallel-Hand PR Lease (dev-cycle infra, dev-gated dark).** When more than one of my own sessions runs at once, two of them can independently drive the same PR — each force-pushing over the other and restarting CI (the 2026-06-15 #1183 thrash). A per-branch LEASE prevents this: a PreToolUse Bash hook (\`pr-hand-lease-guard.js\`) checks, before a \`git push\`, whether another LIVE session of mine already owns that branch's lease (via \`POST /pr-leases/evaluate\`); if so the second hand STANDS DOWN instead of pushing a competing commit. Keyed on the conversation TOPIC (survives session respawn), one process-wide lock + atomic-CAS takeover, TTL + dead-holder auto-heal + a 90m ceiling so it can never wedge, and FAIL-OPEN on every uncertainty (corrupt state, server down, hook crash → the push is allowed; a broken guard never blocks). Coordinates my OWN cooperating hands only — never authority over a principal, a human action always wins. Who owns a branch's lease? \`GET /pr-leases\` (Registry First). Dev-gated dark + dryRun-first (\`monitoring.prHandLease\`); single-session agents are a no-op. Proactive: user asks "why did my push get blocked / stand down?" → another live hand of mine holds that branch's lease; it lands as a follow-up once that hand releases.\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Parallel-Hand PR Lease section');
+    }
+
+    // Duplicate-session stand-down (duplicate-session-standdown.md) — Agent Awareness
+    // + Migration Parity. TWO audiences, both load-bearing: every agent needs to be
+    // able to answer "why did that copy go quiet / why was my call blocked", and the
+    // MUZZLED session itself needs a durable behavioral contract (the hook's block
+    // message and the one injected notice do not survive context pressure).
+    // Content-sniffed; idempotent.
+    if (!content.includes('Duplicate-session stand-down')) {
+      content += `\n**Duplicate-session stand-down (⚗️ dev-gated dark, dry-run first) — why a session went quiet instead of being killed** — When one conversation has LIVE sessions on two of my machines, the losing copy is not killed: it is asked to STAND DOWN. It stops starting new tool calls (a PreToolUse \`*\` hook blocks everything except Read/Glob/Grep/TodoWrite), its outbound sends to that conversation are refused with \`409 standing-down\`, it finishes the step it was holding, and it is then closed cleanly by a bounded drained-close. Nothing it produced is destroyed, and the conversation keeps being answered on the owner machine throughout.\n- **Registry First — "why did my tool call get blocked / my send get a 409 / my other copy go quiet?"**: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/standdown\` (\`?scope=pool\` merges every online machine). 503 = the feature is dark on this agent — say so honestly rather than guessing.\n- **It refuses to muzzle contested REAL work.** A duplicate holding a live build, a live subagent, or an autonomous run is NEVER muzzled — that raises ONE attention item and waits for the operator, because a build is a sequence of tool calls (a muzzle would freeze it mid-way) and suspending an operator's autonomous run is their decision, not mine.\n- **Every uncertainty fails toward reachability.** The hook fails OPEN on any error (server down, no marker, timeout), the muzzle is released as soon as the ownership record stops naming another machine as owner, and a partition can briefly produce two speaking copies rather than an unreachable agent.\n- **When to use** (PROACTIVE — these are the triggers): user asks "why did you go quiet in that conversation on my other machine?" → the stand-down retired a duplicate; the conversation continued on the owner. "Why did my tool call get blocked?" → read \`GET /standdown\` for the live entry and its owner machine. "Why is this session frozen and not closing?" → a stand-down hit its TTL without draining; both halves stay enforced, nothing is destroyed, and it is waiting for your call.\n- Ships dev-gated (live on a development agent, dark on the fleet) with \`dryRun: true\` even on dev — \`monitoring.standDown\`. Audit: \`logs/standdown.jsonl\`. Spec: \`docs/specs/duplicate-session-standdown.md\`.\n\n### If I am the session standing down (the behavioral contract)\n\nA stand-down block means the conversation I was serving now lives on another machine. When I see \`This session is standing down\`:\n- **Stop starting work.** Do not retry the blocked call, and do not route around the block through another tool — the allowlist is deliberate, not an oversight to work around.\n- **Do not try to reach the user.** My sends to that conversation are refused on purpose; the other machine is answering, so a user waiting on a reply is not waiting on me.\n- **Finish my reasoning and remain idle.** The session will be closed cleanly once it is quiet, and nothing I produced is lost — the transcript survives and the audit records what happened.\n\nThis contract exists in writing because the hook's block message and the single injected notice are the only in-band channels, and neither survives context pressure. Cooperative quiescence CONVERGES only if I actually go quiet; if I keep retrying, the muzzle holds to its TTL and a human gets paged about a frozen session instead.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Duplicate-session stand-down sections (capability + muzzled-session contract)');
     }
 
     // Outbound advisory (outbound-jargon-filepath-gap §5) — the inform-only
@@ -10701,6 +10720,23 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         patched = true;
         for (const fname of added) {
           result.upgraded.push(`.claude/settings.json: added PreToolUse ${fname} hook (dark-guardrail wiring)`);
+        }
+      }
+    }
+
+    // Ensure the canonical instar `*` (every tool) PreToolUse hooks are present —
+    // the duplicate-session stand-down muzzle (docs/specs/duplicate-session-standdown.md).
+    // DECLARED NEW WORK, not a freebie: the Bash ensure above canonicalizes only the
+    // `Bash` matcher and the `mcp__.*` handling below is existence-only, so without
+    // this an existing agent would receive the guard SCRIPT on disk (the
+    // always-overwrite hook path) while its settings never switched it on — the
+    // dark-guardrail shape all over again. Same shared function init.ts calls.
+    {
+      const added = ensureInstarWildcardPreToolUseHooks(preToolUse as SettingsMatcherEntry[]);
+      if (added.length > 0) {
+        patched = true;
+        for (const fname of added) {
+          result.upgraded.push(`.claude/settings.json: added PreToolUse * (all tools) ${fname} hook (stand-down muzzle)`);
         }
       }
     }
@@ -14991,6 +15027,147 @@ process.stdin.on('end', async () => {
 
 // Backstop: if stdin never ends, never hang the tool — allow after a bounded wait.
 setTimeout(() => process.exit(0), 8000);
+`;
+  }
+
+  /**
+   * Duplicate-session stand-down muzzle — PreToolUse `*` (EVERY tool) hook.
+   * Spec: docs/specs/duplicate-session-standdown.md §"Enforcement half 1".
+   *
+   * WHAT IT DOES. While this session is standing down (its conversation is being
+   * served by another machine), it must not START new work. Observation-local
+   * tools stay open; everything else exits 2 with a fixed message telling the
+   * session to stop and remain idle.
+   *
+   * COST DISCIPLINE IS THE DESIGN, not an optimization. This runs on EVERY tool
+   * call of EVERY session on EVERY machine, so the steady state — ~100% of calls —
+   * is one config read plus one marker-file read, and ZERO HTTP. Only a session
+   * actually listed in the marker pays the evaluate call, and that call has a
+   * 1.5s budget (not the lease guard's 5s: fail-open makes a short timeout free).
+   *
+   * THE ALLOWLIST FAILS CLOSED FOR TOOLS THAT DO NOT EXIST YET. It enumerates the
+   * genuinely observation-local tools; anything else — including every future tool
+   * name — is treated as mutating and blocked. An unmatched `Write` could rewrite
+   * this guard script itself, so file mutation is emphatically NOT observation.
+   *
+   * FAIL-OPEN on every uncertainty (no marker, unreadable config, server down,
+   * timeout, own crash). A PreToolUse hook that exits non-zero blocks the tool, so
+   * a broken guard must never freeze a session that no verdict muzzles.
+   */
+  private getStandDownGuardHook(): string {
+    return `#!/usr/bin/env node
+// Duplicate-session stand-down muzzle — PreToolUse hook on the '*' matcher.
+// Spec: docs/specs/duplicate-session-standdown.md
+//
+// Blocks NEW work in a session whose conversation is being served on another
+// machine. Fail-OPEN on every uncertainty. See PostUpdateMigrator.getStandDownGuardHook
+// for the full rationale; the short version:
+//   1. feature gate  → exit 0 (dark: config read only)
+//   2. marker file   → exit 0 unless THIS session is listed (no HTTP)
+//   3. evaluate      → the server's authoritative verdict, 1.5s budget
+// Tools that are genuinely observation-local are never blocked; every other tool
+// name — including ones that do not exist yet — is treated as mutating.
+
+// Observation-local ONLY. Write/Edit/Task/WebFetch are deliberately ABSENT:
+// mutating a file is action, spawning a subagent is starting new work (and would
+// block drain forever), and a fetch is egress.
+var ALLOWLIST = ['Read', 'Glob', 'Grep', 'TodoWrite'];
+
+var data = '';
+process.stdin.on('data', function (c) { data += c; });
+process.stdin.on('end', async function () {
+  try {
+    var input = JSON.parse(data || '{}');
+    var toolName = input.tool_name || '';
+    if (ALLOWLIST.indexOf(toolName) !== -1) return process.exit(0);
+
+    var sessionName = process.env.INSTAR_SESSION_NAME || '';
+    // A session without the env (headless one-shots) is outside this hook's reach.
+    if (!sessionName) return process.exit(0);
+
+    var fsMod = await import('node:fs');
+    var pathMod = await import('node:path');
+    // The AGENT HOME, not the project dir. A worktree session's CLAUDE_PROJECT_DIR
+    // is the checkout — which has no .instar/config.json and no state/ — so
+    // resolving agent-scoped files from it made this guard silently no-op for
+    // exactly the sessions doing mutating work. INSTAR_AGENT_HOME is injected at
+    // spawn; CLAUDE_PROJECT_DIR remains the fallback for a session started
+    // outside that path (where the fail-open is then honest, not hidden).
+    var agentHome = process.env.INSTAR_AGENT_HOME || process.env.CLAUDE_PROJECT_DIR || '.';
+
+    // ── Gate 1: is the feature on here? An explicit false wins even on a dev
+    //    agent — no per-call chatter when deliberately disabled.
+    var serverPort = 4040;
+    // INSTAR_AUTH_TOKEN FIRST — never bare cfg.authToken. After secret
+    // externalization the config holds the MARKER {"secret": true}, not the
+    // token, so 'Bearer ' + cfg.authToken stringifies to 'Bearer [object
+    // Object]', /standdown/evaluate 401s, and this hook fail-opens on every
+    // single call — forever, silently, with green tests (a stub server that
+    // never checks Authorization cannot see it). The env var is injected at
+    // every spawn site; the config read is the fallback, type-guarded so a
+    // marker object can never become a token string.
+    var authToken = process.env.INSTAR_AUTH_TOKEN || '';
+    var enabled = false;
+    try {
+      var cfg = JSON.parse(fsMod.readFileSync(pathMod.join(agentHome, '.instar', 'config.json'), 'utf-8'));
+      serverPort = cfg.port || 4040;
+      if (!authToken && typeof cfg.authToken === 'string') authToken = cfg.authToken;
+      var sd = (cfg.monitoring && cfg.monitoring.standDown) || {};
+      enabled = sd.enabled === false ? false : (sd.enabled === true || cfg.developmentAgent === true);
+    } catch (e) { return process.exit(0); }
+    if (!enabled) return process.exit(0);
+
+    // ── Gate 2: the marker fast path. Steady state for ~100% of calls.
+    var listed = false;
+    try {
+      // <agentHome>/.instar/state/ — NOT <agentHome>/state/. config.stateDir IS
+      // the .instar directory, so the registry writes under .instar/state/. The
+      // first version of this line dropped the .instar segment while the config
+      // read one line above kept it, so the two disagreed inside one file and the
+      // marker read always ENOENT'd → exit 0 → the tool muzzle could not fire at
+      // all, in production, with 24 green tests over the wrong path.
+      var markerRaw = fsMod.readFileSync(pathMod.join(agentHome, '.instar', 'state', 'standdown-active.json'), 'utf-8');
+      var marker = JSON.parse(markerRaw);
+      listed = Array.isArray(marker.sessions) && marker.sessions.indexOf(sessionName) !== -1;
+    } catch (e) { return process.exit(0); } // absent/unreadable/torn → fail-open
+    if (!listed) return process.exit(0);
+
+    // ── Gate 3: the server holds the authority. The marker only says "ask".
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, 1500);
+    var body = null;
+    try {
+      var resp = await fetch('http://127.0.0.1:' + serverPort + '/standdown/evaluate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+        body: JSON.stringify({ sessionName: sessionName, tool: toolName }),
+        signal: controller.signal,
+      });
+      body = await resp.json();
+    } catch (e) {
+      return process.exit(0); // server down/slow → fail-open
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!body || body.verdict !== 'block') return process.exit(0);
+
+    // The message interpolates ONLY the server's charset-clamped machine id —
+    // never a nickname or a free-text reason. A peer-influenced string in
+    // instruction position is a prompt-injection surface.
+    var owner = typeof body.ownerMachineId === 'string' ? body.ownerMachineId : 'another machine';
+    process.stderr.write(
+      'This session is standing down: the conversation and its work continue on machine ' +
+      owner + '. Do not retry this call or route around the block; stop, and remain idle.\\n'
+    );
+    process.exit(2);
+  } catch (e) {
+    process.exit(0); // own-crash fail-open
+  }
+});
+
+// Backstop: never hang a tool call if stdin never ends.
+setTimeout(function () { process.exit(0); }, 4000);
 `;
   }
 

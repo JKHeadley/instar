@@ -1,0 +1,49 @@
+{
+  "ts": "2026-08-18T09:02:59.421Z",
+  "slug": "duplicate-session-standdown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/SessionReaper.ts matches session reaper",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 21,
+  "loc": 3657,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/model-registry-freshness.manifest.json",
+      "src/commands/init.ts",
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionManager.ts",
+      "src/core/StandDownAudit.ts",
+      "src/core/StandDownRegistry.ts",
+      "src/core/baselineProcessPatterns.ts",
+      "src/core/deliverToConversation.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/instarSettingsHooks.ts",
+      "src/core/standDownDrain.ts",
+      "src/core/types.ts",
+      "src/monitoring/PresenceProxy.ts",
+      "src/monitoring/SessionReaper.ts",
+      "src/monitoring/delivery-failure-sentinel.ts",
+      "src/monitoring/delivery-failure-sentinel/recovery-policy.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 3617,
+    "deletedLines": 40
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

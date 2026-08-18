@@ -43,7 +43,7 @@ import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillCo
 import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
-import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS } from '../core/instarSettingsHooks.js';
+import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDCARD_PRETOOLUSE_HOOKS, ensureInstarWildcardPreToolUseHooks, type SettingsMatcherEntry } from '../core/instarSettingsHooks.js';
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
@@ -5035,12 +5035,17 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   // Fresh copies so later settings mutation never touches the shared constants.
   const instarBashHooks = INSTAR_BASH_PRETOOLUSE_HOOKS.map((h) => ({ ...h }));
   const instarMcpHooks = INSTAR_MCP_PRETOOLUSE_HOOKS.map((h) => ({ ...h }));
+  // The `*` (every tool) set — the stand-down muzzle. See instarSettingsHooks.ts
+  // for why a wildcard matcher (and not an enumeration of today's tool names) is
+  // the only shape that stays correct as new tools appear.
+  const instarWildcardHooks = INSTAR_WILDCARD_PRETOOLUSE_HOOKS.map((h) => ({ ...h }));
 
   // PreToolUse: merge instar hooks into existing or create fresh
   if (!hooks.PreToolUse) {
     hooks.PreToolUse = [
       { matcher: 'Bash', hooks: instarBashHooks },
       { matcher: 'mcp__.*', hooks: instarMcpHooks },
+      { matcher: '*', hooks: instarWildcardHooks },
     ];
   } else {
     const preToolUse = hooks.PreToolUse as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
@@ -5073,6 +5078,11 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
         mcpEntry.hooks.push(hook);
       }
     }
+
+    // The `*` matcher goes through the SHARED ensure function — the same one the
+    // existing-agent migrator calls — so the two paths cannot drift (an anti-drift
+    // test asserts both consume it).
+    ensureInstarWildcardPreToolUseHooks(preToolUse as SettingsMatcherEntry[]);
   }
 
   // SessionStart: identity injection on all lifecycle events

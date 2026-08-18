@@ -23,7 +23,11 @@
  * via `instarHookFilename()` — never add a `filename` field to these objects,
  * or new agents' settings would gain a stray key.
  *
- * Scope: the Claude-Code `Bash` and `mcp__.*` PreToolUse matchers only.
+ * Scope: the Claude-Code `Bash`, `mcp__.*` and `*` (wildcard) PreToolUse
+ * matchers. The wildcard set exists for guards that must see EVERY tool, not a
+ * command shape — the duplicate-session stand-down muzzle is the first: a
+ * standing-down session must not start work through ANY tool, and a guard that
+ * only saw `Bash` would leave Write/Edit/Task/WebFetch wide open.
  * slopcheck-guard keeps its own dedicated ensure-block in migrateSettings
  * (it is intentionally NOT in this set — it is added by that block for both
  * new and existing agents). Codex hooks (installCodexHooks.ts, `.*` matcher)
@@ -112,6 +116,33 @@ export const INSTAR_MCP_PRETOOLUSE_HOOKS: ReadonlyArray<InstarSettingsHookEntry>
 ];
 
 /**
+ * The canonical instar PreToolUse `*`-matcher (EVERY tool) hook entries.
+ *
+ * WHY A WILDCARD MATCHER EXISTS. The `Bash` and `mcp__.*` sets gate a COMMAND
+ * SHAPE. The stand-down muzzle gates a SESSION: while a duplicate copy is
+ * standing down it must not start new work through any tool at all, and an
+ * unmatched `Write` could rewrite the guard script itself. A matcher that
+ * enumerated today's tool names would also silently fail open for every tool
+ * added later, so the guard matches `*` and owns its ALLOWLIST internally
+ * (unknown tool ⇒ mutating ⇒ blocked).
+ *
+ * Cost discipline is therefore load-bearing, not an optimization: this hook runs
+ * on EVERY tool call on EVERY session, so its steady state is a config read plus
+ * a marker-file stat, with zero HTTP unless this session is actually listed.
+ */
+export const INSTAR_WILDCARD_PRETOOLUSE_HOOKS: ReadonlyArray<InstarSettingsHookEntry> = [
+  {
+    type: 'command',
+    command: `node ${PD}/.instar/hooks/instar/standdown-guard.js`,
+    blocking: true,
+    // Deliberately SHORTER than the lease guard's 6s: that hook fires only on a
+    // `git push`, this one fires on every tool call, and fail-open makes a short
+    // timeout free.
+    timeout: 2000,
+  },
+];
+
+/**
  * The canonical script filenames for the Bash set, in order. Used by the
  * anti-drift test and as the documented contract. Derived once from the
  * command strings so it can never silently disagree with the entries above.
@@ -159,6 +190,9 @@ export interface SettingsMatcherEntry {
  * Does NOT touch slopcheck-guard (its own dedicated ensure-block owns it) or
  * any non-Bash matcher.
  */
+export const INSTAR_WILDCARD_PRETOOLUSE_FILENAMES: ReadonlyArray<string> =
+  INSTAR_WILDCARD_PRETOOLUSE_HOOKS.map((h) => instarHookFilename(h.command) ?? '');
+
 export function ensureInstarBashPreToolUseHooks(preToolUse: SettingsMatcherEntry[]): string[] {
   const added: string[] = [];
   let bashEntry = preToolUse.find((e) => e.matcher === 'Bash');
@@ -174,6 +208,39 @@ export function ensureInstarBashPreToolUseHooks(preToolUse: SettingsMatcherEntry
     const present = bashEntry.hooks.some((h) => typeof h.command === 'string' && h.command.includes(fname));
     if (!present) {
       bashEntry.hooks.push({ ...canonical });
+      added.push(fname);
+    }
+  }
+  return added;
+}
+
+/**
+ * Idempotently ensure every canonical instar `*`-matcher PreToolUse hook is
+ * present. Same contract as the Bash mirror above — add-only, filename-keyed
+ * presence detection, hand-curated entries preserved, safe to run repeatedly.
+ *
+ * WHY THIS MIRROR IS DECLARED NEW WORK. The migrator today canonicalizes only
+ * `Bash`, and its `mcp__.*` handling is existence-only (it never appends to a
+ * matcher that is already present). Neither would install a wildcard hook on an
+ * existing agent, so shipping the stand-down without this function would leave
+ * the tool-muzzle half working for NEW agents only — the exact dark-guardrail
+ * migration gap this module was created to close.
+ */
+export function ensureInstarWildcardPreToolUseHooks(preToolUse: SettingsMatcherEntry[]): string[] {
+  const added: string[] = [];
+  let entry = preToolUse.find((e) => e.matcher === '*');
+  if (!entry) {
+    entry = { matcher: '*', hooks: [] };
+    preToolUse.push(entry);
+  }
+  if (!entry.hooks) entry.hooks = [];
+
+  for (const canonical of INSTAR_WILDCARD_PRETOOLUSE_HOOKS) {
+    const fname = instarHookFilename(canonical.command);
+    if (!fname) continue;
+    const present = entry.hooks.some((h) => typeof h.command === 'string' && h.command.includes(fname));
+    if (!present) {
+      entry.hooks.push({ ...canonical });
       added.push(fname);
     }
   }

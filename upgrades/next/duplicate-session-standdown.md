@@ -1,0 +1,67 @@
+<!-- bump: minor -->
+
+## What Changed
+
+When one conversation had live sessions on two of the agent's machines, the only
+remedies were a post-transfer closeout whose KEEP-guards refuse to end a busy
+session — and a duplicate is busy by construction, so the wrong copy survived
+until a human killed it — or a forced kill, which review rejected: a symmetric
+split-brain lets both machines kill their own copy, a succeeding kill resets
+every brake so an undiagnosed cause becomes a kill/respawn loop, and a
+mid-tool-call kill destroys in-flight work.
+
+The losing copy is now asked to STAND DOWN instead. A PreToolUse hook on every
+tool stops it starting new work (reads and searches stay open), its outbound
+sends to that conversation are refused with a terminal, non-retrying `409`, it
+finishes the step it was holding, and a bounded drained-close retires it once
+four independent signals corroborate that it has genuinely gone quiet. Nothing
+is killed, nothing is destroyed, and the conversation keeps being answered on
+the owner machine throughout.
+
+Registration REFUSES when the duplicate holds contested real work — a live
+build, a live subagent, or an autonomous run. Those raise one attention item and
+wait for the operator: a build is a sequence of tool calls, so a muzzle would
+freeze it partway rather than let it finish, and suspending an operator's
+autonomous run is their decision. Every uncertainty fails toward reachability:
+the hook fails open on any error, the muzzle lifts the moment ownership returns
+to this machine, and a partition can briefly produce two speaking copies rather
+than an unreachable agent.
+
+The existing post-transfer closeout dwell is now owner-scoped, so confirmations
+accumulated against one owner no longer carry into a different owner's episode.
+
+## What to Tell Your User
+
+If you run me on more than one machine and a conversation ends up live on two of
+them, the extra copy now goes quiet and retires itself instead of competing —
+and if it is in the middle of real work, I ask you rather than stopping it. You
+would previously have seen this as sessions restarting, stalling, or answering
+twice.
+
+This ships experimental and observe-only: it is on for development agents in a
+mode where it records what it WOULD do and blocks nothing. Enforcement is a
+deliberate flip, made on measured evidence.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|------------|
+| See any live stand-down and why | `GET /standdown` (`?scope=pool` across machines) |
+| Release a frozen episode | Reply to the attention item, or `POST /standdown/:session/operator-release` |
+| Turn it off entirely | `monitoring.standDown.enabled: false` (read live, no restart) |
+
+## Evidence
+
+77 new tests across three tiers. Unit: registry lifecycle, episode latches, a
+TTL that resumes rather than resets, expiry keeping both enforcement halves, a
+corrupt-boot registry regenerating an EMPTY marker rather than a stale one, and
+the drain predicate resolving every uncertainty to "wait". Hook: the real
+generated guard executed against a live stub server — the allowlist, an unknown
+future tool name treated as mutating, the marker fast path making zero HTTP
+calls, six distinct fail-open paths, and the init/migrator anti-drift contract.
+Integration: the real SessionReaper registering ONLY where today's closeout
+already failed, registering nothing when it succeeds, refusing on all three
+contested-work classes, and the drained-close passing a verified claim rather
+than a bypass list. E2E over real HTTP: the feature answers 200 not 503, the
+send funnel returns 409 naming the owner machine, a returned owner lifts the
+muzzle at the moment of the send, and a dark install still fails the hook open.
