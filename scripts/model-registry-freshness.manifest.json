@@ -19,30 +19,23 @@
       },
       "topModels": [
         {
-          "id": "claude-opus-4-8",
+          "id": "claude-opus-5",
           "role": "capable-anthropic",
           "frontier": true,
           "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
+          "verifiedAt": "2026-08-18"
         },
         {
           "id": "claude-fable-5",
           "role": "ultra-anthropic",
           "frontier": true,
           "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
+          "verifiedAt": "2026-08-18"
         },
         {
-          "id": "claude-opus-5",
+          "id": "claude-opus-4-8",
           "role": "capable-anthropic",
-          "frontier": true,
-          "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
-        },
-        {
-          "id": "claude-sonnet-5",
-          "role": "capable-anthropic",
-          "frontier": true,
+          "frontier": false,
           "pricing": null,
           "verifiedAt": "carried-over-from-allowlist"
         }
@@ -61,37 +54,37 @@
       },
       "topModels": [
         {
-          "id": "claude-opus-4-8",
+          "id": "claude-opus-5",
           "role": "capable-anthropic",
           "frontier": true,
           "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
+          "verifiedAt": "2026-08-18"
         },
         {
-          "id": "claude-sonnet-4-6",
+          "id": "claude-sonnet-5",
           "role": "balanced-anthropic",
           "frontier": true,
           "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
+          "verifiedAt": "2026-08-18"
         },
         {
           "id": "claude-haiku-4-5",
           "role": "fast-anthropic",
           "frontier": true,
           "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
+          "verifiedAt": "2026-08-18"
         },
         {
-          "id": "claude-opus-5",
+          "id": "claude-opus-4-8",
           "role": "capable-anthropic",
-          "frontier": true,
+          "frontier": false,
           "pricing": null,
           "verifiedAt": "carried-over-from-allowlist"
         },
         {
-          "id": "claude-sonnet-5",
-          "role": "capable-anthropic",
-          "frontier": true,
+          "id": "claude-sonnet-4-6",
+          "role": "balanced-anthropic",
+          "frontier": false,
           "pricing": null,
           "verifiedAt": "carried-over-from-allowlist"
         }
@@ -110,22 +103,22 @@
       },
       "topModels": [
         {
-          "id": "gpt-5.5",
+          "id": "gpt-5.6-sol",
           "role": "capable-openai",
           "frontier": true,
-          "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
-        },
-        {
-          "id": "gpt-5.6-sol",
-          "role": "flagship-openai-recognized",
-          "frontier": false,
           "pricing": {
             "inPerMtok": 5,
             "outPerMtok": 30,
             "currency": "USD"
           },
-          "verifiedAt": "2026-07-09"
+          "verifiedAt": "2026-08-18"
+        },
+        {
+          "id": "gpt-5.5",
+          "role": "capable-openai",
+          "frontier": false,
+          "pricing": null,
+          "verifiedAt": "carried-over-from-allowlist"
         },
         {
           "id": "gpt-5.6-terra",
@@ -168,7 +161,7 @@
           "role": "capable-google",
           "frontier": true,
           "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
+          "verifiedAt": "2026-08-18"
         }
       ],
       "note": "Homebrew gemini-cli formula DEPRECATED (upstream-unsupported, disabled 2026-12-18). CLI v0.25.2 still runs. capable tier now pinned to gemini-3.1-pro-preview (verified reachable 2026-07-03 via the gemini CLI / OpenRouter / paid Gemini key); gemini-2.5-pro remains a recognized/spawnable model + capacity fallback (NOT frontier). Migrate off the deprecated formula (npm @google/gemini-cli, or an OpenRouter/pi door). topModels seeded from the reviewed frontierAllowlist (spec D4 carry-over)."
