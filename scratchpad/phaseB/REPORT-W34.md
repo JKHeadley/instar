@@ -312,3 +312,27 @@ tests/unit/standards-enforcement-measurement.test.ts sha256=f4e48bd25cf330a26b60
 tests/unit/standards-coverage-ratchet.test.ts sha256=45cd195bd50ac1263bface56fcdde3aaedc0ff705a2008bb54285f540ee34aa3
 upgrades/next/enforcement-measurement.md sha256=758c42ef17d28ccb88528a17739892257147df98df83c9271356b3863f9cfde8
 ```
+
+## 2026-08-18 04:06:27 -0700 (PDT) — Repair published to PR #1926; open and unmerged
+
+```text
+implementation-commit=9112c99142520cb0c70e1f670ec4930882b672a6
+branch=phaseb/w34-enforcement-measurement
+remote=upstream (https://github.com/JKHeadley/instar.git)
+push=481c5bd0010ab693b8998c1c946b978ff49d25f9..9112c99142520cb0c70e1f670ec4930882b672a6
+pull-request=https://github.com/JKHeadley/instar/pull/1926
+pull-request-state=OPEN
+pull-request-head=9112c99142520cb0c70e1f670ec4930882b672a6
+merged=false
+```
+
+The normal pre-push gate ran rather than being skipped:
+
+```text
+Smoke affected set: 4 test files / 65 test cases.
+Test Files  4 passed (4)
+Tests       65 passed (65)
+exit=0
+```
+
+The PR body now states the repaired relevance + fail-direction boundary, the behavioral vacuity control, the honest live `0/88`, the unchanged model-registry lint blocker, and **BUILT WITH HAND EVIDENCE, PENDING INDEPENDENT JUDGE RE-CERTIFICATION**. No merge or approval was performed.
