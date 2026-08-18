@@ -1,5 +1,27 @@
 # W3.6 — renderer-independent structured test observation
 
+## 2026-08-18 07:20:57 -0700 — pull request opened; no merge
+
+```text
+implementation commit: 4c54093c3f78802a8440eea119436293740cb6f6
+branch: phaseb/w36-structured-test-counts
+pull request: https://github.com/JKHeadley/instar/pull/1933
+```
+
+Sanctioned pre-push affected-set gate:
+
+```text
+$ git push -u upstream phaseb/w36-structured-test-counts
+exit 0
+[test-runner-bound] suite-lane slot acquired (posture: enforcing, cap 1)
+Test Files  2 passed (2)
+Tests       53 passed (53)
+Duration    512.82s
+W36_C1 source="node:test TestsStream" misleadingRendererCounts=ignored mutationLanded=true cleanExit=0 cleanTests=1 mutatedExit=1 mutatedTests=1 confirmationExit=0 confirmationTests=1 failureKind=assertion artifact=authenticated verdict=ratchet
+```
+
+The repeated `standards-coverage check failed` lines in the run are deciding output from expected negative fixtures; the enclosing Vitest result is 53/53 passed. PR state is **BUILT WITH HAND EVIDENCE**. Independent judgement and machine verification remain pending; no FIXED or EFFECTIVE claim. No merge performed.
+
 ## 2026-08-18 07:05:18 -0700 — final targeted hand verification
 
 ```text
