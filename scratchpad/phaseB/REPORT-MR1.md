@@ -212,3 +212,52 @@ Pull request verification:
 ```
 
 Final state: PR open and unmerged. Freshness PASS, drift negative control PASS, type-check PASS, full lint PASS, targeted suite FAIL (3 of 123) with the closed-enum runtime mismatch and two stale expectations. Independent side-effects review concurs with both merge blockers recorded. MR1 is not merge-ready and claims no unblock.
+
+## 2026-08-18 05:43 PDT — MR1-B authorized closure built and hand-proven
+
+Authorized additions applied:
+
+- Added only `claude-opus-5` and `claude-sonnet-5` to `KNOWN_CLAUDE_MODEL_IDS`.
+- Updated prior-value expectations without weakening assertions. The Claude default resolver assertion remains exact and now expects `claude-opus-5` after the closed enum accepts it.
+- Corrected only `doors['codex-cli'].note`, `$flaggedStaleNote`, and `$lastReviewNote`; no behavioral manifest fields changed.
+- Added `tests/unit/model-registry-runtime-resolution.test.ts`, which refuses unhandled manifest pins and requires every extracted pin value to equal a non-empty result from its owning resolver.
+
+Expanded targeted suite before sabotage:
+
+```text
+Test Files  9 passed (9)
+Tests       129 passed (129)
+exit 0
+```
+
+Required must-fail control: temporarily removed `claude-opus-5` from `KNOWN_CLAUDE_MODEL_IDS` and ran only the new check.
+
+```text
+FAIL tests/unit/model-registry-runtime-resolution.test.ts
+Error: RUNTIME-RESOLUTION: pin 'claude-tier-escalation-default-escalated' expected [claude-opus-5, claude-fable-5] but its real resolver returned [<empty>, claude-fable-5]
+
+Test Files  1 failed (1)
+Tests       1 failed | 5 passed (6)
+exit 1
+```
+
+The failure was behavioral: the suite compiled, all six tests executed, five passed, and the assertion named the exact pin plus the empty resolver output.
+
+After restoring `claude-opus-5`:
+
+```text
+Test Files  1 passed (1)
+Tests       6 passed (6)
+exit 0
+```
+
+Post-restoration verification:
+
+- `npm run lint:model-freshness`: PASS, exit 0; all drift lines green.
+- `npx tsc --noEmit`: PASS, exit 0.
+- `npm run lint`: PASS, exit 0.
+- `lastReviewedAt`, staleness window, enforcement mode, pin definitions, and freshness gate script: unchanged.
+
+Finding closed: a manifest pin can no longer be fresh and drift-green while silently resolving empty through a registered runtime path without making CI red. This remains a routing change for operator approval. Gemini was verified from vendor documentation rather than a successful local probe. PR #1928 remains open, draft, unmerged, and without auto-merge.
+
+Independent MR1-B second-pass verdict: `Concur with MR1-B review`. The reviewer confirmed exhaustive manifest-pin coverage, production-resolver invocation, exact non-empty results, the behavioral Claude control, and the distinction between three live routing changes and Gemini's documentation-only verification.

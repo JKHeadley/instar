@@ -1,6 +1,6 @@
 # MR1 Model Registry Review — Plain-English Overview
 
-> The one-line version: update the reviewed frontier labels and three model-routing defaults to the vendor-confirmed current models, while keeping the existing freshness guard intact and refusing to hide a newly discovered routing incompatibility.
+> The one-line version: update the reviewed frontier labels and three model-routing defaults, reconcile the runtime allowlist, and add a CI check proving every manifest pin resolves through its real runtime path.
 
 ## The problem in one breath
 
@@ -16,7 +16,7 @@ The registry review date was refreshed on August 18, but the live routing pins d
 
 This change labels the current Anthropic and Codex models as frontier, demotes the superseded entries without deleting their history, and repoints three existing capable/default routes to the reviewed current ids. Gemini's model id stays unchanged because it remains current; its verification came from vendor documentation rather than a successful local CLI probe.
 
-The review also exposed an important compatibility problem: the Claude tier-escalation default now names `claude-opus-5`, but the independent closed runtime list does not recognize that id yet. The runtime therefore refuses the new default and returns no model. This branch records that result and must not merge in its present form; MR1 did not authorize changing the closed list or rewriting its tests.
+The first review exposed an important compatibility problem: the Claude tier-escalation default named `claude-opus-5`, but the independent closed runtime list did not recognize that id. MR1-B adds only the two Anthropic ids established by the vendor selector, updates the value-pinned expectations, corrects the three contradictory notes, and adds a CI check that invokes every owning resolver for every registered manifest pin.
 
 ## The safeguards
 
@@ -24,12 +24,12 @@ The review also exposed an important compatibility problem: the Claude tier-esca
 
 **The drift tooth still bites.** A temporary change back to the non-frontier Codex id made the real freshness command fail and name the exact offending pin. Reverting the mutation restored a clean check.
 
-**The routing incompatibility is visible.** The targeted suite runs the real resolver and fails because the new Claude default is outside the closed enumeration. The pull request is therefore a review surface, not a claim that the change is ready to ship.
+**Runtime resolvability is now checked.** The new test extracts all six concrete values represented by the five manifest pins, invokes each owning resolver, and refuses missing resolver coverage or an empty/mismatched result. Removing `claude-opus-5` from the closed enum makes the test execute and fail with the exact Claude tier pin and an `<empty>` resolved value.
 
 ## What ships when
 
-Nothing in this branch should ship until the operator authorizes a complete compatible change and the targeted suite is green. The current pull request preserves the reviewed registry delta, the hand evidence, and the exact blocker without merging it.
+The proposal remains a draft pull request for operator approval because it changes live model routing. The targeted suite, type-check, freshness checks, and full lint are green; draft status and disabled auto-merge remain deliberate.
 
 ## What you actually need to decide
 
-Should the routing correction proceed with an explicitly authorized update to the Claude closed model enumeration and its value-pinned tests, or should the Claude default remain on the prior id while the registry-only corrections are reviewed separately?
+Should the operator approve routing the three named code paths to the reviewed current frontier models with the new runtime-resolution ratchet in place?

@@ -38,8 +38,8 @@ describe('resolveTierModel — §5.1', () => {
     expect(resolveTierModel('claude-code', 'escalated', cfg)).toBe('claude-fable-5');
   });
 
-  it('resolves claude-code default → claude-opus-4-8', () => {
-    expect(resolveTierModel('claude-code', 'default', cfg)).toBe('claude-opus-4-8');
+  it('resolves claude-code default → claude-opus-5', () => {
+    expect(resolveTierModel('claude-code', 'default', cfg)).toBe('claude-opus-5');
   });
 
   it('escalated:null resolves to default ⇒ no swap (backwards-compat contract)', () => {

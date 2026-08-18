@@ -207,7 +207,7 @@ describe('Model-Tier Escalation — migrateConfig add-missing-only (never-overwr
     expect(te.enabled).toBe(false);
     expect(te.dryRun).toBe(true);
     expect(te.triggers.skills).toEqual(['build', 'autonomous', 'instar-dev', 'spec-converge']);
-    expect(te.frameworks['claude-code']).toEqual({ default: 'claude-opus-4-8', escalated: 'claude-fable-5' });
+    expect(te.frameworks['claude-code']).toEqual({ default: 'claude-opus-5', escalated: 'claude-fable-5' });
     expect(te.frameworks['codex-cli']).toEqual({ default: null, escalated: null });
     expect(te.costGuards.maxConcurrentEscalatedPerAccount).toBe(2);
     expect(te.costGuards.respectFreeWindows['claude-fable-5']).toBe('2026-06-22');
