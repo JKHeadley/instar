@@ -33,6 +33,8 @@ test('C1 private-channel authority issues and authenticates a real child receipt
     assert.equal(await authority.authenticate(receipt, {
       guardId: 'real-child', childPid: child.pid, childExitCode: 0,
     }), true);
+    assert.equal(Object.isFrozen(receipt), true);
+    assert.equal(Object.isFrozen(receipt.argv), true);
     assert.equal(isLiveAuthenticatedReceipt(receipt), true);
     console.log(`H1_C1 realChildPid=${child.pid} childExit=0 authenticated=true channel=MessagePort`);
   } finally {

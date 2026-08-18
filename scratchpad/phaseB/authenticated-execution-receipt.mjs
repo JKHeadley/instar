@@ -155,7 +155,11 @@ export async function createAuthenticatedReceiptAuthority({ issuer }) {
     async authenticate(receipt, expected = {}) {
       if (closed) return false;
       const result = await request('verify', { receipt, expected });
-      if (result.valid && receipt && typeof receipt === 'object') liveAuthenticatedReceipts.add(receipt);
+      if (result.valid && receipt && typeof receipt === 'object') {
+        if (Array.isArray(receipt.argv)) Object.freeze(receipt.argv);
+        Object.freeze(receipt);
+        liveAuthenticatedReceipts.add(receipt);
+      }
       return result.valid;
     },
     async close() {
