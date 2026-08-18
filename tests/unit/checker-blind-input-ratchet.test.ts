@@ -205,15 +205,78 @@ describe('checker blind-input class ratchet', () => {
 describe('P3 — the ratchet own test rejects all four guard sabotages', () => {
   const sourcePath = path.join(ROOT, 'scripts', 'lib', 'checker-blind-input-ratchet.mjs');
   const source = fs.readFileSync(sourcePath, 'utf8');
+  const guardResultSchema = 'checker-blind-input/guard-own-results-v1';
+  const hollowExpectedResults = [
+    { testNumber: 1, identity: 'empty population is not proof', outcome: 'fail', failureCode: 'ERR_ASSERTION' },
+    { testNumber: 2, identity: 'unknown coverage id is rejected', outcome: 'fail', failureCode: 'ERR_ASSERTION' },
+    { testNumber: 3, identity: 'new uncovered checker is named and rejected', outcome: 'fail', failureCode: 'ERR_ASSERTION' },
+    { testNumber: 4, identity: 'genuinely covered population passes', outcome: 'pass', failureCode: null },
+  ] as const;
 
-  function hasNodeTestSummary(output: string, label: 'tests' | 'fail', count: number): boolean {
-    const tap = `# ${label} ${count}`;
-    const spec = `ℹ ${label} ${count}`;
-    return output.split(/\r?\n/).some((line) => line.trim() === tap || line.trim() === spec);
+  interface GuardOwnResult {
+    schema: typeof guardResultSchema;
+    tests: Array<{
+      testNumber: number;
+      identity: string;
+      outcome: 'pass' | 'fail';
+      failureCode: string | null;
+    }>;
   }
 
-  function guardOwnSuite(modulePath: string, dir: string) {
+  function parseGuardOwnResult(raw: string): GuardOwnResult {
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      throw new Error('guard-own result is not JSON');
+    }
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('guard-own result must be an object');
+    }
+    const record = value as Record<string, unknown>;
+    if (record.schema !== guardResultSchema || !Array.isArray(record.tests)) {
+      throw new Error('guard-own result does not match schema v1');
+    }
+    const rootKeys = Object.keys(record).sort();
+    if (rootKeys.length !== 2 || rootKeys[0] !== 'schema' || rootKeys[1] !== 'tests') {
+      throw new Error('guard-own result has unknown root fields');
+    }
+    const tests = record.tests.map((entry, index) => {
+      if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+        throw new Error(`guard-own test result ${index} must be an object`);
+      }
+      const item = entry as Record<string, unknown>;
+      const keys = Object.keys(item).sort();
+      if (keys.join(',') !== 'failureCode,identity,outcome,testNumber') {
+        throw new Error(`guard-own test result ${index} has the wrong fields`);
+      }
+      if (!Number.isInteger(item.testNumber) || (item.testNumber as number) < 1) {
+        throw new Error(`guard-own test result ${index} has an invalid test number`);
+      }
+      if (typeof item.identity !== 'string' || item.identity.length === 0) {
+        throw new Error(`guard-own test result ${index} has an invalid identity`);
+      }
+      if (item.outcome !== 'pass' && item.outcome !== 'fail') {
+        throw new Error(`guard-own test result ${index} has an invalid outcome`);
+      }
+      if (item.failureCode !== null && typeof item.failureCode !== 'string') {
+        throw new Error(`guard-own test result ${index} has an invalid failure code`);
+      }
+      return {
+        testNumber: item.testNumber as number,
+        identity: item.identity,
+        outcome: item.outcome,
+        failureCode: item.failureCode,
+      };
+    });
+    return { schema: guardResultSchema, tests };
+  }
+
+  function guardOwnSuite(modulePath: string, dir: string, renderer: 'tap' | 'spec' = 'spec') {
     const suite = path.join(dir, 'guard-own.test.mjs');
+    const reporter = path.join(dir, 'guard-own-results-reporter.mjs');
+    const structuredDestination = path.join(dir, `guard-own-${renderer}-results.json`);
+    const renderedDestination = path.join(dir, `guard-own-${renderer}-rendered.txt`);
     fs.writeFileSync(suite, `
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -235,7 +298,41 @@ test('genuinely covered population passes', () => {
   assert.equal(evaluateBlindInputCoverage({population:['known'],coverageIds:['known'],maxUncovered:0}).passed, true);
 });
 `);
-    return spawnSync(process.execPath, ['--test', suite], { encoding: 'utf8' });
+    fs.writeFileSync(reporter, `
+export default async function* guardOwnResults(source) {
+  const tests = [];
+  for await (const event of source) {
+    if (event.type !== 'test:complete' || event.data.details.type === 'suite' || event.data.skip || event.data.todo) continue;
+    if (typeof event.data.file === 'string' && event.data.name === event.data.file) continue;
+    const error = event.data.details.error;
+    const cause = error && typeof error === 'object' ? error.cause : undefined;
+    const failureCode = cause && typeof cause === 'object' && typeof cause.code === 'string'
+      ? cause.code
+      : error && typeof error === 'object' && typeof error.code === 'string' ? error.code : null;
+    tests.push({
+      testNumber: event.data.testNumber,
+      identity: event.data.name,
+      outcome: event.data.details.passed ? 'pass' : 'fail',
+      failureCode,
+    });
+  }
+  yield JSON.stringify({ schema: ${JSON.stringify(guardResultSchema)}, tests });
+}
+`);
+    const child = spawnSync(process.execPath, [
+      '--test',
+      '--test-reporter', renderer,
+      '--test-reporter-destination', renderedDestination,
+      '--test-reporter', reporter,
+      '--test-reporter-destination', structuredDestination,
+      suite,
+    ], { encoding: 'utf8' });
+    return {
+      ...child,
+      renderer,
+      renderedOutput: fs.existsSync(renderedDestination) ? fs.readFileSync(renderedDestination, 'utf8').trim() : '',
+      structuredOutput: fs.existsSync(structuredDestination) ? fs.readFileSync(structuredDestination, 'utf8').trim() : '',
+    };
   }
 
   function replaceGuardBody(body: string): string {
@@ -254,8 +351,8 @@ test('genuinely covered population passes', () => {
     throw new Error('guard body did not close');
   }
 
-  function decidingOutput(result: ReturnType<typeof spawnSync>): string {
-    return `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
+  function decidingOutput(result: ReturnType<typeof guardOwnSuite>): string {
+    return `${result.renderedOutput}\n${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
   }
 
   it('3a DELETE', () => {
@@ -315,13 +412,24 @@ test('genuinely covered population passes', () => {
       fs.writeFileSync(file, hollow);
       expect(hollow).toContain("return { passed: true, reason: 'within-ratchet'");
       expect(hollow).toContain('export function evaluateBlindInputCoverage');
-      const result = guardOwnSuite(file, dir);
-      const output = decidingOutput(result);
-      console.log(`P3_3d_TYPE_PRESERVING_HOLLOW mutationApplied=true guardOwnTestExit=${result.status}\n${output}`);
-      expect(result.status).not.toBe(0);
-      expect(hasNodeTestSummary(output, 'tests', 4)).toBe(true);
-      expect(hasNodeTestSummary(output, 'fail', 3)).toBe(true);
-      expect(output).toMatch(/AssertionError|Expected values to be strictly equal/);
+      const tapResult = guardOwnSuite(file, dir, 'tap');
+      const specResult = guardOwnSuite(file, dir, 'spec');
+      const tapStructured = parseGuardOwnResult(tapResult.structuredOutput);
+      const specStructured = parseGuardOwnResult(specResult.structuredOutput);
+      expect(tapResult.status).not.toBe(0);
+      expect(specResult.status).not.toBe(0);
+      expect(tapStructured.tests).toEqual(hollowExpectedResults);
+      expect(specStructured.tests).toEqual(hollowExpectedResults);
+      expect(tapStructured).toEqual(specStructured);
+      console.log(
+        `P3_3d_TYPE_PRESERVING_HOLLOW mutationApplied=true tapChildExit=${tapResult.status} specChildExit=${specResult.status}`,
+      );
+      console.log(
+        `F4_DECORATION_CONTROL renderer=tap structuredVerdict=reject structured=${JSON.stringify(tapStructured)}\n${tapResult.renderedOutput}`,
+      );
+      console.log(
+        `F4_DECORATION_CONTROL renderer=spec structuredVerdict=reject structured=${JSON.stringify(specStructured)}\n${specResult.renderedOutput}`,
+      );
     } finally {
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'checker-p3:hollow' });
     }

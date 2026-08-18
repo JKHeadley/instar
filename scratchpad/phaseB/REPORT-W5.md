@@ -429,3 +429,60 @@ After verdict: wiring **PROVEN**, wiring-only rung **WIRED**.
 Evidence:
 `scratchpad/phaseB/evidence/F3R-checker-blind-input-coverage.json`, SHA-256
 `f800130157168f2d3871e8d6c2e140b94cd1b734c61730b234aa9ddefa83d35d`.
+
+## 2026-08-18 07:05:36 -0700 (PDT) — F4 structured reader repair
+
+The independent F4 judgment accepted the F3-R scope, negative control, and
+repaired-boundary wiring, but found the reader still coupled to cosmetic Node
+test-runner decoration. F4 removed all TAP/spec summary-line matching from the
+decision path.
+
+The guard-owned child now runs with two independent reporters. A custom
+machine reporter emits schema `checker-blind-input/guard-own-results-v1` from
+Node's `test:complete` events; TAP or spec remains a human-only presentation
+channel. The reader rejects malformed JSON, the wrong schema, unknown root or
+test fields, invalid test numbers, missing identities, invalid outcomes, and
+invalid failure codes. Node also emits a synthetic file aggregate to custom
+reporters; it is excluded by its structural event identity (`name === file`),
+leaving the complete leaf-test population. No rendered text participates in
+the verdict.
+
+The hollow-body control requires exact ordered identity and outcome equality:
+
+```json
+{"schema":"checker-blind-input/guard-own-results-v1","tests":[{"testNumber":1,"identity":"empty population is not proof","outcome":"fail","failureCode":"ERR_ASSERTION"},{"testNumber":2,"identity":"unknown coverage id is rejected","outcome":"fail","failureCode":"ERR_ASSERTION"},{"testNumber":3,"identity":"new uncovered checker is named and rejected","outcome":"fail","failureCode":"ERR_ASSERTION"},{"testNumber":4,"identity":"genuinely covered population passes","outcome":"pass","failureCode":null}]}
+```
+
+This preserves and strengthens all three substantive checks: both real child
+runs exit 1; the exact array contains four tests; and exactly the three named
+refusal tests fail with `ERR_ASSERTION`. An unrelated added, removed, renamed,
+reordered, or outcome-changed test makes exact equality fail.
+
+### Decoration-invariance control
+
+The same hollow guard ran once with the old TAP renderer and once with the
+current spec renderer. Both independent structured results were byte-for-byte
+equivalent after schema validation and produced the same rejection verdict.
+Deciding excerpts, verbatim:
+
+```text
+P3_3d_TYPE_PRESERVING_HOLLOW mutationApplied=true tapChildExit=1 specChildExit=1
+F4_DECORATION_CONTROL renderer=tap structuredVerdict=reject structured={"schema":"checker-blind-input/guard-own-results-v1","tests":[{"testNumber":1,"identity":"empty population is not proof","outcome":"fail","failureCode":"ERR_ASSERTION"},{"testNumber":2,"identity":"unknown coverage id is rejected","outcome":"fail","failureCode":"ERR_ASSERTION"},{"testNumber":3,"identity":"new uncovered checker is named and rejected","outcome":"fail","failureCode":"ERR_ASSERTION"},{"testNumber":4,"identity":"genuinely covered population passes","outcome":"pass","failureCode":null}]}
+# tests 4
+# pass 1
+# fail 3
+F4_DECORATION_CONTROL renderer=spec structuredVerdict=reject structured={"schema":"checker-blind-input/guard-own-results-v1","tests":[{"testNumber":1,"identity":"empty population is not proof","outcome":"fail","failureCode":"ERR_ASSERTION"},{"testNumber":2,"identity":"unknown coverage id is rejected","outcome":"fail","failureCode":"ERR_ASSERTION"},{"testNumber":3,"identity":"new uncovered checker is named and rejected","outcome":"fail","failureCode":"ERR_ASSERTION"},{"testNumber":4,"identity":"genuinely covered population passes","outcome":"pass","failureCode":null}]}
+ℹ tests 4
+ℹ pass 1
+ℹ fail 3
+```
+
+Local verification:
+
+```text
+focused decoration control: Test Files 1 passed (1); Tests 1 passed | 12 skipped (13)
+full guard suite: Test Files 1 passed (1); Tests 13 passed (13)
+```
+
+The non-gating `better-sqlite3` notice remained unrelated and explicitly said
+nothing was blocked or skipped because of it.
