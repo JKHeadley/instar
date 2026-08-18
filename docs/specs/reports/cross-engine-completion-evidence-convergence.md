@@ -3,152 +3,161 @@
 ## Final artifact
 
 - Spec: `docs/specs/cross-engine-completion-evidence.md`
-- Final reviewed SHA-256:
-  `e59c70bfb711a5ed19d963092462d111e3054997dab38e1e15aa1453e67841fd`
-- ELI16: `docs/specs/cross-engine-completion-evidence.eli16.md` (1,405 words)
-- Characterization:
-  `docs/specs/reports/cross-engine-completion-characterization.md`
-- Status: converged draft; not approved; implementation is not authorized by this report.
+- Final exact reviewable-body SHA-256:
+  `d5c371a00f5b0f7b1d5639919bd08cc355a88eb60194aa36f5eb1c15280b1512`
+- Final pre-tag file SHA-256:
+  `82e6a056fb33307efb4130696aa72196ee4a4abac4b7ddb13d2399e3e3c90e79`
+- ELI16: `docs/specs/cross-engine-completion-evidence.eli16.md` (2,248 words)
+- Characterization: `docs/specs/reports/cross-engine-completion-characterization.md`
+- Status: review-ready converged draft. It is not approved and does not authorize implementation,
+  rollout, or a positive completion-verification surface.
+
+The reviewable body was locked after two consecutive clean exact-body rounds. The convergence tag
+is metadata outside that body and must not change the reviewable-body hash above.
 
 ## Reviewer disclosure
 
-- Authoring session: Codex, GPT-5 family. The exact deployed author model identifier was not
-  surfaced by the session runner.
-- Internal review: three independent internal agents covered all six required perspectives:
-  security/privacy, adversarial/failure-mode, scalability, integration, decision completeness, and
-  historical lessons. They inherited the authoring model family; exact deployment identifiers were
-  not surfaced.
-- External final exact-body review:
-  - `codex-cli:gpt-5.5` — MINOR ISSUES, zero material findings;
-  - `gemini-cli:gemini-3.1-pro-preview` — MINOR ISSUES, zero material findings.
-- External prompts were not truncated.
+- Authoring session: Codex, GPT-5 family. The runner did not expose a more specific deployed model
+  identifier.
+- Internal CLASS review: three independent agents covered security/privacy,
+  adversarial/failure-mode, scale, integration, decision completeness, and historical lessons.
+- External exact-body review:
+  - `codex-cli:gpt-5.5` completed and returned **SERIOUS ISSUES**;
+  - `gemini-cli:gemini-3.1-pro-preview` degraded with `reason:error`, so it supplied no reliable
+    final opinion.
 
-## ELI10 overview
+Both external prompts reported truncation, and the Codex result said the referenced context was
+omitted. The external pass is therefore useful dissent, not a complete independent proof.
 
-The old check looked at Claude Code's transcript and did nothing for other engines. The converged
-design moves the reliable boundary into Instar's owned launcher. It works for Claude, Codex,
-Gemini, pi, and Instar-native jobs when they run through that boundary.
+External review is disclosed rather than converted into an approval claim. Codex's remaining
+findings were architectural dissent, summarized and adjudicated below. Gemini's degraded result is
+not counted as a clean review.
 
-The launcher records every mediated local action before it runs, keeps unsupported and unknown
-actions visible, and renders the evidence block itself. The model cannot choose which actions
-count. Exact local evidence yields verified, contradicted, or unknown. No model judges another
-model's prose.
+## What converged
 
-The scope is intentionally local: tests, builds, causal file changes, and execution-only registered
-commands. Pushes, messages, providers, hidden side effects, and standalone CLI sessions remain
-unsupported/unknown and require separate specs.
+The existing completion check reads Claude Code transcript state and intentionally no-ops other
+engines. This design replaces that boundary with an Instar-owned, engine-neutral protocol for
+instrumented deterministic local actions. The launcher owns candidate discovery, action identity,
+close semantics, and rendering. Exact evidence produces clause-level `verified`, `contradicted`, or
+`unknown`; an LLM never judges prose or another model.
 
-## CLASS review result
+The scope is deliberately narrow: named tests, named builds, causal local file writes, and
+execution-only registered local commands. Remote delivery, provider durability, databases,
+background effects, standalone CLIs, and proof of no hidden side effects remain unsupported and
+cannot inherit a completion claim.
 
-### Missing standard fixed
+## Pathway characterization
 
-An agent-general mechanism now requires an explicit characterized row for every build-supported
-engine. Each admitted engine/action row names the instrumented primary, deterministic
-fault-separated verifier/native redundancy, real fixture, trust basis, and failure tests.
-Unsupported or uncharacterized work is explicit and cannot silently no-op.
+The requested live characterization surfaces were tested on August 18, 2026:
 
-### Development-process gap fixed
+- `GET /doorways` returned 503: the registry was unavailable;
+- the decision-quality meter returned 503: the provenance seam was dark;
+- the benchmark-divergence detector returned 503: the detector was dark.
 
-The previous process treated a declared Claude-only no-op as complete. The converged design adds:
+No live route was promoted. The production design therefore stays deterministic. Historical
+benchmark evidence supplies only these research seeds:
 
-- a coverage-preserving registry and exhaustive registry+observed manifest;
-- CI rows/corpus for every build-supported engine;
-- real per-engine fixtures;
-- fault injection for producer/store separation;
-- per-engine stream/output ownership;
-- rollout and capacity gates whose denominators cannot omit unfavorable rows.
-
-## Characterization result
-
-The requested pathway benchmark was executed before selecting the runtime design:
-
-- Live `GET /doorways`, `GET /decision-quality`, and `GET /benchmark-divergence` returned explicit
-  503/degraded states on this agent.
-- Direct probes found Claude Code/headless, Codex, and pi runnable; the Gemini shim lacked a
-  selected asdf version.
-- The closest `completion-judge` benchmark produced useful research candidates, but it uses
-  transcript-shaped inputs. The durable production mirror contains `tone-gate`, not the canonical
-  completion-evidence task.
-
-Conclusion: no door/model route has runtime authority. V1 is deterministic; measured model routes
-remain research-only.
-
-## Iteration summary
-
-| Iteration | Material issue class | Resolution |
+| Engine under review | Research primary | Research backup |
 |---|---|---|
-| 1 | Claude-only no-op; missing engine matrix | Added CLASS standard/process correction and engine/action coverage model |
-| 2 | Model benchmark could be mistaken for authority | Separated characterization research from deterministic runtime admission |
-| 3 | Transcript/native assumptions and weak correlation | Made Instar instrumentation primary; added signed turn/action identities and exact target matching |
-| 4 | Missing consequence/causality contracts | Defined action-specific local report/state contracts; absence never contradiction |
-| 5 | Model-controlled claim completeness and spoofable prose | Made candidates/renderer launcher-owned; isolated and escaped unverified commentary |
-| 6 | Umbrella scope had receipts/workflows/confinement mixed into v1 | Removed durable-external, async, workflow/outbox, and broad-confinement designs; narrowed to deterministic local actions |
-| 7 | Unsupported/unknown work could disappear before schema lookup | Added closed sentinels, pre-invocation candidate registration, overflow behavior, and exhaustive manifest |
-| 8 | Row/retention/byte quotas were arithmetically inconsistent | Changed to bounded per-turn heads, explicit CBOR and component budgets, 31-bucket soak, and sustainable daily rate |
-| 9 | Per-turn head could not represent action lifecycle/source multiplicity | Added immutable per-action staging/source tables, atomic terminal reduction, per-action conflict isolation, crash/TTL behavior |
-| 10 | Final state/schema/integration closure | Added sentinel canonical encodings, optional pool projection with local fallback, pool-stable persisted mapping, trust-basis/UI scope, and exact CI fixtures |
+| Claude | pi / GPT-5.5 | Gemini API / Gemini 3.1 Flash-Lite |
+| Codex | clean Claude one-shot / Sonnet 4.6 | Gemini API |
+| Gemini | pi / GPT-5.5 | clean Claude / Sonnet 4.6 |
+| pi | clean Claude / Sonnet 4.6 | Gemini API |
+| Grok | pi / GPT-5.5 | clean Claude / Sonnet 4.6 |
+| Instar-native | pi / GPT-5.5 | clean Claude / Sonnet 4.6 |
 
-## Material findings catalog
+The Opus coding-harness route was disqualified. None of these seed routes has runtime authority;
+they are inputs to a future benchmark rerun only.
 
-All material findings were resolved in the final body:
+## CLASS and convergence result
 
-- **Authority/completeness:** model cannot add, omit, resolve, or scope away mediated candidates;
-  unknown/unsupported/overflow sentinels exist before schema lookup.
-- **Scope:** only Instar-launched deterministic local actions; no global task-completion, sandbox,
-  provider, or standalone-session claim.
-- **Verdict correctness:** exact schema/target/causality rules; explicit matching failure alone can
-  contradict; missing/different/stale/conflicted evidence is unknown.
-- **Trust disclosure:** local supervisor, independent local producer, and authoritative local state
-  remain distinct bases; none claims host independence.
-- **Presentation:** fixed scoped copy, no global done badge, escaped structurally separate
-  commentary, and proof-gated evidence block.
-- **Correlation/replay:** signed host and pool-stable opaque turn/action mappings independent of
-  timestamps/text; local verification survives pool-key unavailability without projection.
-- **Storage:** bounded per-action intent/result/source staging; atomic close reduction; at most two
-  terminal revisions; per-action conflict isolation; bounded crash/orphan cleanup.
-- **Capacity:** 15 executable actions plus sentinel, 64 concurrent turns, 200 new terminal heads/day,
-  31 retained UTC buckets, 8 KiB CBOR envelopes, dedicated SQLite component budgets, and measured
-  maximum-rate/size/WAL/index soak.
-- **Privacy:** raw prompts, arguments, results, paths, names, prose, secrets, and provider IDs are
-  excluded; cross-machine reads use scrubbed closed projections only.
-- **Operational discipline:** real seven-day measurements, closed success/failure denominators,
-  rollout freeze/de-admission for sustained threshold breach, restore cold-start reason, and
-  independent kill switches.
-- **Architecture:** existing recorder + bounded revisions selected for one local reducer; explicit
-  alternatives and reopen triggers for a second reducer, historical recomputation, async
-  settlement/retries, provider dispatch, or exported build attestations.
+Two final rounds, S and T, reviewed the identical exact body at the hash above. Each round returned
+zero material findings in all six perspectives:
 
-## Final review result
+| Perspective | Round S | Round T |
+|---|---:|---:|
+| Security/privacy | 0 | 0 |
+| Adversarial/failure-mode | 0 | 0 |
+| Scalability | 0 | 0 |
+| Integration | 0 | 0 |
+| Decision completeness | 0 | 0 |
+| Historical lessons | 0 | 0 |
 
-All six internal perspectives returned CLEAN on the final exact body:
+The iterative class review resolved these material issue families before the body was locked:
 
-- security/privacy: zero material findings;
-- adversarial/failure-mode: zero material findings;
-- scalability: zero material findings;
-- integration: zero material findings;
-- decision completeness: zero material findings;
-- historical lessons: zero material findings.
+- launcher-owned complete candidates, closed unsupported/unknown/overflow sentinels, and a single
+  digest-bound close that a model cannot edit or imitate;
+- clause-level verification basis, exact predicate/target/causality rules, and absence/conflict
+  mapping to unknown rather than contradiction or success;
+- one canonical qualification tuple binding engine, build, platform, launcher, renderer, evidence
+  components, schema, registry, and fixture runner;
+- an independently signed dark qualification candidate followed by matching receipts, preventing a
+  generation from choosing its own favorable denominator after measurement;
+- provenance binding across candidate, generation, tuple, sources, terminal reduction, storage,
+  calibration, and metrics without cross-tuple pooling;
+- globally complete per-engine qualification plus exact local tuple admission, preventing one
+  engine/build/host from borrowing another's proof;
+- independently authorized membership and nonce-bound current-head freshness, separated positive
+  health and emergency roles, signer-oracle defenses, and scrubbed private transport;
+- bounded local and control-plane storage, explicit byte/cardinality/rate budgets, crash recovery,
+  census limits, and N/N+1 capacity tests;
+- machine-pinned in-flight turns, fail-closed inbound replay admission, and current Slack remaining
+  entirely visibly unverified until unified acknowledged IDs exist;
+- registry/AST generality ratchets, historical-backlog ownership, SelfHealGate limits, per-engine
+  real fixtures, and full-cohort positive activation;
+- operator-only diagnostic states that distinguish captured evidence held by control from evidence
+  held by a local row without upgrading the user-visible result.
 
-Both external model families returned MINOR ISSUES and zero material findings. Their remaining
-comments concern terminology/accessibility, durable-intent failure wording, out-of-band UI
-channels, key-lifecycle consolidation, and future interoperability/deferred-scope presentation.
-They do not change the reviewed safety, architecture, deployment, or decision boundary.
+## External architectural dissent
 
-## Standards-Conformance Gate
+The final Codex review still rated the spec **SERIOUS ISSUES** for five themes:
 
-The gate was invoked against the final exact body. It returned HTTP 503:
+1. It preferred splitting the local evidence plane, global qualification plane, and control plane
+   into separate specifications.
+2. It preferred a more standard control substrate over the bounded custom publication workflow.
+3. It questioned same-OS-user isolation for private evidence and producer state.
+4. It objected that full canonical-engine parity can let the least-ready engine hold activation.
+5. It found the terminology and overall size difficult to review.
 
-```text
-constitution unreadable: ENOENT ... /Users/justin/Documents/Projects/instar-codey/docs/STANDARDS-REGISTRY.md
-```
+These findings were not hidden or auto-cleared. They were adjudicated as deliberate, contested
+architecture choices rather than newly discovered schema defects:
 
-This is recorded as an unavailable gate, not a pass and not a skipped check. The running server's
-configured project directory does not contain the registry file.
+- one authority spec keeps the global positive-activation invariant reviewable end to end, while
+  implementation is already divided into bounded packages and child workstreams;
+- a routing-dependent per-engine positive surface was explicitly rejected because it recreates the
+  original agent-general safety gap; dark-only operation is the closed fallback;
+- the control protocol has fixed bounds, explicit custody, crash recovery, and named reopen
+  triggers, with alternatives evaluated in the decision record;
+- the spec already states that same-UID convenience is not a security boundary: keys and producer
+  writes require an isolated supervisor/platform credential store and narrow inherited or brokered
+  capabilities, otherwise that exact engine/build is ineligible; stored envelopes are scrubbed and
+  make no same-user confidentiality claim for arbitrary engine-accessible local bytes;
+- operator-only diagnostics explicitly distinguish captured-but-held control and row states.
+
+An earlier concrete Codex finding about an ambiguous qualification denominator was accepted and
+fixed with the exact canonical qualification tuple key and signed candidate/receipt handshake. The
+remaining dissent is therefore preserved for the operator, not represented as consensus. It does
+not grant approval.
+
+## Standards-conformance and verification
+
+The standards gate ran on the locked exact body:
+
+- 88 standards checked;
+- 0 findings;
+- parent-spec fit: `fit`;
+- registry canary: healthy, with 88 article headings and no failures;
+- gate degradation: false.
+
+After the convergence tag was applied, the normalized body hash remained unchanged. The ELI16
+gate, strict self-heal lint, strict machine-local-justification lint, whitespace validation, and
+the full project build all passed.
 
 ## Convergence verdict
 
-Converged at iteration 10 with 14 frontloaded decisions and no open user decision. No unresolved
-material security, architecture, integration, scale, decision, or deployment finding remains.
+The design completed 20 logical convergence iterations (A–T), culminating in the two clean
+exact-body rounds S and T at the locked hash. It contains 22 frontloaded decisions, no cheap-tag decision, no
+open user decision, and no contested finding falsely marked cleared.
 
-The spec is ready for operator review. It is not approved, and this report authorizes no
-implementation or rollout.
+Internal exact-body convergence is complete. External architectural dissent and the degraded Gemini
+review remain explicitly visible. The artifact is ready for operator review, not approved.

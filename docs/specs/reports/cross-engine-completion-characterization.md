@@ -1,4 +1,4 @@
-# Completion-Evidence Pathway Characterization — 2026-07-24
+# Completion-Evidence Pathway Characterization — refreshed 2026-08-18
 
 ## Status
 
@@ -8,18 +8,20 @@ canonical evidence envelope. Every route therefore remains `candidate-prior-only
 
 ## Live surface reads
 
-Authenticated reads against Instar-codey v1.3.938 on port 4044 returned:
+Authenticated freshness reads against Instar-codey v1.3.1180 on port 4044 returned:
 
 | Surface | Result | Meaning |
 |---|---|---|
 | `GET /doorways` | HTTP 503, `registry-unavailable-no-instar-source` | The agent project configured as `projectDir` is not the Instar source worktree, so the source manifest cannot be resolved. |
-| `GET /decision-quality` | HTTP 503, uniform seam dark | No live completion-route grade window is available. |
+| `GET /decision-quality?sinceHours=720` | HTTP 503, uniform seam dark | No live completion-route grade window is available. |
 | `GET /benchmark-divergence` | HTTP 503, detector dark | Absence of a finding cannot be read as “not diverged.” |
 
-A direct free probe using the source registry's deterministic CLI probe found Claude Code,
-Anthropic headless, Codex, and pi runnable. Gemini's asdf shim returned no selected version. The
-source manifest's `codex-cli: referenced-not-installed` label is contradicted by the live Codex
-probe and is treated as stale.
+The August freshness pass therefore cannot promote, reorder, or reject a candidate from live
+quality data. The most recent direct free probe (July 24) found Claude Code, Anthropic headless,
+Codex, and pi runnable; Gemini's asdf shim returned no selected version. That probe was executor
+liveness only, not completion-specific decision quality. Fresh spec-review detection on August 18
+found `codex-cli`/GPT-5.5 and `gemini-cli`/Gemini 3.1 Pro Preview available for review, but those
+are not substitutes for the dark characterization endpoints or the benchmark's fixed routes.
 
 ## Benchmark prior
 
@@ -58,10 +60,14 @@ registry normalizes that key reference to the report's `gemini-api` label and
 | Codex CLI | clean Claude one-shot / Sonnet 4.6 | Gemini API / 3.1 Flash-Lite | backup not live-probed on this host; unadmitted |
 | Gemini CLI | pi / GPT-5.5 | clean Claude one-shot / Sonnet 4.6 | author engine locally unrunnable; unadmitted |
 | pi CLI | clean Claude one-shot / Sonnet 4.6 | Gemini API / 3.1 Flash-Lite | backup not live-probed on this host; unadmitted |
+| Grok Build | pi / GPT-5.5 | clean Claude one-shot / Sonnet 4.6 | no completion-specific Grok row or live quality label; unadmitted |
 | Instar-native | pi / GPT-5.5 | clean Claude one-shot / Sonnet 4.6 | nested origin engine can select a stricter row; unadmitted |
 
 For these research seeds, every listed backup is outside both the author and primary model
-families. The report does not set a future activation policy for same-family alternate doors.
+families. “Best” means best supported by the immutable July completion slice after excluding the
+author family and the disqualified Opus coding-harness route; it does not mean a current production
+winner. The August endpoints supplied no evidence that could honestly change the ordering. The
+report does not set a future activation policy for same-family alternate doors.
 
 ## Missing evidence before admission
 
