@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-08-18T01:50:21-07:00",
+  "status": "built-with-hand-evidence",
+  "protectedBase": {
+    "remote": "https://github.com/JKHeadley/instar.git",
+    "ref": "refs/heads/main",
+    "mergeBase": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5",
+    "source": "canonical-server-content-addressed-merge-base",
+    "candidateMayRaiseStrength": false
+  },
+  "c1": {
+    "command": "node scripts/standards-coverage.mjs --check",
+    "exitCode": 0,
+    "protectedPopulation": 88,
+    "candidatePopulation": 88,
+    "provenStrength": {
+      "enforced": 58,
+      "total": 88,
+      "ratio": 0.6591,
+      "byKind": {
+        "ratchet": 26,
+        "gate": 25,
+        "lint": 7,
+        "spec-only": 9,
+        "documented-only": 21
+      }
+    },
+    "unverifiedReferenceCount": 39,
+    "decidingOutput": "measurement=proven base=4318a1e150e9a8304e6c2e7ad381bf66d03998e5 source=canonical-server-content-addressed-merge-base protected-population=88 candidate-population=88 unverified-references=39"
+  },
+  "c2": {
+    "outcome": "proven-landed",
+    "evidence": [
+      "C3a test reads the candidate registry after mutation and asserts that the Protected Gap heading is absent",
+      "C3b test stats the cited candidate file and asserts an exact size of zero",
+      "C3c test reads both the added rule and its cited file and asserts the file contains no it(...) call"
+    ]
+  },
+  "c3a": {
+    "mutation": "delete one unenforced protected rule",
+    "beforeRatio": 0.5,
+    "afterRatio": 0.5,
+    "removals": 1,
+    "measurementStatus": "not-proven",
+    "decidingOutput": "W34_C3A before=0.5 after=0.5 removals=1 deciding=\"population shrank by 1 (direction: removal)\""
+  },
+  "c3b": {
+    "mutation": "empty a cited ratchet file while preserving its path",
+    "ratchetCountAfter": 0,
+    "decidingOutput": "W34_C3B landed=size-0 ratchet=0 deciding=\"candidate-reference-empty\""
+  },
+  "c3c": {
+    "mutation": "add a new rule citing a new prose-only test file",
+    "ratchetCountAfter": 1,
+    "decidingOutput": "W34_C3C landed=hollow-addition ratchet=1 deciding=\"reference-not-in-protected-census\""
+  },
+  "verification": {
+    "standardsCoverageSuite": "38/38 passed",
+    "measurementUnitSuite": "5/5 passed",
+    "typeCheck": "passed",
+    "diffCheck": "passed",
+    "repositoryLint": {
+      "outcome": "blocked-by-unchanged-upstream-state",
+      "decidingOutput": "STALENESS: model registry last reviewed 2026-07-03 (46d ago) exceeds the 45d window",
+      "relevantFilesDifferFromUpstream": false
+    }
+  },
+  "certification": "pending-independent-judge"
+}
