@@ -85,6 +85,29 @@ export interface PresenceProxyConfig {
   speakerElection?: import('./SpeakerElection.js').SpeakerElection;
 
   /**
+   * Duplicate-session stand-down seam (docs/specs/duplicate-session-standdown.md).
+   * Absent ⇒ the feature is dark ⇒ this proxy behaves exactly as today.
+   *
+   * `entryForTopic` answers whether THIS machine holds a live, ENFORCING muzzle
+   * for the topic; `claimProxyNotice` is the per-episode budget — it returns true
+   * at most once, so a frozen copy explains itself exactly once rather than
+   * narrating its own silence on every tier.
+   */
+  standDown?: {
+    entryForTopic(topicId: number): { ownerMachineId: string; enforcing: boolean } | null;
+    /** Non-consuming read of the USER-channel budget: was the line already sent
+     *  this episode? Read BEFORE sending — without it "claim after success"
+     *  degenerates into send-every-tier. */
+    hasProxyNotice?: (topicId: number) => boolean;
+    /** The per-episode USER-channel budget. Claimed only after a confirmed send. */
+    claimProxyNotice(topicId: number): boolean;
+    /** The DETERMINISTIC send path (telegram.sendToTopic), which does not
+     *  traverse the muzzled reply route. Without it the honest line is
+     *  structurally undeliverable to the very topic it is about. */
+    sendDeterministic?: (topicId: number, text: string) => Promise<boolean>;
+  };
+
+  /**
    * BUILD-STALL-VISIBILITY-SPEC Fix 2 "Routing" — when a /build heartbeat has
    * landed on this topic recently, PresenceProxy suppresses its generic
    * Tier 2/3 standby so the user hears one progress voice per channel.
@@ -2034,6 +2057,50 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
         console.log(`[PresenceProxy] one-voice gate: not this machine's topic (${verdict.reason}) — skipping tier ${tier} send for topic ${topicId}`);
         return;
       }
+    }
+    // ── Duplicate-session stand-down (docs/specs/duplicate-session-standdown.md) ──
+    // AFTER the one-voice election, deliberately: a machine that is not this
+    // topic's speaker sends nothing at all — including the honest line.
+    // This copy is standing down, so its "actively working" / classification
+    // lines are false: the topic is being served on another machine and this
+    // session is deliberately frozen. Two things follow, and the second is the
+    // one that matters. (1) The honest one-liner replaces the classification —
+    // at most once per episode, on the same per-episode notice budget. (2) Every
+    // OTHER tier emission is skipped entirely rather than attempted: this proxy
+    // sends through POST /telegram/reply, which 409s a muzzled topic, and its
+    // error handling would otherwise loop on that refusal. The 409 stays as the
+    // backstop; it is no longer the mechanism.
+    const standDown = (() => {
+      try { return this.config.standDown?.entryForTopic(topicId) ?? null; } catch { return null; /* @silent-fallback-ok — lookup failed ⇒ proxy behaves exactly as today */ }
+    })();
+    if (standDown?.enforcing) {
+      // Sent on the DETERMINISTIC path, not this proxy's normal funnel. The
+      // normal funnel is POST /telegram/reply/:topicId — the exact route whose
+      // voice half 409s this topic — so routing the honest line through it burned
+      // the per-episode budget, threw, and left the user with nothing at all for
+      // that episode. The internal deterministic senders (reap-notify, the
+      // cold-start fallback, the owner-dark ladder) are exempt by construction
+      // for precisely this reason; this line belongs with them.
+      //
+      // The budget is claimed only AFTER a confirmed send, so a failed delivery
+      // does not consume the one chance to explain the silence.
+      const line = `${this.prefix} This copy is standing down — the conversation continues on my other machine, and I'll answer from there.`;
+      try {
+        // CONSULT the budget before sending, commit it only on success. The
+        // round-4 version sent first and claimed after — but never READ the
+        // budget, so the line went out again on every tier emission ("at most
+        // once per episode" was the comment over a loop), and the deterministic
+        // path bypasses the /telegram/reply duplicate suppression that would
+        // otherwise have absorbed the repeats.
+        if (this.config.standDown?.hasProxyNotice?.(topicId)) return;
+        const sent = await this.config.standDown?.sendDeterministic?.(topicId, line);
+        if (sent) this.config.standDown?.claimProxyNotice(topicId);
+      } catch {
+        /* @silent-fallback-ok — the honest line is courtesy; failing to send it must
+           never surface as an error on a deliberately-quiesced copy. The budget is
+           untouched, so a later tick can try again. */
+      }
+      return;
     }
     // Spec A10: acquire shared per-topic proxy mutex if one is wired.
     // PromiseBeacon consumes the same coordinator; the acquire here guarantees

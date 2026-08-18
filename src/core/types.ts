@@ -5787,6 +5787,45 @@ export interface MonitoringConfig {
     tickMs?: number;
   };
   /**
+   * Duplicate-session STAND-DOWN (docs/specs/duplicate-session-standdown.md).
+   * Cooperative quiescence for the losing copy when one conversation has live
+   * sessions on two machines: the copy stops STARTING tool calls and stops
+   * EMITTING user-visible output, finishes the step it holds, and is then closed
+   * by the bounded drained-close rule. It NEVER kills and NEVER blocks a read.
+   *
+   * `enabled` is OMITTED from the defaults (NOT hardcoded false) so
+   * resolveDevAgentGate resolves it LIVE on a development agent and DARK on the
+   * fleet; an explicit `false` still wins, including on a dev agent — the hook
+   * honors it so a deliberately-disabled feature costs nothing per tool call.
+   *
+   * `dryRun` ships TRUE even on a dev agent: producers register entries and both
+   * enforcement halves LOG their would-block/would-refuse verdicts while blocking
+   * nothing, so the flip to enforcement rests on measured false-positive evidence
+   * rather than hope. The flip is the operator's.
+   */
+  standDown?: {
+    /** Dev-gate convention: omit to let resolveDevAgentGate decide. */
+    enabled?: boolean;
+    /** Log would-block/would-refuse verdicts and block nothing (default: true). */
+    dryRun?: boolean;
+    /** TTL for a drain-provable framework, minutes (default 60). */
+    standDownTtlMinutes?: number;
+    /** TTL where drain cannot be resolved (non-claude frameworks), minutes (default 15). */
+    unprovableFrameworkTtlMinutes?: number;
+    /** Corroborated drain observations required before `drained` (default 2). */
+    drainConfirmTicks?: number;
+    /** Consecutive failed re-verify legs before release (default 2). */
+    releaseHysteresisTicks?: number;
+    /** Ticks a mutual muzzle must persist before the tiebreak fires (default 2). */
+    mutualMuzzleGraceTicks?: number;
+    /** Latch-blocked re-registration attempts before the attention item (default 5). */
+    latchBlockedAttentionThreshold?: number;
+    /** Closed episodes per topic per 24h before the churn item fires (default 3). */
+    closedEpisodeChurnThreshold?: number;
+    /** Distinct expired episodes in 7d before the health item fires (default 2). */
+    expiredEpisodeHealthThreshold?: number;
+  };
+  /**
    * Blocker Ledger — the durable resolution-workflow + memory layer that
    * COMPLETES Principle 1 ("almost every blocker is a false blocker — work it").
    * The deferral-detector / B16 / B17 path already DETECTS false-blocker framing;

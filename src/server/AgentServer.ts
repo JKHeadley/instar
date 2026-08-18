@@ -564,6 +564,10 @@ export class AgentServer {
     commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker;
     workQueue?: WorkQueueRegistry;
     prHandLease?: import('../core/PrHandLease.js').PrHandLease;
+    /** Duplicate-session stand-down registry (docs/specs/duplicate-session-standdown.md).
+     *  Absent ⇒ the feature is dark on this agent ⇒ every /standdown route 503s. */
+    standDownRegistry?: import('../core/StandDownRegistry.js').StandDownRegistry;
+    standDownAudit?: import('../core/StandDownAudit.js').StandDownAudit;
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
     subscriptionIdentityOracle?: import('../core/CredentialLocationLedger.js').IdentityOracle;
     subscriptionEmailBinding?: import('../core/SubscriptionPool.js').SubscriptionEmailBindingAuthority;
@@ -3618,6 +3622,8 @@ export class AgentServer {
       commitmentTracker: options.commitmentTracker ?? null,
       workQueue: options.workQueue ?? null,
       prHandLease: options.prHandLease ?? null,
+      standDownRegistry: options.standDownRegistry ?? null,
+      standDownAudit: options.standDownAudit ?? null,
       subscriptionPool: options.subscriptionPool ?? null,
       subscriptionIdentityOracle: options.subscriptionIdentityOracle,
       subscriptionEmailBinding: options.subscriptionEmailBinding,

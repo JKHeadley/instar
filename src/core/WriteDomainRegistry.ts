@@ -251,6 +251,25 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     fileLevel: 'git-sync-excluded',
     note: 'pool-scope GET merge + WS4.1 durable remote-ack; file-level arm shipped in FileClassifier sync exclusions (wave-1 build item)',
   };
+  // ── Duplicate-session stand-down routes (duplicate-session-standdown.md) ──
+  // The registry an entry lives in muzzles a PROCESS on this machine's disk
+  // (machine-local-justification: hardware-bound-resource, spec §Multi-machine
+  // posture). Both axes of the convergence story: LOGICALLY the entries mirror
+  // the replicated ownership records with the cadence re-verify as the declared
+  // agreement invariant (one-tick bounded staleness + hysteresis) and the pool
+  // question is answered by the proxied-on-read GET /standdown?scope=pool;
+  // FILE-LEVEL, state/standdown.json + the marker live under state/ which
+  // git-sync excludes, so no shared-path collision exists by construction.
+  const standDownStory: ConvergenceStory = {
+    logical: 'pool-scope-read-merge',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'entries muzzle a local PROCESS (hardware-bound); authority lives in the replicated ownership records, mirrored with bounded staleness by the cadence re-verify; pool view is GET /standdown?scope=pool',
+  };
+  // POST /standdown/evaluate — the hook's authoritative verdict + audit row for
+  // a session running ON THIS machine (a peer's session can never be listed here).
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/standdown/', domain: 'machine-local', story: standDownStory });
+
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
 

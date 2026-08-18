@@ -1,0 +1,58 @@
+{
+  "ts": "2026-08-18T09:11:13.442Z",
+  "slug": "duplicate-session-standdown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/SessionReaper.ts matches session reaper",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 22,
+  "loc": 3753,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/model-registry-freshness.manifest.json",
+      "src/commands/init.ts",
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionManager.ts",
+      "src/core/StandDownAudit.ts",
+      "src/core/StandDownRegistry.ts",
+      "src/core/baselineProcessPatterns.ts",
+      "src/core/deliverToConversation.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/instarSettingsHooks.ts",
+      "src/core/standDownDrain.ts",
+      "src/core/types.ts",
+      "src/monitoring/PresenceProxy.ts",
+      "src/monitoring/SessionReaper.ts",
+      "src/monitoring/delivery-failure-sentinel.ts",
+      "src/monitoring/delivery-failure-sentinel/recovery-policy.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 3713,
+    "deletedLines": 40
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The stand-down maintenance loop is registered as the standdown-maintenance controller: under the pinned instant-reappear flap + retry-looping model + active user, notify-class emissions settle horizon-independently because every attention item dedupes on a stable per-(topic,kind) id, per-episode notices are epoch-gated behind the admission latch (a fixed epoch cannot re-mint an episode after release), and clean-close cycles are deliberately silent — the ratchet proves the count freezes at the deduped set across 2x horizons and restart reconstruction."
+    }
+  },
+  "verdict": "pass"
+}

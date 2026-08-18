@@ -872,6 +872,13 @@ export interface RouteContext {
    *  concurrent sessions can't push competing commits to the same branch.
    *  Null until dev-gated construction in server.ts (spec: parallel-hand-pr-lease). */
   prHandLease?: import('../core/PrHandLease.js').PrHandLease | null;
+  /** StandDownRegistry — the machine-local ENFORCEMENT RECORD for duplicate-session
+   *  stand-downs (docs/specs/duplicate-session-standdown.md). Null until dev-gated
+   *  construction in server.ts. It holds NO authority over ownership: it mirrors
+   *  verdicts the reconciler and the ownership records own. */
+  standDownRegistry?: import('../core/StandDownRegistry.js').StandDownRegistry | null;
+  /** The coalescing audit sink for stand-down transitions. */
+  standDownAudit?: import('../core/StandDownAudit.js').StandDownAudit | null;
   /** SubscriptionPool (multi-account subscription registry, P1.1 of the
    *  Subscription & Auth Standard). Null until an operator opts in / enrolls. */
   subscriptionPool: import('../core/SubscriptionPool.js').SubscriptionPool | null;
@@ -15334,6 +15341,78 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
+    // ── Duplicate-session stand-down: the VOICE half (docs/specs/duplicate-session-standdown.md) ──
+    // A send TO a topic that has a live stand-down entry ON THIS MACHINE is refused.
+    // The check is TOPIC-keyed, not sender-keyed, and that is what makes it correct
+    // without authentication: an entry exists only on the LOSING machine, so the
+    // winner's sends — on its own machine — never see one. (This route carries no
+    // authenticated session identity; `metadata` is caller-supplied, so keying on a
+    // claimed sender would be attribution dressed as authentication.)
+    //
+    // 409 is deliberate: recovery-policy classifies it TERMINAL/non-retryable, so a
+    // muzzled reply cannot enter the retry loop and end in a false "I had a reply
+    // for you but couldn't deliver it" loss notice.
+    //
+    // The internal deterministic senders (reap-notify, the cold-start lifeline
+    // fallback, the owner-dark ladder) call telegram.sendToTopic directly and never
+    // traverse this route — exempt by construction, so genuine system notices and
+    // this feature's own episode notice still deliver.
+    if (ctx.standDownRegistry) {
+      try {
+        const sdEntry = ctx.standDownRegistry.getByTopic(topicId);
+        if (sdEntry) {
+          // FIRE-TIME OWNERSHIP RE-CHECK (Ownership-Gated Side Effects, applied at
+          // the side effect's own moment). A topic-keyed muzzle must never outlive
+          // the ownership fact it mirrors: if this machine is NOW the owner, the
+          // entry is stale — release it here and let the send proceed, rather than
+          // suppressing the rightful speaker through the release hysteresis.
+          // UNRESOLVABLE reads release, they do not refuse. The registry being
+          // unwired or the mesh identity being unresolved says nothing about who
+          // owns the conversation — and the spec's rule for this decision is that
+          // every uncertainty fails toward RELEASE, the reachability-preserving
+          // direction. Refusing on a null read would have made an infrastructure
+          // gap look like a duplicate and silenced a legitimate reply.
+          const ownershipReadable = !!ctx.sessionOwnershipRegistry && !!ctx.meshSelfId;
+          const currentOwner = ctx.sessionOwnershipRegistry?.ownerOf(String(topicId)) ?? null;
+          const selfId = ctx.meshSelfId ?? null;
+          if (!ownershipReadable || currentOwner == null || currentOwner === selfId) {
+            const returned = ownershipReadable && currentOwner === selfId;
+            ctx.standDownRegistry.release(
+              sdEntry.sessionName,
+              returned ? 'ownership-returned-at-send' : 'ownership-unresolvable-at-send',
+              // An unresolvable read adjudicated nothing, so it must not arm the
+              // episode latch — one transient null would otherwise permanently
+              // disable a legitimate muzzle.
+              { armLatch: returned },
+            );
+            // Every entry-removing path resets the coalescing bucket; left
+            // populated, a later episode on the same key silently loses its
+            // FIRST enforcement row — which is the soak's evidence that a new
+            // episode began.
+            ctx.standDownAudit?.endEpisode(sdEntry.sessionName);
+          } else {
+            ctx.standDownRegistry.countRefusedSend(topicId);
+            ctx.standDownAudit?.enforcement({
+              transition: 'refused-send', sessionName: sdEntry.sessionName, topicId,
+              dryRun: sdEntry.dryRun, episodeId: sdEntry.episodeId,
+            });
+            if (ctx.standDownRegistry.isEnforcing(sdEntry)) {
+              res.status(409).json({
+                error: 'standing-down',
+                // Only the shape-clamped machine id crosses — never a nickname or
+                // a free-text reason (peer-influenced strings stay out of anything
+                // a model reads as instruction).
+                ownerMachineId: sdEntry.ownerMachineId,
+                retryable: false,
+              });
+              return;
+            }
+            // dryRun: the would-refuse row is written; the send proceeds untouched.
+          }
+        }
+      } catch { /* @silent-fallback-ok — a stand-down lookup failure must never block a real reply (fail toward reachability) */ }
+    }
+
     // ── An INVISIBLE payload is refused at the door (window 11, 2026-08-09) ──
     // Earned from a real incident on a peer agent the same morning: a send whose
     // entire body was one ZERO-WIDTH SPACE (U+200B) passed the guard above — it is a
@@ -28592,6 +28671,167 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Inner fail-open — never block a push on an internal error.
       res.json({ decision: 'allow', reason: 'eval-error-failopen' });
     }
+  });
+
+  // ── Duplicate-session stand-down (docs/specs/duplicate-session-standdown.md) ──
+  // The PreToolUse `*` hook posts here for the AUTHORITATIVE verdict; the marker
+  // file only tells it to ask. Side-effect-free apart from the audit row.
+  //
+  // FAIL-OPEN IS THE CONTRACT, at every rung: feature dark, malformed body, no
+  // entry, dryRun — all answer `allow`. A hook that blocks on an internal error
+  // would freeze a session no verdict muzzles, which is strictly worse than the
+  // duplicate this feature exists to retire.
+  router.post('/standdown/evaluate', (req, res) => {
+    const registry = ctx.standDownRegistry;
+    if (!registry) {
+      res.json({ verdict: 'allow', reason: 'feature-disabled' });
+      return;
+    }
+    const { sessionName, tool } = (req.body ?? {}) as { sessionName?: unknown; tool?: unknown };
+    if (typeof sessionName !== 'string' || sessionName.length === 0) {
+      res.json({ verdict: 'allow', reason: 'bad-request-failopen' });
+      return;
+    }
+    try {
+      const entry = registry.getBySession(sessionName);
+      if (!entry) {
+        res.json({ verdict: 'allow', reason: 'no-entry' });
+        return;
+      }
+      const toolName = typeof tool === 'string' ? tool : 'unknown';
+      registry.countBlockedCall(sessionName);
+      ctx.standDownAudit?.enforcement({
+        transition: 'blocked-call', sessionName, topicId: entry.topicId,
+        tool: toolName, dryRun: entry.dryRun, episodeId: entry.episodeId,
+        state: entry.state,
+      });
+      if (!registry.isEnforcing(entry)) {
+        // dryRun (or a non-enforcing state): the would-block row is already
+        // written — the soak's evidence — and the call proceeds untouched.
+        res.json({ verdict: 'allow', wouldBlock: true, reason: entry.dryRun ? 'dry-run' : 'state-not-enforcing' });
+        return;
+      }
+      res.json({ verdict: 'block', ownerMachineId: entry.ownerMachineId, episodeId: entry.episodeId });
+    } catch {
+      res.json({ verdict: 'allow', reason: 'eval-error-failopen' });
+    }
+  });
+
+  // Registry First — "why did my tool call get blocked / my send get a 409?"
+  // `?scope=pool` merges every online machine's entries, dark-peer-tolerant.
+  const standDownPoolLimiter = rateLimiter(60_000, 6);
+  router.get('/standdown', async (req, res) => {
+    const registry = ctx.standDownRegistry;
+    if (!registry) {
+      res.status(503).json({ error: 'duplicate-session stand-down is not enabled on this agent' });
+      return;
+    }
+    const selfMachineId = ctx.meshSelfId ?? null;
+    const dryRun = ctx.liveConfig?.get<boolean>('monitoring.standDown.dryRun', true) ?? true;
+    const degraded = registry.degradedBoot;
+    const body: Record<string, unknown> = {
+      enabled: true,
+      dryRun,
+      machineId: selfMachineId,
+      generatedAt: new Date().toISOString(),
+      entries: registry.list(),
+      // The topics this machine actually holds a live session for. A peer needs
+      // this to tell "I have no copy of that conversation" apart from "I have an
+      // unmuzzled copy" — without it an idle bystander machine reads as a
+      // speaking copy, and the anti-mutual-muzzle tiebreak can never fire in a
+      // pool of more than two.
+      liveTopics: (() => {
+        try {
+          const out = new Set<number>();
+          for (const sess of ctx.sessionManager?.listRunningSessions() ?? []) {
+            const raw = ctx.telegram?.getTopicForSession(sess.tmuxSession);
+            const t = typeof raw === 'number' ? raw : Number(raw);
+            if (Number.isFinite(t)) out.add(t);
+          }
+          return [...out];
+        } catch { return []; /* @silent-fallback-ok — liveTopics unreadable ⇒ empty list ⇒ a peer classifies this machine 'absent', the conservative direction */ }
+      })(),
+      latches: registry.latches(),
+      config: registry.config,
+      // A boot that lost the durable registry is a KNOWN fail-open window: for
+      // the minutes until the producers re-derive their verdicts nothing is
+      // enforced. That must be visible here rather than inferred from silence.
+      ...(degraded.degraded ? { degradedBoot: { since: 'boot', reason: degraded.reason } } : {}),
+      suppressedAuditRows: ctx.standDownAudit?.suppressedCounts() ?? {},
+    };
+    if (req.query.scope !== 'pool') {
+      res.json(body);
+      return;
+    }
+    standDownPoolLimiter(req, res, async () => {
+      const peers = ctx.resolvePeerUrls?.() ?? [];
+      const failed: Array<{ machineId: string; error: string }> = [];
+      const remote: Array<Record<string, unknown>> = [];
+      let poolStale = false;
+      await Promise.all(peers.map(async (p) => {
+        const cap = ctx.machinePoolRegistry?.getCapacity(p.machineId);
+        if (cap && cap.online === false) { failed.push({ machineId: p.machineId, error: 'offline' }); return; }
+        try {
+          const fetchPeer = async () => {
+            const r = await fetch(`${p.url}/standdown`, {
+              headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+              signal: AbortSignal.timeout(4000),
+            });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return (await r.json()) as { entries?: Array<Record<string, unknown>> };
+          };
+          let peerBody: { entries?: Array<Record<string, unknown>> };
+          if (ctx.poolPollCache) {
+            const cached = await ctx.poolPollCache.fetchPeer(p.machineId, '/standdown', fetchPeer);
+            peerBody = cached.body;
+            if (cached.stale) poolStale = true;
+          } else {
+            peerBody = await fetchPeer();
+          }
+          for (const e of peerBody.entries ?? []) {
+            remote.push({ ...e, machineId: p.machineId, machineNickname: cap?.nickname ?? null, remote: true });
+          }
+        } catch (err) {
+          failed.push({ machineId: p.machineId, error: err instanceof Error ? err.message : String(err) });
+        }
+      }));
+      res.json({
+        ...body,
+        entries: [...registry.list().map((e) => ({ ...e, machineId: selfMachineId })), ...remote],
+        scope: 'pool',
+        pool: {
+          selfMachineId, peersQueried: peers.length, peersOk: peers.length - failed.length, failed,
+          ...(poolStale ? { stale: true } : {}),
+        },
+      });
+    });
+  });
+
+  // The operator ack path for an EXPIRED episode. Expiry deliberately keeps both
+  // enforcement halves (a frozen session, zero destruction) and the human decides
+  // — so this is the ONLY route out of that state, and it clears the latch too.
+  router.post('/standdown/:sessionName/operator-release', (req, res) => {
+    const registry = ctx.standDownRegistry;
+    if (!registry) {
+      res.status(503).json({ error: 'duplicate-session stand-down is not enabled on this agent' });
+      return;
+    }
+    // DASHBOARD-PIN GATED — the agent's own Bearer token is structurally
+    // insufficient. Expiry is a deliberate human-arbitered state: the whole
+    // reason both enforcement halves persist past TTL is that a machine may not
+    // decide, for itself, that it is safe to resume. A Bearer-only exit would let
+    // any other live session of this same agent clear a decision the human was
+    // asked to make — self-granting exactly the authority the freeze withholds.
+    // Uses the shared PIN check so this inherits the timing-safe compare and the
+    // durable brute-force lockout rather than re-implementing a weaker one.
+    if (!checkMandatePin(req, res)) return;
+    const released = registry.operatorRelease(req.params.sessionName);
+    if (released) ctx.standDownAudit?.endEpisode(req.params.sessionName);
+    if (!released) {
+      res.status(404).json({ error: 'no stand-down entry for that session on this machine' });
+      return;
+    }
+    res.json({ released: true, sessionName: req.params.sessionName });
   });
 
   router.get('/pr-leases', (req, res) => {

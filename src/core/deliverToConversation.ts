@@ -79,7 +79,13 @@ export type DeliveryOutcome =
         | 'telegram-send-failed'
         | 'conversation-unreachable'
         | 'conversation-binding-incoherent'
-        | 'binding-target-unresolved';
+        | 'binding-target-unresolved'
+        /** The duplicate-session stand-down muzzle refused this send: this copy
+         *  is standing down and the conversation is served on another machine.
+         *  Always carries `standDown: true` — a muzzled reply is NOT a delivery
+         *  failure and must never become a dead-letter or a "couldn't deliver"
+         *  loss notice about a conversation that is alive and answering. */
+        | 'standing-down';
       detail?: string;
       /** §5.1: true ONLY for the pinned permanent error set — the beacon
        *  treats it as TERMINAL (dead-letter), never an infinite retry. */
@@ -156,6 +162,16 @@ export interface ConversationDeliveryDeps {
   log?: (line: string) => void;
   /** Test override for the mass-unreachable coalescing window. */
   coalescingWindowMs?: number;
+  /**
+   * Duplicate-session stand-down (docs/specs/duplicate-session-standdown.md), the
+   * MINTED-ID arm of the voice muzzle. The `id > 0` arm is covered at the
+   * `/telegram/reply/:topicId` route this funnel calls into; a minted (Slack)
+   * conversation never traverses that route, so its refusal lives here.
+   *
+   * Returns the refusal decision for a conversation id, or null when nothing is
+   * standing down. Absent ⇒ feature dark ⇒ the funnel is byte-identical to today.
+   */
+  standDownRefusal?: (conversationId: number) => { ownerMachineId: string } | null;
 }
 
 export type DeliverToConversation = (id: number, text: string, opts?: DeliverOpts) => Promise<DeliveryOutcome>;
@@ -232,6 +248,24 @@ export function createConversationDelivery(deps: ConversationDeliveryDeps): Deli
         };
       }
     }
+
+    // ── Stand-down muzzle, minted-id arm. Checked BEFORE target resolution:
+    //    a muzzled copy must not even resolve a delivery target, and the refusal
+    //    is a first-class typed outcome (never a silent drop). The `id > 0` arm
+    //    above is muzzled at the /telegram/reply route it calls into. ──
+    try {
+      const refusal = deps.standDownRefusal?.(id) ?? null;
+      if (refusal) {
+        return {
+          delivered: false,
+          outcome: 'not-delivered',
+          reason: 'standing-down',
+          detail: `this copy is standing down; the conversation continues on machine ${refusal.ownerMachineId}`,
+          // Not a dead-letter: the conversation IS being answered, just not here.
+          standDown: true,
+        };
+      }
+    } catch { /* @silent-fallback-ok — a stand-down lookup failure never blocks a real delivery (fail toward reachability) */ }
 
     // ── id < 0 → minted conversation. Resolve the delivery TARGET through the
     // §3.5.2 overlay FIRST (record-carried boundTuple, then the local

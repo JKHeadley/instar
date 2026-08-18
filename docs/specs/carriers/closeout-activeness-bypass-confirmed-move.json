@@ -1,0 +1,18 @@
+{
+  "generatedAt": "2026-08-18T00:54:26.099Z",
+  "slug": "closeout-activeness-bypass-confirmed-move",
+  "carriers": {
+    "CMT-2027": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Determine WHY a non-owner machine spawns a session for a hard-pinned foreign topic (SpawnAdmission router-consumed arm allows without consulting ownership; the deciding route verdict log line was unreadable on the peer). This is the duplicate-CREATION half; the closeout spec only fixes the persistence half."
+    },
+    "CMT-2028": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Design and build cooperative quiescence for a losing duplicate session: a control channel that tells it to stop emitting user-visible output and stop starting new tool calls, a bounded drain, and a drain-state the reaper can observe — so ending a duplicate stops interrupting arbitrary in-flight tool work. Acceptance: either the channel ships, or a written finding that it is infeasible with the rea"
+    }
+  }
+}

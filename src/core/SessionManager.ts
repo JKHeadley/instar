@@ -18,9 +18,13 @@ import { fileURLToPath } from 'node:url';
 import { SessionLivenessOracle, type SessionLivenessOracleConfig } from './SessionLivenessOracle.js';
 import { resolveGhTokenFromVault } from './ghToken.js';
 import type { ReapGuard, ReapKeepReason } from './ReapGuard.js';
+import { DRAINED_CLOSE_BYPASSED_REASONS, drainProcessShape, analyseTranscriptSinceBoundary } from './standDownDrain.js';
 import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
 import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
+// ONE definition, imported by both this probe and the stand-down drain predicate
+// (a leaf module, so no load-order cycle — see baselineProcessPatterns.ts).
+import { BASELINE_PROCESS_PATTERNS } from './baselineProcessPatterns.js';
 import { chunkLiteralForTmux, buildLiteralSendArgs } from './tmuxLiteralSend.js';
 import { isReadyPromptTail, classifyPaneReadiness, type PaneReadiness } from './claudeReadinessProbe.js';
 import { extractGeminiFinalAssistantBlock, meaningfulTail } from './paneText.js';
@@ -123,6 +127,178 @@ const ageKillGov = governor.for('age-kill-backoff');
  * the lease-holder boundary unchanged.
  */
 const LOCAL_AGE_LIMIT_REAP_CAPABILITY = Symbol('local-age-limit-reap-capability');
+
+/**
+ * Closeout activeness bypass (docs/specs/closeout-activeness-bypass-confirmed-move.md).
+ *
+ * The SessionReaper's assertion that a liveness-CONFIRMED genuine move justified
+ * lifting the two positive-evidence activeness keep-reasons. It carries the
+ * evidence the decision rested on so the termination authority can validate the
+ * claim instead of trusting a bare boolean.
+ */
+export interface ConfirmedMoveAssertion {
+  /** The session this assertion authorizes — and ONLY this session. Without it
+   *  an assertion is a bearer token for ANY local session for its whole TTL: a
+   *  caller holding one built for topic A could pass it to terminate(sessionB),
+   *  lifting the activeness guards on a correctly-owned busy session while the
+   *  audit row named topic A's owner. Round-4 security finding. */
+  sessionId: string;
+  /** The bound topic, recorded so the audit row answers "which conversation
+   *  moved?" without a second lookup. Advisory in the decision; the sessionId
+   *  is what binds. */
+  topicId: number | null;
+  /** The remote owner the ownership record named. */
+  ownerMachineId: string;
+  /** This machine — the one holding the leftover session. */
+  selfMachineId: string;
+  /** Epoch ms of the liveness proof that backed the confirmed reading. */
+  reachableAt: number;
+  /** Epoch ms of the freshest local user message on the bound topic, or null. */
+  lastUserMessageAt: number | null;
+  /** Confirmations accumulated before the decision (the dwell). */
+  dwellTicks: number;
+  /** The dwell threshold in force when the decision was made. Carried so the
+   *  authority can check `dwellTicks >= requiredConfirmTicks` rather than merely
+   *  "some confirmation happened". The THRESHOLD ITSELF remains the reaper's
+   *  policy — this is an internal-consistency check, not an independent one. */
+  requiredConfirmTicks: number;
+  /** Epoch ms after which this assertion is stale and must be refused. */
+  expiresAt: number;
+}
+
+/**
+ * How long a confirmed-move assertion stays valid. A CODE CONSTANT, never config:
+ * a safety bound in config is a safety bound an emergency edit can silently remove
+ * (the 2026-06-05 load-shed lesson). The reaper builds and consumes the assertion
+ * in the same synchronous block, so this is generous by two orders of magnitude —
+ * it exists to refuse a delayed or replayed call, not to time normal operation.
+ */
+export const CONFIRMED_MOVE_ASSERTION_TTL_MS = 30_000;
+
+/**
+ * Slack allowed when checking the assertion's expiry against the authority's OWN
+ * ceiling. The reaper stamps `expiresAt` from its injected clock and the authority
+ * validates against `Date.now()`; in production these are the same clock, but a
+ * few milliseconds pass between the stamp and the check. Small by design: this is
+ * an allowance for the check-to-kill gap, NOT a second TTL.
+ */
+export const CONFIRMED_MOVE_CLOCK_SKEW_ALLOWANCE_MS = 2_000;
+
+/**
+ * Maximum age of the LIVENESS PROOF the assertion rests on, checked against the
+ * authority's own clock. The TTL above bounds only the reaper→authority hop; it
+ * says nothing about how old the evidence ITSELF is, and `lastUserMessageAt <=
+ * reachableAt` compares two caller-supplied values, so an arbitrarily old (or
+ * future) `reachableAt` would satisfy every other check — the same
+ * caller-vs-caller pattern already withdrawn for identity and for the expiry.
+ *
+ * Derived from the closeout liveness snapshot's own staleness bound (2x the
+ * refresh cadence, ~4 min at the default 120s tick) plus margin, and kept a CODE
+ * CONSTANT for the same reason as the TTL: loosening a safety bound must not be
+ * config-reachable. The failure it closes: the owner machine dies inside the
+ * staleness window, and the closeout kills the LAST live session for the topic
+ * on evidence that was already stale.
+ */
+export const MAX_LIVENESS_EVIDENCE_AGE_MS = 300_000;
+
+/** Machine ids are written verbatim into the world-readable reap-log and
+ *  rendered by GET /sessions/reap-log; `ownerMachineId` originates from the
+ *  peer-influenced mesh ownership registry. Clamp shape and length at the
+ *  authority rather than trusting the registry. */
+const MACHINE_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
+
+/** Why a confirmed-move assertion was refused — named, never a bare false. */
+export type ConfirmedMoveAssertionRefusal =
+  | 'malformed'
+  | 'local-identity-unknown'
+  | 'self-identity-mismatch'
+  | 'self-is-owner'
+  | 'user-message-newer-than-liveness'
+  | 'dwell-below-threshold'
+  | 'expired'
+  | 'ttl-exceeds-ceiling'
+  | 'session-mismatch'
+  | 'liveness-proof-in-future'
+  | 'liveness-proof-stale';
+
+/**
+ * Validate a confirmed-move assertion at the termination authority.
+ *
+ * This authority cannot query the ownership registry or topic-message state —
+ * importing those onto the kill path is coupling this deliberately avoids. What it
+ * CAN do is check the assertion against TRUSTED LOCAL IDENTITY, check that it is
+ * well-formed and internally consistent with the preconditions it claims, and check
+ * that it is fresh. Every failure returns a NAMED reason and denies the bypass
+ * (fail toward NOT killing).
+ *
+ * The identity checks are load-bearing, and they must compare against
+ * `actualLocalMachineId` rather than against the assertion's own fields. An earlier
+ * draft checked only `ownerMachineId !== selfMachineId` — both caller-supplied — and
+ * claimed that made a self-owned bypass "structurally impossible". It did not: a
+ * caller on the owner machine could pass `{ owner: 'other', self: 'not-this-machine' }`
+ * and satisfy it. Comparing both fields against the machine's own identity is what
+ * actually closes that hole; an unknown local identity fails CLOSED.
+ */
+export function validateConfirmedMoveAssertion(
+  assertion: unknown,
+  nowMs: number,
+  actualLocalMachineId: string | null,
+  /** The session this call is about to terminate. An assertion that does not
+   *  name THIS session is refused — it authorizes one kill, not any kill. */
+  targetSessionId?: string,
+): { ok: true; assertion: ConfirmedMoveAssertion } | { ok: false; refusal: ConfirmedMoveAssertionRefusal } {
+  if (typeof assertion !== 'object' || assertion === null) return { ok: false, refusal: 'malformed' };
+  const a = assertion as Partial<ConfirmedMoveAssertion>;
+  const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  if (typeof a.sessionId !== 'string' || a.sessionId.length === 0) return { ok: false, refusal: 'malformed' };
+  if (!(a.topicId === null || finite(a.topicId))) return { ok: false, refusal: 'malformed' };
+  // Shape-clamped, not merely non-empty: these strings land verbatim in a
+  // world-readable log and come from a peer-influenced registry.
+  if (typeof a.ownerMachineId !== 'string' || !MACHINE_ID_PATTERN.test(a.ownerMachineId)) return { ok: false, refusal: 'malformed' };
+  if (typeof a.selfMachineId !== 'string' || !MACHINE_ID_PATTERN.test(a.selfMachineId)) return { ok: false, refusal: 'malformed' };
+  if (!finite(a.reachableAt) || !finite(a.dwellTicks) || !finite(a.expiresAt)) return { ok: false, refusal: 'malformed' };
+  if (!finite(a.requiredConfirmTicks) || a.requiredConfirmTicks < 1) return { ok: false, refusal: 'malformed' };
+  if (!(a.lastUserMessageAt === null || finite(a.lastUserMessageAt))) return { ok: false, refusal: 'malformed' };
+  // Trusted-identity checks. Without a known local identity there is nothing to
+  // compare against, so the bypass is refused rather than granted on self-report.
+  if (typeof actualLocalMachineId !== 'string' || actualLocalMachineId.length === 0) {
+    return { ok: false, refusal: 'local-identity-unknown' };
+  }
+  if (a.selfMachineId !== actualLocalMachineId) return { ok: false, refusal: 'self-identity-mismatch' };
+  // A machine may never bypass on evidence naming IT as the owner.
+  if (a.ownerMachineId === actualLocalMachineId) return { ok: false, refusal: 'self-is-owner' };
+  // The freshest-interaction invariant, re-checked here rather than trusted.
+  if (a.lastUserMessageAt !== null && a.lastUserMessageAt > a.reachableAt) {
+    return { ok: false, refusal: 'user-message-newer-than-liveness' };
+  }
+  if (a.dwellTicks < a.requiredConfirmTicks) return { ok: false, refusal: 'dwell-below-threshold' };
+  if (nowMs > a.expiresAt) return { ok: false, refusal: 'expired' };
+  // The window must be bounded in BOTH directions (round-4 cross-model finding).
+  // Checking only `now <= expiresAt` enforces nothing: a caller that stamps an
+  // expiry a year out passes forever, so the TTL was a documented intention
+  // rather than an enforced bound. The authority owns the ceiling — the caller
+  // supplies the expiry, so the caller cannot be the one who bounds it. A small
+  // clock-skew allowance keeps an honest reaper from being refused when the two
+  // clocks disagree by milliseconds.
+  if (a.expiresAt > nowMs + CONFIRMED_MOVE_ASSERTION_TTL_MS + CONFIRMED_MOVE_CLOCK_SKEW_ALLOWANCE_MS) {
+    return { ok: false, refusal: 'ttl-exceeds-ceiling' };
+  }
+  // The EVIDENCE's own age, anchored to the authority's clock. Without this the
+  // freshest-interaction check is caller-field vs caller-field and an old or
+  // future `reachableAt` makes it vacuous.
+  if (a.reachableAt > nowMs + CONFIRMED_MOVE_CLOCK_SKEW_ALLOWANCE_MS) {
+    return { ok: false, refusal: 'liveness-proof-in-future' };
+  }
+  if (nowMs - a.reachableAt > MAX_LIVENESS_EVIDENCE_AGE_MS) {
+    return { ok: false, refusal: 'liveness-proof-stale' };
+  }
+  // The assertion authorizes ONE session. A caller that supplies no target gets
+  // no bypass — the binding is not optional in effect, only in signature.
+  if (typeof targetSessionId !== 'string' || a.sessionId !== targetSessionId) {
+    return { ok: false, refusal: 'session-mismatch' };
+  }
+  return { ok: true, assertion: a as ConfirmedMoveAssertion };
+}
 
 /** The canonical target derivation for the age-kill controller (companion §1):
  *  instar session ids are stable per topic across respawns, so the session id
@@ -264,14 +440,6 @@ export function parseProcTimeToSeconds(raw: string): number {
  * Process names that are always running in a Claude Code session (MCP servers, etc.)
  * These do NOT indicate activity — they're background infrastructure.
  */
-const BASELINE_PROCESS_PATTERNS = [
-  /\bplaywright-mcp\b/,
-  /\bplaywright\/mcp\b/,
-  /\bmcp-stdio-entry\b/,
-  /\bmcp.*server\b/i,
-  /\bcaffeinate\b/,
-  /\bnpm exec\b.*mcp/,
-];
 
 /** Sanitize a string for use as part of a tmux session name. */
 function sanitizeSessionName(name: string): string {
@@ -360,6 +528,16 @@ export interface SessionTerminateAuthorityOptions {
   bypassRecoveryFlag?: boolean;
   bypassActiveProcessKeep?: boolean;
   bypassRecentUserMessageForConfirmedMove?: boolean;
+  /**
+   * The DRAINED close of a duplicate-session stand-down
+   * (docs/specs/duplicate-session-standdown.md §Drained-close). A CLAIM, not an
+   * authorization: this authority independently confirms the session really is a
+   * DRAINED stand-down against its own registry probe, and then applies its OWN
+   * frozen bypass list. The caller never supplies a reason set — a caller-supplied
+   * bypass set would be exactly the blanket activeness bypass round-4 review
+   * rejected, wearing a different name.
+   */
+  standDownDrainedClose?: boolean;
   /** Trusted SessionReaper assertion after ownership/liveness/dwell clears. */
   localPostTransferCloseout?: boolean;
   workEvidence?: string[];
@@ -378,6 +556,20 @@ export class SessionManager extends EventEmitter {
   private monitoringInProgress = false;
   private inputGuard: InputGuard | null = null;
   private registryPath: string | null = null;
+
+  /**
+   * Duplicate-session stand-down drain probe (docs/specs/duplicate-session-standdown.md).
+   * Wired at boot to the StandDownRegistry; ABSENT means the feature is dark, and
+   * an absent probe grants nothing — a `standDownDrainedClose` claim without a
+   * probe that answers `true` gets no bypass at all.
+   */
+  private standDownDrainProbe: ((tmuxSession: string) => boolean) | null = null;
+
+  /** Wire the stand-down drain probe. Called once at boot by the composition
+   *  root; there is deliberately no way to set it from a request path. */
+  setStandDownDrainProbe(probe: ((tmuxSession: string) => boolean) | null): void {
+    this.standDownDrainProbe = probe;
+  }
 
   /** Track when each session was first seen idle at the Claude prompt. Key = session ID */
   private idlePromptSince = new Map<string, number>();
@@ -1341,6 +1533,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
        * fresh and still vetoes. Spec: docs/specs/post-transfer-closeout-correctness.md.
        */
       bypassRecentUserMessageForConfirmedMove?: boolean;
+      /** See SessionTerminateAuthorityOptions.standDownDrainedClose — verified
+       *  here against `standDownDrainProbe`, never trusted. */
+      standDownDrainedClose?: boolean;
       /** Module-private capability minted only by #terminateLocalAgeExpiredSession.
        *  It proves the request originated in THIS SessionManager's monitor over
        *  THIS machine's state tree and local tmux namespace. Never public. */
@@ -1452,6 +1647,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
         if (opts?.bypassRecoveryFlag) bypassedReasons.push('recovery-in-flight');
         if (opts?.bypassActiveProcessKeep) bypassedReasons.push('active-process');
         if (opts?.bypassRecentUserMessageForConfirmedMove) bypassedReasons.push('recent-user-message');
+        // `standDownDrainedClose` (duplicate-session stand-down §Drained-close).
+        // P20 — VERIFY THE STATE, NOT ITS SYMBOL: the caller's claim buys nothing
+        // on its own. This authority asks its OWN probe whether the session is
+        // genuinely a stand-down entry in the `drained` state, and only then
+        // applies the frozen three-reason list from standDownDrain.ts. A false
+        // probe (feature dark, entry released, not yet drained) means NO bypass —
+        // the ordinary cascade runs and the close is refused, which is the safe
+        // direction.
+        if (opts?.standDownDrainedClose && this.standDownDrainProbe?.(session.tmuxSession) === true) {
+          bypassedReasons.push(...DRAINED_CLOSE_BYPASSED_REASONS);
+        }
         // C2/R4-2: the idle-zombie branch precomputes the guard verdict (no bypass
         // flags) and threads it here so the guard is evaluated ONCE this tick.
         // Every other caller leaves precomputedGuardVerdict undefined and the guard
@@ -2799,6 +3005,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
+        // The agent HOME (the `.instar` PARENT), distinct from CLAUDE_PROJECT_DIR.
+        // A worktree session's project dir has no `.instar/config.json` and no
+        // `.instar/state/`, so any hook that resolved those from the project dir
+        // silently no-opped for exactly the sessions doing mutating work. Hooks
+        // resolve agent-scoped files as `<INSTAR_AGENT_HOME>/.instar/...` — the
+        // `.instar` segment is part of every such path, never implied.
+        '-e', `INSTAR_AGENT_HOME=${this.config.projectDir}`,
         // durable-conversation-identity §7: per-session bind token scoping
         // durable-state opens to this spawn's bootstrap conversation set.
         ...this.bindTokenEnvFlags(
@@ -3129,6 +3342,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
+        // The agent HOME (the `.instar` PARENT), distinct from CLAUDE_PROJECT_DIR.
+        // A worktree session's project dir has no `.instar/config.json` and no
+        // `.instar/state/`, so any hook that resolved those from the project dir
+        // silently no-opped for exactly the sessions doing mutating work. Hooks
+        // resolve agent-scoped files as `<INSTAR_AGENT_HOME>/.instar/...` — the
+        // `.instar` segment is part of every such path, never implied.
+        '-e', `INSTAR_AGENT_HOME=${this.config.projectDir}`,
         // Structural message-kind stamping (outbound-jargon-filepath-gap §2.1).
         // This rerouted-interactive lane is the path the June-15 subscription
         // lever routes JOB spawns through — omitting it here would leave a
@@ -3954,6 +4174,100 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // activity; fall through to the pane/procs verdict rather than pinning a
       // possibly-dead session alive on a read error.
       return false;
+    }
+  }
+
+  /**
+   * The corroborated DRAIN observations for a duplicate-session stand-down
+   * (docs/specs/duplicate-session-standdown.md §Drained-close). The I/O half of
+   * `evaluateDrain`, which owns the actual verdict.
+   *
+   * Every leg is allowed to answer `null` = COULD NOT DETERMINE, and the verdict
+   * function resolves any such answer to NOT drained. That is deliberate: this
+   * feeds a decision to CLOSE a session, so an unprobeable pane or an unreadable
+   * transcript must read as "wait", never as "quiet".
+   */
+  standDownDrainObservations(
+    session: Session,
+    drainBoundaryAt: number,
+  ): import('./standDownDrain.js').DrainObservations {
+    const output = (() => {
+      try { return this.captureOutput(session.tmuxSession, 40); } catch { return null; /* @silent-fallback-ok — unreadable pane ⇒ NULL leg ⇒ evaluateDrain resolves to NOT drained (wait) */ }
+    })();
+    // IDLE_PROMPT_PATTERNS alone corroborates NOTHING here: those are status-bar
+    // strings ("bypass permissions on", "shift+tab to cycle") that are present
+    // whether or not a turn is in flight — which is why every other consumer in
+    // this repo pairs them with a second signal and never trusts them alone. The
+    // precise signal for "a turn is running right now" is the footer hint, and it
+    // already exists as paneShowsClaudeWorking. Without this the pane leg was
+    // effectively always true, and a session mid-turn could satisfy the whole
+    // "corroborated" drain predicate.
+    const idleAtPrompt = output == null || output === ''
+      ? null
+      : (IDLE_PROMPT_PATTERNS.some((p) => output.includes(p)) && !paneShowsClaudeWorking(output));
+
+    // The process tree, with the resident MCP stack excluded — see
+    // standDownDrain.drainProcessShape for why `hasActiveProcesses` is the wrong
+    // probe here (a browser MCP would keep every session un-drained forever).
+    const processWorking = (() => {
+      try {
+        const panePid = withSyncOp(() => execFileSync(
+          this.config.tmuxPath,
+          ['list-panes', '-t', `=${session.tmuxSession}:`, '-F', '#{pane_pid}'],
+          { encoding: 'utf-8', timeout: 5000 },
+        )).trim();
+        const psOutput = withSyncOp(() => execFileSync('ps', ['-eo', 'pid,ppid,command'], { encoding: 'utf-8', timeout: 5000 }));
+        const shape = drainProcessShape(panePid, psOutput);
+        return shape === null ? null : shape.working;
+      } catch { return null; /* @silent-fallback-ok — unknown tree ⇒ NOT drained (wait) */ }
+    })();
+
+    const transcript = this.readTranscriptTailSinceBoundary(session, drainBoundaryAt);
+    return {
+      idleAtPrompt,
+      processWorking,
+      transcriptGrew: transcript === null ? null : transcript.grew,
+      growthIsBlockEchoOnly: transcript?.growthIsBlockEchoOnly ?? false,
+      nonAllowlistedCallsSinceBoundary: transcript?.nonAllowlistedCalls ?? 0,
+    };
+  }
+
+  /** Bounded tail read of the framework transcript, parsed for the two
+   *  transcript-derived drain legs. `null` = could not read ⇒ NOT drained. */
+  private readTranscriptTailSinceBoundary(
+    session: Session,
+    drainBoundaryAt: number,
+  ): { grew: boolean; growthIsBlockEchoOnly: boolean; nonAllowlistedCalls: number } | null {
+    try {
+      const sessionId = session.claudeSessionId;
+      if (!sessionId) return null;
+      const jsonlPath = resolveFrameworkTranscriptPath({
+        framework: session.framework ?? 'claude-code',
+        sessionId,
+        projectDir: session.cwd ?? this.config.projectDir,
+      });
+      if (!jsonlPath) return null;
+      const stat = fs.statSync(jsonlPath);
+      // Bounded: a transcript can be hundreds of MB and this runs on a cadence.
+      const TAIL_BYTES = 512 * 1024;
+      const start = Math.max(0, stat.size - TAIL_BYTES);
+      const fd = fs.openSync(jsonlPath, 'r');
+      let raw: string;
+      try {
+        const buf = Buffer.alloc(Math.min(TAIL_BYTES, stat.size));
+        fs.readSync(fd, buf, 0, buf.length, start);
+        raw = buf.toString('utf-8');
+      } finally { fs.closeSync(fd); }
+      // A partial first line from the byte-offset read is dropped, not guessed.
+      const lines = raw.split('\n').slice(start > 0 ? 1 : 0);
+      const parsed: Array<Record<string, unknown>> = [];
+      for (const l of lines) {
+        if (!l.trim()) continue;
+        try { parsed.push(JSON.parse(l) as Record<string, unknown>); } catch { /* @silent-fallback-ok — a torn JSONL line is not evidence of anything; the other legs still gate the verdict */ }
+      }
+      return analyseTranscriptSinceBoundary(parsed, drainBoundaryAt);
+    } catch {
+      return null; // @silent-fallback-ok — unreadable ⇒ NOT drained (wait)
     }
   }
 
@@ -4881,6 +5195,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
+        // The agent HOME (the `.instar` PARENT), distinct from CLAUDE_PROJECT_DIR.
+        // A worktree session's project dir has no `.instar/config.json` and no
+        // `.instar/state/`, so any hook that resolved those from the project dir
+        // silently no-opped for exactly the sessions doing mutating work. Hooks
+        // resolve agent-scoped files as `<INSTAR_AGENT_HOME>/.instar/...` — the
+        // `.instar` segment is part of every such path, never implied.
+        '-e', `INSTAR_AGENT_HOME=${this.config.projectDir}`,
         '-e', `INSTAR_FRAMEWORK=${framework}`,
         // durable-conversation-identity §7: per-session bind token scoping
         // durable-state opens to this spawn's bootstrap conversation set
@@ -5251,6 +5572,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         '-e', `INSTAR_AGENT_ID=${this.config.projectName}`,
+        // The agent HOME (the `.instar` PARENT), distinct from CLAUDE_PROJECT_DIR.
+        // A worktree session's project dir has no `.instar/config.json` and no
+        // `.instar/state/`, so any hook that resolved those from the project dir
+        // silently no-opped for exactly the sessions doing mutating work. Hooks
+        // resolve agent-scoped files as `<INSTAR_AGENT_HOME>/.instar/...` — the
+        // `.instar` segment is part of every such path, never implied.
+        '-e', `INSTAR_AGENT_HOME=${this.config.projectDir}`,
         '-e', 'ANTHROPIC_API_KEY=',
         // Round-17 (lessons-aware): this pane runs Claude Code argv, so a
         // metered key for ANY provider resident here defeats the same

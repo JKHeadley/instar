@@ -121,6 +121,10 @@ describe('Feature Delivery Completeness', () => {
     // When you add a new CLAUDE.md section to templates.ts, add a key phrase here.
     // The test will verify it exists in both files. If it's only in one, CI fails.
     const featureSections = [
+      // duplicate-session-standdown: both audiences (capability + the muzzled
+      // session's behavioral contract) ship via generateClaudeMd AND a
+      // content-sniffed migrateClaudeMd entry — full template↔migrator parity.
+      'Duplicate-session stand-down',
       // gate-prompts-judge-by-meaning §Migration: the Outbound Message Gate
       // awareness section. Full parity — templates.ts generateClaudeMd + migrator
       // migrateClaudeMd + migrateFrameworkShadowCapabilities markers[] (so a

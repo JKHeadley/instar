@@ -1,0 +1,42 @@
+{
+  "ts": "2026-08-18T10:06:36.335Z",
+  "slug": "duplicate-session-standdown",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/SessionReaper.ts matches session reaper",
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 9,
+  "loc": 137,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/init.ts",
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionManager.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/monitoring/PresenceProxy.ts",
+      "src/monitoring/SessionReaper.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 91,
+    "deletedLines": 46
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "standdown-maintenance controller registered in the convergence ratchet: notify emissions settle horizon-independently (stable per-(topic,kind) dedup ids; epoch-gated per-episode notices; silent clean-close cycles), proven across 2x horizons and restart reconstruction."
+    }
+  },
+  "verdict": "pass"
+}

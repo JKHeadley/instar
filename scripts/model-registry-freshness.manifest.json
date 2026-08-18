@@ -2,7 +2,7 @@
   "$comment": "Doorway/Model Knowledge Registry — canonical/reviewed layer + staleness/drift gate for Instar's per-provider 'capable/latest' model pins. This file is the SINGLE human-edit surface that keeps the model registry from silently rotting. See docs/LLM-ROUTING-REGISTRY.md, docs/specs/DOORWAY-MODEL-KNOWLEDGE-REGISTRY-SPEC.md, and scripts/lint-model-registry-freshness.mjs. Two teeth: (1) STALENESS — lastReviewedAt must be within stalenessWindowDays; (2) DRIFT — every pinned capable model id must be a member of its door's DERIVED frontier set (the ids in doors[door].topModels[] carrying frontier:true — see §1.4 of the spec). topModels is the ONE hand-edited source of truth; the frontier set is a view of it and cannot diverge by construction. To pass the check a human must confirm each capable pin is genuinely current frontier AND bump lastReviewedAt. An un-reviewed list fails loudly.",
   "registrySchemaVersion": 2,
   "$schemaNote": "registrySchemaVersion 2 = the enriched Doorway/Model Knowledge Registry. Increment 1 (spec §Rollout step 1) added the per-door topModels[] frontier-derivation layer + the derived-frontier lint (report mode). Increment 2 (spec §Rollout step 2) ADDS the per-door probe{} block + candidateDoorways[] below — the metadata the deterministic prober (scripts/doorway-scan.mjs) reads to know HOW to re-verify each door — plus the live scan-state (.instar/state/doorway-scan.json) + the dark (enabled:false) doorway-scan job. Both additions are backward-compatible: the freshness lint ignores probe{}/candidateDoorways entirely (it reads only topModels/frontier/pins). GET /doorways is a LATER increment (spec §Rollout step 3) and is NOT wired yet.",
-  "lastReviewedAt": "2026-07-03",
+  "lastReviewedAt": "2026-08-18",
   "stalenessWindowDays": 45,
   "enforcement": "strict",
   "$enforcementNote": "'strict' = GATING (exits 1 on any finding: staleness, drift, or a flaggedStale row) — flipped from 'report' in rollout increment 5 (spec §Rollout step 5, the companion-gated activation) now that the prior flaggedStale door swaps are operator-confirmed + reconciled into topModels (flaggedStale is empty) and the derived-frontier drift + staleness teeth pass clean. This is the LIVE TEETH that the 'Keep the Doorway/Model Map Current' constitutional standard is ratified WITH (not ahead of). The lint runs in the `npm run lint` chain, so a future staleness age-out (lastReviewedAt exceeds stalenessWindowDays) or a pin drifting off its door's derived frontier set now FAILS CI — the anti-rot ratchet, by design. To revert to non-gating (dark/reversible rollback), set this field back to 'report'. Env INSTAR_MODEL_FRESHNESS_STRICT=1 forces strict for a one-off run regardless of this field.",
@@ -11,10 +11,41 @@
       "name": "Claude Code CLI",
       "accessMethod": "Claude Code CLI (subscription/OAuth)",
       "status": "alive",
-      "probe": { "kind": "cli-version", "bin": "claude", "metered": false, "freeDefaultCovered": true },
+      "probe": {
+        "kind": "cli-version",
+        "bin": "claude",
+        "metered": false,
+        "freeDefaultCovered": true
+      },
       "topModels": [
-        { "id": "claude-opus-4-8", "role": "capable-anthropic", "frontier": true, "pricing": null, "verifiedAt": "carried-over-from-allowlist" },
-        { "id": "claude-fable-5", "role": "ultra-anthropic", "frontier": true, "pricing": null, "verifiedAt": "carried-over-from-allowlist" }
+        {
+          "id": "claude-opus-4-8",
+          "role": "capable-anthropic",
+          "frontier": true,
+          "pricing": null,
+          "verifiedAt": "carried-over-from-allowlist"
+        },
+        {
+          "id": "claude-fable-5",
+          "role": "ultra-anthropic",
+          "frontier": true,
+          "pricing": null,
+          "verifiedAt": "carried-over-from-allowlist"
+        },
+        {
+          "id": "claude-opus-5",
+          "role": "capable-anthropic",
+          "frontier": true,
+          "pricing": null,
+          "verifiedAt": "carried-over-from-allowlist"
+        },
+        {
+          "id": "claude-sonnet-5",
+          "role": "capable-anthropic",
+          "frontier": true,
+          "pricing": null,
+          "verifiedAt": "carried-over-from-allowlist"
+        }
       ],
       "note": "Primary door. Tier aliases opus/sonnet/haiku auto-resolve to latest and do NOT rot; only concrete claude-*-N ids in topModels are pinned. topModels seeded 1:1 from the reviewed frontierAllowlist (spec D4 carry-over); the first enabled scan re-verifies."
     },
@@ -22,11 +53,48 @@
       "name": "Anthropic headless (claude -p)",
       "accessMethod": "claude -p one-shot (Agent SDK credit pot)",
       "status": "alive",
-      "probe": { "kind": "cli-version", "bin": "claude", "metered": false, "freeDefaultCovered": true },
+      "probe": {
+        "kind": "cli-version",
+        "bin": "claude",
+        "metered": false,
+        "freeDefaultCovered": true
+      },
       "topModels": [
-        { "id": "claude-opus-4-8", "role": "capable-anthropic", "frontier": true, "pricing": null, "verifiedAt": "carried-over-from-allowlist" },
-        { "id": "claude-sonnet-4-6", "role": "balanced-anthropic", "frontier": true, "pricing": null, "verifiedAt": "carried-over-from-allowlist" },
-        { "id": "claude-haiku-4-5", "role": "fast-anthropic", "frontier": true, "pricing": null, "verifiedAt": "carried-over-from-allowlist" }
+        {
+          "id": "claude-opus-4-8",
+          "role": "capable-anthropic",
+          "frontier": true,
+          "pricing": null,
+          "verifiedAt": "carried-over-from-allowlist"
+        },
+        {
+          "id": "claude-sonnet-4-6",
+          "role": "balanced-anthropic",
+          "frontier": true,
+          "pricing": null,
+          "verifiedAt": "carried-over-from-allowlist"
+        },
+        {
+          "id": "claude-haiku-4-5",
+          "role": "fast-anthropic",
+          "frontier": true,
+          "pricing": null,
+          "verifiedAt": "carried-over-from-allowlist"
+        },
+        {
+          "id": "claude-opus-5",
+          "role": "capable-anthropic",
+          "frontier": true,
+          "pricing": null,
+          "verifiedAt": "carried-over-from-allowlist"
+        },
+        {
+          "id": "claude-sonnet-5",
+          "role": "capable-anthropic",
+          "frontier": true,
+          "pricing": null,
+          "verifiedAt": "carried-over-from-allowlist"
+        }
       ],
       "note": "Background/internal calls. Billing shifts to interactive pool after 2026-06-15 per subscriptionPath. topModels seeded from the reviewed frontierAllowlist (spec D4 carry-over)."
     },
@@ -34,12 +102,53 @@
       "name": "Codex CLI",
       "accessMethod": "codex exec (ChatGPT account)",
       "status": "referenced-not-installed",
-      "probe": { "kind": "cli-version", "bin": "codex", "metered": false, "freeDefaultCovered": false },
+      "probe": {
+        "kind": "cli-version",
+        "bin": "codex",
+        "metered": false,
+        "freeDefaultCovered": false
+      },
       "topModels": [
-        { "id": "gpt-5.5", "role": "capable-openai", "frontier": true, "pricing": null, "verifiedAt": "carried-over-from-allowlist" },
-        { "id": "gpt-5.6-sol", "role": "flagship-openai-recognized", "frontier": false, "pricing": { "inPerMtok": 5, "outPerMtok": 30, "currency": "USD" }, "verifiedAt": "2026-07-09" },
-        { "id": "gpt-5.6-terra", "role": "mid-openai-recognized", "frontier": false, "pricing": { "inPerMtok": 2.5, "outPerMtok": 15, "currency": "USD" }, "verifiedAt": "2026-07-09" },
-        { "id": "gpt-5.6-luna", "role": "small-openai-recognized", "frontier": false, "pricing": { "inPerMtok": 1, "outPerMtok": 6, "currency": "USD" }, "verifiedAt": "2026-07-09" }
+        {
+          "id": "gpt-5.5",
+          "role": "capable-openai",
+          "frontier": true,
+          "pricing": null,
+          "verifiedAt": "carried-over-from-allowlist"
+        },
+        {
+          "id": "gpt-5.6-sol",
+          "role": "flagship-openai-recognized",
+          "frontier": false,
+          "pricing": {
+            "inPerMtok": 5,
+            "outPerMtok": 30,
+            "currency": "USD"
+          },
+          "verifiedAt": "2026-07-09"
+        },
+        {
+          "id": "gpt-5.6-terra",
+          "role": "mid-openai-recognized",
+          "frontier": false,
+          "pricing": {
+            "inPerMtok": 2.5,
+            "outPerMtok": 15,
+            "currency": "USD"
+          },
+          "verifiedAt": "2026-07-09"
+        },
+        {
+          "id": "gpt-5.6-luna",
+          "role": "small-openai-recognized",
+          "frontier": false,
+          "pricing": {
+            "inPerMtok": 1,
+            "outPerMtok": 6,
+            "currency": "USD"
+          },
+          "verifiedAt": "2026-07-09"
+        }
       ],
       "note": "codex CLI is NOT installed on this machine (which codex -> not found), yet componentFrameworks routes job/Usher/TopicIntentExtractor to it -> those fall back at runtime. Door-liveness gap flagged to operator. topModels seeded from the reviewed frontierAllowlist (spec D4 carry-over). The GPT-5.6 family (sol/terra/luna) went GA on the codex subscription + was live-verified 2026-07-09 (codex CLI >= 0.144.0 required); it is now RECOGNIZED/spawnable (added to the acceptance allowlists KNOWN_CODEX_MODEL_IDS + CODEX_MODELS_SUBSCRIPTION) but is deliberately NOT promoted to frontier=true / the capable pin here — the capable pin stays gpt-5.5 pending a benchmark-based promotion (a model earns the routing lane via benchmarks, not GA date). The -pro variants are excluded (plan-gated + pricier). Frontier/pin promotion of gpt-5.6-sol is a tracked follow-up."
     },
@@ -47,9 +156,20 @@
       "name": "Gemini CLI",
       "accessMethod": "gemini -m <model> (Homebrew formula, OAuth)",
       "status": "alive-but-deprecated-formula",
-      "probe": { "kind": "cli-version", "bin": "gemini", "metered": false, "freeDefaultCovered": true },
+      "probe": {
+        "kind": "cli-version",
+        "bin": "gemini",
+        "metered": false,
+        "freeDefaultCovered": true
+      },
       "topModels": [
-        { "id": "gemini-3.1-pro-preview", "role": "capable-google", "frontier": true, "pricing": null, "verifiedAt": "carried-over-from-allowlist" }
+        {
+          "id": "gemini-3.1-pro-preview",
+          "role": "capable-google",
+          "frontier": true,
+          "pricing": null,
+          "verifiedAt": "carried-over-from-allowlist"
+        }
       ],
       "note": "Homebrew gemini-cli formula DEPRECATED (upstream-unsupported, disabled 2026-12-18). CLI v0.25.2 still runs. capable tier now pinned to gemini-3.1-pro-preview (verified reachable 2026-07-03 via the gemini CLI / OpenRouter / paid Gemini key); gemini-2.5-pro remains a recognized/spawnable model + capacity fallback (NOT frontier). Migrate off the deprecated formula (npm @google/gemini-cli, or an OpenRouter/pi door). topModels seeded from the reviewed frontierAllowlist (spec D4 carry-over)."
     },
@@ -57,7 +177,13 @@
       "name": "pi CLI",
       "accessMethod": "pi --model <provider>/<id> (multi-provider: openai-codex, openrouter, ...)",
       "status": "alive",
-      "probe": { "kind": "cli-version", "bin": "pi", "metered": false, "vaultKeyName": "metered_openrouter_bench", "freeDefaultCovered": false },
+      "probe": {
+        "kind": "cli-version",
+        "bin": "pi",
+        "metered": false,
+        "vaultKeyName": "metered_openrouter_bench",
+        "freeDefaultCovered": false
+      },
       "topModels": [],
       "note": "Multi-provider consolidation door. Can reach OpenRouter (one door to many frontier models; vault key metered_openrouter_bench present). pi policy DENIES anthropic/claude via openrouter passthrough by default to protect subscription billing. No pin references this door yet, so topModels is empty (no frontier set to derive); the first enabled scan enumerates observed models for operator classification."
     }
@@ -116,5 +242,6 @@
     "pi-cli",
     "openrouter",
     "gemini-direct-api"
-  ]
+  ],
+  "$lastReviewNote": "2026-08-18 review (Echo). Every existing capable/latest PIN was checked and remains a member of its door's frontier set — no pin was changed, so this review alters NO routing behavior. What the review did find: the Anthropic frontier has moved to the Claude 5 family, so claude-opus-5 and claude-sonnet-5 were ADDED as frontier on the claude-code and anthropic-headless doors. claude-opus-4-8 was deliberately LEFT frontier:true rather than demoted: demoting it would fail the drift check for the pins that currently reference it, and re-pointing those pins is a fleet-wide routing decision that belongs in its own change with its own side-effects review — not bundled into an unrelated feature PR. This note is the dated record that the question is open."
 }

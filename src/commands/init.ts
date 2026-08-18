@@ -43,7 +43,7 @@ import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillCo
 import { ensurePrerequisites } from '../core/Prerequisites.js';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
-import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS } from '../core/instarSettingsHooks.js';
+import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDCARD_PRETOOLUSE_HOOKS, ensureInstarWildcardPreToolUseHooks, type SettingsMatcherEntry } from '../core/instarSettingsHooks.js';
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
@@ -4375,6 +4375,12 @@ fi
   // agent has parity with an updated one (migration-parity-hooks guard); a hook
   // that only reaches existing agents is half a feature.
   fs.writeFileSync(path.join(hooksDir, 'analysis-paralysis-guard.js'), migrator.getHookContent('analysis-paralysis-guard'), { mode: 0o755 });
+  // Duplicate-session stand-down muzzle — installed on fresh init as well as via
+  // the migrator so a NEW agent has parity with an updated one (the
+  // migration-parity-hooks guard's soft cap exists precisely to stop the
+  // deferred-install gap widening). Dev-gated dark + fail-open on every
+  // uncertainty, so on a fresh fleet agent it is one config read per tool call.
+  fs.writeFileSync(path.join(hooksDir, 'standdown-guard.js'), migrator.getHookContent('standdown-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'post-action-reflection.js'), migrator.getHookContent('post-action-reflection'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'external-communication-guard.js'), migrator.getHookContent('external-communication-guard'), { mode: 0o755 });
 
@@ -5035,12 +5041,17 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
   // Fresh copies so later settings mutation never touches the shared constants.
   const instarBashHooks = INSTAR_BASH_PRETOOLUSE_HOOKS.map((h) => ({ ...h }));
   const instarMcpHooks = INSTAR_MCP_PRETOOLUSE_HOOKS.map((h) => ({ ...h }));
+  // The `*` (every tool) set — the stand-down muzzle. See instarSettingsHooks.ts
+  // for why a wildcard matcher (and not an enumeration of today's tool names) is
+  // the only shape that stays correct as new tools appear.
+  const instarWildcardHooks = INSTAR_WILDCARD_PRETOOLUSE_HOOKS.map((h) => ({ ...h }));
 
   // PreToolUse: merge instar hooks into existing or create fresh
   if (!hooks.PreToolUse) {
     hooks.PreToolUse = [
       { matcher: 'Bash', hooks: instarBashHooks },
       { matcher: 'mcp__.*', hooks: instarMcpHooks },
+      { matcher: '*', hooks: instarWildcardHooks },
     ];
   } else {
     const preToolUse = hooks.PreToolUse as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
@@ -5073,6 +5084,11 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
         mcpEntry.hooks.push(hook);
       }
     }
+
+    // The `*` matcher goes through the SHARED ensure function — the same one the
+    // existing-agent migrator calls — so the two paths cannot drift (an anti-drift
+    // test asserts both consume it).
+    ensureInstarWildcardPreToolUseHooks(preToolUse as SettingsMatcherEntry[]);
   }
 
   // SessionStart: identity injection on all lifecycle events

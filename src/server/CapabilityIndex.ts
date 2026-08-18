@@ -121,6 +121,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'duplicateSessionStandDown',
+    prefixes: ['/standdown'],
+    description: 'Duplicate-session stand-down (docs/specs/duplicate-session-standdown.md) — when one conversation has live sessions on two machines, the losing copy is asked to go quiet instead of being killed: a PreToolUse hook blocks new tool calls (reads stay open), its sends to the conversation are refused 409 standing-down, and a bounded drained-close retires it once corroborated quiet. Registry First: "why did my tool call get blocked / my send get a 409 / my other copy go quiet?" → GET /standdown (?scope=pool merges machines); an expired (frozen) episode is released ONLY by the operator (dashboard-PIN route). Dev-gated dark on the fleet, dryRun-first even on dev (monitoring.standDown); single-machine agents are a strict no-op; 503 when dark.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.standDownRegistry,
+      endpoints: ['GET /standdown', 'GET /standdown?scope=pool', 'POST /standdown/evaluate', 'POST /standdown/:sessionName/operator-release'],
+    }),
+  },
+  {
     key: 'guardPosture',
     prefixes: ['/guards'],
     description: 'Guard Posture (GUARD-POSTURE-ENDPOINT-SPEC) — read every machine\'s safety-guard flags with HONEST verification-graded states: on-confirmed (live runtime confirms) / on-unverified (config-on only, grey not green) / on-stale (dead tick loop) / on-dry-run (watching but toothless) / off classified dark-default vs diverged-from-default (the load-shed signature — the only off that alerts) / diverged-pending-restart (disk edit not yet live) / errored / missing (expected runtime never registered) / off-runtime-divergent (runtime contradicts an on-config — the in-memory load-shed class). ?scope=pool accounts for EVERY registered machine by name (classified failure rows, never silent omission); the Machines tab shows last-known posture with age even for a dark peer (heartbeat piggyback + durable store). Read-only, always-on (deliberately no enabled gate — an off-switch on the guard-visibility surface would itself be an invisible disabled guard). When asked "are my guards on?" / "why didn\'t the watchdog fire on machine X?" / after any incident load-shed → read this, never guess. To re-enable a guard via PATCH /config, send the guard\'s FULL config block (one-level-deep merge erases sibling tuning).',

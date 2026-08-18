@@ -21,6 +21,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Session } from '../core/types.js';
 import { ReapGuard } from '../core/ReapGuard.js';
+import { CONFIRMED_MOVE_ASSERTION_TTL_MS, validateConfirmedMoveAssertion } from '../core/SessionManager.js';
 import { getActivitySignal } from './frameworkActivitySignals.js';
 import { probeTranscript, transcriptDelta, type TranscriptProbe } from './transcriptProber.js';
 
@@ -124,6 +125,9 @@ export interface SessionReaperConfig {
    *  Ships DARK fleet-wide, LIVE on a dev agent via `resolveDevAgentGate`. When
    *  OFF the closeout's observable behavior is byte-identical to today. */
   closeoutLivenessGate: boolean;
+  /** Ticks a mutual muzzle (or an unresolvable pool view) must persist before the
+   *  tiebreak releases. Mirrors the release hysteresis. */
+  standDownMutualMuzzleGraceTicks: number;
 }
 
 export const DEFAULT_SESSION_REAPER_CONFIG: SessionReaperConfig = {
@@ -154,6 +158,7 @@ export const DEFAULT_SESSION_REAPER_CONFIG: SessionReaperConfig = {
   topicMovedConfirmTicks: 2,
   topicMovedVetoBreakerAttempts: 5,
   closeoutLivenessGate: false,
+  standDownMutualMuzzleGraceTicks: 2,
 };
 
 /** Memory-pressure thresholds (freePct). Kept as constants — the existing
@@ -304,6 +309,57 @@ export interface SessionReaperDeps {
    *  the recent-message bypass when a user message arrived AFTER the liveness
    *  snapshot (the local session the user is actively talking to is kept). */
   recentUserMessageAt?: (topicId: number) => number | null;
+  /** This machine's mesh identity. A GETTER because mesh identity resolves after
+   *  construction. Absent/null ⇒ no stand-down is ever registered (the registry
+   *  refuses without a trusted local identity — fail toward doing nothing). */
+  selfMachineId?: () => string | null;
+  /** The duplicate-session stand-down seam. Absent ⇒ feature dark ⇒ no-op. */
+  standDown?: StandDownSeam;
+  /** Live config read per tick (an edit applies with no restart). */
+  standDownConfig?: () => { enabled: boolean; dryRun: boolean };
+  /** The ownership EPOCH the current verdict rests on — the episode key's third
+   *  component and the only thing that re-admits a latched episode. */
+  ownershipEpochFor?: (topicId: number) => number | null;
+  /** CONTESTED REAL WORK on the local copy. A non-null answer REFUSES
+   *  registration and escalates to the human instead of muzzling: a build is a
+   *  SEQUENCE of tool calls, so a muzzle would freeze it at the first boundary
+   *  rather than let it finish, and suspending an operator's autonomous run is a
+   *  consent-gated decision this machine may not make for them. */
+  contestedWork?: (session: Session, topicId: number) => 'structural-long-work' | 'active-subagent' | 'autonomous-run' | null;
+  /**
+   * Hand a topic's freshest unanswered LOCAL inbound to the durable inbound
+   * queue so the OWNER machine delivers it. Returns true only when the message
+   * was genuinely accepted for delivery.
+   *
+   * Absent, or false, means the message CANNOT be forwarded — and then the
+   * muzzle is RELEASED rather than held, because a muzzle must never outlive the
+   * user's live attention. The durable inbound queue ships dark on the fleet, so
+   * "absent" is the common case, not an edge: releasing is the correct default,
+   * not a fallback.
+   */
+  divertInboundToOwner?: (topicId: number, ownerMachineId: string) => boolean;
+  /**
+   * Is EVERY live copy of this conversation across the pool muzzled? `null` =
+   * could not determine (stale/partitioned membership). Absent ⇒ no pool view ⇒
+   * the tiebreak never fires.
+   */
+  everyLiveCopyMuzzled?: (topicId: number) => Promise<boolean | null>;
+  /** Claim a per-episode notice budget for ONE channel (the registry owns them,
+   *  one budget per channel so the two audiences cannot silence each other). */
+  claimStandDownNotice?: (sessionName: string, channel: 'session' | 'user') => boolean;
+  /** Inject a line into a session's tmux pane. */
+  injectNotice?: (tmuxSession: string, text: string) => void;
+  /** ONE deduped attention item for a stand-down escalation. Distinct from the
+   *  existing `raiseAttention` (whose shape the busy-orphan path owns) so the
+   *  stand-down's priority is explicit at the callsite. */
+  raiseStandDownAttention?: (item: { id: string; title: string; summary: string; description?: string; priority?: 'medium' | 'high' }) => void;
+  /** Can this session's drain be PROVEN at all (framework capability)? False /
+   *  absent ⇒ the entry takes the shorter TTL and rides the attention path
+   *  rather than pretending it drained. Cheap by construction — no probing. */
+  drainProvable?: (session: Session) => boolean;
+  /** The corroborated drain observations for a muzzled session. Absent ⇒ drain
+   *  is unprovable for this framework ⇒ the entry rides the TTL/attention path. */
+  drainObservations?: (session: Session, drainBoundaryAt: number) => import('../core/standDownDrain.js').DrainObservations | null;
   /** WS1.3: does the topic's placement PIN name THIS machine? A pin-conflict
    *  (pin=here, owner=elsewhere) means the divergence is reconciling TOWARD us —
    *  the closeout holds (do-not-act) instead of attacking the session the pin
@@ -339,6 +395,10 @@ export interface SessionReaperDeps {
        *  ONLY on a liveness-CONFIRMED genuine move so a duplicate leftover with a
        *  pre-move "recent" message can shed. */
       bypassRecentUserMessageForConfirmedMove?: boolean;
+      /** The DRAINED close of a duplicate-session stand-down. A CLAIM the
+       *  authority verifies against its own registry probe before applying its
+       *  OWN frozen three-reason bypass list — this side never names reasons. */
+      standDownDrainedClose?: boolean;
       /** Trusted closeout assertion. This option reaches only the birth-bound
        *  SessionManager authority closure held by production boot wiring. */
       localPostTransferCloseout?: boolean;
@@ -394,9 +454,69 @@ export interface Obs {
  *     WITHHOLD / pin-conflict episodes (audited once; never confirms terminate);
  *     `lastSeenAt` lets the GC grace window evict a held topic uniformly.
  */
+/**
+ * The narrow seam the reaper drives the duplicate-session stand-down through
+ * (docs/specs/duplicate-session-standdown.md). Deliberately a small interface
+ * rather than the StandDownRegistry class: the reaper is a PRODUCER of verdicts,
+ * not an owner of the registry, and this shape is what a test can fake.
+ *
+ * Absent (`undefined`) ⇒ the feature is dark ⇒ every stand-down path below is a
+ * strict no-op and the closeout behaves byte-identically to today.
+ */
+/** The projection of a stand-down entry the reaper needs. Deliberately a subset
+ *  of the registry's own type: the reaper reads state, it never owns it. */
+export interface StandDownSeamEntry {
+  sessionName: string;
+  topicId: number;
+  ownerMachineId: string;
+  state: string;
+  dryRun: boolean;
+  expiresAt: number;
+  issuedAt: number;
+  drainBoundaryAt: number;
+  lastDrainObservedAt: number;
+  lastEvaluateAt: number | null;
+}
+
+export interface StandDownSeam {
+  register(req: {
+    sessionName: string; topicId: number; ownerMachineId: string; ownershipEpoch: number;
+    reason: string; dryRun: boolean; drainUnprovable?: boolean;
+  }, actualLocalMachineId: string | null): { ok: true; created: boolean } | { ok: false; refusal: string };
+  entryFor(sessionName: string): StandDownSeamEntry | null;
+  liveEntries(): StandDownSeamEntry[];
+  observeDrain(sessionName: string, drained: boolean, observedAt?: number): boolean;
+  markClosed(sessionName: string): void;
+  /** Remove an entry whose session vanished — NOT a retirement; no closed-episode row. */
+  dropVanished(sessionName: string): void;
+  closedEpisodeCount(topicId: number): number;
+  closedEpisodeChurnThreshold(): number;
+  reverify(sessionName: string, ok: boolean, why: string): 'held' | 'released';
+  /** Release NOW, bypassing the re-verify hysteresis. Used only where the
+   *  release signal is unambiguous (a live user message this copy holds). */
+  release(sessionName: string, why: string, opts?: { armLatch?: boolean }): void;
+  expire(sessionName: string): unknown;
+  refreshMarker(): void;
+  recordCanaryHit(sessionName: string, detail: string): void;
+  health(): { due: boolean; expiredEpisodes: number; canaryHits: number; liveEntries: number; latches: number; degradedBoot: boolean };
+  claimLatchAttention(): Array<{ episodeId: string; sessionName: string; topicId: number; blockedAttempts: number }>;
+  pruneLatches(currentEpochByTopic: Map<number, number>): number;
+}
+
 export type TopicMovedStreakValue =
   | number // OFF-mode legacy (plain count, or -1 held sentinel)
-  | { kind: 'counting'; count: number; lastTrueReachableAt: number; lastSeenAt: number }
+  | {
+    kind: 'counting';
+    count: number;
+    lastTrueReachableAt: number;
+    lastSeenAt: number;
+    /** The owner the dwell has been accumulating AGAINST (predecessor round-4
+     *  finding 7, fixed here). Without it a topic that moved A→B and then B→C
+     *  carries B's confirmations into C's episode, so the closeout could act on
+     *  a dwell that was never established for the CURRENT owner. An owner change
+     *  resets the count to 1 — the new episode starts clean. */
+    ownerMachineId?: string;
+  }
   | { kind: 'held'; lastSeenAt: number };
 
 export class SessionReaper extends EventEmitter {
@@ -836,7 +956,11 @@ export class SessionReaper extends EventEmitter {
       const prior = this.topicMovedStreak.get(key);
       let count: number;
       let lastTrueReachableAt: number;
-      if (typeof prior === 'object' && prior.kind === 'counting') {
+      if (typeof prior === 'object' && prior.kind === 'counting'
+        // An OWNER CHANGE starts a new episode: confirmations accumulated against
+        // a DIFFERENT owner say nothing about this one, and the stand-down
+        // registration reuses this dwell as its admission evidence.
+        && (prior.ownerMachineId === undefined || prior.ownerMachineId === owner.machineId)) {
         if (reachableAt > prior.lastTrueReachableAt) {
           count = prior.count + 1;
           lastTrueReachableAt = reachableAt;
@@ -850,7 +974,7 @@ export class SessionReaper extends EventEmitter {
         count = 1;
         lastTrueReachableAt = reachableAt;
       }
-      this.topicMovedStreak.set(key, { kind: 'counting', count, lastTrueReachableAt, lastSeenAt: now });
+      this.topicMovedStreak.set(key, { kind: 'counting', count, lastTrueReachableAt, lastSeenAt: now, ownerMachineId: owner.machineId });
 
       if (count >= this.cfg.topicMovedConfirmTicks) {
         const reason = `topic moved to ${owner.displayName} — closing the leftover session on this machine (post-transfer closeout)`;
@@ -864,6 +988,8 @@ export class SessionReaper extends EventEmitter {
           session, otherOwner: owner.displayName, reason, streak: count,
           key, reapedThisTick, bypassRecentForMove,
           confirmedMove: true, snapshotReachableAt: reachableAt,
+          ownerMachineId: owner.machineId,
+          standDownEvidence: { reachableAt, lastUserMessageAt: lastUserMsgAt, dwellTicks: count },
         });
       }
       return { terminated: false, reapedThisTick };
@@ -876,6 +1002,557 @@ export class SessionReaper extends EventEmitter {
       this.topicMovedVetoes.delete(key);
     }
     return { terminated: false, reapedThisTick };
+  }
+
+  /**
+   * Register a stand-down for a duplicate the closeout could not take.
+   *
+   * REFUSALS COME FIRST, and they are the honest half of this design. Contested
+   * REAL work is the human's call, immediately: a build is a SEQUENCE of tool
+   * calls, so muzzling it would freeze it at the first boundary rather than let
+   * it finish (v1's "it finishes muzzled" was self-contradictory); and
+   * suspending an operator's autonomous run is a CONSENT-GATED decision — the
+   * transfer path's suspend primitive answers 409 needsConfirmation for exactly
+   * this reason, so auto-invoking it here would mint an authority nobody granted.
+   * Both refuse, raise ONE attention item, and create NO entry — which also
+   * means no muzzle and therefore no Stop-hook/stand-down deadlock. The cost is
+   * the one this spec accepts everywhere: contested real work waits for a human.
+   */
+  #registerStandDown(
+    session: Session,
+    ownerMachineId: string | undefined,
+    otherOwner: string,
+    evidence: { reachableAt: number; lastUserMessageAt: number | null; dwellTicks: number } | undefined,
+    skipped?: string,
+  ): void {
+    const seam = this.#deps.standDown;
+    if (!seam || !ownerMachineId) return;
+    const gate = (() => {
+      try { return this.#deps.standDownConfig?.() ?? { enabled: false, dryRun: true }; }
+      catch { return { enabled: false, dryRun: true }; /* @silent-fallback-ok — config unreadable ⇒ feature OFF + dryRun (strictly less action) */ }
+    })();
+    if (!gate.enabled) return;
+
+    const topicId = (() => {
+      try { return this.#deps.topicBinding(session.tmuxSession); } catch { return null; /* @silent-fallback-ok — no binding ⇒ no registration (fail toward doing nothing) */ }
+    })();
+    if (topicId == null) return;
+
+    // The operator's never-touch list wins here exactly as it wins at the
+    // terminate authority. Without this, a protected session gets its tools
+    // blocked and its voice 409'd, can never be drain-closed (`protected` is in
+    // DRAINED_CLOSE_NEVER_BYPASSED), and rides the TTL into the frozen state
+    // awaiting an operator ack — a strictly worse outcome than the duplicate,
+    // reached by ignoring the one list that exists to say "not this one".
+    const isProtected = (() => {
+      try { return this.#deps.protectedSessions().includes(session.tmuxSession); } catch { return true; /* @silent-fallback-ok — cannot read the never-touch list ⇒ treat as protected ⇒ refuse to muzzle */ }
+    })();
+    if (isProtected) {
+      this.audit('standdown-refused', session, { rule: 'topic-moved-away', otherOwner, refusal: 'protected' });
+      return;
+    }
+
+    // Contested real work → refuse + escalate. Never a muzzle.
+    const contested = (() => {
+      try { return this.#deps.contestedWork?.(session, topicId) ?? null; } catch { return null; /* @silent-fallback-ok — the composition root maps its own read failure to 'contested' already; a null here defers to the validated admission bar */ }
+    })();
+    if (contested) {
+      this.audit('standdown-refused', session, { rule: 'topic-moved-away', otherOwner, refusal: contested });
+      this.#deps.raiseStandDownAttention?.({
+        id: `standdown-contested:${topicId}:${contested}`,
+        priority: 'high',
+        title: `Two machines are serving topic ${topicId} and this one is doing real work`,
+        summary: contested === 'autonomous-run'
+          ? 'A duplicate copy on this machine is running an autonomous job — your call.'
+          : 'A duplicate copy on this machine holds live work — your call.',
+        description: `The conversation for topic ${topicId} is being served on ${otherOwner}, but this machine also has a live session for it that is genuinely working (${contested}). Nothing has been stopped: stopping it is your decision, not mine. Either let this work finish and it will retire itself, or move/stop it deliberately.`,
+      });
+      return;
+    }
+
+    const epoch = (() => {
+      try { return this.#deps.ownershipEpochFor?.(topicId) ?? null; } catch { return null; /* @silent-fallback-ok — no epoch ⇒ no episode key ⇒ no entry */ }
+    })();
+    // No epoch ⇒ no episode key ⇒ no entry. The episode latch is the only thing
+    // standing between an undiagnosed creation cause and an unbounded
+    // register/release cycle, so an entry that cannot be keyed is not created.
+    if (epoch == null) return;
+
+    const selfId = (() => {
+      try { return this.#deps.selfMachineId?.() ?? null; } catch { return null; /* @silent-fallback-ok — unknown identity ⇒ the admission validator refuses (local-identity-unknown) */ }
+    })();
+
+    // ── The single admission bar (spec Frontloaded Decision 5) ──
+    // The closeout's upstream gate already established ownership + confirmed
+    // remote liveness + the dwell, but "upstream established it" is a claim
+    // about a call chain, not a check. Routing registration through the
+    // predecessor's hardened validator makes the evidence CHECKABLE at the point
+    // of use: trusted local identity (not self-report), self-is-owner, the
+    // freshest-interaction invariant (`lastUserMessageAt <= reachableAt`), the
+    // dwell against the threshold in force, and — the leg nothing else covers —
+    // the AGE of the liveness proof itself, so a snapshot that went stale while
+    // the owner died cannot admit a muzzle. Every refusal is named and refuses.
+    if (!evidence) return;
+    const assertion = {
+      sessionId: session.id,
+      topicId,
+      ownerMachineId,
+      selfMachineId: selfId ?? '',
+      reachableAt: evidence.reachableAt,
+      lastUserMessageAt: evidence.lastUserMessageAt,
+      dwellTicks: evidence.dwellTicks,
+      requiredConfirmTicks: this.cfg.topicMovedConfirmTicks,
+      expiresAt: this.now() + CONFIRMED_MOVE_ASSERTION_TTL_MS,
+    };
+    const validated = validateConfirmedMoveAssertion(assertion, this.now(), selfId, session.id);
+    if (!validated.ok) {
+      this.audit('standdown-refused', session, { rule: 'topic-moved-away', otherOwner, refusal: validated.refusal });
+      return;
+    }
+
+    // Whether this framework can PROVE drain decides the TTL, not whether the
+    // muzzle applies: a non-claude duplicate is muzzled on VOICE immediately and
+    // routes to the TTL/attention path rather than pretending it drained.
+    //
+    // Asked PER SESSION, not by dep presence. Testing `!this.#deps.drainObservations`
+    // was always false in production (the composition root always supplies the
+    // dep; it returns null per-call for a framework it cannot probe), so the
+    // shorter TTL and its config key were dead code and every entry took the full
+    // 60 minutes.
+    // Answered by the framework's CAPABILITY, not by running the whole drain
+    // probe and discarding it — that probe is a tmux capture, a full process
+    // listing and a 512KB transcript read, and it was being paid on every
+    // registration attempt purely to test null-ness.
+    const drainUnprovable = (() => {
+      try { return this.#deps.drainProvable?.(session) !== true; } catch { return true; /* @silent-fallback-ok — capability unreadable ⇒ unprovable ⇒ shorter TTL + attention path */ }
+    })();
+
+    const result = seam.register({
+      sessionName: session.tmuxSession,
+      topicId,
+      ownerMachineId,
+      ownershipEpoch: epoch,
+      reason: `duplicate session — topic served on ${ownerMachineId}${skipped ? ` (closeout held by ${skipped})` : ''}`,
+      dryRun: gate.dryRun,
+      drainUnprovable,
+    }, selfId);
+
+    if (result.ok && result.created) {
+      this.audit('standdown-registered', session, {
+        rule: 'topic-moved-away', otherOwner, ownerMachineId, dryRun: gate.dryRun, drainUnprovable,
+      });
+    } else if (!result.ok && result.refusal !== 'already-registered') {
+      this.audit('standdown-refused', session, { rule: 'topic-moved-away', otherOwner, refusal: result.refusal });
+    }
+  }
+
+  /**
+   * The per-tick stand-down maintenance pass: re-verify, drain, close, expire.
+   *
+   * Order matters. RE-VERIFY runs FIRST — the agreement invariant is that an
+   * entry may exist only while the record names a different owner AND that owner
+   * holds a live session, and a released entry must not then be drained or
+   * closed on the strength of a verdict that no longer holds.
+   */
+  async #standDownTick(sessions: Session[]): Promise<Set<string>> {
+    /** Sessions this pass CLOSED. The caller skips them for the rest of the tick:
+     *  the session list was captured at the top of the tick, so without this the
+     *  closeout would re-attempt a terminate on a session that is already gone,
+     *  get `already-terminal`, and register a fresh stand-down entry for a dead
+     *  session — one wasted register/close cycle and a misleading audit row per
+     *  drained close. */
+    const closed = new Set<string>();
+    const seam = this.#deps.standDown;
+    if (!seam) return closed;
+    const gate = (() => {
+      try { return this.#deps.standDownConfig?.() ?? { enabled: false, dryRun: true }; }
+      catch { return { enabled: false, dryRun: true }; /* @silent-fallback-ok — config unreadable ⇒ feature OFF + dryRun (strictly less action) */ }
+    })();
+    if (!gate.enabled) return closed;
+
+    const entries = seam.liveEntries();
+    // NOTE the ordering: the episode-level escalations at the bottom of this
+    // method must run even when there are NO live entries. A latched episode's
+    // whole point is that its entry was RELEASED — deleted from the map — so
+    // returning early on an empty map made the "a released-then-latched live
+    // duplicate is never invisible" guarantee unreachable in exactly the state it
+    // exists for. Same for the health item after an operator release.
+    if (entries.length > 0) {
+      // A deleted or corrupted marker between transitions would silently lift the
+      // muzzle until the next one, so it is refreshed while entries exist.
+      seam.refreshMarker();
+    }
+
+    const byName = new Map(sessions.map((s) => [s.tmuxSession, s]));
+    const now = this.now();
+
+    for (const entry of entries) {
+      const session = byName.get(entry.sessionName);
+      // The session is gone — closed by another path, or merely absent for a
+      // tick while it restarts. The entry has nothing left to muzzle either way,
+      // and no latch is armed (a future genuine duplicate stays admissible).
+      //
+      // But this is NOT a retirement, and recording it as one manufactured churn
+      // evidence for work the stand-down never did: a session bouncing through a
+      // restart would inflate the "this topic keeps producing duplicates" count
+      // toward an attention item about a retirement that never happened.
+      if (!session) { seam.dropVanished(entry.sessionName); this.#standDownLastDrainReason.delete(entry.sessionName); continue; }
+
+      // ── 1. The agreement invariant ──
+      const stillOwnedElsewhere = (() => {
+        try {
+          const owner = this.#deps.topicOwnerElsewhereInfo?.(entry.topicId) ?? null;
+          if (!owner || owner.machineId !== entry.ownerMachineId) return false;
+          const liveness = this.#deps.remoteOwnerHasLiveSession?.(entry.topicId, entry.ownerMachineId) ?? { state: 'unknown' as const };
+          return liveness.state === true;
+        } catch { return false; /* @silent-fallback-ok — unreadable ownership/liveness ⇒ a FAILED verify leg ⇒ hysteresis-then-RELEASE (reachability wins) */ }
+      })();
+      if (seam.reverify(entry.sessionName, stillOwnedElsewhere, 'ownership-or-liveness-leg-failed') === 'released') {
+        this.audit('standdown-released', session, { rule: 'topic-moved-away', topicId: entry.topicId });
+        continue;
+      }
+
+      // ── 1b. RELEASE-OR-DIVERT: the user is demonstrably addressing THIS copy ──
+      // The scenario that CREATES a duplicate is routing divergence, so the
+      // muzzled copy holding the user's freshest message is the EXPECTED case,
+      // not an edge. Reachability wins: if the message can be handed to the
+      // owner it is diverted and the muzzle holds; if it cannot — including when
+      // the durable inbound queue is simply dark on this machine, which is the
+      // fleet default — the entry is RELEASED and this copy answers. A muzzle
+      // must never outlive the user's live attention.
+      const freshLocalInbound = (() => {
+        try {
+          const at = this.#deps.recentUserMessageAt?.(entry.topicId) ?? null;
+          return at != null && at > entry.issuedAt;
+        } catch { return false; /* @silent-fallback-ok — history unreadable ⇒ no divert/release trigger; the reverify + TTL paths still bound the muzzle */ }
+      })();
+      if (freshLocalInbound) {
+        const diverted = (() => {
+          try { return this.#deps.divertInboundToOwner?.(entry.topicId, entry.ownerMachineId) === true; }
+          catch { return false; /* @silent-fallback-ok — a failed divert must read as NOT diverted ⇒ immediate release (the user is waiting) */ }
+        })();
+        if (!diverted) {
+          // Release IMMEDIATELY, NOT through the hysteresis. The hysteresis
+          // exists to absorb a flapping peer signal; a person waiting on an
+          // answer is not a flap, and making them wait two ticks for a signal
+          // that is already unambiguous would be the muzzle outliving its reason.
+          seam.release(entry.sessionName, 'fresh-local-inbound-undivertable');
+          this.audit('standdown-released', session, { rule: 'standdown', topicId: entry.topicId, why: 'fresh-local-inbound' });
+          continue;
+        }
+        // Diverted: the user hears from the owner. ONE per-episode notice tells
+        // them which machine is answering (claimed inside the registry's budget).
+        if (this.#deps.standDown?.entryFor(entry.sessionName)) this.#injectStandDownNotice(session, entry);
+      }
+
+      // ── 2. TTL. BOTH enforcement halves persist past expiry; what changes is
+      //    that the human is now in the loop and the drain clock stops. ──
+      if (entry.state !== 'expired' && now > entry.expiresAt) {
+        seam.expire(entry.sessionName);
+        if (!entry.dryRun) {
+          // dryRun entries reaching TTL are the EXPECTED state (nothing is
+          // blocked, so the session keeps working) — paging the operator with an
+          // enforcement-shaped alarm about an observe-only mode is noise.
+          this.#deps.raiseStandDownAttention?.({
+            id: `standdown-expired:${entry.topicId}:${entry.sessionName}`,
+            priority: 'high',
+            title: `A duplicate session for topic ${entry.topicId} never went quiet`,
+            summary: 'It has been asked to stand down for the full window and is now frozen, awaiting your call.',
+            description: `Topic ${entry.topicId} is being served on ${entry.ownerMachineId}. The duplicate copy on this machine (${entry.sessionName}) was asked to stand down but never finished what it was holding. It is now frozen — it cannot start work and cannot send — and nothing has been destroyed. Tell me to release it and it resumes, or close it from the dashboard.`,
+          });
+        }
+        continue;
+      }
+      if (entry.state === 'expired') continue; // frozen, awaiting the human
+
+      // ── ONE observation per entry per tick, shared by the canary and the
+      //    drain verdict. Each call is a tmux capture, a full host process
+      //    listing and a 512KB transcript read; taking it twice doubled that
+      //    cost per muzzled entry for no new information.
+      //
+      //    Windowed from the LAST OBSERVATION, not the fixed registration
+      //    boundary — see analyseTranscriptSinceBoundary for why a fixed
+      //    boundary makes "grew" monotonic and drain unreachable. Consecutive
+      //    clean windows are what establish drain, which is also what lets the
+      //    in-flight step the muzzle deliberately allows land in one window and
+      //    be gone by the next.
+      const obs = (() => {
+        try { return this.#deps.drainObservations?.(session, entry.lastDrainObservedAt) ?? null; } catch { return null; /* @silent-fallback-ok — unprobeable ⇒ NOT drained ⇒ the entry waits */ }
+      })();
+
+      // ── 1c. The impossible-state canary (the ONE reachable leg) ──
+      // A live ENFORCING entry whose session is COMPLETING tool calls while
+      // making zero evaluate calls is the signature of a lifted, deleted, or
+      // bypassed marker file. Nothing else can see it: the server never hears
+      // about a call the hook short-circuited, so the absence of evaluate traffic
+      // is the only observable. Checked BEFORE the drain legs, because the same
+      // completed-call evidence would otherwise just read as "not drained".
+      if (!entry.dryRun && entry.state !== 'expired') {
+        // `calls` is the count for THIS observation window (about one tick),
+        // not a cumulative total since registration. That matters: a cumulative
+        // count keeps the compliant sequence — one blocked call, model complies,
+        // session idles — permanently non-zero, so the canary would report the
+        // SUCCESS case as a bypass ten minutes later, which is how a health
+        // alarm earns the right to be ignored. The bypass signature is work
+        // completing RECENTLY while the guard has not been consulted for a long
+        // time, and that is what the two conditions below say together.
+        const calls = obs?.nonAllowlistedCallsSinceBoundary ?? 0;
+        const lastEval = entry.lastEvaluateAt;
+        const evalWindowMs = 10 * 60_000;
+        // `lastEval != null` is required: a compliant session never calls
+        // evaluate at all, so firing without evidence the guard was ACTUALLY
+        // engaged would flag the designed happy path as a bypass.
+        if (calls > 0 && lastEval != null && now - lastEval > evalWindowMs) {
+          seam.recordCanaryHit(entry.sessionName, `${calls} non-allowlisted call(s) completed with no evaluate traffic in ${Math.round(evalWindowMs / 60_000)}m`);
+        }
+      }
+
+
+
+      // ── 3. Drain, corroborated (P20). No observations ⇒ unprovable framework
+      //    ⇒ never "drained"; the entry rides its shorter TTL to the human.
+      //
+      // The corroborated drain is the ENTIRE justification for crossing
+      // active-process + recent-user-message + open-commitment, so anything that
+      // weakens this predicate is the blanket activeness bypass wearing this
+      // feature's name. It has been weakened twice by accident already (once by
+      // passing the tick clock as the window, once by counting requested rather
+      // than completed calls), which is why the window and the counter both
+      // carry their reasoning where they are computed. ──
+      if (!obs) continue;
+      const { evaluateDrain } = await import('../core/standDownDrain.js');
+      const verdict = evaluateDrain(obs);
+      const drained = seam.observeDrain(entry.sessionName, verdict.drained, now);
+      // The verdict's REASON is the operator's evidence for the dryRun→enforce
+      // flip ("is this predicate converging, or is it stuck on one leg?"), and
+      // splitting pane-busy from unknown-pane buys nothing unless something
+      // writes it down. Logged on CHANGE, not per tick — the reaper's own
+      // decision-audit convention (auditability without per-tick spam).
+      const reasonNow = verdict.drained ? 'drained' : verdict.reason;
+      if (this.#standDownLastDrainReason.get(entry.sessionName) !== reasonNow) {
+        this.#standDownLastDrainReason.set(entry.sessionName, reasonNow);
+        this.audit('standdown-drain-verdict', session, {
+          rule: 'standdown', topicId: entry.topicId, reason: reasonNow,
+        });
+      }
+      if (!drained) continue;
+
+      // ── 4. The drained close — the ONE declared carve-out. ──
+      if (await this.#drainedClose(session, entry, gate.dryRun)) {
+        closed.add(session.id);
+        // A clean close deliberately arms NO latch (that episode ended
+        // correctly), so an undiagnosed creation cause can produce a
+        // spawn → register → drain → close CYCLE. It is bounded and visible
+        // rather than braked — each turn of it costs a full dwell plus a full
+        // drain, so it is tens of minutes, not seconds — but "bounded and
+        // visible" is only true if something actually looks. This is that.
+        const churn = seam.closedEpisodeCount(entry.topicId);
+        if (churn > seam.closedEpisodeChurnThreshold()) {
+          this.#deps.raiseStandDownAttention?.({
+            id: `standdown-churn:${entry.topicId}`,
+            priority: 'medium',
+            title: `Topic ${entry.topicId} keeps producing duplicate sessions`,
+            summary: `${churn} duplicate copies have been retired on this machine in the last day — each one cleanly, but something keeps creating them.`,
+            description: `A duplicate session for topic ${entry.topicId} has been stood down and retired ${churn} times in 24 hours. Each retirement worked correctly and nothing was lost, so this is not a failure of the retirement — it is a signal that whatever creates the duplicate has not been diagnosed. Worth looking at the creation cause rather than the cleanup.`,
+          });
+        }
+      }
+    }
+
+    // ── Anti-mutual-muzzle tiebreak ──
+    // The asymmetric admission check (`self-is-owner`) means a mutual muzzle
+    // needs BOTH machines' ownership records wrong at once — rare, but it is the
+    // one state where cooperative quiescence silences the whole agent. The pool
+    // read fires ONLY when local entries exist, so an empty registry costs zero
+    // peer HTTP (the steady state on every machine).
+    //
+    // Chosen deterministically WHEN both sides hold the same view: the copy on
+    // the lexicographically-lowest machine id releases and serves. Under
+    // stale/partitioned membership the two sides may compute different live-copy
+    // sets, so release-on-uncertainty governs after the grace ticks and two
+    // voices become possible — the stated tradeoff. At-least-one-voice beats
+    // at-most-one-voice, because failing toward silence turns a partition into
+    // an unreachable agent.
+    if (this.#deps.everyLiveCopyMuzzled) {
+      const selfId = (() => { try { return this.#deps.selfMachineId?.() ?? null; } catch { return null; /* @silent-fallback-ok — unknown identity ⇒ tiebreak treats as not-lowest, releases only on the uncertainty rule */ } })();
+      // Prune streaks for topics that no longer have an entry — otherwise a key
+      // whose entry was released mid-streak stays resident for the process
+      // lifetime. Small, but an unbounded map is an unbounded map.
+      const liveTopics = new Set(seam.liveEntries().map((e) => e.topicId));
+      for (const t of [...this.#mutualMuzzleStreak.keys()]) if (!liveTopics.has(t)) this.#mutualMuzzleStreak.delete(t);
+      for (const entry of seam.liveEntries()) {
+        if (entry.state === 'closed' || entry.state === 'released') continue;
+        // An EXPIRED entry is the human-arbitered state: both halves stay
+        // enforced and only the PIN-gated operator release clears it. Letting
+        // two ticks of an UNRESOLVABLE peer read lift it would hand the machine
+        // exactly the authority the freeze exists to withhold.
+        if (entry.state === 'expired') continue;
+        const allMuzzled = await (async () => {
+          try { return await this.#deps.everyLiveCopyMuzzled!(entry.topicId); } catch { return null; /* @silent-fallback-ok — pool view unreadable ⇒ UNKNOWN ⇒ release-on-uncertainty after grace, latch NOT armed */ }
+        })();
+        const streak = (this.#mutualMuzzleStreak.get(entry.topicId) ?? 0);
+        if (allMuzzled === false) { this.#mutualMuzzleStreak.delete(entry.topicId); continue; }
+        // `true` (confirmed mutual muzzle) and `null` (cannot tell) BOTH advance
+        // toward release: uncertainty must never leave the agent silent.
+        const next = streak + 1;
+        this.#mutualMuzzleStreak.set(entry.topicId, next);
+        if (next < this.cfg.standDownMutualMuzzleGraceTicks) continue;
+        this.#mutualMuzzleStreak.delete(entry.topicId);
+        // Deterministic winner: the lowest machine id speaks. The bias (the same
+        // machine always wins, including when its own bad record caused the
+        // episode) is acceptable only because every mutual-muzzle episode raises
+        // an attention item — a human sees each one.
+        const iAmLowest = selfId != null && entry.ownerMachineId > selfId;
+        if (iAmLowest || allMuzzled === null) {
+          const confirmed = allMuzzled === true;
+          seam.release(
+            entry.sessionName,
+            confirmed ? 'mutual-muzzle-tiebreak' : 'mutual-muzzle-uncertain',
+            // An UNRESOLVABLE read adjudicated nothing, so it must not arm the
+            // episode latch — the same rule the two send arms already follow.
+            // Latching here meant one unreadable peer permanently disabled a
+            // legitimate muzzle for that epoch.
+            { armLatch: confirmed },
+          );
+          // The alarm claims a specific fact ("both machines went quiet"). Only
+          // raise it when that fact was actually established; an unresolvable
+          // peer read is a release for safety, not evidence of a mutual muzzle,
+          // and telling the operator otherwise is a false report.
+          if (confirmed) {
+            this.#deps.raiseStandDownAttention?.({
+              id: `standdown-mutual-muzzle:${entry.topicId}`,
+              priority: 'high',
+              title: `Both machines went quiet on topic ${entry.topicId}`,
+              summary: 'Each thought the other was serving it. I have resumed answering here so you are not left without a reply.',
+              description: `For topic ${entry.topicId}, this machine and ${entry.ownerMachineId} each recorded the OTHER as the owner, so both copies went quiet — which would have left you with no answer at all. I have resumed on this machine. The underlying disagreement about who owns that conversation is worth a look.`,
+            });
+          } else {
+            this.audit('standdown-released', { id: entry.sessionName, name: entry.sessionName, tmuxSession: entry.sessionName } as Session, {
+              rule: 'standdown', topicId: entry.topicId, why: 'mutual-muzzle-uncertain',
+            });
+          }
+        }
+      }
+    }
+
+    // ── Episode-level escalations, once per episode by construction ──
+    // A LATCHED episode whose producers keep re-attempting means a duplicate is
+    // live and un-muzzled: the latch is doing its P19 job, but silently, and a
+    // released-then-latched live duplicate must never be invisible.
+    for (const latch of seam.claimLatchAttention()) {
+      this.#deps.raiseStandDownAttention?.({
+        id: `standdown-latched:${latch.topicId}`,
+        priority: 'high',
+        title: `Topic ${latch.topicId} keeps looking like a duplicate`,
+        summary: `I've stopped re-asking that copy to stand down after ${latch.blockedAttempts} attempts — something keeps re-creating it.`,
+        description: `A session for topic ${latch.topicId} on this machine has repeatedly been judged a duplicate, but each stand-down was released or expired, so I stopped re-issuing it (that brake is deliberate — otherwise it would loop). The duplicate is likely still there. Worth looking at why the copy keeps being created.`,
+      });
+    }
+
+    // The standdown-health trigger. Expiry means the cooperative primitive did
+    // not converge; a canary hit means enforcement was silently lifted. Both are
+    // "a human should look at this", neither is an emergency.
+    const health = seam.health();
+    if (health.due && !this.#standDownHealthRaised) {
+      this.#standDownHealthRaised = true;
+      this.#deps.raiseStandDownAttention?.({
+        id: 'standdown-health',
+        priority: 'medium',
+        title: 'The duplicate stand-down needs a look',
+        summary: health.canaryHits > 0
+          ? 'A muzzled session kept working — the guard may not be in effect.'
+          : `${health.expiredEpisodes} duplicate sessions were asked to stand down and never went quiet.`,
+        description: `Over the last week: ${health.expiredEpisodes} stand-down(s) reached their time limit without the session going quiet, and ${health.canaryHits} case(s) where a session that should have been held was still completing work. Nothing was destroyed in either case. This is the signal that the cooperative approach is not converging here and is worth a look.`,
+      });
+    } else if (!health.due) {
+      this.#standDownHealthRaised = false;
+    }
+
+    // Latches keyed on a superseded epoch are dead weight.
+    try {
+      const epochs = new Map<number, number>();
+      for (const s of sessions) {
+        const t = this.#deps.topicBinding(s.tmuxSession);
+        if (t == null) continue;
+        const e = this.#deps.ownershipEpochFor?.(t);
+        if (e != null) epochs.set(t, e);
+      }
+      seam.pruneLatches(epochs);
+    } catch { /* @silent-fallback-ok — pruning is housekeeping; a failure just delays it */ }
+
+    return closed;
+  }
+
+  /** Whether the once-per-condition standdown-health item is currently raised. */
+  #standDownHealthRaised = false;
+  /** Consecutive ticks a topic has looked mutually-muzzled (or unresolvable).
+   *  Mirrors the release hysteresis: a single stale membership read must not
+   *  break a legitimate muzzle. */
+  #mutualMuzzleStreak = new Map<number, number>();
+  /** Last audited drain-verdict reason per muzzled session — change-only audit. */
+  #standDownLastDrainReason = new Map<string, string>();
+
+  /**
+   * The ONE injected tmux notice per episode. Injected into the MUZZLED session
+   * rather than sent to the user: the user hears from the owner machine, and
+   * this copy's own send path is refused by construction. The registry owns the
+   * per-episode budget and suppresses it entirely in dryRun.
+   */
+  #injectStandDownNotice(session: Session, entry: { sessionName: string; ownerMachineId: string }): void {
+    try {
+      // The TMUX channel's own budget. It is deliberately distinct from the
+      // user-facing standby line's: sharing one budget meant whichever fired
+      // first permanently silenced the other, so a divert could leave the user
+      // with nothing at all — the opposite of the "one honest line" this design
+      // promises.
+      if (!this.#deps.claimStandDownNotice?.(entry.sessionName, 'session')) return;
+      this.#deps.injectNotice?.(
+        session.tmuxSession,
+        `This session is standing down: the conversation and its work continue on machine ${entry.ownerMachineId}. `
+        + 'Your message was handed to that machine. Stop starting work and remain idle — this session will be closed cleanly.',
+      );
+    } catch { /* @silent-fallback-ok — the notice is courtesy; the hook's block message is the load-bearing channel */ }
+  }
+
+  /**
+   * Close a DRAINED stand-down. The bounded, standard-shaped exit the three
+   * prior ad-hoc closeout bypasses were groping toward: an explicit, corroborated,
+   * narrowly-scoped crossing of exactly three named keep-reasons, never a fourth
+   * ad-hoc flag. Everything else in the cascade is still re-checked.
+   */
+  async #drainedClose(
+    session: Session,
+    entry: { sessionName: string; topicId: number; ownerMachineId: string },
+    dryRun: boolean,
+  ): Promise<boolean> {
+    const { drainedCloseReason } = await import('../core/standDownDrain.js');
+    const reason = drainedCloseReason(entry.ownerMachineId);
+    if (dryRun || !this.killsEnabled) {
+      this.audit('would-reap', session, { rule: 'standdown-drained-close', dryRun: true, otherOwner: entry.ownerMachineId });
+      return false;
+    }
+    // Counts against the ordinary reap budgets — a drained close is a close.
+    if (this.hourlyBudgetRemaining() <= 0) return false;
+    // The authority VERIFIES this claim against its own registry probe and then
+    // applies its OWN frozen bypass list — this call cannot name reasons.
+    const res = await this.#deps.terminate(session.id, reason, {
+      standDownDrainedClose: true,
+      workEvidence: [],
+      localPostTransferCloseout: true,
+    });
+    if (res.terminated) {
+      this.reapTimestamps.push(this.now());
+      this.#deps.standDown?.markClosed(entry.sessionName);
+      this.audit('reaped', session, { rule: 'standdown-drained-close', otherOwner: entry.ownerMachineId });
+      return true;
+    } else {
+      // A guard OUTSIDE the crossed three still holds it — the correct outcome.
+      // The entry stays; the TTL/attention path carries it to the human.
+      this.audit('reap-skipped-topic-moved', session, {
+        rule: 'standdown-drained-close', otherOwner: entry.ownerMachineId, skipped: res.skipped,
+      });
+    }
+    return false;
   }
 
   /**
@@ -894,6 +1571,13 @@ export class SessionReaper extends EventEmitter {
     bypassRecentForMove: boolean;
     confirmedMove?: boolean;
     snapshotReachableAt?: number;
+    /** The owner's stable machine id (distinct from `otherOwner`, which is the
+     *  human-facing display name). The stand-down's episode key and its block
+     *  message both need the ID, never the nickname. */
+    ownerMachineId?: string;
+    /** The evidence the stand-down registration is validated against. Absent ⇒
+     *  no assertion can be built ⇒ no stand-down (fail toward doing nothing). */
+    standDownEvidence?: { reachableAt: number; lastUserMessageAt: number | null; dwellTicks: number };
   }): Promise<{ terminated: boolean; reapedThisTick: number }> {
     const { session, otherOwner, reason, streak, key, bypassRecentForMove } = args;
     let { reapedThisTick } = args;
@@ -928,6 +1612,19 @@ export class SessionReaper extends EventEmitter {
         this.topicMovedVetoes.delete(key);
         return { terminated: true, reapedThisTick };
       }
+      // ── The stand-down producer (docs/specs/duplicate-session-standdown.md) ──
+      // THIS is the seam. The closeout's KEEP-guards just refused to end a
+      // duplicate — and a duplicate is BUSY by construction, so without a second
+      // primitive the wrong copy survives until a human kills it. Rather than
+      // widen the kill (round-4 review rejected that), register a cooperative
+      // stand-down: the copy stops starting work and stops speaking, finishes
+      // what it holds, and the drained-close retires it.
+      //
+      // Registered on the VETO path only, deliberately: an idle leftover is
+      // still closed outright by the terminate above, exactly as today. Nothing
+      // about the existing happy path changes.
+      this.#registerStandDown(session, args.ownerMachineId, otherOwner, args.standDownEvidence, res.skipped);
+
       // Guard veto / already-terminal — audit once per streak crossing, keep the
       // streak so next tick retries (bounded by the breaker).
       const v = vetoes + 1;
@@ -994,8 +1691,30 @@ export class SessionReaper extends EventEmitter {
         for (const id of [...this.topicMovedVetoes.keys()]) if (typeof id === 'number' || !live.has(id)) this.topicMovedVetoes.delete(id);
       }
 
+      // ── Duplicate-session stand-down maintenance (docs/specs/duplicate-session-standdown.md) ──
+      // Runs BEFORE the per-session loop so a released entry cannot be drained or
+      // closed later in the same tick on a verdict that no longer holds. Wrapped:
+      // this is remediation for a duplicate, and it must never be able to take
+      // down the reaper's primary job.
+      let standDownClosed = new Set<string>();
+      try {
+        standDownClosed = await this.#standDownTick(sessions);
+      } catch (err) {
+        // The wrapper exists so remediation for a duplicate can never take down
+        // the reaper's primary job — but a swallowed exception is also how a
+        // broken seam stays invisible, so it is LOUD in both channels rather
+        // than an audit row nobody reads.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[SessionReaper] stand-down maintenance pass threw (duplicate remediation is degraded this tick): ${msg}`);
+        this.audit('standdown-tick-error', sessions[0] ?? ({ id: '-', name: '-', tmuxSession: '-' } as Session), {
+          rule: 'standdown', error: msg,
+        });
+      }
+
       let reapedThisTick = 0;
       for (const session of sessions) {
+        // Already retired by this tick's drained close — the captured list is stale.
+        if (standDownClosed.has(session.id)) continue;
         // ── Post-transfer closeout (operator-named issue, 2026-06-05) ──────
         // A topic-bound session whose topic is now OWNED BY ANOTHER MACHINE is
         // a leftover from a move/failover: the conversation continues on the

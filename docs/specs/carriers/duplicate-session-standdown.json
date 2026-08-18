@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-08-18T04:50:22.968Z",
+  "slug": "duplicate-session-standdown",
+  "carriers": {
+    "CMT-2031": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Deliver the stand-down v1 residual increments: (1) codex-cli tool-muzzle coverage via installCodexHooks (v1 muzzles non-claude frameworks on voice only); (2) sender-identity stamping in the relay payload (INSTAR_SESSION_NAME as attribution) so the funnel refusal can key on the sender; (3) forwarding the muzzled copy composed-but-refused reply text and referenced-context to the owner machine (v1 ab"
+    }
+  }
+}

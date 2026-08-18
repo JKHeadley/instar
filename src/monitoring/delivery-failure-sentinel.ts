@@ -720,6 +720,17 @@ export class DeliveryFailureSentinel extends EventEmitter {
         if (!transitionOwned) return 'retry';
         return this.finalizeToneGated(row, transitionOwned);
 
+      case 'finalize-standing-down':
+        // Terminal and SILENT. The row is finalized as delivered-elsewhere: no
+        // retry (the muzzle is deliberate) and no escalation (the conversation
+        // is alive on the owner machine, so a "couldn't deliver" notice would be
+        // a false loss report — the invisible-payload incident's exact shape).
+        if (!transitionOwned?.('delivered-ambiguous', {
+          attempts: row.attempts + 1,
+          http_code: httpCode ?? null,
+        })) return 'retry';
+        return 'ambiguous';
+
       case 'finalize-ambiguous':
         if (!transitionOwned?.('delivered-ambiguous', {
           attempts: row.attempts + 1,
