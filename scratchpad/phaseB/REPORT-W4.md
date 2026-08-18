@@ -124,3 +124,17 @@ tests=24 pass=24 fail=0
 Pre-proof amended instrument SHA-256: `c9fab8034effc8f64c525073f85c7c04c1fd5cca9c0b2324203632ea34145b3a`.
 
 Operator-binding certification status at this point: **UNKNOWN pending a fresh wiring proof with the repaired instrument**.
+
+### Repaired operator-binding proof
+
+At `2026-08-18 06:07:51 -0700 (PDT)`, the committed repaired instrument re-ran the same wiring-only operator-binding measurement against clean target `4318a1e150e9a8304e6c2e7ad381bf66d03998e5`. The protected base resolved to `248ed7177f5bf416aa7bdad9763741478195e1fc`; the target remained unchanged by measurement.
+
+The real positive run authenticated three signed observer events and minted exactly one post-child receipt. C3 authenticated the observer short-circuit and minted zero guard execution receipts. The deciding verdict line, verbatim, was:
+
+```text
+[fix-verifier-wiring] authenticated guard=topic-operator-evidence entry=node_modules/vitest/vitest.mjs childPid=77868 childExit=0
+```
+
+After verdict: **PROVEN**, wiring-only rung **WIRED**. Unlike the superseded W4 certification, this result is admissible under the repaired regular-file identity predicate and the two authenticated negative fixtures.
+
+Evidence: `scratchpad/phaseB/evidence/W4R-topic-operator-evidence.json` (SHA-256 `c877831e3e0d03621eb41469f82282af8168e7847f423c4dc3bf3963fe1f700c`). Instrument SHA-256: `c9fab8034effc8f64c525073f85c7c04c1fd5cca9c0b2324203632ea34145b3a`.
