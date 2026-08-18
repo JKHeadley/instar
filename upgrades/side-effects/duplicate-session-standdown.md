@@ -217,6 +217,10 @@ Six more: a peer whose feature is DARK (503) was indistinguishable from an unrea
 
 ---
 
+## CI-gate findings (post-commit, pre-merge)
+
+The repository's CI ratchets found seven more integration-registry gaps the local gates had not (the local full-suite runs were repeatedly killed by task-management collisions before reaching these shards — the enforcement therefore landed exactly where it is designed to, at the PR gate). All fixed: the `/standdown` routes classified in the write-domain registry (machine-local, hardware-bound story) and the CapabilityIndex; the CLAUDE.md section tracked in the delivery-completeness list AND the Codex/Gemini shadow markers (the voice half is framework-agnostic, and the behavioral contract matters MOST on frameworks the tool hook does not cover); the dark-gate golden map hand-shifted +18 with per-line verification; the stand-down block in PresenceProxy moved AFTER the one-voice election (a non-speaker machine sends nothing, including the honest line); ~30 deliberate fail-direction catches annotated in-brace per the no-silent-fallbacks ratchet; the stale PresenceProxy entry removed from the LLM-fallback advisory ledger; and `standdown-guard.js` installed on FRESH INIT (via `getHookContent`) rather than widening the deferred-install allowlist past its soft cap — the cap fired and the right answer was to close the gap, not annotate it.
+
 ## Evidence pointers
 
 116 tests total across the three tiers, all green against the final tree, plus the full lint chain.

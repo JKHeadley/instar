@@ -28749,7 +28749,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             if (Number.isFinite(t)) out.add(t);
           }
           return [...out];
-        } catch { return []; }
+        } catch { return []; /* @silent-fallback-ok — liveTopics unreadable ⇒ empty list ⇒ a peer classifies this machine 'absent', the conservative direction */ }
       })(),
       latches: registry.latches(),
       config: registry.config,

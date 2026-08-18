@@ -4192,7 +4192,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     drainBoundaryAt: number,
   ): import('./standDownDrain.js').DrainObservations {
     const output = (() => {
-      try { return this.captureOutput(session.tmuxSession, 40); } catch { return null; }
+      try { return this.captureOutput(session.tmuxSession, 40); } catch { return null; /* @silent-fallback-ok — unreadable pane ⇒ NULL leg ⇒ evaluateDrain resolves to NOT drained (wait) */ }
     })();
     // IDLE_PROMPT_PATTERNS alone corroborates NOTHING here: those are status-bar
     // strings ("bypass permissions on", "shift+tab to cycle") that are present
@@ -4263,7 +4263,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const parsed: Array<Record<string, unknown>> = [];
       for (const l of lines) {
         if (!l.trim()) continue;
-        try { parsed.push(JSON.parse(l) as Record<string, unknown>); } catch { /* a torn line is not evidence */ }
+        try { parsed.push(JSON.parse(l) as Record<string, unknown>); } catch { /* @silent-fallback-ok — a torn JSONL line is not evidence of anything; the other legs still gate the verdict */ }
       }
       return analyseTranscriptSinceBoundary(parsed, drainBoundaryAt);
     } catch {

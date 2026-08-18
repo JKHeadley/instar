@@ -1029,12 +1029,12 @@ export class SessionReaper extends EventEmitter {
     if (!seam || !ownerMachineId) return;
     const gate = (() => {
       try { return this.#deps.standDownConfig?.() ?? { enabled: false, dryRun: true }; }
-      catch { return { enabled: false, dryRun: true }; }
+      catch { return { enabled: false, dryRun: true }; /* @silent-fallback-ok — config unreadable ⇒ feature OFF + dryRun (strictly less action) */ }
     })();
     if (!gate.enabled) return;
 
     const topicId = (() => {
-      try { return this.#deps.topicBinding(session.tmuxSession); } catch { return null; }
+      try { return this.#deps.topicBinding(session.tmuxSession); } catch { return null; /* @silent-fallback-ok — no binding ⇒ no registration (fail toward doing nothing) */ }
     })();
     if (topicId == null) return;
 
@@ -1045,7 +1045,7 @@ export class SessionReaper extends EventEmitter {
     // awaiting an operator ack — a strictly worse outcome than the duplicate,
     // reached by ignoring the one list that exists to say "not this one".
     const isProtected = (() => {
-      try { return this.#deps.protectedSessions().includes(session.tmuxSession); } catch { return true; }
+      try { return this.#deps.protectedSessions().includes(session.tmuxSession); } catch { return true; /* @silent-fallback-ok — cannot read the never-touch list ⇒ treat as protected ⇒ refuse to muzzle */ }
     })();
     if (isProtected) {
       this.audit('standdown-refused', session, { rule: 'topic-moved-away', otherOwner, refusal: 'protected' });
@@ -1054,7 +1054,7 @@ export class SessionReaper extends EventEmitter {
 
     // Contested real work → refuse + escalate. Never a muzzle.
     const contested = (() => {
-      try { return this.#deps.contestedWork?.(session, topicId) ?? null; } catch { return null; }
+      try { return this.#deps.contestedWork?.(session, topicId) ?? null; } catch { return null; /* @silent-fallback-ok — the composition root maps its own read failure to 'contested' already; a null here defers to the validated admission bar */ }
     })();
     if (contested) {
       this.audit('standdown-refused', session, { rule: 'topic-moved-away', otherOwner, refusal: contested });
@@ -1071,7 +1071,7 @@ export class SessionReaper extends EventEmitter {
     }
 
     const epoch = (() => {
-      try { return this.#deps.ownershipEpochFor?.(topicId) ?? null; } catch { return null; }
+      try { return this.#deps.ownershipEpochFor?.(topicId) ?? null; } catch { return null; /* @silent-fallback-ok — no epoch ⇒ no episode key ⇒ no entry */ }
     })();
     // No epoch ⇒ no episode key ⇒ no entry. The episode latch is the only thing
     // standing between an undiagnosed creation cause and an unbounded
@@ -1079,7 +1079,7 @@ export class SessionReaper extends EventEmitter {
     if (epoch == null) return;
 
     const selfId = (() => {
-      try { return this.#deps.selfMachineId?.() ?? null; } catch { return null; }
+      try { return this.#deps.selfMachineId?.() ?? null; } catch { return null; /* @silent-fallback-ok — unknown identity ⇒ the admission validator refuses (local-identity-unknown) */ }
     })();
 
     // ── The single admission bar (spec Frontloaded Decision 5) ──
@@ -1124,7 +1124,7 @@ export class SessionReaper extends EventEmitter {
     // listing and a 512KB transcript read, and it was being paid on every
     // registration attempt purely to test null-ness.
     const drainUnprovable = (() => {
-      try { return this.#deps.drainProvable?.(session) !== true; } catch { return true; }
+      try { return this.#deps.drainProvable?.(session) !== true; } catch { return true; /* @silent-fallback-ok — capability unreadable ⇒ unprovable ⇒ shorter TTL + attention path */ }
     })();
 
     const result = seam.register({
@@ -1166,7 +1166,7 @@ export class SessionReaper extends EventEmitter {
     if (!seam) return closed;
     const gate = (() => {
       try { return this.#deps.standDownConfig?.() ?? { enabled: false, dryRun: true }; }
-      catch { return { enabled: false, dryRun: true }; }
+      catch { return { enabled: false, dryRun: true }; /* @silent-fallback-ok — config unreadable ⇒ feature OFF + dryRun (strictly less action) */ }
     })();
     if (!gate.enabled) return closed;
 
@@ -1205,7 +1205,7 @@ export class SessionReaper extends EventEmitter {
           if (!owner || owner.machineId !== entry.ownerMachineId) return false;
           const liveness = this.#deps.remoteOwnerHasLiveSession?.(entry.topicId, entry.ownerMachineId) ?? { state: 'unknown' as const };
           return liveness.state === true;
-        } catch { return false; }
+        } catch { return false; /* @silent-fallback-ok — unreadable ownership/liveness ⇒ a FAILED verify leg ⇒ hysteresis-then-RELEASE (reachability wins) */ }
       })();
       if (seam.reverify(entry.sessionName, stillOwnedElsewhere, 'ownership-or-liveness-leg-failed') === 'released') {
         this.audit('standdown-released', session, { rule: 'topic-moved-away', topicId: entry.topicId });
@@ -1224,12 +1224,12 @@ export class SessionReaper extends EventEmitter {
         try {
           const at = this.#deps.recentUserMessageAt?.(entry.topicId) ?? null;
           return at != null && at > entry.issuedAt;
-        } catch { return false; }
+        } catch { return false; /* @silent-fallback-ok — history unreadable ⇒ no divert/release trigger; the reverify + TTL paths still bound the muzzle */ }
       })();
       if (freshLocalInbound) {
         const diverted = (() => {
           try { return this.#deps.divertInboundToOwner?.(entry.topicId, entry.ownerMachineId) === true; }
-          catch { return false; }
+          catch { return false; /* @silent-fallback-ok — a failed divert must read as NOT diverted ⇒ immediate release (the user is waiting) */ }
         })();
         if (!diverted) {
           // Release IMMEDIATELY, NOT through the hysteresis. The hysteresis
@@ -1277,7 +1277,7 @@ export class SessionReaper extends EventEmitter {
       //    in-flight step the muzzle deliberately allows land in one window and
       //    be gone by the next.
       const obs = (() => {
-        try { return this.#deps.drainObservations?.(session, entry.lastDrainObservedAt) ?? null; } catch { return null; }
+        try { return this.#deps.drainObservations?.(session, entry.lastDrainObservedAt) ?? null; } catch { return null; /* @silent-fallback-ok — unprobeable ⇒ NOT drained ⇒ the entry waits */ }
       })();
 
       // ── 1c. The impossible-state canary (the ONE reachable leg) ──
@@ -1374,7 +1374,7 @@ export class SessionReaper extends EventEmitter {
     // at-most-one-voice, because failing toward silence turns a partition into
     // an unreachable agent.
     if (this.#deps.everyLiveCopyMuzzled) {
-      const selfId = (() => { try { return this.#deps.selfMachineId?.() ?? null; } catch { return null; } })();
+      const selfId = (() => { try { return this.#deps.selfMachineId?.() ?? null; } catch { return null; /* @silent-fallback-ok — unknown identity ⇒ tiebreak treats as not-lowest, releases only on the uncertainty rule */ } })();
       // Prune streaks for topics that no longer have an entry — otherwise a key
       // whose entry was released mid-streak stays resident for the process
       // lifetime. Small, but an unbounded map is an unbounded map.
@@ -1388,7 +1388,7 @@ export class SessionReaper extends EventEmitter {
         // exactly the authority the freeze exists to withhold.
         if (entry.state === 'expired') continue;
         const allMuzzled = await (async () => {
-          try { return await this.#deps.everyLiveCopyMuzzled!(entry.topicId); } catch { return null; }
+          try { return await this.#deps.everyLiveCopyMuzzled!(entry.topicId); } catch { return null; /* @silent-fallback-ok — pool view unreadable ⇒ UNKNOWN ⇒ release-on-uncertainty after grace, latch NOT armed */ }
         })();
         const streak = (this.#mutualMuzzleStreak.get(entry.topicId) ?? 0);
         if (allMuzzled === false) { this.#mutualMuzzleStreak.delete(entry.topicId); continue; }

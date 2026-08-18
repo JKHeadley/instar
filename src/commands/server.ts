@@ -14551,6 +14551,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         };
 
         presenceProxy = new PresenceProxy({
+          stateDir: config.stateDir,
+          intelligence: sharedIntelligence,
+          // WS3 one-voice gate: only this topic's owner machine speaks 🔭.
+          speakerElection,
           // Stand-down honesty: a frozen copy must not narrate "actively working"
           // about a conversation another machine is answering.
           standDown: {
@@ -14560,14 +14564,14 @@ export async function startServer(options: StartOptions): Promise<void> {
                 const entry = reg?.getByTopic(topicId) ?? null;
                 if (!entry) return null;
                 return { ownerMachineId: entry.ownerMachineId, enforcing: reg!.isEnforcing(entry) };
-              } catch { return null; }
+              } catch { return null; /* @silent-fallback-ok — stand-down lookup failed ⇒ standby behaves exactly as today */ }
             },
             hasProxyNotice: (topicId: number) => {
               try {
                 const reg = _standDownRegistryRef();
                 const entry = reg?.getByTopic(topicId) ?? null;
                 return entry ? reg!.hasNotice(entry.sessionName, 'user') : false;
-              } catch { return false; }
+              } catch { return false; /* @silent-fallback-ok — budget unreadable ⇒ line not sent (extra silence beats a loop) */ }
             },
             sendDeterministic: async (topicId: number, text: string) => {
               try { await telegram?.sendToTopic(topicId, text); return true; }
@@ -14581,13 +14585,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // injected into the muzzled session, so neither can silence the
                 // other.
                 return entry ? reg!.claimNotice(entry.sessionName, 'user') : false;
-              } catch { return false; }
+              } catch { return false; /* @silent-fallback-ok — claim failed ⇒ treated as unsent so a later tick may retry */ }
             },
           },
-          stateDir: config.stateDir,
-          intelligence: sharedIntelligence,
-          // WS3 one-voice gate: only this topic's owner machine speaks 🔭.
-          speakerElection,
           agentName: config.projectName ?? 'the agent',
           // Resolved default framework so idle/stall detection uses the right
           // pane signals (Codex panes don't match Claude prompt patterns).
@@ -19382,7 +19382,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // The authority's OWN confirmation of a drained close (P20): the reaper's
       // claim buys nothing; SessionManager asks this probe directly.
       sessionManager.setStandDownDrainProbe((tmuxSession) => {
-        try { return _standDownRegistry.getBySession(tmuxSession)?.state === 'drained'; } catch { return false; }
+        try { return _standDownRegistry.getBySession(tmuxSession)?.state === 'drained'; } catch { return false; /* @silent-fallback-ok — probe failure ⇒ claim unverified ⇒ NO bypass (the safe direction) */ }
       });
       const degraded = _standDownRegistry.degradedBoot;
       if (degraded.degraded) {
@@ -19606,7 +19606,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   { kind: 'ok', entries: body?.entries ?? [], liveTopics: body?.liveTopics ?? [] },
                   topicId,
                 );
-              } catch { return classifyPeerStandDownView({ kind: 'unreachable' }, topicId); }
+              } catch { /* @silent-fallback-ok — peer read failed ⇒ classified UNKNOWN, which the tiebreak treats as release-worthy only after grace (reachability wins) */ return classifyPeerStandDownView({ kind: 'unreachable' }, topicId); }
             }));
             // A peer we could not read makes the whole answer UNKNOWN — never
             // "not muzzled", which would silently disable the tiebreak, and never
@@ -19616,10 +19616,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             // voice; only "every live copy is muzzled" is the silence state.
             if (results.some((r) => r === 'speaking')) return false;
             return results.some((r) => r === 'muzzled');
-          } catch { return null; }
+          } catch { return null; /* @silent-fallback-ok — pool view unreadable ⇒ UNKNOWN, handled by the tiebreak's grace + no-latch rule */ }
         },
         claimStandDownNotice: (name, channel) => {
-          try { return _standDownRegistry?.claimNotice(name, channel) ?? false; } catch { return false; }
+          try { return _standDownRegistry?.claimNotice(name, channel) ?? false; } catch { return false; /* @silent-fallback-ok — budget unreadable ⇒ do NOT send (an extra silence beats a notice loop) */ }
         },
         // Framework capability, answered without probing (the drain observations
         // themselves are a tmux capture + full process listing + 512KB read).
@@ -19627,7 +19627,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           try {
             const fw = session.framework ?? sessionManager.frameworkForSession(session.tmuxSession);
             return !fw || fw === 'claude-code';
-          } catch { return false; }
+          } catch { return false; /* @silent-fallback-ok — framework unresolvable ⇒ drain unprovable ⇒ shorter TTL + attention path */ }
         },
         injectNotice: (tmuxSession, text) => {
           try { sessionManager.injectMessage(tmuxSession, text, { firstParty: { source: 'standdown-notice' } }); }
@@ -19656,10 +19656,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               // dryRun defaults TRUE: enforcement is an explicit operator flip.
               dryRun: sd.dryRun !== false,
             };
-          } catch { return { enabled: false, dryRun: true }; }
+          } catch { return { enabled: false, dryRun: true }; /* @silent-fallback-ok — config unreadable ⇒ feature OFF + dryRun (strictly less action) */ }
         },
         ownershipEpochFor: (topicId) => {
-          try { return sessionOwnershipRegistry?.read(String(topicId))?.ownershipEpoch ?? null; } catch { return null; }
+          try { return sessionOwnershipRegistry?.read(String(topicId))?.ownershipEpoch ?? null; } catch { return null; /* @silent-fallback-ok — epoch unreadable ⇒ no episode key ⇒ no registration */ }
         },
         // Contested REAL work → the registration REFUSES and escalates. These are
         // the SAME signals the ReapGuard uses, read through the same deps, so the
@@ -19673,7 +19673,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             try {
               const runFile = path.join(config.stateDir, 'autonomous', `${topicId}.local.md`);
               if (fs.existsSync(runFile) && (Date.now() - fs.statSync(runFile).mtimeMs) < 30 * 60_000) return 'autonomous-run';
-            } catch { /* fall through to the shared signal below */ }
+            } catch { /* @silent-fallback-ok — state-file unreadable ⇒ fall through to the shared buildOrAutonomousActive signal (still refuses on it) */ }
             if (reapGuardDeps.buildOrAutonomousActive(topicId)) return 'structural-long-work';
             return null;
           } catch { return 'structural-long-work'; /* @silent-fallback-ok — cannot tell ⇒ treat as contested ⇒ refuse to muzzle (safe) */ }
@@ -19686,7 +19686,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             const fw = sessionManager.frameworkForSession(session.tmuxSession);
             if (fw && fw !== 'claude-code') return null;
               return sessionManager.standDownDrainObservations(session, drainBoundaryAt);
-          } catch { return null; }
+          } catch { return null; /* @silent-fallback-ok — observations unresolvable ⇒ NOT drained ⇒ the entry waits (never closes on a guess) */ }
         },
         raiseStandDownAttention: (item) => {
           try {

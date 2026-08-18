@@ -2047,7 +2047,20 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
   }
 
   private async sendProxyMessage(topicId: number, text: string, tier: number): Promise<void> {
+    // WS3 one-voice election: only this topic's owner machine speaks the 🔭
+    // voice. Single chokepoint for every tier emission. Silent/defer verdicts
+    // simply skip this send — the proxy's own cadence re-evaluates later, and
+    // the owning machine's PresenceProxy carries the voice.
+    if (this.config.speakerElection) {
+      const verdict = this.config.speakerElection.decide(topicId);
+      if (!verdict.speak) {
+        console.log(`[PresenceProxy] one-voice gate: not this machine's topic (${verdict.reason}) — skipping tier ${tier} send for topic ${topicId}`);
+        return;
+      }
+    }
     // ── Duplicate-session stand-down (docs/specs/duplicate-session-standdown.md) ──
+    // AFTER the one-voice election, deliberately: a machine that is not this
+    // topic's speaker sends nothing at all — including the honest line.
     // This copy is standing down, so its "actively working" / classification
     // lines are false: the topic is being served on another machine and this
     // session is deliberately frozen. Two things follow, and the second is the
@@ -2058,7 +2071,7 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
     // error handling would otherwise loop on that refusal. The 409 stays as the
     // backstop; it is no longer the mechanism.
     const standDown = (() => {
-      try { return this.config.standDown?.entryForTopic(topicId) ?? null; } catch { return null; }
+      try { return this.config.standDown?.entryForTopic(topicId) ?? null; } catch { return null; /* @silent-fallback-ok — lookup failed ⇒ proxy behaves exactly as today */ }
     })();
     if (standDown?.enforcing) {
       // Sent on the DETERMINISTIC path, not this proxy's normal funnel. The
@@ -2088,17 +2101,6 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
            untouched, so a later tick can try again. */
       }
       return;
-    }
-    // WS3 one-voice election: only this topic's owner machine speaks the 🔭
-    // voice. Single chokepoint for every tier emission. Silent/defer verdicts
-    // simply skip this send — the proxy's own cadence re-evaluates later, and
-    // the owning machine's PresenceProxy carries the voice.
-    if (this.config.speakerElection) {
-      const verdict = this.config.speakerElection.decide(topicId);
-      if (!verdict.speak) {
-        console.log(`[PresenceProxy] one-voice gate: not this machine's topic (${verdict.reason}) — skipping tier ${tier} send for topic ${topicId}`);
-        return;
-      }
     }
     // Spec A10: acquire shared per-topic proxy mutex if one is wired.
     // PromiseBeacon consumes the same coordinator; the acquire here guarantees

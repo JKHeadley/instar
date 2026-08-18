@@ -9923,6 +9923,14 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // sections preserve narrative ordering in the shadow.
     const markers = [
       '### Mesh Rope Health (recovery probe + partition alerts)',
+      // Duplicate-session stand-down: the VOICE half is framework-agnostic by
+      // construction (the 409 lives on the server's send funnel, so a
+      // Codex/Gemini copy's sends hit exactly the same refusal), and the
+      // muzzled-session behavioral contract matters MOST on the frameworks the
+      // tool-muzzle hook does NOT yet cover — a Codex copy that never learned
+      // "stop starting work, remain idle, nothing is lost" would read the 409
+      // as a delivery bug and loop on it.
+      'Duplicate-session stand-down',
       // Tone-gate advisory migration: framework-agnostic by construction — the
       // outbound gate sits on the SERVER, so a Codex/Gemini agent's messages hit
       // exactly the same nudge. Without this marker such an agent receives a
@@ -12088,7 +12096,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
+  getHookContent(name: 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
     switch (name) {
       case 'session-start': return this.getSessionStartHook();
       case 'mcp-health-autorefresh': return this.getMcpHealthAutorefreshHook();
@@ -12096,6 +12104,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       case 'external-operation-gate': return this.getExternalOperationGateHook();
       case 'deferral-detector': return this.getDeferralDetectorHook();
       case 'self-stop-guard': return this.getSelfStopGuardHook();
+      case 'standdown-guard': return this.getStandDownGuardHook();
       case 'slopcheck-guard': return this.getSlopcheckGuardHook();
       case 'analysis-paralysis-guard': return this.getAnalysisParalysisGuardHook();
       case 'post-action-reflection': return this.getPostActionReflectionHook();

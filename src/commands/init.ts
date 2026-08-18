@@ -4375,6 +4375,12 @@ fi
   // agent has parity with an updated one (migration-parity-hooks guard); a hook
   // that only reaches existing agents is half a feature.
   fs.writeFileSync(path.join(hooksDir, 'analysis-paralysis-guard.js'), migrator.getHookContent('analysis-paralysis-guard'), { mode: 0o755 });
+  // Duplicate-session stand-down muzzle — installed on fresh init as well as via
+  // the migrator so a NEW agent has parity with an updated one (the
+  // migration-parity-hooks guard's soft cap exists precisely to stop the
+  // deferred-install gap widening). Dev-gated dark + fail-open on every
+  // uncertainty, so on a fresh fleet agent it is one config read per tool call.
+  fs.writeFileSync(path.join(hooksDir, 'standdown-guard.js'), migrator.getHookContent('standdown-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'post-action-reflection.js'), migrator.getHookContent('post-action-reflection'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'external-communication-guard.js'), migrator.getHookContent('external-communication-guard'), { mode: 0o755 });
 
