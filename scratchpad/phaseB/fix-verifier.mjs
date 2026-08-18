@@ -4,9 +4,13 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { load as parseYaml } from 'js-yaml';
+import {
+  createAuthenticatedReceiptAuthority,
+  isLiveAuthenticatedReceipt,
+} from './authenticated-execution-receipt.mjs';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(SCRIPT_PATH);
@@ -132,6 +136,99 @@ function directSpawn(argv, options = {}) {
     outputSha256: sha256(combined),
     exitProvenance: 'direct child status from spawnSync; shell=false',
   };
+}
+
+function processRecord(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  const result = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'ppid=', '-o', 'command='], {
+    encoding: 'utf8', timeout: 2_000, env: { PATH: '/usr/bin:/bin', LANG: 'C' },
+  });
+  if (result.status !== 0 || !result.stdout.trim()) return null;
+  const match = result.stdout.trim().match(/^(\d+)\s+([\s\S]+)$/);
+  return match ? { pid, ppid: Number(match[1]), command: match[2] } : null;
+}
+
+function descendantOf(pid, ancestorPid) {
+  let cursor = pid;
+  const seen = new Set();
+  for (let depth = 0; depth < 32 && cursor > 1 && !seen.has(cursor); depth++) {
+    if (cursor === ancestorPid) return true;
+    seen.add(cursor);
+    const record = processRecord(cursor);
+    if (!record) return false;
+    cursor = record.ppid;
+  }
+  return cursor === ancestorPid;
+}
+
+function streamingSpawn(argv, options = {}, onObserverEvent = () => {}) {
+  return new Promise((resolve) => {
+    const startedAt = isoNow();
+    const startedMs = Date.now();
+    let stdout = '';
+    let stderr = '';
+    let stdoutLines = '';
+    let observerError = null;
+    let timedOut = false;
+    let settled = false;
+    let child;
+    try {
+      child = spawn(argv[0], argv.slice(1), {
+        cwd: options.cwd,
+        env: options.env ?? process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      resolve({
+        argv, cwd: options.cwd, startedAt, endedAt: isoNow(), durationMs: Date.now() - startedMs,
+        pid: null, exitCode: null, signal: null, spawnError: error.message, timedOut: false,
+        stdout: clip(''), stderr: clip(''), outputSha256: sha256(''), observerError: null,
+        exitProvenance: 'direct child spawn failed before a pid existed',
+      });
+      return;
+    }
+    const consumeLines = () => {
+      for (;;) {
+        const newline = stdoutLines.indexOf('\n');
+        if (newline < 0) break;
+        const line = stdoutLines.slice(0, newline);
+        stdoutLines = stdoutLines.slice(newline + 1);
+        if (!line.startsWith('FIX_VERIFIER_OBSERVER_EVENT ')) continue;
+        try { onObserverEvent(JSON.parse(line.slice('FIX_VERIFIER_OBSERVER_EVENT '.length)), child.pid); }
+        catch (error) {
+          observerError = error instanceof Error ? error.message : String(error);
+          try { child.kill('SIGTERM'); } catch {}
+        }
+      }
+    };
+    child.stdout.on('data', (chunk) => {
+      const text = chunk.toString();
+      stdout += text;
+      stdoutLines += text;
+      consumeLines();
+    });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.once('error', (error) => { observerError ??= error.message; });
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      try { child.kill('SIGTERM'); } catch {}
+      setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 2_000).unref();
+    }, options.timeoutMs ?? 30_000);
+    child.once('exit', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      consumeLines();
+      const combined = `${stdout}${stderr}`;
+      resolve({
+        argv, cwd: options.cwd, startedAt, endedAt: isoNow(), durationMs: Date.now() - startedMs,
+        pid: child.pid, exitCode: typeof code === 'number' ? code : null, signal: signal ?? null,
+        spawnError: null, timedOut, stdout: clip(stdout), stderr: clip(stderr),
+        outputSha256: sha256(combined), observerError,
+        exitProvenance: 'direct child status from spawn; shell=false; nested observer pids validated live with ps',
+      });
+    });
+  });
 }
 
 function requireSuccess(argv, options = {}) {
@@ -346,16 +443,7 @@ export function validatePipelineContract(contract, commandArgv, protectedWorkflo
   return { valid: problems.length === 0, reason: problems.join('; ') || null, checks, normalizedInvocation: normalized };
 }
 
-function readJsonLines(file) {
-  try {
-    return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  } catch (error) {
-    if (error?.code === 'ENOENT') return [];
-    return [{ malformed: true, error: error.message }];
-  }
-}
-
-function observerSource({ realNode, cwd, guardId, token, nodeEntry, requiredArgs, receiptFile, shortCircuitFile, shortCircuit }) {
+function observerSource({ realNode, cwd, guardId, nodeEntry, requiredArgs, shortCircuit }) {
   return `#!${realNode}\n`
     + `import fs from 'node:fs';\n`
     + `import path from 'node:path';\n`
@@ -366,118 +454,196 @@ function observerSource({ realNode, cwd, guardId, token, nodeEntry, requiredArgs
     + `const required = ${JSON.stringify(requiredArgs)};\n`
     + `const resolve = (value) => { try { return fs.realpathSync(path.resolve(cwd, value)); } catch { return path.resolve(cwd, value); } };\n`
     + `const target = argv.length > 0 && resolve(argv[0]) === resolve(expected) && required.every((item) => argv.includes(item));\n`
-    + `const append = (file, value) => fs.appendFileSync(file, JSON.stringify(value) + '\\n', 'utf8');\n`
+    + `const emit = (kind, fields = {}) => process.stdout.write('FIX_VERIFIER_OBSERVER_EVENT ' + JSON.stringify({ source: 'fix-verifier-observer', kind, guardId: ${JSON.stringify(guardId)}, nodeEntry: ${JSON.stringify(nodeEntry)}, observerPid: process.pid, argv, ...fields }) + '\\n');\n`
+    + `if (target) {\n`
+    + `  emit('observer-ready');\n`
+    + `  process.kill(process.pid, 'SIGSTOP');\n`
+    + `}\n`
     + `if (target && ${shortCircuit ? 'true' : 'false'}) {\n`
-    + `  const event = { source: 'fix-verifier-core', guardId: ${JSON.stringify(guardId)}, token: ${JSON.stringify(token)}, nodeEntry: ${JSON.stringify(nodeEntry)}, argv, shortCircuitedAt: new Date().toISOString() };\n`
-    + `  append(${JSON.stringify(shortCircuitFile)}, event);\n`
-    + `  process.stdout.write('[fix-verifier-C3] short-circuited guard=' + event.guardId + ' entry=' + event.nodeEntry + '\\n');\n`
+    + `  emit('short-circuit', { shortCircuitedAt: new Date().toISOString() });\n`
+    + `  process.stdout.write('[fix-verifier-C3] authenticated observer short-circuited guard=' + ${JSON.stringify(guardId)} + ' entry=' + ${JSON.stringify(nodeEntry)} + '\\n');\n`
     + `  process.exit(0);\n`
     + `}\n`
     + `const startedAt = new Date().toISOString();\n`
     + `const child = spawn(${JSON.stringify(realNode)}, argv, { cwd: process.cwd(), env: process.env, stdio: 'inherit' });\n`
+    + `if (target) {\n`
+    + `  try { child.kill('SIGSTOP'); } catch {}\n`
+    + `  emit('child-start', { childPid: child.pid, startedAt });\n`
+    + `}\n`
     + `const forward = (signal) => { try { child.kill(signal); } catch {} };\n`
     + `for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => forward(signal));\n`
     + `child.once('error', (error) => { console.error(error.message); process.exit(1); });\n`
     + `child.once('exit', (code, signal) => {\n`
     + `  const childExitCode = typeof code === 'number' ? code : null;\n`
     + `  if (target) {\n`
-    + `    const receipt = { source: 'fix-verifier-core', guardId: ${JSON.stringify(guardId)}, token: ${JSON.stringify(token)}, tokenSha256: ${JSON.stringify(sha256(token))}, nodeEntry: ${JSON.stringify(nodeEntry)}, argv, startedAt, childExitedAt: new Date().toISOString(), childExitCode, signal: signal ?? null, emittedAfterChildExit: true };\n`
-    + `    append(${JSON.stringify(receiptFile)}, receipt);\n`
-    + `    process.stdout.write('[fix-verifier-wiring] token=' + receipt.token + ' guard=' + receipt.guardId + ' entry=' + receipt.nodeEntry + ' childExit=' + String(receipt.childExitCode) + '\\n');\n`
+    + `    emit('child-exit', { childPid: child.pid, startedAt, childExitedAt: new Date().toISOString(), childExitCode, signal: signal ?? null, emittedAfterChildExit: true });\n`
     + `  }\n`
     + `  process.exit(childExitCode ?? 1);\n`
     + `});\n`;
 }
 
-function runObservedPipelinePass({ command, cwd, guardId, contract, observerRoot, token, shortCircuit }) {
+async function runObservedPipelinePass({ command, cwd, guardId, contract, observerRoot, authority, shortCircuit }) {
   const label = shortCircuit ? 'c3' : 'positive';
   const root = path.join(observerRoot, label);
   fs.mkdirSync(root, { recursive: true });
-  const receiptFile = path.join(root, 'receipts.jsonl');
-  const shortCircuitFile = path.join(root, 'short-circuits.jsonl');
   const wrapper = path.join(root, 'node');
   fs.writeFileSync(wrapper, observerSource({
     realNode: process.execPath,
     cwd,
     guardId,
-    token,
     nodeEntry: contract.observer.nodeEntry,
     requiredArgs: contract.observer.requiredArgs,
-    receiptFile,
-    shortCircuitFile,
     shortCircuit,
   }), { mode: 0o755 });
-  const run = directSpawn(command.argv, {
+  const events = [];
+  let observerReady = null;
+  let validatedChildStart = null;
+  let childExit = null;
+  let shortCircuitEvent = null;
+  const expectedEntry = path.resolve(cwd, contract.observer.nodeEntry);
+  const continueStopped = (pid) => { try { process.kill(pid, 'SIGCONT'); } catch {} };
+  const run = await streamingSpawn(command.argv, {
     cwd,
     timeoutMs: command.timeoutMs,
     env: { ...process.env, CI: '1', PATH: `${root}${path.delimiter}${process.env.PATH ?? ''}` },
+  }, (event, pipelinePid) => {
+    events.push(event);
+    if (event?.source !== 'fix-verifier-observer' || event.guardId !== guardId || event.nodeEntry !== contract.observer.nodeEntry) {
+      throw new Error('observer event identity is invalid');
+    }
+    if (event.kind === 'observer-ready') {
+      const record = processRecord(event.observerPid);
+      const argvValid = Array.isArray(event.argv)
+        && event.argv.length > 0
+        && (() => { try { return fs.realpathSync(path.resolve(cwd, event.argv[0])) === fs.realpathSync(expectedEntry); } catch { return false; } })()
+        && contract.observer.requiredArgs.every((item) => event.argv.includes(item));
+      const valid = record?.command.includes(wrapper) && descendantOf(event.observerPid, pipelinePid) && argvValid;
+      observerReady = { event, valid, processRecord: record };
+      continueStopped(event.observerPid);
+      if (!valid) throw new Error('observer-ready process identity was not the instrument wrapper in the pipeline descendant tree');
+      return;
+    }
+    if (event.kind === 'child-start') {
+      const record = processRecord(event.childPid);
+      const valid = observerReady?.valid === true
+        && record?.ppid === event.observerPid
+        && descendantOf(event.childPid, pipelinePid)
+        && record.command.includes(contract.observer.nodeEntry)
+        && Array.isArray(event.argv)
+        && event.argv.length > 0;
+      validatedChildStart = { event, valid, processRecord: record };
+      continueStopped(event.childPid);
+      if (!valid) throw new Error('observed child pid was not the exact declared descendant process');
+      return;
+    }
+    if (event.kind === 'child-exit') childExit = event;
+    if (event.kind === 'short-circuit') shortCircuitEvent = event;
   });
+  const receipts = [];
+  let shortCircuitReceipt = null;
+  if (!shortCircuit && run.exitCode === 0 && !run.spawnError && !run.observerError
+      && validatedChildStart?.valid && childExit
+      && childExit.childPid === validatedChildStart.event.childPid
+      && childExit.childExitCode === 0 && childExit.emittedAfterChildExit === true) {
+    const receipt = await authority.issue({
+      guardId, kind: 'child-exit', observerPid: childExit.observerPid,
+      childPid: childExit.childPid, childExitCode: childExit.childExitCode, signal: childExit.signal,
+      argv: childExit.argv, startedAt: childExit.startedAt, childExitedAt: childExit.childExitedAt,
+      emittedAfterChildExit: true,
+    });
+    if (await authority.authenticate(receipt, { guardId, kind: 'child-exit', childPid: childExit.childPid, childExitCode: 0 })) {
+      receipts.push(receipt);
+      process.stdout.write(`[fix-verifier-wiring] authenticated guard=${guardId} entry=${contract.observer.nodeEntry} childPid=${childExit.childPid} childExit=0\n`);
+    }
+  }
+  if (shortCircuit && run.exitCode === 0 && !run.spawnError && !run.observerError
+      && observerReady?.valid && shortCircuitEvent?.observerPid === observerReady.event.observerPid) {
+    const receipt = await authority.issue({
+      guardId, kind: 'short-circuit', observerPid: shortCircuitEvent.observerPid,
+      childPid: shortCircuitEvent.observerPid, childExitCode: 0, signal: null,
+      argv: [wrapper, ...shortCircuitEvent.argv], startedAt: shortCircuitEvent.shortCircuitedAt,
+      childExitedAt: run.endedAt, emittedAfterChildExit: true,
+    });
+    if (await authority.authenticate(receipt, { guardId, kind: 'short-circuit', childPid: shortCircuitEvent.observerPid })) {
+      shortCircuitReceipt = receipt;
+    }
+  }
   return {
     run,
     observer: { wrapper, nodeEntry: contract.observer.nodeEntry, requiredArgs: contract.observer.requiredArgs },
-    receipts: readJsonLines(receiptFile),
-    shortCircuitEvents: readJsonLines(shortCircuitFile),
+    receipts,
+    shortCircuitEvents: shortCircuitEvent ? [shortCircuitEvent] : [],
+    shortCircuitReceipt,
+    processObservations: { observerReady, validatedChildStart, childExit, eventCount: events.length },
   };
 }
 
-export function runPipelineWiringControls({ command, cwd, guardId, contract, observerRoot }) {
-  const token = `${crypto.randomUUID()}-${crypto.randomBytes(16).toString('hex')}`;
-  const c3Token = `${crypto.randomUUID()}-${crypto.randomBytes(16).toString('hex')}`;
-  const positive = runObservedPipelinePass({ command, cwd, guardId, contract, observerRoot, token, shortCircuit: false });
-  const C3 = runObservedPipelinePass({ command, cwd, guardId, contract, observerRoot, token: c3Token, shortCircuit: true });
+export async function runPipelineWiringControls({ command, cwd, guardId, contract, observerRoot }) {
+  const authority = await createAuthenticatedReceiptAuthority({ issuer: `fix-verifier:${guardId}` });
+  let positive;
+  let C3;
+  try {
+    positive = await runObservedPipelinePass({ command, cwd, guardId, contract, observerRoot, authority, shortCircuit: false });
+    C3 = await runObservedPipelinePass({ command, cwd, guardId, contract, observerRoot, authority, shortCircuit: true });
+  } finally {
+    await authority.close();
+  }
   const receipt = positive.receipts.length === 1 ? positive.receipts[0] : null;
-  const positiveReceiptValid = receipt?.source === 'fix-verifier-core'
+  const positiveReceiptValid = isLiveAuthenticatedReceipt(receipt)
     && receipt.guardId === guardId
-    && receipt.token === token
-    && receipt.tokenSha256 === sha256(token)
-    && receipt.nodeEntry === contract.observer.nodeEntry
+    && receipt.kind === 'child-exit'
     && receipt.childExitCode === 0
     && receipt.emittedAfterChildExit === true;
   const c3Event = C3.shortCircuitEvents.length === 1 ? C3.shortCircuitEvents[0] : null;
   const c3Valid = C3.run.exitCode === 0 && !C3.run.spawnError && C3.receipts.length === 0
-    && c3Event?.source === 'fix-verifier-core'
+    && isLiveAuthenticatedReceipt(C3.shortCircuitReceipt)
+    && c3Event?.source === 'fix-verifier-observer'
     && c3Event.guardId === guardId
-    && c3Event.token === c3Token
     && c3Event.nodeEntry === contract.observer.nodeEntry;
   C3.outcome = c3Valid
     ? 'proven'
-    : !c3Event || C3.run.exitCode === null || C3.run.spawnError || C3.run.exitCode !== 0
+    : !c3Event || !C3.shortCircuitReceipt || C3.run.exitCode === null || C3.run.spawnError || C3.run.exitCode !== 0
       ? 'unknown'
       : 'not-proven';
   const checks = [
     { check: 'real declared pipeline wrapper exited successfully', passed: positive.run.exitCode === 0 && !positive.run.spawnError },
-    { check: 'core observer emitted exactly one post-child receipt', passed: positiveReceiptValid },
+    { check: 'private-channel authority authenticated exactly one post-child receipt', passed: positiveReceiptValid },
     { check: 'C3 wrapper still exited successfully', passed: C3.run.exitCode === 0 && !C3.run.spawnError },
-    { check: 'C3 short-circuited the exact guard child', passed: Boolean(c3Event) },
+    { check: 'C3 authenticated the instrument observer short-circuit', passed: Boolean(c3Event) && isLiveAuthenticatedReceipt(C3.shortCircuitReceipt) },
     { check: 'C3 produced no guard execution receipt', passed: C3.receipts.length === 0 },
   ];
   const status = checks.every((item) => item.passed) ? 'proven' : 'unknown';
   return {
-    token,
-    tokenSha256: sha256(token),
+    authorityId: receipt?.authorityId ?? C3.shortCircuitReceipt?.authorityId ?? null,
     positive,
     C3,
     envelope: {
       source: 'fix-verifier-core',
       status,
-      mode: 'core-minted-process-receipt',
-      tokenSha256: sha256(token),
+      mode: 'core-private-channel-hmac-receipt',
+      authorityId: receipt?.authorityId ?? null,
       receipt,
-      C3: { outcome: C3.outcome, receiptCount: C3.receipts.length, shortCircuitEvent: c3Event },
+      C3: {
+        outcome: C3.outcome,
+        receiptCount: C3.receipts.length,
+        shortCircuitEvent: c3Event,
+        shortCircuitReceipt: C3.shortCircuitReceipt,
+      },
       checks,
     },
   };
 }
 
-const PIPELINE_MODES = new Set(['core-minted-process-receipt']);
+const PIPELINE_MODES = new Set(['core-private-channel-hmac-receipt']);
 export function validatePipelineEvidence(evidence) {
   if (!evidence || typeof evidence !== 'object') return { valid: false, reason: 'pipeline evidence is not an object' };
   if (evidence.source !== 'fix-verifier-core' || evidence.status !== 'proven' || !PIPELINE_MODES.has(evidence.mode)) return { valid: false, reason: 'pipeline evidence is not a core-minted proven envelope' };
-  if (!/^[a-f0-9]{64}$/.test(evidence.tokenSha256 ?? '') || evidence.receipt?.tokenSha256 !== evidence.tokenSha256 || evidence.receipt?.emittedAfterChildExit !== true) {
-    return { valid: false, reason: 'pipeline receipt is missing or not bound to the minted token after child exit' };
+  if (!isLiveAuthenticatedReceipt(evidence.receipt) || evidence.receipt?.emittedAfterChildExit !== true) {
+    return { valid: false, reason: 'pipeline receipt was not authenticated live by the private-channel authority' };
   }
-  if (evidence.C3?.outcome !== 'proven' || evidence.C3?.receiptCount !== 0 || !evidence.C3?.shortCircuitEvent) {
-    return { valid: false, reason: 'C3 did not prove wrapper success without a guard receipt' };
+  if (evidence.C3?.outcome !== 'proven' || evidence.C3?.receiptCount !== 0
+      || !evidence.C3?.shortCircuitEvent || !isLiveAuthenticatedReceipt(evidence.C3?.shortCircuitReceipt)) {
+    return { valid: false, reason: 'C3 did not authenticate wrapper success without a guard receipt' };
   }
   if (!Array.isArray(evidence.checks) || evidence.checks.length === 0 || evidence.checks.some((check) => !check || check.passed !== true)) {
     return { valid: false, reason: 'pipeline checks must be non-empty and all pass' };
@@ -622,7 +788,7 @@ async function measure(args) {
     applyFixture(wiringRoot);
     const selectedPipelineCommand = guard.pipeline ? adapter.pipelineCommands[guard.pipeline.commandIndex ?? 0] : null;
     const wiringRun = selectedPipelineCommand && pipelineContractValidation.valid
-      ? runPipelineWiringControls({
+      ? await runPipelineWiringControls({
           command: selectedPipelineCommand,
           cwd: wiringRoot,
           guardId: guard.id,

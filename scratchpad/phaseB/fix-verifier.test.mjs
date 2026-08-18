@@ -96,10 +96,10 @@ test('pipeline contract is anchored in a protected workflow job and exact real c
 test('wiring rejects adapter testimony and requires a core-minted runtime receipt', () => {
   assert.equal(validatePipelineEvidence(undefined).valid, false);
   assert.equal(validatePipelineEvidence({ status: 'proven', mode: 'adapter-command-contract', checks: [{ passed: true }] }).valid, false);
-  assert.equal(validatePipelineEvidence({ status: 'proven', mode: 'core-minted-process-receipt', checks: [{ passed: false }] }).valid, false);
+  assert.equal(validatePipelineEvidence({ status: 'proven', mode: 'core-private-channel-hmac-receipt', checks: [{ passed: false }] }).valid, false);
 });
 
-test('C3 short-circuits the exact guard child while the real wrapper succeeds and produces no receipt', () => {
+test('C3 short-circuits the exact guard child while the real wrapper succeeds and produces no receipt', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-verifier-wiring-test-'));
   try {
     fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
@@ -111,7 +111,7 @@ test('C3 short-circuits the exact guard child while the real wrapper succeeds an
     const contract = {
       observer: { nodeEntry: 'guard.mjs', requiredArgs: [] },
     };
-    const result = runPipelineWiringControls({
+    const result = await runPipelineWiringControls({
       command: { argv: ['npm', 'run', 'wired'], timeoutMs: 30_000 },
       cwd: root,
       guardId: 'fixture-guard',
@@ -120,7 +120,8 @@ test('C3 short-circuits the exact guard child while the real wrapper succeeds an
     });
     assert.equal(result.positive.run.exitCode, 0);
     assert.equal(result.positive.receipts.length, 1);
-    assert.equal(result.positive.receipts[0].token, result.token);
+    assert.match(result.positive.receipts[0].mac, /^[a-f0-9]{64}$/);
+    assert.equal(result.positive.receipts[0].childExitCode, 0);
     assert.equal(result.C3.run.exitCode, 0);
     assert.equal(result.C3.shortCircuitEvents.length, 1);
     assert.equal(result.C3.receipts.length, 0);
@@ -132,7 +133,7 @@ test('C3 short-circuits the exact guard child while the real wrapper succeeds an
   }
 });
 
-test('a pipeline that stops before the guard is UNKNOWN, including C3', () => {
+test('a pipeline that stops before the guard is UNKNOWN, including C3', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-verifier-wiring-blocked-'));
   try {
     fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
@@ -141,7 +142,7 @@ test('a pipeline that stops before the guard is UNKNOWN, including C3', () => {
       scripts: { blocked: "node -e \"console.error('upstream gate stopped'); process.exit(1)\" && node guard.mjs" },
     }));
     fs.writeFileSync(path.join(root, 'guard.mjs'), "console.log('[fixture-guard] PASS');\n");
-    const result = runPipelineWiringControls({
+    const result = await runPipelineWiringControls({
       command: { argv: ['npm', 'run', 'blocked'], timeoutMs: 30_000 },
       cwd: root,
       guardId: 'fixture-guard',
@@ -154,6 +155,48 @@ test('a pipeline that stops before the guard is UNKNOWN, including C3', () => {
     assert.equal(result.C3.outcome, 'unknown');
     assert.equal(result.envelope.status, 'unknown');
     assert.equal(validatePipelineEvidence(result.envelope).valid, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('H1 C3 ignores a same-user disk receipt forged by a stand-in that never runs the declared child', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-verifier-h1-forgery-'));
+  try {
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+      name: 'fix-verifier-h1-forgery',
+      private: true,
+      scripts: { standin: 'node standin.mjs' },
+    }));
+    fs.writeFileSync(path.join(root, 'guard.mjs'), "throw new Error('the real child must not run in C3');\n");
+    fs.writeFileSync(path.join(root, 'standin.mjs'), `
+      import fs from 'node:fs';
+      import path from 'node:path';
+      const visible = {
+        source: 'fix-verifier-core', status: 'proven',
+        mode: 'core-private-channel-hmac-receipt',
+        authorityId: 'candidate-readable', childPid: process.pid,
+        childExitCode: 0, emittedAfterChildExit: true,
+        mac: '0'.repeat(64),
+      };
+      const destination = path.join(process.cwd(), '.observer', 'positive', 'receipts.jsonl');
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.writeFileSync(destination, JSON.stringify(visible) + '\\n');
+      console.log('stand-in wrote candidate-shaped disk receipt without running guard.mjs');
+    `);
+    const result = await runPipelineWiringControls({
+      command: { argv: ['npm', 'run', 'standin'], timeoutMs: 30_000 },
+      cwd: root,
+      guardId: 'declared-real-child',
+      contract: { observer: { nodeEntry: 'guard.mjs', requiredArgs: [] } },
+      observerRoot: path.join(root, '.observer'),
+    });
+    assert.equal(result.positive.run.exitCode, 0);
+    assert.equal(result.positive.receipts.length, 0);
+    assert.equal(result.envelope.status, 'unknown');
+    assert.equal(validatePipelineEvidence(result.envelope).valid, false);
+    assert.equal(fs.existsSync(path.join(root, '.observer', 'positive', 'receipts.jsonl')), true);
+    console.log('H1_W1_C3 standInExit=0 realChildRan=false diskReceiptWritten=true authenticatedReceipts=0 verdict=UNKNOWN');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
