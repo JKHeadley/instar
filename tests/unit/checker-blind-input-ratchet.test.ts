@@ -11,15 +11,18 @@ import { StandardsConformanceReviewer } from '../../src/core/reviewers/standards
 import type { IntelligenceProvider } from '../../src/core/types.js';
 import type { StandardArticle } from '../../src/core/StandardsRegistryParser.js';
 import { HumanAsDetectorLog } from '../../src/monitoring/HumanAsDetectorLog.js';
+import { SafeGitExecutor } from '../../src/core/SafeGitExecutor.js';
 import { BLIND_INPUT_CASE_IDS } from '../../scripts/checker-blind-input-cases.mjs';
 import {
+  deriveProtectedCeiling,
   deriveCheckerPopulation,
   evaluateBlindInputCoverage,
+  evaluateProtectedBlindInputCoverage,
   evaluateCeilingRatchet,
 } from '../../scripts/lib/checker-blind-input-ratchet.mjs';
 import {
   MAX_UNCOVERED_CHECKERS,
-  readProtectedCeiling,
+  readProtectedStateAt,
 } from '../../scripts/lint-checker-blind-input-coverage.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -27,94 +30,209 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 interface BlindObservation {
   /** Independent test oracle: true means the checker reported clean while blind. */
   clean: boolean;
+  /** Calls observed at the real checker boundary; enrollment alone is not proof. */
+  invocations: number;
   evidence: unknown;
   /** Optional subject testimony; deliberately ignored by the oracle. */
   subjectClaim?: string;
 }
 
-type BlindCase = () => Promise<BlindObservation> | BlindObservation;
+interface BlindCase {
+  control: () => Promise<BlindObservation> | BlindObservation;
+  blind: () => Promise<BlindObservation> | BlindObservation;
+}
 
-async function executeBlindCases(cases: Map<string, BlindCase>) {
-  const failures: Array<{ id: string; evidence: unknown }> = [];
+async function executeBlindCases(cases: Map<string, BlindCase>, { emitProof = false } = {}) {
+  const failures: Array<{ id: string; phase: 'control' | 'blind'; reason: string; evidence: unknown }> = [];
+  const provenIds: string[] = [];
   for (const [id, run] of cases) {
-    const observation = await run();
-    if (observation.clean) failures.push({ id, evidence: observation.evidence });
+    const control = await run.control();
+    const blind = await run.blind();
+    if (!control.clean || control.invocations < 1) {
+      failures.push({ id, phase: 'control', reason: !control.clean ? 'control-not-clean' : 'checker-not-invoked', evidence: control.evidence });
+    }
+    if (blind.clean || blind.invocations < 1) {
+      failures.push({ id, phase: 'blind', reason: blind.clean ? 'blind-input-accepted' : 'checker-not-invoked', evidence: blind.evidence });
+    }
+    if (control.clean && !blind.clean && control.invocations >= 1 && blind.invocations >= 1) {
+      provenIds.push(id);
+      if (emitProof) {
+        console.log(`CHECKER_BLIND_EXECUTION ${JSON.stringify({
+          id, control: 'clean', blind: 'refused',
+          controlInvocations: control.invocations, blindInvocations: blind.invocations,
+        })}`);
+      }
+    }
   }
-  return failures;
+  return { failures, provenIds };
 }
 
 const CASES = new Map<string, BlindCase>([
-  ['script:scripts/lint-llm-attribution.js', () => {
-    // Keep the blind fixture outside the repository tree.  The safe filesystem
-    // guard intentionally rejects mutation fixtures nested under a git root;
-    // this case must exercise unreadable input, not trip that source-tree guard.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'checker-blind-attribution-'));
-    const file = path.join(ROOT, 'src', `.checker-blind-attribution-missing-${process.pid}.ts`);
-    try {
-      // A dangling symlink makes the read fail for every user, including root
-      // (chmod-only fixtures are readable by root and falsely look clean).
+  ['script:scripts/lint-llm-attribution.js', {
+    control: () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'checker-control-attribution-'));
+      const file = path.join(dir, 'readable.ts');
+      try {
+        fs.writeFileSync(file, 'export const readable = true;\n');
+        let invocations = 0;
+        invocations += 1;
+        const result = runLint([file]);
+        return { clean: result.real.length === 0 && result.stale.length === 0 && result.blind.length === 0, invocations, evidence: result };
+      } finally {
+        SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'checker-blind-input:attribution-control' });
+      }
+    },
+    blind: () => {
+      const file = path.join(ROOT, 'src', `.checker-blind-attribution-missing-${process.pid}.ts`);
+      let invocations = 0;
+      invocations += 1;
       const result = runLint([file]);
       return {
         clean: result.real.length === 0 && result.stale.length === 0 && result.blind.length === 0,
+        invocations,
         evidence: result,
         subjectClaim: 'process exit is intentionally not trusted by this case',
       };
-    } finally {
-      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'checker-blind-input:attribution' });
-    }
+    },
   }],
-  ['probe:src/monitoring/probes/GuardPostureProbe.ts', async () => {
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'checker-blind-guard-'));
-    try {
-      const [probe] = createGuardPostureProbes({
-        getLocalPosture: () => null,
-        getPeerPostures: () => [{ machineId: 'blind-peer', online: true, posture: null, postureAgeMs: null }],
-        deepReadPeer: async () => { throw new Error('unreachable'); },
-        emitAttention: async () => {},
-        stateDir,
-      });
-      const result = await probe.run();
-      return { clean: result.passed, evidence: result };
-    } finally {
-      SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'checker-blind-input:guard' });
-    }
+  ['probe:src/monitoring/probes/GuardPostureProbe.ts', {
+    control: async () => {
+      const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'checker-control-guard-'));
+      try {
+        const [probe] = createGuardPostureProbes({
+          getLocalPosture: () => ({
+            guards: [],
+            summary: {
+              onConfirmed: 0, onUnverified: 0, onStale: 0, onDryRun: 0,
+              off: 0, offDeviant: 0, offDarkDefault: 0, divergedPendingRestart: 0,
+              errored: 0, missing: 0, offRuntimeDivergent: 0, runtimeEnriched: '0/0',
+            },
+          }),
+          getPeerPostures: () => [],
+          emitAttention: async () => {},
+          stateDir,
+        });
+        let invocations = 0;
+        invocations += 1;
+        const result = await probe.run();
+        return { clean: result.passed, invocations, evidence: result };
+      } finally {
+        SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'checker-blind-input:guard-control' });
+      }
+    },
+    blind: async () => {
+      const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'checker-blind-guard-'));
+      try {
+        const [probe] = createGuardPostureProbes({
+          getLocalPosture: () => null,
+          getPeerPostures: () => [{ machineId: 'blind-peer', online: true, posture: null, postureAgeMs: null }],
+          deepReadPeer: async () => { throw new Error('unreachable'); },
+          emitAttention: async () => {},
+          stateDir,
+        });
+        let invocations = 0;
+        invocations += 1;
+        const result = await probe.run();
+        return { clean: result.passed, invocations, evidence: result };
+      } finally {
+        SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'checker-blind-input:guard' });
+      }
+    },
   }],
-  ['reviewer:src/core/reviewers/standards-conformance.ts', async () => {
-    const articles: StandardArticle[] = [{
-      family: 'Interaction', name: 'Signal vs. Authority', rule: 'Independent judgment.', inPractice: '',
-    }];
-    const provider: IntelligenceProvider = { async evaluate() { throw new Error('provider down'); } };
-    const reviewer = new StandardsConformanceReviewer(provider);
-    const report = await reviewer.review('spec', articles);
-    const fit = await reviewer.judgeFit('spec', 'Signal vs. Authority', articles);
-    return {
-      clean: report.conclusion === 'fits' || fit.verdict === 'fit',
-      evidence: { report, fit },
-    };
+  ['reviewer:src/core/reviewers/standards-conformance.ts', {
+    control: async () => {
+      const articles: StandardArticle[] = [{
+        family: 'Interaction', name: 'Signal vs. Authority', rule: 'Independent judgment.', inPractice: '',
+      }];
+      let calls = 0;
+      const provider: IntelligenceProvider = {
+        async evaluate() {
+          calls += 1;
+          return calls === 1 ? '[]' : '{"verdict":"fit","reason":"control"}';
+        },
+      };
+      const reviewer = new StandardsConformanceReviewer(provider);
+      let invocations = 0;
+      invocations += 1;
+      const report = await reviewer.review('spec', articles);
+      invocations += 1;
+      const fit = await reviewer.judgeFit('spec', 'Signal vs. Authority', articles);
+      return { clean: report.conclusion === 'fits' && fit.verdict === 'fit', invocations, evidence: { report, fit } };
+    },
+    blind: async () => {
+      const articles: StandardArticle[] = [{
+        family: 'Interaction', name: 'Signal vs. Authority', rule: 'Independent judgment.', inPractice: '',
+      }];
+      const provider: IntelligenceProvider = { async evaluate() { throw new Error('provider down'); } };
+      const reviewer = new StandardsConformanceReviewer(provider);
+      let invocations = 0;
+      invocations += 1;
+      const report = await reviewer.review('spec', articles);
+      invocations += 1;
+      const fit = await reviewer.judgeFit('spec', 'Signal vs. Authority', articles);
+      return {
+        clean: report.conclusion === 'fits' || fit.verdict === 'fit',
+        invocations,
+        evidence: { report, fit },
+      };
+    },
   }],
-  ['detector:src/monitoring/HumanAsDetectorLog.ts', () => {
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'checker-blind-detector-'));
-    try {
-      fs.writeFileSync(path.join(stateDir, 'metrics'), 'not a directory');
-      HumanAsDetectorLog.resetForTesting();
-      const log = HumanAsDetectorLog.getInstance();
-      log.configure({ stateDir, agentName: 'blind-case' });
-      vi.spyOn(console, 'warn').mockImplementation(() => {});
-      vi.spyOn(console, 'error').mockImplementation(() => {});
-      log.observe({ text: "that's wrong", source: 'test', topicId: 29723 });
-      const failures = log.getCaptureFailures();
-      return { clean: failures.length === 0, evidence: failures };
-    } finally {
-      vi.restoreAllMocks();
-      HumanAsDetectorLog.resetForTesting();
-      SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'checker-blind-input:detector' });
-    }
+  ['detector:src/monitoring/HumanAsDetectorLog.ts', {
+    control: () => {
+      const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'checker-control-detector-'));
+      try {
+        HumanAsDetectorLog.resetForTesting();
+        const log = HumanAsDetectorLog.getInstance();
+        log.configure({ stateDir, agentName: 'control-case' });
+        vi.spyOn(console, 'warn').mockImplementation(() => {});
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        let invocations = 0;
+        invocations += 1;
+        log.observe({ text: "that's wrong", source: 'test', topicId: 29723 });
+        const failures = log.getCaptureFailures();
+        return { clean: failures.length === 0, invocations, evidence: failures };
+      } finally {
+        vi.restoreAllMocks();
+        HumanAsDetectorLog.resetForTesting();
+        SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'checker-blind-input:detector-control' });
+      }
+    },
+    blind: () => {
+      const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'checker-blind-detector-'));
+      try {
+        fs.writeFileSync(path.join(stateDir, 'metrics'), 'not a directory');
+        HumanAsDetectorLog.resetForTesting();
+        const log = HumanAsDetectorLog.getInstance();
+        log.configure({ stateDir, agentName: 'blind-case' });
+        vi.spyOn(console, 'warn').mockImplementation(() => {});
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        let invocations = 0;
+        invocations += 1;
+        log.observe({ text: "that's wrong", source: 'test', topicId: 29723 });
+        const failures = log.getCaptureFailures();
+        return { clean: failures.length === 0, invocations, evidence: failures };
+      } finally {
+        vi.restoreAllMocks();
+        HumanAsDetectorLog.resetForTesting();
+        SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'checker-blind-input:detector' });
+      }
+    },
   }],
-  ['script:scripts/lint-checker-blind-input-coverage.mjs', () => {
-    let rejected = false;
-    try { deriveCheckerPopulation(path.join(ROOT, '__missing-checker-root__')); }
-    catch { rejected = true; }
-    return { clean: !rejected, evidence: { rejectedMissingRoot: rejected } };
+  ['script:scripts/lint-checker-blind-input-coverage.mjs', {
+    control: () => {
+      let invocations = 0;
+      invocations += 1;
+      const population = deriveCheckerPopulation(ROOT);
+      return { clean: population.length > 0, invocations, evidence: { population: population.length } };
+    },
+    blind: () => {
+      let rejected = false;
+      let invocations = 0;
+      invocations += 1;
+      try { deriveCheckerPopulation(path.join(ROOT, '__missing-checker-root__')); }
+      catch { rejected = true; }
+      return { clean: !rejected, invocations, evidence: { rejectedMissingRoot: rejected } };
+    },
   }],
 ]);
 
@@ -141,24 +259,58 @@ describe('checker blind-input class ratchet', () => {
 
   it('executes every declared blind case and none reports clean', async () => {
     expect([...CASES.keys()].sort()).toEqual([...BLIND_INPUT_CASE_IDS].sort());
-    expect(await executeBlindCases(CASES)).toEqual([]);
+    const execution = await executeBlindCases(CASES, { emitProof: true });
+    expect(execution.failures).toEqual([]);
+    expect(execution.provenIds.sort()).toEqual([...BLIND_INPUT_CASE_IDS].sort());
   });
 
   it('P1 symbol-preserving hollow: an inert case with the same id fails', async () => {
     const hollow = new Map(CASES);
-    hollow.set('script:scripts/lint-llm-attribution.js', () => ({ clean: true, evidence: 'inert body' }));
-    expect(await executeBlindCases(hollow)).toContainEqual({
+    hollow.set('script:scripts/lint-llm-attribution.js', {
+      control: () => ({ clean: true, invocations: 1, evidence: 'control' }),
+      blind: () => ({ clean: true, invocations: 1, evidence: 'inert body' }),
+    });
+    expect((await executeBlindCases(hollow)).failures).toContainEqual({
       id: 'script:scripts/lint-llm-attribution.js',
+      phase: 'blind',
+      reason: 'blind-input-accepted',
       evidence: 'inert body',
     });
+  });
+
+  it('refuses a hollow enrolled case that never invokes its checker', async () => {
+    const hollow = new Map<string, BlindCase>([[
+      'script:scripts/lint-new-but-never-invoked.mjs',
+      {
+        control: () => ({ clean: true, invocations: 0, evidence: 'constant-clean' }),
+        blind: () => ({ clean: false, invocations: 0, evidence: 'constant-refusal' }),
+      },
+    ]]);
+    expect((await executeBlindCases(hollow)).failures).toEqual([
+      {
+        id: 'script:scripts/lint-new-but-never-invoked.mjs',
+        phase: 'control',
+        reason: 'checker-not-invoked',
+        evidence: 'constant-clean',
+      },
+      {
+        id: 'script:scripts/lint-new-but-never-invoked.mjs',
+        phase: 'blind',
+        reason: 'checker-not-invoked',
+        evidence: 'constant-refusal',
+      },
+    ]);
   });
 
   it('P2 subject self-report is ignored by the independent oracle', async () => {
     const liar = new Map<string, BlindCase>([[
       'liar',
-      () => ({ clean: false, subjectClaim: 'clean', evidence: { inputReadable: false } }),
+      {
+        control: () => ({ clean: true, invocations: 1, subjectClaim: 'not-proven', evidence: { inputReadable: true } }),
+        blind: () => ({ clean: false, invocations: 1, subjectClaim: 'clean', evidence: { inputReadable: false } }),
+      },
     ]]);
-    expect(await executeBlindCases(liar)).toEqual([]);
+    expect((await executeBlindCases(liar)).failures).toEqual([]);
   });
 
   it('P4a empty population is an error, never 0/0 clean', () => {
@@ -183,6 +335,32 @@ describe('checker blind-input class ratchet', () => {
     }
   });
 
+  it('does not let retired legacy debt grandfather a different new checker', () => {
+    const result = evaluateProtectedBlindInputCoverage({
+      population: ['legacy-b', 'new-checker'],
+      protectedPopulationIds: ['legacy-a', 'legacy-b'],
+      executionProvenIds: [],
+      maxUncovered: 2,
+    });
+    expect(result).toMatchObject({
+      passed: false,
+      reason: 'new-checker-without-execution-proof',
+      newWithoutExecutionProof: ['new-checker'],
+    });
+  });
+
+  it('derives bootstrap ceiling only from execution-proven protected checkers', () => {
+    expect(deriveProtectedCeiling({
+      protectedPopulationIds: ['legacy-a', 'legacy-b', 'legacy-c'],
+      executionProvenIds: ['legacy-a', 'candidate-new'],
+    })).toBe(2);
+    expect(deriveProtectedCeiling({
+      protectedPopulationIds: ['legacy-a', 'legacy-b', 'legacy-c'],
+      executionProvenIds: [],
+      recordedProtectedCeiling: 1,
+    })).toBe(1);
+  });
+
   it('P5 missing population source throws NOT-PROVEN instead of returning clean', () => {
     expect(() => deriveCheckerPopulation(path.join(ROOT, '__missing__'))).toThrow(/population unavailable/);
   });
@@ -194,11 +372,23 @@ describe('checker blind-input class ratchet', () => {
       .toMatchObject({ passed: false, reason: 'ratchet-ceiling-raised' });
   });
 
-  it('derives bootstrap authority from the protected tree, not a second candidate constant', () => {
+  it('derives bootstrap authority from canonical protected main, never a local tracking ref', () => {
     const entry = fs.readFileSync(path.join(ROOT, 'scripts', 'lint-checker-blind-input-coverage.mjs'), 'utf8');
     expect(entry).not.toContain('INITIAL_MAX_UNCOVERED_CHECKERS');
     expect(entry).not.toContain('CHECKER_BLIND_INPUT_BASE_REF');
-    expect(readProtectedCeiling(ROOT)).toBe(MAX_UNCOVERED_CHECKERS);
+    expect(entry).not.toContain("'upstream/main'");
+    expect(entry).not.toContain("'origin/main'");
+    expect(entry).toContain("const CANONICAL_PROTECTED_REMOTE = 'https://github.com/JKHeadley/instar.git'");
+    const head = SafeGitExecutor.readSync(['rev-parse', 'HEAD'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      operation: 'checker-blind-input-ratchet:read-head',
+      sourceTreeReadOk: true,
+    }).trim();
+    const state = readProtectedStateAt(ROOT, head);
+    expect(state.protectedMainSha).toBe(head);
+    expect(state.baseSha).toBe(head);
+    expect(state.populationIds.length).toBeGreaterThan(90);
   });
 });
 

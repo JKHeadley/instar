@@ -110,6 +110,73 @@ export function evaluateBlindInputCoverage({ population, coverageIds, maxUncover
   };
 }
 
+/**
+ * A new checker is not legacy debt. It may enter the covered set only when the
+ * executable case runner produced a fresh proof for that exact checker ID.
+ * Comparing identities (rather than only cardinality) prevents a removed
+ * legacy checker from donating its grandfathered slot to a new unchecked one.
+ */
+export function evaluateProtectedBlindInputCoverage({
+  population,
+  protectedPopulationIds,
+  executionProvenIds,
+  maxUncovered,
+}) {
+  if (!Array.isArray(protectedPopulationIds) || protectedPopulationIds.length === 0) {
+    return {
+      passed: false,
+      reason: 'protected-population-unavailable',
+      populationCount: Array.isArray(population) ? population.length : 0,
+      coveredCount: 0,
+      uncovered: [],
+    };
+  }
+  const basic = evaluateBlindInputCoverage({
+    population,
+    coverageIds: executionProvenIds,
+    maxUncovered,
+  });
+  if (basic.reason === 'empty-population' || basic.reason === 'duplicate-population-id' ||
+      basic.reason === 'coverage-id-not-in-population') return basic;
+
+  const ids = population.map((entry) => typeof entry === 'string' ? entry : entry.id);
+  const protectedSet = new Set(protectedPopulationIds);
+  const provenSet = new Set(executionProvenIds);
+  const newCheckerIds = ids.filter((id) => !protectedSet.has(id));
+  const newWithoutExecutionProof = newCheckerIds.filter((id) => !provenSet.has(id));
+  if (newWithoutExecutionProof.length > 0) {
+    return {
+      ...basic,
+      passed: false,
+      reason: 'new-checker-without-execution-proof',
+      newCheckerIds,
+      newWithoutExecutionProof,
+    };
+  }
+  return { ...basic, newCheckerIds, newWithoutExecutionProof: [] };
+}
+
+/**
+ * Bootstrap from what was actually demonstrated, not from candidate enrollment.
+ * Once a protected copy records a lower ceiling it remains the upper bound.
+ */
+export function deriveProtectedCeiling({
+  protectedPopulationIds,
+  executionProvenIds,
+  recordedProtectedCeiling = null,
+}) {
+  if (!Array.isArray(protectedPopulationIds) || protectedPopulationIds.length === 0) {
+    throw new Error('protected checker population empty');
+  }
+  const proven = new Set(executionProvenIds);
+  const executionDerived = protectedPopulationIds.filter((id) => !proven.has(id)).length;
+  if (recordedProtectedCeiling === null) return executionDerived;
+  if (!Number.isSafeInteger(recordedProtectedCeiling) || recordedProtectedCeiling < 0) {
+    throw new Error('protected ceiling malformed');
+  }
+  return Math.min(recordedProtectedCeiling, executionDerived);
+}
+
 /** A legacy-debt ceiling is allowed to stay level or fall, never rise. */
 export function evaluateCeilingRatchet({ currentCeiling, protectedCeiling }) {
   if (!Number.isSafeInteger(currentCeiling) || currentCeiling < 0 ||
