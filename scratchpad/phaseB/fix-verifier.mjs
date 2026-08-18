@@ -408,7 +408,9 @@ export function sameRealFile(left, right, cwd = process.cwd()) {
   try {
     const leftRealPath = fs.realpathSync(path.resolve(cwd, left));
     const rightRealPath = fs.realpathSync(path.resolve(cwd, right));
-    return leftRealPath === rightRealPath;
+    return fs.statSync(leftRealPath).isFile()
+      && fs.statSync(rightRealPath).isFile()
+      && leftRealPath === rightRealPath;
   } catch {
     return false;
   }
@@ -481,10 +483,10 @@ function observerSource({ realNode, cwd, guardId, nodeEntry, requiredArgs, short
     + `const publicKey = keyPair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');\n`
     + `const observerSession = crypto.randomUUID();\n`
     + `let sequence = 0;\n`
-    + `const resolveReal = (value) => { try { return fs.realpathSync(path.resolve(cwd, value)); } catch { return null; } };\n`
-    + `const observedReal = argv.length > 0 ? resolveReal(argv[0]) : null;\n`
-    + `const expectedReal = resolveReal(expected);\n`
-    + `const target = observedReal !== null && expectedReal !== null && observedReal === expectedReal && required.every((item) => argv.includes(item));\n`
+    + `const resolveRealFile = (value) => { try { const real = fs.realpathSync(path.resolve(cwd, value)); return fs.statSync(real).isFile() ? real : null; } catch { return null; } };\n`
+    + `const observedRealFile = argv.length > 0 ? resolveRealFile(argv[0]) : null;\n`
+    + `const expectedRealFile = resolveRealFile(expected);\n`
+    + `const target = observedRealFile !== null && expectedRealFile !== null && observedRealFile === expectedRealFile && required.every((item) => argv.includes(item));\n`
     + `const emit = (kind, fields = {}) => { const event = { eventSchema: 'phaseB-authenticated-observer-event/v1', source: 'fix-verifier-observer', observerSession, sequence: ++sequence, kind, guardId: ${JSON.stringify(guardId)}, nodeEntry: ${JSON.stringify(nodeEntry)}, observerPid: process.pid, argv, ...(kind === 'observer-ready' ? { publicKey } : {}), ...fields }; const signature = crypto.sign(null, Buffer.from(canonical(event)), keyPair.privateKey).toString('base64'); process.stdout.write('FIX_VERIFIER_OBSERVER_EVENT ' + JSON.stringify({ ...event, signature }) + '\\n'); };\n`
     + `if (target) {\n`
     + `  emit('observer-ready');\n`

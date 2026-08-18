@@ -218,6 +218,79 @@ test('W4 negative refuses a shim to a same-named real file in another directory'
   }
 });
 
+test('W4-R negative refuses a declared directory even when Node executes its index file', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-verifier-w4r-directory-entry-'));
+  try {
+    const entryDir = path.join(root, 'entry-dir');
+    fs.mkdirSync(entryDir, { recursive: true });
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+      name: 'fix-verifier-w4r-directory-entry',
+      private: true,
+      scripts: { wired: 'node entry-dir' },
+    }));
+    fs.writeFileSync(path.join(entryDir, 'index.js'), "console.log('[w4r-directory] contained index ran');\n");
+
+    const result = await runPipelineWiringControls({
+      command: { argv: ['npm', 'run', 'wired'], timeoutMs: 30_000 },
+      cwd: root,
+      guardId: 'w4r-directory-entry',
+      contract: { observer: { nodeEntry: 'entry-dir', requiredArgs: [] } },
+      observerRoot: path.join(root, '.observer'),
+    });
+
+    assert.equal(sameRealFile('entry-dir', 'entry-dir', root), false);
+    assert.match(result.positive.run.stdout.text, /\[w4r-directory\] contained index ran/);
+    assert.equal(result.positive.run.exitCode, 0);
+    assert.equal(result.positive.processObservations.authenticatedEventCount, 0);
+    assert.equal(result.positive.receipts.length, 0);
+    assert.equal(result.C3.shortCircuitEvents.length, 0);
+    assert.equal(result.C3.receipts.length, 0);
+    assert.equal(result.envelope.status, 'unknown');
+    assert.equal(validatePipelineEvidence(result.envelope).valid, false);
+    console.log('W4R_DIRECTORY executedContainedFile=true authenticatedEvents=0 authenticatedReceipts=0 verdict=UNKNOWN');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('W4-R negative refuses a symlink chain whose final target is a directory', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-verifier-w4r-directory-symlink-'));
+  try {
+    const entryDir = path.join(root, 'entry-dir');
+    fs.mkdirSync(entryDir, { recursive: true });
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+      name: 'fix-verifier-w4r-directory-symlink',
+      private: true,
+      scripts: { wired: 'node entry-link-a' },
+    }));
+    fs.writeFileSync(path.join(entryDir, 'index.js'), "console.log('[w4r-directory-symlink] contained index ran');\n");
+    fs.symlinkSync('entry-link-b', path.join(root, 'entry-link-a'));
+    fs.symlinkSync('entry-dir', path.join(root, 'entry-link-b'));
+
+    const result = await runPipelineWiringControls({
+      command: { argv: ['npm', 'run', 'wired'], timeoutMs: 30_000 },
+      cwd: root,
+      guardId: 'w4r-directory-symlink-entry',
+      contract: { observer: { nodeEntry: 'entry-link-a', requiredArgs: [] } },
+      observerRoot: path.join(root, '.observer'),
+    });
+
+    assert.equal(fs.realpathSync(path.join(root, 'entry-link-a')), fs.realpathSync(entryDir));
+    assert.equal(sameRealFile('entry-link-a', 'entry-link-a', root), false);
+    assert.match(result.positive.run.stdout.text, /\[w4r-directory-symlink\] contained index ran/);
+    assert.equal(result.positive.run.exitCode, 0);
+    assert.equal(result.positive.processObservations.authenticatedEventCount, 0);
+    assert.equal(result.positive.receipts.length, 0);
+    assert.equal(result.C3.shortCircuitEvents.length, 0);
+    assert.equal(result.C3.receipts.length, 0);
+    assert.equal(result.envelope.status, 'unknown');
+    assert.equal(validatePipelineEvidence(result.envelope).valid, false);
+    console.log('W4R_DIRECTORY_SYMLINK chainEndsAtDirectory=true executedContainedFile=true authenticatedEvents=0 authenticatedReceipts=0 verdict=UNKNOWN');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a pipeline that stops before the guard is UNKNOWN, including C3', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-verifier-wiring-blocked-'));
   try {

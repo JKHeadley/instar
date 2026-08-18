@@ -89,3 +89,38 @@ The observed argv used the `.bin/vitest` spelling, all three observer events aut
 Task B after-verdict: **PROVEN**, wiring-only rung **WIRED**. Evidence: `scratchpad/phaseB/evidence/W4-topic-operator-evidence.json` (`e3fedbdd72f6392615b18a6fee3dcce0bbbf527da96fb7cad5155c41001a07e0`).
 
 Could Task B make a genuinely wrong entry pass? **No.** Successful equality requires both filesystem resolutions and exact equality of their canonical results. The wrong-target fixture is specifically a symlink plus same-named file in another directory—the two permissive mistakes this change could otherwise invite—and it stays UNKNOWN with zero receipts. Resolution failure is also explicitly refused.
+
+## 2026-08-18 06:04:14 -0700 (PDT) — W4-R: regular-file identity repair
+
+### Independent finding and correction
+
+J8 demonstrated that the preceding “genuinely wrong entry” conclusion was incorrect. The comparator required equal canonical paths but did not require either resolved operand to be a regular file. Consequently a declared directory compared equal to itself while Node executed its contained `index.js`; the end-to-end control minted one authenticated receipt and returned `proven`. A symlink chain ending at a directory had the same defect. The earlier operator-binding run remains a real execution fact but its certification is inadmissible until this repair is re-proved.
+
+The deciding J8 output was:
+
+```text
+[fix-verifier-wiring] authenticated guard=j8-directory-entry entry=entry-dir childPid=11777 childExit=0
+{"directoryComparisonAccepted":true,"executedContainedFile":true,"wrapperExit":0,"authenticatedReceipts":1,"verdict":"proven"}
+```
+
+J8 names both consumers of the comparison: the parent-side authenticated `observer-ready` / `child-start` identity validation and the generated observer's target selection. The repair requires both canonical operands to pass `statSync(...).isFile()` before exact real-path equality can succeed in both locations. No authentication, signing, sequencing, receipt binding, manifest, adapter, or enforcement-evidence logic changed.
+
+### Authenticated negative fixtures
+
+The full observer/authority controls now exercise both omitted cases. In each case Node really executes the contained index file, but the generated observer emits no authenticated target events, the authority mints zero receipts, C3 emits no short-circuit, and the envelope remains `unknown`:
+
+```text
+W4R_DIRECTORY executedContainedFile=true authenticatedEvents=0 authenticatedReceipts=0 verdict=UNKNOWN
+W4R_DIRECTORY_SYMLINK chainEndsAtDirectory=true executedContainedFile=true authenticatedEvents=0 authenticatedReceipts=0 verdict=UNKNOWN
+```
+
+The pre-proof focused suite passed 24/24:
+
+```text
+node --test scratchpad/phaseB/authenticated-execution-receipt.test.mjs scratchpad/phaseB/fix-verifier.test.mjs
+tests=24 pass=24 fail=0
+```
+
+Pre-proof amended instrument SHA-256: `c9fab8034effc8f64c525073f85c7c04c1fd5cca9c0b2324203632ea34145b3a`.
+
+Operator-binding certification status at this point: **UNKNOWN pending a fresh wiring proof with the repaired instrument**.
