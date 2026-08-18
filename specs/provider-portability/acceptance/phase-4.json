@@ -15,7 +15,7 @@
     {
       "id": "unit-tests-codex",
       "description": "All Codex-adapter unit tests pass (event normalizer + canaries)",
-      "command": "npx vitest run tests/unit/providers/adapters/openai-codex/",
+      "command": "npx vitest run --no-cache tests/unit/providers/adapters/openai-codex/",
       "envRequired": [],
       "expectExitCode": 0,
       "timeoutMs": 60000
@@ -23,7 +23,7 @@
     {
       "id": "capability-honesty-canary",
       "description": "Capability-honesty canary still passes with codex stub factory included",
-      "command": "npx vitest run tests/unit/providers/canary/capabilityHonestyCanary.test.ts",
+      "command": "npx vitest run --no-cache tests/unit/providers/canary/capabilityHonestyCanary.test.ts",
       "envRequired": [],
       "expectExitCode": 0,
       "timeoutMs": 30000
@@ -31,10 +31,19 @@
     {
       "id": "parity-structural",
       "description": "Codex x Anthropic structural parity scenarios pass (no real API)",
-      "command": "npx tsx src/providers/parity/_codex_paritytest.ts",
+      "command": "node node_modules/vite-node/vite-node.mjs src/providers/parity/_codex_paritytest.ts --json",
       "envRequired": [],
       "expectExitCode": 0,
-      "expectStdoutContains": "7 ok, 0 fail",
+      "expectJson": {
+        "source": "stdout",
+        "schema": "instar-parity-summary/v1",
+        "equals": {
+          "total": 7,
+          "passed": 5,
+          "failed": 0,
+          "skipped": 2
+        }
+      },
       "timeoutMs": 60000
     }
   ],
@@ -58,10 +67,19 @@
     {
       "id": "codex-anthropic-parity-realapi",
       "description": "Codex x Anthropic parity passes with INSTAR_REAL_API=1 (arithmetic, abort signal)",
-      "command": "INSTAR_REAL_API=1 npx tsx src/providers/parity/_codex_paritytest.ts",
+      "command": "INSTAR_REAL_API=1 node node_modules/vite-node/vite-node.mjs src/providers/parity/_codex_paritytest.ts --json",
       "envRequired": ["OPENAI_API_KEY|CODEX_AUTH_VALID", "ANTHROPIC_AUTH_VALID"],
       "expectExitCode": 0,
-      "expectStdoutContains": "0 fail",
+      "expectJson": {
+        "source": "stdout",
+        "schema": "instar-parity-summary/v1",
+        "equals": {
+          "total": 7,
+          "passed": 7,
+          "failed": 0,
+          "skipped": 0
+        }
+      },
       "timeoutMs": 180000,
       "lastResult": null
     },

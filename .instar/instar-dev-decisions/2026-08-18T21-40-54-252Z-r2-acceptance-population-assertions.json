@@ -1,0 +1,38 @@
+{
+  "ts": "2026-08-18T21:40:54.252Z",
+  "slug": "r2-acceptance-population-assertions",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 165,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/check-phase-complete.cjs",
+      "scripts/lib/phase-acceptance-output.cjs",
+      "src/providers/parity/_codex_paritytest.ts",
+      "src/providers/parity/index.ts",
+      "src/providers/parity/runner.ts"
+    ],
+    "addedLines": 152,
+    "deletedLines": 13
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The Phase 4 acceptance manifest relied on a floating substring to assert a numeric result population. Exit-code behavior masked the defect, but an exit-zero empty run was not independently refused and `0 fail` also matched `10 fail`."
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "gate",
+      "citation": "tests/unit/phase-acceptance-population.test.ts",
+      "howCaught": "Marker-backed exit-zero controls prove that the gate rejects the legacy `10 fail` text claim, a structured one-failure claim, and a zero-result claim, while accepting only the exact seven-result all-pass contract."
+    },
+    "component": "phase-acceptance-population"
+  },
+  "verdict": "pass"
+}

@@ -29,6 +29,11 @@ Each phase has a JSON file in this directory: `phase-<N>.json`. The shape:
       "envRequired": ["<env var name>", ...],
       "expectExitCode": 0,
       "expectStdoutContains": "<optional substring>",
+      "expectJson": {
+        "source": "stdout",
+        "schema": "<required schema identifier>",
+        "equals": { "<field>": "<exact primitive value>" }
+      },
       "timeoutMs": 120000
     }
   ],
@@ -45,6 +50,9 @@ Each phase has a JSON file in this directory: `phase-<N>.json`. The shape:
 1. Reads the manifest at `specs/provider-portability/acceptance/phase-<N>.json`.
 2. For each structural gate: runs the command, fails the phase if any returns non-zero.
 3. For each real-API gate: runs the command. **Treats any non-zero exit code AS BLOCKED, including the smoke test's intentional AUTH-BLOCKED exit-2/3 codes.** Skipped, gated-off, or auth-blocked are NOT pass states.
+   When `expectJson` is present, the selected stream must be exactly one JSON document with the
+   declared schema and exact field values. Use this for population/count assertions; substring
+   matching cannot distinguish `0 fail` from `10 fail` and cannot prove that work ran.
 4. Exits 0 if and only if every gate passed against a live provider.
 5. Exits non-zero with a structured report otherwise — the report names which gates blocked and why, suitable for surfacing to operator.
 

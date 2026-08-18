@@ -9,8 +9,9 @@
  * credentials for both providers. Structural-only scenarios always run.
  *
  * Run with:
- *   npx tsx src/providers/parity/_codex_paritytest.ts
- *   INSTAR_REAL_API=1 npx tsx src/providers/parity/_codex_paritytest.ts
+ *   node node_modules/vite-node/vite-node.mjs src/providers/parity/_codex_paritytest.ts
+ *   INSTAR_REAL_API=1 node node_modules/vite-node/vite-node.mjs src/providers/parity/_codex_paritytest.ts
+ * Add --json for the machine-readable acceptance summary.
  */
 
 import { createAnthropicHeadlessAdapter } from '../adapters/anthropic-headless/index.js';
@@ -19,12 +20,16 @@ import {
   allParityScenarios,
   runParitySuite,
   reportParityResults,
+  reportParityResultsJson,
 } from './index.js';
 
 async function main(): Promise<void> {
   const realApi = process.env['INSTAR_REAL_API'] === '1';
-  // eslint-disable-next-line no-console
-  console.log(`Codex×Anthropic parity suite — realApi=${realApi}`);
+  const json = process.argv.includes('--json');
+  if (!json) {
+    // eslint-disable-next-line no-console
+    console.log(`Codex×Anthropic parity suite — realApi=${realApi}`);
+  }
 
   const left = createAnthropicHeadlessAdapter();
   const right = createOpenAiCodexAdapter();
@@ -38,7 +43,9 @@ async function main(): Promise<void> {
     allParityScenarios,
   );
 
-  const exitCode = reportParityResults(results);
+  const exitCode = json
+    ? reportParityResultsJson(results)
+    : reportParityResults(results);
   process.exit(exitCode);
 }
 
