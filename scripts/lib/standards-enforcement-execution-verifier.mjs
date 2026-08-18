@@ -3,20 +3,36 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   createAuthenticatedReceiptAuthority,
   isLiveAuthenticatedReceipt,
 } from "../../scratchpad/phaseB/authenticated-execution-receipt.mjs";
 import { SafeFsExecutor } from "../../dist/core/SafeFsExecutor.js";
 
-const ARTIFACT_SCHEMA = "standards-enforcement-observed-execution/v1";
-const RUNNER = "node-test-tap-v1";
+const ARTIFACT_SCHEMA = "standards-enforcement-observed-execution/v2";
+const RUNNER = "node-test-events-v1";
+const RUNNER_REF = "scripts/lib/standards-enforcement-node-test-runner.mjs";
+const RUNNER_PATH = fileURLToPath(
+  new URL("./standards-enforcement-node-test-runner.mjs", import.meta.url),
+);
+const OBSERVATION_SCHEMA = "standards-enforcement-node-test-events/v1";
 const DEFAULT_OBSERVER_TIMEOUT_MS = 15_000;
 const SHA256_RE = /^[a-f0-9]{64}$/;
 const liveArtifacts = new WeakSet();
 
 const sha256 = (value) =>
   crypto.createHash("sha256").update(value).digest("hex");
+
+function runnerDigest() {
+  const stat = fs.lstatSync(RUNNER_PATH);
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error("structured test runner must be a regular non-symlink file");
+  }
+  return sha256(fs.readFileSync(RUNNER_PATH));
+}
+
+const RUNNER_SHA256 = runnerDigest();
 
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -50,33 +66,43 @@ function occurrences(haystack, needle) {
   return count;
 }
 
-function parseTap(output) {
-  const tests = [...output.matchAll(/^# tests (\d+)\s*$/gm)].at(-1);
-  const passed = [...output.matchAll(/^# pass (\d+)\s*$/gm)].at(-1);
-  const failed = [...output.matchAll(/^# fail (\d+)\s*$/gm)].at(-1);
-  return {
-    testsRun: tests ? Number(tests[1]) : null,
-    passed: passed ? Number(passed[1]) : null,
-    failed: failed ? Number(failed[1]) : null,
-  };
-}
-
-function extractDecidingOutput(output) {
-  const lines = output
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const decisive = lines.find((line) =>
-    /AssertionError|ERR_ASSERTION|Expected values|expected .* (?:to|but)|actual:/i.test(
-      line,
-    ),
-  );
+function validObservation(value, observerRef) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value).sort();
+  if (
+    JSON.stringify(keys) !==
+    JSON.stringify(
+      [
+        "assertionFailures",
+        "decidingMessage",
+        "failed",
+        "observerRef",
+        "passed",
+        "schema",
+        "source",
+        "testsRun",
+      ].sort(),
+    )
+  )
+    return false;
+  const counts = [
+    value.testsRun,
+    value.passed,
+    value.failed,
+    value.assertionFailures,
+  ];
   return (
-    decisive ??
-    lines.find((line) => /^not ok\b/.test(line)) ??
-    lines.at(-1) ??
-    ""
-  ).slice(0, 500);
+    value.schema === OBSERVATION_SCHEMA &&
+    value.source === "node:test TestsStream" &&
+    value.observerRef === observerRef &&
+    counts.every(
+      (count) => Number.isSafeInteger(count) && count >= 0,
+    ) &&
+    value.testsRun === value.passed + value.failed &&
+    value.assertionFailures <= value.failed &&
+    typeof value.decidingMessage === "string" &&
+    value.decidingMessage.length <= 500
+  );
 }
 
 function scrubbedChildEnv() {
@@ -97,12 +123,12 @@ function runObserver(
   timeoutMs = DEFAULT_OBSERVER_TIMEOUT_MS,
 ) {
   return new Promise((resolve) => {
-    const argv = [process.execPath, "--test", observerRef];
+    const argv = [process.execPath, RUNNER_PATH, observerRef];
     const startedAt = new Date().toISOString();
-    const child = spawn(process.execPath, ["--test", observerRef], {
+    const child = spawn(process.execPath, [RUNNER_PATH, observerRef], {
       cwd: workspace,
       env: scrubbedChildEnv(),
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
       detached: process.platform !== "win32",
     });
     const stdout = [];
@@ -110,6 +136,7 @@ function runObserver(
     let spawnError = null;
     let timedOut = false;
     let settled = false;
+    const observations = [];
     const finish = (exitCode, signal, emittedAfterChildExit) => {
       if (settled) return;
       settled = true;
@@ -130,7 +157,11 @@ function runObserver(
         emittedAfterChildExit,
         output,
         outputSha256: sha256(output),
-        tap: parseTap(output),
+        observation:
+          observations.length === 1 &&
+          validObservation(observations[0], observerRef)
+            ? observations[0]
+            : null,
         spawnError,
         timedOut,
       });
@@ -148,11 +179,13 @@ function runObserver(
       }
       child.stdout.destroy();
       child.stderr.destroy();
+      if (child.connected) child.disconnect();
       finish(null, "SIGKILL", false);
     }, timeoutMs);
     timer.unref();
     child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
     child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+    child.on("message", (message) => observations.push(message));
     child.on("error", (error) => {
       spawnError = error;
     });
@@ -195,7 +228,7 @@ function validatePlan(record) {
   if (
     execution.runner !== RUNNER ||
     JSON.stringify(execution.argv) !==
-      JSON.stringify(["node", "--test", record.ref])
+      JSON.stringify(["node", RUNNER_REF, record.ref])
   ) {
     return "execution command is not the pinned node test runner for the observer";
   }
@@ -280,6 +313,8 @@ function artifactFor(
       ref: record.ref,
       sha256: record.sha256,
       runner: RUNNER,
+      runnerSha256: RUNNER_SHA256,
+      structuredSource: "node:test TestsStream",
       argv: clean.argv,
     },
     subject: {
@@ -292,26 +327,27 @@ function artifactFor(
     clean: {
       receipt: cleanReceipt,
       exitCode: clean.childExitCode,
-      testsRun: clean.tap.testsRun,
-      passed: clean.tap.passed,
-      failed: clean.tap.failed,
+      testsRun: clean.observation.testsRun,
+      passed: clean.observation.passed,
+      failed: clean.observation.failed,
       outputSha256: clean.outputSha256,
     },
     mutated: {
       receipt: mutatedReceipt,
       exitCode: mutated.childExitCode,
-      testsRun: mutated.tap.testsRun,
-      passed: mutated.tap.passed,
-      failed: mutated.tap.failed,
+      testsRun: mutated.observation.testsRun,
+      passed: mutated.observation.passed,
+      failed: mutated.observation.failed,
+      assertionFailures: mutated.observation.assertionFailures,
       outputSha256: mutated.outputSha256,
-      decidingOutput: extractDecidingOutput(mutated.output),
+      decidingOutput: mutated.observation.decidingMessage,
     },
     confirmation: {
       receipt: confirmationReceipt,
       exitCode: confirmation.childExitCode,
-      testsRun: confirmation.tap.testsRun,
-      passed: confirmation.tap.passed,
-      failed: confirmation.tap.failed,
+      testsRun: confirmation.observation.testsRun,
+      passed: confirmation.observation.passed,
+      failed: confirmation.observation.failed,
       outputSha256: confirmation.outputSha256,
     },
   };
@@ -325,8 +361,8 @@ function artifactFor(
 
 /**
  * The protected ledger chooses a subject and a mechanical mutation, but it cannot
- * state an execution outcome. Both runs and receipts are minted in this boundary
- * from direct child-process observations.
+ * state an execution outcome. All runs, structured observations, and receipts
+ * are minted in this boundary from direct child-process observations.
  */
 export async function verifyProtectedExecutionProof({
   record,
@@ -402,6 +438,12 @@ export async function verifyProtectedExecutionProof({
         reason: "clean observer execution could not be authenticated",
         artifact: null,
       };
+    if (clean.observation === null)
+      return {
+        status: "unknown",
+        reason: "clean structured test observation unavailable",
+        artifact: null,
+      };
 
     const subjectPath = path.join(
       mutatedWorkspace,
@@ -458,6 +500,12 @@ export async function verifyProtectedExecutionProof({
         reason: "mutated observer execution could not be authenticated",
         artifact: null,
       };
+    if (mutated.observation === null)
+      return {
+        status: "unknown",
+        reason: "mutated structured test observation unavailable",
+        artifact: null,
+      };
 
     const confirmation = await runObserver(
       confirmationWorkspace,
@@ -479,6 +527,12 @@ export async function verifyProtectedExecutionProof({
         reason: "confirmation observer execution could not be authenticated",
         artifact: null,
       };
+    if (confirmation.observation === null)
+      return {
+        status: "unknown",
+        reason: "confirmation structured test observation unavailable",
+        artifact: null,
+      };
 
     const artifact = artifactFor(
       record,
@@ -492,23 +546,21 @@ export async function verifyProtectedExecutionProof({
     );
     const cleanPassed =
       clean.childExitCode === 0 &&
-      clean.tap.testsRun > 0 &&
-      clean.tap.failed === 0;
+      clean.observation.testsRun > 0 &&
+      clean.observation.failed === 0;
     const sameTestsRan =
-      Number.isInteger(clean.tap.testsRun) &&
-      clean.tap.testsRun === mutated.tap.testsRun &&
-      clean.tap.testsRun === confirmation.tap.testsRun;
+      Number.isInteger(clean.observation.testsRun) &&
+      clean.observation.testsRun === mutated.observation.testsRun &&
+      clean.observation.testsRun === confirmation.observation.testsRun;
     const confirmationPassed =
       confirmation.childExitCode === 0 &&
-      confirmation.tap.testsRun > 0 &&
-      confirmation.tap.failed === 0;
+      confirmation.observation.testsRun > 0 &&
+      confirmation.observation.failed === 0;
     const assertionFailure =
       mutated.childExitCode !== 0 &&
-      mutated.tap.testsRun > 0 &&
-      mutated.tap.failed > 0 &&
-      /AssertionError|ERR_ASSERTION|Expected values|expected .* (?:to|but)|actual:/i.test(
-        mutated.output,
-      );
+      mutated.observation.testsRun > 0 &&
+      mutated.observation.failed > 0 &&
+      mutated.observation.assertionFailures > 0;
     if (!cleanPassed)
       return {
         status: "not-proven",
@@ -529,8 +581,7 @@ export async function verifyProtectedExecutionProof({
       };
     if (
       !sameTestsRan ||
-      !assertionFailure ||
-      clean.outputSha256 === mutated.outputSha256
+      !assertionFailure
     ) {
       return {
         status: "not-proven",

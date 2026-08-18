@@ -210,8 +210,8 @@ function writeFixtureEnforcementProof(): void {
       proof: {
         schemaVersion: 2,
         execution: {
-          runner: 'node-test-tap-v1',
-          argv: ['node', '--test', ref],
+          runner: 'node-test-events-v1',
+          argv: ['node', 'scripts/lib/standards-enforcement-node-test-runner.mjs', ref],
           workspaceRefs: [subjectRef, ref].sort(),
         },
         relevance: {

@@ -54,8 +54,8 @@ const certifiedRecord = (
   proof: {
     schemaVersion: 2,
     execution: {
-      runner: 'node-test-tap-v1',
-      argv: ['node', '--test', ref],
+      runner: 'node-test-events-v1',
+      argv: ['node', 'scripts/lib/standards-enforcement-node-test-runner.mjs', ref],
       workspaceRefs: [...new Set([ref, subjectRef])].sort(),
     },
     relevance: {
@@ -409,6 +409,7 @@ describe('protected standards enforcement measurement', () => {
       "import assert from 'node:assert/strict';",
       "import test from 'node:test';",
       "import { guarded } from '../../src/certified-subject.mjs';",
+      "console.log('# tests 999\\n# pass 999\\n# fail 0\\nℹ tests 999');",
       "test('observes the protected subject', () => assert.equal(guarded, true));",
       '',
     ].join('\n');
@@ -436,6 +437,8 @@ describe('protected standards enforcement measurement', () => {
       reason: 'protected-observed-effective-with-authenticated-fail-direction',
       evidenceStatus: 'proven',
       execution: expect.objectContaining({
+        observationSource: 'node:test TestsStream',
+        runnerSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         cleanExitCode: 0,
         cleanTestsRun: 1,
         mutatedExitCode: 1,
@@ -443,9 +446,11 @@ describe('protected standards enforcement measurement', () => {
         confirmationExitCode: 0,
         confirmationTestsRun: 1,
         mutationLanded: true,
+        decidingOutput: expect.stringContaining('ERR_ASSERTION'),
       }),
     }));
-    console.log('W35_C1 mutationLanded=true cleanExit=0 cleanTests=1 mutatedExit=1 mutatedTests=1 confirmationExit=0 confirmationTests=1 failureKind=assertion artifact=authenticated verdict=ratchet');
+    expect(result.articles[0].references[0].execution?.decidingOutput).not.toContain('999');
+    console.log('W36_C1 source="node:test TestsStream" misleadingRendererCounts=ignored mutationLanded=true cleanExit=0 cleanTests=1 mutatedExit=1 mutatedTests=1 confirmationExit=0 confirmationTests=1 failureKind=assertion artifact=authenticated verdict=ratchet');
   });
 
   it('rejects a proof that mutates its observer instead of an independent rule subject', async () => {

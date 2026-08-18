@@ -280,7 +280,11 @@ function validProofRecord(record, index) {
   const execution = proof.execution;
   if (!exactKeys(execution, ['runner', 'argv', 'workspaceRefs']) ||
     execution.runner !== STANDARDS_EXECUTION_RUNNER ||
-    JSON.stringify(execution.argv) !== JSON.stringify(['node', '--test', record.ref]) ||
+    JSON.stringify(execution.argv) !== JSON.stringify([
+      'node',
+      'scripts/lib/standards-enforcement-node-test-runner.mjs',
+      record.ref,
+    ]) ||
     !Array.isArray(execution.workspaceRefs) || execution.workspaceRefs.length < 2 ||
     execution.workspaceRefs.some((ref) => !safeRepoPath(ref)) ||
     new Set(execution.workspaceRefs).size !== execution.workspaceRefs.length ||
@@ -495,6 +499,8 @@ export async function measureAnchoredEnforcement({
                     evidenceStatus: 'proven',
                     executionArtifactSha256: artifact.artifactSha256,
                     execution: {
+                      observationSource: artifact.observer.structuredSource,
+                      runnerSha256: artifact.observer.runnerSha256,
                       cleanExitCode: artifact.clean.exitCode,
                       cleanTestsRun: artifact.clean.testsRun,
                       mutatedExitCode: artifact.mutated.exitCode,
@@ -515,6 +521,8 @@ export async function measureAnchoredEnforcement({
                     ...(liveArtifact ? {
                       executionArtifactSha256: artifact.artifactSha256,
                       execution: {
+                        observationSource: artifact.observer.structuredSource,
+                        runnerSha256: artifact.observer.runnerSha256,
                         cleanExitCode: artifact.clean.exitCode,
                         cleanTestsRun: artifact.clean.testsRun,
                         mutatedExitCode: artifact.mutated.exitCode,
