@@ -1,0 +1,667 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-08-18T07:21:03.750Z",
+  "instrument": {
+    "path": "/Users/justin/Documents/Projects/instar-codey/.worktrees/phase-b-w1-validated-pipeline-wiring/scratchpad/phaseB/fix-verifier.mjs",
+    "sha256": "92425be2ecec5969f650c23851153c7e3396ef27582acc141cc6c45d88d116d2",
+    "manifest": {
+      "path": "/Users/justin/Documents/Projects/instar-codey/.worktrees/phase-b-w1-validated-pipeline-wiring/scratchpad/phaseB/fix-verifier.manifest.json",
+      "sha256": "a3ae19ae23bae375f48de04d51aa9f17e674e20783bdfd0d9dd5b5815b864677",
+      "adapterRegistryChecked": true,
+      "count": 8,
+      "ids": [
+        "audit-convergence-validator",
+        "checker-blind-input-coverage",
+        "guard-posture-probe",
+        "lint-llm-attribution",
+        "self-action-convergence",
+        "standards-direction-guard",
+        "testing-integrity-route-enforcement",
+        "topic-operator-evidence"
+      ]
+    },
+    "adapter": {
+      "path": "/Users/justin/Documents/Projects/instar-codey/.worktrees/phase-b-w1-validated-pipeline-wiring/scratchpad/phaseB/adapters/topic-operator-evidence.mjs",
+      "sha256": "d7248e314f779e47d6290500d80d924f30754b8165a524c3992d0160acba49e1"
+    }
+  },
+  "guardId": "topic-operator-evidence",
+  "description": "Evidence-bearing topic-operator bindings plus verified-reader refusal of assertions.",
+  "fixture": "none",
+  "measurementScope": "wiring-only",
+  "target": {
+    "tree": "/Users/justin/Documents/Projects/instar-codey/.worktrees/phase-b-w1-validated-pipeline-wiring",
+    "requestedCommit": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5",
+    "commit": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5",
+    "remote": {
+      "name": "upstream",
+      "url": "https://github.com/JKHeadley/instar.git"
+    },
+    "dirtyAtStart": true,
+    "porcelainAtStart": [
+      "?? scratchpad/phaseB/"
+    ]
+  },
+  "adapterRegistry": {
+    "source": "/Users/justin/Documents/Projects/instar-codey/.worktrees/phase-b-w1-validated-pipeline-wiring/scratchpad/phaseB/fix-verifier.manifest.json",
+    "sourceSha256": "a3ae19ae23bae375f48de04d51aa9f17e674e20783bdfd0d9dd5b5815b864677",
+    "schemaChecked": true,
+    "semanticRole": "list of implemented adapters; never a guard census or coverage denominator",
+    "nonEmpty": true,
+    "adaptedGuardCount": 8,
+    "ids": [
+      "audit-convergence-validator",
+      "checker-blind-input-coverage",
+      "guard-posture-probe",
+      "lint-llm-attribution",
+      "self-action-convergence",
+      "standards-direction-guard",
+      "testing-integrity-route-enforcement",
+      "topic-operator-evidence"
+    ]
+  },
+  "coverageAggregate": {
+    "emitted": false,
+    "ratio": null,
+    "denominator": null,
+    "notMeasured": null,
+    "reason": "this command verifies one requested guard; adapter registration is not the real guard census"
+  },
+  "existence": {
+    "outcome": "proven",
+    "files": [
+      {
+        "path": "tests/unit/topic-operator-store.test.ts",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "tests/integration/topic-operator-routes.test.ts",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "tests/integration/topic-operator-autobind-route.test.ts",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "src/users/TopicOperatorStore.ts",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "src/server/routes.ts",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "src/commands/server.ts",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      }
+    ]
+  },
+  "wiring": {
+    "outcome": "proven",
+    "declaredEntryPoint": ".github/workflows/ci.yml -> npm run test:push",
+    "establishedBy": "core-minted token received from the exact manifest-pinned guard child after it exited through the protected workflow command; C3 wrapper success produced no receipt",
+    "protectedBase": {
+      "remoteUrl": "https://github.com/JKHeadley/instar.git",
+      "ref": "refs/heads/main",
+      "commit": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5",
+      "serverResolved": true,
+      "fetchMatchesServer": true,
+      "workflowPath": ".github/workflows/ci.yml",
+      "workflowSha256": "be9f8f5393854f15793424613fa46da4701b4808219cb173a0d9da1aa649ef71",
+      "mergeBase": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5"
+    },
+    "contract": {
+      "valid": true,
+      "reason": null,
+      "checks": [
+        {
+          "check": "protected remote URL is instrument-pinned",
+          "passed": true
+        },
+        {
+          "check": "protected branch ref is instrument-pinned",
+          "passed": true
+        },
+        {
+          "check": "adapter command invokes the pinned real entry",
+          "passed": true
+        },
+        {
+          "check": "protected workflow job declares the pinned command",
+          "passed": true
+        },
+        {
+          "check": "observer target is a safe exact child entry",
+          "passed": true
+        }
+      ],
+      "normalizedInvocation": [
+        "npm",
+        "run",
+        "test:push",
+        "--",
+        "tests/unit/topic-operator-store.test.ts",
+        "tests/integration/topic-operator-routes.test.ts",
+        "tests/integration/topic-operator-autobind-route.test.ts",
+        "--reporter=verbose"
+      ]
+    },
+    "pipelineEvidence": {
+      "source": "fix-verifier-core",
+      "status": "proven",
+      "mode": "core-minted-process-receipt",
+      "tokenSha256": "28f6b891cac184b8ac590cb8077f8af81b23e1576aa1a046bad24fdf33fed2e5",
+      "receipt": {
+        "source": "fix-verifier-core",
+        "guardId": "topic-operator-evidence",
+        "token": "94c56bdc-0da1-4b45-87f1-17523cbb330f-919c0b0bc43d659474209041d1de216a",
+        "tokenSha256": "28f6b891cac184b8ac590cb8077f8af81b23e1576aa1a046bad24fdf33fed2e5",
+        "nodeEntry": "node_modules/vitest/vitest.mjs",
+        "argv": [
+          "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/01-pipeline-wiring/node_modules/.bin/vitest",
+          "run",
+          "--config",
+          "vitest.push.config.ts",
+          "tests/unit/topic-operator-store.test.ts",
+          "tests/integration/topic-operator-routes.test.ts",
+          "tests/integration/topic-operator-autobind-route.test.ts",
+          "--reporter=verbose"
+        ],
+        "startedAt": "2026-08-18T07:10:51.360Z",
+        "childExitedAt": "2026-08-18T07:21:03.082Z",
+        "childExitCode": 0,
+        "signal": null,
+        "emittedAfterChildExit": true
+      },
+      "C3": {
+        "outcome": "proven",
+        "receiptCount": 0,
+        "shortCircuitEvent": {
+          "source": "fix-verifier-core",
+          "guardId": "topic-operator-evidence",
+          "token": "472cf887-ecac-4a8e-918b-a9a24c5fbf42-4574d487b98ee91e4eb5e71e763245a2",
+          "nodeEntry": "node_modules/vitest/vitest.mjs",
+          "argv": [
+            "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/01-pipeline-wiring/node_modules/.bin/vitest",
+            "run",
+            "--config",
+            "vitest.push.config.ts",
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts",
+            "--reporter=verbose"
+          ],
+          "shortCircuitedAt": "2026-08-18T07:21:03.575Z"
+        }
+      },
+      "checks": [
+        {
+          "check": "real declared pipeline wrapper exited successfully",
+          "passed": true
+        },
+        {
+          "check": "core observer emitted exactly one post-child receipt",
+          "passed": true
+        },
+        {
+          "check": "C3 wrapper still exited successfully",
+          "passed": true
+        },
+        {
+          "check": "C3 short-circuited the exact guard child",
+          "passed": true
+        },
+        {
+          "check": "C3 produced no guard execution receipt",
+          "passed": true
+        }
+      ]
+    },
+    "run": {
+      "token": "94c56bdc-0da1-4b45-87f1-17523cbb330f-919c0b0bc43d659474209041d1de216a",
+      "tokenSha256": "28f6b891cac184b8ac590cb8077f8af81b23e1576aa1a046bad24fdf33fed2e5",
+      "positive": {
+        "run": {
+          "argv": [
+            "npm",
+            "run",
+            "test:push",
+            "--",
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts",
+            "--reporter=verbose"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/01-pipeline-wiring",
+          "startedAt": "2026-08-18T07:10:50.957Z",
+          "endedAt": "2026-08-18T07:21:03.090Z",
+          "durationMs": 612133,
+          "exitCode": 0,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "\n> instar@1.3.1179 test:push\n> vitest run --config vitest.push.config.ts tests/unit/topic-operator-store.test.ts tests/integration/topic-operator-routes.test.ts tests/integration/topic-operator-autobind-route.test.ts --reporter=verbose\n\n\n RUN  v2.1.9 /private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/01-pipeline-wiring\n\n✓ standards registry asset: 88 articles, registry 81b53363a440…, guards 44d5cab21f32… → src/data + dist/data\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > establishes from an authenticated uid and reads it back\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > REFUSES a blank uid — an operator cannot be established without a verified id\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > REFUSES mismatched or missing authentication evidence\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > a content name can never BECOME the operator — only a uid does (by construction)\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > getOperator is null for an unbound topic\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > persists across instances (durable JSON store)\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > replacing an operator overwrites the prior record\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore asserted and legacy bindings > records a manual assertion durably but refuses it as a verified operator\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore asserted and legacy bindings > P2: refuses a subject that self-reports authenticated while its evidence says assertion\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore asserted and legacy bindings > P5: legacy evidence-less and malformed/wrong-container inputs are not-proven, never verified\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore asserted and legacy bindings > P4: verified enumeration is non-vacuous and covers every topic-key shape in the raw population\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.asVerifiedOperator (feeds PrincipalGuard) > returns the PrincipalGuard shape when bound, null when unbound\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.sessionContextBlock > builds a <topic-operator> block naming the verified operator\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.sessionContextBlock > returns null for an unbound topic (nothing injected)\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.sessionContextBlock > falls back to the uid when no display name was provided\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.setAuthenticatedOperator idempotency (increment 2e) > skips the disk write when the stored record is identical\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.setAuthenticatedOperator idempotency (increment 2e) > still writes when the record actually changes\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > POST /topic-operator > records an arbitrary body uid as an assertion in the real stored record, never authenticated inbound\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > POST /topic-operator > 400s a blank uid — a content name can never establish an operator\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > POST /topic-operator > 400s a missing topicId\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > POST /topic-operator > persists the binding (a fresh request reads it back)\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator > lists assertions separately and excludes them from verified operators\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator > returns operator:null for an unbound topic\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator/session-context > returns the <topic-operator> injection block when bound\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator/session-context > returns { present: false } for an asserted binding\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator/session-context > returns { present: false } for an unbound topic\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator/session-context > 400s when topicId is missing\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > when the store is not initialized > every route returns 503 (feature not available), never a crash\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > BINDS the operator from an AUTHORIZED sender\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > does NOT bind an UNAUTHORIZED sender (the Caroline-class guard over the wire)\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > does NOT bind an agent-to-agent bot message (short-circuits before the bind)\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > does not crash when no store is wired (pure additive change)\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > keeps the real lifeline→polling convergence evidence-bound when a Telegram message id exists\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > P5: missing Telegram message id stays not-proven across the real lifeline→polling convergence\n\n Test Files  3 passed (3)\n      Tests  34 passed (34)\n   Start at  00:10:51\n   Duration  611.27s (transform 5.50s, setup 5ms, collect 7.70s, tests 343ms, environment 0ms, prepare 108ms)\n\n[fix-verifier-wiring] token=94c56bdc-0da1-4b45-87f1-17523cbb330f-919c0b0bc43d659474209041d1de216a guard=topic-operator-evidence entry=node_modules/vitest/vitest.mjs childExit=0\n",
+            "truncated": false,
+            "originalChars": 6800
+          },
+          "stderr": {
+            "text": "[test-runner-bound] ⠹ waiting for a suite-lane test slot (0m elapsed; 1 holder(s): pid 95142 age 1745s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (1m elapsed; 1 holder(s): pid 95142 age 1807s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (2m elapsed; 1 holder(s): pid 95142 age 1869s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (3m elapsed; 1 holder(s): pid 95142 age 1932s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (4m elapsed; 1 holder(s): pid 95142 age 1993s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (5m elapsed; 1 holder(s): pid 95142 age 2058s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (6m elapsed; 1 holder(s): pid 95142 age 2121s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (7m elapsed; 1 holder(s): pid 95142 age 2182s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (8m elapsed; 1 holder(s): pid 95142 age 2243s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (9m elapsed; 1 holder(s): pid 95142 age 2308s) — active work, not a hang\n[test-runner-bound] suite-lane slot acquired (posture: enforcing, cap 1, pid 73244)\n",
+            "truncated": false,
+            "originalChars": 1384
+          },
+          "outputSha256": "2fd75de4c09967124e810ea44db3c47c6e06d4e93c70f79222f16eae2f99d4bc",
+          "exitProvenance": "direct child status from spawnSync; shell=false"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/pipeline-observer/positive/node",
+          "nodeEntry": "node_modules/vitest/vitest.mjs",
+          "requiredArgs": [
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts"
+          ]
+        },
+        "receipts": [
+          {
+            "source": "fix-verifier-core",
+            "guardId": "topic-operator-evidence",
+            "token": "94c56bdc-0da1-4b45-87f1-17523cbb330f-919c0b0bc43d659474209041d1de216a",
+            "tokenSha256": "28f6b891cac184b8ac590cb8077f8af81b23e1576aa1a046bad24fdf33fed2e5",
+            "nodeEntry": "node_modules/vitest/vitest.mjs",
+            "argv": [
+              "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/01-pipeline-wiring/node_modules/.bin/vitest",
+              "run",
+              "--config",
+              "vitest.push.config.ts",
+              "tests/unit/topic-operator-store.test.ts",
+              "tests/integration/topic-operator-routes.test.ts",
+              "tests/integration/topic-operator-autobind-route.test.ts",
+              "--reporter=verbose"
+            ],
+            "startedAt": "2026-08-18T07:10:51.360Z",
+            "childExitedAt": "2026-08-18T07:21:03.082Z",
+            "childExitCode": 0,
+            "signal": null,
+            "emittedAfterChildExit": true
+          }
+        ],
+        "shortCircuitEvents": []
+      },
+      "C3": {
+        "run": {
+          "argv": [
+            "npm",
+            "run",
+            "test:push",
+            "--",
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts",
+            "--reporter=verbose"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/01-pipeline-wiring",
+          "startedAt": "2026-08-18T07:21:03.091Z",
+          "endedAt": "2026-08-18T07:21:03.582Z",
+          "durationMs": 491,
+          "exitCode": 0,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "\n> instar@1.3.1179 test:push\n> vitest run --config vitest.push.config.ts tests/unit/topic-operator-store.test.ts tests/integration/topic-operator-routes.test.ts tests/integration/topic-operator-autobind-route.test.ts --reporter=verbose\n\n[fix-verifier-C3] short-circuited guard=topic-operator-evidence entry=node_modules/vitest/vitest.mjs\n",
+            "truncated": false,
+            "originalChars": 338
+          },
+          "stderr": {
+            "text": "",
+            "truncated": false,
+            "originalChars": 0
+          },
+          "outputSha256": "2969a79b75055b23fc6eedd174a3b44f70a07710e8758f8e4e6acbc704c1947d",
+          "exitProvenance": "direct child status from spawnSync; shell=false"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/pipeline-observer/c3/node",
+          "nodeEntry": "node_modules/vitest/vitest.mjs",
+          "requiredArgs": [
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts"
+          ]
+        },
+        "receipts": [],
+        "shortCircuitEvents": [
+          {
+            "source": "fix-verifier-core",
+            "guardId": "topic-operator-evidence",
+            "token": "472cf887-ecac-4a8e-918b-a9a24c5fbf42-4574d487b98ee91e4eb5e71e763245a2",
+            "nodeEntry": "node_modules/vitest/vitest.mjs",
+            "argv": [
+              "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/01-pipeline-wiring/node_modules/.bin/vitest",
+              "run",
+              "--config",
+              "vitest.push.config.ts",
+              "tests/unit/topic-operator-store.test.ts",
+              "tests/integration/topic-operator-routes.test.ts",
+              "tests/integration/topic-operator-autobind-route.test.ts",
+              "--reporter=verbose"
+            ],
+            "shortCircuitedAt": "2026-08-18T07:21:03.575Z"
+          }
+        ],
+        "outcome": "proven"
+      },
+      "envelope": {
+        "source": "fix-verifier-core",
+        "status": "proven",
+        "mode": "core-minted-process-receipt",
+        "tokenSha256": "28f6b891cac184b8ac590cb8077f8af81b23e1576aa1a046bad24fdf33fed2e5",
+        "receipt": {
+          "source": "fix-verifier-core",
+          "guardId": "topic-operator-evidence",
+          "token": "94c56bdc-0da1-4b45-87f1-17523cbb330f-919c0b0bc43d659474209041d1de216a",
+          "tokenSha256": "28f6b891cac184b8ac590cb8077f8af81b23e1576aa1a046bad24fdf33fed2e5",
+          "nodeEntry": "node_modules/vitest/vitest.mjs",
+          "argv": [
+            "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/01-pipeline-wiring/node_modules/.bin/vitest",
+            "run",
+            "--config",
+            "vitest.push.config.ts",
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts",
+            "--reporter=verbose"
+          ],
+          "startedAt": "2026-08-18T07:10:51.360Z",
+          "childExitedAt": "2026-08-18T07:21:03.082Z",
+          "childExitCode": 0,
+          "signal": null,
+          "emittedAfterChildExit": true
+        },
+        "C3": {
+          "outcome": "proven",
+          "receiptCount": 0,
+          "shortCircuitEvent": {
+            "source": "fix-verifier-core",
+            "guardId": "topic-operator-evidence",
+            "token": "472cf887-ecac-4a8e-918b-a9a24c5fbf42-4574d487b98ee91e4eb5e71e763245a2",
+            "nodeEntry": "node_modules/vitest/vitest.mjs",
+            "argv": [
+              "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/01-pipeline-wiring/node_modules/.bin/vitest",
+              "run",
+              "--config",
+              "vitest.push.config.ts",
+              "tests/unit/topic-operator-store.test.ts",
+              "tests/integration/topic-operator-routes.test.ts",
+              "tests/integration/topic-operator-autobind-route.test.ts",
+              "--reporter=verbose"
+            ],
+            "shortCircuitedAt": "2026-08-18T07:21:03.575Z"
+          }
+        },
+        "checks": [
+          {
+            "check": "real declared pipeline wrapper exited successfully",
+            "passed": true
+          },
+          {
+            "check": "core observer emitted exactly one post-child receipt",
+            "passed": true
+          },
+          {
+            "check": "C3 wrapper still exited successfully",
+            "passed": true
+          },
+          {
+            "check": "C3 short-circuited the exact guard child",
+            "passed": true
+          },
+          {
+            "check": "C3 produced no guard execution receipt",
+            "passed": true
+          }
+        ]
+      }
+    }
+  },
+  "controls": {
+    "C1": {
+      "outcome": "proven",
+      "required": "untouched guard passes through the real protected-workflow entry and emits the post-child receipt",
+      "run": {
+        "run": {
+          "argv": [
+            "npm",
+            "run",
+            "test:push",
+            "--",
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts",
+            "--reporter=verbose"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/01-pipeline-wiring",
+          "startedAt": "2026-08-18T07:10:50.957Z",
+          "endedAt": "2026-08-18T07:21:03.090Z",
+          "durationMs": 612133,
+          "exitCode": 0,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "\n> instar@1.3.1179 test:push\n> vitest run --config vitest.push.config.ts tests/unit/topic-operator-store.test.ts tests/integration/topic-operator-routes.test.ts tests/integration/topic-operator-autobind-route.test.ts --reporter=verbose\n\n\n RUN  v2.1.9 /private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/01-pipeline-wiring\n\n✓ standards registry asset: 88 articles, registry 81b53363a440…, guards 44d5cab21f32… → src/data + dist/data\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > establishes from an authenticated uid and reads it back\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > REFUSES a blank uid — an operator cannot be established without a verified id\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > REFUSES mismatched or missing authentication evidence\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > a content name can never BECOME the operator — only a uid does (by construction)\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > getOperator is null for an unbound topic\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > persists across instances (durable JSON store)\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > replacing an operator overwrites the prior record\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore asserted and legacy bindings > records a manual assertion durably but refuses it as a verified operator\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore asserted and legacy bindings > P2: refuses a subject that self-reports authenticated while its evidence says assertion\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore asserted and legacy bindings > P5: legacy evidence-less and malformed/wrong-container inputs are not-proven, never verified\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore asserted and legacy bindings > P4: verified enumeration is non-vacuous and covers every topic-key shape in the raw population\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.asVerifiedOperator (feeds PrincipalGuard) > returns the PrincipalGuard shape when bound, null when unbound\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.sessionContextBlock > builds a <topic-operator> block naming the verified operator\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.sessionContextBlock > returns null for an unbound topic (nothing injected)\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.sessionContextBlock > falls back to the uid when no display name was provided\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.setAuthenticatedOperator idempotency (increment 2e) > skips the disk write when the stored record is identical\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.setAuthenticatedOperator idempotency (increment 2e) > still writes when the record actually changes\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > POST /topic-operator > records an arbitrary body uid as an assertion in the real stored record, never authenticated inbound\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > POST /topic-operator > 400s a blank uid — a content name can never establish an operator\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > POST /topic-operator > 400s a missing topicId\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > POST /topic-operator > persists the binding (a fresh request reads it back)\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator > lists assertions separately and excludes them from verified operators\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator > returns operator:null for an unbound topic\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator/session-context > returns the <topic-operator> injection block when bound\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator/session-context > returns { present: false } for an asserted binding\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator/session-context > returns { present: false } for an unbound topic\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator/session-context > 400s when topicId is missing\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > when the store is not initialized > every route returns 503 (feature not available), never a crash\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > BINDS the operator from an AUTHORIZED sender\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > does NOT bind an UNAUTHORIZED sender (the Caroline-class guard over the wire)\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > does NOT bind an agent-to-agent bot message (short-circuits before the bind)\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > does not crash when no store is wired (pure additive change)\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > keeps the real lifeline→polling convergence evidence-bound when a Telegram message id exists\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > P5: missing Telegram message id stays not-proven across the real lifeline→polling convergence\n\n Test Files  3 passed (3)\n      Tests  34 passed (34)\n   Start at  00:10:51\n   Duration  611.27s (transform 5.50s, setup 5ms, collect 7.70s, tests 343ms, environment 0ms, prepare 108ms)\n\n[fix-verifier-wiring] token=94c56bdc-0da1-4b45-87f1-17523cbb330f-919c0b0bc43d659474209041d1de216a guard=topic-operator-evidence entry=node_modules/vitest/vitest.mjs childExit=0\n",
+            "truncated": false,
+            "originalChars": 6800
+          },
+          "stderr": {
+            "text": "[test-runner-bound] ⠹ waiting for a suite-lane test slot (0m elapsed; 1 holder(s): pid 95142 age 1745s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (1m elapsed; 1 holder(s): pid 95142 age 1807s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (2m elapsed; 1 holder(s): pid 95142 age 1869s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (3m elapsed; 1 holder(s): pid 95142 age 1932s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (4m elapsed; 1 holder(s): pid 95142 age 1993s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (5m elapsed; 1 holder(s): pid 95142 age 2058s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (6m elapsed; 1 holder(s): pid 95142 age 2121s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (7m elapsed; 1 holder(s): pid 95142 age 2182s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (8m elapsed; 1 holder(s): pid 95142 age 2243s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (9m elapsed; 1 holder(s): pid 95142 age 2308s) — active work, not a hang\n[test-runner-bound] suite-lane slot acquired (posture: enforcing, cap 1, pid 73244)\n",
+            "truncated": false,
+            "originalChars": 1384
+          },
+          "outputSha256": "2fd75de4c09967124e810ea44db3c47c6e06d4e93c70f79222f16eae2f99d4bc",
+          "exitProvenance": "direct child status from spawnSync; shell=false"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/pipeline-observer/positive/node",
+          "nodeEntry": "node_modules/vitest/vitest.mjs",
+          "requiredArgs": [
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts"
+          ]
+        },
+        "receipts": [
+          {
+            "source": "fix-verifier-core",
+            "guardId": "topic-operator-evidence",
+            "token": "94c56bdc-0da1-4b45-87f1-17523cbb330f-919c0b0bc43d659474209041d1de216a",
+            "tokenSha256": "28f6b891cac184b8ac590cb8077f8af81b23e1576aa1a046bad24fdf33fed2e5",
+            "nodeEntry": "node_modules/vitest/vitest.mjs",
+            "argv": [
+              "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/01-pipeline-wiring/node_modules/.bin/vitest",
+              "run",
+              "--config",
+              "vitest.push.config.ts",
+              "tests/unit/topic-operator-store.test.ts",
+              "tests/integration/topic-operator-routes.test.ts",
+              "tests/integration/topic-operator-autobind-route.test.ts",
+              "--reporter=verbose"
+            ],
+            "startedAt": "2026-08-18T07:10:51.360Z",
+            "childExitedAt": "2026-08-18T07:21:03.082Z",
+            "childExitCode": 0,
+            "signal": null,
+            "emittedAfterChildExit": true
+          }
+        ],
+        "shortCircuitEvents": []
+      }
+    },
+    "C2": {
+      "outcome": "proven",
+      "required": "the C3 short-circuit is independently recorded against the exact observed child before its result is interpreted",
+      "perMutation": {
+        "C3-exact-child-short-circuit": "proven"
+      }
+    },
+    "C3": {
+      "outcome": "proven",
+      "required": "the real wrapper succeeds while the exact guard child is skipped, and no execution receipt exists",
+      "run": {
+        "run": {
+          "argv": [
+            "npm",
+            "run",
+            "test:push",
+            "--",
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts",
+            "--reporter=verbose"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/01-pipeline-wiring",
+          "startedAt": "2026-08-18T07:21:03.091Z",
+          "endedAt": "2026-08-18T07:21:03.582Z",
+          "durationMs": 491,
+          "exitCode": 0,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "\n> instar@1.3.1179 test:push\n> vitest run --config vitest.push.config.ts tests/unit/topic-operator-store.test.ts tests/integration/topic-operator-routes.test.ts tests/integration/topic-operator-autobind-route.test.ts --reporter=verbose\n\n[fix-verifier-C3] short-circuited guard=topic-operator-evidence entry=node_modules/vitest/vitest.mjs\n",
+            "truncated": false,
+            "originalChars": 338
+          },
+          "stderr": {
+            "text": "",
+            "truncated": false,
+            "originalChars": 0
+          },
+          "outputSha256": "2969a79b75055b23fc6eedd174a3b44f70a07710e8758f8e4e6acbc704c1947d",
+          "exitProvenance": "direct child status from spawnSync; shell=false"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/pipeline-observer/c3/node",
+          "nodeEntry": "node_modules/vitest/vitest.mjs",
+          "requiredArgs": [
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts"
+          ]
+        },
+        "receipts": [],
+        "shortCircuitEvents": [
+          {
+            "source": "fix-verifier-core",
+            "guardId": "topic-operator-evidence",
+            "token": "472cf887-ecac-4a8e-918b-a9a24c5fbf42-4574d487b98ee91e4eb5e71e763245a2",
+            "nodeEntry": "node_modules/vitest/vitest.mjs",
+            "argv": [
+              "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/01-pipeline-wiring/node_modules/.bin/vitest",
+              "run",
+              "--config",
+              "vitest.push.config.ts",
+              "tests/unit/topic-operator-store.test.ts",
+              "tests/integration/topic-operator-routes.test.ts",
+              "tests/integration/topic-operator-autobind-route.test.ts",
+              "--reporter=verbose"
+            ],
+            "shortCircuitedAt": "2026-08-18T07:21:03.575Z"
+          }
+        ],
+        "outcome": "proven"
+      }
+    }
+  },
+  "properties": {
+    "P1": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P2": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P3": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P4": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P5": {
+      "outcome": "unknown",
+      "mutations": []
+    }
+  },
+  "effectiveAgainst": [],
+  "rung": "wired",
+  "mutations": [],
+  "isolation": {
+    "method": "throwaway clones from an isolation seed; server-resolved protected base installed as origin/main, upstream/main, and main; dependency-only node_modules symlink",
+    "tempRoot": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG",
+    "copies": [
+      {
+        "label": "pipeline-wiring",
+        "root": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-daZkpG/01-pipeline-wiring",
+        "commit": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5"
+      }
+    ],
+    "fixtureEvidence": [],
+    "protectedBase": {
+      "remoteUrl": "https://github.com/JKHeadley/instar.git",
+      "ref": "refs/heads/main",
+      "commit": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5",
+      "serverResolved": true,
+      "fetchMatchesServer": true,
+      "workflowPath": ".github/workflows/ci.yml",
+      "workflowSha256": "be9f8f5393854f15793424613fa46da4701b4808219cb173a0d9da1aa649ef71",
+      "mergeBase": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5"
+    },
+    "targetPorcelainUnchanged": true,
+    "cleanup": "removed before record emission"
+  },
+  "dependencies": {
+    "mode": "provided",
+    "path": "/Users/justin/Documents/Projects/instar-codey/.worktrees/phase-b-w1-validated-pipeline-wiring/node_modules",
+    "prepared": true
+  }
+}

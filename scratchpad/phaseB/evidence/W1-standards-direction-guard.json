@@ -1,0 +1,612 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-08-18T07:21:30.469Z",
+  "instrument": {
+    "path": "/Users/justin/Documents/Projects/instar-codey/.worktrees/phase-b-w1-validated-pipeline-wiring/scratchpad/phaseB/fix-verifier.mjs",
+    "sha256": "92425be2ecec5969f650c23851153c7e3396ef27582acc141cc6c45d88d116d2",
+    "manifest": {
+      "path": "/Users/justin/Documents/Projects/instar-codey/.worktrees/phase-b-w1-validated-pipeline-wiring/scratchpad/phaseB/fix-verifier.manifest.json",
+      "sha256": "a3ae19ae23bae375f48de04d51aa9f17e674e20783bdfd0d9dd5b5815b864677",
+      "adapterRegistryChecked": true,
+      "count": 8,
+      "ids": [
+        "audit-convergence-validator",
+        "checker-blind-input-coverage",
+        "guard-posture-probe",
+        "lint-llm-attribution",
+        "self-action-convergence",
+        "standards-direction-guard",
+        "testing-integrity-route-enforcement",
+        "topic-operator-evidence"
+      ]
+    },
+    "adapter": {
+      "path": "/Users/justin/Documents/Projects/instar-codey/.worktrees/phase-b-w1-validated-pipeline-wiring/scratchpad/phaseB/adapters/standards-direction-guard.mjs",
+      "sha256": "deeb477cdddcd9f5683f62269f50d16aa1ad0d5898d2d9a465fe1f406c5e81a2"
+    }
+  },
+  "guardId": "standards-direction-guard",
+  "description": "Protected-base article identity, continuity denominator, and independently ratified constitutional direction guard.",
+  "fixture": "none",
+  "measurementScope": "wiring-only",
+  "target": {
+    "tree": "/Users/justin/Documents/Projects/instar-codey/.worktrees/phase-b-w1-validated-pipeline-wiring",
+    "requestedCommit": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5",
+    "commit": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5",
+    "remote": {
+      "name": "upstream",
+      "url": "https://github.com/JKHeadley/instar.git"
+    },
+    "dirtyAtStart": true,
+    "porcelainAtStart": [
+      "?? scratchpad/phaseB/"
+    ]
+  },
+  "adapterRegistry": {
+    "source": "/Users/justin/Documents/Projects/instar-codey/.worktrees/phase-b-w1-validated-pipeline-wiring/scratchpad/phaseB/fix-verifier.manifest.json",
+    "sourceSha256": "a3ae19ae23bae375f48de04d51aa9f17e674e20783bdfd0d9dd5b5815b864677",
+    "schemaChecked": true,
+    "semanticRole": "list of implemented adapters; never a guard census or coverage denominator",
+    "nonEmpty": true,
+    "adaptedGuardCount": 8,
+    "ids": [
+      "audit-convergence-validator",
+      "checker-blind-input-coverage",
+      "guard-posture-probe",
+      "lint-llm-attribution",
+      "self-action-convergence",
+      "standards-direction-guard",
+      "testing-integrity-route-enforcement",
+      "topic-operator-evidence"
+    ]
+  },
+  "coverageAggregate": {
+    "emitted": false,
+    "ratio": null,
+    "denominator": null,
+    "notMeasured": null,
+    "reason": "this command verifies one requested guard; adapter registration is not the real guard census"
+  },
+  "existence": {
+    "outcome": "proven",
+    "files": [
+      {
+        "path": "scripts/standards-direction-guard.mjs",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "scripts/standards-coverage.mjs",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "tests/unit/standards-direction-guard.test.ts",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "tests/unit/standards-direction-guard-contract.test.ts",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "docs/STANDARDS-REGISTRY.md",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "docs/standards-direction-approvals.json",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": ".github/keyrings/telegram-principal-pub.pem",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      }
+    ]
+  },
+  "wiring": {
+    "outcome": "proven",
+    "declaredEntryPoint": ".github/workflows/ci.yml -> node scripts/standards-coverage.mjs --check",
+    "establishedBy": "core-minted token received from the exact manifest-pinned guard child after it exited through the protected workflow command; C3 wrapper success produced no receipt",
+    "protectedBase": {
+      "remoteUrl": "https://github.com/JKHeadley/instar.git",
+      "ref": "refs/heads/main",
+      "commit": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5",
+      "serverResolved": true,
+      "fetchMatchesServer": true,
+      "workflowPath": ".github/workflows/ci.yml",
+      "workflowSha256": "be9f8f5393854f15793424613fa46da4701b4808219cb173a0d9da1aa649ef71",
+      "mergeBase": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5"
+    },
+    "contract": {
+      "valid": true,
+      "reason": null,
+      "checks": [
+        {
+          "check": "protected remote URL is instrument-pinned",
+          "passed": true
+        },
+        {
+          "check": "protected branch ref is instrument-pinned",
+          "passed": true
+        },
+        {
+          "check": "adapter command invokes the pinned real entry",
+          "passed": true
+        },
+        {
+          "check": "protected workflow job declares the pinned command",
+          "passed": true
+        },
+        {
+          "check": "observer target is a safe exact child entry",
+          "passed": true
+        }
+      ],
+      "normalizedInvocation": [
+        "node",
+        "scripts/standards-coverage.mjs",
+        "--check"
+      ]
+    },
+    "pipelineEvidence": {
+      "source": "fix-verifier-core",
+      "status": "proven",
+      "mode": "core-minted-process-receipt",
+      "tokenSha256": "361b7d0b6e46b3fbe1e216695c1c9723da1d333585ea5ca36bfd699b993b4107",
+      "receipt": {
+        "source": "fix-verifier-core",
+        "guardId": "standards-direction-guard",
+        "token": "d9aa9690-ac0d-4379-af78-0f394d723bcc-d2e8d95506e359666e08053285374421",
+        "tokenSha256": "361b7d0b6e46b3fbe1e216695c1c9723da1d333585ea5ca36bfd699b993b4107",
+        "nodeEntry": "scripts/standards-coverage.mjs",
+        "argv": [
+          "scripts/standards-coverage.mjs",
+          "--check"
+        ],
+        "startedAt": "2026-08-18T07:21:29.894Z",
+        "childExitedAt": "2026-08-18T07:21:30.255Z",
+        "childExitCode": 0,
+        "signal": null,
+        "emittedAfterChildExit": true
+      },
+      "C3": {
+        "outcome": "proven",
+        "receiptCount": 0,
+        "shortCircuitEvent": {
+          "source": "fix-verifier-core",
+          "guardId": "standards-direction-guard",
+          "token": "a41158a6-12b2-4eac-8ac3-0a0c671e92c2-1094f504e9a63bc362801fa0782d3f55",
+          "nodeEntry": "scripts/standards-coverage.mjs",
+          "argv": [
+            "scripts/standards-coverage.mjs",
+            "--check"
+          ],
+          "shortCircuitedAt": "2026-08-18T07:21:30.418Z"
+        }
+      },
+      "checks": [
+        {
+          "check": "real declared pipeline wrapper exited successfully",
+          "passed": true
+        },
+        {
+          "check": "core observer emitted exactly one post-child receipt",
+          "passed": true
+        },
+        {
+          "check": "C3 wrapper still exited successfully",
+          "passed": true
+        },
+        {
+          "check": "C3 short-circuited the exact guard child",
+          "passed": true
+        },
+        {
+          "check": "C3 produced no guard execution receipt",
+          "passed": true
+        }
+      ]
+    },
+    "run": {
+      "token": "d9aa9690-ac0d-4379-af78-0f394d723bcc-d2e8d95506e359666e08053285374421",
+      "tokenSha256": "361b7d0b6e46b3fbe1e216695c1c9723da1d333585ea5ca36bfd699b993b4107",
+      "positive": {
+        "run": {
+          "argv": [
+            "env",
+            "STANDARDS_DIRECTION_BASE_FILE=.b0-s5-protected-registry.md",
+            "STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE=.b0-s5-protected-approver.pem",
+            "STANDARDS_DIRECTION_BASE_REVISION=b0-s5-protected-base",
+            "node",
+            "scripts/standards-coverage.mjs",
+            "--check"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-1F3oYp/01-pipeline-wiring",
+          "startedAt": "2026-08-18T07:21:29.741Z",
+          "endedAt": "2026-08-18T07:21:30.258Z",
+          "durationMs": 517,
+          "exitCode": 0,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "[fix-verifier-wiring] token=d9aa9690-ac0d-4379-af78-0f394d723bcc-d2e8d95506e359666e08053285374421 guard=standards-direction-guard entry=scripts/standards-coverage.mjs childExit=0\n",
+            "truncated": false,
+            "originalChars": 179
+          },
+          "stderr": {
+            "text": "[standards-coverage] registry=true total=88 continuity-total=88 enforced-ratio=0.7386 (ratchet 26 / gate 33 / lint 6 / spec-only 6 / gap 17) false-claims=0 dangling=0 unrecognized-sections=0\n[standards-coverage] floors: enforced-ratio>=0.7 dangling<=0 false-claims<=1 unrecognized-sections<=0\n[standards-coverage] direction-guard=passed base=b0-s5-protected-base trust-root=protected-base candidate-pin-ignored-as-authority=true candidate-pin-drift-blocked=true\n[standards-coverage] area=\"Building\" total=40 continuity-total=40 ref-resolution-ratio=0.85 floor=34/40 last-audited=2026-08-13T17:48:50.000Z audit-ref=docs/audits/standards-area-audit-2026-08-13c.json audit-current=true\n[standards-coverage] area=\"Interaction\" total=13 continuity-total=13 ref-resolution-ratio=0.6154 floor=8/13 last-audited=2026-08-13T17:48:50.000Z audit-ref=docs/audits/standards-area-audit-2026-08-13c.json audit-current=true\n[standards-coverage] area=\"Shipping\" total=7 continuity-total=7 ref-resolution-ratio=0.7143 floor=5/7 last-audited=2026-08-13T17:48:50.000Z audit-ref=docs/audits/standards-area-audit-2026-08-13c.json audit-current=true\n[standards-coverage] area=\"The Fractal\" total=1 continuity-total=1 ref-resolution-ratio=1 floor=1/1 last-audited=2026-08-13T17:48:50.000Z audit-ref=docs/audits/standards-area-audit-2026-08-13c.json audit-current=true\n[standards-coverage] area=\"The Root\" total=1 continuity-total=1 ref-resolution-ratio=1 floor=1/1 last-audited=2026-08-13T17:48:50.000Z audit-ref=docs/audits/standards-area-audit-2026-08-13c.json audit-current=true\n[standards-coverage] area=\"The Substrate\" total=26 continuity-total=26 ref-resolution-ratio=0.6154 floor=16/26 last-audited=2026-08-13T17:48:50.000Z audit-ref=docs/audits/standards-area-audit-2026-08-13c.json audit-current=true\n✅ standards-coverage check passed.\n",
+            "truncated": false,
+            "originalChars": 1821
+          },
+          "outputSha256": "74f8b21df724cecac4790e0c1a8f67097ab1832fdf21fd0ba385b422cd731c8f",
+          "exitProvenance": "direct child status from spawnSync; shell=false"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-1F3oYp/pipeline-observer/positive/node",
+          "nodeEntry": "scripts/standards-coverage.mjs",
+          "requiredArgs": [
+            "--check"
+          ]
+        },
+        "receipts": [
+          {
+            "source": "fix-verifier-core",
+            "guardId": "standards-direction-guard",
+            "token": "d9aa9690-ac0d-4379-af78-0f394d723bcc-d2e8d95506e359666e08053285374421",
+            "tokenSha256": "361b7d0b6e46b3fbe1e216695c1c9723da1d333585ea5ca36bfd699b993b4107",
+            "nodeEntry": "scripts/standards-coverage.mjs",
+            "argv": [
+              "scripts/standards-coverage.mjs",
+              "--check"
+            ],
+            "startedAt": "2026-08-18T07:21:29.894Z",
+            "childExitedAt": "2026-08-18T07:21:30.255Z",
+            "childExitCode": 0,
+            "signal": null,
+            "emittedAfterChildExit": true
+          }
+        ],
+        "shortCircuitEvents": []
+      },
+      "C3": {
+        "run": {
+          "argv": [
+            "env",
+            "STANDARDS_DIRECTION_BASE_FILE=.b0-s5-protected-registry.md",
+            "STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE=.b0-s5-protected-approver.pem",
+            "STANDARDS_DIRECTION_BASE_REVISION=b0-s5-protected-base",
+            "node",
+            "scripts/standards-coverage.mjs",
+            "--check"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-1F3oYp/01-pipeline-wiring",
+          "startedAt": "2026-08-18T07:21:30.258Z",
+          "endedAt": "2026-08-18T07:21:30.421Z",
+          "durationMs": 163,
+          "exitCode": 0,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "[fix-verifier-C3] short-circuited guard=standards-direction-guard entry=scripts/standards-coverage.mjs\n",
+            "truncated": false,
+            "originalChars": 103
+          },
+          "stderr": {
+            "text": "",
+            "truncated": false,
+            "originalChars": 0
+          },
+          "outputSha256": "d414cd1abe3cb37813eed4e19d21f4304ee555df0ae22c10110e35e643819076",
+          "exitProvenance": "direct child status from spawnSync; shell=false"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-1F3oYp/pipeline-observer/c3/node",
+          "nodeEntry": "scripts/standards-coverage.mjs",
+          "requiredArgs": [
+            "--check"
+          ]
+        },
+        "receipts": [],
+        "shortCircuitEvents": [
+          {
+            "source": "fix-verifier-core",
+            "guardId": "standards-direction-guard",
+            "token": "a41158a6-12b2-4eac-8ac3-0a0c671e92c2-1094f504e9a63bc362801fa0782d3f55",
+            "nodeEntry": "scripts/standards-coverage.mjs",
+            "argv": [
+              "scripts/standards-coverage.mjs",
+              "--check"
+            ],
+            "shortCircuitedAt": "2026-08-18T07:21:30.418Z"
+          }
+        ],
+        "outcome": "proven"
+      },
+      "envelope": {
+        "source": "fix-verifier-core",
+        "status": "proven",
+        "mode": "core-minted-process-receipt",
+        "tokenSha256": "361b7d0b6e46b3fbe1e216695c1c9723da1d333585ea5ca36bfd699b993b4107",
+        "receipt": {
+          "source": "fix-verifier-core",
+          "guardId": "standards-direction-guard",
+          "token": "d9aa9690-ac0d-4379-af78-0f394d723bcc-d2e8d95506e359666e08053285374421",
+          "tokenSha256": "361b7d0b6e46b3fbe1e216695c1c9723da1d333585ea5ca36bfd699b993b4107",
+          "nodeEntry": "scripts/standards-coverage.mjs",
+          "argv": [
+            "scripts/standards-coverage.mjs",
+            "--check"
+          ],
+          "startedAt": "2026-08-18T07:21:29.894Z",
+          "childExitedAt": "2026-08-18T07:21:30.255Z",
+          "childExitCode": 0,
+          "signal": null,
+          "emittedAfterChildExit": true
+        },
+        "C3": {
+          "outcome": "proven",
+          "receiptCount": 0,
+          "shortCircuitEvent": {
+            "source": "fix-verifier-core",
+            "guardId": "standards-direction-guard",
+            "token": "a41158a6-12b2-4eac-8ac3-0a0c671e92c2-1094f504e9a63bc362801fa0782d3f55",
+            "nodeEntry": "scripts/standards-coverage.mjs",
+            "argv": [
+              "scripts/standards-coverage.mjs",
+              "--check"
+            ],
+            "shortCircuitedAt": "2026-08-18T07:21:30.418Z"
+          }
+        },
+        "checks": [
+          {
+            "check": "real declared pipeline wrapper exited successfully",
+            "passed": true
+          },
+          {
+            "check": "core observer emitted exactly one post-child receipt",
+            "passed": true
+          },
+          {
+            "check": "C3 wrapper still exited successfully",
+            "passed": true
+          },
+          {
+            "check": "C3 short-circuited the exact guard child",
+            "passed": true
+          },
+          {
+            "check": "C3 produced no guard execution receipt",
+            "passed": true
+          }
+        ]
+      }
+    }
+  },
+  "controls": {
+    "C1": {
+      "outcome": "proven",
+      "required": "untouched guard passes through the real protected-workflow entry and emits the post-child receipt",
+      "run": {
+        "run": {
+          "argv": [
+            "env",
+            "STANDARDS_DIRECTION_BASE_FILE=.b0-s5-protected-registry.md",
+            "STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE=.b0-s5-protected-approver.pem",
+            "STANDARDS_DIRECTION_BASE_REVISION=b0-s5-protected-base",
+            "node",
+            "scripts/standards-coverage.mjs",
+            "--check"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-1F3oYp/01-pipeline-wiring",
+          "startedAt": "2026-08-18T07:21:29.741Z",
+          "endedAt": "2026-08-18T07:21:30.258Z",
+          "durationMs": 517,
+          "exitCode": 0,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "[fix-verifier-wiring] token=d9aa9690-ac0d-4379-af78-0f394d723bcc-d2e8d95506e359666e08053285374421 guard=standards-direction-guard entry=scripts/standards-coverage.mjs childExit=0\n",
+            "truncated": false,
+            "originalChars": 179
+          },
+          "stderr": {
+            "text": "[standards-coverage] registry=true total=88 continuity-total=88 enforced-ratio=0.7386 (ratchet 26 / gate 33 / lint 6 / spec-only 6 / gap 17) false-claims=0 dangling=0 unrecognized-sections=0\n[standards-coverage] floors: enforced-ratio>=0.7 dangling<=0 false-claims<=1 unrecognized-sections<=0\n[standards-coverage] direction-guard=passed base=b0-s5-protected-base trust-root=protected-base candidate-pin-ignored-as-authority=true candidate-pin-drift-blocked=true\n[standards-coverage] area=\"Building\" total=40 continuity-total=40 ref-resolution-ratio=0.85 floor=34/40 last-audited=2026-08-13T17:48:50.000Z audit-ref=docs/audits/standards-area-audit-2026-08-13c.json audit-current=true\n[standards-coverage] area=\"Interaction\" total=13 continuity-total=13 ref-resolution-ratio=0.6154 floor=8/13 last-audited=2026-08-13T17:48:50.000Z audit-ref=docs/audits/standards-area-audit-2026-08-13c.json audit-current=true\n[standards-coverage] area=\"Shipping\" total=7 continuity-total=7 ref-resolution-ratio=0.7143 floor=5/7 last-audited=2026-08-13T17:48:50.000Z audit-ref=docs/audits/standards-area-audit-2026-08-13c.json audit-current=true\n[standards-coverage] area=\"The Fractal\" total=1 continuity-total=1 ref-resolution-ratio=1 floor=1/1 last-audited=2026-08-13T17:48:50.000Z audit-ref=docs/audits/standards-area-audit-2026-08-13c.json audit-current=true\n[standards-coverage] area=\"The Root\" total=1 continuity-total=1 ref-resolution-ratio=1 floor=1/1 last-audited=2026-08-13T17:48:50.000Z audit-ref=docs/audits/standards-area-audit-2026-08-13c.json audit-current=true\n[standards-coverage] area=\"The Substrate\" total=26 continuity-total=26 ref-resolution-ratio=0.6154 floor=16/26 last-audited=2026-08-13T17:48:50.000Z audit-ref=docs/audits/standards-area-audit-2026-08-13c.json audit-current=true\n✅ standards-coverage check passed.\n",
+            "truncated": false,
+            "originalChars": 1821
+          },
+          "outputSha256": "74f8b21df724cecac4790e0c1a8f67097ab1832fdf21fd0ba385b422cd731c8f",
+          "exitProvenance": "direct child status from spawnSync; shell=false"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-1F3oYp/pipeline-observer/positive/node",
+          "nodeEntry": "scripts/standards-coverage.mjs",
+          "requiredArgs": [
+            "--check"
+          ]
+        },
+        "receipts": [
+          {
+            "source": "fix-verifier-core",
+            "guardId": "standards-direction-guard",
+            "token": "d9aa9690-ac0d-4379-af78-0f394d723bcc-d2e8d95506e359666e08053285374421",
+            "tokenSha256": "361b7d0b6e46b3fbe1e216695c1c9723da1d333585ea5ca36bfd699b993b4107",
+            "nodeEntry": "scripts/standards-coverage.mjs",
+            "argv": [
+              "scripts/standards-coverage.mjs",
+              "--check"
+            ],
+            "startedAt": "2026-08-18T07:21:29.894Z",
+            "childExitedAt": "2026-08-18T07:21:30.255Z",
+            "childExitCode": 0,
+            "signal": null,
+            "emittedAfterChildExit": true
+          }
+        ],
+        "shortCircuitEvents": []
+      }
+    },
+    "C2": {
+      "outcome": "proven",
+      "required": "the C3 short-circuit is independently recorded against the exact observed child before its result is interpreted",
+      "perMutation": {
+        "C3-exact-child-short-circuit": "proven"
+      }
+    },
+    "C3": {
+      "outcome": "proven",
+      "required": "the real wrapper succeeds while the exact guard child is skipped, and no execution receipt exists",
+      "run": {
+        "run": {
+          "argv": [
+            "env",
+            "STANDARDS_DIRECTION_BASE_FILE=.b0-s5-protected-registry.md",
+            "STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE=.b0-s5-protected-approver.pem",
+            "STANDARDS_DIRECTION_BASE_REVISION=b0-s5-protected-base",
+            "node",
+            "scripts/standards-coverage.mjs",
+            "--check"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-1F3oYp/01-pipeline-wiring",
+          "startedAt": "2026-08-18T07:21:30.258Z",
+          "endedAt": "2026-08-18T07:21:30.421Z",
+          "durationMs": 163,
+          "exitCode": 0,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "[fix-verifier-C3] short-circuited guard=standards-direction-guard entry=scripts/standards-coverage.mjs\n",
+            "truncated": false,
+            "originalChars": 103
+          },
+          "stderr": {
+            "text": "",
+            "truncated": false,
+            "originalChars": 0
+          },
+          "outputSha256": "d414cd1abe3cb37813eed4e19d21f4304ee555df0ae22c10110e35e643819076",
+          "exitProvenance": "direct child status from spawnSync; shell=false"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-1F3oYp/pipeline-observer/c3/node",
+          "nodeEntry": "scripts/standards-coverage.mjs",
+          "requiredArgs": [
+            "--check"
+          ]
+        },
+        "receipts": [],
+        "shortCircuitEvents": [
+          {
+            "source": "fix-verifier-core",
+            "guardId": "standards-direction-guard",
+            "token": "a41158a6-12b2-4eac-8ac3-0a0c671e92c2-1094f504e9a63bc362801fa0782d3f55",
+            "nodeEntry": "scripts/standards-coverage.mjs",
+            "argv": [
+              "scripts/standards-coverage.mjs",
+              "--check"
+            ],
+            "shortCircuitedAt": "2026-08-18T07:21:30.418Z"
+          }
+        ],
+        "outcome": "proven"
+      }
+    }
+  },
+  "properties": {
+    "P1": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P2": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P3": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P4": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P5": {
+      "outcome": "unknown",
+      "mutations": []
+    }
+  },
+  "effectiveAgainst": [],
+  "rung": "wired",
+  "mutations": [],
+  "isolation": {
+    "method": "throwaway clones from an isolation seed; server-resolved protected base installed as origin/main, upstream/main, and main; dependency-only node_modules symlink",
+    "tempRoot": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-1F3oYp",
+    "copies": [
+      {
+        "label": "pipeline-wiring",
+        "root": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-1F3oYp/01-pipeline-wiring",
+        "commit": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5"
+      }
+    ],
+    "fixtureEvidence": [],
+    "protectedBase": {
+      "remoteUrl": "https://github.com/JKHeadley/instar.git",
+      "ref": "refs/heads/main",
+      "commit": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5",
+      "serverResolved": true,
+      "fetchMatchesServer": true,
+      "workflowPath": ".github/workflows/ci.yml",
+      "workflowSha256": "be9f8f5393854f15793424613fa46da4701b4808219cb173a0d9da1aa649ef71",
+      "mergeBase": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5"
+    },
+    "targetPorcelainUnchanged": true,
+    "cleanup": "removed before record emission"
+  },
+  "dependencies": {
+    "mode": "provided",
+    "path": "/Users/justin/Documents/Projects/instar-codey/.worktrees/phase-b-w1-validated-pipeline-wiring/node_modules",
+    "prepared": true
+  }
+}

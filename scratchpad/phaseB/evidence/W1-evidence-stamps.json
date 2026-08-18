@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-18T00:27:27-07:00",
+  "sha256": {
+    "scratchpad/phaseB/fix-verifier.mjs": "92425be2ecec5969f650c23851153c7e3396ef27582acc141cc6c45d88d116d2",
+    "scratchpad/phaseB/fix-verifier.test.mjs": "08af9989637bc1acb2342101a5fb3d66d91343f125d188a440534f1f644f6b03",
+    "scratchpad/phaseB/fix-verifier.manifest.json": "a3ae19ae23bae375f48de04d51aa9f17e674e20783bdfd0d9dd5b5815b864677",
+    "scratchpad/phaseB/adapters/topic-operator-evidence.mjs": "d7248e314f779e47d6290500d80d924f30754b8165a524c3992d0160acba49e1",
+    "scratchpad/phaseB/adapters/standards-direction-guard.mjs": "deeb477cdddcd9f5683f62269f50d16aa1ad0d5898d2d9a465fe1f406c5e81a2",
+    "scratchpad/phaseB/adapters/testing-integrity-route-enforcement.mjs": "21bf4fa7c026fcbb3d0f745945af163884e7496ce4455fbf55b315f79c4c4337",
+    "scratchpad/phaseB/adapters/checker-blind-input-coverage.mjs": "e3f66283ba3d265d0ebdc7fe56198200a45cbabbcc62369156c0c4d660c7fa77",
+    "scratchpad/phaseB/evidence/W1-topic-operator-evidence.json": "4b154729282c2dc7f237290c5d34e645a12f357a857442cff5dd66e731d96ec2",
+    "scratchpad/phaseB/evidence/W1-standards-direction-guard.json": "a9149512c85438d56a913dc583fe3d0270cb9e700d8c686d734981afc020e867",
+    "scratchpad/phaseB/evidence/W1-testing-integrity-route-enforcement.json": "3a556c7f639267c16160a7dbb7ba1675ee7c001465d8762a783982447c20aa2d",
+    "scratchpad/phaseB/evidence/W1-checker-blind-input-coverage.json": "ecd163ff2ed35166a945f235a064d783d759aedd34836f461d782ed7d085ad4a"
+  }
+}

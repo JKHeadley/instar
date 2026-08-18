@@ -1,0 +1,170 @@
+{
+  "schemaVersion": 1,
+  "adapters": [
+    {
+      "id": "self-action-convergence",
+      "description": "B0.4 third-party acceptance control: convergence model plus the pinned report-only registration lint; P4b enforcement relevance is explicitly unknown.",
+      "adapter": "adapters/self-action-convergence.mjs",
+      "guardFiles": [
+        "tests/unit/self-action-convergence.test.ts",
+        "scripts/lint-no-unregistered-self-action.js"
+      ],
+      "subjectFiles": [
+        "src/testing/selfActionRegistry.ts",
+        "scripts/lib/self-action-detect.mjs"
+      ],
+      "pipelineEntryPoint": ".github/workflows/ci.yml -> npm run test:push and npm run lint (unregistered-self-action lint is report-only at the pinned base)"
+    },
+    {
+      "id": "lint-llm-attribution",
+      "description": "B0.4 third-party known-hollow control: attribution lint silently skips an unreadable violating scanned input at pinned pre-S3 base.",
+      "adapter": "adapters/lint-llm-attribution.mjs",
+      "guardFiles": ["tests/unit/llm-attribution-ratchet.test.ts"],
+      "subjectFiles": ["scripts/lint-llm-attribution.js"],
+      "pipelineEntryPoint": "targeted attribution ratchet + direct lint invocation over generated scanned input"
+    },
+    {
+      "id": "guard-posture-probe",
+      "description": "B0.4 third-party known-hollow control: unavailable local posture is reported clean at pinned pre-S3 base; P4b is explicitly unknown because the real peer-posture source is enumerated.",
+      "adapter": "adapters/guard-posture-probe.mjs",
+      "guardFiles": ["tests/unit/monitoring/guard-posture-probe.test.ts"],
+      "subjectFiles": ["src/monitoring/probes/GuardPostureProbe.ts"],
+      "pipelineEntryPoint": "targeted GuardPostureProbe behavioral suite"
+    },
+    {
+      "id": "audit-convergence-validator",
+      "description": "B0.4 third-party strong control: audit-convergence validator plus merged-state CI ratchet.",
+      "adapter": "adapters/audit-convergence-validator.mjs",
+      "guardFiles": [
+        "tests/unit/audit-convergence-reports.test.ts",
+        "tests/unit/write-audit-convergence.test.ts"
+      ],
+      "subjectFiles": [
+        "scripts/write-audit-convergence.mjs",
+        "docs/STANDARDS-REGISTRY.md",
+        "docs/audits/full-decision-visibility-enactment.md"
+      ],
+      "pipelineEntryPoint": ".github/workflows/ci.yml -> npm run test:push"
+    },
+    {
+      "id": "topic-operator-evidence",
+      "description": "Evidence-bearing topic-operator bindings plus verified-reader refusal of assertions.",
+      "adapter": "adapters/topic-operator-evidence.mjs",
+      "guardFiles": [
+        "tests/unit/topic-operator-store.test.ts",
+        "tests/integration/topic-operator-routes.test.ts",
+        "tests/integration/topic-operator-autobind-route.test.ts"
+      ],
+      "subjectFiles": [
+        "src/users/TopicOperatorStore.ts",
+        "src/server/routes.ts",
+        "src/commands/server.ts"
+      ],
+      "pipeline": {
+        "protectedRemoteUrl": "https://github.com/JKHeadley/instar.git",
+        "protectedRef": "refs/heads/main",
+        "workflowPath": ".github/workflows/ci.yml",
+        "workflowJob": "unit",
+        "workflowCommandPrefix": "npm run test:push",
+        "invocationPrefix": ["npm", "run", "test:push"],
+        "commandIndex": 0,
+        "observer": {
+          "nodeEntry": "node_modules/vitest/vitest.mjs",
+          "requiredArgs": [
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts"
+          ]
+        }
+      },
+      "pipelineEntryPoint": ".github/workflows/ci.yml -> npm run test:push"
+    },
+    {
+      "id": "standards-direction-guard",
+      "description": "Protected-base article identity, continuity denominator, and independently ratified constitutional direction guard.",
+      "adapter": "adapters/standards-direction-guard.mjs",
+      "guardFiles": [
+        "scripts/standards-direction-guard.mjs",
+        "scripts/standards-coverage.mjs",
+        "tests/unit/standards-direction-guard.test.ts",
+        "tests/unit/standards-direction-guard-contract.test.ts"
+      ],
+      "subjectFiles": [
+        "docs/STANDARDS-REGISTRY.md",
+        "docs/standards-direction-approvals.json",
+        ".github/keyrings/telegram-principal-pub.pem"
+      ],
+      "pipeline": {
+        "protectedRemoteUrl": "https://github.com/JKHeadley/instar.git",
+        "protectedRef": "refs/heads/main",
+        "workflowPath": ".github/workflows/ci.yml",
+        "workflowJob": "standards-coverage",
+        "workflowCommandPrefix": "node scripts/standards-coverage.mjs --check",
+        "invocationPrefix": ["node", "scripts/standards-coverage.mjs", "--check"],
+        "commandIndex": 0,
+        "observer": {
+          "nodeEntry": "scripts/standards-coverage.mjs",
+          "requiredArgs": ["--check"]
+        }
+      },
+      "pipelineEntryPoint": ".github/workflows/ci.yml -> node scripts/standards-coverage.mjs --check"
+    },
+    {
+      "id": "testing-integrity-route-enforcement",
+      "description": "The changed-route Tier-3 execution guard and its real-AgentServer evidence oracle.",
+      "adapter": "adapters/testing-integrity-route-enforcement.mjs",
+      "guardFiles": [
+        "scripts/lint-testing-integrity.mjs",
+        "tests/helpers/testingIntegrity.ts",
+        "tests/unit/scripts/testing-integrity-enforcement.test.ts",
+        "tests/integration/testing-integrity-pipeline.test.ts",
+        "tests/e2e/testing-integrity-guard-lifecycle.test.ts"
+      ],
+      "subjectFiles": [
+        "src/server/routes.ts"
+      ],
+      "pipeline": {
+        "protectedRemoteUrl": "https://github.com/JKHeadley/instar.git",
+        "protectedRef": "refs/heads/main",
+        "workflowPath": ".github/workflows/ci.yml",
+        "workflowJob": "lint",
+        "workflowCommandPrefix": "npm run lint",
+        "invocationPrefix": ["npm", "run", "lint"],
+        "commandIndex": 0,
+        "observer": {
+          "nodeEntry": "scripts/lint-testing-integrity.mjs",
+          "requiredArgs": []
+        }
+      },
+      "pipelineEntryPoint": ".github/workflows/ci.yml -> npm run lint"
+    },
+    {
+      "id": "checker-blind-input-coverage",
+      "description": "Production-derived checker census, blind-input cases, and one-way legacy-debt ceiling.",
+      "adapter": "adapters/checker-blind-input-coverage.mjs",
+      "guardFiles": [
+        "scripts/lint-checker-blind-input-coverage.mjs",
+        "scripts/lib/checker-blind-input-ratchet.mjs",
+        "tests/unit/checker-blind-input-ratchet.test.ts"
+      ],
+      "subjectFiles": [
+        "scripts/lint-llm-attribution.js",
+        "scripts/checker-blind-input-cases.mjs"
+      ],
+      "pipeline": {
+        "protectedRemoteUrl": "https://github.com/JKHeadley/instar.git",
+        "protectedRef": "refs/heads/main",
+        "workflowPath": ".github/workflows/ci.yml",
+        "workflowJob": "lint",
+        "workflowCommandPrefix": "npm run lint",
+        "invocationPrefix": ["npm", "run", "lint"],
+        "commandIndex": 0,
+        "observer": {
+          "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+          "requiredArgs": []
+        }
+      },
+      "pipelineEntryPoint": ".github/workflows/ci.yml -> npm run lint"
+    }
+  ]
+}

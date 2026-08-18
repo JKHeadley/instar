@@ -1,0 +1,1120 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-08-18T12:32:48.834Z",
+  "instrument": {
+    "path": "/Users/justin/.instar/agents/instar-codey/.worktrees/phaseb-w4-convert-wiring-proofs/scratchpad/phaseB/fix-verifier.mjs",
+    "sha256": "e49d10fd4d98a93a8011efa6807d180cab56fdf5a7745744879bad7c0afb4897",
+    "manifest": {
+      "path": "/Users/justin/.instar/agents/instar-codey/.worktrees/phaseb-w4-convert-wiring-proofs/scratchpad/phaseB/fix-verifier.manifest.json",
+      "sha256": "a3ae19ae23bae375f48de04d51aa9f17e674e20783bdfd0d9dd5b5815b864677",
+      "adapterRegistryChecked": true,
+      "count": 8,
+      "ids": [
+        "audit-convergence-validator",
+        "checker-blind-input-coverage",
+        "guard-posture-probe",
+        "lint-llm-attribution",
+        "self-action-convergence",
+        "standards-direction-guard",
+        "testing-integrity-route-enforcement",
+        "topic-operator-evidence"
+      ]
+    },
+    "adapter": {
+      "path": "/Users/justin/.instar/agents/instar-codey/.worktrees/phaseb-w4-convert-wiring-proofs/scratchpad/phaseB/adapters/topic-operator-evidence.mjs",
+      "sha256": "d7248e314f779e47d6290500d80d924f30754b8165a524c3992d0160acba49e1"
+    }
+  },
+  "guardId": "topic-operator-evidence",
+  "description": "Evidence-bearing topic-operator bindings plus verified-reader refusal of assertions.",
+  "fixture": "none",
+  "measurementScope": "wiring-only",
+  "target": {
+    "tree": "/Users/justin/Documents/Projects/instar-codey/.worktrees/b0-3-fixlane-20260817",
+    "requestedCommit": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5",
+    "commit": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5",
+    "remote": {
+      "name": "upstream",
+      "url": "https://github.com/JKHeadley/instar.git"
+    },
+    "dirtyAtStart": false,
+    "porcelainAtStart": []
+  },
+  "adapterRegistry": {
+    "source": "/Users/justin/.instar/agents/instar-codey/.worktrees/phaseb-w4-convert-wiring-proofs/scratchpad/phaseB/fix-verifier.manifest.json",
+    "sourceSha256": "a3ae19ae23bae375f48de04d51aa9f17e674e20783bdfd0d9dd5b5815b864677",
+    "schemaChecked": true,
+    "semanticRole": "list of implemented adapters; never a guard census or coverage denominator",
+    "nonEmpty": true,
+    "adaptedGuardCount": 8,
+    "ids": [
+      "audit-convergence-validator",
+      "checker-blind-input-coverage",
+      "guard-posture-probe",
+      "lint-llm-attribution",
+      "self-action-convergence",
+      "standards-direction-guard",
+      "testing-integrity-route-enforcement",
+      "topic-operator-evidence"
+    ]
+  },
+  "coverageAggregate": {
+    "emitted": false,
+    "ratio": null,
+    "denominator": null,
+    "notMeasured": null,
+    "reason": "this command verifies one requested guard; adapter registration is not the real guard census"
+  },
+  "existence": {
+    "outcome": "proven",
+    "files": [
+      {
+        "path": "tests/unit/topic-operator-store.test.ts",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "tests/integration/topic-operator-routes.test.ts",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "tests/integration/topic-operator-autobind-route.test.ts",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "src/users/TopicOperatorStore.ts",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "src/server/routes.ts",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "src/commands/server.ts",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      }
+    ]
+  },
+  "wiring": {
+    "outcome": "proven",
+    "declaredEntryPoint": ".github/workflows/ci.yml -> npm run test:push",
+    "establishedBy": "the core authenticated the signed, strictly sequenced observer events for the exact live manifest-pinned guard child, then bound the HMAC receipt to its signed exit event; C3 wrapper success produced no guard receipt",
+    "protectedBase": {
+      "remoteUrl": "https://github.com/JKHeadley/instar.git",
+      "ref": "refs/heads/main",
+      "commit": "248ed7177f5bf416aa7bdad9763741478195e1fc",
+      "serverResolved": true,
+      "fetchMatchesServer": true,
+      "workflowPath": ".github/workflows/ci.yml",
+      "workflowSha256": "be9f8f5393854f15793424613fa46da4701b4808219cb173a0d9da1aa649ef71",
+      "mergeBase": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5"
+    },
+    "contract": {
+      "valid": true,
+      "reason": null,
+      "checks": [
+        {
+          "check": "protected remote URL is instrument-pinned",
+          "passed": true
+        },
+        {
+          "check": "protected branch ref is instrument-pinned",
+          "passed": true
+        },
+        {
+          "check": "adapter command invokes the pinned real entry",
+          "passed": true
+        },
+        {
+          "check": "protected workflow job declares the pinned command",
+          "passed": true
+        },
+        {
+          "check": "observer target is a safe exact child entry",
+          "passed": true
+        }
+      ],
+      "normalizedInvocation": [
+        "npm",
+        "run",
+        "test:push",
+        "--",
+        "tests/unit/topic-operator-store.test.ts",
+        "tests/integration/topic-operator-routes.test.ts",
+        "tests/integration/topic-operator-autobind-route.test.ts",
+        "--reporter=verbose"
+      ]
+    },
+    "pipelineEvidence": {
+      "source": "fix-verifier-core",
+      "status": "proven",
+      "mode": "core-authenticated-observer-events-hmac-receipt",
+      "authorityId": "8c1ade92-3010-4ca4-80fc-59410b36df93",
+      "receipt": {
+        "schema": "phaseB-authenticated-execution-receipt/v1",
+        "authorityId": "8c1ade92-3010-4ca4-80fc-59410b36df93",
+        "issuer": "fix-verifier:topic-operator-evidence",
+        "nonce": "a9d102c5-2473-4584-a2df-4321fa471205",
+        "guardId": "topic-operator-evidence",
+        "kind": "child-exit",
+        "observerPid": 91371,
+        "childPid": 91450,
+        "childExitCode": 0,
+        "signal": null,
+        "argv": [
+          "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+          "run",
+          "--config",
+          "vitest.push.config.ts",
+          "tests/unit/topic-operator-store.test.ts",
+          "tests/integration/topic-operator-routes.test.ts",
+          "tests/integration/topic-operator-autobind-route.test.ts",
+          "--reporter=verbose"
+        ],
+        "argvHash": "d16b01a2a5b0f9cc49fc9bf1331c5ce4a8fe0c25ffe3cefb5dceb6408721a7f8",
+        "startedAt": "2026-08-18T12:25:55.670Z",
+        "childExitedAt": "2026-08-18T12:32:47.756Z",
+        "emittedAfterChildExit": true,
+        "observerSession": "2c61b471-c63a-41c4-ac67-87cc5da536db",
+        "observerEventSequence": 3,
+        "observerEventSignatureHash": "995c5a117de8bb6fd6b70f32a94239e87391377819c776a30af9d1a0c6998593",
+        "mac": "fe40c4d41fecdbcae0d5df7b8e2b37bc66dfe642d515bd048bf4e9c53fbc7aff"
+      },
+      "C3": {
+        "outcome": "proven",
+        "receiptCount": 0,
+        "shortCircuitEvent": {
+          "eventSchema": "phaseB-authenticated-observer-event/v1",
+          "source": "fix-verifier-observer",
+          "observerSession": "a9af9135-1dce-4ddd-84c7-c1722ff34eae",
+          "sequence": 2,
+          "kind": "short-circuit",
+          "guardId": "topic-operator-evidence",
+          "nodeEntry": "node_modules/vitest/vitest.mjs",
+          "observerPid": 43173,
+          "argv": [
+            "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+            "run",
+            "--config",
+            "vitest.push.config.ts",
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts",
+            "--reporter=verbose"
+          ],
+          "shortCircuitedAt": "2026-08-18T12:32:48.603Z",
+          "signature": "xVs/Xhhg+u/6TQUrYLp1G85J5RQ+6s/DUMy1DNZth0OWfAcWUlnV7wfhXJI4wMAMtrOJ6XoPDiA2zrSJh84nAQ=="
+        },
+        "shortCircuitReceipt": {
+          "schema": "phaseB-authenticated-execution-receipt/v1",
+          "authorityId": "8c1ade92-3010-4ca4-80fc-59410b36df93",
+          "issuer": "fix-verifier:topic-operator-evidence",
+          "nonce": "417d0b79-cb00-4022-9a61-5eccefc4e1c8",
+          "guardId": "topic-operator-evidence",
+          "kind": "short-circuit",
+          "observerPid": 43173,
+          "childPid": 43173,
+          "childExitCode": 0,
+          "signal": null,
+          "argv": [
+            "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/pipeline-observer/c3/authenticated-observer.mjs",
+            "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+            "run",
+            "--config",
+            "vitest.push.config.ts",
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts",
+            "--reporter=verbose"
+          ],
+          "argvHash": "0dfac7b2add3c3f275a269ee6389994a06691c4de859b9785981eb48a3a99577",
+          "startedAt": "2026-08-18T12:32:48.603Z",
+          "childExitedAt": "2026-08-18T12:32:48.611Z",
+          "emittedAfterChildExit": true,
+          "observerSession": "a9af9135-1dce-4ddd-84c7-c1722ff34eae",
+          "observerEventSequence": 2,
+          "observerEventSignatureHash": "2082af619a3d196b4681cdee17ab6e3ee75b8d94f36af96d4d89b3d355439750",
+          "mac": "083dca40e17ad058c078bc3ce5af184fd2079e599ef2dde70b9e1e3237cc84f5"
+        }
+      },
+      "checks": [
+        {
+          "check": "real declared pipeline wrapper exited successfully",
+          "passed": true
+        },
+        {
+          "check": "private-channel authority authenticated exactly one post-child receipt",
+          "passed": true
+        },
+        {
+          "check": "C3 wrapper still exited successfully",
+          "passed": true
+        },
+        {
+          "check": "C3 authenticated the instrument observer short-circuit",
+          "passed": true
+        },
+        {
+          "check": "C3 produced no guard execution receipt",
+          "passed": true
+        }
+      ]
+    },
+    "run": {
+      "authorityId": "8c1ade92-3010-4ca4-80fc-59410b36df93",
+      "positive": {
+        "run": {
+          "argv": [
+            "npm",
+            "run",
+            "test:push",
+            "--",
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts",
+            "--reporter=verbose"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring",
+          "startedAt": "2026-08-18T12:25:55.140Z",
+          "endedAt": "2026-08-18T12:32:47.766Z",
+          "durationMs": 412626,
+          "pid": 91131,
+          "exitCode": 0,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "\n> instar@1.3.1179 test:push\n> vitest run --config vitest.push.config.ts tests/unit/topic-operator-store.test.ts tests/integration/topic-operator-routes.test.ts tests/integration/topic-operator-autobind-route.test.ts --reporter=verbose\n\nFIX_VERIFIER_OBSERVER_EVENT {\"eventSchema\":\"phaseB-authenticated-observer-event/v1\",\"source\":\"fix-verifier-observer\",\"observerSession\":\"2c61b471-c63a-41c4-ac67-87cc5da536db\",\"sequence\":1,\"kind\":\"observer-ready\",\"guardId\":\"topic-operator-evidence\",\"nodeEntry\":\"node_modules/vitest/vitest.mjs\",\"observerPid\":91371,\"argv\":[\"/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest\",\"run\",\"--config\",\"vitest.push.config.ts\",\"tests/unit/topic-operator-store.test.ts\",\"tests/integration/topic-operator-routes.test.ts\",\"tests/integration/topic-operator-autobind-route.test.ts\",\"--reporter=verbose\"],\"publicKey\":\"MCowBQYDK2VwAyEA4DkqMgaLWEqoxtnFFAQrsNl/wLvRFFr0k0Q4ikUGUX8=\",\"signature\":\"460UV10MJN6fN+zYhgNlqK2f13iXEvIVWnhAX54pWSaERkV+Y+tFLHO+IgYNT64DPyFqZ19u635KZ6p1qWKCDQ==\"}\nFIX_VERIFIER_OBSERVER_EVENT {\"eventSchema\":\"phaseB-authenticated-observer-event/v1\",\"source\":\"fix-verifier-observer\",\"observerSession\":\"2c61b471-c63a-41c4-ac67-87cc5da536db\",\"sequence\":2,\"kind\":\"child-start\",\"guardId\":\"topic-operator-evidence\",\"nodeEntry\":\"node_modules/vitest/vitest.mjs\",\"observerPid\":91371,\"argv\":[\"/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest\",\"run\",\"--config\",\"vitest.push.config.ts\",\"tests/unit/topic-operator-store.test.ts\",\"tests/integration/topic-operator-routes.test.ts\",\"tests/integration/topic-operator-autobind-route.test.ts\",\"--reporter=verbose\"],\"childPid\":91450,\"startedAt\":\"2026-08-18T12:25:55.670Z\",\"signature\":\"dd7JjhwEo6fNW3QD5FmKD/kCzhzjd/E9nQ8mAEA42XAy9BLPWA6T4TowREMCUBtzuhWkoNXTqN5kpWxAfPprAQ==\"}\n\n RUN  v2.1.9 /private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring\n\n✓ standards registry asset: 88 articles, registry 81b53363a440…, guards 44d5cab21f32… → src/data + dist/data\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > establishes from an authenticated uid and reads it back\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > REFUSES a blank uid — an operator cannot be established without a verified id\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > REFUSES mismatched or missing authentication evidence\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > a content name can never BECOME the operator — only a uid does (by construction)\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > getOperator is null for an unbound topic\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > persists across instances (durable JSON store)\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > replacing an operator overwrites the prior record\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore asserted and legacy bindings > records a manual assertion durably but refuses it as a verified operator\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore asserted and legacy bindings > P2: refuses a subject that self-reports authenticated while its evidence says assertion\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore asserted and legacy bindings > P5: legacy evidence-less and malformed/wrong-container inputs are not-proven, never verified\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore asserted and legacy bindings > P4: verified enumeration is non-vacuous and covers every topic-key shape in the raw population\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.asVerifiedOperator (feeds PrincipalGuard) > returns the PrincipalGuard shape when bound, null when unbound\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.sessionContextBlock > builds a <topic-operator> block naming the verified operator\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.sessionContextBlock > returns null for an unbound topic (nothing injected)\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.sessionContextBlock > falls back to the uid when no display name was provided\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.setAuthenticatedOperator idempotency (increment 2e) > skips the disk write when the stored record is identical\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.setAuthenticatedOperator idempotency (increment 2e) > still writes when the record actually changes\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > POST /topic-operator > records an arbitrary body uid as an assertion in the real stored record, never authenticated inbound\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > POST /topic-operator > 400s a blank uid — a content name can never establish an operator\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > POST /topic-operator > 400s a missing topicId\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > POST /topic-operator > persists the binding (a fresh request reads it back)\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator > lists assertions separately and excludes them from verified operators\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator > returns operator:null for an unbound topic\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator/session-context > returns the <topic-operator> injection block when bound\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator/session-context > returns { present: false } for an asserted binding\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator/session-context > returns { present: false } for an unbound topic\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator/session-context > 400s when topicId is missing\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > when the store is not initialized > every route returns 503 (feature not available), never a crash\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > BINDS the operator from an AUTHORIZED sender\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > does NOT bind an UNAUTHORIZED sender (the Caroline-class guard over the wire)\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > does NOT bind an agent-to-agent bot message (short-circuits before the bind)\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > does not crash when no store is wired (pure additive change)\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > keeps the real lifeline→polling convergence evidence-bound when a Telegram message id exists\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > P5: missing Telegram message id stays not-proven across the real lifeline→polling convergence\n\n Test Files  3 passed (3)\n      Tests  34 passed (34)\n   Start at  05:25:56\n   Duration  411.40s (transform 6.91s, setup 10ms, collect 11.12s, tests 413ms, environment 0ms, prepare 181ms)\n\nFIX_VERIFIER_OBSERVER_EVENT {\"eventSchema\":\"phaseB-authenticated-observer-event/v1\",\"source\":\"fix-verifier-observer\",\"observerSession\":\"2c61b471-c63a-41c4-ac67-87cc5da536db\",\"sequence\":3,\"kind\":\"child-exit\",\"guardId\":\"topic-operator-evidence\",\"nodeEntry\":\"node_modules/vitest/vitest.mjs\",\"observerPid\":91371,\"argv\":[\"/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest\",\"run\",\"--config\",\"vitest.push.config.ts\",\"tests/unit/topic-operator-store.test.ts\",\"tests/integration/topic-operator-routes.test.ts\",\"tests/integration/topic-operator-autobind-route.test.ts\",\"--reporter=verbose\"],\"childPid\":91450,\"startedAt\":\"2026-08-18T12:25:55.670Z\",\"childExitedAt\":\"2026-08-18T12:32:47.756Z\",\"childExitCode\":0,\"signal\":null,\"emittedAfterChildExit\":true,\"signature\":\"6jdjwp+XLMSzjumO5mBAF1Y2RzoI7CTw6d9zFsjW2nbF3En3KTkZR43q5Yrjm9mzdcI9mhD2LnwCLeQdv03JBQ==\"}\n",
+            "truncated": false,
+            "originalChars": 9210
+          },
+          "stderr": {
+            "text": "[test-runner-bound] ⠹ waiting for a suite-lane test slot (0m elapsed; 1 holder(s): pid 46168 age 77s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (1m elapsed; 1 holder(s): pid 46168 age 139s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (2m elapsed; 1 holder(s): pid 46168 age 200s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (3m elapsed; 1 holder(s): pid 46168 age 265s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (4m elapsed; 1 holder(s): pid 46168 age 331s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (5m elapsed; 1 holder(s): pid 46168 age 393s) — active work, not a hang\n[test-runner-bound] suite-lane slot acquired (posture: enforcing, cap 1, pid 91450)\n",
+            "truncated": false,
+            "originalChars": 857
+          },
+          "outputSha256": "d76196819d7263f472d188324a5e975d91cf418b6d4f80d7025d0d59375fb831",
+          "observerError": null,
+          "observerCandidateLineCount": 3,
+          "exitProvenance": "direct child status from spawn; shell=false; nested observer pids validated live with ps"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/pipeline-observer/positive/node",
+          "observerProgram": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/pipeline-observer/positive/authenticated-observer.mjs",
+          "nodeEntry": "node_modules/vitest/vitest.mjs",
+          "requiredArgs": [
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts"
+          ]
+        },
+        "receipts": [
+          {
+            "schema": "phaseB-authenticated-execution-receipt/v1",
+            "authorityId": "8c1ade92-3010-4ca4-80fc-59410b36df93",
+            "issuer": "fix-verifier:topic-operator-evidence",
+            "nonce": "a9d102c5-2473-4584-a2df-4321fa471205",
+            "guardId": "topic-operator-evidence",
+            "kind": "child-exit",
+            "observerPid": 91371,
+            "childPid": 91450,
+            "childExitCode": 0,
+            "signal": null,
+            "argv": [
+              "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+              "run",
+              "--config",
+              "vitest.push.config.ts",
+              "tests/unit/topic-operator-store.test.ts",
+              "tests/integration/topic-operator-routes.test.ts",
+              "tests/integration/topic-operator-autobind-route.test.ts",
+              "--reporter=verbose"
+            ],
+            "argvHash": "d16b01a2a5b0f9cc49fc9bf1331c5ce4a8fe0c25ffe3cefb5dceb6408721a7f8",
+            "startedAt": "2026-08-18T12:25:55.670Z",
+            "childExitedAt": "2026-08-18T12:32:47.756Z",
+            "emittedAfterChildExit": true,
+            "observerSession": "2c61b471-c63a-41c4-ac67-87cc5da536db",
+            "observerEventSequence": 3,
+            "observerEventSignatureHash": "995c5a117de8bb6fd6b70f32a94239e87391377819c776a30af9d1a0c6998593",
+            "mac": "fe40c4d41fecdbcae0d5df7b8e2b37bc66dfe642d515bd048bf4e9c53fbc7aff"
+          }
+        ],
+        "shortCircuitEvents": [],
+        "shortCircuitReceipt": null,
+        "processObservations": {
+          "observerReady": {
+            "event": {
+              "eventSchema": "phaseB-authenticated-observer-event/v1",
+              "source": "fix-verifier-observer",
+              "observerSession": "2c61b471-c63a-41c4-ac67-87cc5da536db",
+              "sequence": 1,
+              "kind": "observer-ready",
+              "guardId": "topic-operator-evidence",
+              "nodeEntry": "node_modules/vitest/vitest.mjs",
+              "observerPid": 91371,
+              "argv": [
+                "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+                "run",
+                "--config",
+                "vitest.push.config.ts",
+                "tests/unit/topic-operator-store.test.ts",
+                "tests/integration/topic-operator-routes.test.ts",
+                "tests/integration/topic-operator-autobind-route.test.ts",
+                "--reporter=verbose"
+              ],
+              "publicKey": "MCowBQYDK2VwAyEA4DkqMgaLWEqoxtnFFAQrsNl/wLvRFFr0k0Q4ikUGUX8=",
+              "signature": "460UV10MJN6fN+zYhgNlqK2f13iXEvIVWnhAX54pWSaERkV+Y+tFLHO+IgYNT64DPyFqZ19u635KZ6p1qWKCDQ=="
+            },
+            "valid": true,
+            "authenticated": true,
+            "processRecord": {
+              "pid": 91371,
+              "ppid": 91273,
+              "command": "/opt/homebrew/Cellar/node/25.6.1/bin/node /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/pipeline-observer/positive/authenticated-observer.mjs /private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest run --config vitest.push.config.ts tests/unit/topic-operator-store.test.ts tests/integration/topic-operator-routes.test.ts tests/integration/topic-operator-autobind-route.test.ts --reporter=verbose"
+            }
+          },
+          "validatedChildStart": {
+            "event": {
+              "eventSchema": "phaseB-authenticated-observer-event/v1",
+              "source": "fix-verifier-observer",
+              "observerSession": "2c61b471-c63a-41c4-ac67-87cc5da536db",
+              "sequence": 2,
+              "kind": "child-start",
+              "guardId": "topic-operator-evidence",
+              "nodeEntry": "node_modules/vitest/vitest.mjs",
+              "observerPid": 91371,
+              "argv": [
+                "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+                "run",
+                "--config",
+                "vitest.push.config.ts",
+                "tests/unit/topic-operator-store.test.ts",
+                "tests/integration/topic-operator-routes.test.ts",
+                "tests/integration/topic-operator-autobind-route.test.ts",
+                "--reporter=verbose"
+              ],
+              "childPid": 91450,
+              "startedAt": "2026-08-18T12:25:55.670Z",
+              "signature": "dd7JjhwEo6fNW3QD5FmKD/kCzhzjd/E9nQ8mAEA42XAy9BLPWA6T4TowREMCUBtzuhWkoNXTqN5kpWxAfPprAQ=="
+            },
+            "valid": true,
+            "authenticated": true,
+            "processRecord": {
+              "pid": 91450,
+              "ppid": 91371,
+              "command": "/opt/homebrew/Cellar/node/25.6.1/bin/node /private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest run --config vitest.push.config.ts tests/unit/topic-operator-store.test.ts tests/integration/topic-operator-routes.test.ts tests/integration/topic-operator-autobind-route.test.ts --reporter=verbose"
+            }
+          },
+          "childExit": {
+            "eventSchema": "phaseB-authenticated-observer-event/v1",
+            "source": "fix-verifier-observer",
+            "observerSession": "2c61b471-c63a-41c4-ac67-87cc5da536db",
+            "sequence": 3,
+            "kind": "child-exit",
+            "guardId": "topic-operator-evidence",
+            "nodeEntry": "node_modules/vitest/vitest.mjs",
+            "observerPid": 91371,
+            "argv": [
+              "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+              "run",
+              "--config",
+              "vitest.push.config.ts",
+              "tests/unit/topic-operator-store.test.ts",
+              "tests/integration/topic-operator-routes.test.ts",
+              "tests/integration/topic-operator-autobind-route.test.ts",
+              "--reporter=verbose"
+            ],
+            "childPid": 91450,
+            "startedAt": "2026-08-18T12:25:55.670Z",
+            "childExitedAt": "2026-08-18T12:32:47.756Z",
+            "childExitCode": 0,
+            "signal": null,
+            "emittedAfterChildExit": true,
+            "signature": "6jdjwp+XLMSzjumO5mBAF1Y2RzoI7CTw6d9zFsjW2nbF3En3KTkZR43q5Yrjm9mzdcI9mhD2LnwCLeQdv03JBQ=="
+          },
+          "authenticatedEventCount": 3,
+          "stdoutCandidateEventLineCount": 3
+        }
+      },
+      "C3": {
+        "run": {
+          "argv": [
+            "npm",
+            "run",
+            "test:push",
+            "--",
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts",
+            "--reporter=verbose"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring",
+          "startedAt": "2026-08-18T12:32:47.769Z",
+          "endedAt": "2026-08-18T12:32:48.611Z",
+          "durationMs": 842,
+          "pid": 42793,
+          "exitCode": 0,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "\n> instar@1.3.1179 test:push\n> vitest run --config vitest.push.config.ts tests/unit/topic-operator-store.test.ts tests/integration/topic-operator-routes.test.ts tests/integration/topic-operator-autobind-route.test.ts --reporter=verbose\n\nFIX_VERIFIER_OBSERVER_EVENT {\"eventSchema\":\"phaseB-authenticated-observer-event/v1\",\"source\":\"fix-verifier-observer\",\"observerSession\":\"a9af9135-1dce-4ddd-84c7-c1722ff34eae\",\"sequence\":1,\"kind\":\"observer-ready\",\"guardId\":\"topic-operator-evidence\",\"nodeEntry\":\"node_modules/vitest/vitest.mjs\",\"observerPid\":43173,\"argv\":[\"/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest\",\"run\",\"--config\",\"vitest.push.config.ts\",\"tests/unit/topic-operator-store.test.ts\",\"tests/integration/topic-operator-routes.test.ts\",\"tests/integration/topic-operator-autobind-route.test.ts\",\"--reporter=verbose\"],\"publicKey\":\"MCowBQYDK2VwAyEAW4DsysPoQaoV6VGdAUFWAoPBVaRwddy8sDRp/4qCgMc=\",\"signature\":\"AHkIUT3qA4LKfLqNA1+/cEd2UmEQ9Wk2xfNOIa3b/rTQFcJk7mP7Or4LSeXcHnkYtejZTgUFMKbB00zHK2f0Bw==\"}\nFIX_VERIFIER_OBSERVER_EVENT {\"eventSchema\":\"phaseB-authenticated-observer-event/v1\",\"source\":\"fix-verifier-observer\",\"observerSession\":\"a9af9135-1dce-4ddd-84c7-c1722ff34eae\",\"sequence\":2,\"kind\":\"short-circuit\",\"guardId\":\"topic-operator-evidence\",\"nodeEntry\":\"node_modules/vitest/vitest.mjs\",\"observerPid\":43173,\"argv\":[\"/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest\",\"run\",\"--config\",\"vitest.push.config.ts\",\"tests/unit/topic-operator-store.test.ts\",\"tests/integration/topic-operator-routes.test.ts\",\"tests/integration/topic-operator-autobind-route.test.ts\",\"--reporter=verbose\"],\"shortCircuitedAt\":\"2026-08-18T12:32:48.603Z\",\"signature\":\"xVs/Xhhg+u/6TQUrYLp1G85J5RQ+6s/DUMy1DNZth0OWfAcWUlnV7wfhXJI4wMAMtrOJ6XoPDiA2zrSJh84nAQ==\"}\n[fix-verifier-C3] authenticated observer short-circuited guard=topic-operator-evidence entry=node_modules/vitest/vitest.mjs\n",
+            "truncated": false,
+            "originalChars": 2015
+          },
+          "stderr": {
+            "text": "",
+            "truncated": false,
+            "originalChars": 0
+          },
+          "outputSha256": "2b447d6a960cb6439c911ab4af499f23469955ffbc306e964553071e327d211d",
+          "observerError": null,
+          "observerCandidateLineCount": 2,
+          "exitProvenance": "direct child status from spawn; shell=false; nested observer pids validated live with ps"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/pipeline-observer/c3/node",
+          "observerProgram": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/pipeline-observer/c3/authenticated-observer.mjs",
+          "nodeEntry": "node_modules/vitest/vitest.mjs",
+          "requiredArgs": [
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts"
+          ]
+        },
+        "receipts": [],
+        "shortCircuitEvents": [
+          {
+            "eventSchema": "phaseB-authenticated-observer-event/v1",
+            "source": "fix-verifier-observer",
+            "observerSession": "a9af9135-1dce-4ddd-84c7-c1722ff34eae",
+            "sequence": 2,
+            "kind": "short-circuit",
+            "guardId": "topic-operator-evidence",
+            "nodeEntry": "node_modules/vitest/vitest.mjs",
+            "observerPid": 43173,
+            "argv": [
+              "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+              "run",
+              "--config",
+              "vitest.push.config.ts",
+              "tests/unit/topic-operator-store.test.ts",
+              "tests/integration/topic-operator-routes.test.ts",
+              "tests/integration/topic-operator-autobind-route.test.ts",
+              "--reporter=verbose"
+            ],
+            "shortCircuitedAt": "2026-08-18T12:32:48.603Z",
+            "signature": "xVs/Xhhg+u/6TQUrYLp1G85J5RQ+6s/DUMy1DNZth0OWfAcWUlnV7wfhXJI4wMAMtrOJ6XoPDiA2zrSJh84nAQ=="
+          }
+        ],
+        "shortCircuitReceipt": {
+          "schema": "phaseB-authenticated-execution-receipt/v1",
+          "authorityId": "8c1ade92-3010-4ca4-80fc-59410b36df93",
+          "issuer": "fix-verifier:topic-operator-evidence",
+          "nonce": "417d0b79-cb00-4022-9a61-5eccefc4e1c8",
+          "guardId": "topic-operator-evidence",
+          "kind": "short-circuit",
+          "observerPid": 43173,
+          "childPid": 43173,
+          "childExitCode": 0,
+          "signal": null,
+          "argv": [
+            "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/pipeline-observer/c3/authenticated-observer.mjs",
+            "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+            "run",
+            "--config",
+            "vitest.push.config.ts",
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts",
+            "--reporter=verbose"
+          ],
+          "argvHash": "0dfac7b2add3c3f275a269ee6389994a06691c4de859b9785981eb48a3a99577",
+          "startedAt": "2026-08-18T12:32:48.603Z",
+          "childExitedAt": "2026-08-18T12:32:48.611Z",
+          "emittedAfterChildExit": true,
+          "observerSession": "a9af9135-1dce-4ddd-84c7-c1722ff34eae",
+          "observerEventSequence": 2,
+          "observerEventSignatureHash": "2082af619a3d196b4681cdee17ab6e3ee75b8d94f36af96d4d89b3d355439750",
+          "mac": "083dca40e17ad058c078bc3ce5af184fd2079e599ef2dde70b9e1e3237cc84f5"
+        },
+        "processObservations": {
+          "observerReady": {
+            "event": {
+              "eventSchema": "phaseB-authenticated-observer-event/v1",
+              "source": "fix-verifier-observer",
+              "observerSession": "a9af9135-1dce-4ddd-84c7-c1722ff34eae",
+              "sequence": 1,
+              "kind": "observer-ready",
+              "guardId": "topic-operator-evidence",
+              "nodeEntry": "node_modules/vitest/vitest.mjs",
+              "observerPid": 43173,
+              "argv": [
+                "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+                "run",
+                "--config",
+                "vitest.push.config.ts",
+                "tests/unit/topic-operator-store.test.ts",
+                "tests/integration/topic-operator-routes.test.ts",
+                "tests/integration/topic-operator-autobind-route.test.ts",
+                "--reporter=verbose"
+              ],
+              "publicKey": "MCowBQYDK2VwAyEAW4DsysPoQaoV6VGdAUFWAoPBVaRwddy8sDRp/4qCgMc=",
+              "signature": "AHkIUT3qA4LKfLqNA1+/cEd2UmEQ9Wk2xfNOIa3b/rTQFcJk7mP7Or4LSeXcHnkYtejZTgUFMKbB00zHK2f0Bw=="
+            },
+            "valid": true,
+            "authenticated": true,
+            "processRecord": {
+              "pid": 43173,
+              "ppid": 43019,
+              "command": "/opt/homebrew/Cellar/node/25.6.1/bin/node /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/pipeline-observer/c3/authenticated-observer.mjs /private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest run --config vitest.push.config.ts tests/unit/topic-operator-store.test.ts tests/integration/topic-operator-routes.test.ts tests/integration/topic-operator-autobind-route.test.ts --reporter=verbose"
+            }
+          },
+          "validatedChildStart": null,
+          "childExit": null,
+          "authenticatedEventCount": 2,
+          "stdoutCandidateEventLineCount": 2
+        },
+        "outcome": "proven"
+      },
+      "envelope": {
+        "source": "fix-verifier-core",
+        "status": "proven",
+        "mode": "core-authenticated-observer-events-hmac-receipt",
+        "authorityId": "8c1ade92-3010-4ca4-80fc-59410b36df93",
+        "receipt": {
+          "schema": "phaseB-authenticated-execution-receipt/v1",
+          "authorityId": "8c1ade92-3010-4ca4-80fc-59410b36df93",
+          "issuer": "fix-verifier:topic-operator-evidence",
+          "nonce": "a9d102c5-2473-4584-a2df-4321fa471205",
+          "guardId": "topic-operator-evidence",
+          "kind": "child-exit",
+          "observerPid": 91371,
+          "childPid": 91450,
+          "childExitCode": 0,
+          "signal": null,
+          "argv": [
+            "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+            "run",
+            "--config",
+            "vitest.push.config.ts",
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts",
+            "--reporter=verbose"
+          ],
+          "argvHash": "d16b01a2a5b0f9cc49fc9bf1331c5ce4a8fe0c25ffe3cefb5dceb6408721a7f8",
+          "startedAt": "2026-08-18T12:25:55.670Z",
+          "childExitedAt": "2026-08-18T12:32:47.756Z",
+          "emittedAfterChildExit": true,
+          "observerSession": "2c61b471-c63a-41c4-ac67-87cc5da536db",
+          "observerEventSequence": 3,
+          "observerEventSignatureHash": "995c5a117de8bb6fd6b70f32a94239e87391377819c776a30af9d1a0c6998593",
+          "mac": "fe40c4d41fecdbcae0d5df7b8e2b37bc66dfe642d515bd048bf4e9c53fbc7aff"
+        },
+        "C3": {
+          "outcome": "proven",
+          "receiptCount": 0,
+          "shortCircuitEvent": {
+            "eventSchema": "phaseB-authenticated-observer-event/v1",
+            "source": "fix-verifier-observer",
+            "observerSession": "a9af9135-1dce-4ddd-84c7-c1722ff34eae",
+            "sequence": 2,
+            "kind": "short-circuit",
+            "guardId": "topic-operator-evidence",
+            "nodeEntry": "node_modules/vitest/vitest.mjs",
+            "observerPid": 43173,
+            "argv": [
+              "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+              "run",
+              "--config",
+              "vitest.push.config.ts",
+              "tests/unit/topic-operator-store.test.ts",
+              "tests/integration/topic-operator-routes.test.ts",
+              "tests/integration/topic-operator-autobind-route.test.ts",
+              "--reporter=verbose"
+            ],
+            "shortCircuitedAt": "2026-08-18T12:32:48.603Z",
+            "signature": "xVs/Xhhg+u/6TQUrYLp1G85J5RQ+6s/DUMy1DNZth0OWfAcWUlnV7wfhXJI4wMAMtrOJ6XoPDiA2zrSJh84nAQ=="
+          },
+          "shortCircuitReceipt": {
+            "schema": "phaseB-authenticated-execution-receipt/v1",
+            "authorityId": "8c1ade92-3010-4ca4-80fc-59410b36df93",
+            "issuer": "fix-verifier:topic-operator-evidence",
+            "nonce": "417d0b79-cb00-4022-9a61-5eccefc4e1c8",
+            "guardId": "topic-operator-evidence",
+            "kind": "short-circuit",
+            "observerPid": 43173,
+            "childPid": 43173,
+            "childExitCode": 0,
+            "signal": null,
+            "argv": [
+              "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/pipeline-observer/c3/authenticated-observer.mjs",
+              "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+              "run",
+              "--config",
+              "vitest.push.config.ts",
+              "tests/unit/topic-operator-store.test.ts",
+              "tests/integration/topic-operator-routes.test.ts",
+              "tests/integration/topic-operator-autobind-route.test.ts",
+              "--reporter=verbose"
+            ],
+            "argvHash": "0dfac7b2add3c3f275a269ee6389994a06691c4de859b9785981eb48a3a99577",
+            "startedAt": "2026-08-18T12:32:48.603Z",
+            "childExitedAt": "2026-08-18T12:32:48.611Z",
+            "emittedAfterChildExit": true,
+            "observerSession": "a9af9135-1dce-4ddd-84c7-c1722ff34eae",
+            "observerEventSequence": 2,
+            "observerEventSignatureHash": "2082af619a3d196b4681cdee17ab6e3ee75b8d94f36af96d4d89b3d355439750",
+            "mac": "083dca40e17ad058c078bc3ce5af184fd2079e599ef2dde70b9e1e3237cc84f5"
+          }
+        },
+        "checks": [
+          {
+            "check": "real declared pipeline wrapper exited successfully",
+            "passed": true
+          },
+          {
+            "check": "private-channel authority authenticated exactly one post-child receipt",
+            "passed": true
+          },
+          {
+            "check": "C3 wrapper still exited successfully",
+            "passed": true
+          },
+          {
+            "check": "C3 authenticated the instrument observer short-circuit",
+            "passed": true
+          },
+          {
+            "check": "C3 produced no guard execution receipt",
+            "passed": true
+          }
+        ]
+      }
+    }
+  },
+  "controls": {
+    "C1": {
+      "outcome": "proven",
+      "required": "untouched guard passes through the real protected-workflow entry and emits the post-child receipt",
+      "run": {
+        "run": {
+          "argv": [
+            "npm",
+            "run",
+            "test:push",
+            "--",
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts",
+            "--reporter=verbose"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring",
+          "startedAt": "2026-08-18T12:25:55.140Z",
+          "endedAt": "2026-08-18T12:32:47.766Z",
+          "durationMs": 412626,
+          "pid": 91131,
+          "exitCode": 0,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "\n> instar@1.3.1179 test:push\n> vitest run --config vitest.push.config.ts tests/unit/topic-operator-store.test.ts tests/integration/topic-operator-routes.test.ts tests/integration/topic-operator-autobind-route.test.ts --reporter=verbose\n\nFIX_VERIFIER_OBSERVER_EVENT {\"eventSchema\":\"phaseB-authenticated-observer-event/v1\",\"source\":\"fix-verifier-observer\",\"observerSession\":\"2c61b471-c63a-41c4-ac67-87cc5da536db\",\"sequence\":1,\"kind\":\"observer-ready\",\"guardId\":\"topic-operator-evidence\",\"nodeEntry\":\"node_modules/vitest/vitest.mjs\",\"observerPid\":91371,\"argv\":[\"/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest\",\"run\",\"--config\",\"vitest.push.config.ts\",\"tests/unit/topic-operator-store.test.ts\",\"tests/integration/topic-operator-routes.test.ts\",\"tests/integration/topic-operator-autobind-route.test.ts\",\"--reporter=verbose\"],\"publicKey\":\"MCowBQYDK2VwAyEA4DkqMgaLWEqoxtnFFAQrsNl/wLvRFFr0k0Q4ikUGUX8=\",\"signature\":\"460UV10MJN6fN+zYhgNlqK2f13iXEvIVWnhAX54pWSaERkV+Y+tFLHO+IgYNT64DPyFqZ19u635KZ6p1qWKCDQ==\"}\nFIX_VERIFIER_OBSERVER_EVENT {\"eventSchema\":\"phaseB-authenticated-observer-event/v1\",\"source\":\"fix-verifier-observer\",\"observerSession\":\"2c61b471-c63a-41c4-ac67-87cc5da536db\",\"sequence\":2,\"kind\":\"child-start\",\"guardId\":\"topic-operator-evidence\",\"nodeEntry\":\"node_modules/vitest/vitest.mjs\",\"observerPid\":91371,\"argv\":[\"/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest\",\"run\",\"--config\",\"vitest.push.config.ts\",\"tests/unit/topic-operator-store.test.ts\",\"tests/integration/topic-operator-routes.test.ts\",\"tests/integration/topic-operator-autobind-route.test.ts\",\"--reporter=verbose\"],\"childPid\":91450,\"startedAt\":\"2026-08-18T12:25:55.670Z\",\"signature\":\"dd7JjhwEo6fNW3QD5FmKD/kCzhzjd/E9nQ8mAEA42XAy9BLPWA6T4TowREMCUBtzuhWkoNXTqN5kpWxAfPprAQ==\"}\n\n RUN  v2.1.9 /private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring\n\n✓ standards registry asset: 88 articles, registry 81b53363a440…, guards 44d5cab21f32… → src/data + dist/data\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > establishes from an authenticated uid and reads it back\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > REFUSES a blank uid — an operator cannot be established without a verified id\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > REFUSES mismatched or missing authentication evidence\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > a content name can never BECOME the operator — only a uid does (by construction)\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > getOperator is null for an unbound topic\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > persists across instances (durable JSON store)\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore authenticated binding / verified reads > replacing an operator overwrites the prior record\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore asserted and legacy bindings > records a manual assertion durably but refuses it as a verified operator\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore asserted and legacy bindings > P2: refuses a subject that self-reports authenticated while its evidence says assertion\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore asserted and legacy bindings > P5: legacy evidence-less and malformed/wrong-container inputs are not-proven, never verified\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore asserted and legacy bindings > P4: verified enumeration is non-vacuous and covers every topic-key shape in the raw population\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.asVerifiedOperator (feeds PrincipalGuard) > returns the PrincipalGuard shape when bound, null when unbound\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.sessionContextBlock > builds a <topic-operator> block naming the verified operator\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.sessionContextBlock > returns null for an unbound topic (nothing injected)\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.sessionContextBlock > falls back to the uid when no display name was provided\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.setAuthenticatedOperator idempotency (increment 2e) > skips the disk write when the stored record is identical\n ✓ tests/unit/topic-operator-store.test.ts > TopicOperatorStore.setAuthenticatedOperator idempotency (increment 2e) > still writes when the record actually changes\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > POST /topic-operator > records an arbitrary body uid as an assertion in the real stored record, never authenticated inbound\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > POST /topic-operator > 400s a blank uid — a content name can never establish an operator\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > POST /topic-operator > 400s a missing topicId\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > POST /topic-operator > persists the binding (a fresh request reads it back)\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator > lists assertions separately and excludes them from verified operators\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator > returns operator:null for an unbound topic\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator/session-context > returns the <topic-operator> injection block when bound\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator/session-context > returns { present: false } for an asserted binding\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator/session-context > returns { present: false } for an unbound topic\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > GET /topic-operator/session-context > 400s when topicId is missing\n ✓ tests/integration/topic-operator-routes.test.ts > Topic Operator Routes (integration) > when the store is not initialized > every route returns 503 (feature not available), never a crash\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > BINDS the operator from an AUTHORIZED sender\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > does NOT bind an UNAUTHORIZED sender (the Caroline-class guard over the wire)\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > does NOT bind an agent-to-agent bot message (short-circuits before the bind)\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > does not crash when no store is wired (pure additive change)\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > keeps the real lifeline→polling convergence evidence-bound when a Telegram message id exists\n ✓ tests/integration/topic-operator-autobind-route.test.ts > /internal/telegram-forward → topic-operator auto-bind (integration) > P5: missing Telegram message id stays not-proven across the real lifeline→polling convergence\n\n Test Files  3 passed (3)\n      Tests  34 passed (34)\n   Start at  05:25:56\n   Duration  411.40s (transform 6.91s, setup 10ms, collect 11.12s, tests 413ms, environment 0ms, prepare 181ms)\n\nFIX_VERIFIER_OBSERVER_EVENT {\"eventSchema\":\"phaseB-authenticated-observer-event/v1\",\"source\":\"fix-verifier-observer\",\"observerSession\":\"2c61b471-c63a-41c4-ac67-87cc5da536db\",\"sequence\":3,\"kind\":\"child-exit\",\"guardId\":\"topic-operator-evidence\",\"nodeEntry\":\"node_modules/vitest/vitest.mjs\",\"observerPid\":91371,\"argv\":[\"/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest\",\"run\",\"--config\",\"vitest.push.config.ts\",\"tests/unit/topic-operator-store.test.ts\",\"tests/integration/topic-operator-routes.test.ts\",\"tests/integration/topic-operator-autobind-route.test.ts\",\"--reporter=verbose\"],\"childPid\":91450,\"startedAt\":\"2026-08-18T12:25:55.670Z\",\"childExitedAt\":\"2026-08-18T12:32:47.756Z\",\"childExitCode\":0,\"signal\":null,\"emittedAfterChildExit\":true,\"signature\":\"6jdjwp+XLMSzjumO5mBAF1Y2RzoI7CTw6d9zFsjW2nbF3En3KTkZR43q5Yrjm9mzdcI9mhD2LnwCLeQdv03JBQ==\"}\n",
+            "truncated": false,
+            "originalChars": 9210
+          },
+          "stderr": {
+            "text": "[test-runner-bound] ⠹ waiting for a suite-lane test slot (0m elapsed; 1 holder(s): pid 46168 age 77s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (1m elapsed; 1 holder(s): pid 46168 age 139s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (2m elapsed; 1 holder(s): pid 46168 age 200s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (3m elapsed; 1 holder(s): pid 46168 age 265s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (4m elapsed; 1 holder(s): pid 46168 age 331s) — active work, not a hang\n[test-runner-bound] ⠹ waiting for a suite-lane test slot (5m elapsed; 1 holder(s): pid 46168 age 393s) — active work, not a hang\n[test-runner-bound] suite-lane slot acquired (posture: enforcing, cap 1, pid 91450)\n",
+            "truncated": false,
+            "originalChars": 857
+          },
+          "outputSha256": "d76196819d7263f472d188324a5e975d91cf418b6d4f80d7025d0d59375fb831",
+          "observerError": null,
+          "observerCandidateLineCount": 3,
+          "exitProvenance": "direct child status from spawn; shell=false; nested observer pids validated live with ps"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/pipeline-observer/positive/node",
+          "observerProgram": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/pipeline-observer/positive/authenticated-observer.mjs",
+          "nodeEntry": "node_modules/vitest/vitest.mjs",
+          "requiredArgs": [
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts"
+          ]
+        },
+        "receipts": [
+          {
+            "schema": "phaseB-authenticated-execution-receipt/v1",
+            "authorityId": "8c1ade92-3010-4ca4-80fc-59410b36df93",
+            "issuer": "fix-verifier:topic-operator-evidence",
+            "nonce": "a9d102c5-2473-4584-a2df-4321fa471205",
+            "guardId": "topic-operator-evidence",
+            "kind": "child-exit",
+            "observerPid": 91371,
+            "childPid": 91450,
+            "childExitCode": 0,
+            "signal": null,
+            "argv": [
+              "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+              "run",
+              "--config",
+              "vitest.push.config.ts",
+              "tests/unit/topic-operator-store.test.ts",
+              "tests/integration/topic-operator-routes.test.ts",
+              "tests/integration/topic-operator-autobind-route.test.ts",
+              "--reporter=verbose"
+            ],
+            "argvHash": "d16b01a2a5b0f9cc49fc9bf1331c5ce4a8fe0c25ffe3cefb5dceb6408721a7f8",
+            "startedAt": "2026-08-18T12:25:55.670Z",
+            "childExitedAt": "2026-08-18T12:32:47.756Z",
+            "emittedAfterChildExit": true,
+            "observerSession": "2c61b471-c63a-41c4-ac67-87cc5da536db",
+            "observerEventSequence": 3,
+            "observerEventSignatureHash": "995c5a117de8bb6fd6b70f32a94239e87391377819c776a30af9d1a0c6998593",
+            "mac": "fe40c4d41fecdbcae0d5df7b8e2b37bc66dfe642d515bd048bf4e9c53fbc7aff"
+          }
+        ],
+        "shortCircuitEvents": [],
+        "shortCircuitReceipt": null,
+        "processObservations": {
+          "observerReady": {
+            "event": {
+              "eventSchema": "phaseB-authenticated-observer-event/v1",
+              "source": "fix-verifier-observer",
+              "observerSession": "2c61b471-c63a-41c4-ac67-87cc5da536db",
+              "sequence": 1,
+              "kind": "observer-ready",
+              "guardId": "topic-operator-evidence",
+              "nodeEntry": "node_modules/vitest/vitest.mjs",
+              "observerPid": 91371,
+              "argv": [
+                "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+                "run",
+                "--config",
+                "vitest.push.config.ts",
+                "tests/unit/topic-operator-store.test.ts",
+                "tests/integration/topic-operator-routes.test.ts",
+                "tests/integration/topic-operator-autobind-route.test.ts",
+                "--reporter=verbose"
+              ],
+              "publicKey": "MCowBQYDK2VwAyEA4DkqMgaLWEqoxtnFFAQrsNl/wLvRFFr0k0Q4ikUGUX8=",
+              "signature": "460UV10MJN6fN+zYhgNlqK2f13iXEvIVWnhAX54pWSaERkV+Y+tFLHO+IgYNT64DPyFqZ19u635KZ6p1qWKCDQ=="
+            },
+            "valid": true,
+            "authenticated": true,
+            "processRecord": {
+              "pid": 91371,
+              "ppid": 91273,
+              "command": "/opt/homebrew/Cellar/node/25.6.1/bin/node /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/pipeline-observer/positive/authenticated-observer.mjs /private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest run --config vitest.push.config.ts tests/unit/topic-operator-store.test.ts tests/integration/topic-operator-routes.test.ts tests/integration/topic-operator-autobind-route.test.ts --reporter=verbose"
+            }
+          },
+          "validatedChildStart": {
+            "event": {
+              "eventSchema": "phaseB-authenticated-observer-event/v1",
+              "source": "fix-verifier-observer",
+              "observerSession": "2c61b471-c63a-41c4-ac67-87cc5da536db",
+              "sequence": 2,
+              "kind": "child-start",
+              "guardId": "topic-operator-evidence",
+              "nodeEntry": "node_modules/vitest/vitest.mjs",
+              "observerPid": 91371,
+              "argv": [
+                "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+                "run",
+                "--config",
+                "vitest.push.config.ts",
+                "tests/unit/topic-operator-store.test.ts",
+                "tests/integration/topic-operator-routes.test.ts",
+                "tests/integration/topic-operator-autobind-route.test.ts",
+                "--reporter=verbose"
+              ],
+              "childPid": 91450,
+              "startedAt": "2026-08-18T12:25:55.670Z",
+              "signature": "dd7JjhwEo6fNW3QD5FmKD/kCzhzjd/E9nQ8mAEA42XAy9BLPWA6T4TowREMCUBtzuhWkoNXTqN5kpWxAfPprAQ=="
+            },
+            "valid": true,
+            "authenticated": true,
+            "processRecord": {
+              "pid": 91450,
+              "ppid": 91371,
+              "command": "/opt/homebrew/Cellar/node/25.6.1/bin/node /private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest run --config vitest.push.config.ts tests/unit/topic-operator-store.test.ts tests/integration/topic-operator-routes.test.ts tests/integration/topic-operator-autobind-route.test.ts --reporter=verbose"
+            }
+          },
+          "childExit": {
+            "eventSchema": "phaseB-authenticated-observer-event/v1",
+            "source": "fix-verifier-observer",
+            "observerSession": "2c61b471-c63a-41c4-ac67-87cc5da536db",
+            "sequence": 3,
+            "kind": "child-exit",
+            "guardId": "topic-operator-evidence",
+            "nodeEntry": "node_modules/vitest/vitest.mjs",
+            "observerPid": 91371,
+            "argv": [
+              "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+              "run",
+              "--config",
+              "vitest.push.config.ts",
+              "tests/unit/topic-operator-store.test.ts",
+              "tests/integration/topic-operator-routes.test.ts",
+              "tests/integration/topic-operator-autobind-route.test.ts",
+              "--reporter=verbose"
+            ],
+            "childPid": 91450,
+            "startedAt": "2026-08-18T12:25:55.670Z",
+            "childExitedAt": "2026-08-18T12:32:47.756Z",
+            "childExitCode": 0,
+            "signal": null,
+            "emittedAfterChildExit": true,
+            "signature": "6jdjwp+XLMSzjumO5mBAF1Y2RzoI7CTw6d9zFsjW2nbF3En3KTkZR43q5Yrjm9mzdcI9mhD2LnwCLeQdv03JBQ=="
+          },
+          "authenticatedEventCount": 3,
+          "stdoutCandidateEventLineCount": 3
+        }
+      }
+    },
+    "C2": {
+      "outcome": "proven",
+      "required": "the C3 short-circuit is independently recorded against the exact observed child before its result is interpreted",
+      "perMutation": {
+        "C3-exact-child-short-circuit": "proven"
+      }
+    },
+    "C3": {
+      "outcome": "proven",
+      "required": "the real wrapper succeeds while the exact guard child is skipped, and no execution receipt exists",
+      "run": {
+        "run": {
+          "argv": [
+            "npm",
+            "run",
+            "test:push",
+            "--",
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts",
+            "--reporter=verbose"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring",
+          "startedAt": "2026-08-18T12:32:47.769Z",
+          "endedAt": "2026-08-18T12:32:48.611Z",
+          "durationMs": 842,
+          "pid": 42793,
+          "exitCode": 0,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "\n> instar@1.3.1179 test:push\n> vitest run --config vitest.push.config.ts tests/unit/topic-operator-store.test.ts tests/integration/topic-operator-routes.test.ts tests/integration/topic-operator-autobind-route.test.ts --reporter=verbose\n\nFIX_VERIFIER_OBSERVER_EVENT {\"eventSchema\":\"phaseB-authenticated-observer-event/v1\",\"source\":\"fix-verifier-observer\",\"observerSession\":\"a9af9135-1dce-4ddd-84c7-c1722ff34eae\",\"sequence\":1,\"kind\":\"observer-ready\",\"guardId\":\"topic-operator-evidence\",\"nodeEntry\":\"node_modules/vitest/vitest.mjs\",\"observerPid\":43173,\"argv\":[\"/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest\",\"run\",\"--config\",\"vitest.push.config.ts\",\"tests/unit/topic-operator-store.test.ts\",\"tests/integration/topic-operator-routes.test.ts\",\"tests/integration/topic-operator-autobind-route.test.ts\",\"--reporter=verbose\"],\"publicKey\":\"MCowBQYDK2VwAyEAW4DsysPoQaoV6VGdAUFWAoPBVaRwddy8sDRp/4qCgMc=\",\"signature\":\"AHkIUT3qA4LKfLqNA1+/cEd2UmEQ9Wk2xfNOIa3b/rTQFcJk7mP7Or4LSeXcHnkYtejZTgUFMKbB00zHK2f0Bw==\"}\nFIX_VERIFIER_OBSERVER_EVENT {\"eventSchema\":\"phaseB-authenticated-observer-event/v1\",\"source\":\"fix-verifier-observer\",\"observerSession\":\"a9af9135-1dce-4ddd-84c7-c1722ff34eae\",\"sequence\":2,\"kind\":\"short-circuit\",\"guardId\":\"topic-operator-evidence\",\"nodeEntry\":\"node_modules/vitest/vitest.mjs\",\"observerPid\":43173,\"argv\":[\"/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest\",\"run\",\"--config\",\"vitest.push.config.ts\",\"tests/unit/topic-operator-store.test.ts\",\"tests/integration/topic-operator-routes.test.ts\",\"tests/integration/topic-operator-autobind-route.test.ts\",\"--reporter=verbose\"],\"shortCircuitedAt\":\"2026-08-18T12:32:48.603Z\",\"signature\":\"xVs/Xhhg+u/6TQUrYLp1G85J5RQ+6s/DUMy1DNZth0OWfAcWUlnV7wfhXJI4wMAMtrOJ6XoPDiA2zrSJh84nAQ==\"}\n[fix-verifier-C3] authenticated observer short-circuited guard=topic-operator-evidence entry=node_modules/vitest/vitest.mjs\n",
+            "truncated": false,
+            "originalChars": 2015
+          },
+          "stderr": {
+            "text": "",
+            "truncated": false,
+            "originalChars": 0
+          },
+          "outputSha256": "2b447d6a960cb6439c911ab4af499f23469955ffbc306e964553071e327d211d",
+          "observerError": null,
+          "observerCandidateLineCount": 2,
+          "exitProvenance": "direct child status from spawn; shell=false; nested observer pids validated live with ps"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/pipeline-observer/c3/node",
+          "observerProgram": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/pipeline-observer/c3/authenticated-observer.mjs",
+          "nodeEntry": "node_modules/vitest/vitest.mjs",
+          "requiredArgs": [
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts"
+          ]
+        },
+        "receipts": [],
+        "shortCircuitEvents": [
+          {
+            "eventSchema": "phaseB-authenticated-observer-event/v1",
+            "source": "fix-verifier-observer",
+            "observerSession": "a9af9135-1dce-4ddd-84c7-c1722ff34eae",
+            "sequence": 2,
+            "kind": "short-circuit",
+            "guardId": "topic-operator-evidence",
+            "nodeEntry": "node_modules/vitest/vitest.mjs",
+            "observerPid": 43173,
+            "argv": [
+              "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+              "run",
+              "--config",
+              "vitest.push.config.ts",
+              "tests/unit/topic-operator-store.test.ts",
+              "tests/integration/topic-operator-routes.test.ts",
+              "tests/integration/topic-operator-autobind-route.test.ts",
+              "--reporter=verbose"
+            ],
+            "shortCircuitedAt": "2026-08-18T12:32:48.603Z",
+            "signature": "xVs/Xhhg+u/6TQUrYLp1G85J5RQ+6s/DUMy1DNZth0OWfAcWUlnV7wfhXJI4wMAMtrOJ6XoPDiA2zrSJh84nAQ=="
+          }
+        ],
+        "shortCircuitReceipt": {
+          "schema": "phaseB-authenticated-execution-receipt/v1",
+          "authorityId": "8c1ade92-3010-4ca4-80fc-59410b36df93",
+          "issuer": "fix-verifier:topic-operator-evidence",
+          "nonce": "417d0b79-cb00-4022-9a61-5eccefc4e1c8",
+          "guardId": "topic-operator-evidence",
+          "kind": "short-circuit",
+          "observerPid": 43173,
+          "childPid": 43173,
+          "childExitCode": 0,
+          "signal": null,
+          "argv": [
+            "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/pipeline-observer/c3/authenticated-observer.mjs",
+            "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+            "run",
+            "--config",
+            "vitest.push.config.ts",
+            "tests/unit/topic-operator-store.test.ts",
+            "tests/integration/topic-operator-routes.test.ts",
+            "tests/integration/topic-operator-autobind-route.test.ts",
+            "--reporter=verbose"
+          ],
+          "argvHash": "0dfac7b2add3c3f275a269ee6389994a06691c4de859b9785981eb48a3a99577",
+          "startedAt": "2026-08-18T12:32:48.603Z",
+          "childExitedAt": "2026-08-18T12:32:48.611Z",
+          "emittedAfterChildExit": true,
+          "observerSession": "a9af9135-1dce-4ddd-84c7-c1722ff34eae",
+          "observerEventSequence": 2,
+          "observerEventSignatureHash": "2082af619a3d196b4681cdee17ab6e3ee75b8d94f36af96d4d89b3d355439750",
+          "mac": "083dca40e17ad058c078bc3ce5af184fd2079e599ef2dde70b9e1e3237cc84f5"
+        },
+        "processObservations": {
+          "observerReady": {
+            "event": {
+              "eventSchema": "phaseB-authenticated-observer-event/v1",
+              "source": "fix-verifier-observer",
+              "observerSession": "a9af9135-1dce-4ddd-84c7-c1722ff34eae",
+              "sequence": 1,
+              "kind": "observer-ready",
+              "guardId": "topic-operator-evidence",
+              "nodeEntry": "node_modules/vitest/vitest.mjs",
+              "observerPid": 43173,
+              "argv": [
+                "/private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest",
+                "run",
+                "--config",
+                "vitest.push.config.ts",
+                "tests/unit/topic-operator-store.test.ts",
+                "tests/integration/topic-operator-routes.test.ts",
+                "tests/integration/topic-operator-autobind-route.test.ts",
+                "--reporter=verbose"
+              ],
+              "publicKey": "MCowBQYDK2VwAyEAW4DsysPoQaoV6VGdAUFWAoPBVaRwddy8sDRp/4qCgMc=",
+              "signature": "AHkIUT3qA4LKfLqNA1+/cEd2UmEQ9Wk2xfNOIa3b/rTQFcJk7mP7Or4LSeXcHnkYtejZTgUFMKbB00zHK2f0Bw=="
+            },
+            "valid": true,
+            "authenticated": true,
+            "processRecord": {
+              "pid": 43173,
+              "ppid": 43019,
+              "command": "/opt/homebrew/Cellar/node/25.6.1/bin/node /var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/pipeline-observer/c3/authenticated-observer.mjs /private/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring/node_modules/.bin/vitest run --config vitest.push.config.ts tests/unit/topic-operator-store.test.ts tests/integration/topic-operator-routes.test.ts tests/integration/topic-operator-autobind-route.test.ts --reporter=verbose"
+            }
+          },
+          "validatedChildStart": null,
+          "childExit": null,
+          "authenticatedEventCount": 2,
+          "stdoutCandidateEventLineCount": 2
+        },
+        "outcome": "proven"
+      }
+    }
+  },
+  "properties": {
+    "P1": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P2": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P3": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P4": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P5": {
+      "outcome": "unknown",
+      "mutations": []
+    }
+  },
+  "effectiveAgainst": [],
+  "rung": "wired",
+  "mutations": [],
+  "isolation": {
+    "method": "throwaway clones from an isolation seed; server-resolved protected base installed as origin/main, upstream/main, and main; dependency-only node_modules symlink",
+    "tempRoot": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO",
+    "copies": [
+      {
+        "label": "pipeline-wiring",
+        "root": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-zbr7PO/01-pipeline-wiring",
+        "commit": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5"
+      }
+    ],
+    "fixtureEvidence": [],
+    "protectedBase": {
+      "remoteUrl": "https://github.com/JKHeadley/instar.git",
+      "ref": "refs/heads/main",
+      "commit": "248ed7177f5bf416aa7bdad9763741478195e1fc",
+      "serverResolved": true,
+      "fetchMatchesServer": true,
+      "workflowPath": ".github/workflows/ci.yml",
+      "workflowSha256": "be9f8f5393854f15793424613fa46da4701b4808219cb173a0d9da1aa649ef71",
+      "mergeBase": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5"
+    },
+    "targetPorcelainUnchanged": true,
+    "cleanup": "removed before record emission"
+  },
+  "dependencies": {
+    "mode": "provided",
+    "path": "/Users/justin/.instar/agents/instar-codey/.worktrees/phaseb-h1-authenticated-execution-receipts/node_modules",
+    "prepared": true
+  }
+}

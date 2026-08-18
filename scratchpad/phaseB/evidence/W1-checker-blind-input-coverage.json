@@ -1,0 +1,429 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-08-18T07:26:52.404Z",
+  "instrument": {
+    "path": "/Users/justin/Documents/Projects/instar-codey/.worktrees/phase-b-w1-validated-pipeline-wiring/scratchpad/phaseB/fix-verifier.mjs",
+    "sha256": "92425be2ecec5969f650c23851153c7e3396ef27582acc141cc6c45d88d116d2",
+    "manifest": {
+      "path": "/Users/justin/Documents/Projects/instar-codey/.worktrees/phase-b-w1-validated-pipeline-wiring/scratchpad/phaseB/fix-verifier.manifest.json",
+      "sha256": "a3ae19ae23bae375f48de04d51aa9f17e674e20783bdfd0d9dd5b5815b864677",
+      "adapterRegistryChecked": true,
+      "count": 8,
+      "ids": [
+        "audit-convergence-validator",
+        "checker-blind-input-coverage",
+        "guard-posture-probe",
+        "lint-llm-attribution",
+        "self-action-convergence",
+        "standards-direction-guard",
+        "testing-integrity-route-enforcement",
+        "topic-operator-evidence"
+      ]
+    },
+    "adapter": {
+      "path": "/Users/justin/Documents/Projects/instar-codey/.worktrees/phase-b-w1-validated-pipeline-wiring/scratchpad/phaseB/adapters/checker-blind-input-coverage.mjs",
+      "sha256": "e3f66283ba3d265d0ebdc7fe56198200a45cbabbcc62369156c0c4d660c7fa77"
+    }
+  },
+  "guardId": "checker-blind-input-coverage",
+  "description": "Production-derived checker census, blind-input cases, and one-way legacy-debt ceiling.",
+  "fixture": "none",
+  "measurementScope": "wiring-only",
+  "target": {
+    "tree": "/Users/justin/.instar/agents/instar-codey/.worktrees/phaseb-s3-no-blind-clean",
+    "requestedCommit": "2f3cd8e16c7608fcd75c12f51623783f3da8824d",
+    "commit": "2f3cd8e16c7608fcd75c12f51623783f3da8824d",
+    "remote": {
+      "name": "upstream",
+      "url": "https://github.com/JKHeadley/instar.git"
+    },
+    "dirtyAtStart": false,
+    "porcelainAtStart": []
+  },
+  "adapterRegistry": {
+    "source": "/Users/justin/Documents/Projects/instar-codey/.worktrees/phase-b-w1-validated-pipeline-wiring/scratchpad/phaseB/fix-verifier.manifest.json",
+    "sourceSha256": "a3ae19ae23bae375f48de04d51aa9f17e674e20783bdfd0d9dd5b5815b864677",
+    "schemaChecked": true,
+    "semanticRole": "list of implemented adapters; never a guard census or coverage denominator",
+    "nonEmpty": true,
+    "adaptedGuardCount": 8,
+    "ids": [
+      "audit-convergence-validator",
+      "checker-blind-input-coverage",
+      "guard-posture-probe",
+      "lint-llm-attribution",
+      "self-action-convergence",
+      "standards-direction-guard",
+      "testing-integrity-route-enforcement",
+      "topic-operator-evidence"
+    ]
+  },
+  "coverageAggregate": {
+    "emitted": false,
+    "ratio": null,
+    "denominator": null,
+    "notMeasured": null,
+    "reason": "this command verifies one requested guard; adapter registration is not the real guard census"
+  },
+  "existence": {
+    "outcome": "proven",
+    "files": [
+      {
+        "path": "scripts/lint-checker-blind-input-coverage.mjs",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "scripts/lib/checker-blind-input-ratchet.mjs",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "tests/unit/checker-blind-input-ratchet.test.ts",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "scripts/lint-llm-attribution.js",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      },
+      {
+        "path": "scripts/checker-blind-input-cases.mjs",
+        "existsAtCommit": true,
+        "exitCode": 0,
+        "stderr": {
+          "text": "",
+          "truncated": false,
+          "originalChars": 0
+        }
+      }
+    ]
+  },
+  "wiring": {
+    "outcome": "unknown",
+    "declaredEntryPoint": ".github/workflows/ci.yml -> npm run lint",
+    "establishedBy": "no valid core-minted post-child receipt relationship was established",
+    "protectedBase": {
+      "remoteUrl": "https://github.com/JKHeadley/instar.git",
+      "ref": "refs/heads/main",
+      "commit": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5",
+      "serverResolved": true,
+      "fetchMatchesServer": true,
+      "workflowPath": ".github/workflows/ci.yml",
+      "workflowSha256": "be9f8f5393854f15793424613fa46da4701b4808219cb173a0d9da1aa649ef71",
+      "mergeBase": "e5085f969d604cf067383ab3446f5f49c7dccf74"
+    },
+    "contract": {
+      "valid": true,
+      "reason": null,
+      "checks": [
+        {
+          "check": "protected remote URL is instrument-pinned",
+          "passed": true
+        },
+        {
+          "check": "protected branch ref is instrument-pinned",
+          "passed": true
+        },
+        {
+          "check": "adapter command invokes the pinned real entry",
+          "passed": true
+        },
+        {
+          "check": "protected workflow job declares the pinned command",
+          "passed": true
+        },
+        {
+          "check": "observer target is a safe exact child entry",
+          "passed": true
+        }
+      ],
+      "normalizedInvocation": [
+        "npm",
+        "run",
+        "lint"
+      ]
+    },
+    "pipelineEvidence": {
+      "status": "unknown",
+      "rejected": true,
+      "rejectionReason": "pipeline evidence is not a core-minted proven envelope"
+    },
+    "run": {
+      "token": "cb3e90bd-9ec8-4fc9-a0d2-0c5bb8be4725-d8df6d4fca046d281362aecf899333c9",
+      "tokenSha256": "ffdfa8db25294489db99123eed89d8453510af886f814bc7af82810ffd6cb78d",
+      "positive": {
+        "run": {
+          "argv": [
+            "npm",
+            "run",
+            "lint"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-eAEpDq/01-pipeline-wiring",
+          "startedAt": "2026-08-18T07:24:43.531Z",
+          "endedAt": "2026-08-18T07:25:49.743Z",
+          "durationMs": 66211,
+          "exitCode": 1,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "\n> instar@1.3.1178 lint\n> tsc --noEmit && node scripts/lint-no-direct-destructive.js && node scripts/lint-no-direct-llm-http.js && node scripts/lint-no-direct-url-log.js && node scripts/lint-no-unfunneled-topic-creation.js && node scripts/lint-no-unfunneled-headless-launch.js && node scripts/lint-no-unfunneled-tmux-literal-send.js && node scripts/lint-no-unbounded-llm-spawn.js && node scripts/lint-no-unregistered-self-action.js && node scripts/lint-no-unfunneled-credential-write.js && node scripts/lint-state-registry.js && node scripts/lint-store-retention-declared.js && node scripts/lint-no-wholefile-sync-read.js && node scripts/lint-cas-emit-placement.js && node scripts/lint-journal-actuation-ban.js && node scripts/lint-no-blocking-process-scans.js && node scripts/lint-sync-subprocess-chokepoint.js && node scripts/lint-dev-agent-dark-gate.js && node scripts/lint-guard-manifest.js && node scripts/lint-llm-attribution.js && node scripts/lint-no-mainthread-cartographer-walk.js && node scripts/lint-scrape-fixture-realness.js && node scripts/check-codex-rule1-drift.js && node scripts/lint-routing-registry-freshness.js && node scripts/lint-no-opus-claude-cli-gating.js && node scripts/lint-model-registry-freshness.mjs && node scripts/lint-no-unreachable-messaging-gate.js && node scripts/lint-telegram-egress-boundary.mjs && node scripts/lint-nature-chains.mjs && node scripts/lint-emit-without-admit.js && node scripts/lint-migration-consumer-completeness.js && node scripts/lint-canonical-pipeline-completeness.mjs && node scripts/lint-expected-capacity-degradations.js && node scripts/lint-rollout-evidence-resolvable.js && node scripts/lint-no-direct-standards-registry-path.mjs && node scripts/lint-blocking-decisions-declared.mjs && node scripts/lint-no-duplicate-definitions.mjs && node scripts/lint-dispatch-withholds-answer.mjs && node scripts/lint-recall-surface-names-match-mechanism.mjs && node scripts/lint-registry-insertion-placement.mjs && node scripts/lint-standard-code-backreference.mjs && node scripts/lint-registry-tree-parentage.mjs && node scripts/lint-single-governing-obligation.mjs && node scripts/lint-documented-only-countdown.mjs && node scripts/lint-deferral-carrier-resolvable.mjs --staged --enforce && node scripts/generate-standards-hierarchy.mjs --check && node scripts/lint-framework-list-completeness.mjs && node scripts/lint-checker-blind-input-coverage.mjs\n\n[lint-no-direct-url-log] ✓ no credentialed-URL logging found\nlint-no-unfunneled-topic-creation: clean\nlint-no-unfunneled-headless-launch: clean\n✓ tmux literal sends funnelled (scanned 1656 files, 0 unfunneled)\nlint-no-unbounded-llm-spawn: clean\nlint-no-unregistered-self-action: report-only — 25 controller-shape emitter(s) scanned, 19 unregistered.\n  src/core/CaffeinateManager.ts:97 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/core/UpgradeNotifyManager.ts:123 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/core/WorktreeManager.ts:506 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/messaging/SpawnRequestManager.ts:1051 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ActiveWorkSilenceSentinel.ts:203 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/AgentWorktreeReaper.ts:196 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/CollaborationRedriveEngine.ts:322 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ContextWedgeSentinel.ts:321 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/McpProcessReaper.ts:158 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/OrphanProcessReaper.ts:547 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/QuotaManager.ts:419 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/RateLimitSentinel.ts:295 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ReleaseReadinessSentinel.ts:289 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SessionMonitor.ts:335 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SessionWatchdog.ts:429 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SocketDisconnectSentinel.ts:175 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/WorktreeReaper.ts:72 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/threadline/HeartbeatWatchdog.ts:259 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/tunnel/TunnelManager.ts:128 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  (report-only — no build failure; the enforcing flip is gated on prGate.classClosure.dryRun:false after a measured clean soak.)\nlint-no-unfunneled-credential-write: clean\nlint-state-registry: clean (104 registry categories)\nlint-store-retention-declared: OK — 29 stores retentioned, 75 grandfathered (retrofit backlog, may only shrink).\nlint-no-wholefile-sync-read: OK — 0 literal hit(s), all grandfathered (0 baselined).\nlint-cas-emit-placement: clean (14 CAS call site(s), all paired)\nlint-journal-actuation-ban: clean (8 actuator modules, none load the reader)\nlint-no-blocking-process-scans: clean\nlint-sync-subprocess-chokepoint: clean — 95 raw sync spawn(s), all grandfathered (142 baselined).\nlint-dev-agent-dark-gate: clean\nlint-guard-manifest: clean\nlint-no-mainthread-cartographer-walk: clean\n  ✅ parseGroqPricingHtml — realness fixture + feeds-and-asserts test OK (parses the REAL groq.com/pricing table bytes)\n  ✅ parseGooglePricingHtml — realness fixture + feeds-and-asserts test OK (parses the REAL ai.google.dev/pricing flash-lite card bytes (PAID text rate, never audio/free))\n  ✅ FrameworkLoginDriver.parseArtifact — realness fixture + feeds-and-asserts test OK (parses the REAL wrapped Mac Mini login pane)\n  ✅ parseProcTable — realness fixture + feeds-and-asserts test OK (parses the REAL captured ps process table byte-for-byte)\n  ✅ parseProbeResponse — realness fixture + feeds-and-asserts test OK (classifies the REAL captured /mesh/rpc probe responses byte-for-byte)\n  ✅ parseTailscaleStatus — realness fixture + feeds-and-asserts test OK (parses the REAL captured tailscale status --json byte-for-byte)\n  ✅ parseReceivePathMessage — realness fixture + feeds-and-asserts test OK (parses the REAL captured Telegram receive-path message objects)\n  ✅ parseRatificationConfirmation — realness fixture + feeds-and-asserts test OK (binds a REAL reply-anchored confirmation to the enumerated set (message-id chain))\n  ✅ parseDeferTrigger — realness fixture + feeds-and-asserts test OK (matches defer-intent vocabulary in the REAL captured trigger message)\n  ✅ parseDeclaredDeliverables — realness fixture + feeds-and-asserts test OK (a REAL pathless condition text declares NOTHING)\n  ✅ parsePorcelainStatus — realness fixture + feeds-and-asserts test OK (maps REAL git status --porcelain output per the R42 mapping)\n  ✅ runLayerBScan — realness fixture + feeds-and-asserts test OK (flags the REAL incident prose and stays silent on the REAL fenced clean tail)\n[codex-rule1-drift] ✓ config.ts is compliant with spec 12 Rule 1 (Phase A)\nlint-routing-registry-freshness: OK — every COMPONENT_CATEGORY key has a registry row.\nlint-no-opus-claude-cli-gating: OK — R1/R2 clamp intact; no config routes a gating call to Opus×claude-CLI.\n\u001b[1m[lint-model-registry-freshness]\u001b[0m enforcement=strict\n  \u001b[32mok\u001b[0m   Drift OK: gemini-cli 'gemini-capable-tier' -> 'gemini-3.1-pro-preview' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: codex-cli 'codex-capable-tier' -> 'gpt-5.5' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: anthropic-headless 'anthropic-headless-capable-tier' -> 'claude-opus-4-8' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-tier-escalation-default-escalated' -> 'claude-opus-4-8' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-tier-escalation-default-escalated' -> 'claude-fable-5' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-clean-door-reviewer-default' -> 'claude-fable-5' (in derived frontier set).\n  \u001b[31mFIND\u001b[0m STALENESS: model registry last reviewed 2026-07-03 (46d ago) exceeds the 45d window. Re-review each capable/latest pin against current frontier, update frontierAllowlist if a model has moved, then bump lastReviewedAt.\n",
+            "truncated": false,
+            "originalChars": 10983
+          },
+          "stderr": {
+            "text": "  ⚠️  register-or-justify: 70 exported parse*/scrape* symbol(s) in src/ are not in SCRAPE_PARSERS.\n      If they consume untrusted real-world text, register them (spec change) or justify out-of-scope in the PR:\n        • parseWorktreeGitPointer (src/core/AgentWorktreeDetector.ts)\n        • parseCapabilityDigest (src/core/CapabilityRegistry.ts)\n        • parseJsonResult (src/core/ClaudeCliIntelligenceProvider.ts)\n        • parseContinuationTasks (src/core/CodexTaskContinuationStore.ts)\n        • parseHlc (src/core/HybridLogicalClock.ts)\n        • parseHlcKey (src/core/HybridLogicalClock.ts)\n        • parseInstrumentAssessment (src/core/InstrumentAssessment.ts)\n        • parseMoveIntentResponse (src/core/MoveIntentClassifier.ts)\n        • parseIdentityLayer (src/core/OrgIntentIdentityLayer.ts)\n        • parsePlanDoc (src/core/PlanDocParser.ts)\n        • parseProfileIntentResponse (src/core/ProfileIntentClassifier.ts)\n        • parseSafeYaml (src/core/SafeYaml.ts)\n        • parseProcTimeToSeconds (src/core/SessionManager.ts)\n        • parseSlackRoutingKey (src/core/SlackForwardBridge.ts)\n        • parseStandardsRegistryDetailed (src/core/StandardsRegistryParser.ts)\n        • parseStandardsRegistry (src/core/StandardsRegistryParser.ts)\n        • parseArcCheckResponse (src/core/TopicIntentArcCheck.ts)\n        • parseExtractorResponse (src/core/TopicIntentExtractor.ts)\n        • parseExtractorAnalysis (src/core/TopicIntentExtractor.ts)\n        • parseUsherResponse (src/core/Usher.ts)\n        • ...and 50 more\n\n\u001b[31mFAIL\u001b[0m — 1 finding(s) under strict enforcement.\n",
+            "truncated": false,
+            "originalChars": 1584
+          },
+          "outputSha256": "97af8e95a00fb3b49f993a8ec6d4d7c6d1554eafa80d127dad2820ce85fd2937",
+          "exitProvenance": "direct child status from spawnSync; shell=false"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-eAEpDq/pipeline-observer/positive/node",
+          "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+          "requiredArgs": []
+        },
+        "receipts": [],
+        "shortCircuitEvents": []
+      },
+      "C3": {
+        "run": {
+          "argv": [
+            "npm",
+            "run",
+            "lint"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-eAEpDq/01-pipeline-wiring",
+          "startedAt": "2026-08-18T07:25:49.743Z",
+          "endedAt": "2026-08-18T07:26:52.157Z",
+          "durationMs": 62414,
+          "exitCode": 1,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "\n> instar@1.3.1178 lint\n> tsc --noEmit && node scripts/lint-no-direct-destructive.js && node scripts/lint-no-direct-llm-http.js && node scripts/lint-no-direct-url-log.js && node scripts/lint-no-unfunneled-topic-creation.js && node scripts/lint-no-unfunneled-headless-launch.js && node scripts/lint-no-unfunneled-tmux-literal-send.js && node scripts/lint-no-unbounded-llm-spawn.js && node scripts/lint-no-unregistered-self-action.js && node scripts/lint-no-unfunneled-credential-write.js && node scripts/lint-state-registry.js && node scripts/lint-store-retention-declared.js && node scripts/lint-no-wholefile-sync-read.js && node scripts/lint-cas-emit-placement.js && node scripts/lint-journal-actuation-ban.js && node scripts/lint-no-blocking-process-scans.js && node scripts/lint-sync-subprocess-chokepoint.js && node scripts/lint-dev-agent-dark-gate.js && node scripts/lint-guard-manifest.js && node scripts/lint-llm-attribution.js && node scripts/lint-no-mainthread-cartographer-walk.js && node scripts/lint-scrape-fixture-realness.js && node scripts/check-codex-rule1-drift.js && node scripts/lint-routing-registry-freshness.js && node scripts/lint-no-opus-claude-cli-gating.js && node scripts/lint-model-registry-freshness.mjs && node scripts/lint-no-unreachable-messaging-gate.js && node scripts/lint-telegram-egress-boundary.mjs && node scripts/lint-nature-chains.mjs && node scripts/lint-emit-without-admit.js && node scripts/lint-migration-consumer-completeness.js && node scripts/lint-canonical-pipeline-completeness.mjs && node scripts/lint-expected-capacity-degradations.js && node scripts/lint-rollout-evidence-resolvable.js && node scripts/lint-no-direct-standards-registry-path.mjs && node scripts/lint-blocking-decisions-declared.mjs && node scripts/lint-no-duplicate-definitions.mjs && node scripts/lint-dispatch-withholds-answer.mjs && node scripts/lint-recall-surface-names-match-mechanism.mjs && node scripts/lint-registry-insertion-placement.mjs && node scripts/lint-standard-code-backreference.mjs && node scripts/lint-registry-tree-parentage.mjs && node scripts/lint-single-governing-obligation.mjs && node scripts/lint-documented-only-countdown.mjs && node scripts/lint-deferral-carrier-resolvable.mjs --staged --enforce && node scripts/generate-standards-hierarchy.mjs --check && node scripts/lint-framework-list-completeness.mjs && node scripts/lint-checker-blind-input-coverage.mjs\n\n[lint-no-direct-url-log] ✓ no credentialed-URL logging found\nlint-no-unfunneled-topic-creation: clean\nlint-no-unfunneled-headless-launch: clean\n✓ tmux literal sends funnelled (scanned 1656 files, 0 unfunneled)\nlint-no-unbounded-llm-spawn: clean\nlint-no-unregistered-self-action: report-only — 25 controller-shape emitter(s) scanned, 19 unregistered.\n  src/core/CaffeinateManager.ts:97 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/core/UpgradeNotifyManager.ts:123 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/core/WorktreeManager.ts:506 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/messaging/SpawnRequestManager.ts:1051 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ActiveWorkSilenceSentinel.ts:203 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/AgentWorktreeReaper.ts:196 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/CollaborationRedriveEngine.ts:322 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ContextWedgeSentinel.ts:321 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/McpProcessReaper.ts:158 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/OrphanProcessReaper.ts:547 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/QuotaManager.ts:419 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/RateLimitSentinel.ts:295 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ReleaseReadinessSentinel.ts:289 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SessionMonitor.ts:335 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SessionWatchdog.ts:429 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SocketDisconnectSentinel.ts:175 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/WorktreeReaper.ts:72 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/threadline/HeartbeatWatchdog.ts:259 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/tunnel/TunnelManager.ts:128 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  (report-only — no build failure; the enforcing flip is gated on prGate.classClosure.dryRun:false after a measured clean soak.)\nlint-no-unfunneled-credential-write: clean\nlint-state-registry: clean (104 registry categories)\nlint-store-retention-declared: OK — 29 stores retentioned, 75 grandfathered (retrofit backlog, may only shrink).\nlint-no-wholefile-sync-read: OK — 0 literal hit(s), all grandfathered (0 baselined).\nlint-cas-emit-placement: clean (14 CAS call site(s), all paired)\nlint-journal-actuation-ban: clean (8 actuator modules, none load the reader)\nlint-no-blocking-process-scans: clean\nlint-sync-subprocess-chokepoint: clean — 95 raw sync spawn(s), all grandfathered (142 baselined).\nlint-dev-agent-dark-gate: clean\nlint-guard-manifest: clean\nlint-no-mainthread-cartographer-walk: clean\n  ✅ parseGroqPricingHtml — realness fixture + feeds-and-asserts test OK (parses the REAL groq.com/pricing table bytes)\n  ✅ parseGooglePricingHtml — realness fixture + feeds-and-asserts test OK (parses the REAL ai.google.dev/pricing flash-lite card bytes (PAID text rate, never audio/free))\n  ✅ FrameworkLoginDriver.parseArtifact — realness fixture + feeds-and-asserts test OK (parses the REAL wrapped Mac Mini login pane)\n  ✅ parseProcTable — realness fixture + feeds-and-asserts test OK (parses the REAL captured ps process table byte-for-byte)\n  ✅ parseProbeResponse — realness fixture + feeds-and-asserts test OK (classifies the REAL captured /mesh/rpc probe responses byte-for-byte)\n  ✅ parseTailscaleStatus — realness fixture + feeds-and-asserts test OK (parses the REAL captured tailscale status --json byte-for-byte)\n  ✅ parseReceivePathMessage — realness fixture + feeds-and-asserts test OK (parses the REAL captured Telegram receive-path message objects)\n  ✅ parseRatificationConfirmation — realness fixture + feeds-and-asserts test OK (binds a REAL reply-anchored confirmation to the enumerated set (message-id chain))\n  ✅ parseDeferTrigger — realness fixture + feeds-and-asserts test OK (matches defer-intent vocabulary in the REAL captured trigger message)\n  ✅ parseDeclaredDeliverables — realness fixture + feeds-and-asserts test OK (a REAL pathless condition text declares NOTHING)\n  ✅ parsePorcelainStatus — realness fixture + feeds-and-asserts test OK (maps REAL git status --porcelain output per the R42 mapping)\n  ✅ runLayerBScan — realness fixture + feeds-and-asserts test OK (flags the REAL incident prose and stays silent on the REAL fenced clean tail)\n[codex-rule1-drift] ✓ config.ts is compliant with spec 12 Rule 1 (Phase A)\nlint-routing-registry-freshness: OK — every COMPONENT_CATEGORY key has a registry row.\nlint-no-opus-claude-cli-gating: OK — R1/R2 clamp intact; no config routes a gating call to Opus×claude-CLI.\n\u001b[1m[lint-model-registry-freshness]\u001b[0m enforcement=strict\n  \u001b[32mok\u001b[0m   Drift OK: gemini-cli 'gemini-capable-tier' -> 'gemini-3.1-pro-preview' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: codex-cli 'codex-capable-tier' -> 'gpt-5.5' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: anthropic-headless 'anthropic-headless-capable-tier' -> 'claude-opus-4-8' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-tier-escalation-default-escalated' -> 'claude-opus-4-8' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-tier-escalation-default-escalated' -> 'claude-fable-5' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-clean-door-reviewer-default' -> 'claude-fable-5' (in derived frontier set).\n  \u001b[31mFIND\u001b[0m STALENESS: model registry last reviewed 2026-07-03 (46d ago) exceeds the 45d window. Re-review each capable/latest pin against current frontier, update frontierAllowlist if a model has moved, then bump lastReviewedAt.\n",
+            "truncated": false,
+            "originalChars": 10983
+          },
+          "stderr": {
+            "text": "  ⚠️  register-or-justify: 70 exported parse*/scrape* symbol(s) in src/ are not in SCRAPE_PARSERS.\n      If they consume untrusted real-world text, register them (spec change) or justify out-of-scope in the PR:\n        • parseWorktreeGitPointer (src/core/AgentWorktreeDetector.ts)\n        • parseCapabilityDigest (src/core/CapabilityRegistry.ts)\n        • parseJsonResult (src/core/ClaudeCliIntelligenceProvider.ts)\n        • parseContinuationTasks (src/core/CodexTaskContinuationStore.ts)\n        • parseHlc (src/core/HybridLogicalClock.ts)\n        • parseHlcKey (src/core/HybridLogicalClock.ts)\n        • parseInstrumentAssessment (src/core/InstrumentAssessment.ts)\n        • parseMoveIntentResponse (src/core/MoveIntentClassifier.ts)\n        • parseIdentityLayer (src/core/OrgIntentIdentityLayer.ts)\n        • parsePlanDoc (src/core/PlanDocParser.ts)\n        • parseProfileIntentResponse (src/core/ProfileIntentClassifier.ts)\n        • parseSafeYaml (src/core/SafeYaml.ts)\n        • parseProcTimeToSeconds (src/core/SessionManager.ts)\n        • parseSlackRoutingKey (src/core/SlackForwardBridge.ts)\n        • parseStandardsRegistryDetailed (src/core/StandardsRegistryParser.ts)\n        • parseStandardsRegistry (src/core/StandardsRegistryParser.ts)\n        • parseArcCheckResponse (src/core/TopicIntentArcCheck.ts)\n        • parseExtractorResponse (src/core/TopicIntentExtractor.ts)\n        • parseExtractorAnalysis (src/core/TopicIntentExtractor.ts)\n        • parseUsherResponse (src/core/Usher.ts)\n        • ...and 50 more\n\n\u001b[31mFAIL\u001b[0m — 1 finding(s) under strict enforcement.\n",
+            "truncated": false,
+            "originalChars": 1584
+          },
+          "outputSha256": "97af8e95a00fb3b49f993a8ec6d4d7c6d1554eafa80d127dad2820ce85fd2937",
+          "exitProvenance": "direct child status from spawnSync; shell=false"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-eAEpDq/pipeline-observer/c3/node",
+          "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+          "requiredArgs": []
+        },
+        "receipts": [],
+        "shortCircuitEvents": [],
+        "outcome": "unknown"
+      },
+      "envelope": {
+        "source": "fix-verifier-core",
+        "status": "unknown",
+        "mode": "core-minted-process-receipt",
+        "tokenSha256": "ffdfa8db25294489db99123eed89d8453510af886f814bc7af82810ffd6cb78d",
+        "receipt": null,
+        "C3": {
+          "outcome": "unknown",
+          "receiptCount": 0,
+          "shortCircuitEvent": null
+        },
+        "checks": [
+          {
+            "check": "real declared pipeline wrapper exited successfully",
+            "passed": false
+          },
+          {
+            "check": "core observer emitted exactly one post-child receipt",
+            "passed": false
+          },
+          {
+            "check": "C3 wrapper still exited successfully",
+            "passed": false
+          },
+          {
+            "check": "C3 short-circuited the exact guard child",
+            "passed": false
+          },
+          {
+            "check": "C3 produced no guard execution receipt",
+            "passed": true
+          }
+        ]
+      }
+    }
+  },
+  "controls": {
+    "C1": {
+      "outcome": "unknown",
+      "required": "untouched guard passes through the real protected-workflow entry and emits the post-child receipt",
+      "run": {
+        "run": {
+          "argv": [
+            "npm",
+            "run",
+            "lint"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-eAEpDq/01-pipeline-wiring",
+          "startedAt": "2026-08-18T07:24:43.531Z",
+          "endedAt": "2026-08-18T07:25:49.743Z",
+          "durationMs": 66211,
+          "exitCode": 1,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "\n> instar@1.3.1178 lint\n> tsc --noEmit && node scripts/lint-no-direct-destructive.js && node scripts/lint-no-direct-llm-http.js && node scripts/lint-no-direct-url-log.js && node scripts/lint-no-unfunneled-topic-creation.js && node scripts/lint-no-unfunneled-headless-launch.js && node scripts/lint-no-unfunneled-tmux-literal-send.js && node scripts/lint-no-unbounded-llm-spawn.js && node scripts/lint-no-unregistered-self-action.js && node scripts/lint-no-unfunneled-credential-write.js && node scripts/lint-state-registry.js && node scripts/lint-store-retention-declared.js && node scripts/lint-no-wholefile-sync-read.js && node scripts/lint-cas-emit-placement.js && node scripts/lint-journal-actuation-ban.js && node scripts/lint-no-blocking-process-scans.js && node scripts/lint-sync-subprocess-chokepoint.js && node scripts/lint-dev-agent-dark-gate.js && node scripts/lint-guard-manifest.js && node scripts/lint-llm-attribution.js && node scripts/lint-no-mainthread-cartographer-walk.js && node scripts/lint-scrape-fixture-realness.js && node scripts/check-codex-rule1-drift.js && node scripts/lint-routing-registry-freshness.js && node scripts/lint-no-opus-claude-cli-gating.js && node scripts/lint-model-registry-freshness.mjs && node scripts/lint-no-unreachable-messaging-gate.js && node scripts/lint-telegram-egress-boundary.mjs && node scripts/lint-nature-chains.mjs && node scripts/lint-emit-without-admit.js && node scripts/lint-migration-consumer-completeness.js && node scripts/lint-canonical-pipeline-completeness.mjs && node scripts/lint-expected-capacity-degradations.js && node scripts/lint-rollout-evidence-resolvable.js && node scripts/lint-no-direct-standards-registry-path.mjs && node scripts/lint-blocking-decisions-declared.mjs && node scripts/lint-no-duplicate-definitions.mjs && node scripts/lint-dispatch-withholds-answer.mjs && node scripts/lint-recall-surface-names-match-mechanism.mjs && node scripts/lint-registry-insertion-placement.mjs && node scripts/lint-standard-code-backreference.mjs && node scripts/lint-registry-tree-parentage.mjs && node scripts/lint-single-governing-obligation.mjs && node scripts/lint-documented-only-countdown.mjs && node scripts/lint-deferral-carrier-resolvable.mjs --staged --enforce && node scripts/generate-standards-hierarchy.mjs --check && node scripts/lint-framework-list-completeness.mjs && node scripts/lint-checker-blind-input-coverage.mjs\n\n[lint-no-direct-url-log] ✓ no credentialed-URL logging found\nlint-no-unfunneled-topic-creation: clean\nlint-no-unfunneled-headless-launch: clean\n✓ tmux literal sends funnelled (scanned 1656 files, 0 unfunneled)\nlint-no-unbounded-llm-spawn: clean\nlint-no-unregistered-self-action: report-only — 25 controller-shape emitter(s) scanned, 19 unregistered.\n  src/core/CaffeinateManager.ts:97 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/core/UpgradeNotifyManager.ts:123 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/core/WorktreeManager.ts:506 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/messaging/SpawnRequestManager.ts:1051 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ActiveWorkSilenceSentinel.ts:203 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/AgentWorktreeReaper.ts:196 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/CollaborationRedriveEngine.ts:322 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ContextWedgeSentinel.ts:321 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/McpProcessReaper.ts:158 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/OrphanProcessReaper.ts:547 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/QuotaManager.ts:419 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/RateLimitSentinel.ts:295 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ReleaseReadinessSentinel.ts:289 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SessionMonitor.ts:335 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SessionWatchdog.ts:429 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SocketDisconnectSentinel.ts:175 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/WorktreeReaper.ts:72 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/threadline/HeartbeatWatchdog.ts:259 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/tunnel/TunnelManager.ts:128 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  (report-only — no build failure; the enforcing flip is gated on prGate.classClosure.dryRun:false after a measured clean soak.)\nlint-no-unfunneled-credential-write: clean\nlint-state-registry: clean (104 registry categories)\nlint-store-retention-declared: OK — 29 stores retentioned, 75 grandfathered (retrofit backlog, may only shrink).\nlint-no-wholefile-sync-read: OK — 0 literal hit(s), all grandfathered (0 baselined).\nlint-cas-emit-placement: clean (14 CAS call site(s), all paired)\nlint-journal-actuation-ban: clean (8 actuator modules, none load the reader)\nlint-no-blocking-process-scans: clean\nlint-sync-subprocess-chokepoint: clean — 95 raw sync spawn(s), all grandfathered (142 baselined).\nlint-dev-agent-dark-gate: clean\nlint-guard-manifest: clean\nlint-no-mainthread-cartographer-walk: clean\n  ✅ parseGroqPricingHtml — realness fixture + feeds-and-asserts test OK (parses the REAL groq.com/pricing table bytes)\n  ✅ parseGooglePricingHtml — realness fixture + feeds-and-asserts test OK (parses the REAL ai.google.dev/pricing flash-lite card bytes (PAID text rate, never audio/free))\n  ✅ FrameworkLoginDriver.parseArtifact — realness fixture + feeds-and-asserts test OK (parses the REAL wrapped Mac Mini login pane)\n  ✅ parseProcTable — realness fixture + feeds-and-asserts test OK (parses the REAL captured ps process table byte-for-byte)\n  ✅ parseProbeResponse — realness fixture + feeds-and-asserts test OK (classifies the REAL captured /mesh/rpc probe responses byte-for-byte)\n  ✅ parseTailscaleStatus — realness fixture + feeds-and-asserts test OK (parses the REAL captured tailscale status --json byte-for-byte)\n  ✅ parseReceivePathMessage — realness fixture + feeds-and-asserts test OK (parses the REAL captured Telegram receive-path message objects)\n  ✅ parseRatificationConfirmation — realness fixture + feeds-and-asserts test OK (binds a REAL reply-anchored confirmation to the enumerated set (message-id chain))\n  ✅ parseDeferTrigger — realness fixture + feeds-and-asserts test OK (matches defer-intent vocabulary in the REAL captured trigger message)\n  ✅ parseDeclaredDeliverables — realness fixture + feeds-and-asserts test OK (a REAL pathless condition text declares NOTHING)\n  ✅ parsePorcelainStatus — realness fixture + feeds-and-asserts test OK (maps REAL git status --porcelain output per the R42 mapping)\n  ✅ runLayerBScan — realness fixture + feeds-and-asserts test OK (flags the REAL incident prose and stays silent on the REAL fenced clean tail)\n[codex-rule1-drift] ✓ config.ts is compliant with spec 12 Rule 1 (Phase A)\nlint-routing-registry-freshness: OK — every COMPONENT_CATEGORY key has a registry row.\nlint-no-opus-claude-cli-gating: OK — R1/R2 clamp intact; no config routes a gating call to Opus×claude-CLI.\n\u001b[1m[lint-model-registry-freshness]\u001b[0m enforcement=strict\n  \u001b[32mok\u001b[0m   Drift OK: gemini-cli 'gemini-capable-tier' -> 'gemini-3.1-pro-preview' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: codex-cli 'codex-capable-tier' -> 'gpt-5.5' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: anthropic-headless 'anthropic-headless-capable-tier' -> 'claude-opus-4-8' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-tier-escalation-default-escalated' -> 'claude-opus-4-8' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-tier-escalation-default-escalated' -> 'claude-fable-5' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-clean-door-reviewer-default' -> 'claude-fable-5' (in derived frontier set).\n  \u001b[31mFIND\u001b[0m STALENESS: model registry last reviewed 2026-07-03 (46d ago) exceeds the 45d window. Re-review each capable/latest pin against current frontier, update frontierAllowlist if a model has moved, then bump lastReviewedAt.\n",
+            "truncated": false,
+            "originalChars": 10983
+          },
+          "stderr": {
+            "text": "  ⚠️  register-or-justify: 70 exported parse*/scrape* symbol(s) in src/ are not in SCRAPE_PARSERS.\n      If they consume untrusted real-world text, register them (spec change) or justify out-of-scope in the PR:\n        • parseWorktreeGitPointer (src/core/AgentWorktreeDetector.ts)\n        • parseCapabilityDigest (src/core/CapabilityRegistry.ts)\n        • parseJsonResult (src/core/ClaudeCliIntelligenceProvider.ts)\n        • parseContinuationTasks (src/core/CodexTaskContinuationStore.ts)\n        • parseHlc (src/core/HybridLogicalClock.ts)\n        • parseHlcKey (src/core/HybridLogicalClock.ts)\n        • parseInstrumentAssessment (src/core/InstrumentAssessment.ts)\n        • parseMoveIntentResponse (src/core/MoveIntentClassifier.ts)\n        • parseIdentityLayer (src/core/OrgIntentIdentityLayer.ts)\n        • parsePlanDoc (src/core/PlanDocParser.ts)\n        • parseProfileIntentResponse (src/core/ProfileIntentClassifier.ts)\n        • parseSafeYaml (src/core/SafeYaml.ts)\n        • parseProcTimeToSeconds (src/core/SessionManager.ts)\n        • parseSlackRoutingKey (src/core/SlackForwardBridge.ts)\n        • parseStandardsRegistryDetailed (src/core/StandardsRegistryParser.ts)\n        • parseStandardsRegistry (src/core/StandardsRegistryParser.ts)\n        • parseArcCheckResponse (src/core/TopicIntentArcCheck.ts)\n        • parseExtractorResponse (src/core/TopicIntentExtractor.ts)\n        • parseExtractorAnalysis (src/core/TopicIntentExtractor.ts)\n        • parseUsherResponse (src/core/Usher.ts)\n        • ...and 50 more\n\n\u001b[31mFAIL\u001b[0m — 1 finding(s) under strict enforcement.\n",
+            "truncated": false,
+            "originalChars": 1584
+          },
+          "outputSha256": "97af8e95a00fb3b49f993a8ec6d4d7c6d1554eafa80d127dad2820ce85fd2937",
+          "exitProvenance": "direct child status from spawnSync; shell=false"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-eAEpDq/pipeline-observer/positive/node",
+          "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+          "requiredArgs": []
+        },
+        "receipts": [],
+        "shortCircuitEvents": []
+      }
+    },
+    "C2": {
+      "outcome": "unknown",
+      "required": "the C3 short-circuit is independently recorded against the exact observed child before its result is interpreted",
+      "perMutation": {
+        "C3-exact-child-short-circuit": "unknown"
+      }
+    },
+    "C3": {
+      "outcome": "unknown",
+      "required": "the real wrapper succeeds while the exact guard child is skipped, and no execution receipt exists",
+      "run": {
+        "run": {
+          "argv": [
+            "npm",
+            "run",
+            "lint"
+          ],
+          "cwd": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-eAEpDq/01-pipeline-wiring",
+          "startedAt": "2026-08-18T07:25:49.743Z",
+          "endedAt": "2026-08-18T07:26:52.157Z",
+          "durationMs": 62414,
+          "exitCode": 1,
+          "signal": null,
+          "spawnError": null,
+          "timedOut": false,
+          "stdout": {
+            "text": "\n> instar@1.3.1178 lint\n> tsc --noEmit && node scripts/lint-no-direct-destructive.js && node scripts/lint-no-direct-llm-http.js && node scripts/lint-no-direct-url-log.js && node scripts/lint-no-unfunneled-topic-creation.js && node scripts/lint-no-unfunneled-headless-launch.js && node scripts/lint-no-unfunneled-tmux-literal-send.js && node scripts/lint-no-unbounded-llm-spawn.js && node scripts/lint-no-unregistered-self-action.js && node scripts/lint-no-unfunneled-credential-write.js && node scripts/lint-state-registry.js && node scripts/lint-store-retention-declared.js && node scripts/lint-no-wholefile-sync-read.js && node scripts/lint-cas-emit-placement.js && node scripts/lint-journal-actuation-ban.js && node scripts/lint-no-blocking-process-scans.js && node scripts/lint-sync-subprocess-chokepoint.js && node scripts/lint-dev-agent-dark-gate.js && node scripts/lint-guard-manifest.js && node scripts/lint-llm-attribution.js && node scripts/lint-no-mainthread-cartographer-walk.js && node scripts/lint-scrape-fixture-realness.js && node scripts/check-codex-rule1-drift.js && node scripts/lint-routing-registry-freshness.js && node scripts/lint-no-opus-claude-cli-gating.js && node scripts/lint-model-registry-freshness.mjs && node scripts/lint-no-unreachable-messaging-gate.js && node scripts/lint-telegram-egress-boundary.mjs && node scripts/lint-nature-chains.mjs && node scripts/lint-emit-without-admit.js && node scripts/lint-migration-consumer-completeness.js && node scripts/lint-canonical-pipeline-completeness.mjs && node scripts/lint-expected-capacity-degradations.js && node scripts/lint-rollout-evidence-resolvable.js && node scripts/lint-no-direct-standards-registry-path.mjs && node scripts/lint-blocking-decisions-declared.mjs && node scripts/lint-no-duplicate-definitions.mjs && node scripts/lint-dispatch-withholds-answer.mjs && node scripts/lint-recall-surface-names-match-mechanism.mjs && node scripts/lint-registry-insertion-placement.mjs && node scripts/lint-standard-code-backreference.mjs && node scripts/lint-registry-tree-parentage.mjs && node scripts/lint-single-governing-obligation.mjs && node scripts/lint-documented-only-countdown.mjs && node scripts/lint-deferral-carrier-resolvable.mjs --staged --enforce && node scripts/generate-standards-hierarchy.mjs --check && node scripts/lint-framework-list-completeness.mjs && node scripts/lint-checker-blind-input-coverage.mjs\n\n[lint-no-direct-url-log] ✓ no credentialed-URL logging found\nlint-no-unfunneled-topic-creation: clean\nlint-no-unfunneled-headless-launch: clean\n✓ tmux literal sends funnelled (scanned 1656 files, 0 unfunneled)\nlint-no-unbounded-llm-spawn: clean\nlint-no-unregistered-self-action: report-only — 25 controller-shape emitter(s) scanned, 19 unregistered.\n  src/core/CaffeinateManager.ts:97 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/core/UpgradeNotifyManager.ts:123 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/core/WorktreeManager.ts:506 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/messaging/SpawnRequestManager.ts:1051 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ActiveWorkSilenceSentinel.ts:203 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/AgentWorktreeReaper.ts:196 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/CollaborationRedriveEngine.ts:322 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ContextWedgeSentinel.ts:321 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/McpProcessReaper.ts:158 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/OrphanProcessReaper.ts:547 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/QuotaManager.ts:419 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/RateLimitSentinel.ts:295 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/ReleaseReadinessSentinel.ts:289 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SessionMonitor.ts:335 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SessionWatchdog.ts:429 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/SocketDisconnectSentinel.ts:175 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/monitoring/WorktreeReaper.ts:72 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/threadline/HeartbeatWatchdog.ts:259 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  src/tunnel/TunnelManager.ts:128 — a self-action controller with an unregistered emit — add /* @self-action-controller: <id> */ and register <id> in SELF_ACTION_CONTROLLERS (or allowlist it with a one-shot/user-driven reason)\n  (report-only — no build failure; the enforcing flip is gated on prGate.classClosure.dryRun:false after a measured clean soak.)\nlint-no-unfunneled-credential-write: clean\nlint-state-registry: clean (104 registry categories)\nlint-store-retention-declared: OK — 29 stores retentioned, 75 grandfathered (retrofit backlog, may only shrink).\nlint-no-wholefile-sync-read: OK — 0 literal hit(s), all grandfathered (0 baselined).\nlint-cas-emit-placement: clean (14 CAS call site(s), all paired)\nlint-journal-actuation-ban: clean (8 actuator modules, none load the reader)\nlint-no-blocking-process-scans: clean\nlint-sync-subprocess-chokepoint: clean — 95 raw sync spawn(s), all grandfathered (142 baselined).\nlint-dev-agent-dark-gate: clean\nlint-guard-manifest: clean\nlint-no-mainthread-cartographer-walk: clean\n  ✅ parseGroqPricingHtml — realness fixture + feeds-and-asserts test OK (parses the REAL groq.com/pricing table bytes)\n  ✅ parseGooglePricingHtml — realness fixture + feeds-and-asserts test OK (parses the REAL ai.google.dev/pricing flash-lite card bytes (PAID text rate, never audio/free))\n  ✅ FrameworkLoginDriver.parseArtifact — realness fixture + feeds-and-asserts test OK (parses the REAL wrapped Mac Mini login pane)\n  ✅ parseProcTable — realness fixture + feeds-and-asserts test OK (parses the REAL captured ps process table byte-for-byte)\n  ✅ parseProbeResponse — realness fixture + feeds-and-asserts test OK (classifies the REAL captured /mesh/rpc probe responses byte-for-byte)\n  ✅ parseTailscaleStatus — realness fixture + feeds-and-asserts test OK (parses the REAL captured tailscale status --json byte-for-byte)\n  ✅ parseReceivePathMessage — realness fixture + feeds-and-asserts test OK (parses the REAL captured Telegram receive-path message objects)\n  ✅ parseRatificationConfirmation — realness fixture + feeds-and-asserts test OK (binds a REAL reply-anchored confirmation to the enumerated set (message-id chain))\n  ✅ parseDeferTrigger — realness fixture + feeds-and-asserts test OK (matches defer-intent vocabulary in the REAL captured trigger message)\n  ✅ parseDeclaredDeliverables — realness fixture + feeds-and-asserts test OK (a REAL pathless condition text declares NOTHING)\n  ✅ parsePorcelainStatus — realness fixture + feeds-and-asserts test OK (maps REAL git status --porcelain output per the R42 mapping)\n  ✅ runLayerBScan — realness fixture + feeds-and-asserts test OK (flags the REAL incident prose and stays silent on the REAL fenced clean tail)\n[codex-rule1-drift] ✓ config.ts is compliant with spec 12 Rule 1 (Phase A)\nlint-routing-registry-freshness: OK — every COMPONENT_CATEGORY key has a registry row.\nlint-no-opus-claude-cli-gating: OK — R1/R2 clamp intact; no config routes a gating call to Opus×claude-CLI.\n\u001b[1m[lint-model-registry-freshness]\u001b[0m enforcement=strict\n  \u001b[32mok\u001b[0m   Drift OK: gemini-cli 'gemini-capable-tier' -> 'gemini-3.1-pro-preview' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: codex-cli 'codex-capable-tier' -> 'gpt-5.5' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: anthropic-headless 'anthropic-headless-capable-tier' -> 'claude-opus-4-8' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-tier-escalation-default-escalated' -> 'claude-opus-4-8' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-tier-escalation-default-escalated' -> 'claude-fable-5' (in derived frontier set).\n  \u001b[32mok\u001b[0m   Drift OK: claude-code 'claude-clean-door-reviewer-default' -> 'claude-fable-5' (in derived frontier set).\n  \u001b[31mFIND\u001b[0m STALENESS: model registry last reviewed 2026-07-03 (46d ago) exceeds the 45d window. Re-review each capable/latest pin against current frontier, update frontierAllowlist if a model has moved, then bump lastReviewedAt.\n",
+            "truncated": false,
+            "originalChars": 10983
+          },
+          "stderr": {
+            "text": "  ⚠️  register-or-justify: 70 exported parse*/scrape* symbol(s) in src/ are not in SCRAPE_PARSERS.\n      If they consume untrusted real-world text, register them (spec change) or justify out-of-scope in the PR:\n        • parseWorktreeGitPointer (src/core/AgentWorktreeDetector.ts)\n        • parseCapabilityDigest (src/core/CapabilityRegistry.ts)\n        • parseJsonResult (src/core/ClaudeCliIntelligenceProvider.ts)\n        • parseContinuationTasks (src/core/CodexTaskContinuationStore.ts)\n        • parseHlc (src/core/HybridLogicalClock.ts)\n        • parseHlcKey (src/core/HybridLogicalClock.ts)\n        • parseInstrumentAssessment (src/core/InstrumentAssessment.ts)\n        • parseMoveIntentResponse (src/core/MoveIntentClassifier.ts)\n        • parseIdentityLayer (src/core/OrgIntentIdentityLayer.ts)\n        • parsePlanDoc (src/core/PlanDocParser.ts)\n        • parseProfileIntentResponse (src/core/ProfileIntentClassifier.ts)\n        • parseSafeYaml (src/core/SafeYaml.ts)\n        • parseProcTimeToSeconds (src/core/SessionManager.ts)\n        • parseSlackRoutingKey (src/core/SlackForwardBridge.ts)\n        • parseStandardsRegistryDetailed (src/core/StandardsRegistryParser.ts)\n        • parseStandardsRegistry (src/core/StandardsRegistryParser.ts)\n        • parseArcCheckResponse (src/core/TopicIntentArcCheck.ts)\n        • parseExtractorResponse (src/core/TopicIntentExtractor.ts)\n        • parseExtractorAnalysis (src/core/TopicIntentExtractor.ts)\n        • parseUsherResponse (src/core/Usher.ts)\n        • ...and 50 more\n\n\u001b[31mFAIL\u001b[0m — 1 finding(s) under strict enforcement.\n",
+            "truncated": false,
+            "originalChars": 1584
+          },
+          "outputSha256": "97af8e95a00fb3b49f993a8ec6d4d7c6d1554eafa80d127dad2820ce85fd2937",
+          "exitProvenance": "direct child status from spawnSync; shell=false"
+        },
+        "observer": {
+          "wrapper": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-eAEpDq/pipeline-observer/c3/node",
+          "nodeEntry": "scripts/lint-checker-blind-input-coverage.mjs",
+          "requiredArgs": []
+        },
+        "receipts": [],
+        "shortCircuitEvents": [],
+        "outcome": "unknown"
+      }
+    }
+  },
+  "properties": {
+    "P1": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P2": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P3": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P4": {
+      "outcome": "unknown",
+      "mutations": []
+    },
+    "P5": {
+      "outcome": "unknown",
+      "mutations": []
+    }
+  },
+  "effectiveAgainst": [],
+  "rung": "exists",
+  "mutations": [],
+  "isolation": {
+    "method": "throwaway clones from an isolation seed; server-resolved protected base installed as origin/main, upstream/main, and main; dependency-only node_modules symlink",
+    "tempRoot": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-eAEpDq",
+    "copies": [
+      {
+        "label": "pipeline-wiring",
+        "root": "/var/folders/7s/y2tbdryn5jl10h7n_0y2vr700000gn/T/instar-fix-verifier-eAEpDq/01-pipeline-wiring",
+        "commit": "2f3cd8e16c7608fcd75c12f51623783f3da8824d"
+      }
+    ],
+    "fixtureEvidence": [],
+    "protectedBase": {
+      "remoteUrl": "https://github.com/JKHeadley/instar.git",
+      "ref": "refs/heads/main",
+      "commit": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5",
+      "serverResolved": true,
+      "fetchMatchesServer": true,
+      "workflowPath": ".github/workflows/ci.yml",
+      "workflowSha256": "be9f8f5393854f15793424613fa46da4701b4808219cb173a0d9da1aa649ef71",
+      "mergeBase": "e5085f969d604cf067383ab3446f5f49c7dccf74"
+    },
+    "targetPorcelainUnchanged": true,
+    "cleanup": "removed before record emission"
+  },
+  "dependencies": {
+    "mode": "provided",
+    "path": "/Users/justin/.instar/agents/instar-codey/.worktrees/phaseb-s3-no-blind-clean/node_modules",
+    "prepared": true
+  }
+}
