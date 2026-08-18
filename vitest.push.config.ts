@@ -227,7 +227,10 @@ const FLAKY_TESTS = [
 
 ];
 
+const ISOLATED_CACHE_DIR = process.env.INSTAR_VITEST_CACHE_DIR?.trim();
+
 export default defineConfig(withTestRunnerBound('push', {
+  ...(ISOLATED_CACHE_DIR ? { cacheDir: ISOLATED_CACHE_DIR } : {}),
   test: {
     include: ['tests/unit/**/*.test.ts', 'tests/integration/**/*.test.ts', 'tests/e2e/**/*.test.ts'],
     exclude: FLAKY_TESTS,

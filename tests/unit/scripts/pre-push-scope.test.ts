@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  classifyVitestListRun,
+  evaluateAffectedSmokeSelection,
   evaluateSmokeBreadth,
   failedTestFilesFromVitestJson,
   resolvePrePushBase,
-  summarizeVitestList,
+  summarizeVitestListJson,
 } from '../../../scripts/lib/pre-push-scope.mjs';
 
 function fakeGit(outputs: Record<string, string | Error>) {
@@ -77,15 +79,75 @@ describe('pre-push smoke scope helpers', () => {
     expect(result.reason).toContain('affected test file count 81');
   });
 
-  it('summarizes Vitest list output by test cases and unique files', () => {
-    const summary = summarizeVitestList([
-      'tests/unit/a.test.ts > suite > case 1',
-      'tests/unit/a.test.ts > suite > case 2',
-      'tests/integration/b.test.ts > suite > case 1',
-      '',
-    ].join('\n'));
+  it('summarizes schema-pinned Vitest JSON by entries and unique files', () => {
+    const summary = summarizeVitestListJson(JSON.stringify([
+      { name: 'suite > case 1', file: '/repo/tests/unit/a.test.ts' },
+      { name: 'suite > case 2', file: '/repo/tests/unit/a.test.ts' },
+      { name: 'suite > case 1', file: '/repo/tests/integration/b.test.ts' },
+    ]));
 
     expect(summary).toEqual({ testCaseCount: 3, testFileCount: 2 });
+  });
+
+  it.each([
+    ['empty output', ''],
+    ['malformed JSON', '{'],
+    ['old rendered output', 'tests/unit/a.test.ts > suite > case 1'],
+  ])('refuses %s instead of converting it to zero affected tests', (_label, output) => {
+    expect(() => summarizeVitestListJson(output)).toThrow(/Vitest list JSON/);
+  });
+
+  it.each([
+    ['non-array top level', JSON.stringify({ name: 'case', file: '/repo/tests/a.test.ts' })],
+    ['missing file', JSON.stringify([{ name: 'case' }])],
+    ['relative file', JSON.stringify([{ name: 'case', file: 'tests/a.test.ts' }])],
+    ['unexpected field', JSON.stringify([{ name: 'case', file: '/repo/tests/a.test.ts', status: 'passed' }])],
+  ])('fails loudly when the pinned list schema changes: %s', (_label, output) => {
+    expect(() => summarizeVitestListJson(output)).toThrow(/Vitest list/);
+  });
+
+  it('keeps a genuine structured zero distinct and quiet', () => {
+    const summary = summarizeVitestListJson('[]');
+    const decision = evaluateAffectedSmokeSelection({ changedFileCount: 1, ...summary });
+
+    expect(summary).toEqual({ testCaseCount: 0, testFileCount: 0 });
+    expect(decision).toEqual({ action: 'no-tests', reason: 'structured affected set is empty' });
+  });
+
+  it('runs a genuine structured affected set within the caps', () => {
+    const summary = summarizeVitestListJson(JSON.stringify([
+      { name: 'suite > case 1', file: '/repo/tests/unit/a.test.ts' },
+    ]));
+
+    expect(evaluateAffectedSmokeSelection({ changedFileCount: 1, ...summary })).toEqual({
+      action: 'run',
+      reason: 'structured affected set is within local smoke caps',
+    });
+  });
+
+  it('keeps the legitimate breadth skip for a large structured affected set', () => {
+    const entries = Array.from({ length: 1001 }, (_, index) => ({
+      name: `suite > case ${index}`,
+      file: '/repo/tests/unit/a.test.ts',
+    }));
+    const summary = summarizeVitestListJson(JSON.stringify(entries));
+    const decision = evaluateAffectedSmokeSelection({ changedFileCount: 1, ...summary });
+
+    expect(decision.action).toBe('skip');
+    expect(decision.reason).toContain('affected test case count 1001');
+  });
+
+  it('classifies a list timeout as an explicit non-blocking indeterminate skip with zero tests run', () => {
+    expect(classifyVitestListRun({ status: null, signal: 'SIGTERM' })).toEqual({
+      action: 'skip-indeterminate',
+      reason: 'affected-test listing timed out',
+      testsRun: 0,
+    });
+  });
+
+  it('parses only a successful list process and fails other process errors', () => {
+    expect(classifyVitestListRun({ status: 0, signal: null })).toEqual({ action: 'parse' });
+    expect(classifyVitestListRun({ status: 2, signal: null })).toEqual({ action: 'fail', exitCode: 2 });
   });
 
   it('extracts unique failed files from Vitest JSON output', () => {

@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-18T19:52:07.951Z",
+  "slug": "r1-structured-vitest-list",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 147,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lib/pre-push-scope.mjs",
+      "scripts/pre-push-smoke.mjs"
+    ],
+    "addedLines": 125,
+    "deletedLines": 22
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,5 +1,6 @@
 // safe-git-allow: pre-push bootstrap helpers — read-only git only.
 import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 
 export const DEFAULT_SMOKE_LIMITS = Object.freeze({
   maxChangedFiles: 200,
@@ -122,13 +123,66 @@ export function evaluateSmokeBreadth({ changedFileCount, testFileCount, testCase
   return { skip: false, reason: 'within local smoke caps' };
 }
 
-export function summarizeVitestList(stdout) {
-  const tests = String(stdout)
-    .split('\n')
-    .map(s => s.trim())
-    .filter(Boolean);
-  const files = new Set(tests.map(line => line.split(' > ')[0]).filter(Boolean));
-  return { testCaseCount: tests.length, testFileCount: files.size };
+export function summarizeVitestListJson(jsonText) {
+  const text = String(jsonText);
+  if (text.trim().length === 0) {
+    throw new Error('Vitest list JSON is empty');
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`Vitest list JSON is malformed: ${err instanceof Error ? err.message : err}`);
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error('Vitest list JSON must be an array');
+  }
+
+  const files = new Set();
+  for (const [index, entry] of parsed.entries()) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`Vitest list entry ${index} must be an object`);
+    }
+
+    const keys = Object.keys(entry).sort();
+    if (keys.length !== 2 || keys[0] !== 'file' || keys[1] !== 'name') {
+      throw new Error(`Vitest list entry ${index} must contain exactly "file" and "name"`);
+    }
+    if (typeof entry.name !== 'string' || entry.name.trim().length === 0) {
+      throw new Error(`Vitest list entry ${index} has an invalid name`);
+    }
+    if (typeof entry.file !== 'string' || entry.file.trim().length === 0 || !path.isAbsolute(entry.file)) {
+      throw new Error(`Vitest list entry ${index} has an invalid absolute file path`);
+    }
+
+    files.add(path.normalize(entry.file));
+  }
+
+  return { testCaseCount: parsed.length, testFileCount: files.size };
+}
+
+export function evaluateAffectedSmokeSelection(
+  { changedFileCount, testFileCount, testCaseCount },
+  limits = DEFAULT_SMOKE_LIMITS,
+) {
+  const breadth = evaluateSmokeBreadth({ changedFileCount, testFileCount, testCaseCount }, limits);
+  if (breadth.skip) return { action: 'skip', reason: breadth.reason };
+  if (testCaseCount === 0) return { action: 'no-tests', reason: 'structured affected set is empty' };
+  return { action: 'run', reason: 'structured affected set is within local smoke caps' };
+}
+
+export function classifyVitestListRun({ status, signal }) {
+  if (status === 0) return { action: 'parse' };
+  if (signal === 'SIGTERM') {
+    return {
+      action: 'skip-indeterminate',
+      reason: 'affected-test listing timed out',
+      testsRun: 0,
+    };
+  }
+  return { action: 'fail', exitCode: status ?? 1 };
 }
 
 function normalizeTestFileName(name, cwd) {
