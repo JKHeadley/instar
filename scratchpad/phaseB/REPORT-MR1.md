@@ -164,3 +164,30 @@ Exact contradictory fields preserved because MR1 did not authorize editing them:
 The freshness lint ignores these note fields, so it remains green. The side-effects artifact now identifies the contradictory prose as a second reason this branch must not merge.
 
 Re-review verdict: `Concur with the revised review`.
+
+## 2026-08-18 05:22 PDT — pre-push base corrected; release fragment required
+
+First push attempt failed before tests because the pre-push gate selected stale local ref `JKHeadley/main` at `4318a1e150e9a8304e6c2e7ad381bf66d03998e5` instead of fetched `upstream/main` at `248ed7177f5bf416aa7bdad9763741478195e1fc`, producing 29 unrelated release-relevant files. No push occurred.
+
+The tracking ref was refreshed from the upstream repository:
+
+```text
+$ git fetch upstream main:refs/remotes/JKHeadley/main
+4318a1e15..248ed7177 main -> JKHeadley/main
+$ git rev-parse JKHeadley/main upstream/main
+248ed7177f5bf416aa7bdad9763741478195e1fc
+248ed7177f5bf416aa7bdad9763741478195e1fc
+```
+
+Second push attempt compared the correct four runtime files and failed because a release-note fragment was absent:
+
+```text
+4 release-relevant file(s) changed but no release-note fragment was added.
+• scripts/model-registry-freshness.manifest.json
+• src/core/ModelTierEscalation.ts
+• src/providers/adapters/anthropic-headless/models.ts
+• src/providers/adapters/openai-codex/models.ts
+husky - pre-push script failed (code 1)
+```
+
+Added `upgrades/next/mr1-model-registry-review.md` as the required shipping artifact. It states the routing change, documentation-only Gemini evidence, targeted-test totals, and both merge blockers. No hook bypass and no merge.
