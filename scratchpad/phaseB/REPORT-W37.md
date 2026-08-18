@@ -7,9 +7,10 @@
 ```text
 branch: phaseb/w37-authenticated-structured-observation
 base:   6f4d6599ea7c601f917c8db5cd1b6b3c1a3266b9 (phaseb/w36-structured-test-counts)
+implementation commit: aac1ea4d6eee1d69f833115ec1d8f2579cdbb49d
 brief:  scratchpad/phaseB/lane-W37-brief.md
 brief sha256: 4b84ff2fe89ade27cb683268ffed804a4748aa93d27b9518a1ca187c7a6820e0
-pull request: pending at report authoring; appended after publication
+pull request: https://github.com/JKHeadley/instar/pull/1936
 ```
 
 ## What changed
@@ -116,6 +117,17 @@ Tests       4 passed | 34 skipped (38)
 Duration    100.66s
 shared entrypoint preflight: match
 shared entrypoint postflight: match
+```
+
+The normal non-force push gate then ran the complete affected set against its resolved main base:
+
+```text
+Test Files  2 passed (2)
+Tests       54 passed (54)
+Duration    1128.90s
+W37_C2 ... runnerExecuted=false outcome=UNKNOWN artifact=null
+W36_C1 ... misleadingRendererCounts=ignored ... verdict=ratchet
+W37_C1 ... digestCompared=true protectedRunnerMaterialized=true observationsReceiptBound=true verdict=ratchet
 ```
 
 ## Mutation identity and relevance
