@@ -1,5 +1,29 @@
 # W3.5 — independently observed enforcement evidence
 
+## 2026-08-18 06:25:24 -0700 — pull request opened; no merge
+
+Commit and publication:
+
+```text
+$ git rev-parse HEAD
+ad2708cbd52ed2e46294fe61e3fd96bf442f5f49
+
+$ git push -u upstream phaseb/w35-observed-enforcement-proof
+exit 0
+Smoke affected set: 2 test files / 53 test cases.
+Test Files  2 passed (2)
+Tests       53 passed (53)
+Duration    498.45s
+To https://github.com/JKHeadley/instar.git
+ * [new branch] phaseb/w35-observed-enforcement-proof -> phaseb/w35-observed-enforcement-proof
+
+$ gh pr create --repo JKHeadley/instar --base main --head phaseb/w35-observed-enforcement-proof ...
+exit 0
+https://github.com/JKHeadley/instar/pull/1931
+```
+
+PR #1931 is a linked follow-up to W3.4 PR #1926. Its status is stated as BUILT WITH HAND EVIDENCE and NOT MACHINE-VERIFIED; J7/H1 certification and the independent W3.5 judge verdict remain pending. No merge or auto-merge was requested.
+
 ## 2026-08-18 06:13:00 -0700 — executable entry mode preserved; gate obeyed
 
 The first commit recorded `scripts/standards-coverage.mjs` as mode `100644`; the source entry was `100755`. The mode was restored before push. The initial amend attempt was correctly refused because the Tier-1 ELI16 artifact was not staged alongside that staged entry-path metadata change:
