@@ -58,6 +58,16 @@ export interface ParityResult {
 
 export type ParityScenario = (h: ParityHarness) => Promise<ParityResult>;
 
+export const PARITY_SUMMARY_SCHEMA = 'instar-parity-summary/v1' as const;
+
+export interface ParitySummary {
+  schema: typeof PARITY_SUMMARY_SCHEMA;
+  total: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+}
+
 /**
  * Run every scenario against the pair of adapters and aggregate results.
  *
@@ -117,15 +127,40 @@ export async function runParitySuite(
  * (0 if all pass-or-skip, 1 if any fail).
  */
 export function reportParityResults(results: ReadonlyArray<ParityResult>): number {
-  let failures = 0;
+  const summary = summarizeParityResults(results);
   for (const r of results) {
     const tag = r.status === 'pass' ? 'PASS' : r.status === 'skip' ? 'SKIP' : 'FAIL';
     const detail = r.reason ? ` — ${r.reason}` : '';
     // eslint-disable-next-line no-console
     console.log(`[${tag}] ${r.scenario}${detail}`);
-    if (r.status === 'fail') failures += 1;
   }
   // eslint-disable-next-line no-console
-  console.log(`\n${results.length} scenario(s): ${results.length - failures} ok, ${failures} fail`);
-  return failures === 0 ? 0 : 1;
+  console.log(`\n${summary.total} scenario(s): ${summary.total - summary.failed} ok, ${summary.failed} fail`);
+  return summary.failed === 0 ? 0 : 1;
+}
+
+export function summarizeParityResults(results: ReadonlyArray<ParityResult>): ParitySummary {
+  let passed = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const result of results) {
+    if (result.status === 'pass') passed += 1;
+    else if (result.status === 'fail') failed += 1;
+    else skipped += 1;
+  }
+  return {
+    schema: PARITY_SUMMARY_SCHEMA,
+    total: results.length,
+    passed,
+    failed,
+    skipped,
+  };
+}
+
+/** Print one machine-readable document and return the same failure exit semantics as the text reporter. */
+export function reportParityResultsJson(results: ReadonlyArray<ParityResult>): number {
+  const summary = summarizeParityResults(results);
+  // eslint-disable-next-line no-console
+  console.log(JSON.stringify(summary));
+  return summary.failed === 0 ? 0 : 1;
 }

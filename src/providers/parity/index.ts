@@ -5,12 +5,19 @@
  * sets, construct two adapters, and run.
  */
 
-export { runParitySuite, reportParityResults } from './runner.js';
+export {
+  PARITY_SUMMARY_SCHEMA,
+  reportParityResults,
+  reportParityResultsJson,
+  runParitySuite,
+  summarizeParityResults,
+} from './runner.js';
 export type {
   ParityContext,
   ParityHarness,
   ParityResult,
   ParityScenario,
+  ParitySummary,
 } from './runner.js';
 
 export { oneShotCompletionScenarios } from './scenarios/oneShotCompletion.js';

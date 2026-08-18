@@ -29,6 +29,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { evaluateOutputExpectation } = require('./lib/phase-acceptance-output.cjs');
 
 const args = process.argv.slice(2);
 const phaseId = args.find((a) => !a.startsWith('--'));
@@ -78,9 +79,12 @@ function runGate(gate, category) {
   } else if (gate.expectExitCode !== undefined && exitCode !== gate.expectExitCode) {
     status = 'fail';
     reason = `expected exit ${gate.expectExitCode}, got ${exitCode}`;
-  } else if (gate.expectStdoutContains && !stdout.includes(gate.expectStdoutContains) && !stderr.includes(gate.expectStdoutContains)) {
-    status = 'fail';
-    reason = `expected stdout to contain "${gate.expectStdoutContains}"`;
+  } else {
+    const outputExpectation = evaluateOutputExpectation(gate, stdout, stderr);
+    if (!outputExpectation.ok) {
+      status = 'fail';
+      reason = outputExpectation.reason;
+    }
   }
 
   return {
