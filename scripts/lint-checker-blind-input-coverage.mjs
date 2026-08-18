@@ -1,10 +1,9 @@
 // safe-git-allow: standalone prebuild lint uses only read-only merge-base/ls-tree/show; compiled SafeGitExecutor is not reliably available yet.
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   deriveCheckerPopulation,
   deriveProtectedCeiling,
@@ -13,6 +12,10 @@ import {
   evaluateCeilingRatchet,
 } from './lib/checker-blind-input-ratchet.mjs';
 import { BLIND_INPUT_CASE_IDS } from './checker-blind-input-cases.mjs';
+import {
+  createAuthenticatedReceiptAuthority,
+  isLiveAuthenticatedReceipt,
+} from '../scratchpad/phaseB/authenticated-execution-receipt.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // 2026-08-17 baseline: 96 code-derived checkers, 5 executable blind cases.
@@ -130,15 +133,6 @@ export function readProtectedStateAt(root, protectedMainSha) {
   return { protectedMainSha, baseSha: base, populationIds, recordedCeiling };
 }
 
-function readJsonLines(file) {
-  try {
-    return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  } catch (error) {
-    if (error?.code === 'ENOENT') return [];
-    throw notProven(`core execution receipt is malformed: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
 function coreWorkerSource(root) {
   const moduleUrl = (relativePath) => new URL(relativePath, `file://${root.replaceAll('\\', '/')}/`).href;
   return `import fs from 'node:fs';
@@ -244,46 +238,13 @@ try {
 `;
 }
 
-function observerSource({ realNode, root, worker, receiptFile, tokenHash, declaredIds }) {
-  return `#!${realNode}\n`
-    + `import fs from 'node:fs';\n`
-    + `import path from 'node:path';\n`
-    + `import { spawn } from 'node:child_process';\n`
-    + `const argv = process.argv.slice(2);\n`
-    + `const root = ${JSON.stringify(root)};\n`
-    + `const realNode = ${JSON.stringify(realNode)};\n`
-    + `const expectedEntry = path.resolve(root, ${JSON.stringify(VITE_NODE_ENTRY)});\n`
-    + `const expectedWorker = ${JSON.stringify(worker)};\n`
-    + `const declared = new Set(${JSON.stringify(declaredIds)});\n`
-    + `const resolve = (value) => { try { return fs.realpathSync(path.resolve(root, value)); } catch { return path.resolve(root, value); } };\n`
-    + `const scriptIndex = argv.indexOf('--script');\n`
-    + `const id = scriptIndex >= 0 ? argv[scriptIndex + 2] : null;\n`
-    + `const phase = scriptIndex >= 0 ? argv[scriptIndex + 3] : null;\n`
-    + `const target = argv.length > 0 && resolve(argv[0]) === resolve(expectedEntry) && resolve(argv[scriptIndex + 1] ?? '') === resolve(expectedWorker) && declared.has(id) && (phase === 'control' || phase === 'blind');\n`
-    + `const child = spawn(realNode, argv, { cwd: process.cwd(), env: process.env, stdio: 'inherit' });\n`
-    + `const forward = (signal) => { try { child.kill(signal); } catch {} };\n`
-    + `for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => forward(signal));\n`
-    + `child.once('error', (error) => { console.error(error.message); process.exit(1); });\n`
-    + `child.once('exit', (code, signal) => {\n`
-    + `  const childExitCode = typeof code === 'number' ? code : null;\n`
-    + `  if (target) {\n`
-    + `    const receipt = { source: 'checker-blind-core', tokenSha256: ${JSON.stringify(tokenHash)}, id, phase, nodeEntry: ${JSON.stringify(VITE_NODE_ENTRY)}, worker: ${JSON.stringify(CORE_WORKER_LABEL)}, childExitCode, signal: signal ?? null, emittedAfterChildExit: true };\n`
-    + `    fs.appendFileSync(${JSON.stringify(receiptFile)}, JSON.stringify(receipt) + '\\n', 'utf8');\n`
-    + `  }\n`
-    + `  process.exit(childExitCode ?? 1);\n`
-    + `});\n`;
-}
-
-export function validateCoreExecutionReceipts({ records, tokenHash, declaredIds }) {
+export function validateCoreExecutionReceipts({ records, declaredIds }) {
   const expected = new Set(declaredIds.flatMap((id) => [`${id}\u0000control`, `${id}\u0000blind`]));
   const seen = new Set();
   const invalid = [];
   for (const record of records) {
-    const key = `${String(record?.id)}\u0000${String(record?.phase)}`;
-    const valid = record?.source === 'checker-blind-core'
-      && record.tokenSha256 === tokenHash
-      && record.nodeEntry === VITE_NODE_ENTRY
-      && record.worker === CORE_WORKER_LABEL
+    const key = `${String(record?.guardId)}\u0000${String(record?.kind)}`;
+    const valid = isLiveAuthenticatedReceipt(record)
       && record.childExitCode === 0
       && record.emittedAfterChildExit === true
       && expected.has(key)
@@ -295,25 +256,39 @@ export function validateCoreExecutionReceipts({ records, tokenHash, declaredIds 
   return { passed: invalid.length === 0 && missing.length === 0 && seen.size === expected.size, invalid, missing };
 }
 
-function runExecutableCases(root) {
+function runDirectCaseChild(argv, cwd) {
+  return new Promise((resolve) => {
+    const startedAt = new Date().toISOString();
+    let stdout = '';
+    let stderr = '';
+    const child = spawn(argv[0], argv.slice(1), {
+      cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const pid = child.pid;
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    let spawnError = null;
+    child.once('error', (error) => { spawnError = error.message; });
+    const timeout = setTimeout(() => { try { child.kill('SIGTERM'); } catch {} }, 30_000);
+    child.once('exit', (code, signal) => {
+      clearTimeout(timeout);
+      resolve({
+        argv, pid, startedAt, childExitedAt: new Date().toISOString(),
+        childExitCode: typeof code === 'number' ? code : null,
+        signal: signal ?? null, stdout, stderr, spawnError,
+      });
+    });
+  });
+}
+
+async function runExecutableCases(root) {
   const vitest = path.join(root, 'node_modules', '.bin', 'vitest');
   const declared = [...BLIND_INPUT_CASE_IDS].sort();
-  const token = `${crypto.randomUUID()}-${crypto.randomBytes(16).toString('hex')}`;
-  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
   const observerRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'checker-blind-core-'));
-  const receiptFile = path.join(observerRoot, 'receipts.jsonl');
-  const wrapper = path.join(observerRoot, 'node');
   const worker = path.join(observerRoot, CORE_WORKER_LABEL);
+  let authority;
   try {
     fs.writeFileSync(worker, coreWorkerSource(fs.realpathSync(root)), 'utf8');
-    fs.writeFileSync(wrapper, observerSource({
-      realNode: process.execPath,
-      root,
-      worker,
-      receiptFile,
-      tokenHash,
-      declaredIds: declared,
-    }), { mode: 0o755 });
     const child = spawnSync(vitest, [
       'run',
       'tests/unit/checker-blind-input-ratchet.test.ts',
@@ -324,17 +299,42 @@ function runExecutableCases(root) {
       maxBuffer: 32 * 1024 * 1024,
       env: {
         ...process.env,
-        PATH: `${observerRoot}${path.delimiter}${process.env.PATH ?? ''}`,
         INSTAR_CHECKER_BLIND_PIPELINE: '1',
-        INSTAR_CHECKER_BLIND_CORE_WORKER: worker,
       },
     });
     if (child.stdout) process.stdout.write(child.stdout);
     if (child.stderr) process.stderr.write(child.stderr);
     if (child.error) throw unknown(`blind-case runner unavailable: ${child.error.message}`);
     if (child.status !== 0) throw notProven(`executable blind cases exited ${child.status}`);
-    const records = readJsonLines(receiptFile);
-    const validation = validateCoreExecutionReceipts({ records, tokenHash, declaredIds: declared });
+    try {
+      authority = await createAuthenticatedReceiptAuthority({ issuer: 'checker-blind-input-core' });
+    } catch (error) {
+      throw unknown(`private execution receipt authority unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const records = [];
+    for (const id of declared) {
+      for (const phase of ['control', 'blind']) {
+        const argv = [process.execPath, path.join(root, VITE_NODE_ENTRY), '--script', worker, id, phase];
+        const observation = await runDirectCaseChild(argv, root);
+        if (observation.stdout) process.stdout.write(observation.stdout);
+        if (observation.stderr) process.stderr.write(observation.stderr);
+        if (observation.spawnError) throw unknown(`checker case child unavailable: ${observation.spawnError}`);
+        if (observation.childExitCode !== 0) throw notProven(`checker case ${id} ${phase} exited ${observation.childExitCode}`);
+        const receipt = await authority.issue({
+          guardId: id, kind: phase, observerPid: process.pid,
+          childPid: observation.pid, childExitCode: observation.childExitCode,
+          signal: observation.signal, argv: observation.argv,
+          startedAt: observation.startedAt, childExitedAt: observation.childExitedAt,
+          emittedAfterChildExit: true,
+        });
+        const authenticated = await authority.authenticate(receipt, {
+          guardId: id, kind: phase, childPid: observation.pid, childExitCode: 0,
+        });
+        if (!authenticated) throw notProven(`checker case ${id} ${phase} receipt authentication failed`);
+        records.push(receipt);
+      }
+    }
+    const validation = validateCoreExecutionReceipts({ records, declaredIds: declared });
     if (!validation.passed) {
       throw notProven(`independent checker execution receipt incomplete: missing=${validation.missing.length} invalid=${validation.invalid.length}`);
     }
@@ -343,11 +343,12 @@ function runExecutableCases(root) {
     }
     return declared;
   } finally {
+    if (authority) await authority.close();
     fs.rmSync(observerRoot, { recursive: true, force: true });
   }
 }
 
-export function runCheckerBlindInputCoverage({
+export async function runCheckerBlindInputCoverage({
   root = option('--root') ?? ROOT,
   executeCases = !process.argv.includes('--structural-only'),
 } = {}) {
@@ -357,7 +358,7 @@ export function runCheckerBlindInputCoverage({
   }
   const protectedState = readProtectedState(ROOT);
   const population = deriveCheckerPopulation(root);
-  const executionProvenIds = runExecutableCases(root);
+  const executionProvenIds = await runExecutableCases(root);
   const protectedCeiling = deriveProtectedCeiling({
     protectedPopulationIds: protectedState.populationIds,
     executionProvenIds,
@@ -395,7 +396,7 @@ export function runCheckerBlindInputCoverage({
 const isDirect = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isDirect) {
   try {
-    process.exitCode = runCheckerBlindInputCoverage();
+    process.exitCode = await runCheckerBlindInputCoverage();
   } catch (error) {
     const status = error instanceof GuardMeasurementError
       ? error.status

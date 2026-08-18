@@ -25,6 +25,7 @@ import {
   readProtectedStateAt,
   validateCoreExecutionReceipts,
 } from '../../scripts/lint-checker-blind-input-coverage.mjs';
+import { createAuthenticatedReceiptAuthority } from '../../scratchpad/phaseB/authenticated-execution-receipt.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CASE_WORKER = process.env.INSTAR_CHECKER_BLIND_CORE_WORKER
@@ -325,30 +326,37 @@ describe('checker blind-input class ratchet', () => {
     ]);
   });
 
-  it('credits only a complete pair of core-minted post-exit receipts', () => {
-    const tokenHash = 'core-token-hash';
-    const record = (phase: 'control' | 'blind') => ({
-      source: 'checker-blind-core', tokenSha256: tokenHash,
-      id: 'script:scripts/lint-real.mjs', phase,
-      nodeEntry: 'node_modules/vite-node/vite-node.mjs',
-      worker: 'core-generated-checker-case-worker.ts',
-      childExitCode: 0, signal: null, emittedAfterChildExit: true,
-    });
-    expect(validateCoreExecutionReceipts({
-      records: [record('control'), record('blind')],
-      tokenHash,
-      declaredIds: ['script:scripts/lint-real.mjs'],
-    })).toMatchObject({ passed: true, invalid: [], missing: [] });
+  it('credits only a complete pair of private-channel authenticated post-exit receipts', async () => {
+    const authority = await createAuthenticatedReceiptAuthority({ issuer: 'checker-unit' });
+    try {
+      const records = [];
+      for (const phase of ['control', 'blind'] as const) {
+        const receipt = await authority.issue({
+          guardId: 'script:scripts/lint-real.mjs', kind: phase,
+          observerPid: process.pid, childPid: process.pid, childExitCode: 0,
+          signal: null, argv: [process.execPath, 'lint-real.mjs', phase],
+          startedAt: new Date().toISOString(), childExitedAt: new Date().toISOString(),
+          emittedAfterChildExit: true,
+        });
+        expect(await authority.authenticate(receipt, { kind: phase, childExitCode: 0 })).toBe(true);
+        records.push(receipt);
+      }
+      expect(validateCoreExecutionReceipts({
+        records,
+        declaredIds: ['script:scripts/lint-real.mjs'],
+      })).toMatchObject({ passed: true, invalid: [], missing: [] });
+    } finally {
+      await authority.close();
+    }
   });
 
   it('rejects candidate-authored execution testimony without core receipts', () => {
     expect(validateCoreExecutionReceipts({
       records: [{
         source: 'CHECKER_BLIND_EXECUTION',
-        id: 'script:scripts/lint-never-invoked.mjs',
-        phase: 'control', invocations: 1,
+        guardId: 'script:scripts/lint-never-invoked.mjs',
+        kind: 'control', invocations: 1,
       }],
-      tokenHash: 'unavailable-to-candidate',
       declaredIds: ['script:scripts/lint-never-invoked.mjs'],
     })).toMatchObject({
       passed: false,
