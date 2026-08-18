@@ -191,3 +191,24 @@ husky - pre-push script failed (code 1)
 ```
 
 Added `upgrades/next/mr1-model-registry-review.md` as the required shipping artifact. It states the routing change, documentation-only Gemini evidence, targeted-test totals, and both merge blockers. No hook bypass and no merge.
+
+## 2026-08-18 05:29:46 PDT — pull request open; node complete as blocked draft
+
+Upstream branch push: exit `0`; all hooks active. The bounded smoke selector waited for the host lane, then timed out its affected-test listing and explicitly deferred to CI; the path-scoped E2E gate passed.
+
+Pull request verification:
+
+```json
+{
+  "number": 1928,
+  "url": "https://github.com/JKHeadley/instar/pull/1928",
+  "state": "OPEN",
+  "isDraft": true,
+  "baseRefName": "main",
+  "headRefName": "phaseb/mr1-model-registry-review",
+  "headRefOid": "7ac4002cce1dc5e5001f3f106d3d9080e458853c",
+  "autoMergeRequest": null
+}
+```
+
+Final state: PR open and unmerged. Freshness PASS, drift negative control PASS, type-check PASS, full lint PASS, targeted suite FAIL (3 of 123) with the closed-enum runtime mismatch and two stale expectations. Independent side-effects review concurs with both merge blockers recorded. MR1 is not merge-ready and claims no unblock.
