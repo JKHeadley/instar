@@ -921,8 +921,8 @@ async function measure(args) {
         outcome: wiringOutcome,
         declaredEntryPoint: guard.pipelineEntryPoint,
         establishedBy: wired
-          ? 'core-minted token received from the exact manifest-pinned guard child after it exited through the protected workflow command; C3 wrapper success produced no receipt'
-          : 'no valid core-minted post-child receipt relationship was established',
+          ? 'the core authenticated the exact live manifest-pinned guard child after it exited through the protected workflow command; C3 wrapper success produced no guard receipt'
+          : 'no valid core-authenticated post-child receipt relationship was established',
         protectedBase: protectedBaseEvidence,
         contract: pipelineContractValidation,
         pipelineEvidence: pipelineValidation.valid ? rawPipelineEvidence : { status: 'unknown', rejected: true, rejectionReason: pipelineValidation.reason },
