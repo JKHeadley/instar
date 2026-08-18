@@ -35,6 +35,87 @@ function runAgainstRealRepo(): { parkedTotal: number; missingFiles: string[]; gl
   return JSON.parse(res.stdout);
 }
 
+type SyntheticMode = 'real' | 'corrupt-report' | 'missing-runner';
+type SyntheticRun = {
+  runs: Array<'pass' | 'fail' | 'errored'>;
+  runDetails: Array<{
+    outcome: 'pass' | 'fail' | 'errored';
+    reason: string;
+    exitCode: number | null;
+    structured?: { total: number; passed: number; failed: number };
+  }>;
+  verdict: string;
+};
+
+function writeSyntheticRepo(mode: SyntheticMode, testBody: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recheck-outcome-'));
+  fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'tests'), { recursive: true });
+  fs.copyFileSync(SCRIPT, path.join(dir, 'scripts/recheck-parked-tests.mjs'));
+  fs.writeFileSync(path.join(dir, 'vitest.push.config.ts'), [
+    'const FLAKY_TESTS = [',
+    "  'tests/outcome.test.ts',",
+    '];',
+  ].join('\n'));
+  fs.writeFileSync(path.join(dir, 'vitest.config.mjs'),
+    'export default { test: { globals: true } };\n');
+  fs.writeFileSync(path.join(dir, 'tests/outcome.test.ts'), testBody);
+
+  if (mode !== 'missing-runner') {
+    const bin = path.join(dir, 'node_modules', '.bin');
+    fs.mkdirSync(bin, { recursive: true });
+    const realVitest = path.join(ROOT, 'node_modules', 'vitest', 'vitest.mjs');
+    const wrapper = [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      "const { spawnSync } = require('node:child_process');",
+      `const realVitest = ${JSON.stringify(realVitest)};`,
+      "const args = [...process.argv.slice(2), '--cache=false'];",
+      "const result = spawnSync(process.execPath, [realVitest, ...args], { cwd: process.cwd(), encoding: 'utf8', env: process.env });",
+      "const stdout = (result.stdout || '').replaceAll('Tests', 'Checks');",
+      "const stderr = (result.stderr || '').replaceAll('Tests', 'Checks');",
+      "if (process.env.R3_RENDER_CAPTURE) fs.writeFileSync(process.env.R3_RENDER_CAPTURE, stdout + stderr);",
+      ...(mode === 'corrupt-report' ? [
+        "const outputArg = args.find((arg) => arg.startsWith('--outputFile.json='));",
+        "if (outputArg) fs.writeFileSync(outputArg.slice('--outputFile.json='.length), '{not-json');",
+      ] : []),
+      'process.stdout.write(stdout);',
+      'process.stderr.write(stderr);',
+      'process.exit(result.status ?? 1);',
+      '',
+    ].join('\n');
+    const wrapperPath = path.join(bin, 'vitest');
+    fs.writeFileSync(wrapperPath, wrapper, { mode: 0o755 });
+  }
+  return dir;
+}
+
+function runSyntheticRepo(dir: string): { result: SyntheticRun; rendered: string } {
+  const renderCapture = path.join(dir, 'rendered.txt');
+  const res = spawnSync(process.execPath,
+    ['scripts/recheck-parked-tests.mjs', '--slice', '1', '--runs', '1', '--json'], {
+      cwd: dir,
+      encoding: 'utf-8',
+      timeout: 120_000,
+      env: { ...process.env, R3_RENDER_CAPTURE: renderCapture },
+    });
+  expect(res.status, res.stderr).toBe(0);
+  const report = JSON.parse(res.stdout);
+  expect(report.checked).toHaveLength(1);
+  return {
+    result: report.checked[0],
+    rendered: fs.existsSync(renderCapture) ? fs.readFileSync(renderCapture, 'utf-8') : '',
+  };
+}
+
+function removeSyntheticRepo(dir: string): void {
+  SafeFsExecutor.safeRmSync(dir, {
+    recursive: true,
+    force: true,
+    operation: 'tests/unit/recheck-parked-tests.test.ts:outcome-cleanup',
+  });
+}
+
 describe('parked-test re-check', () => {
   it('always exits 0 — it reports, it does not gate', () => {
     // Gating here would recreate the original problem from the other side: a red build for a test
@@ -109,6 +190,72 @@ describe('parked-test re-check', () => {
         recursive: true, force: true,
         operation: 'tests/unit/recheck-parked-tests.test.ts:cleanup',
       });
+    }
+  });
+
+  it('MUST-FIRE: a genuine failure comes from JSON even when rendered wording changes', () => {
+    const dir = writeSyntheticRepo('real', [
+      "it('genuinely fails', () => {",
+      '  expect(1).toBe(2);',
+      '});',
+    ].join('\n'));
+    try {
+      const { result, rendered } = runSyntheticRepo(dir);
+      expect(rendered).toMatch(/Checks\s+1\s+failed/);
+      expect(rendered).not.toMatch(/Tests\s+1\s+failed/);
+      expect(result.runs).toEqual(['fail']);
+      expect(result.verdict).toBe('deterministic-fail');
+      expect(result.runDetails[0]).toMatchObject({
+        outcome: 'fail',
+        reason: 'tests-failed',
+        exitCode: 1,
+        structured: { total: 1, passed: 0, failed: 1 },
+      });
+    } finally {
+      removeSyntheticRepo(dir);
+    }
+  });
+
+  it('MUST-NOT-FIRE: a passing run remains a structured pass', () => {
+    const dir = writeSyntheticRepo('real', [
+      "it('genuinely passes', () => {",
+      '  expect(1).toBe(1);',
+      '});',
+    ].join('\n'));
+    try {
+      const { result } = runSyntheticRepo(dir);
+      expect(result.runs).toEqual(['pass']);
+      expect(result.verdict).toBe('deterministic-pass');
+      expect(result.runDetails[0]).toMatchObject({
+        outcome: 'pass',
+        reason: 'tests-passed',
+        exitCode: 0,
+        structured: { total: 1, passed: 1, failed: 0 },
+      });
+    } finally {
+      removeSyntheticRepo(dir);
+    }
+  });
+
+  it('MUST-NOT-FIRE: never-started and unparseable runs stay distinct errors', () => {
+    const neverStarted = writeSyntheticRepo('missing-runner', "it('would pass', () => expect(1).toBe(1));\n");
+    const unparseable = writeSyntheticRepo('corrupt-report', "it('runs then fails', () => expect(1).toBe(2));\n");
+    try {
+      const missingResult = runSyntheticRepo(neverStarted).result;
+      const unparseableResult = runSyntheticRepo(unparseable).result;
+      expect(missingResult.runs).toEqual(['errored']);
+      expect(missingResult.verdict).toBe('could-not-run');
+      expect(missingResult.runDetails[0]).toMatchObject({
+        outcome: 'errored', reason: 'runner-not-started', exitCode: null,
+      });
+      expect(unparseableResult.runs).toEqual(['errored']);
+      expect(unparseableResult.verdict).toBe('could-not-run');
+      expect(unparseableResult.runDetails[0]).toMatchObject({
+        outcome: 'errored', reason: 'structured-report-unparseable', exitCode: 1,
+      });
+    } finally {
+      removeSyntheticRepo(neverStarted);
+      removeSyntheticRepo(unparseable);
     }
   });
 });
