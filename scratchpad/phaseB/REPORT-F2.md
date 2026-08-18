@@ -100,3 +100,33 @@ The isolated hollow guard was correctly rejected: its own test process exited 1,
 ```text
 checker-blind-input: NOT-PROVEN — executable blind cases exited 1
 ```
+
+## 2026-08-18 05:53:23 -0700 (PDT) — repair and authenticated rerun
+
+The only source repair is in the coverage harness: its P3 type-preserving-hollow fixture now recognizes both TAP (`# tests` / `# fail`) and Node spec-reporter (`ℹ tests` / `ℹ fail`) summary lines while still requiring the isolated guard-own process to exit nonzero and expose assertion failures. No checker behavior, declared blind case, authentication, instrument, enforcement-evidence logic, model registry, CI configuration, or approver key changed.
+
+Post-repair verification:
+
+- `tests/unit/checker-blind-input-ratchet.test.ts`: 18/18 passed, including all five declared executable blind cases and all four P3 guard sabotages.
+- Normal commit gate: passed, including TypeScript and the repository lint chain.
+- Original certified H1 instrument SHA-256: `584a0a0b7248c4bede3f99e58f369db2183ca298fc5c1209862a6e3dc41edd72`.
+- Target commit: `f7cd56fdf5abd1289022499a124421e7ca622ca0`.
+- Protected base resolved to `upstream/main` at `248ed7177f5bf416aa7bdad9763741478195e1fc`.
+- Evidence: `scratchpad/phaseB/evidence/F2-checker-blind-input-coverage.json` (SHA-256 `b7a9ab3c6a5e295a343a27bb20ab0559be389fe479bde7380a0ba0fa0cbdc749`).
+- Positive run authenticated exactly one post-child receipt; C3 authenticated its short-circuit and minted zero guard receipts; the target worktree remained unchanged by measurement.
+
+Before verdict:
+
+```text
+checker-blind-input: NOT-PROVEN — executable blind cases exited 1
+```
+
+After deciding verdict line, verbatim:
+
+```text
+[fix-verifier-wiring] authenticated guard=checker-blind-input-coverage entry=scripts/lint-checker-blind-input-coverage.mjs childPid=32717 childExit=0
+```
+
+After evidence verdict: `wiring.outcome=proven`, `rung=wired`.
+
+Final classification: **HARNESS BUG FIXED**. The blind-input property itself held before and after the repair; the earlier `NOT-PROVEN` was caused solely by reporter-specific interpretation in the coverage test harness.
