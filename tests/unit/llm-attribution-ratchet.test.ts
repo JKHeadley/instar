@@ -10,6 +10,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -98,13 +99,15 @@ describe('lint self-test — the lexical heuristic', () => {
   });
 
   it('returns NOT-PROVEN evidence for an unreadable file instead of a clean result', () => {
-    const dir = fs.mkdtempSync(path.join(ROOT, 'src', '.llm-attribution-blind-'));
+    const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-llm-attribution-blind-'));
+    const dir = path.join(fixtureRoot, 'src');
+    fs.mkdirSync(dir);
     const file = path.join(dir, 'fixture.ts');
     fs.writeFileSync(file, `await provider.evaluate('untagged');\n`);
     try {
-      expect(runLint([file]).real).toHaveLength(1); // readable control bites
+      expect(runLint([file], { sourceRoot: fixtureRoot }).real).toHaveLength(1); // readable control bites
       fs.chmodSync(file, 0o000);
-      const result = runLint([file]);
+      const result = runLint([file], { sourceRoot: fixtureRoot });
       expect(result.real).toEqual([]);
       expect(result.blind).toHaveLength(1);
       expect(result.blind[0]).toMatchObject({
@@ -113,7 +116,7 @@ describe('lint self-test — the lexical heuristic', () => {
       });
     } finally {
       try { fs.chmodSync(file, 0o600); } catch { /* cleanup below handles absence */ }
-      SafeFsExecutor.safeRmSync(dir, {
+      SafeFsExecutor.safeRmSync(fixtureRoot, {
         recursive: true,
         force: true,
         operation: 'llm-attribution-ratchet.test.ts:blind-fixture-cleanup',

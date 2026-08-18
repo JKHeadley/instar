@@ -375,11 +375,16 @@ function collectFiles(args) {
  * suite (tests/unit/llm-attribution-ratchet.test.ts). `checkStale` is true
  * for full-repo runs only — a partial run can't prove an allowlist entry dead.
  */
-export function runLint(files, { allowlist = VIOLATIONS_ALLOWLIST, funnelFiles = FUNNEL_FILES, checkStale = false } = {}) {
+export function runLint(files, {
+  allowlist = VIOLATIONS_ALLOWLIST,
+  funnelFiles = FUNNEL_FILES,
+  checkStale = false,
+  sourceRoot = ROOT,
+} = {}) {
   const violations = [];
   const blind = [];
   for (const f of files) {
-    const rel = path.relative(ROOT, f).split(path.sep).join('/');
+    const rel = path.relative(sourceRoot, f).split(path.sep).join('/');
     if (!rel.startsWith('src/')) continue;
     if (isOutOfScope(rel)) continue;
     if (funnelFiles.has(rel)) continue;

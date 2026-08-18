@@ -229,7 +229,7 @@ test('genuinely covered population passes', () => {
   assert.equal(evaluateBlindInputCoverage({population:['known'],coverageIds:['known'],maxUncovered:0}).passed, true);
 });
 `);
-    return spawnSync(process.execPath, ['--test', suite], { encoding: 'utf8' });
+    return spawnSync(process.execPath, ['--test', '--test-reporter=tap', suite], { encoding: 'utf8' });
   }
 
   function replaceGuardBody(body: string): string {
