@@ -147,3 +147,24 @@ Serialized Error: { code: 'INSTAR_TEST_CAPACITY_TIMEOUT', exitCode: 75 }
 The holder was a live Vitest process in another agent worktree. The limit was not raised, disabled, or reclaimed. Because the exact affected set had already passed as 38/38 plus 5/5 on the current source, the unchanged retry used the repository-documented `INSTAR_PRE_PUSH_SKIP=1` test-only opt-out. The pre-push release and fixture-pollution gates still ran and passed; CI remains authoritative.
 
 PR body states **BUILT WITH HAND EVIDENCE, NOT MACHINE-CERTIFIED**, records the unrelated model-registry staleness finding and capacity-only push result, and reserves FIXED/EFFECTIVE for the independent judge.
+
+## 2026-08-18 02:15:10 -0700 (PDT) — FINAL PR pointer (supersedes the preceding PR-state entry)
+
+The cross-repository PR above was closed by GitHub-side activity and could not be reopened even though its fork head still existed. Its only automation diagnostic was a Vercel comment saying the cross-repository branch/commit reference could not be resolved. No merge occurred. The identical commit was therefore published as a review branch in the upstream repository and a same-repository PR was opened.
+
+```text
+superseded-pull-request=https://github.com/JKHeadley/instar/pull/1925
+superseded-state=CLOSED
+superseded-merged=false
+
+current-pull-request=https://github.com/JKHeadley/instar/pull/1926
+current-pull-request-number=1926
+current-state=OPEN
+current-draft=false
+current-base=JKHeadley/instar:main
+current-head=JKHeadley/instar:phaseb/w34-enforcement-measurement
+current-head-sha=aefb9d2a5123738724a9d78ba14e942245e9055b
+current-merged=false
+```
+
+The current upstream PR was read twice after creation and returned `state=open`, `merged=false`, and the exact local head SHA both times. Nothing was merged.
