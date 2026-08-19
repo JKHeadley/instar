@@ -162,6 +162,12 @@ import { RoutingSpendCapsStore } from '../core/RoutingSpendCapsStore.js';
 import { MeteredSpendGate } from '../core/MeteredSpendGate.js';
 import { RenderedPlanStore } from '../core/RenderedPlanStore.js';
 import { MoneyLayerEnableStore } from '../core/MoneyLayerEnableStore.js';
+import {
+  readEffectiveProcessCeiling,
+  evaluateProcessCeiling,
+  processCeilingNotice,
+  readLaunchdPlistCeilingsForSelf,
+} from '../core/ProcessCeilingCheck.js';
 import { MoneyLayerAuditLog } from '../core/MoneyLayerAuditLog.js';
 import { MoneyLayerEnableSurface } from '../core/MoneyLayerEnableSurface.js';
 import { PROBE_DOOR, PROBE_KEY_REF } from '../core/moneyLayerProbe.js';
@@ -2524,6 +2530,71 @@ export class AgentServer {
           sourceContext: 'feedback-drain:integrity',
         });
       }
+    }
+
+    // Process-ceiling state check (docs/specs/launchd-process-ceiling-floor.md §3).
+    // "Verify the State, Not Its Symbol": migrateLaunchdProcessCeiling raises the value in
+    // the launchd plist, but launchd applies it only to what it starts NEXT — so a migrated
+    // machine keeps running the OLD ceiling until it restarts, and under that ceiling
+    // fork() is refused, commands come back empty, and this server can die outright
+    // (2026-08-19). Reading the plist would re-read the symbol; this reads the LIVE process.
+    //
+    // SIGNAL ONLY: it raises one deduped attention item and does nothing else — no restart,
+    // no launchctl, no gating. Silence is the conservative default on every uncertain branch.
+    try {
+      const ceilingVerdict = evaluateProcessCeiling({
+        platform: process.platform,
+        effective: readEffectiveProcessCeiling(),
+        plistCeilings: readLaunchdPlistCeilingsForSelf(options.config.projectName),
+        machineId: (options.config as { machineId?: string }).machineId ?? 'single-machine',
+        hostFingerprint: os.hostname(),
+      });
+      if (
+        ceilingVerdict.state === 'raise' ||
+        ceilingVerdict.state === 'repair' ||
+        ceilingVerdict.state === 'future-repair'
+      ) {
+        const machineName =
+          (options.config as { machineNickname?: string }).machineNickname ?? 'This machine';
+        const notice = processCeilingNotice(ceilingVerdict, machineName);
+        const why =
+          ceilingVerdict.state === 'raise'
+            ? 'restart required to apply'
+            : ceilingVerdict.state === 'repair'
+              ? 'plist NOT corrected; a restart would not help'
+              : 'running safely, but the plist would drop it back at the next restart';
+        console.warn(
+          `[process-ceiling] effective ${ceilingVerdict.effective} vs floor ${ceilingVerdict.floor} — ${why}`,
+        );
+        void this.telegramAdapter?.createAttentionItem?.({
+          id: ceilingVerdict.dedupeKey,
+          title: notice.title,
+          description: notice.body,
+          summary: notice.title,
+          // future-repair is not yet a live fault, so it must not carry the same urgency as
+          // a machine that is currently crashing on it.
+          priority: ceilingVerdict.state === 'future-repair' ? 'NORMAL' : 'HIGH',
+          category: 'monitoring',
+          sourceContext: `process-ceiling:${ceilingVerdict.state}`,
+        });
+      } else if (ceilingVerdict.state === 'unknown' && process.platform === 'darwin') {
+        // The Attention surface stays SILENT here on purpose (a guess in either direction is
+        // worse than none) — but silence with no trace would mean that if the reader ever
+        // broke on darwin, this whole check would disappear fleet-wide while still
+        // "satisfying" its no-item contract. So the unmeasurable branch is logged, always,
+        // on the platform where it is supposed to work.
+        console.warn(
+          `[process-ceiling] unmeasurable on darwin (${ceilingVerdict.reason}) — no claim made; ` +
+            'the ceiling check produced no verdict this boot',
+        );
+      }
+    } catch (err) {
+      // @silent-fallback-ok: this check exists to REPORT a limit, never to enforce one. A
+      // failure here must not take a boot path down — the worst outcome of staying quiet is
+      // the pre-change behaviour (the operator is not told), which is strictly better than
+      // a boot that fails because a notice could not be composed. It is LOGGED, so a broken
+      // check is visible rather than an invisible fleet-wide gap.
+      console.warn('[process-ceiling] check skipped (non-fatal):', err);
     }
 
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar

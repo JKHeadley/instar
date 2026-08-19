@@ -78,6 +78,52 @@ import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillCo
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
+ * Minimum acceptable launchd `NumberOfProcesses` ceiling for an instar agent.
+ *
+ * The value must clear the HOST's idle process floor, not instar's own subprocess
+ * count: NumberOfProcesses maps to RLIMIT_NPROC, which the kernel counts per real
+ * UID across every process the user owns. A logged-in macOS desktop idles around
+ * 500-550 of them. 2048 leaves roughly 1500 of headroom over that floor — far above
+ * anything the host spawn cap admits, and far below kern.maxprocperuid (10666 on
+ * macOS 15), so it still backstops a runaway that bypasses the funnel.
+ *
+ * Kept in lockstep with the ceiling written by `installAutoStart` in commands/setup.
+ */
+export const LAUNCHD_PROCESS_CEILING_FLOOR = 2048;
+
+/** `<key>NumberOfProcesses</key>` followed by its `<integer>` value, whitespace-tolerant. */
+const LAUNCHD_PROCESS_CEILING_RE =
+  /(<key>\s*NumberOfProcesses\s*<\/key>\s*<integer>\s*)(\d+)(\s*<\/integer>)/g;
+
+/**
+ * Every `NumberOfProcesses` value declared in a launchd plist (Soft and Hard limits
+ * are separate keys, so a plist normally declares two). Empty when the plist declares
+ * none — which is a real state (an older or hand-rolled plist), not an error.
+ */
+export function readLaunchdProcessCeilings(plistXml: string): number[] {
+  const out: number[] = [];
+  for (const m of plistXml.matchAll(LAUNCHD_PROCESS_CEILING_RE)) {
+    const v = Number.parseInt(m[2] ?? '', 10);
+    if (Number.isFinite(v)) out.push(v);
+  }
+  return out;
+}
+
+/**
+ * Raise every `NumberOfProcesses` value BELOW `floor` up to `floor`, leaving the rest
+ * of the plist byte-identical. RAISE-ONLY by construction: a value at or above the
+ * floor is returned untouched, so an operator who tuned theirs higher is never
+ * clobbered and a re-run is a no-op.
+ */
+export function raiseLaunchdProcessCeilings(plistXml: string, floor: number): string {
+  return plistXml.replace(LAUNCHD_PROCESS_CEILING_RE, (whole, lead: string, digits: string, tail: string) => {
+    const v = Number.parseInt(digits, 10);
+    if (!Number.isFinite(v) || v >= floor) return whole;
+    return `${lead}${floor}${tail}`;
+  });
+}
+
+/**
  * Agent-facing contract for `POST /intent/journal` confidence.
  *
  * Shared by `generateClaudeMd` (new agents) and `migrateClaudeMd` (existing
@@ -1437,6 +1483,7 @@ export class PostUpdateMigrator {
     this.migrateClaudeTranscriptSpotlightExclusion(result);
     this.migrateAgentDataSpotlightExclusion(result);
     this.migrateBootWrapperToCjs(result);
+    this.migrateLaunchdProcessCeiling(result);
     this.migrateBootWrapperAbiCheck(result);
     this.migrateStaleLifelineSignal(result);
     this.migrateThreadlineConversationStore(result);
@@ -3338,6 +3385,77 @@ export class PostUpdateMigrator {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       result.errors.push(`boot-wrapper .cjs: ${msg}`);
+    }
+  }
+
+  /**
+   * Raise a launchd NumberOfProcesses ceiling that sits below the machine's idle
+   * process floor (Migration Parity Standard — the shipped template fix reaches
+   * NEW agents via `setup`; only this reaches the deployed ones).
+   *
+   * The original belt shipped 512, reasoned against instar's OWN subprocess count.
+   * NumberOfProcesses maps to RLIMIT_NPROC, which the kernel counts per REAL UID —
+   * every process the logged-in user owns. A normal macOS desktop idles at ~500-550
+   * user processes, so the belt sat under the floor and every fork() from an
+   * instar-supervised shell returned EAGAIN on an idle machine. Observed live on a
+   * Mac Studio (2026-08-19): 531 uid processes against the 512 ceiling, agent shell
+   * commands failing intermittently for hours with no alarm attached.
+   *
+   * Deliberately RAISE-ONLY and floor-gated: it rewrites only a value strictly below
+   * LAUNCHD_PROCESS_CEILING_FLOOR, so an operator who deliberately tuned theirs
+   * HIGHER is never clobbered, and a re-run over an already-migrated plist is a
+   * no-op (idempotent). It performs surgical value replacement rather than
+   * regenerating the plist, so hand-added operator keys survive.
+   *
+   * launchd is NOT reloaded here — the raised ceiling applies to processes launchd
+   * starts AFTER the next load, and forcing a reload would restart the running agent
+   * mid-update. The value lands on disk now and takes effect at the next restart.
+   */
+  private migrateLaunchdProcessCeiling(result: MigrationResult): void {
+    if (process.platform !== 'darwin') {
+      result.skipped.push('launchd process ceiling: non-darwin, no plist');
+      return;
+    }
+    const plistPath = path.join(
+      process.env.HOME ?? '',
+      'Library',
+      'LaunchAgents',
+      `ai.instar.${this.config.projectName}.plist`,
+    );
+    let content: string;
+    try {
+      content = fs.readFileSync(plistPath, 'utf-8');
+    } catch {
+      result.skipped.push('launchd process ceiling: no launchd plist present');
+      return;
+    }
+
+    const found = readLaunchdProcessCeilings(content);
+    if (found.length === 0) {
+      result.skipped.push('launchd process ceiling: plist declares no NumberOfProcesses');
+      return;
+    }
+    if (found.every((v) => v >= LAUNCHD_PROCESS_CEILING_FLOOR)) {
+      result.skipped.push(`launchd process ceiling: already >= ${LAUNCHD_PROCESS_CEILING_FLOOR}`);
+      return;
+    }
+
+    const next = raiseLaunchdProcessCeilings(content, LAUNCHD_PROCESS_CEILING_FLOOR);
+    if (next === content) {
+      // The values parsed as low but nothing rewrote — refuse to claim a change.
+      result.errors.push('launchd process ceiling: value parsed below floor but rewrite was a no-op');
+      return;
+    }
+    try {
+      fs.writeFileSync(`${plistPath}.bak-${Date.now()}`, content, 'utf-8');
+      fs.writeFileSync(plistPath, next, 'utf-8');
+      const raised = found.filter((v) => v < LAUNCHD_PROCESS_CEILING_FLOOR).join('/');
+      result.upgraded.push(
+        `launchd process ceiling: raised ${raised} → ${LAUNCHD_PROCESS_CEILING_FLOOR} (applies at next restart)`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      result.errors.push(`launchd process ceiling: ${msg}`);
     }
   }
 
