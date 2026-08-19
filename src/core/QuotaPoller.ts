@@ -278,6 +278,69 @@ export function mapUsageResponse(
   return snap;
 }
 
+/**
+ * Boundary between codex's short (5-hour) and long (weekly) rate-limit windows,
+ * in minutes. Codex reports 300 and 10080; anything under a day is the short window.
+ */
+export const CODEX_LONG_WINDOW_MIN_MINUTES = 1440;
+
+/**
+ * Route codex's two rate-limit windows into the short (5h) and long (weekly) buckets
+ * by the `windowMinutes` each window REPORTS, rather than by whether it arrived under
+ * the `primary` or `secondary` key.
+ *
+ * WHY (found on real hardware, 2026-08-19): the mapping used to be positional —
+ * `primary → fiveHour`, `secondary → sevenDay` — because codex conventionally puts the
+ * 5-hour window first. A live account on the pro plan reported `primary` with
+ * `window_minutes: 10080` (the WEEKLY window) and `secondary: null`. The pool duly
+ * recorded 20% of a seven-day allowance as a five-hour figure, and the account page
+ * showed a weekly wall resetting "in hours". Every consumer of fiveHour/sevenDay —
+ * proactive swap, placement, the load-shed brake — reads those two fields as window
+ * LENGTHS, so a mislabel there is a wrong decision, not a cosmetic one.
+ *
+ * Positional order is a convention of the producer; `windowMinutes` is the producer
+ * stating what the window actually is. Prefer the statement over the convention.
+ *
+ * Ties are resolved deterministically: when both windows fall in the same class the
+ * more extreme one represents it (shortest for the short bucket, longest for the long),
+ * so a bucket is never filled by an arbitrary pick. A window carrying no usable
+ * `windowMinutes` falls back to its positional meaning, so this can only correct a
+ * mislabel, never introduce one.
+ */
+export function classifyCodexWindows(
+  primary: CodexUsageSnapshot['primary'],
+  secondary: CodexUsageSnapshot['secondary'],
+): { short: CodexUsageSnapshot['primary']; long: CodexUsageSnapshot['secondary'] } {
+  const candidates: Array<{ w: NonNullable<CodexUsageSnapshot['primary']>; positional: 'short' | 'long' }> = [];
+  if (primary) candidates.push({ w: primary, positional: 'short' });
+  if (secondary) candidates.push({ w: secondary, positional: 'long' });
+
+  const classOf = (c: (typeof candidates)[number]): 'short' | 'long' => {
+    const m = c.w.windowMinutes;
+    if (typeof m !== 'number' || !Number.isFinite(m) || m <= 0) return c.positional;
+    return m >= CODEX_LONG_WINDOW_MIN_MINUTES ? 'long' : 'short';
+  };
+  // A window with no usable length keeps its positional meaning; ranking it by a
+  // sentinel would let it beat a window that genuinely stated its length.
+  const lengthOf = (c: (typeof candidates)[number]): number =>
+    typeof c.w.windowMinutes === 'number' && Number.isFinite(c.w.windowMinutes) && c.w.windowMinutes > 0
+      ? c.w.windowMinutes
+      : c.positional === 'short'
+        ? 0
+        : Number.MAX_SAFE_INTEGER;
+
+  let short: CodexUsageSnapshot['primary'] = null;
+  let long: CodexUsageSnapshot['secondary'] = null;
+  for (const c of candidates) {
+    if (classOf(c) === 'short') {
+      if (!short || lengthOf(c) < (short.windowMinutes ?? Number.MAX_SAFE_INTEGER)) short = c.w;
+    } else {
+      if (!long || lengthOf(c) > (long.windowMinutes ?? 0)) long = c.w;
+    }
+  }
+  return { short, long };
+}
+
 export class QuotaPoller {
   private readonly pool: SubscriptionPool;
   private readonly pollIntervalMs: number;
@@ -493,8 +556,12 @@ export class QuotaPoller {
         }
         return { utilizationPct: value.usedPercent, resetsAt: value.resetsAtIso ?? '' };
       };
-      const fiveHour = window(usage.primary);
-      const sevenDay = window(usage.secondary);
+      // Route each window by the length IT reports, not by which key it arrived under
+      // (see classifyCodexWindows) — a weekly window filed as `fiveHour` tells every
+      // downstream swap/placement decision that a multi-day wall clears in hours.
+      const { short: shortWindow, long: longWindow } = classifyCodexWindows(usage.primary, usage.secondary);
+      const fiveHour = window(shortWindow);
+      const sevenDay = window(longWindow);
       const snap: AccountQuotaSnapshot = {
         source: 'codex-rollout',
         measuredAt: usage.capturedAt ?? nowIso,

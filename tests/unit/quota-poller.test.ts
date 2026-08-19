@@ -327,6 +327,28 @@ describe('QuotaPoller', () => {
     expect(pool.get('claude-off')!.lastQuota ?? null).toBeNull();
   });
 
+  // REGRESSION (live capture from a pro account, 2026-08-19): codex reported the
+  // WEEKLY window under `primary` with `secondary: null`. The positional mapping filed
+  // 20% of a seven-day allowance as `fiveHour`, so every swap/placement consumer read a
+  // multi-day wall as one that clears in hours.
+  it('files a WEEKLY window arriving under `primary` as sevenDay, not fiveHour', async () => {
+    const p = new QuotaPoller({
+      pool,
+      now: () => Date.parse('2026-08-19T17:17:00Z'),
+      codexUsageReader: async () => ({
+        source: 'codex-rollout', rolloutPath: '/rollout.jsonl', threadId: 't',
+        capturedAt: '2026-08-19T17:17:35.377Z', model: 'gpt-5.4-mini', planType: 'pro', rateLimitReachedType: null,
+        primary: { usedPercent: 20, remainingPercent: 80, windowMinutes: 10080, resetsAt: 1787196626, resetsAtIso: '2026-08-20T03:30:26.000Z', resetsInSeconds: 36596 },
+        secondary: null,
+      }),
+    });
+    pool.addFixture({ ...ACCT, id: 'codex-weekly-first', provider: 'openai', framework: 'codex-cli' });
+    await p.pollAll();
+    const q = pool.get('codex-weekly-first')!.lastQuota!;
+    expect(q.sevenDay?.utilizationPct).toBe(20);
+    expect(q.fiveHour).toBeUndefined();
+  });
+
   it('normalizes a Codex window to fresh 0% after its known reset passes', async () => {
     const now = Date.parse('2026-06-08T00:00:00Z');
     const p = new QuotaPoller({
