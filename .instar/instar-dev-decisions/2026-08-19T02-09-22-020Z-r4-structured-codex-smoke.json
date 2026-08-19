@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-19T02:09:22.020Z",
+  "slug": "r4-structured-codex-smoke",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 99,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/providers/adapters/openai-codex/_smoketest.ts",
+      "src/providers/adapters/openai-codex/smoketest-result.ts"
+    ],
+    "addedLines": 73,
+    "deletedLines": 26
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

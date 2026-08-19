@@ -2,13 +2,14 @@
  * Smoke test for the openai-codex adapter — real-API path.
  *
  * Gated on Codex credential availability. If `OPENAI_API_KEY` is set OR
- * `~/.codex/auth.json` shows valid OAuth tokens, runs three real prompts
- * through the adapter and verifies the result shape. Without creds, the
- * smoke test prints "skipped" and exits 0 (matching the Anthropic smoke
- * gating semantics).
+ * `~/.codex/auth.json` shows valid OAuth tokens, runs a real prompt through
+ * the adapter and verifies that it returned non-empty text. Without creds,
+ * the smoke test reports BLOCKED and exits 2, which cannot satisfy the
+ * acceptance gate.
  *
  * Run with:
  *   npx tsx src/providers/adapters/openai-codex/_smoketest.ts
+ *   node node_modules/vite-node/vite-node.mjs src/providers/adapters/openai-codex/_smoketest.ts --json
  *   OPENAI_API_KEY=sk-... npx tsx src/providers/adapters/openai-codex/_smoketest.ts
  */
 
@@ -18,6 +19,10 @@ import type { OneShotCompletion } from '../../primitives/transport/oneShotComple
 import { promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { createCodexSmoketestReporter } from './smoketest-result.js';
+
+const jsonOutput = process.argv.includes('--json');
+const reporter = createCodexSmoketestReporter(jsonOutput);
 
 async function hasCredentials(): Promise<{ has: boolean; source: string }> {
   if (process.env['OPENAI_API_KEY']?.startsWith('sk-')) {
@@ -38,18 +43,16 @@ async function hasCredentials(): Promise<{ has: boolean; source: string }> {
 async function main(): Promise<void> {
   const creds = await hasCredentials();
   if (!creds.has) {
-    // eslint-disable-next-line no-console
-    console.log('[openai-codex smoketest] BLOCKED — no Codex credentials available');
-    // eslint-disable-next-line no-console
-    console.log('  Set OPENAI_API_KEY=sk-... or run `codex login` to enable real-API testing.');
+    reporter.info('[openai-codex smoketest] BLOCKED — no Codex credentials available');
+    reporter.info('  Set OPENAI_API_KEY=sk-... or run `codex login` to enable real-API testing.');
     // Exit non-zero: acceptance gates treat missing-creds as BLOCKED, not PASS.
     // The old "exit 0 to keep the autonomous loop moving" was the soft-failure
     // escape hatch that let me claim Phase 4 complete with zero real calls.
     // See memory/feedback_phase_completion_real_api_verified.md.
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
-  // eslint-disable-next-line no-console
-  console.log(`[openai-codex smoketest] running with creds from: ${creds.source}`);
+  reporter.info(`[openai-codex smoketest] running with creds from: ${creds.source}`);
 
   const adapter = createOpenAiCodexAdapter();
   const oneShot = adapter.primitive(CapabilityFlag.OneShotCompletion) as OneShotCompletion;
@@ -69,37 +72,35 @@ async function main(): Promise<void> {
       // eslint-disable-next-line no-console
       console.error('  Likely cause: ChatGPT subscription lapsed or OAuth token expired. Run `codex login` to refresh.');
       // Exit non-zero: acceptance gates treat auth-blocked as BLOCKED, not PASS.
-      process.exit(3);
+      process.exitCode = 3;
+      return;
     }
     // eslint-disable-next-line no-console
     console.error('[openai-codex smoketest] FAILED:', msg);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   const elapsed = Date.now() - start;
 
-  // eslint-disable-next-line no-console
-  console.log(`[openai-codex smoketest] OneShotCompletion responded in ${elapsed}ms`);
-  // eslint-disable-next-line no-console
-  console.log(`  text: ${JSON.stringify(result.text.slice(0, 120))}`);
-  // eslint-disable-next-line no-console
-  console.log(`  usage: ${JSON.stringify(result.usage)}`);
+  reporter.info(`[openai-codex smoketest] OneShotCompletion responded in ${elapsed}ms`);
+  reporter.info(`  text: ${JSON.stringify(result.text.slice(0, 120))}`);
+  reporter.info(`  usage: ${JSON.stringify(result.usage)}`);
 
-  const ok = result.text.length > 0;
-  if (!ok) {
+  const success = reporter.success(result.text);
+  if (!success) {
     // eslint-disable-next-line no-console
     console.error('[openai-codex smoketest] AUTH-BLOCKED — empty response (Codex CLI rejected creds silently, hit timeout)');
     // eslint-disable-next-line no-console
     console.error('  Likely cause: subscription lapsed. Re-run `codex login` to refresh OAuth.');
     // Exit non-zero: empty response is failure, not a pass.
-    process.exit(3);
+    process.exitCode = 3;
+    return;
   }
-  // eslint-disable-next-line no-console
-  console.log('[openai-codex smoketest] PASSED');
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 void main().catch((err) => {
   // eslint-disable-next-line no-console
   console.error('[openai-codex smoketest] crashed:', err);
-  process.exit(2);
+  process.exitCode = 2;
 });
