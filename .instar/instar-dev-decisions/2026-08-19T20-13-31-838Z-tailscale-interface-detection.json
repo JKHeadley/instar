@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-19T20:13:31.838Z",
+  "slug": "tailscale-interface-detection",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 71,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/MeshUrlAdvertiser.ts"
+    ],
+    "addedLines": 68,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

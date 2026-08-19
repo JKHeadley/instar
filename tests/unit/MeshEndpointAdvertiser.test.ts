@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   detectTailscaleIp,
+  pickTailscaleIpFromInterfaces,
   pickPrimaryLanIp,
   computeSelfMeshEndpoints,
   endpointsEqual,
@@ -15,23 +16,71 @@ import type { MeshEndpoint } from '../../src/core/types.js';
 describe('detectTailscaleIp', () => {
   it('returns the 100.64/10 address from `tailscale ip -4`', async () => {
     const exec = (_f: string, _a: string[], cb: (e: Error | null, s: string) => void) => cb(null, '100.64.165.27\n');
-    const ip = await detectTailscaleIp({ execFileFn: exec, bin: '/Applications/Tailscale.app/Contents/MacOS/Tailscale' });
+    const ip = await detectTailscaleIp({ execFileFn: exec, bin: '/Applications/Tailscale.app/Contents/MacOS/Tailscale', ifaces: null });
     expect(ip).toBe('100.64.165.27');
   });
   it('rejects a non-CGNAT address (spoofed/unexpected)', async () => {
     const exec = (_f: string, _a: string[], cb: (e: Error | null, s: string) => void) => cb(null, '192.168.1.5\n');
-    expect(await detectTailscaleIp({ execFileFn: exec, bin: 'tailscale' })).toBeNull();
+    expect(await detectTailscaleIp({ execFileFn: exec, bin: 'tailscale', ifaces: null })).toBeNull();
   });
   it('takes only the FIRST line (multi-address output)', async () => {
     const exec = (_f: string, _a: string[], cb: (e: Error | null, s: string) => void) => cb(null, '100.64.165.27\nfd7a::1\n');
-    expect(await detectTailscaleIp({ execFileFn: exec, bin: 'tailscale' })).toBe('100.64.165.27');
+    expect(await detectTailscaleIp({ execFileFn: exec, bin: 'tailscale', ifaces: null })).toBe('100.64.165.27');
   });
   it('fails silent (null) on exec error', async () => {
     const exec = (_f: string, _a: string[], cb: (e: Error | null, s: string) => void) => cb(new Error('ENOENT'), '');
-    expect(await detectTailscaleIp({ execFileFn: exec, bin: 'tailscale' })).toBeNull();
+    expect(await detectTailscaleIp({ execFileFn: exec, bin: 'tailscale', ifaces: null })).toBeNull();
   });
   it('null bin ⇒ null (tailscale not present)', async () => {
-    expect(await detectTailscaleIp({ bin: null })).toBeNull();
+    expect(await detectTailscaleIp({ bin: null, ifaces: null })).toBeNull();
+  });
+});
+
+describe('pickTailscaleIpFromInterfaces', () => {
+  it('picks the 100.64/10 IPv4 bound to a macOS utun tunnel device', () => {
+    const ifaces: NetIfaces = {
+      lo0: [{ address: '127.0.0.1', family: 'IPv4', internal: true }],
+      en1: [{ address: '192.168.87.47', family: 'IPv4', internal: false }],
+      utun11: [{ address: '100.124.55.70', family: 'IPv4', internal: false }],
+    };
+    expect(pickTailscaleIpFromInterfaces(ifaces)).toBe('100.124.55.70');
+  });
+  it('picks the Linux tailscale0 device', () => {
+    const ifaces: NetIfaces = { tailscale0: [{ address: '100.64.165.27', family: 4, internal: false }] };
+    expect(pickTailscaleIpFromInterfaces(ifaces)).toBe('100.64.165.27');
+  });
+  it('IGNORES a CGNAT address on a real NIC (ISP carrier-grade NAT is not a tailnet rope)', () => {
+    const ifaces: NetIfaces = { en0: [{ address: '100.100.1.5', family: 'IPv4', internal: false }] };
+    expect(pickTailscaleIpFromInterfaces(ifaces)).toBeNull();
+  });
+  it('IGNORES a non-CGNAT address on a utun device (a non-tailscale VPN tunnel)', () => {
+    const ifaces: NetIfaces = { utun4: [{ address: '10.8.0.2', family: 'IPv4', internal: false }] };
+    expect(pickTailscaleIpFromInterfaces(ifaces)).toBeNull();
+  });
+  it('returns null when the machine holds no tailnet address', () => {
+    const ifaces: NetIfaces = { en0: [{ address: '192.168.1.10', family: 'IPv4', internal: false }] };
+    expect(pickTailscaleIpFromInterfaces(ifaces)).toBeNull();
+  });
+});
+
+describe('detectTailscaleIp — interface tier beats a wrong-copy CLI', () => {
+  // THE REGRESSION (2026-08-19): two Tailscale installs, the app-bundle copy signed
+  // out while the standalone daemon holds the tailnet address. The CLI tier answers
+  // "logged out"; the machine must STILL advertise its working tailscale rope.
+  it('returns the interface address even when the CLI reports logged out', async () => {
+    const exec = (_f: string, _a: string[], cb: (e: Error | null, s: string) => void) =>
+      cb(null, ''); // `tailscale ip -4` on a signed-out daemon: empty stdout
+    const ifaces: NetIfaces = { utun11: [{ address: '100.124.55.70', family: 'IPv4', internal: false }] };
+    expect(await detectTailscaleIp({ execFileFn: exec, bin: 'tailscale', ifaces })).toBe('100.124.55.70');
+  });
+  it('needs no tailscale binary at all when the interface carries the address', async () => {
+    const ifaces: NetIfaces = { utun3: [{ address: '100.64.165.27', family: 'IPv4', internal: false }] };
+    expect(await detectTailscaleIp({ bin: null, ifaces })).toBe('100.64.165.27');
+  });
+  it('falls back to the CLI when no interface carries a tailnet address', async () => {
+    const exec = (_f: string, _a: string[], cb: (e: Error | null, s: string) => void) => cb(null, '100.64.165.27\n');
+    const ifaces: NetIfaces = { en0: [{ address: '192.168.1.10', family: 'IPv4', internal: false }] };
+    expect(await detectTailscaleIp({ execFileFn: exec, bin: 'tailscale', ifaces })).toBe('100.64.165.27');
   });
 });
 
