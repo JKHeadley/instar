@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-08-18T03:48:34-07:00",
+  "status": "built-with-hand-evidence-pending-independent-recertification",
+  "protectedBase": {
+    "remote": "https://github.com/JKHeadley/instar.git",
+    "ref": "refs/heads/main",
+    "mergeBase": "4318a1e150e9a8304e6c2e7ad381bf66d03998e5",
+    "source": "canonical-server-content-addressed-merge-base",
+    "candidateMayRaiseStrength": false
+  },
+  "requiredProof": {
+    "articleBinding": "articleId + articleSha256 + ruleSha256",
+    "observerBinding": "observerRef + observerSha256",
+    "subjectBoundary": "subjectRef differs from observerRef and the verdict ledger",
+    "cleanControl": "exitCode=0 and testsRun>=1",
+    "failDirection": "landed independent-subject mutation, same testsRun, nonzero exit, assertion failure, distinct output digest"
+  },
+  "c3dRedBeforeRepair": {
+    "command": "npx vitest run tests/unit/standards-enforcement-measurement.test.ts --reporter=verbose",
+    "exitCode": 1,
+    "tests": "1 failed | 5 passed (6)",
+    "mutationLanded": "protected and candidate snapshots contained an already-censused executable expect(true).toBe(true) assertion",
+    "decidingOutput": "AssertionError: expected 'ratchet' to be 'documented-only'"
+  },
+  "c3dGreenAfterRepair": {
+    "command": "npx vitest run tests/unit/standards-enforcement-measurement.test.ts --reporter=verbose",
+    "exitCode": 0,
+    "tests": "9 passed (9)",
+    "decidingOutput": "W34_C3D landed=already-censused-expect-true strength=documented-only deciding=\"protected-relevance-proof-missing\""
+  },
+  "negativeProofControls": {
+    "subjectOracleBoundary": "proof mutating its observer is rejected and measurement is not-proven",
+    "compileOnlyRed": "testsRun=0/failureKind=compile is rejected; only same-test assertion failure qualifies",
+    "candidateRuleContinuity": "changing the candidate rule digest while retaining identity and observer loses proven strength"
+  },
+  "liveMeasurement": {
+    "command": "node scripts/standards-coverage.mjs --check",
+    "exitCode": 0,
+    "population": {
+      "protected": 88,
+      "candidate": 88,
+      "continuity": 88
+    },
+    "provenStrength": {
+      "enforced": 0,
+      "total": 88,
+      "ratio": 0,
+      "byKind": {
+        "ratchet": 0,
+        "gate": 0,
+        "lint": 0,
+        "spec-only": 0,
+        "documented-only": 88
+      }
+    },
+    "unverifiedReferenceCount": 254,
+    "decidingOutput": "measurement=proven base=4318a1e150e9a8304e6c2e7ad381bf66d03998e5 source=canonical-server-content-addressed-merge-base protected-population=88 candidate-population=88 unverified-references=254"
+  },
+  "verification": {
+    "affectedSuites": "47/47 passed across 2 files",
+    "typeCheck": "passed",
+    "diffCheck": "passed",
+    "repositoryLint": {
+      "outcome": "blocked-by-unchanged-upstream-state",
+      "decidingOutput": "STALENESS: model registry last reviewed 2026-07-03 (46d ago) exceeds the 45d window"
+    }
+  },
+  "certification": "pending-independent-judge-recertification"
+}

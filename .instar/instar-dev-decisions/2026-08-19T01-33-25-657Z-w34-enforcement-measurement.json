@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-19T01:33:25.657Z",
+  "slug": "w34-enforcement-measurement",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 744,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lib/standards-enforcement-measurement.mjs",
+      "scripts/standards-coverage.mjs"
+    ],
+    "addedLines": 696,
+    "deletedLines": 48
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
