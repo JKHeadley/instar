@@ -51,10 +51,17 @@
     {
       "id": "codex-smoketest",
       "description": "Real OneShotCompletion returns non-empty text against live Codex API",
-      "command": "npx tsx src/providers/adapters/openai-codex/_smoketest.ts",
+      "command": "node node_modules/vite-node/vite-node.mjs src/providers/adapters/openai-codex/_smoketest.ts --json",
       "envRequired": ["OPENAI_API_KEY|CODEX_AUTH_VALID"],
       "expectExitCode": 0,
-      "expectStdoutContains": "PASSED",
+      "expectJson": {
+        "source": "stdout",
+        "schema": "instar-codex-smoketest/v1",
+        "equals": {
+          "status": "passed",
+          "responseNonEmpty": true
+        }
+      },
       "timeoutMs": 120000,
       "lastResult": {
         "runAt": "2026-05-15T14:35:00Z",
