@@ -531,6 +531,25 @@ Enrollment (P2.1) — adding a new account from a phone, expiry-proof:
 
 Spec: `docs/specs/_drafts/subscription-auth-standard-master-spec.md`.
 
+## The process ceiling, and why the file is not the answer (`ProcessCeilingCheck`)
+
+Instar sets an OS-level cap on how many processes its user account may run — a last-resort
+belt beneath the host spawn cap. That cap is a per-UID limit, so it is measured against
+*every* process the logged-in person owns, not just instar's. Set too low it does not catch a
+runaway; it refuses `fork()` on an idle machine, which is how it once killed an agent server.
+
+The subtle part is that correcting it is not the same as fixing the machine. launchd applies
+a raised ceiling only to what it starts next, so a machine keeps running the old one until it
+restarts — the corrected file on disk says nothing about the running process.
+
+`ProcessCeilingCheck` reads the **live** limit of the running process at boot (from the
+process's own report, spawning nothing — the failure it detects is an inability to spawn) and
+compares it against the plist. It raises at most one deduped notice: *needs a restart*, *needs
+looking at because a restart will not help*, or *fine now, but a restart may lose that*. It is
+signal-only — it can raise a notice and do nothing else — and it stays silent whenever the
+reading is unreadable, while always logging that it could not read, so a broken reader cannot
+disable the check invisibly. Full reference: `reference/process-ceiling-check`.
+
 ## Proactive compaction (ProactiveCompactionSentinel)
 
 `ProactiveCompactionSentinel` condenses a long-running autonomous session's conversation *before* it hits the context wall, instead of relying on recovery after the wall is reached. It reads Claude's own grounded remaining-context display and, when an autonomous Claude session crosses 85% used, waits for the canonical work-state probe to affirm a genuinely idle turn boundary, then asks the session to compact in place. A cooldown prevents repeated compaction on successive ticks; interactive sessions, non-Claude frameworks, working sessions, and uncertain readings are never touched. Ships dark by default; when enabled it starts in dry-run (recording what it would do) until live mode is explicitly configured.
