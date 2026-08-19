@@ -21,6 +21,7 @@
 
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { networkInterfaces } from 'node:os';
 import type { MeshEndpoint } from './types.js';
 import { isRfc1918, isTailscaleCgnat } from './PeerEndpointResolver.js';
 
@@ -125,14 +126,78 @@ const defaultExecFile: ExecFileFn = (file, args, cb) => {
 };
 
 /**
- * Detect this machine's Tailscale IPv4 (Decision 16): `tailscale ip -4` via the
- * resolved bin, accept ONLY a single well-formed 100.64/10 CGNAT address. Bounded
- * 3s, fail-silent → null. Injectable exec + bin-exists for unit tests.
+ * Tunnel-device interface names that carry a Tailscale address: macOS assigns the
+ * tailnet IP to a `utun<N>` device; Linux/BSD to `tailscale0` (or `ts<N>`). Deliberately
+ * NARROW: a carrier-grade-NAT ISP can hand a 100.64/10 address to a real `en0`, and
+ * advertising THAT as a tailscale rope would be a false positive.
+ */
+const TAILSCALE_IFACE_RE = /^(utun\d*|tailscale\d*|ts\d+)$/i;
+
+/**
+ * Pick this machine's Tailscale IPv4 from its OWN network interfaces — a non-internal
+ * 100.64/10 IPv4 bound to a tunnel device (see TAILSCALE_IFACE_RE). Pure over the
+ * supplied interfaces map; null when the machine holds no tailnet address.
+ *
+ * WHY THIS IS THE PRIMARY SOURCE (found via real-hardware dogfooding, 2026-08-19):
+ * `detectTailscaleIp` previously asked a tailscale CLI *binary* whether the machine
+ * had an address. On a machine with TWO Tailscale installs (the macOS app bundle AND
+ * a standalone/brew copy) the two CLIs talk to DIFFERENT daemons over different
+ * sockets. `resolveTailscaleBin` prefers the app bundle; if THAT copy is signed out
+ * while the standalone daemon is the one actually up and holding the tailnet address,
+ * the CLI answers "logged out" and the machine advertises NO tailscale rope — while
+ * the rope is demonstrably working (the operator's laptop, reachable over tailscale
+ * from another machine at the very moment its own agent reported the rope absent).
+ *
+ * The interface table is the machine's own network state rather than one app's opinion
+ * of it: if a tailnet address is bound to a tunnel device, the route exists, whichever
+ * daemon put it there and whichever CLI copies are installed. It also needs no exec,
+ * no binary on disk, and no PATH.
+ */
+export function pickTailscaleIpFromInterfaces(ifaces: NetIfaces): string | null {
+  for (const [name, addrs] of Object.entries(ifaces)) {
+    if (!TAILSCALE_IFACE_RE.test(name)) continue;
+    for (const a of addrs ?? []) {
+      const isV4 = a.family === 'IPv4' || a.family === 4;
+      if (isV4 && !a.internal && isTailscaleCgnat(a.address)) return a.address;
+    }
+  }
+  return null;
+}
+
+/** Read the live interface table, fail-silent to null (never throws into detection). */
+function readSelfInterfaces(): NetIfaces | null {
+  try {
+    return networkInterfaces() as unknown as NetIfaces;
+  } catch {
+    // @silent-fallback-ok: an unreadable interface table just drops us to the CLI
+    // tier below — the SAME behaviour as before this function existed. Nothing hidden.
+    return null;
+  }
+}
+
+/**
+ * Detect this machine's Tailscale IPv4, accepting ONLY a well-formed 100.64/10 CGNAT
+ * address. Two tiers, in order:
+ *
+ *  1. The machine's own network interfaces (authoritative — see
+ *     `pickTailscaleIpFromInterfaces`). No exec, no binary, no app.
+ *  2. `tailscale ip -4` via the resolved bin (Decision 16). Retained as a fallback for
+ *     platforms/configurations where the tunnel device is named unconventionally, so
+ *     this change can only ADD detections, never remove one that worked before.
+ *
+ * Bounded 3s on the exec tier, fail-silent → null. Injectable exec + bin + ifaces so
+ * unit tests exercise each tier hermetically (pass `ifaces: null` to test tier 2 alone).
  */
 export async function detectTailscaleIp(opts?: {
   execFileFn?: ExecFileFn;
   bin?: string | null;
+  ifaces?: NetIfaces | null;
 }): Promise<string | null> {
+  const ifaces = opts?.ifaces === undefined ? readSelfInterfaces() : opts.ifaces;
+  if (ifaces) {
+    const fromIface = pickTailscaleIpFromInterfaces(ifaces);
+    if (fromIface) return fromIface;
+  }
   const bin = opts?.bin === undefined ? resolveTailscaleBin() : opts.bin;
   if (!bin) return null;
   const exec = opts?.execFileFn ?? defaultExecFile;
