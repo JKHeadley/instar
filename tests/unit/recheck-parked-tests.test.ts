@@ -22,6 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { stripVTControlCharacters } from 'node:util';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -35,7 +36,7 @@ function runAgainstRealRepo(): { parkedTotal: number; missingFiles: string[]; gl
   return JSON.parse(res.stdout);
 }
 
-type SyntheticMode = 'real' | 'corrupt-report' | 'missing-runner';
+type SyntheticMode = 'real' | 'ansi-rendered' | 'wrong-wording' | 'corrupt-report' | 'missing-runner';
 type SyntheticRun = {
   runs: Array<'pass' | 'fail' | 'errored'>;
   runDetails: Array<{
@@ -85,15 +86,27 @@ function writeSyntheticRepo(mode: SyntheticMode, testBody: string): string {
       `const realVitest = ${JSON.stringify(realVitest)};`,
       "const args = [...process.argv.slice(2), '--cache=false'];",
       "const result = spawnSync(process.execPath, [realVitest, ...args], { cwd: process.cwd(), encoding: 'utf8', env: process.env });",
-      "const stdout = (result.stdout || '').replaceAll('Tests', 'Checks');",
-      "const stderr = (result.stderr || '').replaceAll('Tests', 'Checks');",
-      "if (process.env.R3_RENDER_CAPTURE) fs.writeFileSync(process.env.R3_RENDER_CAPTURE, stdout + stderr);",
+      ...(mode === 'wrong-wording' ? [
+        "const stdout = result.stdout || '';",
+        "const stderr = result.stderr || '';",
+      ] : [
+        "const stdout = (result.stdout || '').replaceAll('Tests', 'Checks');",
+        "const stderr = (result.stderr || '').replaceAll('Tests', 'Checks');",
+      ]),
+      ...(mode === 'ansi-rendered' ? [
+        "const renderedStdout = stdout.replace(/(Checks)(\\s+)(1)(\\s+failed)/, '$1$2\\u001b[31m$3$4\\u001b[39m');",
+        "const renderedStderr = stderr.replace(/(Checks)(\\s+)(1)(\\s+failed)/, '$1$2\\u001b[31m$3$4\\u001b[39m');",
+      ] : [
+        'const renderedStdout = stdout;',
+        'const renderedStderr = stderr;',
+      ]),
+      "if (process.env.R3_RENDER_CAPTURE) fs.writeFileSync(process.env.R3_RENDER_CAPTURE, renderedStdout + renderedStderr);",
       ...(mode === 'corrupt-report' ? [
         "const outputArg = args.find((arg) => arg.startsWith('--outputFile.json='));",
         "if (outputArg) fs.writeFileSync(outputArg.slice('--outputFile.json='.length), '{not-json');",
       ] : []),
-      'process.stdout.write(stdout);',
-      'process.stderr.write(stderr);',
+      'process.stdout.write(renderedStdout);',
+      'process.stderr.write(renderedStderr);',
       'process.exit(result.status ?? 1);',
       '',
     ].join('\n');
@@ -127,6 +140,12 @@ function removeSyntheticRepo(dir: string): void {
     force: true,
     operation: 'tests/unit/recheck-parked-tests.test.ts:outcome-cleanup',
   });
+}
+
+function expectRenderedWrapperSummary(rendered: string): void {
+  const text = stripVTControlCharacters(rendered);
+  expect(text).toMatch(/Checks\s+1\s+failed/);
+  expect(text).not.toMatch(/Tests\s+1\s+failed/);
 }
 
 describe('parked-test re-check', () => {
@@ -206,15 +225,14 @@ describe('parked-test re-check', () => {
   });
 
   it('MUST-FIRE: a genuine failure comes from JSON even when rendered wording changes', () => {
-    const dir = writeSyntheticRepo('real', [
+    const dir = writeSyntheticRepo('ansi-rendered', [
       "it('genuinely fails', () => {",
       '  expect(1).toBe(2);',
       '});',
     ].join('\n'));
     try {
       const { result, rendered } = runSyntheticRepo(dir);
-      expect(rendered).toMatch(/Checks\s+1\s+failed/);
-      expect(rendered).not.toMatch(/Tests\s+1\s+failed/);
+      expectRenderedWrapperSummary(rendered);
       expect(result.runs).toEqual(['fail']);
       expect(result.verdict).toBe('deterministic-fail');
       expect(result.runDetails[0]).toMatchObject({
@@ -223,6 +241,21 @@ describe('parked-test re-check', () => {
         exitCode: 1,
         structured: { total: 1, passed: 0, failed: 1 },
       });
+    } finally {
+      removeSyntheticRepo(dir);
+    }
+  });
+
+  it('MUST-FIRE CONTROL: the rendered-summary contract rejects wrong Tests wording', () => {
+    const dir = writeSyntheticRepo('wrong-wording', [
+      "it('genuinely fails', () => {",
+      '  expect(1).toBe(2);',
+      '});',
+    ].join('\n'));
+    try {
+      const { rendered } = runSyntheticRepo(dir);
+      expect(stripVTControlCharacters(rendered)).toMatch(/Tests\s+1\s+failed/);
+      expect(() => expectRenderedWrapperSummary(rendered)).toThrowError(/Checks/);
     } finally {
       removeSyntheticRepo(dir);
     }

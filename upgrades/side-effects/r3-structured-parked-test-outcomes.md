@@ -153,3 +153,25 @@ modifies only a manually invoked, signal-only test observation.
 
 No agent-authored-artifact defect and no self-triggered controller — not applicable. This is an
 ordinary result-parser defect in a manually invoked contributor script.
+
+## CI5 addendum — rendered-summary assertion hardening
+
+PR #1938's Node 20 and Node 22 shard-4 jobs exposed a defect in the test's secondary, rendered-output
+assertion. The production classifier remained structured and the wrapper's combined capture already
+contained both stdout and stderr. The captured value also contained the required `Checks` wording.
+The assertion failed because Vitest's ANSI style bytes occurred between `Checks`, `1`, and `failed`,
+so the raw `/Checks\s+1\s+failed/` expression could not span the presentation markup.
+
+The focused test now removes only VT control characters from that same combined rendered capture
+before applying the original two wording requirements. It still requires `Checks 1 failed` and still
+forbids `Tests 1 failed`; neither requirement is deleted or weakened. The synthetic wrapper also has
+an explicit wrong-wording mode, and a must-fire control proves the assertion rejects that mode. A
+separate ANSI-decorated mode makes the CI failure deterministic even on a non-colour local terminal.
+
+This addendum changes test robustness only. `scripts/recheck-parked-tests.mjs`, its two simultaneous
+reporters, its structured classification, its signal-only exit-zero contract, and every authority
+boundary described above are unchanged.
+
+Final focused proof against the restored CI5 bytes passed one file and all nine tests on Node 22. The
+repair-reverted ANSI control and the deliberately wrong-worded control were also run as actual red
+tests before their final expected-control forms were restored.

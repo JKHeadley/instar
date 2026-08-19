@@ -50,3 +50,14 @@ The negative control used a real failing Vitest test while changing only the dis
 the unchanged JSON evidence. Separate real-run controls preserved `pass`, classified a missing runner
 as `errored`, and classified a deliberately corrupted JSON report as `errored` rather than inventing a
 test result.
+
+## CI5 follow-up: colour is presentation too
+
+The original proof also checked that the wrapper visibly printed “Checks 1 failed.” In GitHub Actions,
+Vitest inserted terminal-colour instructions between those words and numbers. People still saw the
+same sentence, but the test's plain-text expression could not jump over invisible control bytes.
+
+The check now removes only those terminal instructions before making the same two demands: the summary
+must say “Checks 1 failed,” and it must not say “Tests 1 failed.” A deliberately wrong-worded wrapper
+is still rejected. This does not change how parked-test outcomes are decided; JSON remains the decision
+source, while rendered output is checked only for the wrapper's separate display contract.
