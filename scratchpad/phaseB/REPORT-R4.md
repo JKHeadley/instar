@@ -169,6 +169,15 @@ the pull-request diff whenever any in-scope path differs; it does not correlate 
 scope to each changed source file. Same-commit membership and exact scoped-file identity were
 therefore verified separately rather than inferred from a green presence check.
 
+The first publication attempt from the audited commit stopped at the separate pre-push release
+gate. It correctly classified the two runtime source files as release-relevant and refused because
+R4 carried no `upgrades/next/` fragment. I added nothing and did not retry that refused push. After
+the operator reviewed the finding and directed completion, I authored
+`upgrades/next/r4-structured-codex-smoke.md`. The fragment records the actual structured acceptance
+change, natural output-drain correction, fail-closed boundaries, observed controls, and the fact
+that no live provider call was made. It is a patch release note with all user-facing sections; R4
+changes shipped runtime behavior and therefore does not use the internal-only lane.
+
 ## Scope and disposition
 
 - Branch: `phaseb/r4-structured-codex-smoke`.
