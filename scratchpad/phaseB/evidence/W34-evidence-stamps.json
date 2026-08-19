@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-18T03:56:48-07:00",
+  "sha256": {
+    "scripts/lib/standards-enforcement-measurement.mjs": "c7046545033b6f08db019284cc81a37f795472646b39f382c4029bf6a90ea069",
+    "scripts/standards-coverage.mjs": "c46737e5f248711fe3d0746c58f363a533716795a9d51fbd371770a7c7e7f754",
+    "tests/unit/standards-enforcement-measurement.test.ts": "f4e48bd25cf330a26b609ee18747a6bccdf289fe00685ba8d01c21e497d6ece0",
+    "tests/unit/standards-coverage-ratchet.test.ts": "45cd195bd50ac1263bface56fcdde3aaedc0ff705a2008bb54285f540ee34aa3",
+    "scratchpad/phaseB/evidence/W34-controls.json": "cf082e89522b35f4d34774000dd6d2328d7a5dc36b63d8a00748d41bef0c8e75",
+    "scratchpad/phaseB/evidence/W34-J5-repair-controls.json": "1f09210204346e133b76110997b8c56880864a04e9eb8bd6cf33a1af95ff028d",
+    "upgrades/next/enforcement-measurement.md": "758c42ef17d28ccb88528a17739892257147df98df83c9271356b3863f9cfde8"
+  }
+}
