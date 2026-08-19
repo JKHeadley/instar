@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-08-19T21:17:21.077Z",
+  "slug": "launchd-process-ceiling-floor",
+  "carriers": {
+    "CMT-015": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "(1) HEADROOM PROBE: the ceiling check verifies the LIMIT, not the HEADROOM \u2014 a machine at 1900 of 2048 reports fine. A fork-based count fails exactly when the limit is exhausted, so this needs a non-forking (native) process count. Until it lands, any FUTURE change to the ceiling value is blocked on it, because a ceiling change is precisely the decision that needs headroom baselines \u2014 2048 was chos"
+    }
+  }
+}

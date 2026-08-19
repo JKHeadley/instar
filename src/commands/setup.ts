@@ -1772,20 +1772,37 @@ ${argsXml}
     <integer>10</integer>
     <!-- Fork-bomb prevention belt (forkbomb-prevention-simple §D-CAP): an
          OS-level NumberOfProcesses ceiling under the host-wide spawn-cap
-         semaphore (the PRIMARY control). Generous + conservative (512) — it
-         bounds a non-compliant runaway that bypasses the funnel without
-         affecting normal operation (normal instar runs far fewer subprocesses).
-         This is the host-GLOBAL belt the funnel's per-process honesty can't
-         provide; it never substitutes for the spawn cap, it backstops it. -->
+         semaphore (the PRIMARY control). This is the host-GLOBAL belt the
+         funnel's per-process honesty can't provide; it never substitutes for
+         the spawn cap, it backstops it.
+
+         The ceiling MUST clear the machine's idle process floor, and by a wide
+         margin. NumberOfProcesses maps to RLIMIT_NPROC, which the kernel counts
+         PER REAL UID — every process the logged-in user owns, not just the ones
+         instar spawned. The original value (512) was chosen as "generous"
+         against instar's own subprocess count, which was the wrong denominator:
+         a normal logged-in macOS desktop already runs ~500-550 user daemons
+         before instar starts. The belt therefore sat BELOW the idle floor, and
+         the failure was not a bounded runaway — it was every fork() from an
+         instar-supervised shell returning EAGAIN on an otherwise idle machine
+         (observed on a Mac Studio, 2026-08-19: 531 uid processes against the
+         512 ceiling, with agent shell commands failing intermittently for
+         hours). A backstop that fires at rest is not a backstop.
+
+         2048 leaves ~1500 headroom over that floor — far above anything the
+         spawn cap admits (default 8 concurrent LLM subprocesses and their
+         children), far below kern.maxprocperuid (10666 on macOS 15), and still
+         well under the 2026-06-20 runaway (~230-289 concurrent spawns on top of
+         the floor). Raise this only against a measured floor, never a guess. -->
     <key>HardResourceLimits</key>
     <dict>
         <key>NumberOfProcesses</key>
-        <integer>512</integer>
+        <integer>2048</integer>
     </dict>
     <key>SoftResourceLimits</key>
     <dict>
         <key>NumberOfProcesses</key>
-        <integer>512</integer>
+        <integer>2048</integer>
     </dict>
 </dict>
 </plist>`;
@@ -1793,7 +1810,12 @@ ${argsXml}
   try {
     fs.mkdirSync(launchAgentsDir, { recursive: true });
     fs.mkdirSync(logDir, { recursive: true });
-    fs.writeFileSync(plistPath, plist);
+    // RAISE-ONLY on the setup path too (docs/specs/launchd-process-ceiling-floor.md §1,
+    // "The operator's escape path, as a contract"). The migration is raise-only, but setup
+    // REGENERATES this file — so without this, a re-run would silently clobber an operator
+    // who deliberately raised their ceiling for a heavy host, and the contract that their
+    // change "sticks" would be false. Found in spec review before it shipped, not after.
+    fs.writeFileSync(plistPath, preserveHigherProcessCeiling(plist, readExistingPlist(plistPath)));
 
     // Validate the plist is well-formed XML before loading.
     // A corrupted plist means launchd can't restart the agent after crashes,
@@ -2110,4 +2132,50 @@ I am ${agentName}, set up via non-interactive mode.
     console.log(pc.green('  ✓ Telegram configured'));
   }
   console.log(pc.dim(`\n  Start with: instar server start --dir ${agentDir}\n`));
+}
+
+/**
+ * Read an existing launchd plist, or `null` when there is none / it cannot be read.
+ * A missing plist is the normal first-install case, not an error.
+ */
+function readExistingPlist(plistPath: string): string | null {
+  try {
+    return fs.readFileSync(plistPath, 'utf-8');
+  } catch {
+    // @silent-fallback-ok: no existing plist (first install) or an unreadable one. Either
+    // way the freshly generated template is written as-is, which is the pre-existing
+    // behaviour — this helper can only ever PRESERVE more, never less.
+    return null;
+  }
+}
+
+/**
+ * Carry an operator's HIGHER `NumberOfProcesses` value from an existing plist into the
+ * freshly generated one, leaving everything else in the new template intact.
+ *
+ * Raise-only by construction: a previous value is carried forward ONLY when it is strictly
+ * greater than the template's. So a stale LOW value (the 512 this change exists to fix) is
+ * correctly replaced by the template, while an operator's deliberate higher value survives
+ * a setup re-run.
+ *
+ * Exported for tests: this is the half of the raise-only contract that lives on the
+ * regenerating path, and it is exactly the half a spec review caught missing.
+ */
+export function preserveHigherProcessCeiling(nextPlist: string, previousPlist: string | null): string {
+  if (!previousPlist) return nextPlist;
+  const RE = /(<key>\s*NumberOfProcesses\s*<\/key>\s*<integer>\s*)(\d+)(\s*<\/integer>)/g;
+  const previous: number[] = [];
+  for (const m of previousPlist.matchAll(RE)) {
+    const v = Number.parseInt(m[2] ?? '', 10);
+    if (Number.isFinite(v)) previous.push(v);
+  }
+  if (previous.length === 0) return nextPlist;
+  const highestPrevious = Math.max(...previous);
+  let i = 0;
+  return nextPlist.replace(RE, (whole, lead: string, digits: string, tail: string) => {
+    i += 1;
+    const templateValue = Number.parseInt(digits, 10);
+    if (!Number.isFinite(templateValue)) return whole;
+    return highestPrevious > templateValue ? `${lead}${highestPrevious}${tail}` : whole;
+  });
 }
