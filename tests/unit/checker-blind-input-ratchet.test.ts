@@ -462,6 +462,12 @@ describe('P3 — the ratchet own test rejects all four guard sabotages', () => {
   const sourcePath = path.join(ROOT, 'scripts', 'lib', 'checker-blind-input-ratchet.mjs');
   const source = fs.readFileSync(sourcePath, 'utf8');
 
+  function hasNodeTestSummary(output: string, label: 'tests' | 'fail', count: number): boolean {
+    const tap = `# ${label} ${count}`;
+    const spec = `ℹ ${label} ${count}`;
+    return output.split(/\r?\n/).some((line) => line.trim() === tap || line.trim() === spec);
+  }
+
   function guardOwnSuite(modulePath: string, dir: string) {
     const suite = path.join(dir, 'guard-own.test.mjs');
     fs.writeFileSync(suite, `
@@ -569,8 +575,8 @@ test('genuinely covered population passes', () => {
       const output = decidingOutput(result);
       console.log(`P3_3d_TYPE_PRESERVING_HOLLOW mutationApplied=true guardOwnTestExit=${result.status}\n${output}`);
       expect(result.status).not.toBe(0);
-      expect(output).toContain('# tests 4');
-      expect(output).toContain('# fail 3');
+      expect(hasNodeTestSummary(output, 'tests', 4)).toBe(true);
+      expect(hasNodeTestSummary(output, 'fail', 3)).toBe(true);
       expect(output).toMatch(/AssertionError|Expected values to be strictly equal/);
     } finally {
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'checker-p3:hollow' });
