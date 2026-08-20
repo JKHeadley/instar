@@ -97,8 +97,16 @@ describe('request-timeout override map (production wiring)', () => {
     // Regression guard: the global default is still passed as the first arg, and
     // the overrides come from the shared builder (so this test's map == prod's) —
     // fed the configured parity-source total budget so the parity routes' windows
-    // track the operator's degraded-source tuning.
-    expect(agentServerSrc).toMatch(/requestTimeout\(options\.config\.requestTimeoutMs,\s*buildRequestTimeoutOverrides\(\{ paritySourceTotalTimeoutMs \}\)\)/);
+    // track the operator's degraded-source tuning, and the follow-me remote-scrape
+    // budget so the cross-machine sign-in chain cannot re-invert (2026-08-20).
+    // Whitespace-tolerant: the call is formatted across lines, but it must still be
+    // the SHARED BUILDER receiving BOTH config-derived budgets — never an inline literal.
+    expect(agentServerSrc).toMatch(
+      /requestTimeout\(\s*options\.config\.requestTimeoutMs,\s*buildRequestTimeoutOverrides\(\{[^}]*paritySourceTotalTimeoutMs[^}]*\}\),?\s*\)/,
+    );
+    expect(agentServerSrc).toMatch(
+      /buildRequestTimeoutOverrides\(\{[^}]*followMeRemoteScrapeTimeoutMs[^}]*\}\)/,
+    );
     expect(agentServerSrc).toMatch(/feedbackMigration\?\.paritySource\?\.totalTimeoutMs/);
   });
 

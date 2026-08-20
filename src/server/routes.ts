@@ -120,7 +120,7 @@ import {
 } from '../core/PlaywrightProfileRegistry.js';
 import { PlaywrightSeatLease } from '../core/PlaywrightSeatLease.js';
 import { writeConfigAtomic, readSelfKnowledgeFlags } from '../core/BootSelfKnowledge.js';
-import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS } from './middleware.js';
+import { rateLimiter, signViewPath, OUTBOUND_GATE_REVIEW_BUDGET_MS, resolveFollowMeBudgets, FOLLOWME_SIMPLE_RELAY_FETCH_MS } from './middleware.js';
 import { reviewWithinBudget } from './outboundGateBudget.js';
 import { resolveToneRecipientClass } from './toneRecipientClass.js';
 import { RULE_DISPOSITIONS, buildDegradedToneResult, resolveToneGateOperatorConfig, fingerprintAutomatedTemplate } from '../core/MessagingToneGate.js';
@@ -30530,7 +30530,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         method: 'POST',
         headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ code }),
-        signal: AbortSignal.timeout(40_000),
+        signal: AbortSignal.timeout(FOLLOWME_SIMPLE_RELAY_FETCH_MS),
       });
       const body = await r.json().catch(() => ({}));
       res.status(r.status).json(body);
@@ -30571,7 +30571,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const r = await fetch(`${baseUrl}/subscription-pool/follow-me/enroll/${encodeURIComponent(id)}/cancel`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(40_000),
+        signal: AbortSignal.timeout(FOLLOWME_SIMPLE_RELAY_FETCH_MS),
       });
       const body = await r.json().catch(() => ({}));
       res.status(r.status).json(body);
@@ -30592,7 +30592,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // fingerprints or raw mandate JSON. Idempotent: a re-tap reuses an existing valid pending login
   // for this pair (no duplicate, no stacked mandate). Dark behind multiMachine.accountFollowMe.
   router.post('/subscription-pool/matrix/start-cell', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/matrix/start-cell'), async (req, res) => {
-    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean; remoteScrapeTimeoutMs?: number } } }).multiMachine?.accountFollowMe;
     if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
       res.status(503).json({ error: 'account follow-me not enabled' });
       return;
@@ -30724,11 +30724,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       baseUrl = peer.url;
     }
     try {
+      // The relay must OUTLIVE the target's own enroll/start route budget, which
+      // in turn outlives its pane-scrape budget. All three derive from the one
+      // `remoteScrapeTimeoutMs` knob (resolveFollowMeBudgets) — a hard-coded 40s
+      // here aborted a peer that was still legitimately working (the 2026-08-20
+      // "Couldn't start: Request timeout" report).
+      const relayFetchMs = resolveFollowMeBudgets(afmCfg?.remoteScrapeTimeoutMs).relayFetchMs;
       const r = await fetch(`${baseUrl}/subscription-pool/follow-me/enroll/start`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ mandateId, accountId }),
-        signal: AbortSignal.timeout(40_000),
+        signal: AbortSignal.timeout(relayFetchMs),
       });
       const body = await r.json().catch(() => ({})) as {
         login?: { id?: string; verificationUrl?: string; expectedEmail?: string; ttlExpiresAt?: string; notice?: string; kind?: string };
