@@ -33,6 +33,13 @@
  */
 
 import { createHash, createPrivateKey, type KeyObject } from 'node:crypto';
+import {
+  readFileSync as nodeReadFileSync,
+  writeFileSync as nodeWriteFileSync,
+  renameSync as nodeRenameSync,
+  mkdirSync as nodeMkdirSync,
+} from 'node:fs';
+import { join as nodeJoin, dirname as nodeDirname } from 'node:path';
 import { encryptForSync, decryptFromSync, type EncryptedSecretPayload } from './SecretStore.js';
 
 /** How an identity came to exist on a machine. Spec §3 — lineage, not "who did I join". */
@@ -194,4 +201,141 @@ export function openHandoverEnvelope(input: {
 /** The routing fingerprint of an Ed25519 public key: first 16 bytes of its SHA-256, hex. */
 export function fingerprintOf(publicKeyBase64: string): string {
   return createHash('sha256').update(Buffer.from(publicKeyBase64, 'base64')).digest('hex').slice(0, 32);
+}
+
+/**
+ * Read this machine's agent identity in the shape the handover seals.
+ *
+ * Returns null when there is none — a real state on a machine that never had one, which the
+ * caller reports rather than papering over: the joiner will refuse to mint, and the operator
+ * deserves to know which end lacked the identity.
+ */
+export function readAgentIdentityForHandover(
+  stateDir: string,
+  deps: { readFile?: (p: string) => string } = {},
+): { payload: HandoverPayload; fingerprint: string } | null {
+  const readFile = deps.readFile ?? ((f: string) => nodeReadFileSync(f, 'utf-8'));
+  for (const rel of ['identity.json', nodeJoin('threadline', 'identity.json')]) {
+    try {
+      const d = JSON.parse(readFile(nodeJoin(stateDir, rel))) as {
+        publicKey?: string;
+        privateKey?: string;
+        createdAt?: string;
+        provenance?: IdentityProvenance;
+      };
+      if (!d.publicKey || !d.privateKey) continue;
+      const fingerprint = fingerprintOf(d.publicKey);
+      return {
+        fingerprint,
+        payload: {
+          identity: {
+            publicKey: d.publicKey,
+            privateKey: d.privateKey,
+            createdAt: d.createdAt ?? new Date(0).toISOString(),
+          },
+          // An identity predating the provenance record is honestly UNKNOWN-origin: it is
+          // recorded as received-on-join with its own fingerprint as root, which never wins a
+          // lineage comparison and therefore routes any future split to the operator rather
+          // than letting an unverifiable claim decide.
+          provenance: d.provenance ?? {
+            schemaVersion: 1,
+            origin: 'received-on-join',
+            rootFingerprint: fingerprint,
+            machineId: 'unknown',
+            createdAt: d.createdAt ?? new Date(0).toISOString(),
+            producedBy: 'pre-provenance',
+          },
+        },
+      };
+    } catch {
+      // @silent-fallback-ok: try the next location; an absent identity is handled by the
+      // null return, which the caller logs.
+    }
+  }
+  return null;
+}
+
+export type InstallOutcome =
+  | { ok: true; fingerprint: string }
+  | { ok: false; reason: 'not-offered' | HandoverRejection | 'write-failed' | 'no-encryption-key' };
+
+/**
+ * Open a pairing response's identity envelope and install it — atomically, owner-only.
+ *
+ * Called by `joinMesh` BEFORE the server first starts, so the boot finds an identity and never
+ * reaches the minting branch.
+ *
+ * NEVER falls back to minting on any failure path. A silent twin is worse than a join that
+ * plainly did not finish (spec Frontloaded Decision 2), and the whole point of the mint guard
+ * is that this function's failure cannot be routed around.
+ *
+ * `pinnedFingerprint` is the agent fingerprint from the operator's pairing artefact. When it is
+ * absent the pin check is skipped and the envelope's own fingerprint is used — weaker, and
+ * honest about being weaker: it still resists a wrong-joiner or replayed envelope (the
+ * transcript and the sealing key cover those) but not a hostile listener fabricating one.
+ */
+export function installAgentIdentityFromPairing(input: {
+  envelope: unknown;
+  stateDir: string;
+  expected: HandoverTranscript;
+  encryptionPrivateKeyPem: string | null;
+  pinnedFingerprint: string | null;
+  now?: Date;
+  writeFile?: (p: string, data: string) => void;
+}): InstallOutcome {
+  if (!input.envelope) return { ok: false, reason: 'not-offered' };
+  if (!input.encryptionPrivateKeyPem) return { ok: false, reason: 'no-encryption-key' };
+
+  const env = input.envelope as IdentityHandoverEnvelope;
+  const pinned = input.pinnedFingerprint ?? env?.identityFingerprint ?? '';
+
+  const opened = openHandoverEnvelope({
+    envelope: env,
+    // The joiner cannot know the expiry the sealer chose, so it is taken from the envelope and
+    // then CHECKED against the clock inside openHandoverEnvelope. Every other transcript field
+    // is compared against what this joiner actually sent.
+    expected: { ...input.expected, expiresAt: env?.transcript?.expiresAt ?? '' },
+    pinnedFingerprint: pinned,
+    joinerEncryptionPrivateKeyPem: input.encryptionPrivateKeyPem,
+    ...(input.now ? { now: input.now } : {}),
+  });
+  if (!opened.ok) return { ok: false, reason: opened.rejection };
+
+  try {
+    const write = input.writeFile ?? defaultAtomicWrite;
+    write(
+      nodeJoin(input.stateDir, 'identity.json'),
+      JSON.stringify(
+        {
+          version: 1,
+          publicKey: opened.payload.identity.publicKey,
+          privateKey: opened.payload.identity.privateKey,
+          createdAt: opened.payload.identity.createdAt,
+          provenance: {
+            ...opened.payload.provenance,
+            origin: 'received-on-join' as const,
+            machineId: input.expected.joinerMachineId,
+          },
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+  } catch {
+    return { ok: false, reason: 'write-failed' };
+  }
+  return { ok: true, fingerprint: fingerprintOf(opened.payload.identity.publicKey) };
+}
+
+/**
+ * Atomic, owner-only write: temp file in the destination directory → rename.
+ *
+ * A half-written identity is worse than none — it is an agent that starts with a corrupt key.
+ */
+function defaultAtomicWrite(target: string, data: string): void {
+  const dir = nodeDirname(target);
+  nodeMkdirSync(dir, { recursive: true });
+  const tmp = nodeJoin(dir, `.identity.${process.pid}.${Date.now()}.tmp`);
+  nodeWriteFileSync(tmp, data, { mode: 0o600 });
+  nodeRenameSync(tmp, target);
 }

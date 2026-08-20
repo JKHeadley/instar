@@ -16,6 +16,7 @@
  */
 
 import { Router } from 'express';
+import { sealIdentityForJoiner, readAgentIdentityForHandover } from '../core/AgentIdentityHandover.js';
 import crypto from 'node:crypto';
 import { sign, verify } from '../core/MachineIdentity.js';
 import type { MachineIdentityManager } from '../core/MachineIdentity.js';
@@ -43,6 +44,14 @@ export interface MachineRouteContext {
   localMachineId: string;
   /** This machine's signing private key (PEM) */
   localSigningKeyPem: string;
+  /**
+   * Agent state dir + agent name, for the agent-identity handover on pairing
+   * (docs/specs/agent-identity-continuity-on-expansion.md §1). Optional so an
+   * embedder that omits them simply hands over nothing and the joiner fails
+   * loudly — never mints.
+   */
+  stateDir?: string;
+  agentName?: string;
   /** Callback when this machine should demote to standby */
   onDemote?: () => void;
   /** Callback when this machine should promote to awake */
@@ -375,9 +384,53 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
 
     // Return this machine's identity so the joiner can register us as awake.
     const localIdentity = ctx.identityManager.loadIdentity();
+
+    // ── Carry the AGENT identity to the joiner ────────────────────────────────────
+    // Spec: docs/specs/agent-identity-continuity-on-expansion.md §1.
+    //
+    // Without this the joiner finds no agent identity and (post-guard) refuses to mint,
+    // so the join fails — and pre-guard it minted one, silently splitting the agent in
+    // two. `ephemeralPublicKey` has always arrived here and was validated and unused;
+    // this is what it was for.
+    //
+    // Sealed to that key, bound to a transcript the joiner re-checks against what it
+    // sent. A refusal is NAMED and the field is simply absent — never a partial or
+    // fabricated envelope, because the joiner must be able to tell "not provided" from
+    // "provided and wrong".
+    let agentIdentityEnvelope: unknown;
+    try {
+      const agentIdentity = ctx.stateDir ? readAgentIdentityForHandover(ctx.stateDir) : null;
+      if (agentIdentity) {
+        const sealed = sealIdentityForJoiner({
+          payload: agentIdentity.payload,
+          identityFingerprint: agentIdentity.fingerprint,
+          transcript: {
+            pairingSessionId: String(stored.code),
+            joinerMachineId: machineIdentity.machineId,
+            joinerEncryptionPublicKey: String(ephemeralPublicKey),
+            agentName: ctx.agentName ?? '',
+            expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+          },
+        });
+        if (sealed.ok) agentIdentityEnvelope = sealed.envelope;
+        else console.warn(`[pair] agent-identity handover refused: ${sealed.refusal}`);
+      } else {
+        // No agent identity to hand over is a REAL state on a machine that never had
+        // one. Logged rather than silent, because the joiner will refuse to mint and
+        // the operator deserves to know which end lacked it.
+        console.warn('[pair] no agent identity on this machine to hand over');
+      }
+    } catch (err) {
+      // @silent-fallback-ok: pairing the MACHINE must still succeed even if the agent
+      // identity cannot be sealed — the joiner then fails loudly with a named reason
+      // rather than minting, which is the safe direction.
+      console.warn('[pair] agent-identity handover failed (non-fatal):', err);
+    }
+
     res.json({
       status: 'paired',
       machineIdentity: localIdentity,
+      ...(agentIdentityEnvelope ? { agentIdentityEnvelope } : {}),
       message: 'Paired.',
     });
   });
