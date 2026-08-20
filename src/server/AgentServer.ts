@@ -1197,7 +1197,17 @@ export class AgentServer {
     // window with it — see buildRequestTimeoutOverrides() for the live incident.
     const paritySourceTotalTimeoutMs = (options.config as { feedbackMigration?: { paritySource?: { totalTimeoutMs?: number } } })
       .feedbackMigration?.paritySource?.totalTimeoutMs;
-    this.app.use(requestTimeout(options.config.requestTimeoutMs, buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs })));
+    // The account-follow-me cross-machine sign-in chain derives its four nested
+    // budgets from this one operator knob — widening the remote scrape budget
+    // must widen every budget above it, or the chain silently re-inverts and the
+    // operator gets a bare 408 instead of the handler's classified outcome.
+    const followMeRemoteScrapeTimeoutMs = (options.config as {
+      multiMachine?: { accountFollowMe?: { remoteScrapeTimeoutMs?: number } };
+    }).multiMachine?.accountFollowMe?.remoteScrapeTimeoutMs;
+    this.app.use(requestTimeout(
+      options.config.requestTimeoutMs,
+      buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs, followMeRemoteScrapeTimeoutMs }),
+    ));
 
     // ── Token Ledger ──────────────────────────────────────────────────
     // Read-only token-usage observability. Reads Claude Code's per-session

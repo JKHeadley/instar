@@ -437,6 +437,96 @@ export const POOL_TRANSFER_TIMEOUT_MS = 75_000;
 export const PARITY_ROUTE_SLACK_MS = 60_000;
 
 /**
+ * ── Account-follow-me cross-machine sign-in: the BUDGET CHAIN ──────────────
+ *
+ * A single "Set up" tap on the Subscriptions grid nests FOUR budgets. Each
+ * outer one must strictly exceed everything it wraps, or a dumb timer kills a
+ * still-legitimate operation and REPLACES the handler's honest, classified
+ * outcome (`502 login-did-not-start / retryable`, `409 cannot-resolve-email`,
+ * `201 reused`) with a bare "Request timeout" the operator cannot act on:
+ *
+ *   L1  POST /subscription-pool/matrix/start-cell   (fronting machine, this map)
+ *   L2  ├─ mandate delivery over the mesh           (FOLLOWME_MANDATE_DELIVERY_BUDGET_MS)
+ *       └─ relay fetch → the target's enroll/start  (followMeRelayFetchMs)
+ *   L3     POST /subscription-pool/follow-me/enroll/start  (TARGET machine, this map)
+ *   L4       FrameworkLoginDriver.drive() pane scrape      (remoteScrapeTimeoutMs)
+ *
+ * Shipped state (2026-08-20, reported by the operator as "Couldn't start:
+ * Request timeout" on a cross-machine cell): L1 and L3 both inherited the 30s
+ * DEFAULT while L2's relay was hard-coded to 40s and L4 was configured to
+ * 180s. So the outermost budget was the SMALLEST — the inversion fired on every
+ * cross-machine tap slower than 30s, which on a Cloudflare-routed peer is the
+ * normal case, not the edge case.
+ *
+ * This is the SAME "408 while the handler keeps running" failure class that
+ * OUTBOUND_MESSAGING_TIMEOUT_MS, PARITY_PASS_TIMEOUT_MS and
+ * POOL_TRANSFER_TIMEOUT_MS each already exist to prevent. It recurred here
+ * because those three were fixed as individual constants, so a NEW nested route
+ * had nothing to inherit. Deriving the whole chain from one source — and
+ * asserting the ordering in a test — is what makes the fix structural instead
+ * of a fourth spot-fix waiting for a fifth.
+ */
+
+/** Mesh bound on `deliverMandateToMachine` (commands/server.ts `timeoutMs: 15_000`).
+ *  Mirrored here because start-cell spends it BEFORE its relay fetch begins. */
+export const FOLLOWME_MANDATE_DELIVERY_BUDGET_MS = 15_000;
+
+/** Driver default when `remoteScrapeTimeoutMs` is unset (FrameworkLoginDriver). */
+export const FOLLOWME_DEFAULT_SCRAPE_TIMEOUT_MS = 60_000;
+
+/** Spawn + artifact-parse + store-write the target does AROUND the pane scrape. */
+export const FOLLOWME_ENROLL_START_SLACK_MS = 30_000;
+
+/** Slack so the relay fetch outlives the target ROUTE it is waiting on. */
+export const FOLLOWME_RELAY_SLACK_MS = 10_000;
+
+/** Slack so start-cell's route budget outlives mandate delivery + its relay. */
+export const FOLLOWME_START_CELL_SLACK_MS = 10_000;
+
+/**
+ * Budget for the two SIMPLE fronting relays (`follow-me/submit-code`,
+ * `follow-me/cancel`). Their target-side work never drives a login — it types a
+ * code into a live pane (bounded by the identity oracle's own 10s) or kills one
+ * — so they keep the fixed 40s relay fetch and need only a route budget above
+ * it. submit-code is the one that MUST NOT 408: a verification code is
+ * single-use, so a timeout there leaves the operator unable to tell whether
+ * their one shot was spent.
+ */
+export const FOLLOWME_SIMPLE_RELAY_FETCH_MS = 40_000;
+export const FOLLOWME_SIMPLE_RELAY_ROUTE_MS = 60_000;
+
+export interface FollowMeBudgets {
+  /** L4 — the pane-scrape budget actually in force on the target. */
+  scrapeMs: number;
+  /** L3 — route budget for the target's `follow-me/enroll/start`. */
+  enrollStartRouteMs: number;
+  /** L2 — the fronting machine's relay fetch to that route. */
+  relayFetchMs: number;
+  /** L1 — route budget for `matrix/start-cell`. */
+  startCellRouteMs: number;
+}
+
+/**
+ * Derive the whole chain from the ONE operator-tunable value
+ * (`multiMachine.accountFollowMe.remoteScrapeTimeoutMs`), so widening the scrape
+ * budget for a slow remote widens every budget above it instead of silently
+ * re-inverting the chain. Strict `<` ordering is asserted in the unit test.
+ */
+export function resolveFollowMeBudgets(remoteScrapeTimeoutMs?: number): FollowMeBudgets {
+  const scrapeMs =
+    typeof remoteScrapeTimeoutMs === 'number' &&
+    Number.isFinite(remoteScrapeTimeoutMs) &&
+    remoteScrapeTimeoutMs > 0
+      ? remoteScrapeTimeoutMs
+      : FOLLOWME_DEFAULT_SCRAPE_TIMEOUT_MS;
+  const enrollStartRouteMs = scrapeMs + FOLLOWME_ENROLL_START_SLACK_MS;
+  const relayFetchMs = enrollStartRouteMs + FOLLOWME_RELAY_SLACK_MS;
+  const startCellRouteMs =
+    relayFetchMs + FOLLOWME_MANDATE_DELIVERY_BUDGET_MS + FOLLOWME_START_CELL_SLACK_MS;
+  return { scrapeMs, enrollStartRouteMs, relayFetchMs, startCellRouteMs };
+}
+
+/**
  * The production per-path request-timeout overrides. Exported as the single
  * source of truth so wiring-integrity tests assert against the SAME map the
  * server actually wires — never a hand-rolled copy that could pass while the
@@ -450,8 +540,12 @@ export const PARITY_ROUTE_SLACK_MS = 60_000;
  * live 2026-06-05: 600s/page configured, 360s route → four concurrent passes).
  * The constant stays the floor; the derived budget never shrinks below it.
  */
-export function buildRequestTimeoutOverrides(opts?: { paritySourceTotalTimeoutMs?: number }): Record<string, number> {
+export function buildRequestTimeoutOverrides(opts?: {
+  paritySourceTotalTimeoutMs?: number;
+  followMeRemoteScrapeTimeoutMs?: number;
+}): Record<string, number> {
   const configuredTotal = opts?.paritySourceTotalTimeoutMs;
+  const followMe = resolveFollowMeBudgets(opts?.followMeRemoteScrapeTimeoutMs);
   const parityBudgetMs = typeof configuredTotal === 'number' && Number.isFinite(configuredTotal) && configuredTotal > 0
     ? Math.max(PARITY_PASS_TIMEOUT_MS, configuredTotal + PARITY_ROUTE_SLACK_MS)
     : PARITY_PASS_TIMEOUT_MS;
@@ -473,6 +567,20 @@ export function buildRequestTimeoutOverrides(opts?: { paritySourceTotalTimeoutMs
     // WS1.2: the deterministic transfer awaits the owner-side drain (≤ drain
     // bound + the 50s remote-call cap) synchronously — see POOL_TRANSFER_TIMEOUT_MS.
     '/pool/transfer': POOL_TRANSFER_TIMEOUT_MS,
+    // Account-follow-me cross-machine sign-in chain — see the FollowMeBudgets
+    // block above. These four entries are what stop the outermost budget from
+    // being the smallest one in the stack.
+    //
+    // NOTE the prefix matcher is longest-prefix over `path` OR `path + '/'`, and
+    // the target-side submit-code/cancel routes are PARAMETERISED
+    // (`/follow-me/enroll/:id/submit-code`), so they sit UNDER the
+    // '/subscription-pool/follow-me/enroll' prefix and inherit the enroll-start
+    // budget. That is deliberate: the target-side completion runs the S7 email
+    // gate and must not 408 mid-add either.
+    '/subscription-pool/follow-me/enroll': followMe.enrollStartRouteMs,
+    '/subscription-pool/matrix/start-cell': followMe.startCellRouteMs,
+    '/subscription-pool/follow-me/submit-code': FOLLOWME_SIMPLE_RELAY_ROUTE_MS,
+    '/subscription-pool/follow-me/cancel': FOLLOWME_SIMPLE_RELAY_ROUTE_MS,
   };
 }
 
