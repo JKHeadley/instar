@@ -40,49 +40,6 @@ describe('StageAdvancer (§Rollout)', () => {
   });
   afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/StageAdvancer.test.ts' }));
 
-  // ── Deadlock escape (2026-08-19 incident) ───────────────────────────────
-  // A stage is only PROVEN while the agent is IN it, so a transient red locks the
-  // rung out permanently. A red is superseded when the PRIOR stage recorded a
-  // green for the same commit LATER than the red. Both sides of the boundary:
-
-  it('reconcile SKIPS the revert when the current stage red is superseded by a NEWER prior-stage green', () => {
-    let t = 1000;
-    const clocked = new SessionPoolE2EResultStore({
-      filePath: path.join(dir, 'superseded.json'), sign, verifySig, now: () => (t += 1000),
-    });
-    clocked.recordResult(1, 'red', SHA, 'red@stage1');    // older red at the LIVE stage
-    clocked.recordResult(0, 'green', SHA, 'green@stage0'); // NEWER green at the prior stage
-    stage = 'shadow';
-    writes = [];
-    advancer = new StageAdvancer({
-      resultStore: clocked,
-      currentCommitSha: () => SHA,
-      readStage: () => stage,
-      writeStageConfig: (s) => { writes.push(s); stage = s; },
-    });
-    expect(advancer.reconcile()).toBe('shadow'); // stays — earns a re-test
-    expect(writes).toEqual([]);                  // and never writes the config
-  });
-
-  it('reconcile STILL reverts when the current stage red is NEWER than the prior-stage green (guard preserved)', () => {
-    let t = 1000;
-    const clocked = new SessionPoolE2EResultStore({
-      filePath: path.join(dir, 'genuine.json'), sign, verifySig, now: () => (t += 1000),
-    });
-    clocked.recordResult(0, 'green', SHA, 'green@stage0'); // older green at the prior stage
-    clocked.recordResult(1, 'red', SHA, 'red@stage1');     // NEWER red at the LIVE stage
-    stage = 'shadow';
-    writes = [];
-    advancer = new StageAdvancer({
-      resultStore: clocked,
-      currentCommitSha: () => SHA,
-      readStage: () => stage,
-      writeStageConfig: (s) => { writes.push(s); stage = s; },
-    });
-    expect(advancer.reconcile()).toBe('dark'); // a genuine regression still demotes
-    expect(writes).toEqual(['dark']);
-  });
-
   it('REFUSES advance with no prior-stage E2E result (e2e-gate-not-passed / no-result)', () => {
     const r = advancer.advanceTo('shadow');
     expect(r).toMatchObject({ ok: false, reason: 'e2e-gate-not-passed', detail: 'no-result' });

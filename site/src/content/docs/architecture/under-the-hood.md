@@ -531,6 +531,24 @@ Enrollment (P2.1) — adding a new account from a phone, expiry-proof:
 
 Spec: `docs/specs/_drafts/subscription-auth-standard-master-spec.md`.
 
+## One agent, one identity (`AgentIdentityHandover`, `AgentIdentityReconciler`)
+
+An agent is reached by an address derived from its identity, and that address should be the same
+whichever of its machines answers. Expanding onto a new machine used to break that: the join
+provisions a *machine* identity but never the *agent* identity, so the new machine found none and
+minted its own. One agent quietly became two sharing a name — and nothing reported it.
+
+`AgentIdentityHandover` carries the identity to the joiner, sealed to the key it already sends
+during pairing and bound to that exchange's transcript. The minting path then refuses to invent an
+identity on any machine that joined a mesh, so a failed handover fails loudly instead of producing
+a twin.
+
+`AgentIdentityDivergenceDetector` compares what each machine publishes and raises one deduped
+notice on a genuine split; an unreachable peer is reported as unknown, never as agreement.
+`AgentIdentityReconciler` returns a decision rather than performing one, and refuses majority, age
+and prevalence as tiebreakers — each correlates with being right without being a reason. Full
+reference: `reference/agent-identity-continuity`.
+
 ## The process ceiling, and why the file is not the answer (`ProcessCeilingCheck`)
 
 Instar sets an OS-level cap on how many processes its user account may run — a last-resort
