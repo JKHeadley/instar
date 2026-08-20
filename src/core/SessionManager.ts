@@ -3260,7 +3260,23 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // is keyed on the session id suffix so two concurrent rerouted sessions
     // can't false-trigger each other.
     const sentinel = `INSTAR_JOB_COMPLETE_${sessionId.slice(-8)}`;
-    const promptWithSentinel = `${withClaudeUltracodePrompt(options.prompt, options.ultracode)}\n\nWhen you have fully completed this task, print exactly this marker as your final line: ${sentinel}`;
+    // ── The sentinel must NOT appear literally in the prompt (2026-08-20) ──
+    // The prompt is INJECTED into the REPL, so every character of it is echoed
+    // onto the pane the monitor scans. Emitting the assembled sentinel inside
+    // the instruction made the pane satisfy `detectSessionCompletion` from the
+    // moment the prompt rendered: the monitor read its own instruction back and
+    // reaped the session as SUCCESS on its first look after the 15s grace.
+    // Measured on a live 3-machine fleet: 31/31 rerouted sessions killed at
+    // 15-41s, ALL recorded `completed`, incl. 25 scheduled jobs reporting
+    // "success, 0 failures" while doing ~16s of work each.
+    // Fix: hand the model the two halves and have it join them. The assembled
+    // literal then exists ONLY when the model actually prints it. If the model
+    // mis-joins, the session is NOT detected and falls through to the hard
+    // lifetime cap — recorded as a timeout, i.e. the SAFE direction (a loud
+    // non-completion) rather than a silent false success.
+    const sentinelPrefix = 'INSTAR_JOB_COMPLETE';
+    const sentinelSuffix = sessionId.slice(-8);
+    const promptWithSentinel = `${withClaudeUltracodePrompt(options.prompt, options.ultracode)}\n\nWhen you have fully completed this task, your FINAL line must be a completion marker assembled from these three pieces joined together with no spaces and nothing else on the line:\n  piece 1: ${sentinelPrefix}\n  piece 2: _\n  piece 3: ${sentinelSuffix}\nWrite the assembled marker ONLY on that final line — never earlier in your output, and never quote it back while describing what you are doing.`;
 
     // ── Build the INTERACTIVE launch (no `-p`) ──
     // Carry the resolved model + the A2A continuity flag through. sessionId

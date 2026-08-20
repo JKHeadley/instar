@@ -270,8 +270,8 @@ describe('headless-spawn reroute', () => {
     expect(launch).not.toContain('--allowedTools');
   });
 
-  it('V2: rerouted prompt gets the completion sentinel appended', async () => {
-    const { manager } = makeManager({ mode: 'force' }, tmpDir);
+  it('V2: rerouted prompt carries the sentinel HALVES, never the assembled literal', async () => {
+    const { manager, state } = makeManager({ mode: 'force' }, tmpDir);
     const captured: string[] = [];
     (manager as unknown as { injectMessage: (t: string, text: string) => boolean }).injectMessage =
       (_t, text) => { captured.push(text); return true; };
@@ -282,8 +282,17 @@ describe('headless-spawn reroute', () => {
     const sentinel = `INSTAR_JOB_COMPLETE_${s.id.slice(-8)}`;
     expect(captured.length).toBe(1);
     expect(captured[0]).toContain('ORIGINAL PROMPT');
-    expect(captured[0]).toContain(sentinel);
-    expect(captured[0].trimEnd().endsWith(sentinel)).toBe(true);
+    // THE LOAD-BEARING ASSERTION (2026-08-20 regression): the injected prompt is
+    // echoed onto the pane the completion monitor scans, so it must NEVER contain
+    // the ASSEMBLED sentinel — otherwise the monitor reads its own instruction
+    // back and reaps the session as a success before any work happens.
+    expect(captured[0]).not.toContain(sentinel);
+    // It must still carry both halves so the model can assemble the marker.
+    expect(captured[0]).toContain('INSTAR_JOB_COMPLETE');
+    expect(captured[0]).toContain(s.id.slice(-8));
+    // And the session's match target remains the assembled literal.
+    const saved3 = state.getSession(s.id)!;
+    expect(saved3.completionPatterns).toEqual([sentinel]);
   });
 
   // ── V4: A2A continuity — resumeSessionId path ──
@@ -401,6 +410,43 @@ describe('detectSessionCompletion (V3 decision boundary)', () => {
       startedAt: new Date().toISOString(), completionMode: 'pattern' as const,
       completionPatterns: ['INSTAR_JOB_COMPLETE_abcd1234'],
     };
+    expect(manager.detectSessionCompletion(session)).toBe(true);
+  });
+
+  // ── REGRESSION (2026-08-20): the prompt echo must not satisfy the matcher ──
+  // Both halves of this feature were already unit-tested IN ISOLATION and both
+  // passed: "the prompt gets the sentinel appended" and "a pane containing the
+  // sentinel is detected". Their COMPOSITION was the bug — the injected prompt
+  // IS pane content, so appending the assembled sentinel made every rerouted
+  // session self-satisfy the completion check on the monitor's first look.
+  // Field evidence: 31/31 rerouted sessions reaped at 15-41s, all recorded
+  // `completed`, incl. 25 scheduled jobs reporting "success, 0 failures".
+  // This test couples the two halves, which is the only way to catch it.
+  it('REGRESSION: the injected prompt, seen as pane output, is NOT completion', async () => {
+    const { manager } = makeManager({ mode: 'force' }, tmpDir);
+    const captured: string[] = [];
+    (manager as unknown as { injectMessage: (t: string, text: string) => boolean }).injectMessage =
+      (_t, text) => { captured.push(text); return true; };
+    const s = await manager.spawnSession({ name: 'job-echo-regression', prompt: 'DO THE WORK' });
+    await new Promise((r) => setTimeout(r, 1200));
+    expect(captured.length).toBe(1);
+    const injectedPrompt = captured[0];
+
+    // The pane shows the echoed prompt and nothing else — the session has done
+    // no work yet. Feed EXACTLY that to the real matcher.
+    (manager as unknown as { captureOutput: () => string }).captureOutput = () => injectedPrompt;
+    const sentinel = `INSTAR_JOB_COMPLETE_${s.id.slice(-8)}`;
+    const session = {
+      id: s.id, name: s.name, status: 'running' as const, tmuxSession: s.tmuxSession,
+      startedAt: new Date().toISOString(), completionMode: 'pattern' as const,
+      completionPatterns: [sentinel],
+    };
+    expect(manager.detectSessionCompletion(session)).toBe(false);
+
+    // Positive control: the matcher is not simply broken — once the model
+    // actually prints the assembled marker, it IS detected.
+    (manager as unknown as { captureOutput: () => string }).captureOutput =
+      () => `${injectedPrompt}\n...did the work...\n${sentinel}\n`;
     expect(manager.detectSessionCompletion(session)).toBe(true);
   });
 
