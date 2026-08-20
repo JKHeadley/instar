@@ -51,6 +51,16 @@ export interface HumanDetectorSignal {
   messagePreview: string;
 }
 
+/** Metadata-only evidence that a classified signal could not be durably captured. */
+export interface HumanDetectorCaptureFailure {
+  ts: string;
+  source: string;
+  topicId: number | null;
+  messageId: number | null;
+  category: HumanDetectorCategory;
+  reason: 'state-dir-unconfigured' | 'persistence-write-failed';
+}
+
 export type HumanDetectorCategory =
   | 'factual-correction'      // "that's wrong", "actually X is Y"
   | 'staleness'               // "out of date", "you said that days ago"
@@ -144,6 +154,8 @@ export class HumanAsDetectorLog {
   private agentName = 'unknown';
   /** In-memory ring of recent signals (for health/summary without disk reads) */
   private recent: HumanDetectorSignal[] = [];
+  /** Fail-open-and-LOUD record: a write miss is visible even when disk is blind. */
+  private captureFailures: HumanDetectorCaptureFailure[] = [];
 
   private constructor() {}
 
@@ -248,7 +260,23 @@ export class HumanAsDetectorLog {
       this.recent.push(signal);
       if (this.recent.length > 200) this.recent = this.recent.slice(-200);
 
-      this.persist(signal);
+      const persistResult = this.persist(signal);
+      if (persistResult !== 'persisted') {
+        const failure: HumanDetectorCaptureFailure = {
+          ts: signal.ts,
+          source: signal.source,
+          topicId: signal.topicId,
+          messageId: signal.messageId,
+          category: signal.category,
+          reason: persistResult,
+        };
+        this.captureFailures.push(failure);
+        if (this.captureFailures.length > 200) this.captureFailures = this.captureFailures.slice(-200);
+        console.error(
+          `[HUMAN-AS-DETECTOR-CAPTURE-FAILED] ${failure.reason} — ` +
+          `${failure.category} signal remains in memory but was not persisted`,
+        );
+      }
 
       // Visible, never silent — mirrors DegradationReporter's console signal.
       console.warn(
@@ -266,6 +294,11 @@ export class HumanAsDetectorLog {
   /** Recent in-memory signals (for health checks / summary endpoint). */
   getRecent(): HumanDetectorSignal[] {
     return [...this.recent];
+  }
+
+  /** Recent metadata-only durable-capture failures for the operator health surface. */
+  getCaptureFailures(): HumanDetectorCaptureFailure[] {
+    return [...this.captureFailures];
   }
 
   // ── Drift canary (spec §3.2) ───────────────────────────────────────
@@ -317,8 +350,8 @@ export class HumanAsDetectorLog {
 
   // ── Internal ──────────────────────────────────────────────
 
-  private persist(signal: HumanDetectorSignal): void {
-    if (!this.stateDir) return;
+  private persist(signal: HumanDetectorSignal): 'persisted' | HumanDetectorCaptureFailure['reason'] {
+    if (!this.stateDir) return 'state-dir-unconfigured';
     try {
       const dir = path.join(this.stateDir, 'metrics');
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -334,8 +367,9 @@ export class HumanAsDetectorLog {
         JSON.stringify({ ...metadata, agentName: this.agentName }) + '\n',
         { mode: 0o600 },
       );
+      return 'persisted';
     } catch {
-      // Disk persistence is best-effort; the console.warn is the safety net.
+      return 'persistence-write-failed';
     }
   }
 

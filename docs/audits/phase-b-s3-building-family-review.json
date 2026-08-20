@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-17T18:17:47.000Z",
+  "reviewers": [
+    "phase-b-s3-guard-author",
+    "blind-input-consumer-audit"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 0
+  },
+  "convergenceReport": "docs/specs/reports/phase-b-s3-building-family-review.md",
+  "convergenceSha256": "6f7ea04de1e468376790b577d581528307bf7207bafc8d208ea1ffcd4f2761fa",
+  "areas": {
+    "Building": {
+      "areaSha256": "be634f1b61e0ef5ab4fcc1ed6cb212852c63178f7ec95b999326cecfcbf4bda7",
+      "verdict": "accepted"
+    }
+  }
+}

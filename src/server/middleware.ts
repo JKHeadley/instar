@@ -400,7 +400,7 @@ export const OUTBOUND_GATE_REVIEW_BUDGET_MS = 20_000;
  * It makes a single heavy top-tier review call over a full spec; the 30s default
  * 408s on any real spec. Set ABOVE the reviewer's inner CONFORMANCE_REVIEW_TIMEOUT_MS
  * (150s) so the provider's own clean kill fires first — a genuinely-too-slow spec
- * degrades fail-open (advisory empty report) instead of erroring at the client.
+ * degrades to an explicit not-proven report instead of erroring at the client.
  */
 export const SPEC_REVIEW_TIMEOUT_MS = 180_000;
 
