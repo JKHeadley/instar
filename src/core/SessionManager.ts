@@ -5737,7 +5737,27 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return false; // still stuck after the full recovery window
   }
 
-  injectTelegramMessage(tmuxSession: string, topicId: number, text: string, topicName?: string, senderName?: string, telegramUserId?: number, messageId?: number): boolean {
+  injectTelegramMessage(
+    tmuxSession: string,
+    topicId: number,
+    text: string,
+    topicName?: string,
+    senderName?: string,
+    telegramUserId?: number,
+    messageId?: number,
+    opts?: {
+      /**
+       * W21 re-delivery provenance. TRUE only when instar's own no-loss
+       * recovery is RE-injecting a message it already delivered once
+       * (`reinjectStuck` → `metadata.replay: true`). Purely additive: it adds
+       * a visible marker to the tag and nothing else — it can never refuse,
+       * delay, reorder or drop a message. Travels as THIS in-process
+       * parameter, never as content, so a body that merely contains the
+       * marker text cannot mint it.
+       */
+      reDelivered?: boolean;
+    },
+  ): boolean {
     // Structural dedup at the delivery chokepoint: a given Telegram messageId
     // must reach a session at most once. Upstream paths can over-forward the SAME
     // user message (lifeline re-forward, PendingRelayStore re-drive, sentinel
@@ -5803,7 +5823,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
     // Build tag using the shared builder — includes UID when available
     // Format: [telegram:42 "Agent Updates" from Justin (uid:12345)]
-    const topicTag = buildInjectionTag(topicId, safeTopic, safeName, telegramUserId);
+    const topicTag = buildInjectionTag(topicId, safeTopic, safeName, telegramUserId, opts?.reDelivered);
     const taggedText = `${topicTag} ${transformed}`;
 
     if (taggedText.length <= FILE_THRESHOLD) {
@@ -5817,7 +5837,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const filepath = path.join(tmpDir, filename);
     fs.writeFileSync(filepath, taggedText);
 
-    const ref = `[telegram:${topicId}] [Long message saved to ${filepath} — read it to see the full message]`;
+    // The session sees ONLY this line until it opens the file, so the marker has
+    // to ride here too — the observed 2026-08-20 re-deliveries were all long
+    // messages, i.e. exactly this branch. buildInjectionTag(topicId) with a
+    // falsy flag returns `[telegram:N]`, byte-identical to the previous literal.
+    const refTag = buildInjectionTag(topicId, undefined, undefined, undefined, opts?.reDelivered);
+    const ref = `${refTag} [Long message saved to ${filepath} — read it to see the full message]`;
     return this.injectMessage(tmuxSession, ref) !== false;
   }
 

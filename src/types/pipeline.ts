@@ -239,6 +239,22 @@ export function toInjection(
 }
 
 /**
+ * The visible re-delivery marker (W21).
+ *
+ * instar's own no-loss recovery re-injects an inbound message that was claimed
+ * but never reply-committed (`reinjectStuck`, mints `id: replay-<dedupeKey>`
+ * with `metadata.replay: true`). Before this marker existed the two injected
+ * payloads were BYTE-IDENTICAL, so a re-delivered message was indistinguishable
+ * from a fresh instruction — which is how a superseded 21-hour-old instruction
+ * read as current on 2026-08-20.
+ *
+ * The marker is emitted INSIDE the tag, AFTER the topic id, so every existing
+ * tag parser (all of which anchor on `^\[telegram:(\d+)`) is unaffected.
+ */
+export const RE_DELIVERY_MARKER =
+  'RE-DELIVERED — no reply was recorded for this message';
+
+/**
  * Build the injection tag string.
  *
  * Exported for use by SessionManager.injectTelegramMessage() to avoid
@@ -250,23 +266,32 @@ export function toInjection(
  *   [telegram:42 "Topic Name"]                       — when sender unknown
  *   [telegram:42 from Justin (uid:12345)]             — when no topic name
  *   [telegram:42]                                     — bare minimum
+ *
+ * `reDelivered` is an IN-PROCESS parameter, never content-derived — the same
+ * provenance discipline `SessionManager.injectMessage`'s first-party flag uses.
+ * A message whose BODY merely contains the marker text therefore cannot mint
+ * the marker: there is nothing to string-match and so nothing to forge.
+ * ADDITIVE ONLY — when `reDelivered` is falsy the returned bytes are identical
+ * to the pre-marker output.
  */
 export function buildInjectionTag(
   topicId: number,
   topicName?: string,
   senderName?: string,
   telegramUserId?: number,
+  reDelivered?: boolean,
 ): string {
   const uidSuffix = telegramUserId ? ` (uid:${telegramUserId})` : '';
+  const reDeliverySuffix = reDelivered === true ? ` — ${RE_DELIVERY_MARKER}` : '';
 
   if (topicName && senderName) {
-    return `[telegram:${topicId} "${topicName}" from ${senderName}${uidSuffix}]`;
+    return `[telegram:${topicId} "${topicName}" from ${senderName}${uidSuffix}${reDeliverySuffix}]`;
   } else if (topicName) {
-    return `[telegram:${topicId} "${topicName}"]`;
+    return `[telegram:${topicId} "${topicName}"${reDeliverySuffix}]`;
   } else if (senderName) {
-    return `[telegram:${topicId} from ${senderName}${uidSuffix}]`;
+    return `[telegram:${topicId} from ${senderName}${uidSuffix}${reDeliverySuffix}]`;
   } else {
-    return `[telegram:${topicId}]`;
+    return `[telegram:${topicId}${reDeliverySuffix}]`;
   }
 }
 
