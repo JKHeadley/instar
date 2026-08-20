@@ -1,0 +1,31 @@
+{
+  "ts": "2026-08-20T21:39:52.822Z",
+  "slug": "reroute-sentinel-echo-collision",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 18,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SessionManager.ts"
+    ],
+    "addedLines": 17,
+    "deletedLines": 1
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Introduced with the june15-headless-spawn-reroute lane itself (spec O1, 'the crux'). The completion sentinel was designed as a per-session literal printed by the model and matched on the pane, but the prompt CARRYING that instruction is injected into the same pane, so the assembled literal was present from render time. Not a regression from a later PR and not an environment shift - the collision existed from the lane's first commit and was invisible because its symptom is a FALSE SUCCESS, which no status surface distinguishes from a real one. The two unit tests that covered the halves in isolation both passed and one actively pinned the defect (asserting the prompt must END with the assembled sentinel), so the guard rail confirmed the bug rather than catching it."
+  },
+  "classClosure": {
+    "defectClass": "brittle-keyword-authority",
+    "closure": "gap",
+    "gapItem": "ACT-1798",
+    "prNumber": 1951,
+    "component": "SessionManager"
+  },
+  "verdict": "pass"
+}
