@@ -55,13 +55,14 @@ describe('POST /spec/conformance-check', () => {
     expect(res.body.report.findings[0].standard).toMatch(/No Manual Work/);
   });
 
-  it('degrades safe (empty report) with no intelligence provider', async () => {
+  it('degrades safely to an explicit not-proven report with no intelligence provider', async () => {
     const res = await request(app({ intelligence: null }))
       .post('/spec/conformance-check')
       .send({ markdown: '# Spec\nsomething' });
     expect(res.status).toBe(200);
     expect(res.body.report.degraded).toBe(true);
     expect(res.body.report.findings).toEqual([]);
+    expect(res.body.report.conclusion).toBe('not-proven');
   });
 
   it('400 when neither markdown nor specPath is given', async () => {

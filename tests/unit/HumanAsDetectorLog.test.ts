@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -124,6 +124,29 @@ describe('HumanAsDetectorLog', () => {
       HumanAsDetectorLog.resetForTesting();
       const fresh = HumanAsDetectorLog.getInstance(); // no configure()
       expect(() => fresh.observe({ text: "That's wrong.", source: 'telegram' })).not.toThrow();
+      expect(fresh.getCaptureFailures()).toMatchObject([
+        { reason: 'state-dir-unconfigured', category: 'factual-correction' },
+      ]);
+    });
+
+    it('fails open and LOUD with a failed-capture record when persistence cannot write', () => {
+      // A regular file at metrics/ makes mkdirSync/appendFileSync fail.
+      fs.writeFileSync(path.join(tmpDir, 'metrics'), 'not a directory');
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const signal = log.observe({ text: "That's wrong.", source: 'telegram', topicId: 29723 });
+
+      expect(signal).not.toBeNull(); // message path remains fail-open
+      expect(log.getRecent()).toHaveLength(1);
+      expect(log.getCaptureFailures()).toEqual([
+        expect.objectContaining({
+          source: 'telegram',
+          topicId: 29723,
+          category: 'factual-correction',
+          reason: 'persistence-write-failed',
+        }),
+      ]);
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('HUMAN-AS-DETECTOR-CAPTURE-FAILED'));
     });
   });
 

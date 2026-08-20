@@ -163,6 +163,7 @@ describe('StandardsConformanceReviewer', () => {
     expect(report.degraded).toBe(false);
     expect(report.standardsChecked).toBe(2);
     expect(report.findings).toHaveLength(1);
+    expect(report.conclusion).toBe('possible-violation');
     expect(report.findings[0].standard).toBe('No Manual Work (user *or* agent)');
     expect(report.findings[0].status).toBe('possible-violation');
   });
@@ -183,11 +184,12 @@ describe('StandardsConformanceReviewer', () => {
     expect(seen?.timeoutMs).toBe(CONFORMANCE_REVIEW_TIMEOUT_MS);
   });
 
-  it('degrades safe (empty report) when no provider is configured', async () => {
+  it('returns not-proven when no provider is configured', async () => {
     const report = await new StandardsConformanceReviewer(null).review('spec', FIXTURE_ARTICLES);
     expect(report.degraded).toBe(true);
     expect(report.degradeReason).toBe('no-intelligence');
     expect(report.findings).toEqual([]);
+    expect(report.conclusion).toBe('not-proven');
   });
 
   it('degrades safe when the provider throws', async () => {
@@ -195,6 +197,8 @@ describe('StandardsConformanceReviewer', () => {
     const report = await new StandardsConformanceReviewer(provider).review('spec', FIXTURE_ARTICLES);
     expect(report.degraded).toBe(true);
     expect(report.degradeReason).toBe('error');
+    expect(report.findings).toEqual([]);
+    expect(report.conclusion).toBe('not-proven');
   });
 
   it('degrades (unparseable) when the LLM returns non-JSON', async () => {
@@ -202,6 +206,8 @@ describe('StandardsConformanceReviewer', () => {
     const report = await new StandardsConformanceReviewer(provider).review('spec', FIXTURE_ARTICLES);
     expect(report.degraded).toBe(true);
     expect(report.degradeReason).toBe('unparseable');
+    expect(report.findings).toEqual([]);
+    expect(report.conclusion).toBe('not-proven');
   });
 
   it('drops hallucinated standards not in the registry', () => {
@@ -264,25 +270,25 @@ describe('Constitutional Traceability — judgeFit + parseFitResponse', () => {
     expect(r.verdict).toBe('fit');
   });
 
-  it('FAILS OPEN to "fit" when no provider — never block work by being down', async () => {
+  it('returns not-proven when no provider — unavailable judgment cannot authorize fit', async () => {
     const r = await new StandardsConformanceReviewer(null).judgeFit('spec', 'Signal vs. Authority', FIXTURE_ARTICLES);
-    expect(r.verdict).toBe('fit');
+    expect(r.verdict).toBe('not-proven');
     expect(r.degraded).toBe(true);
     expect(r.degradeReason).toBe('no-intelligence');
   });
 
-  it('FAILS OPEN to "fit" when the provider throws', async () => {
+  it('returns not-proven when the provider throws', async () => {
     const provider: IntelligenceProvider = { async evaluate() { throw new Error('down'); } };
     const r = await new StandardsConformanceReviewer(provider).judgeFit('spec', 'Signal vs. Authority', FIXTURE_ARTICLES);
-    expect(r.verdict).toBe('fit');
+    expect(r.verdict).toBe('not-proven');
     expect(r.degraded).toBe(true);
     expect(r.degradeReason).toBe('error');
   });
 
-  it('FAILS OPEN to "fit" when the verdict is unparseable', async () => {
+  it('returns not-proven when the verdict is unparseable', async () => {
     const r = await new StandardsConformanceReviewer(fitProvider('no json here'))
       .judgeFit('spec', 'Signal vs. Authority', FIXTURE_ARTICLES);
-    expect(r.verdict).toBe('fit');
+    expect(r.verdict).toBe('not-proven');
     expect(r.degraded).toBe(true);
     expect(r.degradeReason).toBe('unparseable');
   });

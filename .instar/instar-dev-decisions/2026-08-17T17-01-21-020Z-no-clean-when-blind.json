@@ -1,0 +1,43 @@
+{
+  "ts": "2026-08-17T17:01:21.020Z",
+  "slug": "no-clean-when-blind",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 381,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/checker-blind-input-cases.mjs",
+      "scripts/lib/checker-blind-input-ratchet.mjs",
+      "scripts/lint-checker-blind-input-coverage.mjs",
+      "scripts/lint-llm-attribution.js",
+      "src/core/reviewers/standards-conformance.ts",
+      "src/monitoring/HumanAsDetectorLog.ts",
+      "src/monitoring/probes/GuardPostureProbe.ts",
+      "src/server/middleware.ts",
+      "src/server/routes.ts",
+      "src/server/specReviewRoutes.ts"
+    ],
+    "addedLines": 336,
+    "deletedLines": 45
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Four independent checker paths collapsed unavailable evidence into clean, fit, or silent outcomes; the shared missing invariant was that inability to inspect must remain distinguishable from a clean result."
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "scripts/lint-checker-blind-input-coverage.mjs#MAX_UNCOVERED_CHECKERS",
+      "howCaught": "The code-derived checker denominator plus executable blind-input cases rejects a new checker whose clean claim lacks evidence that its input could actually be inspected."
+    },
+    "component": "checker-blind-input"
+  },
+  "verdict": "pass"
+}

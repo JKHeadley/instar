@@ -7,9 +7,9 @@
  * structured per-standard report rather than a single block/warn verdict.
  *
  * Signal-only (spec §4): it produces a report; it has NO blocking authority. The
- * human ratification + the instar-dev `approved:true` gate decide. Degrade-safe:
- * no provider, or an LLM throw/timeout → an empty report (fail-open) — the gate
- * must never block spec work by being down.
+ * human ratification + the instar-dev `approved:true` gate decide. A missing
+ * provider, throw, timeout, or malformed answer is an explicit `not-proven`
+ * conclusion — never an empty report that downstream code can misread as fit.
  *
  * Spec: docs/specs/standards-conformance-gate.md §2.
  */
@@ -25,7 +25,8 @@ export type ConformanceStatus = 'possible-violation';
  * standard it names? 'fit' passes; 'weak'/'none' block (the work must improve the
  * constitution to cover it, or be recognized as unconstitutional).
  */
-export type ConformanceFitVerdict = 'fit' | 'weak' | 'none';
+export type ConformanceFitVerdict = 'fit' | 'weak' | 'none' | 'not-proven';
+export type ConformanceConclusion = 'fits' | 'possible-violation' | 'not-proven';
 
 export interface ConformanceFinding {
   /** The standard the draft may violate (article name). */
@@ -38,9 +39,11 @@ export interface ConformanceFinding {
 
 export interface ConformanceReport {
   findings: ConformanceFinding[];
+  /** Independent conclusion; consumers must never infer "fits" from findings.length alone. */
+  conclusion: ConformanceConclusion;
   /** How many standards were checked against. */
   standardsChecked: number;
-  /** True when the LLM step didn't run (no provider / error) — report is empty, not authoritative. */
+  /** True when the LLM step didn't run (no provider / error) — conclusion is explicitly not-proven. */
   degraded: boolean;
   degradeReason?: 'no-intelligence' | 'error' | 'unparseable';
   checkedAt: string;
@@ -53,8 +56,8 @@ export interface ConformanceReport {
  * parent constitutional standard it names? The structural half (does the named
  * parent resolve to a real registry article?) always runs and can BLOCK with
  * 'none'. The qualitative half (is the fit indisputable?) is an LLM judgment that
- * BLOCKS on 'weak'/'none' but FAILS OPEN to 'fit' when the reviewer is degraded —
- * the gate must never block work by being down.
+ * BLOCKS closure on 'weak'/'none' and returns 'not-proven' when the reviewer is
+ * degraded. Work may continue, but the unavailable judgment cannot become fit.
  */
 export interface FitReport {
   verdict: ConformanceFitVerdict;
@@ -64,7 +67,7 @@ export interface FitReport {
   parentResolved: boolean;
   /** One-line plain-English rationale. */
   reason: string;
-  /** True when the LLM step didn't run (fail-open to 'fit'). */
+  /** True when the LLM step didn't run — verdict is explicitly not-proven. */
   degraded: boolean;
   degradeReason?: 'no-intelligence' | 'error' | 'unparseable';
   checkedAt: string;
@@ -77,10 +80,10 @@ export const MAX_SPEC_CHARS = 24000;
  * Per-call budget passed to the provider for the conformance review. Reviewing
  * a full spec against the whole constitution is a single heavy top-tier call
  * that routinely exceeds the providers' 30s default; without this the call is
- * killed mid-review and the gate returns a misleadingly-empty degraded report.
+ * killed mid-review and the gate returns an explicit not-proven degraded report.
  * Kept strictly BELOW the route's outer middleware budget (SPEC_REVIEW_TIMEOUT_MS
  * in AgentServer) so the provider's clean kill fires before the HTTP 408 — a
- * genuinely-too-slow spec degrades fail-open rather than erroring at the client.
+ * genuinely-too-slow spec degrades to not-proven rather than erroring at the client.
  */
 export const CONFORMANCE_REVIEW_TIMEOUT_MS = 150_000;
 const FENCE = '<<<SPEC';
@@ -199,7 +202,7 @@ export class StandardsConformanceReviewer {
   async review(specMarkdown: string, articles: StandardArticle[]): Promise<ConformanceReport> {
     const base = { standardsChecked: articles.length, checkedAt: new Date().toISOString() };
     if (!this.intelligence) {
-      return { ...base, findings: [], degraded: true, degradeReason: 'no-intelligence' };
+      return { ...base, findings: [], conclusion: 'not-proven', degraded: true, degradeReason: 'no-intelligence' };
     }
     let raw: string;
     try {
@@ -211,21 +214,26 @@ export class StandardsConformanceReviewer {
         attribution: { component: 'StandardsConformanceReviewer' },
       });
     } catch {
-      return { ...base, findings: [], degraded: true, degradeReason: 'error' };
+      return { ...base, findings: [], conclusion: 'not-proven', degraded: true, degradeReason: 'error' };
     }
     const findings = parseConformanceResponse(raw, articles);
     if (findings === null) {
-      return { ...base, findings: [], degraded: true, degradeReason: 'unparseable' };
+      return { ...base, findings: [], conclusion: 'not-proven', degraded: true, degradeReason: 'unparseable' };
     }
-    return { ...base, findings, degraded: false };
+    return {
+      ...base,
+      findings,
+      conclusion: findings.length > 0 ? 'possible-violation' : 'fits',
+      degraded: false,
+    };
   }
 
   /**
    * Constitutional Traceability fit judgment (Part C). The STRUCTURAL half always
    * runs: the named parent must resolve to a real registry article, else 'none' (a
    * real block — "name a parent that resolves", not a degrade). The QUALITATIVE half
-   * is the LLM; it returns 'fit'/'weak'/'none' and FAILS OPEN to 'fit' when degraded
-   * (no provider / error / unparseable) — the gate must never block work by being down.
+   * is the LLM; it returns 'fit'/'weak'/'none'. A degraded judgment returns
+   * 'not-proven': it may not halt ordinary work, but it cannot authorize closure.
    */
   async judgeFit(specMarkdown: string, parentPrincipleName: string, articles: StandardArticle[]): Promise<FitReport> {
     const base = { parentPrinciple: parentPrincipleName || '', checkedAt: new Date().toISOString() };
@@ -249,7 +257,7 @@ export class StandardsConformanceReviewer {
       };
     }
     if (!this.intelligence) {
-      return { ...base, verdict: 'fit', parentResolved: true, reason: 'fit judgment unavailable (no intelligence) — fail-open', degraded: true, degradeReason: 'no-intelligence' };
+      return { ...base, verdict: 'not-proven', parentResolved: true, reason: 'fit judgment unavailable (no intelligence) — not proven', degraded: true, degradeReason: 'no-intelligence' };
     }
     let raw: string;
     try {
@@ -261,11 +269,11 @@ export class StandardsConformanceReviewer {
         attribution: { component: 'StandardsConformanceReviewer/fit' },
       });
     } catch {
-      return { ...base, verdict: 'fit', parentResolved: true, reason: 'fit judgment errored — fail-open', degraded: true, degradeReason: 'error' };
+      return { ...base, verdict: 'not-proven', parentResolved: true, reason: 'fit judgment errored — not proven', degraded: true, degradeReason: 'error' };
     }
     const parsed = parseFitResponse(raw);
     if (!parsed) {
-      return { ...base, verdict: 'fit', parentResolved: true, reason: 'fit judgment unparseable — fail-open', degraded: true, degradeReason: 'unparseable' };
+      return { ...base, verdict: 'not-proven', parentResolved: true, reason: 'fit judgment unparseable — not proven', degraded: true, degradeReason: 'unparseable' };
     }
     return { ...base, verdict: parsed.verdict, parentResolved: true, reason: parsed.reason, degraded: false };
   }

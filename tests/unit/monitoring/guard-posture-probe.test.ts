@@ -88,13 +88,13 @@ function hb(partial: Partial<HeartbeatGuardPosture> = {}): HeartbeatGuardPosture
 
 function makeProbe(opts: {
   local?: () => GuardInventoryResult | null;
-  peers?: () => PeerPostureRead[];
+  peers?: () => PeerPostureRead[] | null;
   deepReadPeer?: GuardPostureProbeDeps['deepReadPeer'];
   emitAttention?: GuardPostureProbeDeps['emitAttention'];
 }) {
   const emitted: GuardPostureAttentionItem[] = [];
   const probes = createGuardPostureProbes({
-    getLocalPosture: opts.local ?? (() => null),
+    getLocalPosture: opts.local ?? (() => CLEAN_INV),
     getPeerPostures: opts.peers ?? (() => []),
     deepReadPeer: opts.deepReadPeer,
     emitAttention:
@@ -129,6 +129,42 @@ describe('GuardPostureProbe — probe family conventions', () => {
     const result = await probe.run();
     expect(result.passed).toBe(true);
     expect(result.description).toContain('No guard-posture anomalies');
+  });
+
+  it('returns NOT-PROVEN when null posture plus a throwing deep read leaves it blind', async () => {
+    const deepReadPeer = vi.fn(async () => { throw new Error('peer unreachable'); });
+    const { probe, emitted } = makeProbe({
+      local: () => null,
+      peers: () => [{
+        machineId: 'm_blind',
+        online: true,
+        posture: null,
+        postureAgeMs: null,
+      }],
+      deepReadPeer,
+    });
+
+    const result = await probe.run();
+
+    expect(deepReadPeer).toHaveBeenCalledWith('m_blind');
+    expect(result.passed).toBe(false);
+    expect(result.description).toContain('NOT-PROVEN');
+    expect(result.error).toContain('local: posture unavailable');
+    expect(result.error).toContain('peer unreachable');
+    expect(emitted).toEqual([]);
+  });
+
+  it('distinguishes an unreadable peer registry from an inspected empty population', async () => {
+    const unreadable = makeProbe({ peers: () => null });
+    const empty = makeProbe({ peers: () => [] });
+
+    const unreadableResult = await unreadable.probe.run();
+    const emptyResult = await empty.probe.run();
+
+    expect(unreadableResult.passed).toBe(false);
+    expect(unreadableResult.description).toContain('NOT-PROVEN');
+    expect(unreadableResult.error).toContain('peer registry');
+    expect(emptyResult.passed).toBe(true);
   });
 });
 

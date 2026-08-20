@@ -312,17 +312,21 @@ export function checkFileText(rel, rawText) {
   return violations;
 }
 
-function walk(dir, out, skip) {
+function walk(dir, out, skip, blind) {
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
+  } catch (err) {
+    blind.push({
+      file: path.relative(ROOT, dir).split(path.sep).join('/') || '.',
+      reason: `directory-unreadable: ${err instanceof Error ? err.message : String(err)}`,
+    });
     return;
   }
   for (const e of entries) {
     if (skip.has(e.name)) continue;
     const full = path.join(dir, e.name);
-    if (e.isDirectory()) walk(full, out, skip);
+    if (e.isDirectory()) walk(full, out, skip, blind);
     else if (EXTENSIONS.has(path.extname(e.name))) out.push(full);
   }
 }
@@ -331,9 +335,13 @@ function collectFiles(args) {
   if (args.length === 0) {
     const skip = new Set(['node_modules', 'dist', 'build', '.instar', '.git', 'coverage']);
     const out = [];
+    const blind = [];
     const p = path.join(ROOT, 'src');
-    if (fs.existsSync(p)) walk(p, out, skip);
-    return out;
+    walk(p, out, skip, blind);
+    if (out.length === 0 && blind.length === 0) {
+      blind.push({ file: 'src', reason: 'empty-source-population' });
+    }
+    return { files: out, blind };
   }
   if (args[0] === '--staged') {
     try {
@@ -341,16 +349,25 @@ function collectFiles(args) {
         cwd: ROOT,
         encoding: 'utf-8',
       });
-      return stdout
+      return { files: stdout
         .split('\n')
         .filter(Boolean)
         .filter((f) => f.startsWith('src/') && EXTENSIONS.has(path.extname(f)))
-        .map((f) => path.join(ROOT, f));
-    } catch {
-      return [];
+        .map((f) => path.join(ROOT, f)), blind: [] };
+    } catch (err) {
+      return {
+        files: [],
+        blind: [{
+          file: '<staged-files>',
+          reason: `staged-input-unavailable: ${err instanceof Error ? err.message : String(err)}`,
+        }],
+      };
     }
   }
-  return args.map((a) => path.resolve(ROOT, a)).filter((f) => fs.existsSync(f));
+  // Keep absent/unreadable explicit inputs in the population. runLint() owns
+  // the read and records an honest blind-input failure instead of filtering the
+  // path away and turning "could not look" into a clean zero-violation result.
+  return { files: args.map((a) => path.resolve(ROOT, a)), blind: [] };
 }
 
 /**
@@ -358,17 +375,27 @@ function collectFiles(args) {
  * suite (tests/unit/llm-attribution-ratchet.test.ts). `checkStale` is true
  * for full-repo runs only — a partial run can't prove an allowlist entry dead.
  */
-export function runLint(files, { allowlist = VIOLATIONS_ALLOWLIST, funnelFiles = FUNNEL_FILES, checkStale = false } = {}) {
+export function runLint(files, {
+  allowlist = VIOLATIONS_ALLOWLIST,
+  funnelFiles = FUNNEL_FILES,
+  checkStale = false,
+  sourceRoot = ROOT,
+} = {}) {
   const violations = [];
+  const blind = [];
   for (const f of files) {
-    const rel = path.relative(ROOT, f).split(path.sep).join('/');
+    const rel = path.relative(sourceRoot, f).split(path.sep).join('/');
     if (!rel.startsWith('src/')) continue;
     if (isOutOfScope(rel)) continue;
     if (funnelFiles.has(rel)) continue;
     let text;
     try {
       text = fs.readFileSync(f, 'utf-8');
-    } catch {
+    } catch (err) {
+      blind.push({
+        file: rel,
+        reason: `file-unreadable: ${err instanceof Error ? err.message : String(err)}`,
+      });
       continue;
     }
     violations.push(...checkFileText(rel, text));
@@ -387,15 +414,16 @@ export function runLint(files, { allowlist = VIOLATIONS_ALLOWLIST, funnelFiles =
       if (!hitFiles.has(entry) && !hitLines.has(entry)) stale.push(entry);
     }
   }
-  return { real, allowlisted, stale };
+  return { real, allowlisted, stale, blind };
 }
 
 function main() {
   const args = process.argv.slice(2);
-  const files = collectFiles(args);
-  const { real, stale } = runLint(files, { checkStale: args.length === 0 });
+  const collected = collectFiles(args);
+  const { real, stale, blind: readBlind } = runLint(collected.files, { checkStale: args.length === 0 });
+  const blind = [...collected.blind, ...readBlind];
 
-  if (real.length === 0 && stale.length === 0) process.exit(0);
+  if (real.length === 0 && stale.length === 0 && blind.length === 0) process.exit(0);
 
   if (real.length > 0) {
     console.error('lint-llm-attribution: funnel LLM callsite(s) without attribution.component found.\n');
@@ -410,6 +438,12 @@ function main() {
   }
   for (const entry of stale) {
     console.error(`  STALE allowlist entry "${entry}" — no remaining violation; remove me.`);
+  }
+  if (blind.length > 0) {
+    console.error('lint-llm-attribution: NOT-PROVEN — one or more inputs could not be inspected.');
+    for (const entry of blind) {
+      console.error(`  BLIND ${entry.file} — ${entry.reason}`);
+    }
   }
   process.exit(1);
 }

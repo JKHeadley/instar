@@ -13405,6 +13405,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({
       byLayer: log.summarizeByLayer(),
       recent: log.getRecent().slice(-50),
+      captureFailures: log.getCaptureFailures().slice(-50),
     });
   });
 
