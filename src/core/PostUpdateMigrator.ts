@@ -15833,6 +15833,16 @@ process.stdin.on('end', async () => {
     // the swallowing version in place with a `.new` beside it, and every agent
     // keeps mis-sending a misplaced (or typo'd) flag as message body.
     'a2cf02154a6023725f15480a575f54a5231278c70396cd12051b7d7055b72d98',
+    // The flag-position-guard version, shipped immediately BEFORE the
+    // suppressed-duplicate honesty fix. In this version the relay read only
+    // the HTTP status: the server answers 200 with `suppressedDuplicate: true`
+    // when it drops an exact repeat, and the script discarded that body,
+    // printed "Sent N chars" and exited 0 — reporting a message the user
+    // never saw as delivered. Registering this SHA is what lets a deployed
+    // agent RECEIVE the fix: without it the SHA-history migrator leaves the
+    // mis-reporting version in place with a `.new` beside it, and every
+    // existing agent keeps being told its suppressed sends succeeded.
+    '4464581188f5c736a62edac5e6a2edecfcfcd365557a18e514b741731bed6e0b',
   ]);
 
   /**

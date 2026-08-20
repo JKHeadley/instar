@@ -519,6 +519,13 @@ HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 
 if [ "$HTTP_CODE" = "200" ]; then
+  if printf '%s' "$BODY" | python3 -c 'import sys,json; raise SystemExit(0 if json.load(sys.stdin).get("suppressedDuplicate") is True else 1)' 2>/dev/null; then
+    SUPPRESSED_DELIVERY_ID=$(printf '%s' "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("deliveryId", ""))' 2>/dev/null || echo "")
+    DELIVERY_ID_DETAIL=""
+    [ -n "$SUPPRESSED_DELIVERY_ID" ] && DELIVERY_ID_DETAIL="; delivery id $SUPPRESSED_DELIVERY_ID"
+    echo "NOT SENT — suppressed duplicate for topic $TOPIC_ID${DELIVERY_ID_DETAIL}; an identical message was already delivered to that topic recently"
+    exit 1
+  fi
   echo "Sent $(echo "$MSG" | wc -c | tr -d ' ') chars to topic $TOPIC_ID"
 elif [ "$HTTP_CODE" = "408" ]; then
   # Request timeout on the server side — the outbound path (tone gate + Telegram API)
