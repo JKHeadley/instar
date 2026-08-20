@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-08-20T03:36:24.778Z",
+  "slug": "agent-identity-continuity-on-expansion",
+  "carriers": {
+    "CMT-026": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "(1) RELAY-SIDE RETIREMENT of stale agent registrations. Local repair leaves the orphan row registered; the July resolver fix mitigates it but does not remove it. Retirement is a relay operation needing its own authorization model (who may retire a registration, how the relay knows the requester owns it) \u2014 that design does not exist. Until it does, a repaired agent still has a dead row bearing its "
+    }
+  }
+}

@@ -24,7 +24,7 @@
  * report that a limit is wrong.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   LAUNCHD_PROCESS_CEILING_FLOOR,
@@ -75,7 +75,7 @@ export function readEffectiveProcessCeiling(
  *              restart a machine that would come back just as broken; folding it into
  *              silence — the first draft's behaviour — leaves a machine crashing on this
  *              exact bug with nobody told.
- * - `future-repair` — the machine is running SAFELY right now, but its plist is absent,
+ * - `future-repair` — the machine is running SAFELY right now, but its EXISTING plist is
  *              unreadable, half-raised, or below the floor, so its NEXT restart MAY land it
  *              in the unsafe state. "May", not "would": when the plist is below the floor
  *              the outcome is known, but when it cannot be READ the next effective limit is
@@ -111,6 +111,20 @@ export function evaluateProcessCeiling(input: {
   platform: string;
   effective: number | null;
   plistCeilings: number[];
+  /**
+   * Whether a launchd plist EXISTS for this agent at all.
+   *
+   * Absent is NOT the same as "present but wrong" (found 2026-08-19 by this repo's own suite,
+   * after the first version shipped): a machine with no launchd plist is not launchd-managed,
+   * so it has no managed ceiling to lose at its next restart, and telling its operator that a
+   * restart "may lose" the limit is a false alarm. The first version conflated the two and
+   * raised `future-repair` on every healthy unmanaged machine — including inside the test
+   * suite, where it polluted unrelated tests' attention items. That is how it was caught.
+   *
+   * Defaults TRUE so an omitted flag keeps the stricter reading rather than silently
+   * suppressing a real warning.
+   */
+  plistPresent?: boolean;
   machineId: string;
   /**
    * A host fingerprint mixed into the dedupe key alongside `machineId` (round-10 review
@@ -128,10 +142,14 @@ export function evaluateProcessCeiling(input: {
   const who = `${input.machineId}@${input.hostFingerprint ?? 'unknown-host'}`;
   if (input.platform !== 'darwin') return { state: 'unknown', reason: 'not-applicable' };
   if (input.effective === null) return { state: 'unknown', reason: 'effective-unreadable' };
+  const plistPresent = input.plistPresent ?? true;
   const plistOk =
     input.plistCeilings.length > 0 && input.plistCeilings.every((v) => v >= floor);
   if (input.effective >= floor) {
     if (plistOk) return { state: 'ok', effective: input.effective, floor };
+    // Safe now AND not launchd-managed: there is no managed ceiling to lose on restart, so
+    // there is nothing to warn about. Silence here is accuracy, not suppression.
+    if (!plistPresent) return { state: 'unknown', reason: 'not-applicable' };
     // Safe now, unsafe after the next restart. Reported at lower urgency, never silently.
     return {
       state: 'future-repair',
@@ -214,6 +232,18 @@ export function processCeilingNotice(
  * symbol WITHOUT importing the migration machinery: the check compares the symbol against
  * the state, so it needs to see both, but it must never be able to write either.
  */
+export function launchdPlistExistsForSelf(
+  projectName: string,
+  deps: { platform?: string; home?: string; exists?: (p: string) => boolean } = {},
+): boolean {
+  const platform = deps.platform ?? process.platform;
+  if (platform !== 'darwin') return false;
+  const home = deps.home ?? process.env.HOME ?? '';
+  if (!home) return false;
+  const exists = deps.exists ?? ((f: string) => existsSync(f));
+  return exists(join(home, 'Library', 'LaunchAgents', `ai.instar.${projectName}.plist`));
+}
+
 export function readLaunchdPlistCeilingsForSelf(
   projectName: string,
   deps: {
