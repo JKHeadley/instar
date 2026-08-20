@@ -2824,6 +2824,11 @@ export function wireTelegramRouting(
         const injected = sessionManager.injectTelegramMessage(
           targetSession, topicId, text, pipeline.topicName, pipeline.sender.firstName, pipeline.sender.telegramUserId,
           parseInt(pipeline.id.replace('tg-', ''), 10) || undefined,
+          // W21: the ONE place the re-delivery flag exists in-process. Set by
+          // `reinjectStuck` (the no-loss recovery re-injection) and read here so
+          // the tag can say so out loud. Read from the first-party Message
+          // metadata, never from `content` — content cannot forge it.
+          { reDelivered: msg.metadata?.replay === true },
         );
         if (injected) confirmLocalSessionPoolClaim();
         // Delivery confirmation — only when WE own polling. When lifeline owns

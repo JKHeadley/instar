@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { buildInjectionTag } from '../../src/types/pipeline.js';
 
 describe('Telegram message injection logic', () => {
   const FILE_THRESHOLD = 500;
@@ -28,11 +29,20 @@ describe('Telegram message injection logic', () => {
   });
 
   it('tags messages with [telegram:N] format', () => {
+    // W21 moved the long-message reference line off a hardcoded
+    // `[telegram:${topicId}]` literal and onto the shared buildInjectionTag()
+    // builder, so the re-delivery marker can ride the ONE line the session
+    // actually sees. The guarantee this test protects is unchanged — messages
+    // are tagged `[telegram:N]` — so it follows the tag to where it now lives
+    // and asserts the OUTPUT rather than a source string the change removed.
     const source = fs.readFileSync(
       path.join(process.cwd(), 'src/core/SessionManager.ts'),
       'utf-8'
     );
-    expect(source).toContain('`[telegram:${topicId}]');
+    expect(source).toContain('buildInjectionTag(');
+    expect(buildInjectionTag(42)).toBe('[telegram:42]');
+    expect(buildInjectionTag(42, 'Agent Updates', 'Justin', 12345))
+      .toBe('[telegram:42 "Agent Updates" from Justin (uid:12345)]');
   });
 
   it('writes long messages to temp file', () => {
