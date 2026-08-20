@@ -1,0 +1,25 @@
+{
+  "ts": "2026-08-20T07:01:49.810Z",
+  "slug": "wire-agent-identity-handover",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 261,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/machine.ts",
+      "src/core/AgentIdentityHandover.ts",
+      "src/server/AgentServer.ts",
+      "src/server/machineRoutes.ts"
+    ],
+    "addedLines": 260,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

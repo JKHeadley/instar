@@ -1114,6 +1114,10 @@ export class AgentServer {
         },
         localMachineId: coord.identity!.machineId,
         localSigningKeyPem: options.localSigningKeyPem ?? '',
+        // Agent-identity handover on pairing (agent-identity-continuity-on-expansion §1) —
+        // without these the pair route hands over nothing and a joiner fails loudly.
+        stateDir: options.config.stateDir,
+        agentName: options.config.projectName,
         onDemote: () => coord.demoteToStandby('Remote heartbeat: another machine took over'),
         onPromote: () => coord.promoteToAwake('Remote handoff: awake machine handed off to us'),
         onHandoffRequest: async () => ({

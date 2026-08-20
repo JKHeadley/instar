@@ -15,6 +15,7 @@
  */
 
 import fs from 'node:fs';
+import { installAgentIdentityFromPairing } from '../core/AgentIdentityHandover.js';
 import path from 'node:path';
 import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
@@ -326,6 +327,14 @@ interface JoinOptions {
   code?: string;
   name?: string;
   port?: number;
+  /**
+   * The agent fingerprint from the operator's pairing artefact
+   * (agent-identity-continuity-on-expansion §1). When supplied, the joiner pins it and
+   * refuses any identity that does not hash to it — the check that stops a hostile
+   * listener returning a fabricated identity. Optional, and its absence is a weaker
+   * posture rather than an error.
+   */
+  agentFingerprint?: string;
 }
 
 /**
@@ -483,7 +492,56 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         process.exit(1);
       }
 
-      const result = await resp.json() as { machineIdentity?: any; status?: string };
+      const result = await resp.json() as {
+        machineIdentity?: any;
+        agentIdentityEnvelope?: any;
+        status?: string;
+      };
+
+      // ── Install the AGENT identity carried by the pairing response ──────────────────
+      // Spec: docs/specs/agent-identity-continuity-on-expansion.md §1.
+      //
+      // This must happen BEFORE the server first starts, so the boot finds an identity and
+      // never reaches the minting branch. A failure here is LOUD and provisions nothing —
+      // the joiner must never fall back to minting, because a silent twin is worse than a
+      // join that plainly did not finish (Frontloaded Decision 2).
+      const agentIdentityOutcome = installAgentIdentityFromPairing({
+        envelope: result.agentIdentityEnvelope,
+        stateDir: config.stateDir,
+        expected: {
+          pairingSessionId: String(options.code),
+          joinerMachineId: identity.machineId,
+          joinerEncryptionPublicKey: identity.encryptionPublicKey,
+          agentName: config.projectName,
+          expiresAt: '',
+        },
+        encryptionPrivateKeyPem: (() => {
+          try {
+            return mgr.loadEncryptionKey();
+          } catch {
+            // @silent-fallback-ok: reported as `no-encryption-key`, which is a LOUD refusal
+            // in the caller — never a fallback to minting.
+            return null;
+          }
+        })(),
+        pinnedFingerprint: options.agentFingerprint ?? null,
+      });
+      if (agentIdentityOutcome.ok) {
+        console.log(pc.green('  Agent identity received — this machine is the same agent.'));
+      } else if (agentIdentityOutcome.reason === 'not-offered') {
+        console.log(
+          pc.red('  This mesh did not provide an agent identity.') +
+            '\n  The machine you paired with is likely on an older version. Update it and re-pair.' +
+            '\n  NOT minting an identity here: that would silently split the agent in two.',
+        );
+      } else {
+        console.log(
+          pc.red(`  Agent identity handover REFUSED: ${agentIdentityOutcome.reason}`) +
+            '\n  Nothing was provisioned. Re-pair with a fresh code; if it repeats, the ' +
+            'response is not coming from the machine you think it is.',
+        );
+      }
+
       if (result.machineIdentity) {
         // Store the remote machine's identity
         mgr.storeRemoteIdentity(result.machineIdentity);
