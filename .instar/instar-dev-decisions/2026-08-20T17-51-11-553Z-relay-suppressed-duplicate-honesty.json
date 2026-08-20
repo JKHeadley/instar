@@ -1,0 +1,33 @@
+{
+  "ts": "2026-08-20T17:51:11.553Z",
+  "slug": "relay-suppressed-duplicate-honesty",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 17,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/templates/scripts/telegram-reply.sh"
+    ],
+    "addedLines": 17,
+    "deletedLines": 0
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      946,
+      1358
+    ],
+    "notes": "Latent since the server's duplicate-suppression path shipped (#946 introduced the suppressedDuplicate response; #1358 added the in-flight reservation arm). The server deliberately answers HTTP 200 - a suppressed send is not an error from its side - and puts the real outcome in a body field. telegram-reply.sh had only ever branched on the status line, so the new field was never read and the success print was reached anyway. Nothing regressed: the reporting gap shipped alongside the suppression feature and stayed invisible because a false success produces no error, no retry and no log entry. Found by direct observation on a live agent - a message reported as sent that the user never received."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

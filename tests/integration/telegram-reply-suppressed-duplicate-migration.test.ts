@@ -1,0 +1,198 @@
+/**
+ * Tier-2 integration tests for the suppressed-duplicate honesty MIGRATION.
+ *
+ * Per the Migration Parity Standard (CLAUDE.md), an instar agent updates in
+ * place: a template-only change reaches ONLY newly created agents. Every agent
+ * that already exists keeps the version on its disk unless the SHA-history
+ * migrator recognises it. That recognition is the whole deliverable here — the
+ * seven-line script fix is inert in the field without it.
+ *
+ * These tests drive the REAL `migrateScripts()` against a real script already
+ * on disk, in both deployed locations, and pin the three branches the migrator
+ * distinguishes: known-shipped (upgrade), already-current (no-op), and
+ * locally-modified (preserve + `.new` candidate).
+ */
+
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+
+type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[] };
+
+const TEMPLATE = path.resolve('src/templates/scripts/telegram-reply.sh');
+
+/**
+ * The SHA this PR registers — the version shipped immediately BEFORE the fix.
+ * Every agent in the field is running this exact content.
+ */
+const PRIOR_SHIPPED_SHA =
+  '4464581188f5c736a62edac5e6a2edecfcfcd365557a18e514b741731bed6e0b';
+
+const SUPPRESSION_MARKER = 'suppressedDuplicate';
+
+/**
+ * Reconstruct the pre-fix shipped script by removing the seven-line
+ * suppression branch from the current template.
+ *
+ * Deriving it (rather than pasting a 42KB literal) is deliberate: the
+ * reconstruction is only valid if it hashes to the SHA actually registered in
+ * the migrator, which the first test asserts. That single assertion is what
+ * proves the registered constant is genuinely "current template minus this
+ * fix" — a typo'd or stale hash there would silently strand every deployed
+ * agent on a `.new` candidate, which is exactly the failure this PR fixes.
+ */
+function priorShippedContent(): string {
+  const lines = fs.readFileSync(TEMPLATE, 'utf-8').split('\n');
+  const start = lines.findIndex(l => l.includes(`get("${SUPPRESSION_MARKER}") is True`));
+  if (start === -1) throw new Error('suppression branch not found in template');
+  const removed = lines.slice(start, start + 7);
+  if (removed[6].trim() !== 'fi') {
+    throw new Error(`expected the 7-line branch to close with "fi", got: ${removed[6]}`);
+  }
+  return [...lines.slice(0, start), ...lines.slice(start + 7)].join('\n');
+}
+
+function sha256(text: string): string {
+  return crypto.createHash('sha256').update(text).digest('hex');
+}
+
+function createMigrator(projectDir: string): PostUpdateMigrator {
+  return new PostUpdateMigrator({
+    projectDir,
+    stateDir: path.join(projectDir, '.instar'),
+    port: 4042,
+    hasTelegram: true,
+    projectName: 'test-agent',
+  });
+}
+
+function runMigrateScripts(m: PostUpdateMigrator): MigrationResult {
+  const result: MigrationResult = { upgraded: [], skipped: [], errors: [] };
+  (m as unknown as { migrateScripts(r: MigrationResult): void }).migrateScripts(result);
+  return result;
+}
+
+describe('suppressed-duplicate honesty — post-update migration', () => {
+  let projectDir: string;
+  let claudePath: string;
+  let neutralPath: string;
+  let backupsDir: string;
+
+  /** Stand up an agent that ALREADY EXISTS, running the pre-fix relay. */
+  function deployPriorShippedAgent(content = priorShippedContent()): void {
+    for (const p of [claudePath, neutralPath]) {
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, content, { mode: 0o755 });
+    }
+  }
+
+  beforeEach(() => {
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-suppressed-dup-migration-'));
+    fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
+    claudePath = path.join(projectDir, '.claude', 'scripts', 'telegram-reply.sh');
+    neutralPath = path.join(projectDir, '.instar', 'scripts', 'telegram-reply.sh');
+    backupsDir = path.join(projectDir, '.instar', 'backups');
+  });
+
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(projectDir, {
+      recursive: true,
+      force: true,
+      operation: 'tests/integration/telegram-reply-suppressed-duplicate-migration.test.ts',
+    });
+  });
+
+  it('registers the EXACT sha of the shipped pre-fix template', () => {
+    // If this fails, the migrator's registered hash does not describe any real
+    // deployed script, and the migration reaches nobody.
+    expect(sha256(priorShippedContent())).toBe(PRIOR_SHIPPED_SHA);
+    expect(PostUpdateMigrator.TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS.has(PRIOR_SHIPPED_SHA)).toBe(true);
+  });
+
+  it('the pre-fix script genuinely lacks the fix (the "before" state is real)', () => {
+    const prior = priorShippedContent();
+    expect(prior).not.toContain(SUPPRESSION_MARKER);
+    expect(prior).toContain('Sent $(echo "$MSG" | wc -c | tr -d \' \') chars to topic $TOPIC_ID');
+  });
+
+  it('patches a pre-fix script already on disk, in BOTH deployed locations', () => {
+    deployPriorShippedAgent();
+    const template = fs.readFileSync(TEMPLATE, 'utf-8');
+
+    const result = runMigrateScripts(createMigrator(projectDir));
+
+    expect(result.errors).toEqual([]);
+    for (const p of [claudePath, neutralPath]) {
+      const after = fs.readFileSync(p, 'utf-8');
+      expect(after).toBe(template);
+      expect(after).toContain('NOT SENT — suppressed duplicate for topic');
+    }
+    expect(result.upgraded.some(u => u.includes('scripts/telegram-reply.sh'))).toBe(true);
+    expect(result.upgraded.some(u => u.includes('.instar/scripts/telegram-reply.sh'))).toBe(true);
+  });
+
+  it('keeps the migrated script executable', () => {
+    deployPriorShippedAgent();
+    runMigrateScripts(createMigrator(projectDir));
+
+    // A relay the agent cannot execute is as broken as one that lies.
+    for (const p of [claudePath, neutralPath]) {
+      expect(fs.statSync(p).mode & 0o111).not.toBe(0);
+    }
+  });
+
+  it('backs the prior version up before overwriting', () => {
+    deployPriorShippedAgent();
+    runMigrateScripts(createMigrator(projectDir));
+
+    const backups = fs.readdirSync(backupsDir).filter(f => f.startsWith('telegram-reply.sh.'));
+    expect(backups.length).toBeGreaterThan(0);
+    expect(sha256(fs.readFileSync(path.join(backupsDir, backups[0]), 'utf-8')))
+      .toBe(PRIOR_SHIPPED_SHA);
+  });
+
+  it('is idempotent — a second update run changes nothing and adds no backup', () => {
+    deployPriorShippedAgent();
+    runMigrateScripts(createMigrator(projectDir));
+    const afterFirst = fs.readFileSync(claudePath, 'utf-8');
+    const backupsAfterFirst = fs.readdirSync(backupsDir).length;
+
+    const second = runMigrateScripts(createMigrator(projectDir));
+
+    expect(second.errors).toEqual([]);
+    expect(fs.readFileSync(claudePath, 'utf-8')).toBe(afterFirst);
+    expect(fs.readdirSync(backupsDir).length).toBe(backupsAfterFirst);
+    expect(second.skipped.some(s => s.includes('already current'))).toBe(true);
+    expect(second.upgraded.some(u => u.includes('telegram-reply.sh'))).toBe(false);
+  });
+
+  it('does NOT clobber a locally customised script — writes a .new candidate instead', () => {
+    deployPriorShippedAgent(`${priorShippedContent()}\n# operator's local customisation\n`);
+    const before = fs.readFileSync(claudePath, 'utf-8');
+
+    const result = runMigrateScripts(createMigrator(projectDir));
+
+    // The operator's file is untouched...
+    expect(fs.readFileSync(claudePath, 'utf-8')).toBe(before);
+    // ...and the fix is offered alongside for them to reconcile.
+    const candidate = fs.readFileSync(`${claudePath}.new`, 'utf-8');
+    expect(candidate).toBe(fs.readFileSync(TEMPLATE, 'utf-8'));
+    expect(candidate).toContain('NOT SENT — suppressed duplicate for topic');
+    expect(result.skipped.some(s => s.includes('user-modified'))).toBe(true);
+  });
+
+  it('installs the fixed script outright on an agent that has none', () => {
+    // New-agent path — no prior file. Covers the other half of Migration
+    // Parity: new agents must not be left behind either.
+    const result = runMigrateScripts(createMigrator(projectDir));
+
+    expect(result.errors).toEqual([]);
+    for (const p of [claudePath, neutralPath]) {
+      expect(fs.readFileSync(p, 'utf-8')).toContain('NOT SENT — suppressed duplicate for topic');
+    }
+  });
+});
