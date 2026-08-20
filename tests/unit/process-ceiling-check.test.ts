@@ -14,6 +14,7 @@ import {
   evaluateProcessCeiling,
   processCeilingNotice,
   readLaunchdPlistCeilingsForSelf,
+  launchdPlistExistsForSelf,
 } from '../../src/core/ProcessCeilingCheck.js';
 import { LAUNCHD_PROCESS_CEILING_FLOOR } from '../../src/core/PostUpdateMigrator.js';
 
@@ -322,5 +323,39 @@ describe('processCeilingNotice — the future-repair variant does not manufactur
     for (const forbidden of ['launchctl', 'ulimit', 'NumberOfProcesses', '.plist', '/Users/', 'sudo']) {
       expect(text).not.toContain(forbidden);
     }
+  });
+});
+
+describe('a machine with NO launchd plist is not warned (regression, found 2026-08-19)', () => {
+  // The first shipped version conflated "no plist at all" with "plist present but wrong", so a
+  // perfectly healthy machine that simply is not launchd-managed got a `future-repair` notice.
+  // It surfaced by polluting an unrelated test's attention items — the suite caught what the
+  // review did not.
+  const base = { platform: 'darwin', machineId: 'm1' };
+
+  it('SILENT when safe and not launchd-managed — nothing to lose on restart', () => {
+    const v = evaluateProcessCeiling({ ...base, effective: 2048, plistCeilings: [], plistPresent: false });
+    expect(v.state).toBe('unknown');
+    if (v.state === 'unknown') expect(v.reason).toBe('not-applicable');
+  });
+
+  it('still WARNS when safe and the plist EXISTS but is wrong — the real risk is unchanged', () => {
+    const v = evaluateProcessCeiling({ ...base, effective: 4096, plistCeilings: [512, 512], plistPresent: true });
+    expect(v.state).toBe('future-repair');
+  });
+
+  it('still warns when the plist exists but could not be parsed', () => {
+    const v = evaluateProcessCeiling({ ...base, effective: 4096, plistCeilings: [], plistPresent: true });
+    expect(v.state).toBe('future-repair');
+  });
+
+  it('an UNSAFE machine is still reported even with no plist — it needs looking at either way', () => {
+    const v = evaluateProcessCeiling({ ...base, effective: 512, plistCeilings: [], plistPresent: false });
+    expect(v.state).toBe('repair');
+  });
+
+  it('defaults to the STRICTER reading when the flag is omitted — no silent suppression', () => {
+    const v = evaluateProcessCeiling({ ...base, effective: 4096, plistCeilings: [] });
+    expect(v.state).toBe('future-repair');
   });
 });

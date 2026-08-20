@@ -167,7 +167,13 @@ import {
   evaluateProcessCeiling,
   processCeilingNotice,
   readLaunchdPlistCeilingsForSelf,
+  launchdPlistExistsForSelf,
 } from '../core/ProcessCeilingCheck.js';
+import {
+  evaluateDivergence,
+  divergenceNotice,
+} from '../core/AgentIdentityDivergenceDetector.js';
+import { fingerprintOf as identityFingerprintOf } from '../core/AgentIdentityHandover.js';
 import { MoneyLayerAuditLog } from '../core/MoneyLayerAuditLog.js';
 import { MoneyLayerEnableSurface } from '../core/MoneyLayerEnableSurface.js';
 import { PROBE_DOOR, PROBE_KEY_REF } from '../core/moneyLayerProbe.js';
@@ -2546,6 +2552,7 @@ export class AgentServer {
         platform: process.platform,
         effective: readEffectiveProcessCeiling(),
         plistCeilings: readLaunchdPlistCeilingsForSelf(options.config.projectName),
+        plistPresent: launchdPlistExistsForSelf(options.config.projectName),
         machineId: (options.config as { machineId?: string }).machineId ?? 'single-machine',
         hostFingerprint: os.hostname(),
       });
@@ -2583,9 +2590,14 @@ export class AgentServer {
         // broke on darwin, this whole check would disappear fleet-wide while still
         // "satisfying" its no-item contract. So the unmeasurable branch is logged, always,
         // on the platform where it is supposed to work.
+        // Two very different silences, and conflating them in the log is how a broken reader
+        // gets mistaken for an unmanaged machine.
         console.warn(
-          `[process-ceiling] unmeasurable on darwin (${ceilingVerdict.reason}) — no claim made; ` +
-            'the ceiling check produced no verdict this boot',
+          ceilingVerdict.reason === 'effective-unreadable'
+            ? '[process-ceiling] UNMEASURABLE on darwin — the live process limit could not be ' +
+              'read, so no claim was made. A persistent reading here means the check is blind.'
+            : '[process-ceiling] not applicable — this agent home is not launchd-managed, so ' +
+              'there is no managed ceiling to report on.',
         );
       }
     } catch (err) {
@@ -2595,6 +2607,108 @@ export class AgentServer {
       // a boot that fails because a notice could not be composed. It is LOGGED, so a broken
       // check is visible rather than an invisible fleet-wide gap.
       console.warn('[process-ceiling] check skipped (non-fatal):', err);
+    }
+
+    // Agent-identity divergence check (docs/specs/agent-identity-continuity-on-expansion.md §4).
+    //
+    // The 2026-08-19 split went FOUR DAYS unreported and surfaced only while investigating an
+    // unrelated request. A repair path with no detector only fixes the splits somebody happens
+    // to notice, so this is the part that makes the failure visible at all.
+    //
+    // EVERY machine observes — not only the lease holder, which fails in the two cases that
+    // matter most (the holder may BE the diverged machine, and it may be the isolated one).
+    // The single-notice property comes from the episode dedupe key, not from restricting who
+    // is allowed to look.
+    //
+    // Deliberately DELAYED and fire-and-forget: it reaches peers over the network, and a boot
+    // path must never block on that. SIGNAL ONLY — it raises one attention item and repairs
+    // nothing; repair needs an operator decision (§3).
+    if (options.resolvePeerUrls) {
+      const divergenceTimer = setTimeout(() => {
+        void (async () => {
+          try {
+            const peers = options.resolvePeerUrls!();
+            if (peers.length === 0) return; // single machine — nothing to compare
+            // Read the SELF fingerprint from the same canonical identity the verifier uses —
+            // the STATE this machine publishes, not a cached copy that could drift from it.
+            const selfFp = (() => {
+              try {
+                const id = JSON.parse(
+                  fs.readFileSync(path.join(options.config.stateDir, 'identity.json'), 'utf-8'),
+                ) as { publicKey?: string };
+                return id.publicKey ? identityFingerprintOf(id.publicKey) : null;
+              } catch {
+                // @silent-fallback-ok: no readable identity → null → the detector counts this
+                // machine as unreadable, which is `cannot-tell`, never agreement.
+                return null;
+              }
+            })();
+            const agentName = options.config.projectName;
+            const observations = [
+              {
+                machineId: 'self',
+                machineName:
+                  (options.config as { machineNickname?: string }).machineNickname ?? 'this machine',
+                publishedFingerprint: selfFp,
+                ...(selfFp ? {} : { unreachableReason: 'no-local-fingerprint' }),
+              },
+              ...(await Promise.all(
+                peers.map(async (p) => {
+                  try {
+                    const r = await fetch(`${p.url.replace(/\/+$/, '')}/provenance`, {
+                      headers: {
+                        Authorization: `Bearer ${options.config.authToken ?? ''}`,
+                        'X-Instar-AgentId': agentName,
+                      },
+                      signal: AbortSignal.timeout(8000),
+                    });
+                    const j = (await r.json()) as { fingerprint?: string };
+                    return {
+                      machineId: p.machineId,
+                      machineName: p.machineId,
+                      publishedFingerprint: j?.fingerprint ?? null,
+                      ...(j?.fingerprint ? {} : { unreachableReason: 'no-fingerprint-reported' }),
+                    };
+                  } catch {
+                    // Unreachable is UNKNOWN, never agreement — the detector's whole point.
+                    return {
+                      machineId: p.machineId,
+                      machineName: p.machineId,
+                      publishedFingerprint: null,
+                      unreachableReason: 'unreachable',
+                    };
+                  }
+                }),
+              )),
+            ];
+            const verdict = evaluateDivergence({ agentName, observations });
+            if (verdict.state === 'cannot-tell') {
+              console.warn(
+                `[identity-divergence] cannot-tell — ${verdict.unreadable.length} machine(s) unreadable; ` +
+                  'no claim made (this is NOT agreement)',
+              );
+              return;
+            }
+            if (!verdict.shouldNotify || !verdict.episodeKey) return;
+            const notice = divergenceNotice(verdict, agentName);
+            console.warn(`[identity-divergence] SPLIT: ${verdict.fingerprints.join(' vs ')}`);
+            void this.telegramAdapter?.createAttentionItem?.({
+              id: verdict.episodeKey,
+              title: notice.title,
+              description: notice.body,
+              summary: notice.title,
+              priority: 'HIGH',
+              category: 'monitoring',
+              sourceContext: 'agent-identity:split',
+            });
+          } catch (err) {
+            // @silent-fallback-ok: a detector that can take a boot down is worse than the split
+            // it detects. Logged so a broken detector is visible rather than quietly inert.
+            console.warn('[identity-divergence] check skipped (non-fatal):', err);
+          }
+        })();
+      }, 90_000);
+      divergenceTimer.unref?.();
     }
 
     // Failure-Learning Loop (docs/specs/FAILURE-LEARNING-LOOP-SPEC.md) — instar

@@ -15,7 +15,29 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { generateIdentityKeyPair, type KeyPair } from '../ThreadlineCrypto.js';
 import { computeFingerprint, deriveX25519PublicKey } from './MessageEncryptor.js';
+import { detectJoinedMesh } from './JoinedMeshDetector.js';
 import type { AgentFingerprint } from '../relay/types.js';
+
+/**
+ * Thrown when minting is refused because this home joined an existing mesh.
+ *
+ * Spec: docs/specs/agent-identity-continuity-on-expansion.md §2, Frontloaded Decision 2 —
+ * fail closed, loudly. A machine that cannot obtain the agent's identity must NOT invent one:
+ * a silent twin is worse than a machine that plainly says it could not join properly.
+ */
+export class IdentityNotProvisionedError extends Error {
+  readonly code = 'identity-not-provisioned';
+  readonly peerMachineCount: number;
+  constructor(peerMachineCount: number) {
+    super(
+      'This machine joined an existing agent mesh but has no agent identity. Minting one here ' +
+        'would split the agent into two identities sharing a name, so it is refused. The ' +
+        'identity must be provisioned by the pairing exchange — re-pair this machine.',
+    );
+    this.name = 'IdentityNotProvisionedError';
+    this.peerMachineCount = peerMachineCount;
+  }
+}
 
 export interface IdentityInfo {
   fingerprint: AgentFingerprint;
@@ -54,6 +76,23 @@ export class IdentityManager {
     if (loaded) {
       this.identity = loaded;
       return loaded;
+    }
+
+    // ── The mint refusal (spec: agent-identity-continuity-on-expansion §2) ───────────
+    // Nothing was found on disk. For the FIRST machine of a new agent that is correct and
+    // minting follows. For a machine that JOINED an existing agent's mesh it is the defect
+    // this guard exists to close: the agent already has an identity, it simply was not
+    // carried here, and minting turns one agent into two that share a name.
+    //
+    // Enforced at the minting SITE rather than at the call sites, deliberately — guarding
+    // callers leaves the next caller free to reintroduce it.
+    //
+    // The discriminator is an on-disk fact (a registry naming another machine), and every
+    // uncertain reading resolves toward minting, so an unrelated filesystem problem can
+    // never deny a legitimate standalone agent its identity.
+    const joined = detectJoinedMesh(this.stateDir);
+    if (joined.joined) {
+      throw new IdentityNotProvisionedError(joined.peerMachineCount);
     }
 
     // Generate new identity (legacy path for backward compat with standalone tooling)

@@ -1,0 +1,31 @@
+{
+  "ts": "2026-08-20T03:38:17.522Z",
+  "slug": "agent-identity-continuity-on-expansion",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 807,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/AgentIdentityDivergenceDetector.ts",
+      "src/core/AgentIdentityHandover.ts",
+      "src/core/AgentIdentityReconciler.ts",
+      "src/core/ProcessCeilingCheck.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/server/AgentServer.ts",
+      "src/threadline/client/IdentityManager.ts",
+      "src/threadline/client/JoinedMeshDetector.ts"
+    ],
+    "addedLines": 803,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
