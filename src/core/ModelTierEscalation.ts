@@ -152,7 +152,7 @@ export const DEFAULT_TIER_ESCALATION_CONFIG: TierEscalationConfig = {
     llmIntentCheck: false,
   },
   frameworks: {
-    'claude-code': { default: 'claude-opus-4-8', escalated: 'claude-fable-5' },
+    'claude-code': { default: 'claude-opus-5', escalated: 'claude-fable-5' },
     'codex-cli': { default: null, escalated: null },
     'gemini-cli': { default: null, escalated: null },
     'pi-cli': { default: null, escalated: null },
@@ -190,6 +190,8 @@ import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 
 export const KNOWN_CLAUDE_MODEL_IDS = [
   'claude-fable-5',
+  'claude-opus-5',
+  'claude-sonnet-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',

@@ -1,0 +1,25 @@
+{
+  "ts": "2026-08-18T12:18:40.227Z",
+  "slug": "mr1-model-registry-review",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 63,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/model-registry-freshness.manifest.json",
+      "src/core/ModelTierEscalation.ts",
+      "src/providers/adapters/anthropic-headless/models.ts",
+      "src/providers/adapters/openai-codex/models.ts"
+    ],
+    "addedLines": 28,
+    "deletedLines": 35
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

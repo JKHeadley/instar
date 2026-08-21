@@ -219,15 +219,15 @@ describe('POST /sessions/:name/model-swap — integration', () => {
     let calls = 0;
     tailResponse = () => {
       calls++;
-      return calls === 1 ? IDLE_TAIL : 'Set model to claude-opus-4-8\n' + IDLE_TAIL;
+      return calls === 1 ? IDLE_TAIL : 'Set model to claude-opus-5\n' + IDLE_TAIL;
     };
     const res = await request(app)
       .post('/sessions/work-session/model-swap')
       .send({ tier: 'default' });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('swapped');
-    expect(sentInputs).toEqual(['/model claude-opus-4-8']);
-    expect(sessions[0].model).toBe('claude-opus-4-8');
+    expect(sentInputs).toEqual(['/model claude-opus-5']);
+    expect(sessions[0].model).toBe('claude-opus-5');
   });
 
   it('RESCUE: dryRun:true also performs a REAL de-escalation for an escalated session', async () => {
@@ -236,14 +236,14 @@ describe('POST /sessions/:name/model-swap — integration', () => {
     let calls = 0;
     tailResponse = () => {
       calls++;
-      return calls === 1 ? IDLE_TAIL : 'Set model to claude-opus-4-8\n' + IDLE_TAIL;
+      return calls === 1 ? IDLE_TAIL : 'Set model to claude-opus-5\n' + IDLE_TAIL;
     };
     const res = await request(app)
       .post('/sessions/work-session/model-swap')
       .send({ tier: 'default' });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('swapped');
-    expect(sessions[0].model).toBe('claude-opus-4-8');
+    expect(sessions[0].model).toBe('claude-opus-5');
   });
 
   it('disabled + tier:default on a NON-escalated session: still refused (fleet stays inert)', async () => {

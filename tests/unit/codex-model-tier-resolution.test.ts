@@ -25,8 +25,8 @@ describe('codex model-tier resolution (post gpt-5.2 retirement 2026-06-03)', () 
     it('balanced tier resolves to gpt-5.4-mini', () => {
       expect(resolveCliModelFlag('balanced')).toBe('gpt-5.4-mini');
     });
-    it('capable tier resolves to gpt-5.5', () => {
-      expect(resolveCliModelFlag('capable')).toBe('gpt-5.5');
+    it('capable tier resolves to gpt-5.6-sol', () => {
+      expect(resolveCliModelFlag('capable')).toBe('gpt-5.6-sol');
     });
     it('undefined falls back to the balanced default', () => {
       expect(resolveCliModelFlag(undefined)).toBe('gpt-5.4-mini');
