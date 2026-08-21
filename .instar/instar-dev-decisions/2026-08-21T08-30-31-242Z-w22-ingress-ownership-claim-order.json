@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-21T08:30:31.242Z",
+  "slug": "w22-ingress-ownership-claim-order",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 14,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/routes.ts"
+    ],
+    "addedLines": 13,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
