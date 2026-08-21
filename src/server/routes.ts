@@ -22577,7 +22577,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // duplicate/in-flight event we return ok+deduped WITHOUT routing — the
     // structural no-duplicate-reply guarantee. FAIL-OPEN: any ledger error
     // falls through to normal routing (the gate must never drop a real message).
-    if (ctx.messageLedger) {
+    let shouldClaimInbound = true;
+    if (ctx.sessionOwnershipRegistry && ctx.meshSelfId) {
+      try {
+        const currentOwner = ctx.sessionOwnershipRegistry.ownerOf(String(topicId));
+        if (currentOwner && currentOwner !== ctx.meshSelfId) {
+          shouldClaimInbound = false;
+          console.log(`[telegram-forward] exactly-once: skipped non-owner claim for topic ${topicId}; owner=${currentOwner} self=${ctx.meshSelfId}`);
+        }
+      } catch (err) {
+        console.error(`[telegram-forward] ownership read error (fail-open, claiming/routing normally): ${err instanceof Error ? err.message : err}`);
+      }
+    }
+    if (ctx.messageLedger && shouldClaimInbound) {
       try {
         const eventId = req.body.updateId ?? messageId ?? `${topicId}:${req.body.timestamp ?? Date.now()}`;
         const dedupeKey = dedupeKeyFor('telegram', topicId, eventId);
