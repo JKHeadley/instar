@@ -26,6 +26,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 // Keep in sync with inScope() in scripts/instar-dev-precommit.js — the gate
 // this check detects bypasses OF. (A drift here only weakens detection, never
@@ -40,18 +41,43 @@ export function isInScopeFile(file) {
   return false;
 }
 
-function isGateEvidence(change) {
-  // Post-#827 per-entry file (added per gate evaluation)…
-  if (/^\.instar\/instar-dev-decisions\/.+\.json$/.test(change.file)) return true;
-  // …or the pre-#827 legacy JSONL append (transition grace for in-flight PRs).
-  if (change.file === '.instar/instar-dev-decisions.jsonl') return true;
-  return false;
+function isPerEntryDecisionFile(change) {
+  return /^\.instar\/instar-dev-decisions\/.+\.json$/.test(change.file);
+}
+
+function isLegacyDecisionFile(change) {
+  return change.file === '.instar/instar-dev-decisions.jsonl';
+}
+
+function recordScopeFiles(record) {
+  const files = record?.scope?.files;
+  return Array.isArray(files) ? files.filter((file) => typeof file === 'string') : [];
+}
+
+function coverageFiles(records) {
+  const covered = new Set();
+  for (const record of Array.isArray(records) ? records : []) {
+    for (const file of recordScopeFiles(record)) covered.add(file);
+  }
+  return covered;
+}
+
+function readDecisionAuditRecords(changes) {
+  const records = [];
+  for (const change of changes.filter(isPerEntryDecisionFile)) {
+    try {
+      records.push(JSON.parse(readFileSync(change.file, 'utf8')));
+    } catch {
+      records.push({});
+    }
+  }
+  return records;
 }
 
 /**
  * Pure evaluation — exported for unit tests.
- * @param {{ changes: Array<{status: string, file: string}>, title?: string, authorType?: string }} input
- * @returns {{ ok: boolean, exempt?: string, reason?: string, inScopeFiles?: string[] }}
+ * @param {{ changes: Array<{status: string, file: string}>, records?: unknown[], title?: string, authorType?: string }} input
+ * @returns {{ ok: boolean, exempt?: string, reason?: string, inScopeFiles?: string[], uncoveredFiles?: string[] }}
  */
 export function evaluateDecisionAuditPresence(input) {
   const title = String(input?.title ?? '');
@@ -64,21 +90,39 @@ export function evaluateDecisionAuditPresence(input) {
     return { ok: true, reason: 'no in-scope changes — local gate not required' };
   }
 
-  const hasEvidence = changes.some(isGateEvidence);
-  if (hasEvidence) {
-    return { ok: true, reason: 'gate evidence present', inScopeFiles };
+  if (changes.some(isLegacyDecisionFile)) {
+    return { ok: true, reason: 'legacy decision-audit evidence present', inScopeFiles };
+  }
+
+  const recordChanges = changes.filter(isPerEntryDecisionFile);
+  if (recordChanges.length === 0) {
+    return {
+      ok: false,
+      inScopeFiles,
+      reason:
+        `This PR changes ${inScopeFiles.length} in-scope file(s) but carries NO decision-audit record — ` +
+        `the local instar-dev pre-commit gate did not run for these commits. The usual cause is a build ` +
+        `worktree without the husky shim (created with raw 'git worktree add' instead of 'instar worktree ` +
+        `create'). Fix: in the worktree run 'npm run prepare' (wires .husky/_), then re-commit so the gate ` +
+        `evaluates the change and its audit entry (.instar/instar-dev-decisions/<ts>-<slug>.json) rides the ` +
+        `commit. See tasks #81/#80 and PRs #827/#829.`,
+    };
+  }
+
+  const covered = coverageFiles(input?.records);
+  const uncoveredFiles = inScopeFiles.filter((file) => !covered.has(file));
+  if (uncoveredFiles.length === 0) {
+    return { ok: true, reason: 'decision-audit scope covers in-scope changes', inScopeFiles };
   }
 
   return {
     ok: false,
     inScopeFiles,
+    uncoveredFiles,
     reason:
-      `This PR changes ${inScopeFiles.length} in-scope file(s) but carries NO decision-audit record — ` +
-      `the local instar-dev pre-commit gate did not run for these commits. The usual cause is a build ` +
-      `worktree without the husky shim (created with raw 'git worktree add' instead of 'instar worktree ` +
-      `create'). Fix: in the worktree run 'npm run prepare' (wires .husky/_), then re-commit so the gate ` +
-      `evaluates the change and its audit entry (.instar/instar-dev-decisions/<ts>-<slug>.json) rides the ` +
-      `commit. See tasks #81/#80 and PRs #827/#829.`,
+      `This PR changes ${inScopeFiles.length} in-scope file(s), but its decision-audit record scope ` +
+      `does not cover ${uncoveredFiles.length} in-scope file(s). Re-run the local instar-dev ` +
+      `pre-commit gate for this change so the decision-audit record declares the changed path(s).`,
   };
 }
 
@@ -114,8 +158,10 @@ if (invokedDirectly) {
     console.error(`decision-audit gate: git diff failed — ${err instanceof Error ? err.message : String(err)}`);
     process.exit(2);
   }
+  const changes = parseNameStatus(diffOut);
   const res = evaluateDecisionAuditPresence({
-    changes: parseNameStatus(diffOut),
+    changes,
+    records: readDecisionAuditRecords(changes),
     title: process.env.PR_TITLE,
     authorType: process.env.PR_AUTHOR_TYPE,
   });
@@ -126,7 +172,7 @@ if (invokedDirectly) {
   console.error('decision-audit gate: FAIL');
   console.error(res.reason);
   console.error('');
-  console.error('In-scope files without gate evidence:');
-  for (const f of res.inScopeFiles ?? []) console.error(`  - ${f}`);
+  console.error('In-scope files lacking decision-audit coverage:');
+  for (const f of res.uncoveredFiles ?? res.inScopeFiles ?? []) console.error(`  - ${f}`);
   process.exit(1);
 }

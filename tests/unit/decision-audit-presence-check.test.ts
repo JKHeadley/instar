@@ -52,17 +52,63 @@ describe('evaluateDecisionAuditPresence', () => {
   const entry = { status: 'A', file: '.instar/instar-dev-decisions/2026-06-05T12-00-00-000Z-slug.json' };
   const legacy = { status: 'M', file: '.instar/instar-dev-decisions.jsonl' };
   const srcChange = { status: 'M', file: 'src/core/Config.ts' };
+  const scriptChange = { status: 'M', file: 'scripts/instar-dev-precommit.js' };
   const docsChange = { status: 'M', file: 'docs/specs/foo.md' };
 
-  it('passes when in-scope changes carry a per-entry decision file', () => {
-    const r = evaluateDecisionAuditPresence({ changes: [srcChange, entry] });
+  it('passes when in-scope changes carry a per-entry decision file whose scope covers them', () => {
+    const r = evaluateDecisionAuditPresence({
+      changes: [srcChange, entry],
+      records: [{ scope: { files: ['src/core/Config.ts'] } }],
+    });
     expect(r.ok).toBe(true);
-    expect(r.reason).toContain('evidence');
+    expect(r.reason).toContain('covers');
+  });
+
+  it('passes when multiple per-entry decision file scopes cover the in-scope changes as a union', () => {
+    const r = evaluateDecisionAuditPresence({
+      changes: [srcChange, scriptChange, entry],
+      records: [
+        { scope: { files: ['src/core/Config.ts'] } },
+        { scope: { files: ['scripts/instar-dev-precommit.js'] } },
+      ],
+    });
+    expect(r.ok).toBe(true);
   });
 
   it('passes when in-scope changes carry a legacy jsonl modification (transition grace)', () => {
     const r = evaluateDecisionAuditPresence({ changes: [srcChange, legacy] });
     expect(r.ok).toBe(true);
+  });
+
+  it('fails when a per-entry decision file scopes different files', () => {
+    const r = evaluateDecisionAuditPresence({
+      changes: [srcChange, entry],
+      records: [{ scope: { files: ['scripts/instar-dev-precommit.js'] } }],
+    });
+    expect(r.ok).toBe(false);
+    expect(r.uncoveredFiles).toEqual(['src/core/Config.ts']);
+    expect(r.reason).toContain('does not cover');
+  });
+
+  it('fails closed when a per-entry decision file has absent or malformed scope files', () => {
+    const withoutScope = evaluateDecisionAuditPresence({ changes: [srcChange, entry], records: [{}] });
+    const malformedScope = evaluateDecisionAuditPresence({
+      changes: [srcChange, entry],
+      records: [{ scope: { files: 'src/core/Config.ts' } }],
+    });
+    expect(withoutScope.ok).toBe(false);
+    expect(withoutScope.uncoveredFiles).toEqual(['src/core/Config.ts']);
+    expect(malformedScope.ok).toBe(false);
+    expect(malformedScope.uncoveredFiles).toEqual(['src/core/Config.ts']);
+  });
+
+  it('does not treat a directory scope string as covering descendant files', () => {
+    const r = evaluateDecisionAuditPresence({
+      changes: [srcChange, entry],
+      records: [{ scope: { files: ['src/core'] } }],
+    });
+    expect(r.ok).toBe(false);
+    expect(r.uncoveredFiles).toEqual(['src/core/Config.ts']);
   });
 
   it('FAILS when in-scope changes carry no gate evidence — the bypass shape', () => {
@@ -82,8 +128,11 @@ describe('evaluateDecisionAuditPresence', () => {
     expect(r.reason).toContain('no in-scope changes');
   });
 
-  it('exempts bot authors and the release-cut PR', () => {
+  it('exempts bot authors', () => {
     expect(evaluateDecisionAuditPresence({ changes: [srcChange], authorType: 'Bot' }).exempt).toBe('bot-author');
+  });
+
+  it('exempts the release-cut PR', () => {
     expect(evaluateDecisionAuditPresence({ changes: [srcChange], title: 'chore: release v1.3.300 [skip ci]' }).exempt).toBe('release-cut');
   });
 
