@@ -1,0 +1,34 @@
+<!-- bump: patch -->
+
+## What Changed
+
+A new manually-started maintenance job was added to this repository's own
+pipeline: it marks ONE already-published version of the package deprecated,
+with a plain-English pointer to the version people should use instead.
+
+It exists because a release race can leave an ORPHAN on the registry — a
+version that was published, but whose release commit and tag never landed in
+history. Cleaning one up requires a publish-capable credential, and that
+credential lives only inside this repository's pipeline. This job is the one
+place it can be used for that purpose, and its capability is exactly one write.
+
+The job is started by hand only. It never checks out the repository, so no
+repository code runs beside the credential. It can deprecate; it cannot publish
+and it cannot unpublish. The version and the message are supplied when it is
+started, so nothing about the target is baked into the file. A range or a tag
+is refused before the credential is touched, because those would deprecate many
+versions in a single call, and the current recommended version is refused so
+that what everyone installs can never be hit by a typo. Afterwards the result
+is read back from the registry — the command exiting cleanly is not accepted as
+proof on its own.
+
+## What to Tell Your User
+
+Nothing. This is repository maintenance for the people who publish this
+package; it changes no behaviour on any installed agent and adds no capability
+an agent can reach.
+
+## Summary of New Capabilities
+
+None for agents or users. One maintenance job for maintainers of this
+repository.
