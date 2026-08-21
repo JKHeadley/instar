@@ -1,0 +1,137 @@
+# deprecate-version — mark ONE already-published version of this package deprecated.
+#
+# Why this exists: a release run can leave an ORPHAN on the registry — a version
+# published by a race whose release commit and tag never landed in history (live
+# case 2026-08-21: 1.3.1183, published between two racing publish runs, no tag,
+# no release commit, superseded four and a half minutes later by 1.3.1184).
+# Removing such a version is the destructive option and is deliberately NOT
+# available here; marking it deprecated with a pointer to the good version is.
+#
+# DELIBERATE LIMITS — this job's capability is exactly one npm write:
+#   * It is started BY HAND only. There is no push, schedule or other trigger.
+#   * It NEVER checks out the repository, so no repository code runs beside the
+#     publish-capable credential this job is handed.
+#   * `npm deprecate` is the only npm write it performs. It cannot publish and
+#     it cannot unpublish.
+#   * The version and the pointer text are supplied when it is started. Nothing
+#     about the target is baked into this file.
+#   * The version input must be ONE exact published version. A range or a tag
+#     (`*`, `<1.3.1184`, `latest`) would deprecate MANY versions in a single
+#     call, so those are refused before the credential is used at all.
+#   * The current `latest` version is refused, so the version everyone installs
+#     can never be deprecated by a mistyped input.
+#
+# Reversal is NOT in this job: npm clears a deprecation when the message is
+# empty, and this job requires a non-empty message. Clearing one therefore still
+# needs a credential outside this workflow. That is a known, accepted limit of
+# the approved scope, not an oversight.
+
+name: deprecate-version
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'ONE exact published version to deprecate, e.g. 1.3.1183. Ranges and tags are refused.'
+        required: true
+        type: string
+      message:
+        description: 'Plain-English pointer shown at install time, e.g. "orphaned release, never tagged — use 1.3.1184 instead".'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deprecate-version
+  cancel-in-progress: false
+
+jobs:
+  deprecate:
+    name: Deprecate a published version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Every check that could refuse the request runs BEFORE the credential is
+      # ever put on disk, and reads the registry rather than trusting the input.
+      - name: Check the request and record the before state
+        id: before
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_MESSAGE: ${{ inputs.message }}
+        run: |
+          node --input-type=module -e '
+            import fs from "node:fs";
+
+            const version = (process.env.INPUT_VERSION ?? "").trim();
+            const message = (process.env.INPUT_MESSAGE ?? "").trim();
+            const fail = (why) => { console.error("REFUSED: " + why); process.exit(1); };
+
+            // One exact semver. Anything a range or tag could hide is refused here.
+            if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+              fail(`"${version}" is not one exact version. Ranges and tags are refused because they deprecate many versions at once.`);
+            }
+            if (message.length === 0) fail("the pointer message is empty.");
+            if (message.length > 512) fail(`the pointer message is ${message.length} characters; the limit is 512.`);
+            if (/[\r\n]/.test(message)) fail("the pointer message must be a single line.");
+
+            const res = await fetch("https://registry.npmjs.org/instar", { headers: { "Cache-Control": "no-cache" } });
+            if (!res.ok) fail(`the registry answered ${res.status} when asked about this package.`);
+            const pkg = await res.json();
+            const latest = pkg["dist-tags"]?.latest;
+            if (!pkg.versions?.[version]) fail(`${version} is not published on the registry, so there is nothing to deprecate.`);
+            if (version === latest) fail(`${version} is the current latest version. Deprecating what everyone installs is never this jobs purpose.`);
+
+            const before = pkg.versions[version].deprecated;
+            console.log(`package:  ${pkg.name}`);
+            console.log(`version:  ${version}`);
+            console.log(`latest:   ${latest}`);
+            console.log(`before:   ${before === undefined ? "not deprecated" : JSON.stringify(before)}`);
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### Before\n\n- version: \`${version}\`\n- latest: \`${latest}\`\n- deprecated: ${before === undefined ? "no" : "`" + before + "`"}\n`);
+          '
+        shell: bash
+
+      - name: Mark it deprecated
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_MESSAGE: ${{ inputs.message }}
+        run: npm deprecate "instar@$INPUT_VERSION" "$INPUT_MESSAGE"
+
+      # The command exiting zero is not the answer. The registry is.
+      - name: Read the registry back and prove it took
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_MESSAGE: ${{ inputs.message }}
+        run: |
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const version = process.env.INPUT_VERSION.trim();
+            const expected = process.env.INPUT_MESSAGE.trim();
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+            // The registry is a cache in front of a database; a fresh write can
+            // take a few seconds to be visible. Retry rather than call a
+            // propagation delay a failure.
+            for (let attempt = 1; attempt <= 10; attempt++) {
+              const res = await fetch("https://registry.npmjs.org/instar", { headers: { "Cache-Control": "no-cache" } });
+              const pkg = await res.json();
+              const after = pkg.versions?.[version]?.deprecated;
+              if (after === expected) {
+                console.log(`after: ${JSON.stringify(after)}`);
+                console.log(`latest is still ${pkg["dist-tags"]?.latest}`);
+                fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### After\n\n- deprecated: \`${after}\`\n- latest: \`${pkg["dist-tags"]?.latest}\`\n`);
+                process.exit(0);
+              }
+              console.log(`attempt ${attempt}: registry still reads ${JSON.stringify(after)}`);
+              await sleep(6000);
+            }
+            console.error("The registry did not come back with the expected message. Nothing here retried the write; check the version by hand before running this again.");
+            process.exit(1);
+          '
+        shell: bash
