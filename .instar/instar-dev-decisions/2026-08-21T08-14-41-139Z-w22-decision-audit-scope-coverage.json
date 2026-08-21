@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-21T08:14:41.139Z",
+  "slug": "w22-decision-audit-scope-coverage",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 86,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/decision-audit-presence-check.mjs"
+    ],
+    "addedLines": 66,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
