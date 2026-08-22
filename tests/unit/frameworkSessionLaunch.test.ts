@@ -178,11 +178,17 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
       // `--dangerously-skip-permissions` — removes approval prompts AND
       // drops the sandbox (which would otherwise block the agent from
       // reaching localhost where instar's server lives).
+      // `-c check_for_update_on_startup=false` suppresses codex's blocking
+      // startup update menu, which killed interactive sessions ~18s after spawn
+      // on 2026-08-22 (its focused default runs `npm install -g @openai/codex`,
+      // which exits codex). See CODEX_NO_UPDATE_PROMPT_FLAGS.
       expect(spec.argv).toEqual([
         bin,
         '--model',
         'gpt-5.5',
         '--dangerously-bypass-approvals-and-sandbox',
+        '-c',
+        'check_for_update_on_startup=false',
       ]);
     });
 
@@ -650,5 +656,39 @@ describe('frameworkSessionLaunch — per-agent codex threadline MCP override', (
     const jsonPart = argsFlag!.slice('mcp_servers.threadline.args='.length);
     expect(() => JSON.parse(jsonPart)).not.toThrow();
     expect(JSON.parse(jsonPart)).toEqual(mcp.args);
+  });
+});
+
+describe("codex-cli interactive — the startup update prompt is suppressed", () => {
+  /**
+   * 2026-08-22: codex 0.147 opened every fresh interactive session on a blocking
+   * `Update available!` menu whose focused default runs `npm install -g
+   * @openai/codex` — which makes codex EXIT. Instar's readiness probe misread that
+   * menu as a ready prompt and injected the first user message plus Enter into it,
+   * killing the pane ~18s after spawn (verified: the injected Enter really did
+   * upgrade the local codex 0.147.0 → 0.149.0).
+   *
+   * The probe fix stops instar typing into a menu. This flag stops the menu being
+   * drawn, so the session is USABLE rather than merely visibly stuck.
+   */
+  it('passes check_for_update_on_startup=false', () => {
+    const spec = buildInteractiveLaunch('codex-cli', { binaryPath: '/usr/local/bin/codex' });
+    const i = spec.argv.indexOf('check_for_update_on_startup=false');
+    expect(i).toBeGreaterThan(-1);
+    // codex takes overrides as `-c key=value`, so the flag must precede the value.
+    expect(spec.argv[i - 1]).toBe('-c');
+  });
+
+  it('still suppresses it on a resume launch — a resumed pane draws the same menu', () => {
+    const spec = buildInteractiveLaunch('codex-cli', {
+      binaryPath: '/usr/local/bin/codex',
+      resumeSessionId: 'abc-123',
+    });
+    expect(spec.argv).toContain('check_for_update_on_startup=false');
+  });
+
+  it('is codex-only — no other framework carries a codex config key', () => {
+    const claude = buildInteractiveLaunch('claude-code', { binaryPath: '/usr/local/bin/claude' });
+    expect(claude.argv.join(' ')).not.toContain('check_for_update_on_startup');
   });
 });

@@ -1,0 +1,27 @@
+{
+  "ts": "2026-08-22T22:05:56.072Z",
+  "slug": "codex-startup-menu-session-death",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 116,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/claudeReadinessProbe.ts",
+      "src/core/frameworkSessionLaunch.ts",
+      "src/monitoring/PermissionPromptAutoResolver.ts"
+    ],
+    "addedLines": 111,
+    "deletedLines": 5
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Latent asymmetry in claudeReadinessProbe: tailShowsMenu gated on Claude's U+276F only, while the ready branch directly below already accepted U+276F OR codex's U+203A. Dormant because no framework had yet drawn a U+203A-led numbered menu at startup. Exposed by an environment shift — codex 0.147 shipping a blocking 'Update available!' startup menu whose focused default runs `npm install -g @openai/codex` and exits codex. The module header already stated the violated invariant ('a menu ... never as ready, no matter which glyphs it carries'), so the defect was a divergence from a written rule, not an unconsidered case."
+  },
+  "classClosure": null,
+  "verdict": "blocked"
+}

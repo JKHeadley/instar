@@ -129,6 +129,55 @@ const MENU_OPTION_RE = /^[^\w\n]{0,4}\s*\d+[.)]\s+\S/;
 const SELECTOR_GLYPH = '❯';
 
 /**
+ * Codex's selector cursor. Codex paints `›` where Claude Code paints `❯` — on the
+ * input box AND on a menu's focused option, the same glyph reuse.
+ */
+const CODEX_SELECTOR_GLYPH = '›';
+
+/**
+ * Every glyph that can mark a focused option. The menu test and the ready test MUST
+ * consult the SAME set, or a framework whose glyph only one of them knows falls
+ * through the menu branch into the ready branch.
+ *
+ * THE 2026-08-22 CODEX INCIDENT (why this is a set and not a constant)
+ * --------------------------------------------------------------------
+ * `tailShowsMenu` opened with `!tail.includes(SELECTOR_GLYPH) → false`, i.e. ❯ only,
+ * while `classifyPaneReadiness`'s ready branch already accepted `❯ || ›`. So codex
+ * 0.147's blocking startup menu —
+ *
+ *     ✨ Update available! 0.147.0 -> 0.149.0
+ *     › 1. Update now (runs `npm install -g @openai/codex`)
+ *       2. Skip
+ *       3. Skip until next version
+ *     Press enter to continue
+ *
+ * — never reached the menu branch (no ❯) and was classified READY by the very next
+ * line (it has a ›). The spawn path then injected the user's first message plus
+ * Enter into a focused menu whose default option is `Update now`, codex shelled out
+ * to `npm install -g @openai/codex` and EXITED, and the pane died ~18s after spawn.
+ * Verified end-to-end: the injected Enter really did upgrade the local codex
+ * 0.147.0 → 0.149.0.
+ *
+ * That is the exact failure this module's header says is the worst class — "text
+ * typed at a menu is not lost, Enter SELECTS AN OPTION" — and the header already
+ * states the invariant that was violated: a menu is classified as its own state
+ * "no matter which glyphs it carries". It carried a glyph only half the module
+ * knew. Adding a framework's glyph to the ready test without adding it to the menu
+ * test is the shape of this bug; the shared set is what makes that impossible.
+ *
+ * NOT extended to `PermissionPromptAutoResolver`'s selector, deliberately. That one
+ * gates an ACTUATION (it presses Enter). On this menu the focused option is the
+ * irreversible one, so pressing Enter is the defect, not the fix — the same reason
+ * the resolver answers grok with a digit rather than Enter.
+ */
+const SELECTOR_GLYPHS = [SELECTOR_GLYPH, CODEX_SELECTOR_GLYPH] as const;
+
+/** True when the text carries any framework's focused-option selector cursor. */
+function hasSelectorGlyph(text: string): boolean {
+  return SELECTOR_GLYPHS.some(g => text.includes(g));
+}
+
+/**
  * True when the tail shows a FOCUSED selection menu.
  *
  * Requires the selector glyph to sit ON a numbered option line, AND at least two
@@ -147,13 +196,13 @@ const SELECTOR_GLYPH = '❯';
  * divergent notion of what a menu looks like.
  */
 export function tailShowsMenu(tail: string): boolean {
-  if (!tail || !tail.includes(SELECTOR_GLYPH)) return false;
+  if (!tail || !hasSelectorGlyph(tail)) return false;
   let options = 0;
   let glyphOnOption = false;
   for (const line of tail.split('\n')) {
     if (!MENU_OPTION_RE.test(line)) continue;
     options++;
-    if (line.includes(SELECTOR_GLYPH)) glyphOnOption = true;
+    if (hasSelectorGlyph(line)) glyphOnOption = true;
   }
   return glyphOnOption && options >= 2;
 }
@@ -173,8 +222,9 @@ export function classifyPaneReadiness(tail: string): PaneReadiness {
   if (tailShowsMenu(tail)) return 'menu';
 
   // The framework prompt character. Codex uses ›; keeping this probe Claude-only
-  // previously delayed continuation bootstraps to the full timeout.
-  if (tail.includes(SELECTOR_GLYPH) || tail.includes('›')) return 'ready';
+  // previously delayed continuation bootstraps to the full timeout. Reads the SAME
+  // glyph set the menu test above uses — see SELECTOR_GLYPHS for why that matters.
+  if (hasSelectorGlyph(tail)) return 'ready';
 
   // Footer/status-bar strings that only render once the TUI is up.
   if (AT_PROMPT_FOOTERS.some(marker => tail.includes(marker))) return 'ready';
