@@ -903,10 +903,46 @@ speed; they NEVER replace the raw words. The ONE permitted deletion is an explic
 request (a deliberate act by the principal) — categorically distinct from the system quietly
 forgetting on its own, which is what this rules out.
 
-**OD4 — The coherence journal is the WRONG container, and that (not size) was the real blocker.**
-`DEFAULT_RETENTION` rotates and DELETES (`rotateKeep: N`). Correct for coordination breadcrumbs,
-disqualifying for memory under OD3. The per-kind byte budget is a hand-picked table value chosen
-because every kind so far is small metadata — it is not an architectural wall.
+**OD4 — WITHDRAWN 2026-08-21 (same evening), because the author's finding it rested on was
+wrong. The operator's instruction (OD3) is untouched; only this diagnosis of the mechanism is.**
+
+*What OD4 said:* the coherence journal is the WRONG container — `DEFAULT_RETENTION` rotates and
+DELETES, so it is disqualifying for memory under OD3, and that (not size) was the real blocker.
+
+*What the code actually says, read after the fact:*
+
+- `maxFileBytes` is a **rotation threshold**, not a budget. `rotate()` compares the ACTIVE file's
+  size to it and rotates; there is no per-kind total ceiling anywhere. The "we are already over a
+  4 MB budget with two machines" claim reported to the operator earlier that evening read a
+  rotation threshold as a cap. It is withdrawn.
+- `rotateKeep: 0` means **rotate but NEVER delete** — the comment at `CoherenceJournal.ts:249`
+  says so and `rotate()` implements it (`if (ret.rotateKeep > 0) pruneArchives(...)`, with
+  `rotateKeep === 0 → never delete (history forever in bounded files)`). It is not hypothetical:
+  `topic-placement` already ships with it.
+- A peer that falls past the tail window does **not** lose data. `StoreSnapshotEngine`
+  (`src/core/StoreSnapshot.ts`, constructed in `src/commands/server.ts`) performs single-origin
+  snapshot-then-tail, explicitly built for whole-store materialization off the event loop. What
+  rotation bounds is **catch-up-by-tail**, not the record.
+- The per-entry cap is 8 KB by default and 80 KB on the replicated-record path; the rate cap is
+  100 burst / 50 per second. At the measured ~800 outbound-plus-inbound messages per day, neither
+  binds.
+
+*Why the memory-family stores nevertheless choose `rotateKeep: 4`, which is the part worth
+keeping:* their comments state a **compliance** reason — a never-deleting transport log would
+retain PII past an erasure request. That is a real constraint and it is NOT the same claim as
+"the container cannot remember." It is also precisely the tension OD3's single carve-out resolves:
+the system never forgets on its own; the operator may explicitly ask for a deletion.
+
+*Net effect on this spec:* the container objection dissolves and the redesign gets SMALLER, not
+larger. The live questions that remain are (a) sealing content at rest per machine (OD5) and
+(b) whether the transport's shape suits multi-MB content streams as opposed to small records —
+a volume question standing on its own, no longer propped up by a retention claim that was false.
+
+*Why this is recorded rather than quietly edited:* the operator reasoned from OD4 in the live
+conversation. A decision he made on a wrong premise has to show the premise being withdrawn, or
+the record misleads whoever reads it next. The withdrawal was found by reading the rotation code
+while beginning the rev-5 pass — the same failure mode as the two other corrections that evening:
+acting confidently on a value without reading what it meant.
 
 **OD5 — Measured, so the cost argument is settled.** This machine, 2026-08-21: 2,490 messages
 over 3 days, 3.0 MB raw, **0.4 MB gzipped (7.5x, lossless)**. Projection at that rate: ~50 MB
