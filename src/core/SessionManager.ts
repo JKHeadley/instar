@@ -5482,6 +5482,43 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Tmux still alive but readiness probe couldn't confirm — best-effort inject.
     // (Preserves the original behavior for prompt-detection false negatives.)
     if (stillAlive) {
+      // ...UNLESS the pane is sitting on a MENU. `classifyPaneState` exists for
+      // exactly this: callers whose not-ready branch is DESTRUCTIVE ask it
+      // instead of the boolean. Blind-injecting is destructive here — Enter
+      // SELECTS the focused option, so the message does not merely get lost, it
+      // ANSWERS a question on the operator's behalf.
+      //
+      // 2026-08-22: without this, the codex readiness fix was only half a fix.
+      // Refusing to type into a menu at the READY check just moved the same
+      // Enter to the timeout branch — codex's update menu (focused option:
+      // `Update now`, which exits codex) would still have killed the session,
+      // ~90s in rather than ~18s, and its trust-directory prompt would still
+      // have been auto-answered `Yes, continue`. A delayed identical outcome is
+      // not a fix.
+      //
+      // The message is NOT silently dropped: the durable pending-inject record
+      // is left INTACT (not cleared) — clearing it here is what would drop it.
+      // Be precise about what that buys, because it is easy to overstate:
+      // `recoverPendingInjects` runs at SERVER BOOT, not on a menu-clear watch,
+      // so the record is re-delivered on the next boot if the pane is still
+      // alive and the record is under its 6h expiry, and REPORTED as a loss
+      // otherwise. The immediate visibility comes from the DegradationReporter
+      // entry below, and the practical recovery is the bridge's existing
+      // respawn on the next inbound message. What this branch guarantees is
+      // narrow and worth having on its own: the message is never typed into a
+      // menu, and its non-delivery is never silent.
+      const paneState = this.classifyPaneState(tmuxSession);
+      if (paneState === 'menu') {
+        console.error(`[SessionManager] Session "${tmuxSession}" is sitting on a MENU — refusing to inject (Enter would select an option). Pending inject retained for re-delivery.`);
+        DegradationReporter.getInstance().report({
+          feature: 'SessionManager.handleReadyAndInject',
+          primary: 'Inject the initial message once the session is ready',
+          fallback: `Session "${tmuxSession}" is parked on a selection menu; the message was NOT typed into it`,
+          reason: 'Why: typing at a menu selects an option rather than sending text — it can answer a permission/update question on the operator\'s behalf, and on some menus the focused option terminates the process.',
+          impact: 'The initial message is retained as a durable pending inject (re-delivered at the next server boot while unexpired, reported as a loss otherwise); the bridge also respawns on the next inbound message. The parked menu itself is reported by PermissionPromptAutoResolver Layer 3.',
+        });
+        return;
+      }
       console.error(`[SessionManager] Session not ready in "${tmuxSession}" — message NOT injected. Session may need manual intervention.`);
       console.log(`[SessionManager] Session "${tmuxSession}" still alive — attempting injection anyway`);
       // Same instar-composed bootstrap as the ready path above — first-party (F7).

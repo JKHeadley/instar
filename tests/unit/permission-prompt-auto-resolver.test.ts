@@ -470,3 +470,44 @@ describe('PermissionPromptAutoResolver — guardStatus', () => {
     expect(h.resolver.guardStatus().lastTickAt).toBe(h.ctrl.now);
   });
 });
+
+// ─── Layer 3 — codex's blocking startup menu (2026-08-22) ────────────────────────
+
+describe("detectPersistingMenu — codex's `Press enter to continue` footer", () => {
+  /**
+   * Verbatim from the codex 0.147.0 pane behind the 2026-08-22 session-death
+   * incident. Layer 3 exists so a menu the resolver declines to auto-clear is still
+   * REPORTED. Without the footer taught here this menu was declined silently: its
+   * last line is `Press enter to continue`, which the "genuine bottom" predicate did
+   * not recognise as menu structure — the same way grok's `1/3:select` footer was
+   * missed before it was added.
+   */
+  const CODEX_UPDATE_MENU = toPaneTailLines(
+    [
+      '  ✨ Update available! 0.147.0 -> 0.149.0',
+      '',
+      '  Release notes: https://github.com/openai/codex/releases/latest',
+      '',
+      '› 1. Update now (runs `npm install -g @openai/codex`)',
+      '  2. Skip',
+      '  3. Skip until next version',
+      '',
+      '  Press enter to continue',
+    ].join('\n'),
+  );
+
+  it('is DETECTED, so a stuck codex session is reported rather than silent', () => {
+    const m = detectPersistingMenu(CODEX_UPDATE_MENU, false);
+    expect(m).not.toBeNull();
+    expect(m!.optionLabels.length).toBe(3);
+  });
+
+  it('is still declined while the pane is generating', () => {
+    expect(detectPersistingMenu(CODEX_UPDATE_MENU, true)).toBeNull();
+  });
+
+  it('the footer alone is not a menu — it still needs glyph-led numbered options', () => {
+    const footerOnly = toPaneTailLines('  Some prose output\n  Press enter to continue');
+    expect(detectPersistingMenu(footerOnly, false)).toBeNull();
+  });
+});
