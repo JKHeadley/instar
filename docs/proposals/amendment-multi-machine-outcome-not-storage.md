@@ -125,6 +125,56 @@ cite the registry for either position. The boundary is therefore part of the Rul
 than commentary beneath it. Found while resolving this amendment's tree placement; see
 *Registry-process compliance* below.
 
+## Amendment 5 — a posture key for "unified is ratified, the mechanism is being built"
+### (added 2026-08-21, found by applying Amendments 1-2 to a real spec)
+
+**The gap.** The closed taxonomy has three keys — `physical-credential-locality`,
+`hardware-bound-resource`, `operator-ratified-exception` — and widening it is marked
+constitution-bound in the lint's own source. None of the three can express the posture of a
+surface that is **migrating** from machine-local to unified.
+
+**How it was found.** The conversation-history spec keys nine surfaces
+`operator-ratified-exception (PENDING — Q9)`. Q9 asked the operator to ratify exactly that
+locality; under this directive he ruled **against** it. Those markers now cite a
+ratification that was DENIED — a false claim, not an outstanding errand. The honest posture
+is `unified`, but the replicated store that would deliver it is not built, so declaring
+`unified` today would be the "infeasible unified" error the same spec's table already caught
+twice in earlier rounds. Every available move is untrue.
+
+**Why this is not one spec's problem.** Every surface that migrates from machine-local to
+unified arrives at the identical wall, and the arrival is guaranteed by Amendment 1: making
+survivability the test converts a population of currently-passing `machine-local` surfaces
+into surfaces whose correct posture is `unified` and whose mechanism is unbuilt. **Adopting
+Amendment 1 without Amendment 5 therefore manufactures the false-claim class it is meant to
+reduce** — plausibly a contributor to the 62 undefended machine-local postures the marker
+sweep already reports fleet-wide.
+
+**Proposed shape (deliberately narrow, and self-closing).**
+
+> `migrating-to-unified` — permitted ONLY when the marker also cites (a) the ratified
+> decision establishing unified as the destination, and (b) a resolvable tracking ref for
+> the work that delivers it. It carries an expiry date. On expiry the surface either
+> declares `unified` or the exception is re-argued in front of the operator; it may never
+> lapse silently into a permanent posture.
+
+The citation requirements make it deterministically checkable by the existing marker lint —
+the same existence-check it already performs for `operator-ratified-exception` refs — so
+unlike Amendments 1, 2 and 4 this one lands **enforced on arrival** rather than as a named
+unenforced sub-obligation.
+
+**The honest objection, stated rather than left for a reviewer.** A fourth key widens the
+escape hatch, and the registry's design reasoning says the hatch is kept narrow *on purpose*
+— the friction of going through the operator is what stops it widening whenever an author
+finds it convenient. That argument has real force here. The counter is that this key is the
+only one of the four whose use is **self-terminating**: it requires a date and a tracked
+delivery, so it cannot become a resting place. A key that expires is a different object from
+one that grants permanent cover. The operator should weigh that rather than take my word for
+it, which is why this is a numbered amendment and not a footnote.
+
+**If rejected**, the fallback is worse but honest: migrating surfaces keep a visibly refuted
+marker and the lint keeps reporting them, which at least does not launder the false claim
+into a quiet one.
+
 ## Why 1 and 4 do not collide
 
 Read naively they do: every machine holds everything, and nothing is ever deleted, is
@@ -234,8 +284,10 @@ earlier draft raised this and handed it back. It is decided here, with the evide
 the placement rule asks for a considered position and a proposal that declines to take one
 supplies nothing to ratify.
 
-**Amendments 1, 2 and 3 are an UPDATE to *An Instar Agent Is Always a Multi-Machine Entity*,
-not new articles.** Each refines the posture rule that article already owns — 1 strengthens
+**Amendments 1, 2, 3 and 5 are an UPDATE to *An Instar Agent Is Always a Multi-Machine
+Entity*, not new articles.** Amendment 5 in particular edits that article's own closed
+taxonomy, which it explicitly owns as THE SINGLE GOVERNING ARTICLE for the cross-machine
+posture declaration — so it could not sit anywhere else. Each refines the posture rule that article already owns — 1 strengthens
 the test it applies, 2 restates its form, 3 narrows one enumerated key in its own closed
 taxonomy. None introduces a subject the article does not already govern, so under the
 insertion rule's third case they fold in rather than sit beside it.
@@ -277,16 +329,23 @@ registry's residual section exists to prevent.
 2. Adopt Amendment 2 (outcome not storage)?
 3. Adopt Amendment 3 (narrow the credential key)?
 4. Adopt Amendment 4 (never delete)?
-5. Should these land before or after the enforcement work? **Revised recommendation:
+5. Adopt Amendment 5 (a self-expiring `migrating-to-unified` posture key)? **Note the
+   coupling: adopting 1 without 5 manufactures false machine-local claims, because
+   survivability converts a population of currently-passing surfaces into ones whose correct
+   posture is unified and whose mechanism is unbuilt.**
+6. Should these land before or after the enforcement work? **Revised recommendation:
    AFTER, and probably coordinated with the Phase B window owner rather than alongside
    it.** My earlier framing called the enforcement gap something I had discovered; it is
    in fact branch B of a ratified Aug-3 goal tree with a 184-finding audit already
    running against it. Landing registry edits into a live measurement, against a pinned
    base, is how one session's work gets thrown away by another's.
-6. Confirm the placement above: 1–3 fold into the multi-machine article as an update;
+7. Confirm the placement above: 1–3 fold into the multi-machine article as an update;
    4 becomes a new Substrate article deriving from *Deferral = Deletion*, with the
    agent-memory-versus-telemetry boundary stated in its Rule. (Decided rather than asked,
    per the standing instruction to stop deferring — but placement is a tree decision and
    yours to overturn.)
 
-Each is independent; adopting any subset is coherent.
+Adopting any subset is coherent **with one stated exception**: Amendment 1 without
+Amendment 5 is the combination that makes the record worse, because survivability converts
+passing surfaces into ones with no honest key available. If 5 is rejected, 1 should land
+with that consequence acknowledged rather than discovered later.
