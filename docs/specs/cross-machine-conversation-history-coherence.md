@@ -777,6 +777,34 @@ The honest statement for rev 2: **this spec introduces no mechanical gate, and D
 
 ## Multi-machine posture
 
+> **REV-5 NOTE (2026-08-21) — nine rows below are now REFUTED, not merely pending, and the
+> taxonomy has no key for what replaces them.**
+>
+> Nine rows key `operator-ratified-exception (PENDING — Q9)`. Q9 asked the operator to
+> ratify exactly that locality for conversation content. **He ruled against it** (see the
+> OPERATOR DIRECTIVE section: OD1, OD2). So those markers do not cite a ratification that is
+> still outstanding — they cite one that was **explicitly denied**. A pending citation is an
+> unfinished errand; a denied one is a false claim, and it is the more misleading direction,
+> exactly as row 1 argues about `unified`.
+>
+> **The correct posture for each of them is `unified`** — that is the ratified destination.
+> **But the mechanism does not exist yet**, so declaring them `unified` today would repeat the
+> "infeasible unified" error this same table already caught twice (rows 1 and 7).
+>
+> **And there is no honest third option in the closed taxonomy.** Its three keys are
+> `physical-credential-locality`, `hardware-bound-resource`, `operator-ratified-exception`
+> (`scripts/lint-machine-local-justification.js`, where widening the set is marked
+> constitution-bound). None expresses *"unified is the ratified destination; the surface is
+> machine-local only while the mechanism is being built, and here is the trigger that closes
+> it."* The rows are therefore left AS THEY STAND, visibly refuted, rather than re-keyed into
+> a marker that would be equally untrue and merely quieter.
+>
+> **This generalises past this spec.** Any surface migrating from machine-local to unified
+> lands in the same hole, which is a plausible contributor to the 62 undefended machine-local
+> postures the marker sweep reports fleet-wide. Raised as a candidate fifth amendment in
+> `docs/proposals/amendment-multi-machine-outcome-not-storage.md`; widening a closed taxonomy
+> is the operator's decision, so this spec names the gap and invents nothing.
+
 Every surface this spec introduces, with its declared posture. Default is `unified`.
 
 | Surface | Posture | Note |
