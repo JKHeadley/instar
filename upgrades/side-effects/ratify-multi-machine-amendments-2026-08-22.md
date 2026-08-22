@@ -3,7 +3,7 @@
 **Version / slug:** `ratify-multi-machine-amendments-2026-08-22`
 **Date:** `2026-08-22`
 **Author:** `echo`
-**Second-pass reviewer:** `not required (Tier 1 — report-first dev script, no runtime surface)`
+**Second-pass reviewer:** `codex-cli — external adversarial lens, 4 rounds (9 → 4 → 2 → 0 findings)`
 
 ## Summary of the change
 
@@ -64,15 +64,25 @@ Near zero and purely additive to revert. Removing `migrating-to-unified` from `T
 
 Ship. The change is the mechanical half of an operator-ratified constitutional amendment, adds no authority, has no runtime or external surface, and is covered both directions by tests (well-formed markers pass; the narrowed case, each missing citation, and an expired posture each fail). The honest caveat that belongs with it: the registry edit itself cannot merge until the standards direction guard has an approver key installed in protected main — that gate is the operator's and is named in the PR rather than worked around.
 
-## Second-pass review (if required)
+## Second-pass review
 
-Not required. Tier 1: one dev script, report-first, no decision authority, no runtime surface, at the declared risk floor.
+**Run, and it changed the change.** An external model was given the diff with instructions to REFUTE — contradiction, over-claim, loophole, subject-drift — not to approve. Four rounds; nine findings; convergence when a full re-review returned NO NEW FINDINGS. Full record: `docs/specs/reports/standards-family-convergence-2026-08-22.md`. The six that altered the constitutional text:
+
+1. **`proxied-on-read` contradicted the new survivability clause** — the article enumerated a posture its own Rule forbids, each citable against the other. Now annotated operational-only and named in the Rule.
+2. **The new key was RENEWABLE, not self-terminating** — proven by this change's own first-draft fixture, which used `expires=2099-01-01` and passed. Closed in two steps: a 180-day horizon, then `since=` plus a 360-day total-lifetime cap after the lens observed a per-declaration horizon is renewable.
+3. **The same loophole re-created one key over** — round 3 gave the TEMPORARY credential barrier a deadline but no lifetime cap, reintroducing on the older key what had just been closed on the newer. Now identical contracts. Worth naming: a fix patterned on another fix inherited the defect that pattern had already been corrected for.
+4. **Erasure authority is not only the operator** — the carve-out now covers a lawful erasure obligation, the `Fails.` line no longer re-narrows it, and a PROPAGATION condition requires a permitted deletion to reach every duplicate, summary and index the duplication rule created.
+5. **Two over-claims** — "ENFORCED" read as covering semantics the parser cannot check (now "deterministically CHECKABLE marker contracts", with the boundary in the same sentence); and three days of compressed message text extrapolated to "any hardware" (now scoped to its sample).
+6. **The continuity test begged the question for dual-purpose records** — resolved by a precedence rule (a bounded store may age its COPY, never hold the ONLY copy) plus, in round 4, a requirement that a replacing summary OMIT the erased material.
+
+The lint changes in this artifact's §1–§8 above are the mechanical half of findings 2, 3 and 5; the tests were extended in step with each round (13 → 16 → 20 → 21).
 
 ## Evidence pointers
 
-- `tests/unit/lint-machine-local-justification.test.ts` — 13 tests, all passing, including the withdrawn-defence arm (a bare credential marker must leave its posture reading UNDEFENDED, not merely reportable) and the self-terminating arm (a fully-cited but expired marker is a finding).
+- `tests/unit/lint-machine-local-justification.test.ts` — 21 tests, all passing, including the withdrawn-defence arm (a bare credential marker must leave its posture reading UNDEFENDED, not merely reportable), the self-terminating arms (expired, beyond-horizon, and past-total-lifetime each fail separately), and the TEMPORARY-barrier contract (exit ref, re-review date, and `since` each tested missing).
 - Sweep before/after over `docs/specs/**`: 73 findings → 122 (`+19` credential markers now needing an authority and permanence, `+11` postures thereby left undefended, `+19` permanence findings). Report-only; no build state changes.
 - `node scripts/lint-registry-tree-parentage.mjs` — clean, 89 articles, 40 bidirectional relations.
+- `node scripts/standards-coverage.mjs --check` — the Building and The Substrate area audits are RECORDED and current (`docs/audits/standards-area-audit-2026-08-22.json`). The ONLY remaining failure is the direction guard, which requires an operator-signed ratification per changed article; the approver key pinned in protected main is an empty placeholder. Named in the PR, not worked around.
 - `node scripts/lint-registry-insertion-placement.mjs` — clean, 89 articles, 78 declaring a placement.
 - `node scripts/generate-standards-registry-asset.mjs` — canary accepts; 0 unrecognized article sections.
 

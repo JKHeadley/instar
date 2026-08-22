@@ -4,13 +4,13 @@ title: "Fixture — defended machine-local surface (PASSES Standard A)"
 
 # Fixture spec — a well-defended machine-local surface
 
-This surface stores the Claude OAuth login, whose relocation between machines is
-prohibited by the vendor's terms of service — not a credential that merely happens
-to sit on one disk.
+The signing key is generated inside this machine's secure element and has no
+export path. There is no authority forbidding the move; the move is simply not
+possible — which is why the basis is stated as an impossibility rather than a
+prohibition, and why the barrier is permanent rather than temporary.
 
 ## Multi-machine posture
 
-The per-machine Claude login is machine-local: Anthropic's terms forbid relocating
-it, so each machine re-mints its own rather than copying a token.
+The attestation signing key is machine-local.
 
-machine-local-justification: physical-credential-locality prohibited-by="Anthropic terms of service — relocating a Claude login between machines is prohibited" permanence=temporary
+machine-local-justification: physical-credential-locality impossible-because="the key is generated inside this machine's secure element and has no export path" permanence=permanent

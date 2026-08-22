@@ -32,6 +32,19 @@ Change 5 exists because of change 1, and this is the one dependency among the fi
 
 **Nothing here blocks anyone.** The parser reports and exits zero. Narrowing the credential excuse moved the report count from 73 findings to 122 across the spec corpus — 19 declarations that never named who forbids the move, and 11 surfaces thereby left undefended. That number going up is the amendment working.
 
+## What an outside reviewer found before this shipped
+
+Rather than write the five changes and call them done, the diff was handed to an independent model told to attack it. Four rounds. It was right nine times, and six of those changed the text:
+
+- **The new "on the way" label was renewable, not self-expiring.** Nothing stopped an author setting the expiry to the year 2099 — and this change's own first test case did exactly that and passed. It now carries a maximum date *and* a total lifetime, so it can be renewed roughly once before it must be resolved or re-argued.
+- **Then the same hole was re-created one rule over.** Fixing the credential excuse by giving it a deadline, but no lifetime, reproduced the loophole that had just been closed for the other key. Both now carry the same contract.
+- **The rulebook contradicted itself.** An existing posture means "read it from the other machine when needed" — exactly what change 1 forbids. Both were left standing, each citable against the other. Now the enumeration says which one wins.
+- **Deletion authority was stated too narrowly.** Only the operator could ask for something to be removed, but an erasure obligation can come from the person concerned or from law. The carve-out now covers both — and a permitted deletion must reach every copy, which matters precisely because this rule creates copies on purpose.
+- **Two things were over-claimed** — that the two checkable amendments were "enforced" (the checker verifies the shape of a declaration, never whether it is true), and that three days of measured conversation proved keeping everything forever is affordable on any hardware.
+- **The memory-versus-telemetry test begged the question for records that are both.** Resolved by a precedence rule: a bounded store may age out its copy, but it may never be the only copy.
+
+That is what a real second pass looks like when it is allowed to say no.
+
 ## What ships when
 
 The rulebook text and the two enforced contracts ship together, so the prose and the parser cannot disagree. Fixing the 19 newly-reported declarations is separate work and is not folded in here.
