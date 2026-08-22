@@ -105,10 +105,25 @@ scale.
 > they summarize. The single permitted deletion is one the operator explicitly requests —
 > a deliberate act by the principal, categorically distinct from a system quietly
 > forgetting on its own.
+>
+> **Subject, stated in the Rule because it decides a live collision.** This governs AGENT
+> MEMORY — conversation history, learnings, relationships, knowledge; the record a
+> successor instance needs in order to be the same agent. It does NOT govern telemetry,
+> audit trails, metrics, or coordination breadcrumbs, which are bounded on purpose and
+> whose bounding *Observable Intelligence* requires. The test is whether losing the record
+> costs the agent its continuity, not whether the record is useful.
 
 **Why.** Justin: "archiving CANNOT mean deleting. We must be able to access message
 history at all costs." This is also the clause that makes Amendment 1 affordable rather
 than unbounded — see below.
+
+**Why the subject clause is not padding.** *Observable Intelligence* carries a
+**Balanced by — Responsible Resource** clause requiring audit trails to age out — bounded
+retention, never forever — and calls an unbounded observability store its own incoherence.
+Worded generally, "archiving may never delete" contradicts it outright, and a reader could
+cite the registry for either position. The boundary is therefore part of the Rule rather
+than commentary beneath it. Found while resolving this amendment's tree placement; see
+*Registry-process compliance* below.
 
 ## Why 1 and 4 do not collide
 
@@ -199,15 +214,47 @@ registry's own format, not as bare Rule text:
 Without that, they read as guarantees the moment they are ratified — the failure mode
 this registry already carries one article's worth of scar tissue about.
 
-**Placement — one open question I am NOT deciding.** Amendments 1, 2 and 3 clearly belong
-inside *An Instar Agent Is Always a Multi-Machine Entity*: they refine its posture rule.
-**Amendment 4 (archiving may never delete) may not.** Its subject is the durability of
-agent memory, which is true on a single machine with no peers at all — a store that
-rotates away history violates it whether or not the agent is multi-machine. Under the
-insertion-placement rule it is plausibly a standalone article, or a child of a
-memory/observability parent, rather than a clause of the multi-machine posture article.
-Filing it under the wrong parent is the kind of mistake the tree exists to prevent, so it
-is raised here as a decision rather than assumed.
+**Placement — resolved against the tree (was an open question; decided 2026-08-21).** The
+earlier draft raised this and handed it back. It is decided here, with the evidence, because
+the placement rule asks for a considered position and a proposal that declines to take one
+supplies nothing to ratify.
+
+**Amendments 1, 2 and 3 are an UPDATE to *An Instar Agent Is Always a Multi-Machine Entity*,
+not new articles.** Each refines the posture rule that article already owns — 1 strengthens
+the test it applies, 2 restates its form, 3 narrows one enumerated key in its own closed
+taxonomy. None introduces a subject the article does not already govern, so under the
+insertion rule's third case they fold in rather than sit beside it.
+
+**Amendment 4 is a NEW article in the Substrate family, declaring a CHILD placement whose
+named parent is *Deferral = Deletion*.** Its subject is the durability of agent memory, which holds on a
+single machine with no peers at all — a store that rotates history away violates it whether
+or not the agent is multi-machine. Filing it under the multi-machine article would bind a
+general obligation to a condition it does not depend on.
+
+*Why that parent specifically.* **Deferral = Deletion** holds that an insight not captured
+NOW is gone, because the successor instance lacks the context that made it worth capturing.
+Amendment 4 is the same conservation one step later in time: an insight that WAS captured is
+equally gone if the store holding it evicts it. Same loss, same reason (no successor can
+reconstruct it), different mechanism — omission versus eviction. A CHILD rather than a
+sibling because the parent states the conservation principle and this article extends its
+reach past the capture boundary.
+
+**The boundary this article must state, or it collides the moment it lands.** *Observable
+Intelligence* already carries a **Balanced by — Responsible Resource** clause holding that
+audit trails are kept long enough to show trends and then aged out — bounded retention,
+never forever — and calling an observability store that grows without bound its own
+incoherence. "Archiving may never delete," worded generally, contradicts that clause
+directly. So the new article must name its subject: it governs **agent memory** —
+conversation history, learnings, relationships, knowledge — and does **not** govern
+telemetry, audit trails, metrics, or coordination breadcrumbs, which are bounded on
+purpose. The distinguishing test is whether a successor instance needs the record **to be
+itself**, not whether the record is useful. The registry's own Root section supplies the
+language for why that line falls there: destroying an agent's accumulated record is "an
+injury to a self," not a data incident.
+
+Without that boundary stated in the article's own Rule, the new article and the existing
+clause can each be cited against the other — precisely the both-sides-citable defect the
+registry's residual section exists to prevent.
 
 ## What the operator is being asked to decide
 
@@ -221,6 +268,10 @@ is raised here as a decision rather than assumed.
    in fact branch B of a ratified Aug-3 goal tree with a 184-finding audit already
    running against it. Landing registry edits into a live measurement, against a pinned
    base, is how one session's work gets thrown away by another's.
-6. Where does Amendment 4 belong in the tree — inside this article, or as its own?
+6. Confirm the placement above: 1–3 fold into the multi-machine article as an update;
+   4 becomes a new Substrate article deriving from *Deferral = Deletion*, with the
+   agent-memory-versus-telemetry boundary stated in its Rule. (Decided rather than asked,
+   per the standing instruction to stop deferring — but placement is a tree decision and
+   yours to overturn.)
 
 Each is independent; adopting any subset is coherent.
