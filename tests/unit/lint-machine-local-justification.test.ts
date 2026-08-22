@@ -13,6 +13,7 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 // @ts-expect-error — plain-JS gate script, no type declarations
 import { findPostureSection } from '../../scripts/lint-machine-local-justification.js';
@@ -111,14 +112,21 @@ describe('lint-machine-local-justification (Standard A marker floor)', () => {
       'machine-local-justification: hardware-bound-resource',
       '',
     ].join('\n');
-    const tmp = path.join(FIX, 'A-tmp-out-of-section.md');
+    // The fixture is written to an OS tmpdir, NOT into `FIX` under the repo:
+    // SourceTreeGuard refuses every destructive fs op whose target resolves
+    // inside the instar source tree, so the cleanup below threw
+    // SourceTreeGuardError and failed the test on CI. The lint takes an explicit
+    // path argument, so the file's location is irrelevant to what is asserted.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spec-lint-'));
+    const tmp = path.join(tmpDir, 'A-tmp-out-of-section.md');
     fs.writeFileSync(tmp, body);
     try {
       const r = runLint('--strict', tmp);
       expect(r.code).toBe(1);
       expect(r.stderr).toMatch(/A1-undefended-machine-local|A2-marker-outside-posture-section/);
     } finally {
-      SafeFsExecutor.safeRmSync(tmp, {
+      SafeFsExecutor.safeRmSync(tmpDir, {
+        recursive: true,
         force: true,
         operation: 'tests/unit/lint-machine-local-justification.test.ts:cleanup',
       });
