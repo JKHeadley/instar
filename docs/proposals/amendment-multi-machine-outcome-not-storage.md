@@ -1,0 +1,163 @@
+# PROPOSED AMENDMENT — not yet ratified
+
+**Status:** PROPOSAL. Agent proposes, operator ratifies. Deliberately NOT written into
+`docs/STANDARDS-REGISTRY.md`.
+**Proposed by:** Echo, from the 2026-08-21 operator directive in topic 52222.
+**Target article:** *An Instar Agent Is Always a Multi-Machine Entity* (ROOT / FOUNDATIONAL).
+**Type:** amendment to an existing ratified article, not a new entry.
+
+---
+
+## Why this exists
+
+Justin ruled on this directly (topic 52222, 2026-08-21), and the ruling does not fit the
+article as written:
+
+> "My high-level goal of who an agent is is that an agent is a single coherent being or
+> entity... an agent's machines are part of its body. In this analogy, it would be like
+> saying my right hand holds a hammer and since it's only for my right hand, my left hand
+> can't use it... ultimately I want an INSTAR agent to have the capability of expanding
+> autonomously across many many machines and any critical single machine restriction
+> creates an unscalable bottleneck."
+
+And the requirement that the current article cannot express at all:
+
+> "An Instar agent could exist AS IS with ANY SINGLE MACHINE it is installed on. If ALL of
+> the other machines but one crashed, the agent would only be affected by the amount of
+> physical resources it has access to, NOT the information."
+
+He stated he is "strongly leaning towards updating our standards to more clearly enforce
+this goal." This drafts that update so the decision is a yes/no on concrete text rather
+than an authoring task — per *Agent Proposes, Operator Approves*.
+
+## What the current article gets right, and keeps
+
+The unified-by-default posture, the closed justification taxonomy, and the rule that
+`machine-local` must argue for itself are all correct and are NOT weakened here. The
+amendment adds a requirement the article does not currently make, and narrows one key.
+
+## Amendment 1 — add the survivability clause (the substantive change)
+
+**Proposed addition to the Rule:**
+
+> **Single-machine survivability.** An agent must be able to operate AS IS on any single
+> machine it is installed on. If every other machine becomes unavailable, the agent loses
+> RESOURCES — throughput, parallelism, hardware it does not have — but never INFORMATION.
+> A design in which some information is reachable only by contacting another machine
+> violates this, however reliable that other machine is assumed to be.
+
+**Why this is not already covered.** The article's current test is "can this be unified?"
+A fetch-on-demand design passes that test — every machine *can* reach the data — while
+failing this one, because reachability depends on a peer being up. That is exactly the
+gap the conversation-history spec fell into: six review rounds converged on a design that
+satisfied the written standard and violated the operator's actual requirement.
+
+**What it costs.** This is the expensive clause. It rules out the whole family of
+designs where one machine holds the authoritative copy and others borrow it. Ruling
+those out is the point.
+
+## Amendment 2 — state the rule as an outcome, not a storage mandate
+
+**Proposed framing note appended to the Rule:**
+
+> This article states an OUTCOME, not a storage mechanism. It requires that any machine
+> can act coherently on anything the agent knows; it does not prescribe that every byte
+> sits on every disk. Full replication, sealed per-machine replication, and
+> replicate-index-plus-encrypted-content all satisfy it. Fetch-on-demand from a live peer
+> does not. Mechanisms may improve without a constitutional edit; the outcome may not
+> quietly weaken.
+
+**Why.** A storage mandate written into the constitution freezes today's implementation
+into the document, and the next better mechanism then requires amending the constitution
+to adopt. An outcome ages better and is the harder thing to satisfy dishonestly.
+
+## Amendment 3 — narrow `physical-credential-locality`
+
+**Proposed replacement for that taxonomy key's meaning:**
+
+> `physical-credential-locality` covers only a credential whose relocation is prohibited
+> or technically impossible — a vendor's terms of service, a hardware-bound key, a legal
+> residency constraint. It does NOT cover a credential that merely HAPPENS to be stored
+> on one disk. Where a vault (Bitwarden and equivalents) can hold it, the locality is a
+> storage choice and this key does not apply. A claim under this key must name the
+> prohibiting authority, and must state whether the prohibition is expected to be
+> permanent or temporary.
+
+**Why.** Justin: "I actually personally don't agree that a login needs to live physically
+on a single machine." He is right about the general case, and the repo proves it — the
+vault already holds most credentials portably. The key as written lets an author assert a
+physical constraint where a storage habit exists.
+
+**The one genuine current instance, and its expiry.** Anthropic's terms forbid relocating
+a Claude login between machines, which is why WS5.2 re-mints per machine rather than
+copying a token. Under this amendment that claim still passes — it names a prohibiting
+authority — and must additionally be declared TEMPORARY, with the planned exit recorded:
+per the operator, moving to API-key doorways once per-machine login becomes untenable at
+scale.
+
+## Amendment 4 — archiving may never mean deleting
+
+**Proposed addition:**
+
+> Where a store bounds its own growth, it may compact, compress, or summarize, but it may
+> not DELETE agent memory. Rotation-with-deletion is disqualifying for any store holding
+> what the agent knows. Summaries may be added for speed; they never replace the material
+> they summarize. The single permitted deletion is one the operator explicitly requests —
+> a deliberate act by the principal, categorically distinct from a system quietly
+> forgetting on its own.
+
+**Why.** Justin: "archiving CANNOT mean deleting. We must be able to access message
+history at all costs." This is also the clause that makes Amendment 1 affordable rather
+than unbounded — see below.
+
+## Why 1 and 4 do not collide
+
+Read naively they do: every machine holds everything, and nothing is ever deleted, is
+unbounded growth on every machine forever.
+
+Compression resolves it, and the margin is not close. Measured on this machine
+2026-08-21: 2,490 messages over 3 days, 3.0 MB raw, **0.4 MB gzipped — 7.5x, lossless.**
+At that rate a year of history is roughly 50 MB compressed and a decade is under half a
+gigabyte. Every machine carrying every conversation is affordable on any hardware the
+agent will run on.
+
+What was expensive was never the data. It was the container: the coherence journal's
+`DEFAULT_RETENTION` rotates and deletes, and its per-kind byte budgets were each hand-set
+small because every kind stored so far is small metadata. That is a table value, not an
+architectural wall — but the delete-on-rotate behaviour is disqualifying under
+Amendment 4 regardless of the number.
+
+## Enforcement — what would actually check this
+
+Stated plainly, because an unenforced standard reads as a guarantee while being a wish,
+and this registry already carries one article flagged for exactly that.
+
+- **Amendment 3 is enforceable today.** `scripts/lint-machine-local-justification.js`
+  already parses the taxonomy key; requiring a named prohibiting authority and a
+  permanent/temporary declaration under `physical-credential-locality` is a parser change
+  of the same shape as the checks it already makes.
+- **Amendments 1, 2 and 4 are NOT deterministically checkable.** No parser can decide
+  whether a design survives the loss of its peers. These would land as `/spec-converge`
+  reviewer questions — the cross-machine reviewer gains "does this survive every peer
+  disappearing?" and "does any store here delete agent memory?" — which is semantic
+  authority, not a ratchet.
+
+Proposing them anyway, with that asymmetry named rather than hidden: a reviewer question
+is real enforcement, weaker than a lint and stronger than prose.
+
+**The honest precondition.** The existing article's own enforcement is currently thin —
+the marker lint reports 73 findings across the spec corpus (62 undefended machine-local
+postures, 8 unresolvable ratification refs, 3 invalid keys) and runs in report-only mode.
+Adding clauses to an article that is substantially unenforced widens the gap between
+what the constitution says and what is true on disk. That triage is separate work
+(topic 52222), and it is the stronger claim on effort than these amendments are.
+
+## What the operator is being asked to decide
+
+1. Adopt Amendment 1 (survivability)? This is the load-bearing one and the expensive one.
+2. Adopt Amendment 2 (outcome not storage)?
+3. Adopt Amendment 3 (narrow the credential key)?
+4. Adopt Amendment 4 (never delete)?
+5. Should these land before or after the 73-finding enforcement triage?
+
+Each is independent; adopting any subset is coherent.
