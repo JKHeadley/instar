@@ -22,11 +22,28 @@
  *   A2 — SPURIOUS / MALFORMED marker (the reverse direction, §170): a
  *        `machine-local-justification:` marker whose key is NOT in the closed
  *        taxonomy {physical-credential-locality, hardware-bound-resource,
- *        operator-ratified-exception}; OR an `operator-ratified-exception` marker
- *        that cites no machine-verifiable, existence-checkable ref (a commit SHA,
- *        a dotted registry key, or a URL — §155-162: a bare topic+date fails
- *        DETERMINISTICALLY); OR a well-formed marker that sits OUTSIDE the
- *        `## Multi-machine posture` section (the location contract, §178-181).
+ *        operator-ratified-exception, migrating-to-unified}; OR an
+ *        `operator-ratified-exception` marker that cites no machine-verifiable,
+ *        existence-checkable ref (a commit SHA, a dotted registry key, or a URL —
+ *        §155-162: a bare topic+date fails DETERMINISTICALLY); OR a well-formed
+ *        marker that sits OUTSIDE the `## Multi-machine posture` section (the
+ *        location contract, §178-181).
+ *
+ * ── Amendments 3 and 5 (ratified 2026-08-22, operator directive topic 52222) ──
+ * The taxonomy gained per-key contracts, both deterministic — which is why they
+ * land ENFORCED on arrival while the same directive's Amendments 1, 2 and 4 land
+ * as declared-unenforced reviewer questions. Naming that asymmetry rather than
+ * claiming a guard for the unguarded clauses is deliberate.
+ *
+ *   physical-credential-locality (NARROWED) — must carry
+ *     `prohibited-by="<authority>"` and `permanence=permanent|temporary`. The key
+ *     covers only a credential whose relocation is PROHIBITED or technically
+ *     impossible; where a vault can hold it, the locality is a storage choice and
+ *     the key does not apply.
+ *   migrating-to-unified (NEW) — must carry `ratified=<ref> tracking=<ref>
+ *     expires=YYYY-MM-DD`, and an EXPIRED marker is itself a finding. The expiry
+ *     is what makes this the one self-terminating key, and is the whole reason a
+ *     fourth key was ratified into a deliberately narrow taxonomy.
  *
  * ── Honest deterministic scope (§194-202, §242-245) ───────────────────────
  * PRESENCE + well-formedness only. It does NOT judge whether a declared posture
@@ -70,6 +87,10 @@ export const TAXONOMY_KEYS = new Set([
   'physical-credential-locality',
   'hardware-bound-resource',
   'operator-ratified-exception',
+  // Ratified 2026-08-22 (operator directive, topic 52222 — Amendment 5). The
+  // ONLY self-terminating key: it requires a date and a tracked delivery, so it
+  // cannot become a resting place. See A2-migrating-* below for its contract.
+  'migrating-to-unified',
 ]);
 
 // ── Finding the posture section (widened 2026-08-21) ──────────────────────
@@ -189,10 +210,137 @@ export function hasResolvableRef(rest) {
 }
 
 /**
+ * Parse `name=value` / `name: value` sub-fields out of a marker's `rest`.
+ *
+ * Amendments 3 and 5 (ratified 2026-08-22) require a marker to carry NAMED
+ * facts rather than free prose — that is what makes them deterministically
+ * checkable rather than a reviewer's judgement. A value runs to the next known
+ * field name or to end-of-line, and may be quoted.
+ *
+ * Returns a lowercase-keyed object; a repeated field keeps the FIRST value, so
+ * appending a second `permanence=` cannot quietly override the first.
+ */
+export const MARKER_FIELDS = ['prohibited-by', 'permanence', 'ratified', 'tracking', 'expires'];
+export function parseMarkerFields(rest) {
+  const out = {};
+  if (!rest) return out;
+  const names = MARKER_FIELDS.map((n) => n.replace(/[-]/g, '\\-')).join('|');
+  const re = new RegExp(
+    `\\b(${names})\\s*[=:]\\s*(?:"([^"]*)"|'([^']*)'|([^\\s].*?))(?=\\s+(?:${names})\\s*[=:]|\\s*$)`,
+    'gi',
+  );
+  let m;
+  while ((m = re.exec(rest)) !== null) {
+    const key = m[1].toLowerCase();
+    const val = (m[2] ?? m[3] ?? m[4] ?? '').trim();
+    if (!(key in out)) out[key] = val;
+  }
+  return out;
+}
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Amendment 3 — `physical-credential-locality` must NAME the prohibiting
+ * authority and declare the prohibition PERMANENT or TEMPORARY. Returns a
+ * findings array (empty when well-formed).
+ *
+ * Why named fields rather than prose: the key as previously written let an
+ * author assert a physical constraint where a storage habit existed, and no
+ * parser could tell the two apart. "Bitwarden could hold this" is the test, and
+ * a marker that cannot even name who forbids the move has not met it.
+ */
+export function gradePhysicalCredentialLocality(rest) {
+  const findings = [];
+  const f = parseMarkerFields(rest);
+  if (!f['prohibited-by']) {
+    findings.push({
+      rule: 'A2-credential-locality-no-authority',
+      message:
+        `physical-credential-locality must NAME the prohibiting authority — ` +
+        `\`prohibited-by="<vendor ToS | hardware binding | legal residency constraint>"\` ` +
+        `(Amendment 3, ratified 2026-08-22). This key covers only a credential whose ` +
+        `relocation is PROHIBITED or technically impossible; a credential that merely ` +
+        `HAPPENS to sit on one disk is a storage choice, and where a vault can hold it ` +
+        `this key does not apply. Marker value: "${rest || '(empty)'}".`,
+    });
+  }
+  const perm = (f.permanence || '').toLowerCase();
+  if (perm !== 'permanent' && perm !== 'temporary') {
+    findings.push({
+      rule: 'A2-credential-locality-no-permanence',
+      message:
+        `physical-credential-locality must declare \`permanence=permanent\` or ` +
+        `\`permanence=temporary\` (Amendment 3, ratified 2026-08-22). A temporary ` +
+        `prohibition is a posture with an exit; a permanent one is a standing constraint, ` +
+        `and conflating them hides which is which. Marker value: "${rest || '(empty)'}".`,
+    });
+  }
+  return findings;
+}
+
+/**
+ * Amendment 5 — `migrating-to-unified` is permitted ONLY with (a) the ratified
+ * decision establishing unified as the destination, (b) a resolvable tracking
+ * ref for the work that delivers it, and (c) an expiry date. On expiry the
+ * surface declares `unified` or the exception is re-argued in front of the
+ * operator; it may never lapse silently into a permanent posture — so an
+ * EXPIRED marker is itself a finding, not a grace period.
+ *
+ * `today` is injectable so the expiry arm is testable without freezing a clock.
+ */
+export function gradeMigratingToUnified(rest, today = new Date()) {
+  const findings = [];
+  const f = parseMarkerFields(rest);
+  if (!hasResolvableRef(f.ratified || '')) {
+    findings.push({
+      rule: 'A2-migrating-no-ratified-decision',
+      message:
+        `migrating-to-unified must cite the ratified decision establishing \`unified\` as the ` +
+        `destination — \`ratified=<commit SHA | URL | dotted registry key>\` (Amendment 5, ` +
+        `ratified 2026-08-22). Without it the key asserts a destination nobody approved, which ` +
+        `is the false-claim class it exists to prevent. Marker value: "${rest || '(empty)'}".`,
+    });
+  }
+  if (!hasResolvableRef(f.tracking || '')) {
+    findings.push({
+      rule: 'A2-migrating-no-tracking-ref',
+      message:
+        `migrating-to-unified must cite a resolvable tracking ref for the work that DELIVERS ` +
+        `unified — \`tracking=<commit SHA | URL | dotted registry key>\` (Amendment 5). A ` +
+        `migration with no tracked delivery is a permanent posture wearing a temporary label. ` +
+        `Marker value: "${rest || '(empty)'}".`,
+    });
+  }
+  const expires = f.expires || '';
+  if (!ISO_DATE_RE.test(expires) || Number.isNaN(Date.parse(expires))) {
+    findings.push({
+      rule: 'A2-migrating-no-expiry',
+      message:
+        `migrating-to-unified must carry \`expires=YYYY-MM-DD\` (Amendment 5). The expiry is ` +
+        `what makes this key self-terminating and is the entire reason a fourth key was ` +
+        `ratified into a deliberately narrow taxonomy. Marker value: "${rest || '(empty)'}".`,
+    });
+  } else {
+    const due = Date.parse(`${expires}T23:59:59Z`);
+    if (due < today.getTime()) {
+      findings.push({
+        rule: 'A2-migrating-expired',
+        message:
+          `migrating-to-unified EXPIRED on ${expires}. The surface must now declare \`unified\` ` +
+          `or the exception must be re-argued in front of the operator; it may never lapse ` +
+          `silently into a permanent posture (Amendment 5).`,
+      });
+    }
+  }
+  return findings;
+}
+
+/**
  * Grade one spec's text against Standard A's marker contract. Pure — no I/O.
  * Returns { findings: [{ rule, message }] }.
  */
-export function gradeMachineLocalMarkers(text) {
+export function gradeMachineLocalMarkers(text, today = new Date()) {
   const findings = [];
   const markers = parseMarkers(text);
   const posture = findPostureSection(text);
@@ -208,6 +356,12 @@ export function gradeMachineLocalMarkers(text) {
           `(a fourth reason is an operator-ratified constitutional decision, §205-219).`,
       });
       continue;
+    }
+    if (marker.key === 'physical-credential-locality') {
+      for (const f of gradePhysicalCredentialLocality(marker.rest)) findings.push(f);
+    }
+    if (marker.key === 'migrating-to-unified') {
+      for (const f of gradeMigratingToUnified(marker.rest, today)) findings.push(f);
     }
     if (marker.key === 'operator-ratified-exception' && !hasResolvableRef(marker.rest)) {
       findings.push({
@@ -236,13 +390,22 @@ export function gradeMachineLocalMarkers(text) {
   if (posture) {
     const sectionText = text.slice(posture.start, posture.end);
     const assertsMachineLocal = /machine-local/i.test(sectionText);
-    const hasValidMarker = markers.some(
-      (mk) =>
-        TAXONOMY_KEYS.has(mk.key) &&
-        mk.index >= posture.start &&
-        mk.index < posture.end &&
-        (mk.key !== 'operator-ratified-exception' || hasResolvableRef(mk.rest)),
-    );
+    // A marker DEFENDS a machine-local posture only when it is well-formed FOR ITS
+    // KEY. Amendments 3 and 5 added per-key contracts, so a marker that carries the
+    // right key and nothing else must not count as a defence — otherwise the new
+    // requirements would be reportable while the posture they govern still passed.
+    const hasValidMarker = markers.some((mk) => {
+      if (!TAXONOMY_KEYS.has(mk.key)) return false;
+      if (mk.index < posture.start || mk.index >= posture.end) return false;
+      if (mk.key === 'operator-ratified-exception') return hasResolvableRef(mk.rest);
+      if (mk.key === 'physical-credential-locality') {
+        return gradePhysicalCredentialLocality(mk.rest).length === 0;
+      }
+      if (mk.key === 'migrating-to-unified') {
+        return gradeMigratingToUnified(mk.rest, today).length === 0;
+      }
+      return true;
+    });
     if (assertsMachineLocal && !hasValidMarker) {
       findings.push({
         rule: 'A1-undefended-machine-local',

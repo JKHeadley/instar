@@ -10,6 +10,17 @@
 //     out-of-taxonomy key and an operator-ratified-exception with no ref (rule A2),
 //   - ship REPORT-FIRST: a finding is a non-blocking signal (exit 0) unless
 //     --strict is passed.
+//
+// Amendments 3 and 5 (ratified 2026-08-22, operator directive topic 52222) added
+// per-key contracts, and both arms are covered below:
+//   - physical-credential-locality NARROWED — must NAME the prohibiting authority
+//     and declare permanence; the pre-amendment bare form now fails. That is a
+//     deliberate tightening, so the bare form gets its own negative fixture rather
+//     than being deleted: the case that used to pass must be shown failing.
+//   - migrating-to-unified ADDED — must cite the ratified destination and a
+//     tracking ref AND carry an expiry, and an EXPIRED marker is itself a finding.
+//     The expiry arm is what makes the key self-terminating; without it the key
+//     would be a permanent posture wearing a temporary label.
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -187,5 +198,50 @@ describe('lint-machine-local-justification (Standard A marker floor)', () => {
     const r = runLint('--json', fx('A-bad-spurious-key.md'));
     const parsed = JSON.parse(r.stdout) as { findings: Array<{ rule: string }> };
     expect(parsed.findings.some((f) => f.rule === 'A2-invalid-taxonomy-key')).toBe(true);
+  });
+
+  // ── Amendment 3 — physical-credential-locality, NARROWED ──
+  it('PASSES physical-credential-locality that names the authority and declares permanence', () => {
+    const r = runLint('--strict', fx('A-good-defended.md'));
+    expect(r.code).toBe(0);
+  });
+
+  it('FAILS (strict) the pre-amendment BARE physical-credential-locality form', () => {
+    // The exact marker that passed before 2026-08-22. A narrowing that does not
+    // fail the case it narrowed has narrowed nothing.
+    const r = runLint('--strict', fx('A-bad-credential-bare.md'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('A2-credential-locality-no-authority');
+    expect(r.stderr).toContain('A2-credential-locality-no-permanence');
+  });
+
+  it('withdraws the DEFENCE too: a bare credential marker no longer defends the posture', () => {
+    // Not merely reportable — the surface must read as UNDEFENDED, or the new
+    // requirement would be visible while the posture it governs still passed.
+    const r = runLint('--json', fx('A-bad-credential-bare.md'));
+    const parsed = JSON.parse(r.stdout) as { findings: Array<{ rule: string }> };
+    expect(parsed.findings.some((f) => f.rule === 'A1-undefended-machine-local')).toBe(true);
+  });
+
+  // ── Amendment 5 — migrating-to-unified ──
+  it('PASSES migrating-to-unified with a ratified ref, a tracking ref and an expiry', () => {
+    const r = runLint('--strict', fx('A-good-migrating.md'));
+    expect(r.code).toBe(0);
+  });
+
+  it('FAILS (strict) migrating-to-unified missing its citations and expiry', () => {
+    const r = runLint('--strict', fx('A-bad-migrating-incomplete.md'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('A2-migrating-no-ratified-decision');
+    expect(r.stderr).toContain('A2-migrating-no-tracking-ref');
+    expect(r.stderr).toContain('A2-migrating-no-expiry');
+  });
+
+  it('FAILS (strict) a migrating-to-unified posture that has EXPIRED', () => {
+    // The self-terminating arm. A fully-cited marker whose date has passed is a
+    // finding, because the key may never lapse silently into a permanent posture.
+    const r = runLint('--strict', fx('A-bad-migrating-expired.md'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('A2-migrating-expired');
   });
 });
