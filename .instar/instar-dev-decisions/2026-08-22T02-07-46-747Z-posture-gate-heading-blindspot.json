@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-22T02:07:46.747Z",
+  "slug": "posture-gate-heading-blindspot",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 63,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-machine-local-justification.js"
+    ],
+    "addedLines": 59,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

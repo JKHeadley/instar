@@ -72,7 +72,37 @@ export const TAXONOMY_KEYS = new Set([
   'operator-ratified-exception',
 ]);
 
-const POSTURE_SECTION_RE = /^#{1,6}\s+Multi-machine posture\b.*$/im;
+// ── Finding the posture section (widened 2026-08-21) ──────────────────────
+// This gate located its section by matching the heading text EXACTLY. Real spec
+// headings carry ordinals and qualifiers, and every such section was INVISIBLE:
+// the spec then read as "no posture section", A1/A3 never fired, and it passed
+// CLEAN without ever being checked. Measured on this corpus, an exact match saw
+// 91 of 149 posture-carrying specs and silently skipped the rest — including the
+// replicated-store foundation, the mesh self-heal spec, the secure-pairing spec
+// and the standards-registry spec itself. Nobody had to make a mistake; you just
+// had to number your heading.
+//
+// The shapes actually in the corpus, all of which must be seen:
+//   `## Multi-machine posture`                              (bare)
+//   `## 8. Multi-machine posture` / `## 8.2 …`               (numeric ordinal)
+//   `## §4. Multi-machine posture (Phase A)`                 (section-mark ordinal)
+//   `#### D. Multi-machine posture — released-no-placement`  (letter ordinal)
+//   `## 4. State and multi-machine posture`                  (phrase not leading)
+//   `## Cross-Machine Coherence (multi-machine posture)`     (phrase parenthesised)
+//
+// So the matcher is CONTAINMENT, not a prefix. Over-matching a heading errs
+// toward CHECKING a section that may not be the posture one; under-matching
+// silently skips the check entirely. For a gate whose whole purpose is to be
+// unskippable, and which is report-first (non-blocking without --strict), the
+// containment direction is the correct asymmetry.
+const POSTURE_HEADING_RE = /^#{1,6}[ \t]+.*multi-machine posture.*$/gim;
+
+// Among containing headings, the CANONICAL one — the phrase leading the title
+// after an optional ordinal — is preferred, so a spec carrying both a real
+// posture section and an incidental prose heading picks the real one
+// deterministically rather than by document order.
+const POSTURE_CANONICAL_RE =
+  /^#{1,6}[ \t]+(?:(?:§[ \t]*)?(?:[0-9]+(?:\.[0-9]+)*|[A-Z])\.?[ \t]+)?multi-machine posture\b/i;
 
 // A standalone marker line: start-of-line (optional bullet / backtick), the
 // label, a colon, then `key rest`. Anchored so a mid-sentence backticked prose
@@ -80,6 +110,22 @@ const POSTURE_SECTION_RE = /^#{1,6}\s+Multi-machine posture\b.*$/im;
 // does NOT match — only a real declaration line does.
 const MARKER_LINE_RE =
   /^[ \t]*(?:[-*+][ \t]+)?`?machine-local-justification`?[ \t]*:[ \t]*`?([^\s`]+)`?[ \t]*(.*?)`?[ \t]*$/gim;
+
+// ── Prose QUOTATION of a marker, not a declaration (2026-08-21) ────────────
+// The anchoring claim above holds only while the prose mention is mid-line. A
+// correction-heavy spec quotes markers constantly ("an earlier draft declared it
+// `machine-local-justification: hardware-bound-resource`. A JSONL audit file is
+// not…"), and ordinary paragraph wrapping puts that quotation at line-start,
+// where it reads as a live declaration sitting outside the posture section — a
+// false A3. Found by running the widened gate on a real 196KB spec; no fixture
+// had ever contained a spec that TALKS ABOUT markers.
+//
+// The discriminator is the closing backtick: a real declaration is the line's
+// content (bare label, optional trailing ref — see the corpus fixtures), whereas
+// a quotation closes its backtick span and then CONTINUES with sentence prose.
+// A fully-backticked marker alone on its line is still a declaration, because
+// nothing follows the span.
+const MARKER_QUOTATION_RE = /`[^`]*machine-local-justification[^`]*`[ \t]*\S/i;
 
 // A machine-verifiable, existence-checkable ref for operator-ratified-exception
 // (§155-162): a commit SHA (7-40 hex), a URL, or a dotted registry key.
@@ -94,11 +140,18 @@ const REF_REGISTRY_KEY_RE = /\b[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+){1,}\b/;
  * (or EOF).
  */
 export function findPostureSection(text) {
-  const m = POSTURE_SECTION_RE.exec(text);
+  POSTURE_HEADING_RE.lastIndex = 0;
+  const matches = [];
+  let hit;
+  while ((hit = POSTURE_HEADING_RE.exec(text)) !== null) {
+    matches.push({ text: hit[0], index: hit.index });
+  }
+  if (matches.length === 0) return null;
+  const m = matches.find((c) => POSTURE_CANONICAL_RE.test(c.text)) ?? matches[0];
   if (!m) return null;
-  const headingLevel = (m[0].match(/^#+/) || ['#'])[0].length;
+  const headingLevel = (m.text.match(/^#+/) || ['#'])[0].length;
   const start = m.index;
-  const afterHeading = start + m[0].length;
+  const afterHeading = start + m.text.length;
   // Find the next heading at <= headingLevel after the section starts.
   const rest = text.slice(afterHeading);
   const nextHeadingRe = new RegExp(`^#{1,${headingLevel}}\\s+\\S`, 'im');
@@ -117,6 +170,8 @@ export function parseMarkers(text) {
   MARKER_LINE_RE.lastIndex = 0;
   let m;
   while ((m = MARKER_LINE_RE.exec(text)) !== null) {
+    // A prose quotation of a marker is not a declaration of one.
+    if (MARKER_QUOTATION_RE.test(m[0])) continue;
     const key = m[1];
     const rest = (m[2] || '').trim();
     // Skip template placeholders like `<taxonomy-key>` / `<key>` — documentation,
