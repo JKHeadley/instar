@@ -159,9 +159,16 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
     });
 
     it('passes --model gpt-5.5 + --dangerously-bypass-approvals-and-sandbox by default (parity with Claude\'s --dangerously-skip-permissions)', () => {
-      const spec = buildInteractiveLaunch('codex-cli', {
-        binaryPath: '/usr/local/bin/codex',
-      });
+      // The binary is a FAKE whose --help advertises no hook-trust flag, so this
+      // asserts the DEFAULT argv deterministically. It previously passed the real
+      // '/usr/local/bin/codex' path, which made the assertion depend on whichever
+      // codex happens to be installed: `codexSupportsHookTrustBypass` shells out to
+      // `<binary> --help`, so on a host with codex >=0.133 the builder appended
+      // `--dangerously-bypass-hook-trust` and this exact-array comparison failed —
+      // green in CI (no codex on the runner), red on a maintainer's machine. The
+      // sibling tests below already use this helper; this one just hadn't adopted it.
+      const bin = fakeCodexBinary(false);
+      const spec = buildInteractiveLaunch('codex-cli', { binaryPath: bin });
       // The explicit `--model` flag avoids Codex CLI's own historical
       // default `gpt-5.2-codex` (retired from ChatGPT-subscription auth
       // 2026-04-14). The session default is gpt-5.5 as of 2026-05-23
@@ -172,7 +179,7 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
       // drops the sandbox (which would otherwise block the agent from
       // reaching localhost where instar's server lives).
       expect(spec.argv).toEqual([
-        '/usr/local/bin/codex',
+        bin,
         '--model',
         'gpt-5.5',
         '--dangerously-bypass-approvals-and-sandbox',
