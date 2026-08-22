@@ -67,7 +67,22 @@ describe('resolveStableNodeBinary', () => {
 
   it('falls back to PATH lookup when all absolute candidates fail', () => {
     const fakeExecPath = '/tmp/nonexistent-cellar/node';
-    const realNode = process.execPath;
+    // A REAL executable in a tmpdir, standing in for "the node PATH lookup found"
+    // — deliberately NOT `process.execPath`.
+    //
+    // It must be real because `existsSyncOverride` only stubs `existsSync`: the
+    // resolver's executability check then calls the genuine `statSync` and
+    // `accessSync`, so a purely synthetic path fails regardless of the override.
+    // And it must not be `process.execPath`, because the override hides the three
+    // absolute candidates BY NAME — including `/usr/local/bin/node` — while also
+    // requiring `p === realNode`. On a host whose node IS at one of those paths
+    // (a plain macOS `/usr/local/bin/node` install — most developer machines) the
+    // two clauses contradict each other: everything is hidden, the resolver
+    // correctly returns null, and the test fails. It passed only where node
+    // happens to sit elsewhere, which is why CI never saw it.
+    const tmpBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'resolve-node-'));
+    const realNode = path.join(tmpBinDir, 'node');
+    fs.writeFileSync(realNode, '#!/bin/bash\nexit 0\n', { mode: 0o755 });
 
     const resolved = resolveStableNodeBinary({
       execPathOverride: fakeExecPath,
@@ -82,9 +97,17 @@ describe('resolveStableNodeBinary', () => {
       whichOverride: () => realNode,
     });
 
-    expect(resolved).not.toBeNull();
-    expect(resolved!.source).toBe('which');
-    expect(resolved!.path).toBe(realNode);
+    try {
+      expect(resolved).not.toBeNull();
+      expect(resolved!.source).toBe('which');
+      expect(resolved!.path).toBe(realNode);
+    } finally {
+      SafeFsExecutor.safeRmSync(tmpBinDir, {
+        recursive: true,
+        force: true,
+        operation: 'tests/unit/resolveNodeBinary.test.ts:cleanup',
+      });
+    }
   });
 
   it('returns null when no Node is reachable anywhere', () => {
