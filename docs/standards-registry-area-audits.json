@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-08-13T17:48:50.000Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-13c.json",
-      "auditSha256": "89a056b6d6804b3df6a9664acdcd16e3b0c876cce142257cff5d4db6a04bc8e8",
-      "areaSha256": "58f1bf9ba210af353cad2fe8a8fe8f7a7114ae3735829cf82e8b16a5da38d34d",
+      "lastAuditedAt": "2026-08-22T19:05:00.000Z",
+      "auditRef": "docs/audits/standards-area-audit-2026-08-22.json",
+      "auditSha256": "4c844ba18d26bc6605e82057ceb59bdaf4eed9e7da302691c9f620965d8ae1f0",
+      "areaSha256": "2dc3982412341ab62ba2789b1ba3ae9a96430c110e1659e7faab72e968aced72",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
@@ -52,10 +52,10 @@
       }
     },
     "The Substrate": {
-      "lastAuditedAt": "2026-08-13T17:48:50.000Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-13c.json",
-      "auditSha256": "89a056b6d6804b3df6a9664acdcd16e3b0c876cce142257cff5d4db6a04bc8e8",
-      "areaSha256": "dc1b536bd334124bf15a12f30339ed1a54c2d44c6797a7dd5210b8e2373e934b",
+      "lastAuditedAt": "2026-08-22T19:05:00.000Z",
+      "auditRef": "docs/audits/standards-area-audit-2026-08-22.json",
+      "auditSha256": "4c844ba18d26bc6605e82057ceb59bdaf4eed9e7da302691c9f620965d8ae1f0",
+      "areaSha256": "83b311b42cfca904f3bf75c23a8b5990c13729cc2926b92c2b4f2d51929c0fe1",
       "refResolutionFloor": {
         "enforced": 16,
         "total": 26
