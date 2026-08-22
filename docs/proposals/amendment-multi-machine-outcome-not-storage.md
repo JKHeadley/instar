@@ -152,12 +152,75 @@ Adding clauses to an article that is substantially unenforced widens the gap bet
 what the constitution says and what is true on disk. That triage is separate work
 (topic 52222), and it is the stronger claim on effort than these amendments are.
 
+## Conflict check against the in-flight Phase B / Observer work (added after review)
+
+Justin's condition: verify this does not collide with, or get thrown away by, the
+parallel standards work. Checked, with the limits of what I could read stated.
+
+**No file collision.** The four open standards PRs (#1931, #1933, #1936, #1939) touch
+enforcement MEASUREMENT machinery — `standards-enforcement-measurement.mjs`,
+`standards-enforcement-execution-verifier.mjs`, `standards-coverage.mjs` — and Phase B
+window reports. None touches `docs/STANDARDS-REGISTRY.md` or
+`scripts/lint-machine-local-justification.js`. Last registry commit on `main` is #1893.
+
+**There IS a mechanical coupling, and it is the reason to be careful.**
+`scripts/standards-coverage.mjs` is a Tier-3 CI ratchet over the registry: it classifies
+each of the 88 articles by the guard its prose NAMES and fails the build if the enforced
+ratio drops, with per-area floors (the target article sits in **Building**, floor 34/40).
+Editing an article's prose can therefore move a CI number that another project is
+actively measuring against a pinned base.
+
+**The specific trap, already recorded in the registry itself.** *Cross-Store Coherence*
+documents that naming a guard in prose made it classify as ENFORCED by a guard measuring
+something else, and that "the enforcement ratio RISING on an edit that built nothing was
+the tell." Amendments 1, 2 and 4 have no guard. If they name one to look enforced, this
+proposal reproduces that exact failure inside the article that is being amended to be
+more honest. They must therefore land as declared-unenforced — see below.
+
+**Measurement caveat, stated rather than papered over.** I could not obtain a trustworthy
+local coverage baseline: `standards-coverage.mjs` needs `refs/remotes/upstream/main`,
+which does not resolve in this checkout, and every area consequently reports
+`ref-resolution-ratio=0`. That is a broken read, NOT a finding — quoting it as the real
+enforcement state would be the empty-is-not-an-answer error the Observer topic has been
+cataloguing all week. The before/after ratio must be measured in CI, on a tree where the
+reference resolves, before these amendments merge.
+
+## Registry-process compliance (added after review)
+
+**Amendments 1, 2 and 4 must land as declared unenforced sub-obligations,** in the
+registry's own format, not as bare Rule text:
+
+> **UNENFORCED SUB-OBLIGATION, named:** no guard decides whether a design survives the
+> loss of every peer, and none decides whether a store deletes agent memory. Both are
+> `/spec-converge` reviewer questions only.
+> **Sub-obligation countdown.** `<date>` — tracked as
+> `STD-SUBCOUNTDOWN-multi-machine-survivability`.
+
+Without that, they read as guarantees the moment they are ratified — the failure mode
+this registry already carries one article's worth of scar tissue about.
+
+**Placement — one open question I am NOT deciding.** Amendments 1, 2 and 3 clearly belong
+inside *An Instar Agent Is Always a Multi-Machine Entity*: they refine its posture rule.
+**Amendment 4 (archiving may never delete) may not.** Its subject is the durability of
+agent memory, which is true on a single machine with no peers at all — a store that
+rotates away history violates it whether or not the agent is multi-machine. Under the
+insertion-placement rule it is plausibly a standalone article, or a child of a
+memory/observability parent, rather than a clause of the multi-machine posture article.
+Filing it under the wrong parent is the kind of mistake the tree exists to prevent, so it
+is raised here as a decision rather than assumed.
+
 ## What the operator is being asked to decide
 
 1. Adopt Amendment 1 (survivability)? This is the load-bearing one and the expensive one.
 2. Adopt Amendment 2 (outcome not storage)?
 3. Adopt Amendment 3 (narrow the credential key)?
 4. Adopt Amendment 4 (never delete)?
-5. Should these land before or after the 73-finding enforcement triage?
+5. Should these land before or after the enforcement work? **Revised recommendation:
+   AFTER, and probably coordinated with the Phase B window owner rather than alongside
+   it.** My earlier framing called the enforcement gap something I had discovered; it is
+   in fact branch B of a ratified Aug-3 goal tree with a 184-finding audit already
+   running against it. Landing registry edits into a live measurement, against a pinned
+   base, is how one session's work gets thrown away by another's.
+6. Where does Amendment 4 belong in the tree — inside this article, or as its own?
 
 Each is independent; adopting any subset is coherent.
