@@ -136,11 +136,26 @@ At that rate a year of history is roughly 50 MB compressed and a decade is under
 gigabyte. Every machine carrying every conversation is affordable on any hardware the
 agent will run on.
 
-What was expensive was never the data. It was the container: the coherence journal's
-`DEFAULT_RETENTION` rotates and deletes, and its per-kind byte budgets were each hand-set
-small because every kind stored so far is small metadata. That is a table value, not an
-architectural wall — but the delete-on-rotate behaviour is disqualifying under
-Amendment 4 regardless of the number.
+What was expensive was never the data.
+
+**A claim that stood here has been withdrawn (2026-08-21, same evening).** This section
+previously argued that the real cost was the container — that the coherence journal
+"rotates and deletes" and that its per-kind byte budgets were set too small. Reading the
+rotation code shows both halves are wrong: `maxFileBytes` is a rotation THRESHOLD with no
+total ceiling behind it, and `rotateKeep: 0` means rotate but NEVER delete — already
+shipping on one kind today. A peer that falls past the tail window re-joins by
+snapshot-then-tail rather than losing anything.
+
+**What the correction leaves standing is stronger than what it removes.** The stores that
+hold agent memory deliberately DO expire their transport logs, and their code comments
+give the reason: a never-deleting log would retain personal data past an erasure request.
+That is a genuine constraint, and Amendment 4 is the thing that reconciles it — the system
+never forgets on its own, and the operator may explicitly ask for a deletion. So the
+amendment is not merely compatible with the compliance requirement; it is the formulation
+that lets both hold at once. An unqualified "never delete" would not be.
+
+The container was never the obstacle. Amendment 4 is therefore cheap to satisfy, and its
+one carve-out is load-bearing rather than decorative.
 
 ## Enforcement — what would actually check this
 
