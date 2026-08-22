@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-18T22:04:36.909Z",
+  "slug": "r3-structured-parked-test-outcomes",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 13,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/recheck-parked-tests.mjs"
+    ],
+    "addedLines": 12,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
