@@ -333,12 +333,25 @@ registry's residual section exists to prevent.
    coupling: adopting 1 without 5 manufactures false machine-local claims, because
    survivability converts a population of currently-passing surfaces into ones whose correct
    posture is unified and whose mechanism is unbuilt.**
-6. Should these land before or after the enforcement work? **Revised recommendation:
-   AFTER, and probably coordinated with the Phase B window owner rather than alongside
-   it.** My earlier framing called the enforcement gap something I had discovered; it is
-   in fact branch B of a ratified Aug-3 goal tree with a 184-finding audit already
-   running against it. Landing registry edits into a live measurement, against a pinned
-   base, is how one session's work gets thrown away by another's.
+6. Should these land before or after the enforcement work? **Sharpened 2026-08-21 into a
+   checkable condition, because "coordinate with the window owner" named no trigger and a
+   deferral without a trigger is an abandonment with a polite label.**
+
+   *What I claimed first:* that landing these would disturb a live measurement pinned to a
+   base commit. *What the evidence shows:* the four open standards PRs (#1931, #1933, #1936,
+   #1939) touch enforcement MACHINERY only — verified by listing their changed files; none
+   touches `docs/STANDARDS-REGISTRY.md` or the marker lint. And **this proposal is a document,
+   not a registry edit**, so nothing it does today is measurable by that audit at all.
+
+   *So the collision window is narrower and later than I said.* It opens at the single moment
+   the ratified text is written INTO the registry — the operator's action, not mine. The
+   concrete precondition at that moment is: **those four PRs are merged, or re-checked as
+   non-colliding then** (the check above is a point-in-time fact, and a PR can gain files).
+
+   *The one genuine ordering constraint that survives* is Amendment 5's, and it runs the other
+   way — 5 should land WITH or BEFORE 1, not after, because 1 without 5 manufactures false
+   markers (see the coupling under item 5). My earlier "land everything after the enforcement
+   work" would have got that backwards.
 7. Confirm the placement above: 1–3 fold into the multi-machine article as an update;
    4 becomes a new Substrate article deriving from *Deferral = Deletion*, with the
    agent-memory-versus-telemetry boundary stated in its Rule. (Decided rather than asked,
