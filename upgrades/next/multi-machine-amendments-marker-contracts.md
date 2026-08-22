@@ -16,7 +16,7 @@ The operator ratified five amendments to the multi-machine standard (topic 52222
 
 21 self-tests, both directions per contract: well-formed markers pass; each missing citation, an expired posture, a beyond-horizon expiry, a renewal past the total lifetime, a TEMPORARY barrier missing its exit / re-review date / `since`, and the pre-amendment bare credential form each fail under `--strict`. The withdrawn-defence arm asserts a malformed marker leaves its posture reading UNDEFENDED rather than merely reportable, and the passing fixtures compute their dates so they cannot rot into failures.
 
-Sweeping the spec corpus moves the report from 73 findings to 122: 19 credential markers that never named who forbids the move, and 11 postures thereby left undefended. Report-only — that rise is the narrowing working, and repairing those 19 is separate work.
+Sweeping the spec corpus moves the report from 94 findings to 135: 16 credential markers that never named who forbids the move, and 9 postures thereby left undefended. Report-only — that rise is the narrowing working, and repairing those 16 is separate work.
 
 The change was reviewed by an external adversarial lens over four rounds (nine findings, converged at zero new). It proved this change's own first-draft fixture used `expires=2099-01-01` and passed, which is how the renewable-not-self-terminating gap was found.
 

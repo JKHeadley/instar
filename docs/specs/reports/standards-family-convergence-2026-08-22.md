@@ -80,14 +80,14 @@ because a review whose findings are invisible in the artifact is indistinguishab
 | placement declarations | **78 of 89** (11 grandfathered, shrink-only) |
 | hierarchy block | current (`--check` clean) |
 | marker-lint self-tests | **21 passing**, both directions per new contract |
-| marker-lint sweep over `docs/specs/**` | **73 → 122 findings** (report-only) |
+| marker-lint sweep over `docs/specs/**` | **94 → 135 findings** (report-only) |
 
 ## The sweep number, read honestly
 
-The narrowing moves the corpus report from 73 findings to 122: **19** `physical-credential-locality`
-markers that never named who forbids the move, and **11** postures thereby left undefended. That
+The narrowing moves the corpus report from 94 findings to 135: **16** `physical-credential-locality`
+markers that never named who forbids the move, and **9** postures thereby left undefended. That
 rise is the amendment working — it is the population the operator predicted when he said he did not
-accept that a login must live on one machine. **It is not fixed here.** Repairing those 19 is
+accept that a login must live on one machine. **It is not fixed here.** Repairing those 16 is
 separate work, and folding it into the ratification would have made the ratification unreviewable.
 
 ## Enforcement honesty — the asymmetry, restated because it is the thing most likely to rot
