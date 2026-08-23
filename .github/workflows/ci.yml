@@ -148,6 +148,39 @@ jobs:
       # the approval that ratified it. A commit with no such pull request (a
       # direct push to main) resolves nothing, writes an empty context, and the
       # guard refuses exactly as it did before — the bypass stays closed.
+      # PATH B resolution, then the review fetch.
+      #
+      # A FAILED FETCH MUST NOT LOOK LIKE AN EMPTY ONE.
+      #
+      # The first version of this step did `gh api ... || echo '[]'`, so an
+      # API error, a rate limit or a network fault produced an empty review
+      # list — byte-identical to "the operator genuinely has not approved
+      # yet". Both are not-approved, so the SAFE direction held; but the
+      # REASON the operator is shown would have been a lie. They would read
+      # "no review from <login>", approve, watch it fail again, and have no
+      # way to know the check never reached GitHub.
+      #
+      # A dead query and a true absence printed the same word. Caught by a
+      # peer session's diagnosis the same night this shipped: an instrument
+      # whose failure is unreachable has not measured anything.
+      #
+      # So on a failed call the `reviews` key is OMITTED entirely and a
+      # `fetchError` is written instead. The grader's `Array.isArray`
+      # check then reports "review list unavailable" — a distinct, named,
+      # already-tested state. The SAME distinction now covers the
+      # commit -> pull-request association call on the push path, which had
+      # the identical `|| echo '[]'` shape: a failed association is
+      # "cannot verify", never "this commit has no pull request".
+      # A `pull_request_review` event carries the SAME `pull_request`
+      # payload as a `pull_request` event, so it takes the PR path. It is
+      # named explicitly rather than folded into a `!= push` test: this
+      # step now has three callers, and the one added to make approval
+      # re-run the checks is precisely the one that must not fall through
+      # to the push branch. On a review event `github.sha` is the merge
+      # REF, which matches no `merge_commit_sha`, so the push branch would
+      # resolve no pull request, write an empty context, and refuse —
+      # turning the trigger that exists to honour an approval into one
+      # that reliably rejects it.
       - name: Fetch operator review context (direction guard path B)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -161,31 +194,8 @@ jobs:
           OUT: ${{ runner.temp }}/standards-direction-review.json
         run: |
           set -u
-          # PATH B resolution, then the review fetch.
-          #
-          # A FAILED FETCH MUST NOT LOOK LIKE AN EMPTY ONE.
-          #
-          # The first version of this step did `gh api ... || echo '[]'`, so an
-          # API error, a rate limit or a network fault produced an empty review
-          # list — byte-identical to "the operator genuinely has not approved
-          # yet". Both are not-approved, so the SAFE direction held; but the
-          # REASON the operator is shown would have been a lie. They would read
-          # "no review from <login>", approve, watch it fail again, and have no
-          # way to know the check never reached GitHub.
-          #
-          # A dead query and a true absence printed the same word. Caught by a
-          # peer session's diagnosis the same night this shipped: an instrument
-          # whose failure is unreachable has not measured anything.
-          #
-          # So on a failed call the `reviews` key is OMITTED entirely and a
-          # `fetchError` is written instead. The grader's `Array.isArray`
-          # check then reports "review list unavailable" — a distinct, named,
-          # already-tested state. The SAME distinction now covers the
-          # commit -> pull-request association call on the push path, which had
-          # the identical `|| echo '[]'` shape: a failed association is
-          # "cannot verify", never "this commit has no pull request".
           assoc_failed=0
-          if [ "$EVENT_NAME" != "pull_request" ]; then
+          if [ "$EVENT_NAME" != "pull_request" ] && [ "$EVENT_NAME" != "pull_request_review" ]; then
             if associated=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PUSH_SHA}/pulls" 2>/dev/null); then
               match=$(SHA="$PUSH_SHA" jq -c '[.[] | select(.merge_commit_sha == env.SHA)] | if length == 1 then .[0] else empty end' <<< "${associated:-[]}" 2>/dev/null || echo '')
             else
@@ -296,9 +306,12 @@ jobs:
       # fileParallelism stays off within each shard to preserve isolation.
       - run: npm run test:push -- --shard=${{ matrix.shard }}/4
         env:
-          AUDIT_CHANGE_KIND: ${{ github.event_name == 'pull_request' && 'pull_request' || (github.event_name == 'push' && 'push' || '') }}
-          AUDIT_CHANGE_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (github.event_name == 'push' && github.event.before || '') }}
-          AUDIT_CHANGE_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || (github.event_name == 'push' && github.sha || '') }}
+          # A review event is PR-shaped here too: its payload carries the
+          # same base/head, and leaving it out would hand the audit an
+          # EMPTY change kind — an unscoped run reporting clean.
+          AUDIT_CHANGE_KIND: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && 'pull_request' || (github.event_name == 'push' && 'push' || '') }}
+          AUDIT_CHANGE_BASE_SHA: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || (github.event_name == 'push' && github.event.before || '') }}
+          AUDIT_CHANGE_HEAD_SHA: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.head.sha || (github.event_name == 'push' && github.sha || '') }}
       - name: Working-tree integrity check
         run: |
           if [ -n "$(git status --porcelain)" ]; then

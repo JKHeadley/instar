@@ -45,6 +45,7 @@ None added. A workflow trigger is a deterministic event subscription.
 - **The direction guard's path B** is the feature this completes; without it, path B is only usable by someone manually re-running jobs.
 - **The self-wiring contract** pins the trigger so it cannot be dropped silently. Dropping it would not fail any test otherwise, and the symptom would be an operator approving into a void — exactly the failure being fixed.
 - **CI cost:** one extra run per review event on open PRs. Reviews are rare here (the operator is asked only for constitutional changes), so this is not a meaningful load.
+- **The event SHAPE, found on rebase (2026-08-23) and the reason this branch is not a two-line change.** Adding a trigger gives the workflow a THIRD event shape, and three places assumed exactly two. The evidence step branched on `!= "pull_request"`, so a review event fell into the push branch, where the pull request is resolved by matching `github.sha` against `merge_commit_sha` — on a review event `github.sha` is the merge REF and matches nothing. The step would have resolved no pull request, written an empty context, and refused. The trigger added to make an approval count would have reliably rejected it, while every assertion about the trigger's presence stayed green: the event fires, the job runs, the check goes red. `AUDIT_CHANGE_KIND` / `_BASE_SHA` / `_HEAD_SHA` had the same two-shape assumption and would have handed the decision audit an EMPTY change kind — an unscoped run reporting clean. Both are fixed here and the first is pinned as a fourth regression route. This is the producer/consumer split in its exact shape: the trigger is the producer, and firing it is not the same fact as the checks handling it.
 
 ## 6. External surfaces
 
@@ -60,7 +61,7 @@ This IS an operator-surface fix. Before: approve, and the red check stays red wi
 
 ## 8. Rollback cost
 
-Two lines in the workflow and their pinned counterpart in the contract. Reverting restores today's behaviour, in which an operator's approval requires a manual re-run to take effect — which is why the revert should not happen quietly.
+The trigger, the event-shape handling in the evidence step and the three `AUDIT_CHANGE_*` expressions, plus their pinned counterparts in the contract. Reverting restores today's behaviour, in which an operator's approval requires a manual re-run to take effect — which is why the revert should not happen quietly. Reverting the event-shape handling ALONE is worse than reverting the whole change: the trigger would still fire and the check would then fail on every approval.
 
 ## Conclusion
 
@@ -68,13 +69,15 @@ Ship. It closes a gap found on the first real use of the approval path, in the d
 
 ## Second-pass review
 
-Not required: one trigger, no decision authority, no runtime surface. The design question worth a second look — whether `dismissed` belongs — is answered under §1 and is the load-bearing half.
+Ran, and it found something. Rebasing onto `main` after #1970 landed put this branch's trigger next to that change's push-path resolution for the first time, and the two together produced a third event shape neither had handled. See §5. The design question worth a second look — whether `dismissed` belongs — is answered under §1 and is the load-bearing half.
 
 ## Evidence pointers
 
 - Observed live: PR #1960, approved at 22:03, standards check still red and finished; a manual re-run of the same job then passed with no other change. That difference is the bug.
 - `tests/unit/standards-coverage-ratchet.test.ts` 38/38, including the negative controls that assert a workflow missing the required triggers FAILS, whose fixtures and expected error text moved with the contract.
-- The population literals in the same suite moved 88/89/89 → 89/89/89 when #1960 merged — the transition the prior comment predicted, applied when it happened rather than loosened to a relation.
+- **Correction, on rebase.** An earlier version of this document cited moving the suite's population literals 88/89/89 → 89/89/89 as evidence. Those literals are GONE — #1970 removed them on `main`, because `protectedBase` is measured against the merge base and therefore depends on WHERE the test runs, so no literal can satisfy both the branch and the merged state. The rebase takes `main`'s removal. The claim is withdrawn rather than restated.
+- The fourth regression route (`pull_request_review` folded back into the push branch) is asserted in the same suite and fails the check when applied, alongside the three routes #1970 pinned.
+- `scripts/standards-coverage.mjs --check` run against this worktree: PASSED, so the pinned literal matches the workflow as it now stands rather than as it was described.
 
 ## Class-Closure Declaration (display-only mirror)
 

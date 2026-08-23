@@ -36,31 +36,47 @@ const REVIEW_STEP_FIXTURE: string[] = [
   '          OUT: ${{ runner.temp }}/standards-direction-review.json',
   '        run: |',
   '          set -u',
-  '          if [ "$EVENT_NAME" != "pull_request" ]; then',
-  "            associated=$(gh api \"repos/${GITHUB_REPOSITORY}/commits/${PUSH_SHA}/pulls\" 2>/dev/null || echo '[]')",
-  "            match=$(SHA=\"$PUSH_SHA\" jq -c '[.[] | select(.merge_commit_sha == env.SHA)] | if length == 1 then .[0] else empty end' <<< \"${associated:-[]}\" 2>/dev/null || echo '')",
+  '          assoc_failed=0',
+  '          if [ "$EVENT_NAME" != "pull_request" ] && [ "$EVENT_NAME" != "pull_request_review" ]; then',
+  '            if associated=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PUSH_SHA}/pulls" 2>/dev/null); then',
+  `              match=$(SHA="$PUSH_SHA" jq -c '[.[] | select(.merge_commit_sha == env.SHA)] | if length == 1 then .[0] else empty end' <<< "\${associated:-[]}" 2>/dev/null || echo '')`,
+  '            else',
+  "              associated='[]'",
+  "              match=''",
+  '              assoc_failed=1',
+  '            fi',
   "            PR=''",
   "            HEAD_SHA=''",
   "            PR_AUTHOR=''",
   '            if [ -n "$match" ]; then',
-  "              PR=$(jq -r '.number // empty' <<< \"$match\" 2>/dev/null || echo '')",
-  "              HEAD_SHA=$(jq -r '.head.sha // empty' <<< \"$match\" 2>/dev/null || echo '')",
-  "              PR_AUTHOR=$(jq -r '.user.login // empty' <<< \"$match\" 2>/dev/null || echo '')",
+  `              PR=$(jq -r '.number // empty' <<< "$match" 2>/dev/null || echo '')`,
+  `              HEAD_SHA=$(jq -r '.head.sha // empty' <<< "$match" 2>/dev/null || echo '')`,
+  `              PR_AUTHOR=$(jq -r '.user.login // empty' <<< "$match" 2>/dev/null || echo '')`,
   '            fi',
-  "            echo \"path-b: event=${EVENT_NAME} associated=$(jq -r 'length' <<< \"${associated:-[]}\" 2>/dev/null || echo unreadable) matched-pr=${PR:-none}\"",
+  `            echo "path-b: event=\${EVENT_NAME} associated=$(jq -r 'length' <<< "\${associated:-[]}" 2>/dev/null || echo unreadable) matched-pr=\${PR:-none} assoc-failed=\${assoc_failed}"`,
   '          fi',
-  "          reviews='[]'",
-  '          if [ -n "$PR" ]; then',
-  "            reviews=$(gh api \"repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews?per_page=100\" 2>/dev/null || echo '[]')",
+  '          echo "path-b: head-sha=${HEAD_SHA:-none} owner=${OWNER_LOGIN:-none}/${OWNER_TYPE:-none}"',
+  '          if [ "$assoc_failed" = "1" ]; then',
+  `            printf '%s' '{"fetchError":"the commit-to-pull-request association call failed"}' > "$OUT"`,
+  '          elif [ -z "$PR" ]; then',
+  '            jq -n --arg headSha "$HEAD_SHA" \\',
+  '                  --arg ownerLogin "$OWNER_LOGIN" \\',
+  '                  --arg ownerType "$OWNER_TYPE" \\',
+  '                  --arg prAuthorLogin "$PR_AUTHOR" \\',
+  "               '{reviews:[], headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \\",
+  `               > "$OUT" || printf '%s' '{"fetchError":"jq could not build the review context"}' > "$OUT"`,
+  '          elif reviews=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews?per_page=100" 2>/dev/null); then',
+  `            echo "path-b: reviews=$(jq -r 'length' <<< "$reviews" 2>/dev/null || echo unreadable)"`,
+  '            jq -n --argjson reviews "$reviews" \\',
+  '                  --arg headSha "$HEAD_SHA" \\',
+  '                  --arg ownerLogin "$OWNER_LOGIN" \\',
+  '                  --arg ownerType "$OWNER_TYPE" \\',
+  '                  --arg prAuthorLogin "$PR_AUTHOR" \\',
+  "               '{reviews:$reviews, headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \\",
+  `               > "$OUT" || printf '%s' '{"fetchError":"jq could not build the review context"}' > "$OUT"`,
+  '          else',
+  `            printf '%s' '{"fetchError":"the reviews API call failed"}' > "$OUT"`,
   '          fi',
-  "          echo \"path-b: reviews=$(jq -r 'length' <<< \"${reviews:-[]}\" 2>/dev/null || echo unreadable) head-sha=${HEAD_SHA:-none} owner=${OWNER_LOGIN:-none}/${OWNER_TYPE:-none}\"",
-  '          jq -n --argjson reviews "${reviews:-[]}" \\',
-  '                --arg headSha "$HEAD_SHA" \\',
-  '                --arg ownerLogin "$OWNER_LOGIN" \\',
-  '                --arg ownerType "$OWNER_TYPE" \\',
-  '                --arg prAuthorLogin "$PR_AUTHOR" \\',
-  "             '{reviews:$reviews, headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \\",
-  "             > \"$OUT\" || echo '{}' > \"$OUT\"",
   '',
 ];
 
@@ -497,6 +513,25 @@ describe('standards-coverage ratchet script', () => {
     const gutted = runFullCheck();
     expect(gutted.code).toBe(1);
     expect(gutted.out).toContain('requires dependency install plus full-history protected-base extraction');
+
+    // FOURTH ROUTE — the one the review TRIGGER creates, pinned the day it was
+    // added. `pull_request_review` gives this step a third caller, and it is the
+    // caller whose entire purpose is to honour an approval. Its payload is
+    // PR-shaped, but `github.sha` on a review event is the merge REF, which
+    // matches no `merge_commit_sha` — so if the branch test is narrowed back to
+    // `!= "pull_request"` alone, a review event falls into the push path,
+    // resolves no pull request, writes an empty context and refuses. The trigger
+    // added to make an approval count would then reliably reject it, and every
+    // assertion about the trigger's PRESENCE would still pass: the event fires,
+    // the job runs, the check goes red. Presence of a trigger is not handling of
+    // its event.
+    write('.github/workflows/ci.yml', validWorkflow.replace(
+      'if [ "$EVENT_NAME" != "pull_request" ] && [ "$EVENT_NAME" != "pull_request_review" ]; then',
+      'if [ "$EVENT_NAME" != "pull_request" ]; then',
+    ));
+    const reviewEventUnhandled = runFullCheck();
+    expect(reviewEventUnhandled.code).toBe(1);
+    expect(reviewEventUnhandled.out).toContain('requires dependency install plus full-history protected-base extraction');
 
     // And the token scope is pinned, not inherited: dropping the permissions block
     // returns the job to the repository default, which a tightened org policy can
