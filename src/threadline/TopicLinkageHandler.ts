@@ -57,6 +57,8 @@ export interface TopicLinkageDeps {
    * result means the inject stalled, so the caller must fall back to surfacing.
    */
   injectIntoSession: (sessionName: string, text: string) => boolean | Promise<boolean>;
+  /** Confirm the recipient read and acted; wake/dispatch alone is not delivery. */
+  awaitConsumption: (sessionName: string) => boolean | Promise<boolean>;
   /** Check if a tmux session is alive. */
   isSessionAlive: (sessionName: string) => boolean;
   /** Post a notification to a Telegram topic. */
@@ -412,8 +414,9 @@ export class TopicLinkageHandler {
     // surface the awaited reply through the topic's existing wake path.
     if (sessionName && this.deps.isSessionAlive(sessionName)) {
       try {
-        const ok = await this.deps.injectIntoSession(sessionName, payload);
-        if (ok) {
+        const woke = await this.deps.injectIntoSession(sessionName, payload);
+        const consumed = woke ? await this.deps.awaitConsumption(sessionName) : false;
+        if (consumed) {
           deliveryMode = 'live-inject';
         }
       } catch (err) {
@@ -516,7 +519,9 @@ export class TopicLinkageHandler {
     // configured) leaves the commitment OPEN so PromiseBeacon keeps heartbeating;
     // the 7-day TTL + expireCommitments() sweep is the backstop. This is the fix
     // for the 2026-05-25 premature-resolution incident.
-    const surfacedToUser = deliveryMode === 'live-inject' || telegramSent;
+    // Coordination success belongs to the intended session, not the Telegram
+    // observer. A fallback surface makes failure visible but cannot consume it.
+    const surfacedToUser = deliveryMode === 'live-inject';
     let commitmentDelivered = false;
     if (commitment && surfacedToUser) {
       try {

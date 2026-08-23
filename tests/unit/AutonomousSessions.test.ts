@@ -124,6 +124,12 @@ describe('stopping', () => {
     expect(stopAutonomousTopic(stateDir, 'a')).toBe(true);
     const jobs = listAutonomousJobs(stateDir);
     expect(jobs.map((j) => j.topic)).toEqual(['b']);
+    const archives = fs.readdirSync(path.join(stateDir, 'autonomous')).filter(f => f.startsWith('a.archive-close-'));
+    expect(archives).toHaveLength(1);
+    const archivePath = path.join(stateDir, 'autonomous', archives[0]);
+    const readBack = fs.readFileSync(archivePath);
+    expect(readBack.toString('utf8')).toContain('goal: "job a"');
+    console.log(`CLOSE-PROOF liveExists=false archive=${archivePath} bytes=${readBack.byteLength} content=${JSON.stringify(readBack.toString('utf8'))}`);
   });
 
   it('stopAutonomousTopic returns false for unknown topic', () => {

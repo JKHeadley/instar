@@ -17029,6 +17029,15 @@ export async function startServer(options: StartOptions): Promise<void> {
             return await sessionManager.injectPasteNotificationConfirmed(sessionName, text);
           } catch { return false; }
         },
+        awaitConsumption: async (sessionName: string) => {
+          const deadline = Date.now() + 30_000;
+          while (Date.now() < deadline) {
+            // Cleared only by /telegram/reply after the recipient acts.
+            if (!sessionManager.getPendingInjection(sessionName)) return true;
+            await new Promise(resolve => setTimeout(resolve, 250));
+          }
+          return false;
+        },
         isSessionAlive: (sessionName: string) => {
           try { return sessionManager.isSessionAlive(sessionName); } catch { return false; }
         },
