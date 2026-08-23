@@ -59,6 +59,7 @@ const REQUIRED_LINTS = [
   // executed. Verified against the base commit rather than assumed.
   'lint-blocking-decisions-declared.mjs',
   'lint-dispatch-withholds-answer.mjs',
+  'lint-bounded-judgment-input.mjs',
   'lint-documented-only-countdown.mjs',
   // Not named "lint-*": it is a generator whose --check mode IS the guard. Listed
   // here anyway, because the property this ratchet protects is "a registry guard
