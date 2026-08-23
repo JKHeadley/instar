@@ -1,4 +1,4 @@
-# Completion-Evidence Pathway Characterization — refreshed 2026-08-18
+# Completion-Evidence Pathway Characterization — refreshed 2026-08-22
 
 ## Status
 
@@ -15,6 +15,12 @@ Authenticated freshness reads against Instar-codey v1.3.1180 on port 4044 return
 | `GET /doorways` | HTTP 503, `registry-unavailable-no-instar-source` | The agent project configured as `projectDir` is not the Instar source worktree, so the source manifest cannot be resolved. |
 | `GET /decision-quality?sinceHours=720` | HTTP 503, uniform seam dark | No live completion-route grade window is available. |
 | `GET /benchmark-divergence` | HTTP 503, detector dark | Absence of a finding cannot be read as “not diverged.” |
+
+The same three authenticated reads were repeated on 2026-08-22 against the live Instar-codey
+server on port 4044. They returned the same status and reason codes: doorway registry unavailable
+because this install has no Instar-source manifest, decision-quality uniform seam dark, and
+benchmark-divergence detector dark. The recheck therefore supplies no new evidence that can
+promote, reorder, or reject any candidate route below.
 
 The August freshness pass therefore cannot promote, reorder, or reject a candidate from live
 quality data. The most recent direct free probe (July 24) found Claude Code, Anthropic headless,
