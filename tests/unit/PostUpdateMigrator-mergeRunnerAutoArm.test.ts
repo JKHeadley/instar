@@ -112,6 +112,23 @@ describe('migrateClaudeMd — Green-PR section REPLACE for already-armed agents 
     expect(after).toContain('mergeStrategy');
   });
 
+  it('RE-SYNCS a section that already carries mergeStrategy but predates approval-required (2026-08-22) — and stays idempotent after', () => {
+    // An agent migrated by the PREVIOUS re-sync has the mergeStrategy marker, so
+    // the old content-sniff would SKIP it forever and it would never learn the
+    // approval-required flow (request-the-review + link, never loop).
+    const MID_SECTION = OLD_SECTION.replace('## Green-PR Auto-Merge (Phase 7 becomes machinery)', '## Green-PR Auto-Merge (Phase 7 becomes machinery)\n\n- (prior re-sync) mergeStrategy is auto.');
+    fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n\nIntro.\n' + MID_SECTION + '\n## Next Section\n\nAfter.\n');
+    const result = runClaudeMdMigration(projectDir);
+    expect(result.upgraded.some((u) => /updated Green-PR Auto-Merge/.test(u))).toBe(true);
+    const after = fs.readFileSync(claudeMdPath, 'utf-8');
+    expect(after).toContain('approval-required');
+    expect(after).toContain('Review changes');
+    expect(after).toContain('## Next Section');
+    expect(after.match(/## Green-PR Auto-Merge/g)!.length).toBe(1);
+    const second = runClaudeMdMigration(projectDir);
+    expect(second.upgraded.some((u) => /Green-PR Auto-Merge/.test(u))).toBe(false);
+  });
+
   it('is IDEMPOTENT for the Green-PR section — once the new marker is present, a second run skips and does not duplicate', () => {
     fs.writeFileSync(claudeMdPath, '# CLAUDE.md\n\nIntro.\n' + OLD_SECTION);
     runClaudeMdMigration(projectDir);

@@ -1,0 +1,28 @@
+<!-- bump: patch -->
+
+## What Changed
+
+When the base branch's RULESET requires a human approval (`pull_request` rule with `require_last_push_approval` and/or a positive `required_approving_review_count`), `scripts/safe-merge.mjs` now reads that policy BEFORE attempting the merge, REQUESTS the operator's review itself (repo owner by default; `--request-review-from <login,…>` to override; never the PR author), and returns a distinct `refused:approval-required` result carrying the direct Files-tab `reviewUrl`. GitHub's refusal text on the merge path ("New changes require approval from someone other than the last pusher") is classified the same way as belt-and-braces. The green-PR watcher treats the slug as terminal-non-ladder (no retry burn) and posts ONE attention line with the link. The `/instar-dev` Phase-7 text and the CLAUDE.md Green-PR section (with a migration that re-syncs agents that already carry the prior `mergeStrategy` marker) now say it plainly: send the operator the link, merge when the approval lands, never loop, never ask them to "request a review".
+
+Why: on 2026-08-22 PR #1963 was fully green and refused by a ruleset tightened at 17:03 PDT; `safe-merge` read only CLASSIC branch protection, so it attempted the merge, got a generic failure, and the operator met a reviewer-less PR ("waiting for someone to request your review") with no Approve button. The operator's requirement is explicit: link → approve, nothing else.
+
+## Evidence
+
+- Ruleset policy extraction: detects `require_last_push_approval` with zero required approvals (the exact 2026-08-22 ruleset shape, committed verbatim), detects a positive count, reports no policy when no `pull_request` rule exists (no over-block). Negative control: drop the last-push flag read → test fails.
+- GitHub's verbatim refusal text is matched on the merge path; an unrelated merge failure is not.
+- Watcher: `refused:approval-required` records the outcome, raises one attention line containing the Files-tab URL and "already requested", advances the ladder by zero attempts. Negative control: remove the branch → test fails.
+- Migrator: a CLAUDE.md section carrying `mergeStrategy` but not `approval-required` is re-synced once and idempotent after. Negative control: revert the re-sync condition → test fails.
+- `--request-review-from` parses a login list and rejects junk; capabilities advertise `approval-required-refusal` + `request-review-from`. Typecheck + lint clean.
+- This PR is itself the first to go through the new flow.
+
+## What to Tell Your User
+
+When a pull request needs your approval because of the repository's own rule, you now get one link that opens straight to the Approve button, with your review already requested. You never have to ask for the review to be requested first. The rule itself is unchanged — the approval is still yours to give.
+
+## Summary of New Capabilities
+
+Approval-required pull requests resolve to "here is the link, your review is requested" instead of a failed merge and a reviewer-less PR.
+
+## Known Limits
+
+A review requirement expressed only in classic branch protection keeps the pre-existing `refused:reviews-required` behaviour (refuse without requesting a review). Team reviewers are not supported; only user logins. If GitHub rejects the review request the result carries `requestError` and still emits the link. <!-- tracked: CMT-1044 -->

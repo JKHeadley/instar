@@ -722,6 +722,21 @@ export class GreenPrAutoMerger extends EventEmitter {
       return;
     }
 
+    if (outcome === 'refused:approval-required') {
+      // The base branch demands a HUMAN approval (ruleset require_last_push_approval
+      // or a required review) that --admin cannot and must not bypass. safe-merge
+      // has already REQUESTED the review; the only thing left is to hand the
+      // operator the link. Terminal-non-ladder: retrying cannot produce an
+      // approval, so this must not burn ladder attempts (2026-08-22, PR #1963).
+      const ep: Episode = state.episodes[target.number] ?? { pr: target.number, headRefOid: target.headRefOid, attempts: 0, rearmEpisodes: 0, state: 'active' };
+      ep.lastOutcome = outcome;
+      ep.lastAttemptAt = this.deps.now();
+      state.episodes[target.number] = ep;
+      this.deps.audit({ kind: 'green-pr-automerge', event: 'approval-required', pr: target.number });
+      void this.refreshAggregate(state, [`PR #${target.number} is green and waiting on YOUR approval — the main-branch rule needs a reviewer other than the pusher, and I have already requested you. One click: https://github.com/${this.cfg.repo}/pull/${target.number}/files → Review changes → Approve. I merge the moment it lands.`]);
+      return;
+    }
+
     const ep: Episode = state.episodes[target.number] ?? { pr: target.number, headRefOid: target.headRefOid, attempts: 0, rearmEpisodes: 0, state: 'active' };
     const folded = applyOutcome(ep, outcome, this.deps.now(), this.ladderCfg(), { armedHead: armedHead ?? target.headRefOid });
     state.episodes[target.number] = folded.ep;
