@@ -10401,6 +10401,31 @@ export async function startServer(options: StartOptions): Promise<void> {
       }));
     }
 
+    // A session whose process ended on its own (no reaper/operator/kill) lands in
+    // the SAME reap-log as every other session end — `type:'exited'` with uptime
+    // and the last startup-window pane tail. Before this, a self-exit was a
+    // reason-less `completed` record and NO row here (2026-08-22 codex class).
+    sessionManager.on('sessionExited', (e: {
+      session: import('../core/types.js').Session;
+      reason: string;
+      uptimeSeconds?: number;
+      lastTail?: string;
+    }) => {
+      try {
+        reapLog.recordExited({
+          session: e.session.name,
+          tmuxSession: e.session.tmuxSession,
+          reason: e.reason,
+          ...(e.session.framework ? { framework: e.session.framework } : {}),
+          ...(e.uptimeSeconds !== undefined ? { uptimeSeconds: e.uptimeSeconds } : {}),
+          ...(e.session.launchLane ? { launchLane: e.session.launchLane } : {}),
+          ...(e.lastTail ? { lastTail: e.lastTail } : {}),
+        });
+      } catch (err) {
+        // @silent-fallback-ok — an audit write must never disturb the monitor loop.
+        console.warn('[reap-log] recordExited failed (non-fatal):', err);
+      }
+    });
     sessionManager.on('sessionReaped', (e: { session: import('../core/types.js').Session; reason: string; disposition?: 'terminal' | 'recovery-bounce'; origin?: 'operator' | 'autonomous'; authorityScope?: 'lease-holder' | 'local-age-limit' | 'local-post-transfer-closeout' | 'operator'; midWork?: boolean; workEvidence?: string[]; via?: string }) => {
       // ── F7: schedule a post-grace reachability verify for the affected topic. Both a
       //    terminal kill AND a recovery-bounce schedule one (a recovery whose respawn

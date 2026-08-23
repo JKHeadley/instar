@@ -308,6 +308,13 @@ export function deriveTargetKey(sessionId: string): DerivedTarget {
 }
 
 /** Absolute maximum session duration (4 hours) — safety net for sessions without explicit timeout */
+/** Sessions younger than this get their pane tail sampled each monitor tick
+ *  so a self-exit during startup leaves evidence (see `startupTails`). */
+const STARTUP_TAIL_WINDOW_MS = 120_000;
+/** Lines captured per startup-tail sample — enough to show a menu/banner/error,
+ *  small enough to be a negligible per-tick cost. */
+const STARTUP_TAIL_LINES = 15;
+
 const DEFAULT_MAX_DURATION_MINUTES = 240;
 
 /** Age-gate transcript-activity window (ms). A session whose framework transcript
@@ -752,6 +759,22 @@ export class SessionManager extends EventEmitter {
   private worktreeManager: import('./WorktreeManager.js').WorktreeManager | null = null;
   private buildContextStore: SessionBuildContextStore | null = null;
   private pendingInjects!: PendingInjectStore;
+  /**
+   * Last pane tail the monitor saw for a session still in its STARTUP window.
+   *
+   * A session whose process ends on its own takes its terminal with it — by the
+   * time the monitor notices the pane is gone there is nothing left to capture.
+   * 2026-08-22: interactive codex sessions died ~18s after spawn and every death
+   * was a `completed`/reason-null record with no evidence; the cause had to be
+   * re-derived by hand-spawning one and watching. So the monitor samples a small
+   * tail for sessions younger than `STARTUP_TAIL_WINDOW_MS` (where silent deaths
+   * cluster — a session that survives startup is not the silent-death class),
+   * and the vanish path hands the last sample to the reap-log `exited` row.
+   * Bounded: the window caps how many sessions are sampled per tick, entries are
+   * evicted every tick for sessions no longer running, and the stored tail is a
+   * dozen lines. Memory-only; never written anywhere except the redacted row.
+   */
+  private readonly startupTails = new Map<string, { tail: string; at: number }>();
 
   /** Per-session shim directory root (one subdir per session). Used for K9 mandatory shim. */
   private shimRoot: string | null = null;
@@ -2012,13 +2035,34 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // entries for ended sessions + per-entry TTL). The resolver's sweep is internally
       // guarded (it never throws into the monitor loop), so no outer guard is needed.
       this.permissionPromptResolver?.sweep(new Set(running.map(s => s.tmuxSession)));
+      // Evict startup-tail samples for sessions that are no longer running
+      // (bounded map — same hygiene as the resolver sweep above).
+      if (this.startupTails.size > 0) {
+        const live = new Set(running.map(s => s.tmuxSession));
+        for (const key of this.startupTails.keys()) {
+          if (!live.has(key)) this.startupTails.delete(key);
+        }
+      }
       for (const session of running) {
         // Grace period: don't check sessions that started less than 15 seconds ago.
         // Claude Code takes several seconds to start — the process might not be
         // visible in tmux yet when the monitor runs its first check.
+        let ageMs: number | undefined;
         if (session.startedAt) {
-          const ageMs = Date.now() - new Date(session.startedAt).getTime();
+          ageMs = Date.now() - new Date(session.startedAt).getTime();
           if (ageMs < 15_000) continue;
+        }
+
+        // Startup-window evidence sample (see `startupTails`). Taken BEFORE the
+        // liveness probe: if the pane is already gone the capture is empty and
+        // the previous sample is kept — which is exactly the evidence we want.
+        if (ageMs !== undefined && ageMs < STARTUP_TAIL_WINDOW_MS) {
+          try {
+            const tail = await this.captureOutputMaybeAsync(session.tmuxSession, STARTUP_TAIL_LINES);
+            if (tail && tail.trim().length > 0) {
+              this.startupTails.set(session.tmuxSession, { tail, at: Date.now() });
+            }
+          } catch { /* @silent-fallback-ok — evidence sampling must never affect the tick */ }
         }
 
         const alive = await this.isSessionAliveAsync(session.tmuxSession);
@@ -2047,9 +2091,36 @@ rm()  { "${shimRunner}" rm  "$@"; }
               injectedAt: pendingInjection.injectedAt,
             });
           }
+          // The process ended ON ITS OWN — no reaper, no operator, no kill path
+          // owns this transition. Stamp WHY so the record is not a reason-less
+          // `completed` (2026-08-22: the codex interactive death class was
+          // invisible in the records precisely because this branch wrote
+          // nothing), and hand the last startup-window tail sample to the
+          // reap-log `exited` row via `sessionExited`. `sessionComplete` still
+          // fires for every existing listener — this ADDS a record, it changes
+          // no existing semantics.
+          const uptimeSeconds = fresh.startedAt
+            ? Math.max(0, Math.round((Date.now() - new Date(fresh.startedAt).getTime()) / 1000))
+            : undefined;
+          const duringStartup = uptimeSeconds !== undefined && uptimeSeconds * 1000 < STARTUP_TAIL_WINDOW_MS;
+          const lastSample = this.startupTails.get(session.tmuxSession);
+          this.startupTails.delete(session.tmuxSession);
           fresh.status = 'completed';
           fresh.endedAt = new Date().toISOString();
+          fresh.endedReason = duringStartup ? 'process-exited-during-startup' : 'process-exited';
           this.state.saveSession(fresh);
+          console.warn(
+            `[SessionManager] Session "${fresh.name}" (${fresh.framework ?? 'unknown framework'}) exited on its own` +
+            `${uptimeSeconds !== undefined ? ` after ${uptimeSeconds}s` : ''} — not killed by instar.` +
+            `${duringStartup ? ' Died DURING STARTUP.' : ''}` +
+            `${lastSample ? ` Last pane tail sampled ${Math.round((Date.now() - lastSample.at) / 1000)}s before detection (recorded in reap-log).` : ' No startup tail sample was available.'}`,
+          );
+          this.emit('sessionExited', {
+            session: fresh,
+            reason: fresh.endedReason,
+            uptimeSeconds,
+            lastTail: lastSample?.tail,
+          });
           this.emit('sessionComplete', fresh);
           continue;
         }
