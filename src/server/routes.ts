@@ -167,6 +167,7 @@ import { annotateDecisionOutcome, decisionQualityRecordingLive, getDecisionAnnot
 import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
 import { DP_COMPLETION_EVALUATE, DP_MESSAGING_TONE_GATE, PROVENANCE_COVERAGE, backlogTrackerExists, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
 import { CheckInReminderReconciler } from '../monitoring/CheckInReminderReconciler.js';
+import { recordSessionsReadDiscrepancy } from '../monitoring/SessionsReadDiscrepancyProbe.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
 import { RemoteAckStore } from '../core/RemoteAckStore.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
@@ -9211,6 +9212,23 @@ export function createRoutes(ctx: RouteContext): Router {
       : ctx.state.listSessions();
     if (!explicitStatus && !includeAll) {
       sessions = sessions.filter((s) => isActiveStatus(s.status));
+    }
+
+    // Observe the intermittent "empty /sessions while the reaper sees live
+    // sessions" failure at the consumer read path. Only compare the default
+    // active listing: include=all and terminal-status queries intentionally
+    // have different populations. Mismatches alone are written to a bounded
+    // JSONL file; probe I/O is fail-open and cannot break this read route.
+    if (!explicitStatus && !includeAll && ctx.sessionReaper) {
+      try {
+        const reaperSessions = ctx.sessionReaper.snapshot().sessions;
+        recordSessionsReadDiscrepancy(ctx.config.stateDir, {
+          sessionsCount: sessions.length,
+          reaperCount: reaperSessions.length,
+          sessionIds: sessions.map((s) => s.id),
+          reaperSessionIds: reaperSessions.map((s) => s.sessionId),
+        });
+      } catch { /* @silent-fallback-ok — an observability probe must not break the read it observes */ }
     }
 
     // Which machine answered — so a session row can say where it runs. Absent
