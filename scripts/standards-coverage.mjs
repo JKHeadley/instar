@@ -586,10 +586,22 @@ function validateRootSelfWiring() {
     return exactKeys(config, ['branches']) &&
       Array.isArray(config.branches) && config.branches.length === 1 && config.branches[0] === 'main';
   };
-  if (!exactKeys(workflow.on, ['push', 'pull_request', 'workflow_dispatch']) ||
+  // `pull_request_review` added 2026-08-22 and pinned, not merely permitted.
+  // The direction guard accepts the operator's approval as proof, but CI fired
+  // on push — before any approval could exist — so approving left the check
+  // red and finished, with nothing to re-run it. `dismissed` is pinned beside
+  // `submitted` because withdrawing an approval must re-run the guard and turn
+  // the check red again: a gate that only re-evaluates toward passing is not a
+  // gate. Pinning the types means neither can be dropped silently.
+  const reviewTrigger = workflow.on?.pull_request_review;
+  const reviewTriggerWired = exactKeys(reviewTrigger, ['types']) &&
+    Array.isArray(reviewTrigger.types) && reviewTrigger.types.length === 2 &&
+    reviewTrigger.types.includes('submitted') && reviewTrigger.types.includes('dismissed');
+  if (!exactKeys(workflow.on, ['push', 'pull_request', 'pull_request_review', 'workflow_dispatch']) ||
     !(workflow.on.workflow_dispatch === null || exactKeys(workflow.on.workflow_dispatch, [])) ||
+    !reviewTriggerWired ||
     !eventTargetsMain('push') || !eventTargetsMain('pull_request')) {
-    errors.push('The Root self-wiring requires top-level push and pull_request CI triggers targeting main');
+    errors.push('The Root self-wiring requires top-level push, pull_request and pull_request_review (submitted+dismissed) CI triggers targeting main');
   }
   const job = workflow.jobs?.['standards-coverage'];
   const steps = Array.isArray(job?.steps) ? job.steps : [];

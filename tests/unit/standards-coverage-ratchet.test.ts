@@ -349,6 +349,8 @@ describe('standards-coverage ratchet script', () => {
       '    branches: [main]',
       '  pull_request:',
       '    branches: [main]',
+      '  pull_request_review:',
+      '    types: [submitted, dismissed]',
       '  workflow_dispatch:',
       'jobs:',
       '  standards-coverage:',
@@ -423,7 +425,7 @@ describe('standards-coverage ratchet script', () => {
     write('.github/workflows/ci.yml', validWorkflow.replace('jobs:', "  'merge_group':\njobs:"));
     const unsupportedEvent = runFullCheck();
     expect(unsupportedEvent.code).toBe(1);
-    expect(unsupportedEvent.out).toContain('requires top-level push and pull_request CI triggers targeting main');
+    expect(unsupportedEvent.out).toContain('requires top-level push, pull_request and pull_request_review (submitted+dismissed) CI triggers targeting main');
 
     write('.github/workflows/ci.yml', [
       'on:',
@@ -457,7 +459,7 @@ describe('standards-coverage ratchet script', () => {
     ].join('\n'));
     const decoys = runFullCheck();
     expect(decoys.code).toBe(1);
-    expect(decoys.out).toContain('requires top-level push and pull_request CI triggers targeting main');
+    expect(decoys.out).toContain('requires top-level push, pull_request and pull_request_review (submitted+dismissed) CI triggers targeting main');
     expect(decoys.out).toContain('requires the standards-coverage CI job to invoke');
 
     write('.github/workflows/ci.yml', [
@@ -506,7 +508,7 @@ describe('standards-coverage ratchet script', () => {
     ].join('\n'));
     const swallowed = runFullCheck();
     expect(swallowed.code).toBe(1);
-    expect(swallowed.out).toContain('requires top-level push and pull_request CI triggers targeting main');
+    expect(swallowed.out).toContain('requires top-level push, pull_request and pull_request_review (submitted+dismissed) CI triggers targeting main');
     expect(swallowed.out).toContain('requires the standards-coverage CI job to invoke');
 
     const expressionWorkflow = (scope: 'job' | 'step') => [
@@ -1038,15 +1040,15 @@ describe('standards-coverage ratchet script', () => {
     expect(cli.measurement).toEqual(expect.objectContaining({
       status: 'proven',
       basis: expect.objectContaining({ candidateTreeMayRaiseStrength: false }),
-      population: expect.objectContaining({ protectedBase: 88, candidate: 89, continuity: 89 }),
-      // 2026-08-22: protectedBase is measured from the MERGE-BASE (canonical
-      // main), so while this branch is unmerged it holds the pre-article count
-      // and the candidate tree holds the new one. The asymmetry IS the
-      // measurement working — the protected baseline is deliberately not
-      // something a branch can raise about itself. It becomes 89/89/89 once this
-      // merges, which is the same update the 2026-08-13 addition needed; the
-      // literals are kept rather than loosened to a relation so that a change in
-      // the population stays a visible edit in a diff.
+      population: expect.objectContaining({ protectedBase: 89, candidate: 89, continuity: 89 }),
+      // 2026-08-22: 88/89/89 while the five-amendment branch was unmerged, then
+      // 89/89/89 on merge — the transition its own comment predicted, applied
+      // here when it happened. protectedBase is measured from the MERGE-BASE
+      // (canonical main), so an unmerged branch shows the asymmetry and a merged
+      // one does not: the protected baseline is deliberately not something a
+      // branch can raise about itself. The literals are kept rather than
+      // loosened to a relation, so a change in the population stays a visible
+      // edit in a diff — which is exactly how this update got noticed.
     }));
     expect(cli.enforcedRatio).toBeLessThan(library.summary.enforcedRatio);
   });
