@@ -75,6 +75,17 @@ import {
   escalatedModelIds,
   normalizeTierEscalationConfig,
 } from '../core/ModelTierEscalation.js';
+
+/** Validate a decision-quality join key carried back by an advisory client. */
+export function isPlausibleDecisionRef(ref: string): boolean {
+  // Router ids are `d-<machineId8>-<uuid>` on a mesh member and `d-<uuid>`
+  // on a single-machine install. The old validator accepted only a hex token
+  // after `d-`, so every production machine id shaped like `m_03b30f` was
+  // rejected before the outcome annotator ran. Keep this stricter than a
+  // generic identifier: one optional bounded machine segment plus one UUID.
+  return /^[db]-(?:[a-z0-9_]{1,64}-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref)
+    && ref.length <= 128;
+}
 import {
   validateSummaryDeterministic,
   neutralizeInstructionShapedContent,
@@ -2535,10 +2546,6 @@ export function createRoutes(ctx: RouteContext): Router {
     if (sha256Short(text) === p.textSha) return null;
     pendingAdvisories.delete(topicId);
     return { rule: p.rule, decisionRef: p.decisionRef };
-  }
-
-  function isPlausibleDecisionRef(ref: string): boolean {
-    return /^[db]-[0-9a-f]{8}(-[0-9a-f-]{8,})?[0-9a-f-]*$/i.test(ref) && ref.length <= 128;
   }
 
   function recordToneAdvisoryReaction(input: {
