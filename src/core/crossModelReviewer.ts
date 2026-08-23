@@ -1,6 +1,15 @@
 /**
  * crossModelReviewer — Step B of the tiered development process.
  *
+ * Governed by: *Never Silently Cut the Data a Decision Depends On*
+ * (docs/STANDARDS-REGISTRY.md). This file carries the case that earned that article:
+ * `CONTEXT_BUDGET_BYTES` (derived from the transport, derivation recorded in place),
+ * `LOAD_BEARING_CONTEXT_SUBSTRINGS` (the context a review is not valid without), and the
+ * `context-incomplete` REFUSAL in `runCrossModelReview` — which exists because this file's
+ * disclosure layer was already correct and complete, and six rounds of review were conducted on a
+ * fabricated view of the world anyway. Disclosure informs a reader who reads; refusal does not
+ * depend on anyone reading.
+ *
  * Re-platforms the `/spec-converge` external "cross-model" reviewer onto the
  * agent's own installed `codex` CLI. The external pass that the skill used to
  * describe as running "via the /crossreview pattern" (a never-built
@@ -100,13 +109,52 @@ export const REVIEWER_TIMEOUT_MAX_MS = 900_000;
  * so referenced context MUST be inlined; this bounds the prompt size (spec §2).
  * The spec is always included in full; referenced context fills the remainder
  * and is truncated (with a loud note) if it overflows.
+ *
+ * ── DERIVATION (governed by *Never Silently Cut the Data a Decision Depends On*) ─────────────
+ * This number is DERIVED from the binding constraint on the consumer, and the
+ * derivation is recorded here so it can be re-checked rather than inherited.
+ * Re-derive it whenever the transport or the supported reviewer families
+ * change; do not tune it by feel.
+ *
+ *   Candidate constraint 1 — the model's context window. Every reviewer
+ *   family this registry supports at the `capable` tier accepts >= 200K
+ *   input tokens, i.e. roughly 800 KB of English markdown at ~4 chars/token.
+ *   NOT binding.
+ *
+ *   Candidate constraint 2 — the TRANSPORT. The exec-json path hands the
+ *   prompt to the CLI on stdin (unbounded). But `intelligence.codexExecJson:
+ *   false` is a documented rollback lever, and the plain path passes the
+ *   prompt as a single argv element, which must fit inside the host's
+ *   ARG_MAX *together with the whole environment* — 1 MiB on macOS, 2 MiB on
+ *   typical Linux. BINDING, and binding on the smaller host.
+ *
+ * So the budget is set from the transport, at a quarter of the smaller
+ * ARG_MAX: 256 KiB. That leaves three quarters of ARG_MAX for the
+ * environment and the rest of the command line on the worst-case host, and
+ * is ~64K tokens — comfortably inside every supported model's window.
+ *
+ * WHAT THIS NUMBER DOES NOT PROMISE. It is a transport ceiling, not a
+ * guarantee that any given spec plus its parent design will fit. When the
+ * load-bearing context does NOT fit, the review does not quietly proceed on
+ * a partial view: `assembleReviewerPrompt` records the omission and
+ * `runCrossModelReview` returns `degraded` rather than a verdict. See
+ * `LOAD_BEARING_CONTEXT_SUBSTRINGS`.
+ *
+ * HISTORY. This was 60 KB from the spec's first draft until 2026-08-22, a
+ * number with no recorded derivation. At that size the budget was smaller
+ * than a single ordinary spec, so referenced context was dropped in FULL on
+ * every round of every review — the truncation note read "truncated to fit"
+ * while describing 100% loss. Six rounds of cross-model review on
+ * `placement-real-capacity-scoring` were conducted without the reviewers
+ * ever seeing the parent design, the standards registry, or the lessons doc.
+ * The disclosure machinery worked correctly throughout; nothing refused.
  */
-export const CONTEXT_BUDGET_BYTES = 60 * 1024;
+export const CONTEXT_BUDGET_BYTES = 256 * 1024;
 
 /**
  * Deterministic priority ordering for referenced context (spec §2, F4).
  *
- * When the 60KB budget can't hold every referenced doc, truncation MUST be
+ * When the budget can't hold every referenced doc, truncation MUST be
  * deterministic — the same spec + same docs always drop the same docs — so a
  * review is reproducible and the "what got dropped" note is stable. The
  * constitutional / lessons docs are the highest-value context for a reviewer
@@ -124,6 +172,50 @@ export const CONTEXT_PRIORITY_SUBSTRINGS: readonly string[] = [
   'STANDARDS-REGISTRY',
   'integrated-being',
 ] as const;
+
+/**
+ * The subset of referenced context a cross-model review is NOT VALID WITHOUT
+ * (governed by *Never Silently Cut the Data a Decision Depends On*).
+ *
+ * The reviewer's job is to judge a spec against the design and the rules it is
+ * built on. A reviewer that received the spec but none of those documents can
+ * only check whether the spec agrees with ITSELF — a materially weaker check
+ * wearing the same name. So when a budget walk cannot admit one of these docs
+ * IN FULL, the honest outcome is not "a review with a caveat"; it is NOT A
+ * REVIEW, and `runCrossModelReview` degrades rather than returning a verdict.
+ *
+ * PARTIAL COUNTS AS OMITTED, deliberately. Half of the standards registry, cut
+ * at whatever byte the budget ran out on, is not the standards registry — the
+ * reviewer cannot know whether the clause that governs this spec was in the
+ * half it received. Treating a partial constitutional doc as "present" is the
+ * same substitution of a symbol for the state that this rule exists to stop.
+ *
+ * These coincide with `CONTEXT_PRIORITY_SUBSTRINGS` today, and that is not a
+ * coincidence — a doc is kept first BECAUSE the review is worthless without it.
+ * They are named separately because they answer different questions (what order
+ * do docs go in / what may a review proceed without), and a future doc could
+ * be worth prioritising without being load-bearing.
+ *
+ * SPELLED OUT RATHER THAN ALIASED, deliberately (independent review 2026-08-22,
+ * finding C8). This was `= CONTEXT_PRIORITY_SUBSTRINGS` — the SAME array object,
+ * which made the paragraph above false: with an alias, adding a doc to the
+ * priority list silently promotes it to a review-BLOCKER, and the divergence the
+ * comment reserves the right to have is unrepresentable. A list that claims to
+ * be separate must be separate; two lists that happen to agree are checked by
+ * `load-bearing docs are a subset of the priority order` in the unit tests.
+ */
+export const LOAD_BEARING_CONTEXT_SUBSTRINGS: readonly string[] = [
+  'signal-vs-authority',
+  'INSTAR-DESIGN-PRINCIPLES-AND-LESSONS',
+  'STANDARDS-REGISTRY',
+  'integrated-being',
+] as const;
+
+/** True when a context doc path is one the review is not valid without. */
+export function isLoadBearingContext(docPath: string): boolean {
+  const lower = docPath.toLowerCase();
+  return LOAD_BEARING_CONTEXT_SUBSTRINGS.some((s) => lower.includes(s.toLowerCase()));
+}
 
 /**
  * Return a deterministic priority rank for a context doc path: a small index
@@ -2191,6 +2283,35 @@ export interface AssembledPrompt {
   truncated: boolean;
   /** Byte size of the assembled prompt. */
   bytes: number;
+  /**
+   * Repo-relative paths of LOAD-BEARING context docs
+   * (`LOAD_BEARING_CONTEXT_SUBSTRINGS`) that did not make it in whole — either
+   * cut mid-document or dropped entirely. Non-empty means the reviewer cannot
+   * do the job the review claims to do, and `runCrossModelReview` degrades
+   * instead of returning a verdict.
+   *
+   * Always present (empty when nothing load-bearing was lost) so a consumer
+   * that forgets to check reads `[]` rather than `undefined` — an absent field
+   * must never be mistakable for "nothing was lost".
+   */
+  omittedLoadBearing: string[];
+  /**
+   * The subset of `omittedLoadBearing` that could NEVER have fitted — the doc's
+   * own byte size alone exceeds the WHOLE budget, so no spec is small enough to
+   * admit it and no amount of trimming elsewhere will ever change the outcome.
+   *
+   * Split out from `omittedLoadBearing` after the independent review of
+   * 2026-08-22 (finding C2). Both refuse, but they call for OPPOSITE actions and
+   * a single reason string sent the reader down the wrong one: an ordinary
+   * omission says *make the spec smaller*, while this says *stop passing this
+   * doc as raw context — nothing you do to the spec can help.* The live case is
+   * the standards registry, which is larger than the entire budget on its own:
+   * attaching it produced a refusal whose advice ("use a smaller spec") was
+   * unfollowable, which is a limit hiding behind its own polite notice — the
+   * exact defect *Never Silently Cut the Data a Decision Depends On* was earned
+   * from, reproduced by that article's own implementation.
+   */
+  undeliverableLoadBearing: string[];
 }
 
 /**
@@ -2279,11 +2400,32 @@ export function assembleReviewerPrompt(inputs: AssemblePromptInputs): AssembledP
     );
   }
 
+  // Which LOAD-BEARING docs failed to arrive IN FULL? A partial one counts as
+  // omitted (see LOAD_BEARING_CONTEXT_SUBSTRINGS) — half a constitution cannot
+  // certify a spec against the constitution.
+  const omittedLoadBearing = [
+    ...(partialDoc && isLoadBearingContext(partialDoc) ? [partialDoc] : []),
+    ...droppedDocs.filter(isLoadBearingContext),
+  ];
+
+  // Of those, which could never have fitted at ANY spec size? Measured against
+  // the WHOLE budget, not the remainder: a doc bigger than the entire budget is
+  // undeliverable by construction, and saying "use a smaller spec" about it is
+  // advice that cannot be followed.
+  const undeliverableLoadBearing = omittedLoadBearing.filter((docPath) => {
+    const doc = context.find((d) => d.path === docPath);
+    if (!doc) return false;
+    const block = `\n--- CONTEXT: ${doc.path} ---\n${doc.content}\n`;
+    return Buffer.byteLength(block, 'utf-8') > budget;
+  });
+
   const promptText = parts.join('');
   return {
     promptText,
     truncated,
     bytes: Buffer.byteLength(promptText, 'utf-8'),
+    omittedLoadBearing,
+    undeliverableLoadBearing,
   };
 }
 
@@ -2441,6 +2583,80 @@ export function resolveReviewerTimeoutMs(
  * `assembled` is produced by `assembleReviewerPrompt`. `detectInputs` and
  * `providerOverride` exist for tests; production omits them.
  */
+/**
+ * THE single place a cross-model reviewer is invoked.
+ *
+ * Every path — the first-match default and the per-family `--family` path the
+ * skill actually uses — enters here, so the load-bearing context refusal cannot
+ * be routed around. That is the whole point of the function existing: before
+ * 2026-08-22 the refusal lived inline in `runCrossModelReview` while the skill
+ * driver called `family.review(...)` directly, so the guard was live only on the
+ * path nothing used (independent review, finding C1). A guard reachable by one
+ * of two callers is not a guard; it is a comment with a test attached.
+ */
+async function invokeReviewerWithContextGuard(
+  framework: SupportedReviewerFramework,
+  detection: CrossModelDetectionResult,
+  args: {
+    assembled: AssembledPrompt;
+    timeoutMs?: number;
+    providerOverride?: ReviewerInvokeArgs['providerOverride'];
+    config?: ReviewerConfig;
+  },
+): Promise<ReviewerResult> {
+
+  // We have a reviewer. Before spending it, check that the input it is about
+  // to judge is one a review can actually be conducted on. If the budget walk
+  // dropped (or cut) a doc the review is not valid without, this is NOT a
+  // review with a caveat — the reviewer could only check the spec against
+  // itself. Degrade, name exactly what was lost, and spend nothing.
+  //
+  // This is deliberately a REFUSAL rather than a louder disclosure. The
+  // assembler already disclosed the loss correctly and in full, naming every
+  // affected doc in the prompt — and six rounds of review were still conducted
+  // and reported as review on top of it. Disclosure informs a reader who
+  // reads; refusal does not depend on anyone reading.
+  const omitted = args.assembled.omittedLoadBearing ?? [];
+  if (omitted.length > 0) {
+    // Two refusals, not one (independent review 2026-08-22, finding C2). Both
+    // decline to review; they differ in what the reader must DO about it, and
+    // an undeliverable doc reported as an ordinary omission hands the reader
+    // advice ("make the spec smaller") that cannot work at any spec size.
+    const undeliverable = args.assembled.undeliverableLoadBearing ?? [];
+    const reason =
+      undeliverable.length > 0
+        ? `context-undeliverable: ${undeliverable.join(', ')} — larger than the whole ` +
+          `${CONTEXT_BUDGET_BYTES}-byte budget on its own; no spec size admits it. ` +
+          `Do not pass it as raw context (the standards-conformance gate reads the ` +
+          `constitution in code).`
+        : `context-incomplete: ${omitted.join(', ')}`;
+    return {
+      status: 'degraded',
+      framework: framework.id,
+      reason,
+      flag: `cross-model-review: ${framework.id} (degraded: ${
+        (args.assembled.undeliverableLoadBearing ?? []).length > 0
+          ? 'context-undeliverable'
+          : 'context-incomplete'
+      })`,
+      crossFamily: isCrossFamilyReviewerFramework(framework.id),
+    };
+  }
+
+  return framework.review({
+    promptText: args.assembled.promptText,
+    // Per-family timeout (§3.2 / D6): an explicit caller value wins (e.g. the
+    // script's `--timeout-ms` dev override); otherwise resolve the per-family
+    // budget from the `specConverge.reviewers.timeoutMs` knob (absent ⇒ 120s).
+    timeoutMs: args.timeoutMs ?? resolveReviewerTimeoutMs(args.config, framework.id),
+    // Hand the already-computed detection down so the entry never re-probes
+    // the host (and tests stay hermetic to the injected inputs).
+    detectionOverride: detection,
+    ...(args.config ? { reviewerConfig: args.config } : {}),
+    ...(args.providerOverride ? { providerOverride: args.providerOverride } : {}),
+  });
+}
+
 export async function runCrossModelReview(args: {
   assembled: AssembledPrompt;
   timeoutMs?: number;
@@ -2448,6 +2664,29 @@ export async function runCrossModelReview(args: {
   providerOverride?: ReviewerInvokeArgs['providerOverride'];
   /** Agent config for the config-gated claude clean-door family (§1.5). */
   config?: ReviewerConfig;
+  /**
+   * Review through THIS family specifically, instead of the first framework
+   * detection happens to name.
+   *
+   * Added 2026-08-22 after the independent review's finding C1: the per-family
+   * path existed only in the skill driver, which called `family.review(...)`
+   * DIRECTLY — bypassing this function and therefore bypassing the load-bearing
+   * context refusal below. `ReviewerInvokeArgs` carries only `promptText`, so
+   * that path could not have refused even if it wanted to: the omission signal
+   * does not reach it. Since `SKILL.md` instructs `--family` on every call, the
+   * refusal was live on a path nothing used and absent from the path everything
+   * used — dead code wearing a passing test (the test called this function).
+   *
+   * The fix is one chokepoint rather than a check copied into four family
+   * entries (*Structure beats Willpower*): every review, per-family or not,
+   * enters here and meets the same guard.
+   */
+  family?: string;
+  /**
+   * A detection the caller already computed (the driver detects before
+   * assembling). Skips re-probing the host; MUST still be `available`.
+   */
+  detectionOverride?: CrossModelDetectionResult;
 }): Promise<ReviewerResult> {
   // Derive detect inputs from config when the caller omitted them
   // (round-8: every future caller inherits the enabledFrameworks plumb —
@@ -2457,7 +2696,39 @@ export async function runCrossModelReview(args: {
     (Array.isArray((args.config as { enabledFrameworks?: string[] } | undefined)?.enabledFrameworks)
       ? { enabledFrameworks: (args.config as { enabledFrameworks: string[] }).enabledFrameworks }
       : undefined);
-  const detection = detectCrossModelReviewer(effectiveDetectInputs, args.config);
+  // Per-family selection (C1): resolve THIS family's entry and detection, then
+  // fall through to exactly the same refusal + invoke below. A family the
+  // active registry does not carry is `unavailable`, never a silent fallback to
+  // some other model — a caller that asked for gemini must not be answered by
+  // codex without being told.
+  const requestedFamily = args.family;
+  if (requestedFamily !== undefined) {
+    const entry = resolveActiveReviewerFrameworks(args.config).find(
+      (f) => f.id === requestedFamily,
+    );
+    if (!entry) {
+      const flag = buildCrossModelFlag('unavailable', 'no-supported-framework');
+      return {
+        status: 'unavailable',
+        reason: 'no-supported-framework',
+        flag: flag.flag,
+        crossFamily: isCrossFamilyReviewerFramework(requestedFamily),
+      };
+    }
+    const famDetection = args.detectionOverride ?? entry.detect(effectiveDetectInputs);
+    if (!famDetection.available) {
+      const flag = buildCrossModelFlag('unavailable', famDetection.reason);
+      return {
+        status: 'unavailable',
+        reason: famDetection.reason,
+        flag: flag.flag,
+        crossFamily: isCrossFamilyReviewerFramework(requestedFamily),
+      };
+    }
+    return invokeReviewerWithContextGuard(entry, famDetection, args);
+  }
+
+  const detection = args.detectionOverride ?? detectCrossModelReviewer(effectiveDetectInputs, args.config);
   if (!detection.available) {
     const flag = buildCrossModelFlag('unavailable', detection.reason);
     return {
@@ -2482,18 +2753,7 @@ export async function runCrossModelReview(args: {
     };
   }
 
-  return framework.review({
-    promptText: args.assembled.promptText,
-    // Per-family timeout (§3.2 / D6): an explicit caller value wins (e.g. the
-    // script's `--timeout-ms` dev override); otherwise resolve the per-family
-    // budget from the `specConverge.reviewers.timeoutMs` knob (absent ⇒ 120s).
-    timeoutMs: args.timeoutMs ?? resolveReviewerTimeoutMs(args.config, framework.id),
-    // Hand the already-computed detection down so the entry never re-probes
-    // the host (and tests stay hermetic to the injected inputs).
-    detectionOverride: detection,
-    ...(args.config ? { reviewerConfig: args.config } : {}),
-    ...(args.providerOverride ? { providerOverride: args.providerOverride } : {}),
-  });
+  return invokeReviewerWithContextGuard(framework, detection, args);
 }
 
 // ── Delta-gating (reviewable-body hash) ─────────────────────────────────

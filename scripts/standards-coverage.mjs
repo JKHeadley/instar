@@ -191,6 +191,24 @@ const EXCLUDED_NARRATIVE_SECTION_HEADINGS = [
   'Constrain the model\'s output with structure, never by matching its prose',
   'Distinct from Cross-Machine Coherence',
   'Distinct from Deferral = Deletion',
+  // Added 2026-08-22 with *Never Silently Cut the Data a Decision Depends On*.
+  // NARRATIVE, never ENFORCEMENT: it demarcates which of two sibling articles
+  // governs which side of the same verb (storing a bounded record vs. bounding a
+  // judgment's input). Scanning it for guards would let a boundary statement read
+  // as a live check.
+  //
+  // KEPT IN SYNC WITH `src/core/StandardsRegistryParser.ts` — this list exists in
+  // two places, and the 2026-08-22 independent review found the article added to
+  // the parser copy only, so the CLI and the library disagreed about whether the
+  // section was recognized. The duplicated-definition trap, hit inside the change
+  // that was about not trusting a single reading.
+  'Distinct from Expected Capacity Enforcement',
+  // Added 2026-08-22, on the operator's ruling that a standard must register
+  // whether it is ACTUALLY enforced rather than be inferred as enforced because a
+  // guard exists. NARRATIVE, never ENFORCEMENT: this field states the LIMITS of
+  // the guards named in `Applied through`, so scanning it as enforcement would
+  // count a sentence about what is NOT covered as coverage.
+  'Enforcement state — PARTIAL, and the number is the point',
   'Distinct from the OnboardingGate',
   // Added 2026-08-07 by operator ruling on external-review finding 4: an article
   // honestly labelled `documented-only` must carry a COUNTDOWN — a deadline and a

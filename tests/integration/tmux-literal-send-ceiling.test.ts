@@ -55,14 +55,37 @@ function startReceiver(): { session: string; outFile: string } {
   return { session, outFile };
 }
 
-function drain(outFile: string, expectBytes: number, maxMs = 10_000): number {
-  const deadline = Date.now() + maxMs;
+/**
+ * Wait for the pane to finish delivering, bounded by PROGRESS rather than by a
+ * wall-clock guess.
+ *
+ * The previous form waited a flat 10s. That is a constant standing in for
+ * "however long this machine needs to push ~40 KB through a tmux pane in ten
+ * chunks" — a number with no derivation, which is fine until the machine is
+ * slow. On 2026-08-23 a loaded CI runner delivered 4,095 of 39,978 bytes inside
+ * the window and the test reported a byte-exactness failure for what was only
+ * an unfinished write. (The same shape as the article this branch adds: a bound
+ * on the input to a judgment, picked as a constant, silently deciding the
+ * verdict.)
+ *
+ * Progress is the honest signal. Keep waiting while the file is still growing;
+ * give up only once it has STALLED for `stallMs` with the payload short. A real
+ * regression — a chunk dropped, a ceiling raised past what tmux accepts —
+ * stalls immediately and still fails, and fails FASTER than the old form. A
+ * merely slow machine now finishes. The absolute cap remains so a pathological
+ * hang cannot run forever.
+ */
+function drain(outFile: string, expectBytes: number, stallMs = 10_000, maxMs = 120_000): number {
+  const hardDeadline = Date.now() + maxMs;
   let size = 0;
-  while (Date.now() < deadline) {
+  let lastGrowthAt = Date.now();
+  while (Date.now() < hardDeadline) {
     if (existsSync(outFile)) {
-      size = readFileSync(outFile).length;
+      const observed = readFileSync(outFile).length;
+      if (observed > size) { size = observed; lastGrowthAt = Date.now(); }
       if (size >= expectBytes) return size;
     }
+    if (Date.now() - lastGrowthAt >= stallMs) return size;
     execFileSync('/bin/sleep', ['0.25']);
   }
   return size;

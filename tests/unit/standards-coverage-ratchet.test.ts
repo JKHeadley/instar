@@ -1038,16 +1038,31 @@ describe('standards-coverage ratchet script', () => {
     expect(cli.measurement).toEqual(expect.objectContaining({
       status: 'proven',
       basis: expect.objectContaining({ candidateTreeMayRaiseStrength: false }),
-      population: expect.objectContaining({ protectedBase: 88, candidate: 89, continuity: 89 }),
-      // 2026-08-22: protectedBase is measured from the MERGE-BASE (canonical
-      // main), so while this branch is unmerged it holds the pre-article count
-      // and the candidate tree holds the new one. The asymmetry IS the
-      // measurement working — the protected baseline is deliberately not
-      // something a branch can raise about itself. It becomes 89/89/89 once this
-      // merges, which is the same update the 2026-08-13 addition needed; the
-      // literals are kept rather than loosened to a relation so that a change in
-      // the population stays a visible edit in a diff.
     }));
+    // 2026-08-23: the population literals that stood here (`protectedBase: 88,
+    // candidate: 89, continuity: 89`) are GONE, and this is a correction rather
+    // than a loosening. `protectedBase` is measured against the MERGE-BASE with
+    // canonical main, so its value depends on WHERE THE TEST RUNS, not on what
+    // the registry says: on a branch that adds an article it is candidate-1, and
+    // the moment that branch merges it becomes candidate. A literal can satisfy
+    // one of those and must fail the other.
+    //
+    // That is not theoretical. This assertion turned canonical main RED on
+    // 2026-08-23 the moment PR #1965 merged — it kept expecting 88/89/89 while
+    // main had become 89/89/89 — and main stayed red through the next two
+    // merges. A ratchet that a correct merge breaks trains people to edit the
+    // ratchet, which is the opposite of what it is for.
+    //
+    // What is pinned instead is the INVARIANT the literals were standing in for,
+    // which is branch-position-independent: the candidate tree is the registry
+    // the CLI just measured, continuity tracks it, and a branch can never raise
+    // the protected baseline above itself. The article COUNT is still a
+    // deliberate hand-updated snapshot — it lives in the live-registry test
+    // below, where it is measured from the registry rather than from a diff
+    // against wherever this checkout happens to be sitting.
+    expect(cli.measurement.population.candidate).toBe(cli.total);
+    expect(cli.measurement.population.continuity).toBe(cli.total);
+    expect(cli.measurement.population.protectedBase).toBeLessThanOrEqual(cli.measurement.population.candidate);
     expect(cli.enforcedRatio).toBeLessThan(library.summary.enforcedRatio);
   });
 
@@ -1108,7 +1123,15 @@ describe('standards-coverage ratchet script', () => {
     // rule-bound relevance plus a landed violation that makes the same test fail by assertion. The
     // protected baseline has no such ledger yet, so its honest value is 0/88; the legacy per-area
     // floors remain visible separately and are not rewritten into evidence they never established.
-    expect(report.total).toBe(89);
+    //
+    // 2026-08-23: 89 -> 90. This branch adds ONE article (*Never Silently Cut the
+    // Data a Decision Depends On*) to Building, and canonical main had already
+    // moved 88 -> 89 with *Archiving May Never Mean Deleting*. Updated by
+    // re-deriving from the live registry, and the Building family's audit record
+    // was refreshed by a round that genuinely accepts
+    // (docs/specs/reports/building-family-area-audit-2026-08-23-round2.md) —
+    // never by editing this number to make a run green.
+    expect(report.total).toBe(90);
     expect(report.enforcedRatio).toBe(0);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',
