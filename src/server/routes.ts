@@ -1882,6 +1882,17 @@ function resolveAgentFingerprint(ctx: RouteContext): string {
   return ctx.config.projectName ?? 'self';
 }
 
+/** Resolve the dashboard's legacy attention bound aliases into one final-result limit. */
+export function parseAttentionLimit(query: Record<string, unknown>): number | undefined {
+  for (const key of ['limit', 'count', 'take', 'pageSize']) {
+    const raw = Array.isArray(query[key]) ? query[key][0] : query[key];
+    if (typeof raw !== 'string' || !/^\d+$/.test(raw)) continue;
+    const parsed = Number(raw);
+    if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+  }
+  return undefined;
+}
+
 /**
  * Explicit FIELD ALLOWLIST for a REDACTED judgment-provenance row merged from a
  * peer (llm-decision-quality-meter §5.5): the served RedactedProvenanceRow keys
@@ -17162,6 +17173,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     const requestedStatus = req.query.status as string | undefined;
     const status = requestedStatus ? (normalizeAttentionStatus(requestedStatus) ?? requestedStatus) : undefined;
+    const limit = parseAttentionLimit(req.query as Record<string, unknown>);
     const selfMachineId = ctx.meshSelfId ?? null;
     // Local items are stamped with THIS machine's id at read time (mirrors the
     // sessions?scope=pool precedent — the store stays machine-agnostic; the
@@ -17194,11 +17206,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         });
       }
       const merged = await attentionPoolMerge(localItems, status);
-      res.json(merged);
+      if (limit === undefined) {
+        res.json(merged);
+      } else {
+        const items = (merged.items as Array<Record<string, unknown>>).slice(0, limit);
+        res.json({ ...merged, items, count: items.length });
+      }
       return;
     }
 
-    res.json({ items: localItems, count: localItems.length });
+    const items = limit === undefined ? localItems : localItems.slice(0, limit);
+    res.json({ items, count: items.length });
   });
 
   router.get('/attention/:id', (req, res) => {
@@ -25909,16 +25927,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const { buildPassport } = await import('../core/AgentPassport.js');
       const { OrgIntentManager } = await import('../core/OrgIntentManager.js');
-      // Best-effort identity fingerprint from threadline agent-info, else 'unresolved'.
+      // Read the canonical identity through the same manager as /threadline/health.
+      // agent-info.json is a discovery projection and may be absent or stale.
       let fingerprint = 'unresolved';
       try {
-        const fs = await import('node:fs');
-        const path = await import('node:path');
-        const infoPath = path.join(ctx.config.stateDir, '..', 'threadline', 'agent-info.json');
-        if (fs.existsSync(infoPath)) {
-          const info = JSON.parse(fs.readFileSync(infoPath, 'utf-8'));
-          fingerprint = info.fingerprint || info.publicKey || 'unresolved';
-        }
+        const { IdentityManager } = await import('../threadline/client/IdentityManager.js');
+        fingerprint = new IdentityManager(ctx.config.stateDir).get()?.fingerprint ?? 'unresolved';
       } catch { /* fingerprint stays unresolved */ }
       const parsed = new OrgIntentManager(ctx.config.stateDir).parse();
       const forbiddenActions = parsed ? parsed.constraints.map((c: { text: string }) => c.text) : [];
