@@ -1043,6 +1043,15 @@ const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
     argv.push('--dangerously-bypass-approvals-and-sandbox');
   } else {
     argv.push('-s', 'workspace-write');
+    // Codex's workspace-write policy defaults network access OFF. Instar's
+    // headless workers must be able to reach their own agent API for capability
+    // discovery and grounded verification, so opt in at the invocation (not in
+    // the operator's machine-local ~/.codex/config.toml). This preserves the
+    // filesystem sandbox and wins deterministically over either value in the
+    // user config. CODEX_SANDBOX_NETWORK_DISABLED remains Codex's diagnostic
+    // control: if a host/policy removes this grant, commands inside the worker
+    // see it set rather than having to infer sandbox denial from curl's 000.
+    argv.push('-c', 'sandbox_workspace_write.network_access=true');
   }
   // Run instar's own safety hooks without a persisted-trust requirement (same
   // rationale as the interactive builder; capability-gated for codex <0.133).
