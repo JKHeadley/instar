@@ -625,7 +625,13 @@ function validateRootSelfWiring() {
     // silent one. The guard caught exactly that when this key was introduced.
     STANDARDS_DIRECTION_REVIEW_FILE: '${{ runner.temp }}/standards-direction-review.json',
   };
-  if (!exactKeys(job, ['name', 'runs-on', 'steps']) ||
+  if (!exactKeys(job, ['name', 'runs-on', 'permissions', 'steps']) ||
+    // Second-pass finding 2: the token scope path B needs is now EXPLICIT and
+    // pinned, not inherited from the repository's default workflow permission —
+    // a tightened org default would otherwise 403 the association call and
+    // silently restore the always-refuse-on-push state this fix ends.
+    !exactKeys(job.permissions, ['contents', 'pull-requests']) ||
+    job.permissions.contents !== 'read' || job.permissions['pull-requests'] !== 'read' ||
     job.name !== 'Standards Enforcement Coverage' || job['runs-on'] !== 'ubuntu-latest' ||
     !exactKeys(checkStep, ['run', 'env']) || !exactKeys(checkStep?.env, Object.keys(checkEnv)) ||
     Object.entries(checkEnv).some(([key, value]) => checkStep.env[key] !== value) ||
@@ -653,6 +659,40 @@ function validateRootSelfWiring() {
     'git show "$BASE_SHA:.github/keyrings/telegram-principal-pub.pem" > "$RUNNER_TEMP/standards-direction-approver-base.pem"',
     '',
   ].join('\n');
+  // Second-pass finding 1 (2026-08-23): the pin used to constrain this step's KEYS
+  // and env map but not its `run`, so the entire push-resolution branch could be
+  // deleted — returning the guard to refusing on every push — with every ratchet
+  // assertion still green. The body is pinned literally now, exactly as the
+  // protected-base step's is, so a behaviour edit here is a DECLARED edit.
+  const expectedReviewRun = [
+    'set -u',
+    'if [ "$EVENT_NAME" != "pull_request" ]; then',
+    "  associated=$(gh api \"repos/${GITHUB_REPOSITORY}/commits/${PUSH_SHA}/pulls\" 2>/dev/null || echo '[]')",
+    "  match=$(SHA=\"$PUSH_SHA\" jq -c '[.[] | select(.merge_commit_sha == env.SHA)] | if length == 1 then .[0] else empty end' <<< \"${associated:-[]}\" 2>/dev/null || echo '')",
+    "  PR=''",
+    "  HEAD_SHA=''",
+    "  PR_AUTHOR=''",
+    '  if [ -n "$match" ]; then',
+    "    PR=$(jq -r '.number // empty' <<< \"$match\" 2>/dev/null || echo '')",
+    "    HEAD_SHA=$(jq -r '.head.sha // empty' <<< \"$match\" 2>/dev/null || echo '')",
+    "    PR_AUTHOR=$(jq -r '.user.login // empty' <<< \"$match\" 2>/dev/null || echo '')",
+    '  fi',
+    "  echo \"path-b: event=${EVENT_NAME} associated=$(jq -r 'length' <<< \"${associated:-[]}\" 2>/dev/null || echo unreadable) matched-pr=${PR:-none}\"",
+    'fi',
+    "reviews='[]'",
+    'if [ -n "$PR" ]; then',
+    "  reviews=$(gh api \"repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews?per_page=100\" 2>/dev/null || echo '[]')",
+    'fi',
+    "echo \"path-b: reviews=$(jq -r 'length' <<< \"${reviews:-[]}\" 2>/dev/null || echo unreadable) head-sha=${HEAD_SHA:-none} owner=${OWNER_LOGIN:-none}/${OWNER_TYPE:-none}\"",
+    'jq -n --argjson reviews "${reviews:-[]}" \\',
+    '      --arg headSha "$HEAD_SHA" \\',
+    '      --arg ownerLogin "$OWNER_LOGIN" \\',
+    '      --arg ownerType "$OWNER_TYPE" \\',
+    '      --arg prAuthorLogin "$PR_AUTHOR" \\',
+    "   '{reviews:$reviews, headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \\",
+    "   > \"$OUT\" || echo '{}' > \"$OUT\"",
+    '',
+  ].join('\n');
   const expectedBaseSha = "${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}";
   const exactPrefix = [checkoutStep, setupStep, installStep, baseStep, reviewStep, checkStep];
   const ordered = exactPrefix.every((step, index) => step && steps[index] === step);
@@ -664,9 +704,16 @@ function validateRootSelfWiring() {
     baseStep.name === 'Resolve protected-base area ledger' &&
     exactKeys(baseStep.env, ['BASE_SHA']) && baseStep.env.BASE_SHA === expectedBaseSha &&
     baseStep.run === expectedBaseRun &&
-    exactKeys(reviewStep, ['name', 'if', 'env', 'run']) &&
-    reviewStep.if === "github.event_name == 'pull_request'" &&
-    exactKeys(reviewStep.env, ['GH_TOKEN', 'PR', 'HEAD_SHA', 'OWNER_LOGIN', 'OWNER_TYPE', 'PR_AUTHOR', 'OUT']) &&
+    // 2026-08-23: the `if:` key is GONE from this pin because it is gone from the
+    // step. Gating the evidence-gathering on `pull_request` made the guard refuse
+    // on every push to main — the operator's approval existed, on the pull request
+    // that produced the commit, and the step simply was not run to go and read it.
+    // The pin follows the step: EVENT_NAME and PUSH_SHA are the inputs the push
+    // branch needs, and their presence here is what makes adding them a declared
+    // edit rather than a silent one.
+    exactKeys(reviewStep, ['name', 'env', 'run']) &&
+    reviewStep.run === expectedReviewRun &&
+    exactKeys(reviewStep.env, ['GH_TOKEN', 'EVENT_NAME', 'PR', 'HEAD_SHA', 'PR_AUTHOR', 'PUSH_SHA', 'OWNER_LOGIN', 'OWNER_TYPE', 'OUT']) &&
     reviewStep.env.OUT === '${{ runner.temp }}/standards-direction-review.json';
   if (!protectedBaseWired) {
     errors.push('The Root self-wiring requires dependency install plus full-history protected-base extraction and required base env on the standards check');
