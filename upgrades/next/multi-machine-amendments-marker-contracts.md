@@ -1,0 +1,25 @@
+---
+change_type: fix
+---
+
+<!-- internal-only -->
+
+## What Changed
+
+The operator ratified five amendments to the multi-machine standard (topic 52222, 2026-08-22). Two of them are deterministically checkable and are now enforced by the marker lint (`scripts/lint-machine-local-justification.js`), a report-first parser over `docs/specs/**` that blocks nothing.
+
+`physical-credential-locality` is NARROWED. A marker must now NAME its basis — `prohibited-by="<authority>"` where relocation is forbidden, or `impossible-because="<barrier>"` where it is technically impossible — and declare `permanence=permanent|temporary`. A TEMPORARY barrier must additionally record `exit=<ref>`, a `expires=YYYY-MM-DD` re-review date at most 180 days out, and `since=YYYY-MM-DD` with a 360-day total-lifetime cap. The bare form that previously passed now reports findings and no longer defends its posture.
+
+`migrating-to-unified` is a NEW fourth taxonomy key for a surface whose correct posture is `unified` but whose mechanism is unbuilt. It requires `ratified=<ref> tracking=<ref> since=YYYY-MM-DD expires=YYYY-MM-DD`, with the same 180-day horizon and 360-day total-lifetime cap. An expired, beyond-horizon, or past-lifetime marker is itself a finding.
+
+## Evidence
+
+21 self-tests, both directions per contract: well-formed markers pass; each missing citation, an expired posture, a beyond-horizon expiry, a renewal past the total lifetime, a TEMPORARY barrier missing its exit / re-review date / `since`, and the pre-amendment bare credential form each fail under `--strict`. The withdrawn-defence arm asserts a malformed marker leaves its posture reading UNDEFENDED rather than merely reportable, and the passing fixtures compute their dates so they cannot rot into failures.
+
+Sweeping the spec corpus moves the report from 94 findings to 135: 16 credential markers that never named who forbids the move, and 9 postures thereby left undefended. Report-only — that rise is the narrowing working, and repairing those 16 is separate work.
+
+The change was reviewed by an external adversarial lens over four rounds (nine findings, converged at zero new). It proved this change's own first-draft fixture used `expires=2099-01-01` and passed, which is how the renewable-not-self-terminating gap was found.
+
+## Known Limits
+
+The parser checks the marker's SHAPE only. It cannot verify that a named authority really prohibits relocation, that an impossibility is real, that tracked work will deliver unification, or that an expiry triggers genuine re-argument — those remain the `/spec-converge` reviewer's semantic authority. A rewritten `since` defeats the lifetime cap and is falsification the parser cannot detect. The lint stays REPORT-FIRST; `--strict` is used by its own tests and is not wired into CI as a blocking gate. Amendments 1, 2 and 4 of the same directive carry no deterministic guard at all and are declared unenforced in the registry with dated countdowns.
