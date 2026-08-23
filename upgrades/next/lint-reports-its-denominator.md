@@ -22,6 +22,6 @@ First live output: `135 finding(s) — 1818 spec(s) scanned, 133 carrying a post
 
 A denominator does not DETECT drift; it makes drift legible to a human reading the output. If nobody reads it, it buys nothing. An automated ratchet on the population would be the stronger control and is not built here.
 
-Unresolved and recorded rather than smoothed: the historical comment says 149 posture-carrying specs, this measures 133. Not claimed as a regression — the 149 was another measurement, possibly by a different method. It is surfaced because a number disagreeing with a documented number on the first run is exactly what this change exists to produce.
+The historical comment says 149 posture-carrying specs; this measures 133. **Drift is ruled out** — three independent methods (this lint, a peer's `git grep`, and a third regex pass) all return 133, including at `c465a94ef`, the widening commit itself, with the count unmoved across the two commits since. The population is not shrinking under the gate. What produced 149 remains unmeasured and no claim is made between the candidates.
 
 No other gate in this repository was audited for the same defect, and nothing enumerates the gates that print a reassuring word with no scale.

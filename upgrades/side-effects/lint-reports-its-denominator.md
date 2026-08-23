@@ -72,11 +72,17 @@ Ship. Zero behaviour change, one line of output, and it addresses the reading-si
 - 40 tests, including: the denominator appears on the clean path AND the findings path (the failing path is where a shrunken population is most dangerous — a reader sees findings, assumes the sweep was whole, and never asks how far it reached); the JSON `population` shape; an unreadable file COUNTED rather than swallowed; and the property the incident turned on — **a one-file run and a two-file run must not print the same sentence**.
 - First real output on the live corpus: `135 finding(s) — 1818 spec(s) scanned, 133 carrying a posture section`.
 
-## An unresolved discrepancy, surfaced by this change on its first run
+## The discrepancy this surfaced on its first run — and what three instruments then established
 
-The historical comment records **149** posture-carrying specs; this now measures **133**. I have NOT resolved which is right, and I am not claiming a regression — the 149 was someone else's measurement, possibly with a different method or against a different tree, and the corpus has changed since.
+The historical comment records **149** posture-carrying specs; this measures **133**. That gap was reported as fully unresolved when this branch was first pushed. It has since been narrowed by two further measurements, and the narrowing is recorded here rather than folded silently into the original text.
 
-It is recorded here rather than smoothed over because it is precisely the sentence the change exists to produce: a number beside a verdict, disagreeing with a documented number, on the first run. Whether it is drift, a method difference, or specs legitimately removed is unmeasured and belongs to whoever picks it up.
+**DRIFT IS RULED OUT — the alarming reading is disconfirmed.** A peer session (echo-fb, W24) measured by an independent method (`git grep`, not this lint's regex) and got 133 at HEAD *and* 133 at `c465a94ef`, the widening commit itself, with only two commits touching `docs/specs` in between and the count unmoved. I then reproduced that with a third method: 133 at `c465a94ef`, 133 at `upstream/main`, control on an invented token 0, control on a common token 1811 of 1818.
+
+So the count was **already 133 when the comment claiming 149 was written**. Sixteen specs did not silently lose their posture section.
+
+**A 2-file disagreement between my third method and the other two, resolved rather than averaged.** My first pass returned 131. The difference is case: my throwaway regex was case-sensitive on the second word, while the lint's matcher carries `/i`. The two specs are `matrix-cell-operator-cancel.md` and `playwright-profile-registry.md`, whose headings capitalise "Posture". 133 is correct and matches the lint. Recorded because a two-instrument disagreement is information, and resolving it by preference would have been the error this whole change is about.
+
+**Still unmeasured: what produced 149.** A different branch, a method nobody has guessed, or a figure that was never right. Three candidates, none distinguished, and no claim made between them. What is now measured is the part that mattered — the population is not shrinking under the gate.
 
 ## Class-Closure Declaration (display-only mirror)
 

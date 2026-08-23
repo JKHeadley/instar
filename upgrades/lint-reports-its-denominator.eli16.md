@@ -35,4 +35,10 @@ Immediately. Nothing to decide, no setting, no risk.
 
 ## What you actually need to decide
 
-Nothing. One honest thing surfaced on the first run and is written into the notes rather than smoothed away: the old comment records 149 documents carrying that section; the live count is now 133. I haven't chased down whether that's drift, a different counting method, or documents legitimately removed — but a number disagreeing with a documented number on the very first run is exactly what this change was built to produce.
+Nothing — and the one loose number has since been chased down, which is worth reporting because it is the change doing its job.
+
+On the first run the new count (133) disagreed with a number written in an old comment (149). The worrying reading was that sixteen documents had quietly lost the section nobody was checking. **That is now ruled out.** Two other people measured it different ways and both got 133 — including at the exact moment the old comment was written. Nothing has been slipping away.
+
+What nobody has worked out is where 149 came from. A different branch, a different way of counting, or a number that was never right. Three possibilities, none of them picked, because guessing between them would be the same habit this change exists to break.
+
+One small thing worth keeping: my own quick check first said 131, not 133. The difference was capital letters — two documents write "Posture" rather than "posture". Two measurements disagreeing is information; averaging them or taking the nicer one would have been exactly the mistake.
