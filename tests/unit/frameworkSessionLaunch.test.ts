@@ -362,10 +362,25 @@ describe('frameworkSessionLaunch.buildHeadlessLaunch', () => {
       // Jobs keep the sandbox (they ingest external content + don't use MCP).
       expect(spec.argv).toContain('-s');
       expect(spec.argv).toContain('workspace-write');
+      expect(spec.argv).toContain('sandbox_workspace_write.network_access=true');
       expect(spec.argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(spec.argv).toContain('-m');
       expect(spec.argv).toContain('gpt-5.5');
       expect(spec.argv[spec.argv.length - 1]).toBe('analyze this');
+    });
+
+    it('pins workspace-write network access per launch after the sandbox selection', () => {
+      const spec = buildHeadlessLaunch('codex-cli', {
+        binaryPath: '/usr/local/bin/codex',
+        prompt: 'probe local API',
+      });
+      const sandbox = spec.argv.indexOf('-s');
+      const override = spec.argv.indexOf('-c');
+      expect(spec.argv.slice(sandbox, sandbox + 2)).toEqual(['-s', 'workspace-write']);
+      expect(spec.argv.slice(override, override + 2)).toEqual([
+        '-c', 'sandbox_workspace_write.network_access=true',
+      ]);
+      expect(spec.argv).not.toContain('danger-full-access');
     });
 
     it('appends --dangerously-bypass-hook-trust before the prompt when the codex binary supports it', () => {
@@ -394,6 +409,7 @@ describe('frameworkSessionLaunch.buildHeadlessLaunch', () => {
       // sandbox, so the reply path uses full bypass. Jobs (above) do not.
       expect(spec.argv).toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(spec.argv).not.toContain('workspace-write');
+      expect(spec.argv).not.toContain('sandbox_workspace_write.network_access=true');
     });
 
     it('explicit codexSandboxMode wins over codexAllowMcpTools', () => {
@@ -409,6 +425,7 @@ describe('frameworkSessionLaunch.buildHeadlessLaunch', () => {
       expect(spec.argv).toContain('never');
       expect(spec.argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(spec.argv).not.toContain('workspace-write');
+      expect(spec.argv).not.toContain('sandbox_workspace_write.network_access=true');
     });
 
     it('honors model override', () => {

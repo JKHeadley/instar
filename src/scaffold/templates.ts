@@ -1122,6 +1122,8 @@ curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities
 
 This returns your full capability matrix: scripts, hooks, Telegram status, jobs, git sync status, relationships, and more. **This is the source of truth about what you can do — not the prose descriptions in this file.**
 
+Headless Codex workers retain the \`workspace-write\` filesystem sandbox while Instar grants that sandbox network access per launch, so this localhost capability check works without a machine-local Codex config edit. If a policy removes the grant, Codex names the cause as \`Network access was denied by the Codex sandbox network proxy\` (and sets \`CODEX_SANDBOX_NETWORK_DISABLED=1\`); do not report that diagnostic as a dead agent server.
+
 Instar contributors can run \`instar dev:preflight\` before opening PRs to run lint, CapabilityIndex discoverability checks, and an advisory new-route-prefix scan against the diff.
 
 Run \`instar dev:ci-failures <pr>\` to print a red PR's exact failing tests (file:line + assertion) via the GitHub check-run annotations API — handy when \`gh run view --log\` returns nothing.
