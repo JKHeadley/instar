@@ -19,6 +19,52 @@ import { parseRegistryStructure } from '../../scripts/standards-registry-article
 import { inventoryStandardsArticles } from '../../scripts/standards-direction-guard.mjs';
 import { stampConverged, validateAuditReport } from '../../scripts/write-audit-convergence.mjs';
 
+// The review step's EXACT wiring, shared by every workflow fixture below so the
+// pin's literal `run` contract is exercised rather than approximated. Kept in one
+// place: three fixtures drifting independently is the duplicated-definition trap.
+const REVIEW_STEP_FIXTURE: string[] = [
+  '      - name: Fetch operator review context (direction guard path B)',
+  '        env:',
+  '          GH_TOKEN: ${{ github.token }}',
+  '          EVENT_NAME: ${{ github.event_name }}',
+  '          PR: ${{ github.event.pull_request.number }}',
+  '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
+  '          PR_AUTHOR: ${{ github.event.pull_request.user.login }}',
+  '          PUSH_SHA: ${{ github.sha }}',
+  '          OWNER_LOGIN: ${{ github.event.repository.owner.login }}',
+  '          OWNER_TYPE: ${{ github.event.repository.owner.type }}',
+  '          OUT: ${{ runner.temp }}/standards-direction-review.json',
+  '        run: |',
+  '          set -u',
+  '          if [ "$EVENT_NAME" != "pull_request" ]; then',
+  "            associated=$(gh api \"repos/${GITHUB_REPOSITORY}/commits/${PUSH_SHA}/pulls\" 2>/dev/null || echo '[]')",
+  "            match=$(SHA=\"$PUSH_SHA\" jq -c '[.[] | select(.merge_commit_sha == env.SHA)] | if length == 1 then .[0] else empty end' <<< \"${associated:-[]}\" 2>/dev/null || echo '')",
+  "            PR=''",
+  "            HEAD_SHA=''",
+  "            PR_AUTHOR=''",
+  '            if [ -n "$match" ]; then',
+  "              PR=$(jq -r '.number // empty' <<< \"$match\" 2>/dev/null || echo '')",
+  "              HEAD_SHA=$(jq -r '.head.sha // empty' <<< \"$match\" 2>/dev/null || echo '')",
+  "              PR_AUTHOR=$(jq -r '.user.login // empty' <<< \"$match\" 2>/dev/null || echo '')",
+  '            fi',
+  "            echo \"path-b: event=${EVENT_NAME} associated=$(jq -r 'length' <<< \"${associated:-[]}\" 2>/dev/null || echo unreadable) matched-pr=${PR:-none}\"",
+  '          fi',
+  "          reviews='[]'",
+  '          if [ -n "$PR" ]; then',
+  "            reviews=$(gh api \"repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews?per_page=100\" 2>/dev/null || echo '[]')",
+  '          fi',
+  "          echo \"path-b: reviews=$(jq -r 'length' <<< \"${reviews:-[]}\" 2>/dev/null || echo unreadable) head-sha=${HEAD_SHA:-none} owner=${OWNER_LOGIN:-none}/${OWNER_TYPE:-none}\"",
+  '          jq -n --argjson reviews "${reviews:-[]}" \\',
+  '                --arg headSha "$HEAD_SHA" \\',
+  '                --arg ownerLogin "$OWNER_LOGIN" \\',
+  '                --arg ownerType "$OWNER_TYPE" \\',
+  '                --arg prAuthorLogin "$PR_AUTHOR" \\',
+  "             '{reviews:$reviews, headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \\",
+  "             > \"$OUT\" || echo '{}' > \"$OUT\"",
+  '',
+];
+
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.resolve(__dirname, '../../scripts/standards-coverage.mjs');
 
@@ -354,6 +400,10 @@ describe('standards-coverage ratchet script', () => {
       '  standards-coverage:',
       '    name: Standards Enforcement Coverage',
       '    runs-on: ubuntu-latest',
+      // Pinned as of 2026-08-23: path B's token scope is declared, not inherited.
+      '    permissions:',
+      '      contents: read',
+      '      pull-requests: read',
       '    steps:',
       '      - uses: actions/checkout@v4',
       '        with:',
@@ -376,18 +426,7 @@ describe('standards-coverage ratchet script', () => {
       '          fi',
       '          git show "$BASE_SHA:docs/STANDARDS-REGISTRY.md" > "$RUNNER_TEMP/standards-registry-base.md"',
       '          git show "$BASE_SHA:.github/keyrings/telegram-principal-pub.pem" > "$RUNNER_TEMP/standards-direction-approver-base.pem"',
-      '      - name: Fetch operator review context (direction guard path B)',
-      "        if: github.event_name == 'pull_request'",
-      '        env:',
-      '          GH_TOKEN: ${{ github.token }}',
-      '          PR: ${{ github.event.pull_request.number }}',
-      '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
-      '          OWNER_LOGIN: ${{ github.event.repository.owner.login }}',
-      '          OWNER_TYPE: ${{ github.event.repository.owner.type }}',
-      '          PR_AUTHOR: ${{ github.event.pull_request.user.login }}',
-      '          OUT: ${{ runner.temp }}/standards-direction-review.json',
-      '        run: |',
-      '          echo "{}" > "$OUT"',
+      ...REVIEW_STEP_FIXTURE,
       '      - run: node scripts/standards-coverage.mjs --check',
       '        env:',
       '          STANDARDS_AREA_AUDIT_BASE_FILE: ${{ runner.temp }}/standards-area-audits-base.json',
@@ -411,6 +450,61 @@ describe('standards-coverage ratchet script', () => {
         '          STANDARDS_AREA_AUDIT_BASE_FILE: ${{ runner.temp }}/standards-area-audits-base.json',
       ));
     expect(runFullCheck().code).toBe(0);
+
+    // 2026-08-23 REGRESSION PIN — the `if:` that broke canonical main.
+    //
+    // The evidence-gathering step shipped gated `if: github.event_name ==
+    // 'pull_request'`, so on a push to main it never ran, the context file was
+    // never written, and the guard read ENOENT as "no approval" and refused —
+    // while the operator's approval sat on the pull request that had just
+    // produced that very commit. Every registry change ratified by review turned
+    // main red the moment it merged; main stayed red across three merges. The
+    // pin now refuses the gate outright, so the regression cannot return as a
+    // one-line edit nobody reads.
+    write('.github/workflows/ci.yml', validWorkflow.replace(
+      '      - name: Fetch operator review context (direction guard path B)\n',
+      '      - name: Fetch operator review context (direction guard path B)\n' +
+      "        if: github.event_name == 'pull_request'\n",
+    ));
+    const regated = runFullCheck();
+    expect(regated.code).toBe(1);
+    expect(regated.out).toContain('requires dependency install plus full-history protected-base extraction');
+
+    // Dropping either push-branch input is the same silent edit by another route:
+    // without EVENT_NAME the step cannot tell which branch it is on, and without
+    // PUSH_SHA it cannot find the pull request that produced the commit. Either
+    // one alone returns the guard to refusing on every push.
+    for (const key of ['EVENT_NAME: ${{ github.event_name }}', 'PUSH_SHA: ${{ github.sha }}']) {
+      write('.github/workflows/ci.yml', validWorkflow.replace(`          ${key}\n`, ''));
+      const dropped = runFullCheck();
+      expect(dropped.code).toBe(1);
+      expect(dropped.out).toContain('requires dependency install plus full-history protected-base extraction');
+    }
+
+    // The third route, and the one the first version of this pin MISSED (found by
+    // the independent second-pass review, 2026-08-23): the step's keys and env map
+    // were pinned but its `run` was not, so the whole push-resolution branch could
+    // be gutted — returning the guard to refusing on every push — while all the
+    // assertions above stayed green, because the fixture's body was a stub no test
+    // ever executed. A guard that only covers the route its author thought of is
+    // the closure equivalent of a test that never runs.
+    write('.github/workflows/ci.yml', validWorkflow.replace(
+      /(        run: \|\n)(?:          .*\n)+/,
+      '$1          echo "{}" > "$OUT"\n',
+    ));
+    const gutted = runFullCheck();
+    expect(gutted.code).toBe(1);
+    expect(gutted.out).toContain('requires dependency install plus full-history protected-base extraction');
+
+    // And the token scope is pinned, not inherited: dropping the permissions block
+    // returns the job to the repository default, which a tightened org policy can
+    // silently shrink until the association call 403s and the guard refuses forever.
+    write('.github/workflows/ci.yml', validWorkflow.replace(
+      '    permissions:\n      contents: read\n      pull-requests: read\n', '',
+    ));
+    const unscoped = runFullCheck();
+    expect(unscoped.code).toBe(1);
+    expect(unscoped.out).toContain('requires the standards-coverage CI job to invoke');
 
     write('.github/workflows/ci.yml', validWorkflow
       .replace('          fetch-depth: 0', '          fetch-depth: 0\n          ref: ${{ github.event.pull_request.base.sha }}')
@@ -471,18 +565,7 @@ describe('standards-coverage ratchet script', () => {
       '    if: false',
       '    runs-on: ubuntu-latest',
       '    steps:',
-      '      - name: Fetch operator review context (direction guard path B)',
-      "        if: github.event_name == 'pull_request'",
-      '        env:',
-      '          GH_TOKEN: ${{ github.token }}',
-      '          PR: ${{ github.event.pull_request.number }}',
-      '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
-      '          OWNER_LOGIN: ${{ github.event.repository.owner.login }}',
-      '          OWNER_TYPE: ${{ github.event.repository.owner.type }}',
-      '          PR_AUTHOR: ${{ github.event.pull_request.user.login }}',
-      '          OUT: ${{ runner.temp }}/standards-direction-review.json',
-      '        run: |',
-      '          echo "{}" > "$OUT"',
+      ...REVIEW_STEP_FIXTURE,
       '      - run: node scripts/standards-coverage.mjs --check',
       '        continue-on-error: true',
     ].join('\n'));
@@ -520,18 +603,7 @@ describe('standards-coverage ratchet script', () => {
       ...(scope === 'job' ? ["    'continue-on-error': ${{ true }}"] : []),
       '    runs-on: ubuntu-latest',
       '    steps:',
-      '      - name: Fetch operator review context (direction guard path B)',
-      "        if: github.event_name == 'pull_request'",
-      '        env:',
-      '          GH_TOKEN: ${{ github.token }}',
-      '          PR: ${{ github.event.pull_request.number }}',
-      '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
-      '          OWNER_LOGIN: ${{ github.event.repository.owner.login }}',
-      '          OWNER_TYPE: ${{ github.event.repository.owner.type }}',
-      '          PR_AUTHOR: ${{ github.event.pull_request.user.login }}',
-      '          OUT: ${{ runner.temp }}/standards-direction-review.json',
-      '        run: |',
-      '          echo "{}" > "$OUT"',
+      ...REVIEW_STEP_FIXTURE,
       '      - run: node scripts/standards-coverage.mjs --check',
       ...(scope === 'step' ? ["        'continue-on-error': ${{ true }}"] : []),
     ].join('\n');
