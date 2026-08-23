@@ -61,6 +61,8 @@ import {
   readDirectionApprovalLedger,
   resolveProtectedApproverKey,
   resolveProtectedBaseRegistry,
+  verifyGithubReviewApproval,
+  applyGithubReviewRatification,
 } from './standards-direction-guard.mjs';
 import {
   measureAnchoredEnforcement,
@@ -72,6 +74,17 @@ import { parseFrontmatter, validateAuditReport } from './write-audit-convergence
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const args = new Set(process.argv.slice(2));
 const CHECK = args.has('--check');
+
+// Path B (operator ratification via GitHub code-owner review) resolves ONCE,
+// up front, because the direction-guard evaluation below is synchronous. In a
+// CI pull-request context this asks the GitHub API whether the repository
+// owner has an approving review bound to the exact head commit; everywhere
+// else (local runs, push builds) it is UNAVAILABLE with a named reason and the
+// signature path is simply what remains. Fails closed by construction — see
+// verifyGithubReviewApproval. An approval submitted AFTER a CI run appears on
+// re-run (reviews are fetched live), so the documented flow for a red
+// ratification check is: operator approves, the check is re-run, it greens.
+const GITHUB_REVIEW_RATIFICATION = await verifyGithubReviewApproval();
 const JSON_ONLY = args.has('--json');
 const QUIET = args.has('--quiet');
 /**
@@ -612,13 +625,20 @@ function validateRootSelfWiring() {
   const steps = Array.isArray(job?.steps) ? job.steps : [];
   const checkStep = steps.find((step) => step?.run === 'node scripts/standards-coverage.mjs --check');
   const checkEnv = {
+    // Path B of the direction guard reads the PR's reviews with the run's own
+    // token (standards-approval-via-github-review). Pinned here because the
+    // self-wiring contract is EXACT-KEYS: an env var appearing on this step
+    // without appearing in this pin is the drift this check exists to catch.
+    GITHUB_TOKEN: '${{ github.token }}',
     STANDARDS_AREA_AUDIT_BASE_FILE: '${{ runner.temp }}/standards-area-audits-base.json',
     STANDARDS_AREA_AUDIT_BASE_REQUIRED: '${{ steps.area-audit-base.outputs.required }}',
     STANDARDS_DIRECTION_BASE_FILE: '${{ runner.temp }}/standards-registry-base.md',
     STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE: '${{ runner.temp }}/standards-direction-approver-base.pem',
     STANDARDS_DIRECTION_BASE_REVISION: "${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}",
   };
-  if (!exactKeys(job, ['name', 'runs-on', 'steps']) ||
+  if (!exactKeys(job, ['name', 'runs-on', 'permissions', 'steps']) ||
+    !exactKeys(job.permissions, ['contents', 'pull-requests']) ||
+    job.permissions.contents !== 'read' || job.permissions['pull-requests'] !== 'read' ||
     job.name !== 'Standards Enforcement Coverage' || job['runs-on'] !== 'ubuntu-latest' ||
     !exactKeys(checkStep, ['run', 'env']) || !exactKeys(checkStep?.env, Object.keys(checkEnv)) ||
     Object.entries(checkEnv).some(([key, value]) => checkStep.env[key] !== value) ||
@@ -1344,6 +1364,17 @@ function compute() {
       baseRevision: base.revision ?? 'unknown-protected-base',
     });
     assessed.errors.unshift(...approvals.errors, ...candidateKey.errors, ...key.errors);
+    // Path B: an accepted code-owner review clears ONLY the unsigned-ratification
+    // class; ledger/key/trust-root errors always stand. See
+    // applyGithubReviewRatification for why the narrowing is deliberate.
+    const githubRatification = applyGithubReviewRatification(assessed, GITHUB_REVIEW_RATIFICATION);
+    assessed.githubReview = {
+      available: GITHUB_REVIEW_RATIFICATION.available === true,
+      accepted: GITHUB_REVIEW_RATIFICATION.accepted === true,
+      reason: GITHUB_REVIEW_RATIFICATION.reason ?? null,
+      approval: GITHUB_REVIEW_RATIFICATION.approval ?? null,
+      cleared: githubRatification.cleared,
+    };
     if (assessed.errors.length > 0) assessed.status = 'not-proven';
     assessed.trustRoot = {
       origin: 'protected-base',
@@ -1826,6 +1857,14 @@ function main() {
       `ratio=${report.measurement.protectedFloor.ratio} candidate-may-raise=false`);
     for (const error of report.measurement.errors) {
       console.error(`[standards-coverage] MEASUREMENT — ${error}`);
+    }
+    if (report.directionGuard.githubReview?.accepted) {
+      const a = report.directionGuard.githubReview.approval;
+      console.error(`[standards-coverage] direction-ratification=github-code-owner-review ` +
+        `approver=${a?.login} commit=${String(a?.commitId).slice(0, 12)} cleared=${report.directionGuard.githubReview.cleared}`);
+    } else if (report.directionGuard.githubReview) {
+      console.error(`[standards-coverage] direction-ratification=github-review-unavailable ` +
+        `reason=${report.directionGuard.githubReview.reason ?? 'not-accepted'} (signature path governs)`);
     }
     console.error(`[standards-coverage] direction-guard=${report.directionGuard.status} ` +
       `base=${report.directionGuard.baseRevision ?? 'not-assessed'} ` +

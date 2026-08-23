@@ -64,6 +64,12 @@ jobs:
   standards-coverage:
     name: Standards Enforcement Coverage
     runs-on: ubuntu-latest
+    # Least privilege for the path-B review read (second-pass finding E): the
+    # job needs the PR's reviews and the checkout, nothing writable. Pinned by
+    # the Root self-wiring contract in scripts/standards-coverage.mjs.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -97,6 +103,12 @@ jobs:
           git show "$BASE_SHA:.github/keyrings/telegram-principal-pub.pem" > "$RUNNER_TEMP/standards-direction-approver-base.pem"
       - run: node scripts/standards-coverage.mjs --check
         env:
+          # Path B of the direction guard: lets the check verify an approving
+          # code-owner review bound to the PR head (the operator's chosen
+          # ratification route, spec standards-approval-via-github-review).
+          # The token is read-only for this purpose; the SECURITY boundary is
+          # the ruleset (require_code_owner_review), not this check.
+          GITHUB_TOKEN: ${{ github.token }}
           STANDARDS_AREA_AUDIT_BASE_FILE: ${{ runner.temp }}/standards-area-audits-base.json
           STANDARDS_AREA_AUDIT_BASE_REQUIRED: ${{ steps.area-audit-base.outputs.required }}
           STANDARDS_DIRECTION_BASE_FILE: ${{ runner.temp }}/standards-registry-base.md

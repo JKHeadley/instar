@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-23T05:22:34.050Z",
+  "slug": "standards-ratification-github-path.side-effects",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 207,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/standards-coverage.mjs",
+      "scripts/standards-direction-guard.mjs"
+    ],
+    "addedLines": 206,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
