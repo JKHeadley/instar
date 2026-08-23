@@ -1,0 +1,31 @@
+{
+  "ts": "2026-08-23T01:47:15.013Z",
+  "slug": "approval-required-request-review-and-link",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 162,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/safe-merge.mjs",
+      "skills/instar-dev/SKILL.md",
+      "src/core/PostUpdateMigrator.ts",
+      "src/monitoring/GreenPrAutoMerger.ts"
+    ],
+    "addedLines": 157,
+    "deletedLines": 5
+  },
+  "causalAutopsy": {
+    "origin": "environment-shift",
+    "notes": "safe-merge read review requirements from CLASSIC branch protection only; GitHub rulesets (the newer mechanism) can also require reviews. Dormant until the operator tightened the main ruleset (require_last_push_approval) at 2026-08-22 17:03 PDT, after which a green PR (#1963) was refused at merge time and the operator met a reviewer-less PR with no Approve button. The code gap was latent; the trigger was the environment change."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

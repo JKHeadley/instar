@@ -70,6 +70,11 @@ export const TAXONOMY_KEYS = new Set([
   'physical-credential-locality',
   'hardware-bound-resource',
   'operator-ratified-exception',
+  // Ratified 2026-08-22 (operator directive, topic 52222 — Amendment 5). The
+  // ONLY self-terminating key: it carries a first-declared date, a bounded
+  // re-review horizon, and a total-lifetime cap, so it cannot become a resting
+  // place. See the A2-migrating-* contracts below.
+  'migrating-to-unified',
 ]);
 
 // ── Finding the posture section (widened 2026-08-21) ──────────────────────
@@ -189,10 +194,268 @@ export function hasResolvableRef(rest) {
 }
 
 /**
+ * Parse `name=value` / `name: value` sub-fields out of a marker's `rest`.
+ *
+ * Amendments 3 and 5 (ratified 2026-08-22) require a marker to carry NAMED
+ * facts rather than free prose — that is what makes them deterministically
+ * checkable rather than a reviewer's judgement. A value runs to the next known
+ * field name or to end-of-line, and may be quoted.
+ *
+ * Returns a lowercase-keyed object; a repeated field keeps the FIRST value, so
+ * appending a second `permanence=` cannot quietly override the first.
+ */
+export const MARKER_FIELDS = ['prohibited-by', 'impossible-because', 'permanence', 'exit', 'ratified', 'tracking', 'since', 'expires'];
+export function parseMarkerFields(rest) {
+  const out = {};
+  if (!rest) return out;
+  const names = MARKER_FIELDS.map((n) => n.replace(/[-]/g, '\\-')).join('|');
+  const re = new RegExp(
+    `\\b(${names})\\s*[=:]\\s*(?:"([^"]*)"|'([^']*)'|([^\\s].*?))(?=\\s+(?:${names})\\s*[=:]|\\s*$)`,
+    'gi',
+  );
+  let m;
+  while ((m = re.exec(rest)) !== null) {
+    const key = m[1].toLowerCase();
+    const val = (m[2] ?? m[3] ?? m[4] ?? '').trim();
+    if (!(key in out)) out[key] = val;
+  }
+  return out;
+}
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Amendment 5's maximum horizon. Without it the key is RENEWABLE, not
+// self-terminating: an author sets a distant expiry, delivers nothing, and is
+// never asked again. The first draft's own fixture used the year 2099 and
+// passed, which is how the gap was found (external adversarial lens, 2026-08-22).
+export const MIGRATION_MAX_HORIZON_DAYS = 180;
+
+// Round 3. The horizon alone bounds ONE declaration; renewing it re-dates the
+// expiry and buys unbounded time. `since` (first declaration) plus a TOTAL
+// LIFETIME cap is what makes the key actually terminate. A rewritten `since` is
+// falsification, not a loophole — the parser cannot see it, and the article says so.
+export const MIGRATION_MAX_TOTAL_LIFETIME_DAYS = 360;
+
+/** Shared: an ISO date field that must be present, well-formed, and within `maxDays` of today. */
+function gradeHorizonDate(value, { rule, label, maxDays, today, missingMessage }) {
+  const findings = [];
+  if (!ISO_DATE_RE.test(value || '') || Number.isNaN(Date.parse(value))) {
+    findings.push({ rule: `${rule}-missing`, message: missingMessage });
+    return { findings, dueMs: null };
+  }
+  const dueMs = Date.parse(`${value}T23:59:59Z`);
+  if (dueMs > today.getTime() + maxDays * 24 * 60 * 60 * 1000) {
+    findings.push({
+      rule: `${rule}-beyond-horizon`,
+      message:
+        `${label} ${value} is more than ${maxDays} days out. A distant date makes the ` +
+        `posture renewable rather than self-terminating — it must come back in front of ` +
+        `a reader on a bounded cadence.`,
+    });
+  } else if (dueMs < today.getTime()) {
+    findings.push({ rule: `${rule}-expired`, message: `${label} ${value} has PASSED. The posture must be re-argued or resolved; it may never lapse silently into a permanent one.` });
+  }
+  return { findings, dueMs };
+}
+
+/**
+ * Amendment 3 — `physical-credential-locality` must NAME the prohibiting
+ * authority and declare the prohibition PERMANENT or TEMPORARY. Returns a
+ * findings array (empty when well-formed).
+ *
+ * Why named fields rather than prose: the key as previously written let an
+ * author assert a physical constraint where a storage habit existed, and no
+ * parser could tell the two apart. "Bitwarden could hold this" is the test, and
+ * a marker that cannot even name who forbids the move has not met it.
+ */
+export function gradePhysicalCredentialLocality(rest, today = new Date()) {
+  const findings = [];
+  const f = parseMarkerFields(rest);
+  // The basis may be a PROHIBITION or an IMPOSSIBILITY. Demanding a
+  // `prohibited-by` for a purely technical barrier was an inconsistent
+  // evidentiary bar — a hardware-bound key has no authority to cite (external
+  // adversarial lens, 2026-08-22).
+  if (!f['prohibited-by'] && !f['impossible-because']) {
+    findings.push({
+      rule: 'A2-credential-locality-no-authority',
+      message:
+        `physical-credential-locality must NAME its basis — either ` +
+        `\`prohibited-by="<vendor ToS | legal residency constraint>"\` or ` +
+        `\`impossible-because="<what makes relocation technically impossible>"\` ` +
+        `(Amendment 3, ratified 2026-08-22). This key covers only a credential whose ` +
+        `relocation is PROHIBITED or technically impossible; a credential that merely ` +
+        `HAPPENS to sit on one disk is a storage choice, and where a vault can hold it ` +
+        `this key does not apply. Marker value: "${rest || '(empty)'}".`,
+    });
+  }
+  const perm = (f.permanence || '').toLowerCase();
+  // A TEMPORARY barrier with no tracked way out is a permanent barrier wearing a
+  // temporary label — the defect `migrating-to-unified` carries a horizon against,
+  // and it applied here identically (external adversarial lens, 2026-08-22).
+  if (perm === 'temporary') {
+    if (!hasResolvableRef(f.exit || '')) {
+      findings.push({
+        rule: 'A2-credential-locality-temporary-no-exit',
+        message:
+          `physical-credential-locality declared \`permanence=temporary\` must record its ` +
+          `exit — \`exit=<commit SHA | URL | dotted registry key>\` naming the work or ` +
+          `decision that ends the barrier (Amendment 3, ratified 2026-08-22). Marker value: ` +
+          `"${rest || '(empty)'}".`,
+      });
+    }
+    // An exit with no deadline is a permanent barrier with paperwork. Same horizon
+    // the newer key carries — binding a new key more tightly than an old one for no
+    // stated reason is an inconsistency, not a conservative default (round 3).
+    // Round 4: a deadline WITHOUT a lifetime cap is renewable every 180 days
+    // forever — the exact loophole round 3 closed one key over. Same contract here.
+    const tsince = f.since || '';
+    if (!ISO_DATE_RE.test(tsince) || Number.isNaN(Date.parse(tsince))) {
+      findings.push({
+        rule: 'A2-credential-locality-temporary-no-since',
+        message:
+          `physical-credential-locality declared \`permanence=temporary\` must carry ` +
+          `\`since=YYYY-MM-DD\` — the date the barrier was FIRST declared, carried forward ` +
+          `across renewals (Amendment 3, round 4). Without it the re-review date is ` +
+          `renewable forever. Marker value: "${rest || '(empty)'}".`,
+      });
+    } else if (ISO_DATE_RE.test(f.expires || '') && !Number.isNaN(Date.parse(f.expires))) {
+      const lifetimeDays = (Date.parse(f.expires) - Date.parse(tsince)) / (24 * 60 * 60 * 1000);
+      if (lifetimeDays > MIGRATION_MAX_TOTAL_LIFETIME_DAYS) {
+        findings.push({
+          rule: 'A2-credential-locality-temporary-lifetime-exceeded',
+          message:
+            `physical-credential-locality has been declared TEMPORARY for a TOTAL of ` +
+            `${Math.round(lifetimeDays)} days (since ${tsince} → expires ${f.expires}), over ` +
+            `the ${MIGRATION_MAX_TOTAL_LIFETIME_DAYS}-day lifetime cap. Re-argue it in front ` +
+            `of the operator, who may rule it PERMANENT — the honest outcome for a barrier ` +
+            `that has held for a year.`,
+        });
+      }
+    }
+    for (const finding of gradeHorizonDate(f.expires, {
+      rule: 'A2-credential-locality-temporary-review',
+      label: 'physical-credential-locality TEMPORARY re-review date',
+      maxDays: MIGRATION_MAX_HORIZON_DAYS,
+      today,
+      missingMessage:
+        `physical-credential-locality declared \`permanence=temporary\` must carry a ` +
+        `re-review date — \`expires=YYYY-MM-DD\`, at most ${MIGRATION_MAX_HORIZON_DAYS} ` +
+        `days out (Amendment 3, round 3). Marker value: "${rest || '(empty)'}".`,
+    }).findings) findings.push(finding);
+  }
+  if (perm !== 'permanent' && perm !== 'temporary') {
+    findings.push({
+      rule: 'A2-credential-locality-no-permanence',
+      message:
+        `physical-credential-locality must declare \`permanence=permanent\` or ` +
+        `\`permanence=temporary\` (Amendment 3, ratified 2026-08-22). A temporary ` +
+        `prohibition is a posture with an exit; a permanent one is a standing constraint, ` +
+        `and conflating them hides which is which. Marker value: "${rest || '(empty)'}".`,
+    });
+  }
+  return findings;
+}
+
+/**
+ * Amendment 5 — `migrating-to-unified` is permitted ONLY with (a) the ratified
+ * decision establishing unified as the destination, (b) a resolvable tracking
+ * ref for the work that delivers it, and (c) an expiry date. On expiry the
+ * surface declares `unified` or the exception is re-argued in front of the
+ * operator; it may never lapse silently into a permanent posture — so an
+ * EXPIRED marker is itself a finding, not a grace period.
+ *
+ * `today` is injectable so the expiry arm is testable without freezing a clock.
+ */
+export function gradeMigratingToUnified(rest, today = new Date()) {
+  const findings = [];
+  const f = parseMarkerFields(rest);
+  if (!hasResolvableRef(f.ratified || '')) {
+    findings.push({
+      rule: 'A2-migrating-no-ratified-decision',
+      message:
+        `migrating-to-unified must cite the ratified decision establishing \`unified\` as the ` +
+        `destination — \`ratified=<commit SHA | URL | dotted registry key>\` (Amendment 5, ` +
+        `ratified 2026-08-22). Without it the key asserts a destination nobody approved, which ` +
+        `is the false-claim class it exists to prevent. Marker value: "${rest || '(empty)'}".`,
+    });
+  }
+  if (!hasResolvableRef(f.tracking || '')) {
+    findings.push({
+      rule: 'A2-migrating-no-tracking-ref',
+      message:
+        `migrating-to-unified must cite a resolvable tracking ref for the work that DELIVERS ` +
+        `unified — \`tracking=<commit SHA | URL | dotted registry key>\` (Amendment 5). A ` +
+        `migration with no tracked delivery is a permanent posture wearing a temporary label. ` +
+        `Marker value: "${rest || '(empty)'}".`,
+    });
+  }
+  // Round 3: the total lifetime, not just this declaration's horizon.
+  const since = f.since || '';
+  if (!ISO_DATE_RE.test(since) || Number.isNaN(Date.parse(since))) {
+    findings.push({
+      rule: 'A2-migrating-no-since',
+      message:
+        `migrating-to-unified must carry \`since=YYYY-MM-DD\` — the date the posture was ` +
+        `FIRST declared for this surface, carried forward unchanged across renewals ` +
+        `(Amendment 5, round 3). Without it the horizon bounds one declaration and a ` +
+        `renewal buys unbounded time. Marker value: "${rest || '(empty)'}".`,
+    });
+  }
+  const expires = f.expires || '';
+  if (ISO_DATE_RE.test(since) && ISO_DATE_RE.test(expires) &&
+      !Number.isNaN(Date.parse(since)) && !Number.isNaN(Date.parse(expires))) {
+    const lifetimeDays = (Date.parse(expires) - Date.parse(since)) / (24 * 60 * 60 * 1000);
+    if (lifetimeDays > MIGRATION_MAX_TOTAL_LIFETIME_DAYS) {
+      findings.push({
+        rule: 'A2-migrating-lifetime-exceeded',
+        message:
+          `migrating-to-unified has been in force for a TOTAL of ${Math.round(lifetimeDays)} ` +
+          `days (since ${since} → expires ${expires}), over the ` +
+          `${MIGRATION_MAX_TOTAL_LIFETIME_DAYS}-day lifetime cap. The surface must declare ` +
+          `\`unified\` or the exception must be re-argued in front of the operator — a ` +
+          `renewal may not carry it further.`,
+      });
+    }
+  }
+  if (!ISO_DATE_RE.test(expires) || Number.isNaN(Date.parse(expires))) {
+    findings.push({
+      rule: 'A2-migrating-no-expiry',
+      message:
+        `migrating-to-unified must carry \`expires=YYYY-MM-DD\` (Amendment 5). The expiry is ` +
+        `what makes this key self-terminating and is the entire reason a fourth key was ` +
+        `ratified into a deliberately narrow taxonomy. Marker value: "${rest || '(empty)'}".`,
+    });
+  } else {
+    const due = Date.parse(`${expires}T23:59:59Z`);
+    const horizonMs = MIGRATION_MAX_HORIZON_DAYS * 24 * 60 * 60 * 1000;
+    if (due > today.getTime() + horizonMs) {
+      findings.push({
+        rule: 'A2-migrating-expiry-beyond-horizon',
+        message:
+          `migrating-to-unified expiry ${expires} is more than ` +
+          `${MIGRATION_MAX_HORIZON_DAYS} days out (Amendment 5's maximum horizon). A ` +
+          `distant expiry makes the key renewable rather than self-terminating — the ` +
+          `posture must come back in front of a reader on a bounded cadence.`,
+      });
+    }
+    if (due < today.getTime()) {
+      findings.push({
+        rule: 'A2-migrating-expired',
+        message:
+          `migrating-to-unified EXPIRED on ${expires}. The surface must now declare \`unified\` ` +
+          `or the exception must be re-argued in front of the operator; it may never lapse ` +
+          `silently into a permanent posture (Amendment 5).`,
+      });
+    }
+  }
+  return findings;
+}
+
+/**
  * Grade one spec's text against Standard A's marker contract. Pure — no I/O.
  * Returns { findings: [{ rule, message }] }.
  */
-export function gradeMachineLocalMarkers(text) {
+export function gradeMachineLocalMarkers(text, today = new Date()) {
   const findings = [];
   const markers = parseMarkers(text);
   const posture = findPostureSection(text);
@@ -208,6 +471,12 @@ export function gradeMachineLocalMarkers(text) {
           `(a fourth reason is an operator-ratified constitutional decision, §205-219).`,
       });
       continue;
+    }
+    if (marker.key === 'physical-credential-locality') {
+      for (const f of gradePhysicalCredentialLocality(marker.rest, today)) findings.push(f);
+    }
+    if (marker.key === 'migrating-to-unified') {
+      for (const f of gradeMigratingToUnified(marker.rest, today)) findings.push(f);
     }
     if (marker.key === 'operator-ratified-exception' && !hasResolvableRef(marker.rest)) {
       findings.push({
@@ -236,13 +505,22 @@ export function gradeMachineLocalMarkers(text) {
   if (posture) {
     const sectionText = text.slice(posture.start, posture.end);
     const assertsMachineLocal = /machine-local/i.test(sectionText);
-    const hasValidMarker = markers.some(
-      (mk) =>
-        TAXONOMY_KEYS.has(mk.key) &&
-        mk.index >= posture.start &&
-        mk.index < posture.end &&
-        (mk.key !== 'operator-ratified-exception' || hasResolvableRef(mk.rest)),
-    );
+    // A marker DEFENDS a machine-local posture only when it is well-formed FOR ITS
+    // KEY. Amendments 3 and 5 added per-key contracts, so a marker carrying the
+    // right key and nothing else must not count as a defence — otherwise the new
+    // requirements would be reportable while the posture they govern still passed.
+    const hasValidMarker = markers.some((mk) => {
+      if (!TAXONOMY_KEYS.has(mk.key)) return false;
+      if (mk.index < posture.start || mk.index >= posture.end) return false;
+      if (mk.key === 'operator-ratified-exception') return hasResolvableRef(mk.rest);
+      if (mk.key === 'physical-credential-locality') {
+        return gradePhysicalCredentialLocality(mk.rest, today).length === 0;
+      }
+      if (mk.key === 'migrating-to-unified') {
+        return gradeMigratingToUnified(mk.rest, today).length === 0;
+      }
+      return true;
+    });
     if (assertsMachineLocal && !hasValidMarker) {
       findings.push({
         rule: 'A1-undefended-machine-local',

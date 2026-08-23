@@ -376,6 +376,18 @@ describe('standards-coverage ratchet script', () => {
       '          fi',
       '          git show "$BASE_SHA:docs/STANDARDS-REGISTRY.md" > "$RUNNER_TEMP/standards-registry-base.md"',
       '          git show "$BASE_SHA:.github/keyrings/telegram-principal-pub.pem" > "$RUNNER_TEMP/standards-direction-approver-base.pem"',
+      '      - name: Fetch operator review context (direction guard path B)',
+      "        if: github.event_name == 'pull_request'",
+      '        env:',
+      '          GH_TOKEN: ${{ github.token }}',
+      '          PR: ${{ github.event.pull_request.number }}',
+      '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
+      '          OWNER_LOGIN: ${{ github.event.repository.owner.login }}',
+      '          OWNER_TYPE: ${{ github.event.repository.owner.type }}',
+      '          PR_AUTHOR: ${{ github.event.pull_request.user.login }}',
+      '          OUT: ${{ runner.temp }}/standards-direction-review.json',
+      '        run: |',
+      '          echo "{}" > "$OUT"',
       '      - run: node scripts/standards-coverage.mjs --check',
       '        env:',
       '          STANDARDS_AREA_AUDIT_BASE_FILE: ${{ runner.temp }}/standards-area-audits-base.json',
@@ -383,6 +395,7 @@ describe('standards-coverage ratchet script', () => {
       '          STANDARDS_DIRECTION_BASE_FILE: ${{ runner.temp }}/standards-registry-base.md',
       '          STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE: ${{ runner.temp }}/standards-direction-approver-base.pem',
       "          STANDARDS_DIRECTION_BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}",
+      '          STANDARDS_DIRECTION_REVIEW_FILE: ${{ runner.temp }}/standards-direction-review.json',
     ].join('\n'));
     fs.rmSync(path.join(repo, 'docs', 'standards-registry-area-audits.json'));
     refreshAreaAudits();
@@ -458,6 +471,18 @@ describe('standards-coverage ratchet script', () => {
       '    if: false',
       '    runs-on: ubuntu-latest',
       '    steps:',
+      '      - name: Fetch operator review context (direction guard path B)',
+      "        if: github.event_name == 'pull_request'",
+      '        env:',
+      '          GH_TOKEN: ${{ github.token }}',
+      '          PR: ${{ github.event.pull_request.number }}',
+      '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
+      '          OWNER_LOGIN: ${{ github.event.repository.owner.login }}',
+      '          OWNER_TYPE: ${{ github.event.repository.owner.type }}',
+      '          PR_AUTHOR: ${{ github.event.pull_request.user.login }}',
+      '          OUT: ${{ runner.temp }}/standards-direction-review.json',
+      '        run: |',
+      '          echo "{}" > "$OUT"',
       '      - run: node scripts/standards-coverage.mjs --check',
       '        continue-on-error: true',
     ].join('\n'));
@@ -495,6 +520,18 @@ describe('standards-coverage ratchet script', () => {
       ...(scope === 'job' ? ["    'continue-on-error': ${{ true }}"] : []),
       '    runs-on: ubuntu-latest',
       '    steps:',
+      '      - name: Fetch operator review context (direction guard path B)',
+      "        if: github.event_name == 'pull_request'",
+      '        env:',
+      '          GH_TOKEN: ${{ github.token }}',
+      '          PR: ${{ github.event.pull_request.number }}',
+      '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
+      '          OWNER_LOGIN: ${{ github.event.repository.owner.login }}',
+      '          OWNER_TYPE: ${{ github.event.repository.owner.type }}',
+      '          PR_AUTHOR: ${{ github.event.pull_request.user.login }}',
+      '          OUT: ${{ runner.temp }}/standards-direction-review.json',
+      '        run: |',
+      '          echo "{}" > "$OUT"',
       '      - run: node scripts/standards-coverage.mjs --check',
       ...(scope === 'step' ? ["        'continue-on-error': ${{ true }}"] : []),
     ].join('\n');
@@ -1001,14 +1038,31 @@ describe('standards-coverage ratchet script', () => {
     expect(cli.measurement).toEqual(expect.objectContaining({
       status: 'proven',
       basis: expect.objectContaining({ candidateTreeMayRaiseStrength: false }),
-      population: expect.objectContaining({ protectedBase: 88, candidate: 89, continuity: 89 }),
-      // 2026-08-22: protectedBase is measured from the MERGE-BASE with canonical
-      // main, so while this branch is unmerged it holds the pre-article count (88)
-      // and the candidate tree holds the new one (89). The asymmetry IS the
-      // measurement working — a branch is deliberately not able to raise the
-      // protected baseline about itself. Becomes 89/89/89 once merged, the same
-      // update the 2026-08-13 addition needed.
     }));
+    // 2026-08-23: the population literals that stood here (`protectedBase: 88,
+    // candidate: 89, continuity: 89`) are GONE, and this is a correction rather
+    // than a loosening. `protectedBase` is measured against the MERGE-BASE with
+    // canonical main, so its value depends on WHERE THE TEST RUNS, not on what
+    // the registry says: on a branch that adds an article it is candidate-1, and
+    // the moment that branch merges it becomes candidate. A literal can satisfy
+    // one of those and must fail the other.
+    //
+    // That is not theoretical. This assertion turned canonical main RED on
+    // 2026-08-23 the moment PR #1965 merged — it kept expecting 88/89/89 while
+    // main had become 89/89/89 — and main stayed red through the next two
+    // merges. A ratchet that a correct merge breaks trains people to edit the
+    // ratchet, which is the opposite of what it is for.
+    //
+    // What is pinned instead is the INVARIANT the literals were standing in for,
+    // which is branch-position-independent: the candidate tree is the registry
+    // the CLI just measured, continuity tracks it, and a branch can never raise
+    // the protected baseline above itself. The article COUNT is still a
+    // deliberate hand-updated snapshot — it lives in the live-registry test
+    // below, where it is measured from the registry rather than from a diff
+    // against wherever this checkout happens to be sitting.
+    expect(cli.measurement.population.candidate).toBe(cli.total);
+    expect(cli.measurement.population.continuity).toBe(cli.total);
+    expect(cli.measurement.population.protectedBase).toBeLessThanOrEqual(cli.measurement.population.candidate);
     expect(cli.enforcedRatio).toBeLessThan(library.summary.enforcedRatio);
   });
 
@@ -1069,7 +1123,15 @@ describe('standards-coverage ratchet script', () => {
     // rule-bound relevance plus a landed violation that makes the same test fail by assertion. The
     // protected baseline has no such ledger yet, so its honest value is 0/88; the legacy per-area
     // floors remain visible separately and are not rewritten into evidence they never established.
-    expect(report.total).toBe(89);
+    //
+    // 2026-08-23: 89 -> 90. This branch adds ONE article (*Never Silently Cut the
+    // Data a Decision Depends On*) to Building, and canonical main had already
+    // moved 88 -> 89 with *Archiving May Never Mean Deleting*. Updated by
+    // re-deriving from the live registry, and the Building family's audit record
+    // was refreshed by a round that genuinely accepts
+    // (docs/specs/reports/building-family-area-audit-2026-08-23-round2.md) —
+    // never by editing this number to make a run green.
+    expect(report.total).toBe(90);
     expect(report.enforcedRatio).toBe(0);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',

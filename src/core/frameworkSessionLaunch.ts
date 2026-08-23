@@ -149,6 +149,42 @@ export function resolveInteractiveLaunchModel(
  * registration clobbered everyone else's. Empty when no override is requested
  * (e.g. claude-code launches, or codex agents without threadline configured).
  */
+/**
+ * Suppress codex's blocking startup update prompt.
+ *
+ * Codex 0.147 (and every release since it shipped the prompt) opens an interactive
+ * session with a menu it will not proceed past:
+ *
+ *     Update available! 0.147.0 -> 0.149.0
+ *     > 1. Update now (runs `npm install -g @openai/codex`)
+ *       2. Skip
+ *       3. Skip until next version
+ *     Press enter to continue
+ *
+ * Nothing on instar's side can safely answer it. The focused default RUNS
+ * `npm install -g @openai/codex`, which makes codex exit — so an Enter (from the
+ * inject path, or from any watcher that presses the focused option) KILLS the
+ * session rather than clearing the prompt. That is exactly what happened on
+ * 2026-08-22: readiness misread the menu as a ready prompt, the first user message
+ * was injected with a trailing Enter, and the pane died ~18s after spawn.
+ *
+ * The readiness-probe fix (`claudeReadinessProbe.SELECTOR_GLYPHS`) stops instar
+ * TYPING into the menu, which converts the death into a visible stall. This flag is
+ * the other half: it stops the menu from being drawn at all, so a codex session is
+ * usable rather than merely visibly stuck. Both halves are wanted — the probe fix
+ * covers menus we have not seen, this covers the one we have.
+ *
+ * `check_for_update_on_startup` is codex's own config key (verified against codex
+ * 0.149: a session launched with it boots straight to the input box). Passed via
+ * `-c` rather than written into the SHARED `~/.codex/config.toml`, so instar never
+ * mutates a file every codex agent on the machine reads.
+ *
+ * Interactive launches only. `codex exec` has no TUI to draw a menu in, so the
+ * headless builder is deliberately left alone rather than carrying an unverified
+ * flag.
+ */
+const CODEX_NO_UPDATE_PROMPT_FLAGS = ['-c', 'check_for_update_on_startup=false'];
+
 function codexThreadlineMcpFlags(mcp?: { command: string; args: string[] }): string[] {
   if (!mcp) return [];
   return [
@@ -419,6 +455,7 @@ const codexCliBuilder: Builder = (options) => {
   if (codexSupportsHookTrustBypass(options.binaryPath)) {
     argv.push('--dangerously-bypass-hook-trust');
   }
+  argv.push(...CODEX_NO_UPDATE_PROMPT_FLAGS);
   argv.push(...codexThreadlineMcpFlags(options.codexThreadlineMcp));
   // Topic Profile §6 — thinking mode → codex reasoning effort. `max` → xhigh;
   // `off` → low (codex reasoning models have no off level; the profile write

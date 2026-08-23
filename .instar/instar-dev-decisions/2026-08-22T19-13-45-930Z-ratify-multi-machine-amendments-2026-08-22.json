@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-22T19:13:45.930Z",
+  "slug": "ratify-multi-machine-amendments-2026-08-22",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 327,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-machine-local-justification.js"
+    ],
+    "addedLines": 13,
+    "deletedLines": 314
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -95,8 +95,41 @@ jobs:
           fi
           git show "$BASE_SHA:docs/STANDARDS-REGISTRY.md" > "$RUNNER_TEMP/standards-registry-base.md"
           git show "$BASE_SHA:.github/keyrings/telegram-principal-pub.pem" > "$RUNNER_TEMP/standards-direction-approver-base.pem"
+      # PATH B context for the direction guard (2026-08-22, topic 52222).
+      #
+      # The operator's approving review is an alternative to an Ed25519
+      # ratification. The evidence is an API fact held by GitHub — "did the
+      # owner submit an APPROVED review on this exact commit?" — which is why
+      # it is fetched HERE rather than derived from anything in the repository.
+      #
+      # This step must never fail the job: an unavailable review context means
+      # the guard falls back to requiring a signature, which is the safe
+      # direction. `|| true` plus an explicit empty file keeps a rate limit or
+      # an API outage from turning "cannot verify" into a hard error, while the
+      # guard still refuses to treat it as an approval.
+      - name: Fetch operator review context (direction guard path B)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          OWNER_LOGIN: ${{ github.event.repository.owner.login }}
+          OWNER_TYPE: ${{ github.event.repository.owner.type }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          OUT: ${{ runner.temp }}/standards-direction-review.json
+        run: |
+          reviews='[]'
+          reviews=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews?per_page=100" 2>/dev/null || echo '[]')
+          jq -n --argjson reviews "${reviews:-[]}" \
+                --arg headSha "$HEAD_SHA" \
+                --arg ownerLogin "$OWNER_LOGIN" \
+                --arg ownerType "$OWNER_TYPE" \
+                --arg prAuthorLogin "$PR_AUTHOR" \
+             '{reviews:$reviews, headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \
+             > "$OUT" || echo '{}' > "$OUT"
       - run: node scripts/standards-coverage.mjs --check
         env:
+          STANDARDS_DIRECTION_REVIEW_FILE: ${{ runner.temp }}/standards-direction-review.json
           STANDARDS_AREA_AUDIT_BASE_FILE: ${{ runner.temp }}/standards-area-audits-base.json
           STANDARDS_AREA_AUDIT_BASE_REQUIRED: ${{ steps.area-audit-base.outputs.required }}
           STANDARDS_DIRECTION_BASE_FILE: ${{ runner.temp }}/standards-registry-base.md

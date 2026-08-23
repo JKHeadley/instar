@@ -61,6 +61,46 @@ const PERMISSION_MENU =
   'Claude Code needs permission to run this command\n❯ 1. Yes\n  2. Yes, and bypass permissions\n  3. No';
 const TRUST_FOLDER_MENU = 'Do you trust the files in this folder?\n❯ 1. Yes, proceed\n  2. No, exit';
 
+/**
+ * Verbatim from the pane that caused the 2026-08-22 codex incident — captured from a
+ * live `codex 0.147.0` interactive launch, tmux 200x50. Do not "tidy" this string.
+ *
+ * It carries codex's `›` selector on the focused option and NOT Claude's `❯`, which
+ * is the whole point: the menu test used to require `❯`, so this fell through to the
+ * ready test, which already accepted `›`. The spawn path then injected the user's
+ * first message plus Enter onto `1. Update now`, codex ran `npm install -g
+ * @openai/codex` and exited, and the pane died ~18s after spawn.
+ */
+const CODEX_UPDATE_MENU = [
+  '  ✨ Update available! 0.147.0 -> 0.149.0',
+  '',
+  '  Release notes: https://github.com/openai/codex/releases/latest',
+  '',
+  '› 1. Update now (runs `npm install -g @openai/codex`)',
+  '  2. Skip',
+  '  3. Skip until next version',
+  '',
+  '  Press enter to continue',
+].join('\n');
+
+/**
+ * Verbatim from a live `codex 0.149.0` pane launched with the update prompt
+ * suppressed — the state the same session reaches once it is genuinely ready. Its
+ * job here is to prove the widened menu test did not over-block: this pane also
+ * leads a line with `›`, and it must still read as ready.
+ */
+const CODEX_READY_PANE = [
+  '╭──────────────────────────────────────────────────╮',
+  '│ >_ OpenAI Codex (v0.149.0)                       │',
+  '│ model:       gpt-5.6-sol high   /model to change │',
+  '│ directory:   ~/.instar/agents/echo               │',
+  '│ permissions: YOLO mode                           │',
+  '╰──────────────────────────────────────────────────╯',
+  '• You have 1 usage limit reset available. Run /usage to use one.',
+  '› Ask Codex to do anything',
+  '  gpt-5.6-sol high · ~/.instar/agents/echo',
+].join('\n');
+
 describe('classifyPaneReadiness — a booting pane is not a ready pane', () => {
   it('REGRESSION: the 2026-07-26 startup banner does NOT read as ready', () => {
     expect(classifyPaneReadiness(BANNER_TAIL)).toBe('not-ready');
@@ -192,5 +232,65 @@ describe('the probe discriminates', () => {
     expect(menus.length).toBeGreaterThan(0);
     expect(ready.length).toBeGreaterThan(0);
     expect(new Set([...notReady, ...menus, ...ready].map(classifyPaneReadiness)).size).toBe(3);
+  });
+});
+
+describe("classifyPaneReadiness — codex's selector is read by BOTH tests", () => {
+  it("REGRESSION (2026-08-22): codex's startup update menu is a menu, NOT ready", () => {
+    // The defect verbatim: this returned 'ready', instar typed into it, Enter
+    // selected `Update now`, codex exited, the session died ~18s after spawn.
+    expect(classifyPaneReadiness(CODEX_UPDATE_MENU)).toBe('menu');
+    expect(tailShowsMenu(CODEX_UPDATE_MENU)).toBe(true);
+  });
+
+  it('the inject path refuses that pane — a menu is never typeable', () => {
+    // isReadyPromptTail is what the spawn/inject path consults. `false` here is
+    // the property that actually keeps the session alive.
+    expect(isReadyPromptTail(CODEX_UPDATE_MENU)).toBe(false);
+  });
+
+  it("a codex menu with Claude's glyph is ALSO a menu — neither glyph is special", () => {
+    const claudeGlyphVariant = CODEX_UPDATE_MENU.replace('› 1.', '❯ 1.');
+    expect(classifyPaneReadiness(claudeGlyphVariant)).toBe('menu');
+  });
+
+  it('NOT over-blocked: a genuinely ready codex pane still reads as ready', () => {
+    // The widened menu test must not swallow the ready state it sits next to.
+    // This pane leads a line with › too — the discriminator is the numbered
+    // option lines, not the glyph.
+    expect(classifyPaneReadiness(CODEX_READY_PANE)).toBe('ready');
+    expect(tailShowsMenu(CODEX_READY_PANE)).toBe(false);
+  });
+
+  it("NOT over-blocked: codex's bare prompt is still ready", () => {
+    expect(classifyPaneReadiness(CODEX_PROMPT_TAIL)).toBe('ready');
+  });
+
+  it("REGRESSION: codex's trust-directory prompt is a menu, not ready", () => {
+    // A SECOND real codex startup menu, captured live from codex 0.149 launched
+    // in an untrusted directory. Same shape, different prose — which is the
+    // point: the discriminator is structure (glyph on a numbered option line,
+    // two options), not wording, so a menu nobody characterised in advance is
+    // still caught.
+    //
+    // This one carries the harm the module header names outright. Before the
+    // fix it read as ready, so an arriving user message plus Enter would have
+    // selected `1. Yes, continue` — answering a TRUST decision on the
+    // operator's behalf. Classifying it as a menu is what stops that.
+    const trustPrompt = [
+      '> You are in /private/tmp',
+      '  Do you trust the contents of this directory? Working with untrusted',
+      '  contents comes with higher risk of prompt injection.',
+      '› 1. Yes, continue',
+      '  2. No, quit',
+      '  Press enter to continue',
+    ].join('\n');
+    expect(classifyPaneReadiness(trustPrompt)).toBe('menu');
+    expect(isReadyPromptTail(trustPrompt)).toBe(false);
+  });
+
+  it('a single ›-led numbered line is not enough to call it a menu', () => {
+    // Same guard the ❯ path has: one numbered line is ordinary output.
+    expect(tailShowsMenu('› 1. Some output line\n  more prose')).toBe(false);
   });
 });

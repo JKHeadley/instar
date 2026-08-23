@@ -10,10 +10,12 @@ must accept it rather than read it as out-of-section.
 
 ## 8.2 Multi-machine posture
 
-The bot-token → forum/topic-id binding is machine-local: it is namespaced by the
-per-disk service credential and cannot be replicated safely.
+The attestation signing key is machine-local: it is generated inside this
+machine's secure element and has no export path. (Updated 2026-08-22 for
+Amendment 3, which narrowed this key — the bare form this fixture used to carry
+now correctly fails, and `A-bad-credential-bare.md` preserves that case.)
 
-machine-local-justification: physical-credential-locality
+machine-local-justification: physical-credential-locality impossible-because="the key is generated inside this machine's secure element and has no export path" permanence=permanent
 
 ## 9. Next section
 

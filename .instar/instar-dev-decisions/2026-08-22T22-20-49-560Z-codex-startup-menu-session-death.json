@@ -1,0 +1,28 @@
+{
+  "ts": "2026-08-22T22:20:49.560Z",
+  "slug": "codex-startup-menu-session-death",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 153,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/core/claudeReadinessProbe.ts",
+      "src/core/frameworkSessionLaunch.ts",
+      "src/monitoring/PermissionPromptAutoResolver.ts"
+    ],
+    "addedLines": 148,
+    "deletedLines": 5
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Latent asymmetry in claudeReadinessProbe: tailShowsMenu gated on Claude's U+276F only, while the ready branch directly below already accepted U+276F OR codex's U+203A. Dormant because no framework had yet drawn a U+203A-led numbered startup menu. Exposed by an environment shift — codex 0.147 shipping a blocking 'Update available!' menu whose focused default runs `npm install -g @openai/codex` and exits codex. A SECOND latent defect was found while fixing the first: handleReadyAndInject's not-ready branch blind-injects into any live pane, so refusing at the ready check only relocated the fatal Enter from ~18s to ~90s. Both were divergences from rules the code already stated in prose (the probe header's 'never ready no matter which glyphs it carries'; classifyPaneState's 'for callers whose not-ready branch is DESTRUCTIVE'), not unconsidered cases."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

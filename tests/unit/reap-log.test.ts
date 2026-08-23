@@ -307,3 +307,88 @@ describe('ReapLog — bounded read + rotation (can never be slurped/grow unbound
     expect(log.read()).toEqual([]);
   });
 });
+
+describe("ReapLog.recordExited — a session that ended on its own leaves a trace", () => {
+  let dir: string;
+  let log: ReapLog;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reap-log-exited-'));
+    fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
+    log = new ReapLog(path.join(dir, 'state'), () => 'm_test');
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("round-trips type 'exited' + uptime + framework + tail — the normalizer must not coerce it to 'reaped'", () => {
+    // 2026-08-22: every interactive codex death was a reason-less `completed`
+    // record and NO reap-log row. This row is what makes the death debuggable
+    // from the records. The read-side whitelist previously coerced every
+    // unknown type to 'reaped' — a row that survives append but comes back as
+    // a 'reaped' row would mis-attribute a self-exit to a kill.
+    log.recordExited({
+      session: 'Observer 2',
+      tmuxSession: 'echo-observer-2',
+      reason: 'process-exited-during-startup',
+      framework: 'codex-cli',
+      uptimeSeconds: 18.66,
+      lastTail: [
+        '  Update available! 0.147.0 -> 0.149.0',
+        '› 1. Update now (runs `npm install -g @openai/codex`)',
+        '  2. Skip',
+        '  Press enter to continue',
+      ].join('\n'),
+    });
+    const [row] = log.read();
+    expect(row.type).toBe('exited');
+    expect(row.disposition).toBe('terminal');
+    expect(row.reason).toBe('process-exited-during-startup');
+    expect(row.framework).toBe('codex-cli');
+    expect(row.uptimeSeconds).toBe(19); // rounded, finite
+    expect(row.machine).toBe('m_test');
+    expect(row.lastTail).toContain('Update now');
+    expect(row.lastTailRedactions).toBe(0);
+  });
+
+  it('REDACTS credential-shaped material in the tail through the live-tail scrubber, and records that it did', () => {
+    // The tail is pane CONTENT — the one field here that can carry a secret.
+    // It goes through the SAME redactor the dashboard live-tail uses, INSIDE
+    // recordExited, so no caller can write a raw secret into this log.
+    log.recordExited({
+      session: 's',
+      tmuxSession: 't',
+      reason: 'process-exited',
+      lastTail: 'export OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456\nAuthorization: Bearer eyJabcdefghijklmnop.qrstuvwxyz012345.ABCDEFGHIJKLMNOP\n› done',
+    });
+    const [row] = log.read();
+    expect(row.lastTail).not.toContain('sk-abcdefghijklmnopqrstuvwxyz123456');
+    expect(row.lastTail).not.toContain('eyJabcdefghijklmnop');
+    expect(row.lastTail).toContain('› done');
+    expect((row.lastTailRedactions ?? 0)).toBeGreaterThanOrEqual(2);
+  });
+
+  it('CLAMPS the tail — a pane dump can never inflate this log (Bounded Accumulation)', () => {
+    const huge = Array.from({ length: 400 }, (_, i) => `line ${i} ${'x'.repeat(80)}`).join('\n');
+    log.recordExited({ session: 's', tmuxSession: 't', reason: 'process-exited', lastTail: huge });
+    const [row] = log.read();
+    expect(row.lastTail!.length).toBeLessThanOrEqual(1500);
+    expect(row.lastTail!.split('\n').length).toBeLessThanOrEqual(12);
+    // Keeps the END of the pane (where the menu / error / prompt is), not the start.
+    expect(row.lastTail).toContain('line 399');
+  });
+
+  it('omits the tail fields entirely when no sample was available — absence is honest, not an empty string', () => {
+    log.recordExited({ session: 's', tmuxSession: 't', reason: 'process-exited', uptimeSeconds: 3600 });
+    const [row] = log.read();
+    expect(row.lastTail).toBeUndefined();
+    expect(row.lastTailRedactions).toBeUndefined();
+    expect(row.uptimeSeconds).toBe(3600);
+  });
+
+  it("an 'exited' row is distinct from a 'reaped' row in the same log — the reader can tell a self-exit from a kill", () => {
+    log.recordReaped({ session: 'a', tmuxSession: 'a', reason: 'idle-zombie' });
+    log.recordExited({ session: 'b', tmuxSession: 'b', reason: 'process-exited' });
+    const types = log.read().map((r) => r.type);
+    expect(types).toEqual(['reaped', 'exited']);
+  });
+});
