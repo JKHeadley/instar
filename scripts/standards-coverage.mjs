@@ -56,6 +56,7 @@ import yaml from 'js-yaml';
 import { articleIds, parseRegistryStructure } from './standards-registry-article-core.mjs';
 import {
   evaluateStandardsDirection,
+  evaluateOperatorReviewApproval,
   inventoryStandardsArticles,
   readCandidateApproverKey,
   readDirectionApprovalLedger,
@@ -599,6 +600,12 @@ function validateRootSelfWiring() {
     STANDARDS_DIRECTION_BASE_FILE: '${{ runner.temp }}/standards-registry-base.md',
     STANDARDS_DIRECTION_BASE_APPROVER_KEY_FILE: '${{ runner.temp }}/standards-direction-approver-base.pem',
     STANDARDS_DIRECTION_BASE_REVISION: "${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}",
+    // Path B (2026-08-22): the operator-review context the guard reads. Pinned
+    // here for the same reason as the others — this contract is deliberately
+    // EXACT so the CI wiring cannot be quietly rearranged, and adding an input
+    // to the check must therefore be a visible, declared edit rather than a
+    // silent one. The guard caught exactly that when this key was introduced.
+    STANDARDS_DIRECTION_REVIEW_FILE: '${{ runner.temp }}/standards-direction-review.json',
   };
   if (!exactKeys(job, ['name', 'runs-on', 'steps']) ||
     job.name !== 'Standards Enforcement Coverage' || job['runs-on'] !== 'ubuntu-latest' ||
@@ -611,6 +618,11 @@ function validateRootSelfWiring() {
   const setupStep = steps.find((step) => step?.uses === 'actions/setup-node@v4');
   const installStep = steps.find((step) => step?.run === 'npm ci --ignore-scripts');
   const baseStep = steps.find((step) => step?.id === 'area-audit-base');
+  // Path B's evidence-gathering step. Pinned into the ordered prefix so it
+  // cannot be dropped without this check failing — an absent step would make
+  // every operator approval read as UNAVAILABLE, which fails safe but would
+  // silently return the operator to needing a key.
+  const reviewStep = steps.find((step) => step?.name === 'Fetch operator review context (direction guard path B)');
   const expectedBaseRun = [
     'git cat-file -e "$BASE_SHA^{commit}"',
     'if git cat-file -e "$BASE_SHA:docs/standards-registry-area-audits.json"; then',
@@ -624,7 +636,7 @@ function validateRootSelfWiring() {
     '',
   ].join('\n');
   const expectedBaseSha = "${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}";
-  const exactPrefix = [checkoutStep, setupStep, installStep, baseStep, checkStep];
+  const exactPrefix = [checkoutStep, setupStep, installStep, baseStep, reviewStep, checkStep];
   const ordered = exactPrefix.every((step, index) => step && steps[index] === step);
   const protectedBaseWired = ordered &&
     exactKeys(checkoutStep, ['uses', 'with']) && exactKeys(checkoutStep.with, ['fetch-depth']) && checkoutStep.with['fetch-depth'] === 0 &&
@@ -633,7 +645,11 @@ function validateRootSelfWiring() {
     exactKeys(baseStep, ['name', 'id', 'env', 'run']) &&
     baseStep.name === 'Resolve protected-base area ledger' &&
     exactKeys(baseStep.env, ['BASE_SHA']) && baseStep.env.BASE_SHA === expectedBaseSha &&
-    baseStep.run === expectedBaseRun;
+    baseStep.run === expectedBaseRun &&
+    exactKeys(reviewStep, ['name', 'if', 'env', 'run']) &&
+    reviewStep.if === "github.event_name == 'pull_request'" &&
+    exactKeys(reviewStep.env, ['GH_TOKEN', 'PR', 'HEAD_SHA', 'OWNER_LOGIN', 'OWNER_TYPE', 'PR_AUTHOR', 'OUT']) &&
+    reviewStep.env.OUT === '${{ runner.temp }}/standards-direction-review.json';
   if (!protectedBaseWired) {
     errors.push('The Root self-wiring requires dependency install plus full-history protected-base extraction and required base env on the standards check');
   }
@@ -1317,6 +1333,31 @@ function compute() {
     if (key.revision !== base.revision) {
       key.errors.push('protected-base registry and approver trust root resolved from different revisions');
     }
+    // PATH B context (2026-08-22). The WORKFLOW fetches the reviews and writes
+    // them here, so this script performs no network I/O and stays testable.
+    // Absent, unreadable or malformed => UNAVAILABLE, which falls back to
+    // requiring a signed ratification. It never becomes an approval.
+    const review = (() => {
+      const file = process.env.STANDARDS_DIRECTION_REVIEW_FILE;
+      if (!file) return null;
+      let raw;
+      try {
+        const stat = fs.lstatSync(file);
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('not a regular file');
+        raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      } catch (err) {
+        return { approved: false, approvedBy: null, reason: `review context unreadable (${err.message})` };
+      }
+      if (!isPlainObject(raw)) return { approved: false, approvedBy: null, reason: 'review context is not an object' };
+      return evaluateOperatorReviewApproval({
+        reviews: raw.reviews,
+        ownerLogin: raw.ownerLogin,
+        ownerType: raw.ownerType,
+        headSha: raw.headSha,
+        prAuthorLogin: raw.prAuthorLogin,
+      });
+    })();
+
     const assessed = evaluateStandardsDirection({
       baseMarkdown: base.markdown,
       candidateMarkdown: markdown,
@@ -1324,6 +1365,7 @@ function compute() {
       approverPublicKeyPem: key.pem,
       candidateApproverPublicKeyPem: candidateKey.pem,
       baseRevision: base.revision ?? 'unknown-protected-base',
+      reviewApproval: review,
     });
     assessed.errors.unshift(...approvals.errors, ...candidateKey.errors, ...key.errors);
     if (assessed.errors.length > 0) assessed.status = 'not-proven';
