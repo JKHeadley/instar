@@ -352,7 +352,9 @@ describe('advisory migration through POST /telegram/reply', () => {
 
     const res = await reply(204, 'The convergence report is ready — I can link it or paste the summary here.', {
       toneAdvisoryComplied: 'B2_FILE_PATH',
-      toneAdvisoryDecisionRef: 'd-testmachine-00000000-0000-4000-8000-000000000000',
+      // Production mesh ids contain an underscore (`m_<hex>`). This exact
+      // shape was rejected by the old route validator while test-only ids passed.
+      toneAdvisoryDecisionRef: 'd-m_03b30f-00000000-0000-4000-8000-000000000000',
     });
     expect(res.status).toBe(200);
     expect(sent).toHaveLength(1);
