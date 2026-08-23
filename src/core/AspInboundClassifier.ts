@@ -236,6 +236,9 @@ export function buildAspInboundClassifier(
       ledgerPath: path.join(stateDir, 'asp-classifications.jsonl'),
       resolvePublicKey: directory.resolver(),
       seenNonces,
+      // The re-read join needs a durable verdict for BOTH sides. Absence is
+      // UNRESOLVED, never an implicit human classification.
+      onlyRecordTagged: false,
     });
   } catch {
     /* @silent-fallback-ok: construction failure yields null so a provenance recorder can never

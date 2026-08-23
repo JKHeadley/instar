@@ -6120,6 +6120,12 @@ setTimeout(() => process.exit(0), 2000);
     let patched = false;
     const port = this.config.port;
 
+    if (!content.includes('Telegram history authorship verdicts:')) {
+      content += '\n- **Telegram history authorship verdicts:** re-read rows carry `authorship`. Use `agent-verified`/`human`; treat `rejected` as rejected provenance, `UNRESOLVED` as a visible classification gap, and pre-2026-08-19 `unclassifiable` as history that predates the layer. Never infer either gap as human.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Telegram history authorship verdict awareness');
+    }
+
     if (!content.includes('Registry First — capability registry:')) {
       content += '\n- **Registry First — capability registry:** when asking which machine can serve a capability, consult `GET /capability-registry`; it distinguishes unavailable, unobserved, stale, and available evidence.\n';
       patched = true;
