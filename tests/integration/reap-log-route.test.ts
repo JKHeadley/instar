@@ -91,6 +91,25 @@ describe('GET /sessions/reap-log (integration §P4)', () => {
     expect(res.body.pool).toBeUndefined();
   });
 
+  it('serves distinct completed and stopped-mid-work self-exit outcomes', async () => {
+    const log = new ReapLog(stateDir, () => 'm1');
+    log.recordExited({
+      session: 'finished', tmuxSession: 'finished', reason: 'process-exited',
+      exitCode: 0, midWork: false, outcome: 'completed',
+    });
+    log.recordExited({
+      session: 'interrupted', tmuxSession: 'interrupted', reason: 'process-exited',
+      exitCode: -1, midWork: true, outcome: 'stopped-mid-work',
+    });
+
+    const res = await request(appWith(log)).get('/sessions/reap-log');
+    expect(res.status).toBe(200);
+    expect(res.body.entries).toMatchObject([
+      { type: 'exited', session: 'finished', exitCode: 0, midWork: false, outcome: 'completed' },
+      { type: 'exited', session: 'interrupted', exitCode: -1, midWork: true, outcome: 'stopped-mid-work' },
+    ]);
+  });
+
   it('honours ?limit by returning only the most-recent N', async () => {
     const log = new ReapLog(stateDir);
     for (let i = 0; i < 8; i++) log.recordReaped({ session: `s${i}`, tmuxSession: `t${i}`, reason: 'idle-zombie' });

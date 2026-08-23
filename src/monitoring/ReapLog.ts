@@ -79,6 +79,8 @@ export type ReapNotifyOutcome =
   | 'no-topic'
   | 'enqueue-failed';
 
+export type SessionEndOutcome = 'completed' | 'stopped-mid-work';
+
 const NOTIFY_OUTCOMES: ReadonlySet<string> = new Set([
   'enqueued',
   'sent',
@@ -86,6 +88,7 @@ const NOTIFY_OUTCOMES: ReadonlySet<string> = new Set([
   'no-topic',
   'enqueue-failed',
 ]);
+const SESSION_END_OUTCOMES: ReadonlySet<string> = new Set(['completed', 'stopped-mid-work']);
 
 export interface ReapLogEntry {
   ts: string;
@@ -140,7 +143,10 @@ export interface ReapLogEntry {
   /** Notify entries: the topic the notice targets (absent for lifeline-only). */
   topicId?: number;
   /** Notify entries: the outcome this record asserts. */
-  outcome?: ReapNotifyOutcome;
+  outcome?: ReapNotifyOutcome | SessionEndOutcome;
+  /** Process exit status when tmux retained it. Zero is a clean completion;
+   *  non-zero means the process stopped before completing normally. */
+  exitCode?: number;
   /** Exited entries: how long the session had been up when its process ended. */
   uptimeSeconds?: number;
   /** Exited entries: the framework the session was launched on, when known. */
@@ -281,6 +287,9 @@ export class ReapLog {
     launchLane?: 'headless' | 'rerouted-interactive';
     /** Raw last-seen pane tail; redacted + clamped here, never stored raw. */
     lastTail?: string;
+    midWork?: boolean;
+    outcome: SessionEndOutcome;
+    exitCode?: number;
   }): void {
     let tail: { text: string; redactedCount: number } | undefined;
     if (typeof e.lastTail === 'string' && e.lastTail.trim().length > 0) {
@@ -299,6 +308,9 @@ export class ReapLog {
         ? { uptimeSeconds: Math.max(0, Math.round(e.uptimeSeconds)) }
         : {}),
       ...(e.launchLane ? { launchLane: e.launchLane } : {}),
+      midWork: e.midWork ?? false,
+      outcome: e.outcome,
+      ...(typeof e.exitCode === 'number' ? { exitCode: e.exitCode } : {}),
       ...(tail ? { lastTail: tail.text, lastTailRedactions: tail.redactedCount } : {}),
     });
     // The session is gone — same skip-state hygiene as a reap.
@@ -475,10 +487,10 @@ export class ReapLog {
           : entry.type === 'exited' ? 'exited'
             : 'reaped';
     const skipped = typeof entry.skipped === 'string' ? entry.skipped : undefined;
-    const outcome =
-      typeof entry.outcome === 'string' && NOTIFY_OUTCOMES.has(entry.outcome)
-        ? (entry.outcome as ReapNotifyOutcome)
-        : undefined;
+    const outcome = typeof entry.outcome === 'string' &&
+      (NOTIFY_OUTCOMES.has(entry.outcome) || SESSION_END_OUTCOMES.has(entry.outcome))
+      ? entry.outcome as ReapNotifyOutcome | SessionEndOutcome
+      : undefined;
     let disposition = entry.disposition;
     if (!disposition) {
       disposition =
@@ -524,6 +536,9 @@ export class ReapLog {
       ...(typeof entry.noticeId === 'string' ? { noticeId: entry.noticeId } : {}),
       ...(typeof entry.topicId === 'number' ? { topicId: entry.topicId } : {}),
       ...(outcome ? { outcome } : {}),
+      ...(typeof entry.exitCode === 'number' && Number.isFinite(entry.exitCode)
+        ? { exitCode: Math.trunc(entry.exitCode) }
+        : {}),
       ...(typeof entry.uptimeSeconds === 'number' && Number.isFinite(entry.uptimeSeconds)
         ? { uptimeSeconds: entry.uptimeSeconds }
         : {}),

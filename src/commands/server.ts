@@ -10410,6 +10410,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       reason: string;
       uptimeSeconds?: number;
       lastTail?: string;
+      exitCode?: number;
+      midWork: boolean;
+      outcome: 'completed' | 'stopped-mid-work';
     }) => {
       try {
         reapLog.recordExited({
@@ -10420,6 +10423,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           ...(e.uptimeSeconds !== undefined ? { uptimeSeconds: e.uptimeSeconds } : {}),
           ...(e.session.launchLane ? { launchLane: e.session.launchLane } : {}),
           ...(e.lastTail ? { lastTail: e.lastTail } : {}),
+          ...(e.exitCode !== undefined ? { exitCode: e.exitCode } : {}),
+          midWork: e.midWork,
+          outcome: e.outcome,
         });
       } catch (err) {
         // @silent-fallback-ok — an audit write must never disturb the monitor loop.
