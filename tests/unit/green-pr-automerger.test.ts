@@ -494,6 +494,21 @@ describe('GreenPrAutoMerger — auto-merge-unavailable terminal-non-ladder', () 
     expect(h.attentionLines.flat().some(l => /Allow auto-merge.*disabled/.test(l))).toBe(true);
   });
 
+  it("approval-required (the repo's own rule wants a human) records ONE attention line with the direct review link and NEVER advances the ladder (2026-08-22, PR #1963)", async () => {
+    const h = harness({ runResult: { outcome: 'refused:approval-required', confirmedMerged: false } });
+    prime(h);
+    const r = await new GreenPrAutoMerger(h.deps, cfg).tick();
+    expect(r.acted).toBe(false);
+    expect(h.state.episodes[100]?.attempts).toBe(0); // retrying cannot produce an approval
+    expect(h.state.episodes[100]?.lastOutcome).toBe('refused:approval-required');
+    expect(h.audits.some(a => a.event === 'approval-required')).toBe(true);
+    const line = h.attentionLines.flat().find(l => /approval/.test(l));
+    expect(line).toBeDefined();
+    // The operator's next step must be ONE click: the Files-tab review URL, not "ask Echo to request it".
+    expect(line).toMatch(new RegExp(`https://github\\.com/${cfg.repo.replace('/', '\\/')}/pull/100/files`));
+    expect(line).toMatch(/already requested/);
+  });
+
   it('a generic refused:auto-arm-error:* takes the normal backoff ladder', async () => {
     const h = harness({ runResult: { outcome: 'refused:auto-arm-error:merge-command-failed', confirmedMerged: false } });
     prime(h);

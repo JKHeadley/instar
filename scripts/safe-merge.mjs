@@ -74,7 +74,7 @@ const ALLOWED_FLAGS = new Set([
   '--admin', '--auto', '--squash', '--merge', '--rebase', '--delete-branch', '--capabilities',
 ]);
 const ALLOWED_VALUE_FLAGS = new Set([
-  '--repo', '--deadline-ms', '--match-head-commit', '--extra-floor',
+  '--repo', '--deadline-ms', '--match-head-commit', '--extra-floor', '--request-review-from',
 ]);
 
 /** Strict argv parser — unknown flags are REJECTED (spec §3.1: a stale or
@@ -84,6 +84,9 @@ export function parseArgs(argv) {
     pr: null, repo: DEFAULT_REPO, method: '--merge', admin: false, auto: false,
     deleteBranch: false, deadlineMs: DEFAULT_DEADLINE_MS,
     matchHeadCommit: null, extraFloor: [], capabilities: false,
+    // Logins to request review from when the base branch requires a non-pusher
+    // approval (2026-08-22). Empty ⇒ default to the repo owner at act time.
+    requestReviewFrom: [],
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -107,6 +110,12 @@ export function parseArgs(argv) {
         out.matchHeadCommit = v;
       } else if (a === '--extra-floor') {
         out.extraFloor = v.split(',').map(s => s.trim()).filter(Boolean);
+      } else if (a === '--request-review-from') {
+        const logins = v.split(',').map(s => s.trim()).filter(Boolean);
+        for (const l of logins) {
+          if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(l)) throw new UsageError(`--request-review-from must be GitHub logins, got: ${l}`);
+        }
+        out.requestReviewFrom = logins;
       }
       continue;
     }
@@ -138,6 +147,7 @@ export function capabilities() {
       'required-contexts-cross-check', 'producer-binding', 'floor',
       'reviews-required-refusal', 'classified-exits', 'delete-branch', 'deadline-ms',
       'native-auto-merge', 'auto-arm-unavailable-detection',
+      'approval-required-refusal', 'request-review-from',
     ],
     exitCodes: { merged: 0, refused: 1, usageOrError: 2, alreadyMerged: 3, closed: 4, autoMergeArmed: 5 },
   };
@@ -237,6 +247,51 @@ export function classifyMergeFailure(stderrText, status, signal) {
 }
 
 /**
+ * Ruleset review policy on the base branch (2026-08-22).
+ *
+ * `fetchProtectionContexts` reads CLASSIC branch protection only. A repo RULESET
+ * can ALSO demand reviews — `pull_request` rule with `required_approving_review_count`
+ * and/or `require_last_push_approval` ("approval of the most recent reviewable push
+ * by someone other than the pusher"). This wrapper never read that, so on
+ * 2026-08-22 it declared PR #1963 green-and-mergeable, ran `gh pr merge`, and
+ * GitHub refused with "New changes require approval from someone other than the
+ * last pusher" — leaving the operator staring at a PR with NO reviewer requested
+ * and a "waiting for someone to request your review" dead end instead of an
+ * Approve button. Reading the ruleset BEFORE merging is what lets us request the
+ * review up front and hand the operator a link that ends in one click.
+ *
+ * Pure: takes the parsed `/repos/{repo}/rules/branches/{branch}` array.
+ */
+export function extractRulesetReviewPolicy(rules) {
+  let reviewsRequired = false;
+  let lastPushApprovalRequired = false;
+  for (const rule of Array.isArray(rules) ? rules : []) {
+    if (rule?.type !== 'pull_request') continue;
+    const p = rule?.parameters ?? {};
+    if (Number(p.required_approving_review_count) > 0) reviewsRequired = true;
+    if (p.require_last_push_approval === true) lastPushApprovalRequired = true;
+  }
+  return { reviewsRequired, lastPushApprovalRequired };
+}
+
+/**
+ * GitHub's refusal text when a non-pusher approval is required (ruleset
+ * `require_last_push_approval`, or classic last-push-approval). Matched on the
+ * MERGE failure path as belt-and-braces for a ruleset that changes between the
+ * pre-check and the merge, or one the pre-check could not read.
+ */
+export function isNonPusherApprovalRequired(stderrText) {
+  const text = String(stderrText ?? '');
+  return /approval from someone other than the last pusher/i.test(text)
+    || /(Repository rule violations|review).*(approv|last pusher)/i.test(text);
+}
+
+/** The one link the operator needs: the PR's Files tab, where "Review changes → Approve" lives. */
+export function reviewUrlFor(repo, pr) {
+  return `https://github.com/${repo}/pull/${pr}/files`;
+}
+
+/**
  * The auto-merge-disabled discriminator (mergerunner-auto-arm-handoff §
  * "auto-merge-unavailable — terminal-non-ladder"). `classifyMergeFailure`
  * collapses BOTH "auto-merge is OFF on the repo" (a PERMANENT condition) and a
@@ -322,6 +377,71 @@ function fetchRulesetContexts(repo, branch) {
   return contexts;
 }
 
+function fetchRulesetReviewPolicy(repo, branch) {
+  const r = gh(['api', `repos/${repo}/rules/branches/${branch}`], { allowFail: true });
+  if (r.status !== 0) {
+    if (/HTTP 404/.test(r.stderr || '')) return { reviewsRequired: false, lastPushApprovalRequired: false };
+    throw new Error(`branch rulesets unverifiable: ${(r.stderr || '').slice(0, 300)}`);
+  }
+  return extractRulesetReviewPolicy(JSON.parse(r.stdout));
+}
+
+/** Who to ask for the approval: --request-review-from, else the repo owner. Never the PR author (GitHub rejects it). */
+function resolveReviewers(repo, args, view) {
+  let logins = Array.isArray(args.requestReviewFrom) && args.requestReviewFrom.length > 0 ? [...args.requestReviewFrom] : [];
+  if (logins.length === 0) {
+    try {
+      const owner = ghJson(['repo', 'view', repo, '--json', 'owner'])?.owner?.login;
+      if (owner) logins = [owner];
+    } catch { /* fall through — no default reviewer resolvable */ }
+  }
+  const author = view?.author?.login;
+  return logins.filter(l => l && l !== author);
+}
+
+/** Request review from `logins` on the PR. Idempotent at GitHub (re-requesting is a no-op). Never throws. */
+function requestReviewers(repo, pr, logins) {
+  if (!logins.length) return { requested: [], error: 'no-reviewer-resolvable' };
+  const args = ['api', '-X', 'POST', `repos/${repo}/pulls/${pr}/requested_reviewers`];
+  for (const l of logins) args.push('-f', `reviewers[]=${l}`);
+  const r = gh(args, { allowFail: true });
+  if (r.status !== 0) return { requested: [], error: (r.stderr || '').slice(0, 200) };
+  try {
+    const body = JSON.parse(r.stdout);
+    const now = (body?.requested_reviewers ?? []).map(u => u?.login).filter(Boolean);
+    return { requested: logins.filter(l => now.includes(l)), error: null };
+  } catch {
+    return { requested: logins, error: null };
+  }
+}
+
+/**
+ * Refuse-with-a-link: the base branch needs a human approval that `--admin`
+ * cannot (and must not) bypass. Request the review so the operator's next
+ * step is ONE click, emit the distinct `refused:approval-required` slug with
+ * the direct Files-tab URL, and exit 1. This is the 2026-08-22 process fix:
+ * the operator should never have to ask the agent to request a review.
+ */
+function refuseApprovalRequired({ repo, pr, view, args, policy, via }) {
+  const reviewers = resolveReviewers(repo, args, view);
+  const rq = requestReviewers(repo, pr, reviewers);
+  const reviewUrl = reviewUrlFor(repo, pr);
+  result({
+    result: 'refused:approval-required',
+    pr: Number(pr),
+    reviewUrl,
+    reviewersRequested: rq.requested,
+    ...(rq.error ? { requestError: rq.error } : {}),
+    reviewDecision: view?.reviewDecision ?? null,
+    policy,
+    via,
+  });
+  console.error(`safe-merge: REFUSING — the base branch requires an approval from someone other than the pusher (${via}). ` +
+    (rq.requested.length ? `Review requested from ${rq.requested.join(', ')}. ` : `Could not request a reviewer (${rq.error}). `) +
+    `Approve here: ${reviewUrl}`);
+  process.exit(1);
+}
+
 function fetchCheckRunsWithProducers(repo, headSha) {
   const runsResp = ghJson(['api', `repos/${repo}/commits/${headSha}/check-runs?per_page=100`, '--paginate', '--slurp']);
   const pages = Array.isArray(runsResp) ? runsResp : [runsResp];
@@ -378,7 +498,7 @@ async function main() {
   // --- PR state + head pin -------------------------------------------------
   let view;
   try {
-    view = ghJson(['pr', 'view', pr, '--repo', repo, '--json', 'state,mergedAt,headRefOid,baseRefName,reviewDecision,isDraft']);
+    view = ghJson(['pr', 'view', pr, '--repo', repo, '--json', 'state,mergedAt,headRefOid,baseRefName,reviewDecision,isDraft,author']);
   } catch (e) {
     result({ result: 'error:pr-unreadable', detail: String(e.message).slice(0, 300) });
     process.exit(2);
@@ -501,6 +621,14 @@ async function main() {
       console.error('safe-merge: REFUSING — required-review protection exists and is unsatisfied. --admin would bypass it un-re-imposed.');
       process.exit(1);
     }
+    // RULESET review policy (classic protection above is not the only source).
+    // Read it BEFORE attempting the merge so a required non-pusher approval is
+    // answered by REQUESTING the review + handing back the link — not by a
+    // failed `gh pr merge` and a reviewer-less PR (2026-08-22, PR #1963).
+    const reviewPolicy = fetchRulesetReviewPolicy(repo, view.baseRefName || 'main');
+    if ((reviewPolicy.reviewsRequired || reviewPolicy.lastPushApprovalRequired) && view.reviewDecision !== 'APPROVED') {
+      refuseApprovalRequired({ repo, pr, view, args, policy: reviewPolicy, via: 'ruleset-precheck' });
+    }
     const rulesetContexts = fetchRulesetContexts(repo, view.baseRefName || 'main');
     const checkRuns = fetchCheckRunsWithProducers(repo, pinnedHead);
     evaluation = evaluateRequiredContexts({
@@ -531,6 +659,12 @@ async function main() {
   process.stderr.write(m.stderr ?? '');
 
   if (m.status !== 0 || m.signal) {
+    // Belt-and-braces: a ruleset that changed between the pre-check and the
+    // merge (or one the pre-check could not read) still gets the request-and-link
+    // treatment, never a bare merge-command-failed.
+    if (isNonPusherApprovalRequired(m.stderr)) {
+      refuseApprovalRequired({ repo, pr, view, args, policy: null, via: 'merge-refusal' });
+    }
     const cls = classifyMergeFailure(m.stderr, m.status, m.signal);
     result({ result: cls === 'already-merged' || cls === 'closed' ? cls : `refused-or-${cls}`, raw: cls });
     if (cls === 'already-merged') process.exit(3);

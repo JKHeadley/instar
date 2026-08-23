@@ -16,6 +16,9 @@ import {
   evaluateRequiredContexts,
   classifyMergeFailure,
   isAutoMergeUnavailable,
+  extractRulesetReviewPolicy,
+  isNonPusherApprovalRequired,
+  reviewUrlFor,
   CONTRACT_VERSION,
   DEFAULT_REPO,
   REQUIRED_CONTEXTS_FLOOR,
@@ -257,5 +260,58 @@ describe('REQUIRED_CONTEXTS_FLOOR — code-pinned minimum', () => {
       expect(pin.workflowPath).toMatch(/^\.github\/workflows\//);
       expect(pin.appSlug).toBeTruthy();
     }
+  });
+});
+
+describe('ruleset review policy — request the approval up front, never a reviewer-less dead end (2026-08-22)', () => {
+  // Verbatim shape of GET /repos/JKHeadley/instar/rules/branches/main after the
+  // 2026-08-22 17:03 PDT ruleset change: 0 required approvals but
+  // require_last_push_approval:true. The wrapper read only classic protection,
+  // declared PR #1963 mergeable, and GitHub refused the merge — leaving the
+  // operator with "waiting for someone to request your review".
+  const RULES = [
+    { type: 'deletion', ruleset_id: 1 },
+    { type: 'required_status_checks', ruleset_id: 1, parameters: { required_status_checks: [{ context: 'e2e' }] } },
+    { type: 'pull_request', ruleset_id: 1, parameters: { required_approving_review_count: 0, require_last_push_approval: true, dismiss_stale_reviews_on_push: false } },
+  ];
+
+  it('detects require_last_push_approval even with zero required approvals', () => {
+    expect(extractRulesetReviewPolicy(RULES)).toEqual({ reviewsRequired: false, lastPushApprovalRequired: true });
+  });
+
+  it('detects a positive required_approving_review_count', () => {
+    const rules = [{ type: 'pull_request', parameters: { required_approving_review_count: 1 } }];
+    expect(extractRulesetReviewPolicy(rules)).toEqual({ reviewsRequired: true, lastPushApprovalRequired: false });
+  });
+
+  it('reports no policy when there is no pull_request rule (the pre-change state) — no over-block', () => {
+    expect(extractRulesetReviewPolicy(RULES.filter(r => r.type !== 'pull_request'))).toEqual({ reviewsRequired: false, lastPushApprovalRequired: false });
+    expect(extractRulesetReviewPolicy([])).toEqual({ reviewsRequired: false, lastPushApprovalRequired: false });
+    expect(extractRulesetReviewPolicy(null)).toEqual({ reviewsRequired: false, lastPushApprovalRequired: false });
+  });
+
+  it("matches GitHub's verbatim non-pusher refusal on the merge path", () => {
+    expect(isNonPusherApprovalRequired('GraphQL: Repository rule violations found\nNew changes require approval from someone other than the last pusher.\n (mergePullRequest)')).toBe(true);
+  });
+
+  it('does NOT match an unrelated merge failure (stays a normal merge-command-failed)', () => {
+    expect(isNonPusherApprovalRequired('GraphQL: Pull request is not mergeable (mergePullRequest)')).toBe(false);
+    expect(isNonPusherApprovalRequired('')).toBe(false);
+  });
+
+  it('the review link is the Files tab, where Review changes → Approve lives', () => {
+    expect(reviewUrlFor('JKHeadley/instar', 1963)).toBe('https://github.com/JKHeadley/instar/pull/1963/files');
+  });
+
+  it('parseArgs accepts --request-review-from as a login list and rejects junk', () => {
+    expect(parseArgs(['1963', '--squash', '--admin', '--request-review-from', 'JKHeadley,octocat']).requestReviewFrom).toEqual(['JKHeadley', 'octocat']);
+    expect(parseArgs(['1963']).requestReviewFrom).toEqual([]);
+    expect(() => parseArgs(['1963', '--request-review-from', 'not a login!'])).toThrow(UsageError);
+  });
+
+  it('advertises the new capabilities so the orchestrator can key on the slug', () => {
+    const caps = capabilities();
+    expect(caps.features).toContain('approval-required-refusal');
+    expect(caps.features).toContain('request-review-from');
   });
 });
