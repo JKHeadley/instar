@@ -161,9 +161,38 @@ jobs:
           OUT: ${{ runner.temp }}/standards-direction-review.json
         run: |
           set -u
+          # PATH B resolution, then the review fetch.
+          #
+          # A FAILED FETCH MUST NOT LOOK LIKE AN EMPTY ONE.
+          #
+          # The first version of this step did `gh api ... || echo '[]'`, so an
+          # API error, a rate limit or a network fault produced an empty review
+          # list — byte-identical to "the operator genuinely has not approved
+          # yet". Both are not-approved, so the SAFE direction held; but the
+          # REASON the operator is shown would have been a lie. They would read
+          # "no review from <login>", approve, watch it fail again, and have no
+          # way to know the check never reached GitHub.
+          #
+          # A dead query and a true absence printed the same word. Caught by a
+          # peer session's diagnosis the same night this shipped: an instrument
+          # whose failure is unreachable has not measured anything.
+          #
+          # So on a failed call the `reviews` key is OMITTED entirely and a
+          # `fetchError` is written instead. The grader's `Array.isArray`
+          # check then reports "review list unavailable" — a distinct, named,
+          # already-tested state. The SAME distinction now covers the
+          # commit -> pull-request association call on the push path, which had
+          # the identical `|| echo '[]'` shape: a failed association is
+          # "cannot verify", never "this commit has no pull request".
+          assoc_failed=0
           if [ "$EVENT_NAME" != "pull_request" ]; then
-            associated=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PUSH_SHA}/pulls" 2>/dev/null || echo '[]')
-            match=$(SHA="$PUSH_SHA" jq -c '[.[] | select(.merge_commit_sha == env.SHA)] | if length == 1 then .[0] else empty end' <<< "${associated:-[]}" 2>/dev/null || echo '')
+            if associated=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PUSH_SHA}/pulls" 2>/dev/null); then
+              match=$(SHA="$PUSH_SHA" jq -c '[.[] | select(.merge_commit_sha == env.SHA)] | if length == 1 then .[0] else empty end' <<< "${associated:-[]}" 2>/dev/null || echo '')
+            else
+              associated='[]'
+              match=''
+              assoc_failed=1
+            fi
             PR=''
             HEAD_SHA=''
             PR_AUTHOR=''
@@ -172,20 +201,30 @@ jobs:
               HEAD_SHA=$(jq -r '.head.sha // empty' <<< "$match" 2>/dev/null || echo '')
               PR_AUTHOR=$(jq -r '.user.login // empty' <<< "$match" 2>/dev/null || echo '')
             fi
-            echo "path-b: event=${EVENT_NAME} associated=$(jq -r 'length' <<< "${associated:-[]}" 2>/dev/null || echo unreadable) matched-pr=${PR:-none}"
+            echo "path-b: event=${EVENT_NAME} associated=$(jq -r 'length' <<< "${associated:-[]}" 2>/dev/null || echo unreadable) matched-pr=${PR:-none} assoc-failed=${assoc_failed}"
           fi
-          reviews='[]'
-          if [ -n "$PR" ]; then
-            reviews=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews?per_page=100" 2>/dev/null || echo '[]')
+          echo "path-b: head-sha=${HEAD_SHA:-none} owner=${OWNER_LOGIN:-none}/${OWNER_TYPE:-none}"
+          if [ "$assoc_failed" = "1" ]; then
+            printf '%s' '{"fetchError":"the commit-to-pull-request association call failed"}' > "$OUT"
+          elif [ -z "$PR" ]; then
+            jq -n --arg headSha "$HEAD_SHA" \
+                  --arg ownerLogin "$OWNER_LOGIN" \
+                  --arg ownerType "$OWNER_TYPE" \
+                  --arg prAuthorLogin "$PR_AUTHOR" \
+               '{reviews:[], headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \
+               > "$OUT" || printf '%s' '{"fetchError":"jq could not build the review context"}' > "$OUT"
+          elif reviews=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews?per_page=100" 2>/dev/null); then
+            echo "path-b: reviews=$(jq -r 'length' <<< "$reviews" 2>/dev/null || echo unreadable)"
+            jq -n --argjson reviews "$reviews" \
+                  --arg headSha "$HEAD_SHA" \
+                  --arg ownerLogin "$OWNER_LOGIN" \
+                  --arg ownerType "$OWNER_TYPE" \
+                  --arg prAuthorLogin "$PR_AUTHOR" \
+               '{reviews:$reviews, headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \
+               > "$OUT" || printf '%s' '{"fetchError":"jq could not build the review context"}' > "$OUT"
+          else
+            printf '%s' '{"fetchError":"the reviews API call failed"}' > "$OUT"
           fi
-          echo "path-b: reviews=$(jq -r 'length' <<< "${reviews:-[]}" 2>/dev/null || echo unreadable) head-sha=${HEAD_SHA:-none} owner=${OWNER_LOGIN:-none}/${OWNER_TYPE:-none}"
-          jq -n --argjson reviews "${reviews:-[]}" \
-                --arg headSha "$HEAD_SHA" \
-                --arg ownerLogin "$OWNER_LOGIN" \
-                --arg ownerType "$OWNER_TYPE" \
-                --arg prAuthorLogin "$PR_AUTHOR" \
-             '{reviews:$reviews, headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \
-             > "$OUT" || echo '{}' > "$OUT"
       - run: node scripts/standards-coverage.mjs --check
         env:
           STANDARDS_DIRECTION_REVIEW_FILE: ${{ runner.temp }}/standards-direction-review.json
