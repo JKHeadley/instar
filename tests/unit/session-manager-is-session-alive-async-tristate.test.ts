@@ -296,6 +296,29 @@ describe('monitorTick — a session that ended on its own leaves a reason and an
     expect(exited[0].lastTail).toBeUndefined();
   });
 
+  it('distinguishes a clean finished worker from a non-zero process exit while work was in flight', async () => {
+    startupSession('finished-worker', 10 * 60_000);
+    startupSession('interrupted-worker', 10 * 60_000);
+    const exited: Array<{ session: Session; exitCode: number; midWork: boolean; outcome: string }> = [];
+    manager.on('sessionExited', (e) => exited.push(e));
+
+    opHandlers = {
+      'has-session': (args) => args.includes('=finished-worker')
+        ? { reject: absentErr() }
+        : { ok: '' },
+      'display-message': () => ({ ok: 'codex||codex||1||-1' }),
+      'capture-pane': () => ({ ok: '' }),
+    };
+    await maintenanceTicks.get(manager)!();
+
+    expect(exited).toHaveLength(2);
+    const finished = exited.find((e) => e.session.tmuxSession === 'finished-worker');
+    const interrupted = exited.find((e) => e.session.tmuxSession === 'interrupted-worker');
+    expect(finished).toMatchObject({ exitCode: 0, midWork: false, outcome: 'completed' });
+    expect(interrupted).toMatchObject({ exitCode: -1, midWork: true, outcome: 'stopped-mid-work' });
+    expect(finished!.outcome).not.toBe(interrupted!.outcome);
+  });
+
   it('an INDETERMINATE probe stamps nothing and emits nothing — the slow-tmux guard still holds', async () => {
     startupSession('slow', 20_000);
     opHandlers = { 'has-session': () => ({ reject: timeoutErr() }), 'capture-pane': () => ({ ok: 'something' }) };
