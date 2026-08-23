@@ -105,7 +105,7 @@ import type { AuthorizationRequestStore, AuthorizationRequest } from '../core/Au
 import { planTransferByNickname } from '../core/TransferByNickname.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import { averageMeasuredJobSuccessRates } from '../scheduler/JobRunHistory.js';
-import type { InstarConfig, JobPriority } from '../core/types.js';
+import type { InstarConfig, JobPriority, Session } from '../core/types.js';
 import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
 import { knownComponents } from '../core/componentCategories.js';
 import { buildNatureRoutingMap, traceComponent } from '../core/natureRoutingMap.js';
@@ -1628,6 +1628,18 @@ export interface RouteContext {
     ) => Promise<{ status: number; contentType: string | null; body: Buffer }>;
   } | null;
   startTime: Date;
+}
+
+/** Resolve any identifier advertised by GET /sessions to an active tmux pane. */
+export function resolveActiveSessionTmux(
+  sessions: Session[],
+  identifier: string,
+): string | null {
+  const active = sessions.find((session) =>
+    (session.status === 'running' || session.status === 'starting') &&
+    (session.id === identifier || session.name === identifier || session.tmuxSession === identifier),
+  );
+  return active?.tmuxSession ?? null;
 }
 
 export type SubscriptionPoolWriteCapability =
@@ -9486,7 +9498,10 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const rawLines = parseInt(req.query.lines as string, 10) || 100;
     const lines = Math.min(Math.max(rawLines, 1), 10_000);
-    const output = ctx.sessionManager.captureOutput(req.params.name, lines);
+    const tmuxSession = resolveActiveSessionTmux(ctx.state.listSessions(), req.params.name);
+    const output = tmuxSession === null
+      ? null
+      : ctx.sessionManager.captureOutput(tmuxSession, lines);
 
     if (output === null) {
       res.status(404).json({ error: `Session "${req.params.name}" not found or not running` });
