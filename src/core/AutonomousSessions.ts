@@ -15,7 +15,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { JobPriority } from './types.js';
-import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 /** Default concurrent autonomous-job cap when config doesn't specify one. */
 export const DEFAULT_MAX_CONCURRENT_AUTONOMOUS = 5;
@@ -359,25 +358,51 @@ export function markAutonomousInterruptedMidTask(stateDir: string, topic: string
   return true;
 }
 
+function markStoppedPreservingRecord(file: string): boolean {
+  let content: string;
+  try {
+    content = fs.readFileSync(file, 'utf8');
+  } catch {
+    return false;
+  }
+  const stamp = new Date().toISOString();
+  let next = /^active:/m.test(content)
+    ? content.replace(/^active:.*$/m, 'active: false')
+    : `active: false\n${content}`;
+  const stoppedAt = `stopped_at: "${stamp}"`;
+  next = /^stopped_at:/m.test(next)
+    ? next.replace(/^stopped_at:.*$/m, stoppedAt)
+    : next.replace(/^active:.*$/m, (m) => `${m}\n${stoppedAt}`);
+  if (next === content) return true;
+  const tmp = `${file}.tmp-stop`;
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    fs.writeSync(fd, next, null, 'utf8');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, file);
+  return true;
+}
+
 export function stopAutonomousTopic(stateDir: string, topic: string, journal?: AutonomousJournalSeam): boolean {
   const f = path.join(autonomousDir(stateDir), `${topic}.local.md`);
   if (fs.existsSync(f)) {
     emitStopped(journal, stateDir, topic, f);
-    SafeFsExecutor.safeRmSync(f, { force: true, operation: 'AutonomousSessions.stopAutonomousTopic' });
-    return true;
+    return markStoppedPreservingRecord(f);
   }
   return false;
 }
-
 export interface StopAllResult {
   stoppedTopics: string[];
   stoppedLegacy: boolean;
 }
 
 /**
- * Stop every autonomous job. Removes all per-topic files + the legacy file and
- * writes the emergency-stop flag so any session whose hook fires before its file
- * is gone also stands down. The flag is the belt; removing files is the suspenders.
+ * Stop every autonomous job. Preserves per-topic and legacy state files while
+ * marking them inactive, and writes the emergency-stop flag so any session whose
+ * hook fires before seeing the inactive marker also stands down.
  */
 export function stopAllAutonomousJobs(stateDir: string, journal?: AutonomousJournalSeam): StopAllResult {
   const stoppedTopics: string[] = [];
@@ -386,9 +411,9 @@ export function stopAllAutonomousJobs(stateDir: string, journal?: AutonomousJour
     for (const name of fs.readdirSync(dir)) {
       if (!name.endsWith('.local.md')) continue;
       const topic = name.replace(/\.local\.md$/, '');
-      emitStopped(journal, stateDir, topic, path.join(dir, name));
-      SafeFsExecutor.safeRmSync(path.join(dir, name), { force: true, operation: 'AutonomousSessions.stopAllAutonomousJobs' });
-      stoppedTopics.push(topic);
+      const file = path.join(dir, name);
+      emitStopped(journal, stateDir, topic, file);
+      if (markStoppedPreservingRecord(file)) stoppedTopics.push(topic);
     }
   } catch {
     /* dir absent */
@@ -396,8 +421,7 @@ export function stopAllAutonomousJobs(stateDir: string, journal?: AutonomousJour
   let stoppedLegacy = false;
   const legacy = legacyFile(stateDir);
   if (fs.existsSync(legacy)) {
-    SafeFsExecutor.safeRmSync(legacy, { force: true, operation: 'AutonomousSessions.stopAllAutonomousJobs(legacy)' });
-    stoppedLegacy = true;
+    stoppedLegacy = markStoppedPreservingRecord(legacy);
   }
   try {
     fs.writeFileSync(path.join(stateDir, 'autonomous-emergency-stop'), `stopped-all ${new Date().toISOString()}\n`);

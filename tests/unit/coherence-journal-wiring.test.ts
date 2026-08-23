@@ -140,13 +140,14 @@ describe('autonomous stop funnels (§3.3)', () => {
     return f;
   }
 
-  it('stopAutonomousTopic emits stopped with the scanner-compatible runId BEFORE removing the file', () => {
+  it('stopAutonomousTopic emits stopped with the scanner-compatible runId before preserving the stopped file', () => {
     const startedAt = '2026-06-06T03:00:00Z';
     const file = writeRun('13481', startedAt);
     const ok = stopAutonomousTopic(tmpDir, '13481', captureJournal2());
     expect(ok).toBe(true);
-    // Oracle: the file is genuinely gone.
-    expect(fs.existsSync(file)).toBe(false);
+    // Oracle: the file is genuinely preserved but inactive.
+    expect(fs.existsSync(file)).toBe(true);
+    expect(fs.readFileSync(file, 'utf8')).toMatch(/^active: false$/m);
     const stops = emitted.filter((e) => e.kind === 'autonomous-run');
     expect(stops).toHaveLength(1);
     expect(stops[0]).toMatchObject({

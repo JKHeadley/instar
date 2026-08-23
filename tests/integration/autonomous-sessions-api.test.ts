@@ -109,7 +109,8 @@ describe('Multi-session autonomy API (integration)', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).ok).toBe(true);
     const list = await (await fetch(`${baseUrl}/autonomous/sessions`)).json();
-    expect(list.sessions.map((s: any) => s.topic)).toEqual(['12143']);
+    expect(list.sessions.map((s: any) => s.topic).sort()).toEqual(['12143', '9984']);
+    expect(list.sessions.find((s: any) => s.topic === '9984').active).toBe(false);
 
     // now under the cap → can-start allowed
     const can = await (await fetch(`${baseUrl}/autonomous/can-start`)).json();
@@ -121,13 +122,14 @@ describe('Multi-session autonomy API (integration)', () => {
     expect(res.status).toBe(404);
   });
 
-  it('POST /autonomous/stop-all clears everything', async () => {
+  it('POST /autonomous/stop-all stops everything without deleting records', async () => {
     writeJob(project.stateDir, '777');
     const res = await fetch(`${baseUrl}/autonomous/stop-all`, { method: 'POST' });
     expect(res.status).toBe(200);
     expect((await res.json()).ok).toBe(true);
     const list = await (await fetch(`${baseUrl}/autonomous/sessions`)).json();
-    expect(list.sessions).toEqual([]);
+    expect(list.sessions.length).toBeGreaterThan(0);
+    expect(list.sessions.every((s: any) => s.active === false)).toBe(true);
   });
 
   it('POST /autonomous/evaluate-completion returns met:true when the transcript shows success', async () => {

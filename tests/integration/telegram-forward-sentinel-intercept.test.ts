@@ -73,6 +73,7 @@ function buildContext(
       getJobState: () => null,
       getSession: () => null,
       queryEvents: () => [],
+      getCoherenceJournal: () => undefined,
     } as never,
     scheduler: null,
     telegram: {
@@ -137,12 +138,20 @@ describe('/internal/telegram-forward — sentinel emergency-stop/pause intercept
   });
 
   it('disposition kill → kills the topic session and does NOT route', async () => {
+    fs.mkdirSync(path.join(stateDir, 'autonomous'), { recursive: true });
+    const stateFile = path.join(stateDir, 'autonomous', `${TOPIC}.local.md`);
+    fs.writeFileSync(
+      stateFile,
+      `---\nactive: true\npaused: false\nreport_topic: "${TOPIC}"\nstarted_at: "2026-08-23T00:00:00Z"\n---\n\nlive notes\n`,
+    );
     const ctx = buildContext(stateDir, async () => ({ disposition: 'kill', category: 'emergency-stop', reason: 'exact match: stop' }), spies);
     const res = await forward(makeApp(ctx), 'stop everything');
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ ok: true, sentinel: 'emergency-stop', killed: true });
     expect(spies.killed).toContain(SESSION); // session was killed
     expect(spies.routed).toHaveLength(0);    // message was NOT delivered to the session
+    expect(fs.existsSync(stateFile)).toBe(true); // record survives emergency stop
+    expect(fs.readFileSync(stateFile, 'utf8')).toMatch(/^active: false$/m);
   });
 
   it('disposition pause → pauses the session and does NOT route (deterministic pause)', async () => {
