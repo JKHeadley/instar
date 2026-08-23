@@ -223,3 +223,96 @@ describe('SessionManager.isSessionAliveAsync — tri-state (§A)', () => {
     off.stopMonitoring();
   });
 });
+
+describe('monitorTick — a session that ended on its own leaves a reason and an evidence event', () => {
+  // 2026-08-22: interactive codex sessions died ~18s after spawn and every
+  // death was `status:'completed'`, reason null, no event anyone could log.
+  // These tests pin the evidence trail the vanish branch now leaves.
+  let dir: string;
+  let state: StateManager;
+  let manager: SessionManager;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-exited-'));
+    fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
+    state = new StateManager(path.join(dir, 'state'));
+    manager = makeManager(dir, state, true);
+    opHandlers = {};
+  });
+  afterEach(() => {
+    manager.stopMonitoring();
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/session-manager-is-session-alive-async-tristate.test.ts' });
+  });
+
+  function startupSession(id: string, ageMs: number): Session {
+    const s: Session = {
+      id, name: id, status: 'running', tmuxSession: id, framework: 'codex-cli',
+      startedAt: new Date(Date.now() - ageMs).toISOString(), prompt: 'p',
+    } as Session;
+    state.saveSession(s);
+    return s;
+  }
+
+  it("stamps endedReason 'process-exited-during-startup' and emits sessionExited carrying the LAST SAMPLED TAIL when a young session vanishes", async () => {
+    startupSession('codex-young', 20_000); // past the 15s grace, inside the 120s startup window
+    const MENU = '  Update available! 0.147.0 -> 0.149.0\n› 1. Update now\n  2. Skip\n  Press enter to continue';
+    // Tick 1: pane alive, capture returns the menu → sampled.
+    opHandlers = {
+      'has-session': () => ({ ok: '' }),
+      'display-message': () => ({ ok: 'codex||codex' }),
+      'capture-pane': () => ({ ok: MENU }),
+    };
+    const exited: Array<{ session: Session; reason: string; uptimeSeconds?: number; lastTail?: string }> = [];
+    manager.on('sessionExited', (e) => exited.push(e));
+    await maintenanceTicks.get(manager)!();
+    expect(exited).toHaveLength(0);
+    expect(state.getSession('codex-young')!.status).toBe('running');
+
+    // Tick 2: the pane is GONE (the process exited on its own). Capture is
+    // empty — exactly the situation where the prior sample is the only evidence.
+    opHandlers = {
+      'has-session': () => ({ reject: absentErr() }),
+      'capture-pane': () => ({ ok: '' }),
+    };
+    await maintenanceTicks.get(manager)!();
+
+    const rec = state.getSession('codex-young')!;
+    expect(rec.status).toBe('completed');
+    expect(rec.endedReason).toBe('process-exited-during-startup');
+    expect(exited).toHaveLength(1);
+    expect(exited[0].reason).toBe('process-exited-during-startup');
+    expect(exited[0].uptimeSeconds).toBeGreaterThanOrEqual(20);
+    expect(exited[0].lastTail).toContain('Update now'); // the evidence the dead pane took with it
+  });
+
+  it("a vanish past the startup window is 'process-exited' (not during-startup), still emits, and carries no tail sample", async () => {
+    startupSession('old-one', 10 * 60_000);
+    opHandlers = { 'has-session': () => ({ reject: absentErr() }), 'capture-pane': () => ({ ok: '' }) };
+    const exited: Array<{ reason: string; lastTail?: string }> = [];
+    manager.on('sessionExited', (e) => exited.push(e));
+    await maintenanceTicks.get(manager)!();
+    expect(state.getSession('old-one')!.endedReason).toBe('process-exited');
+    expect(exited).toHaveLength(1);
+    expect(exited[0].lastTail).toBeUndefined();
+  });
+
+  it('an INDETERMINATE probe stamps nothing and emits nothing — the slow-tmux guard still holds', async () => {
+    startupSession('slow', 20_000);
+    opHandlers = { 'has-session': () => ({ reject: timeoutErr() }), 'capture-pane': () => ({ ok: 'something' }) };
+    let n = 0;
+    manager.on('sessionExited', () => { n++; });
+    await maintenanceTicks.get(manager)!();
+    expect(state.getSession('slow')!.status).toBe('running');
+    expect(state.getSession('slow')!.endedReason).toBeUndefined();
+    expect(n).toBe(0);
+  });
+
+  it('sessionComplete STILL fires on a vanish — existing listeners are unchanged', async () => {
+    startupSession('compat', 20_000);
+    opHandlers = { 'has-session': () => ({ reject: absentErr() }), 'capture-pane': () => ({ ok: '' }) };
+    let completes = 0;
+    manager.on('sessionComplete', () => { completes++; });
+    await maintenanceTicks.get(manager)!();
+    expect(completes).toBe(1);
+  });
+});

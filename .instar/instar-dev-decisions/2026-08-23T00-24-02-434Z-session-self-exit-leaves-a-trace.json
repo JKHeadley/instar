@@ -1,0 +1,27 @@
+{
+  "ts": "2026-08-23T00:24:02.434Z",
+  "slug": "session-self-exit-leaves-a-trace",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 201,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/monitoring/ReapLog.ts"
+    ],
+    "addedLines": 197,
+    "deletedLines": 4
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "The monitor's tmux-vanished branch predates endedReason (added later for terminateSession/killSession) and the reap-log; it was never retrofitted, so a process that ended on its own was the one session-end path that wrote no reason and no log row. Dormant until the 2026-08-22 codex interactive death class made self-exits the thing that needed debugging from records."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

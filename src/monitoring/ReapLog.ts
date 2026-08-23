@@ -15,6 +15,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { redactForLiveTail } from '../core/liveTailRedaction.js';
 
 /**
  * Read only the last `maxBytes` of a file and return its non-empty lines,
@@ -89,8 +90,13 @@ const NOTIFY_OUTCOMES: ReadonlySet<string> = new Set([
 export interface ReapLogEntry {
   ts: string;
   /** 'reaped' = a kill happened; 'skipped' = a terminate was refused/no-op;
-   *  'notify' = a reap-notice delivery outcome record (reap-notify spec R1.3). */
-  type: 'reaped' | 'skipped' | 'notify';
+   *  'notify' = a reap-notice delivery outcome record (reap-notify spec R1.3);
+   *  'exited' = the session's process ENDED ON ITS OWN — nobody in instar asked
+   *  for it (2026-08-22: the codex interactive death class). Before this type a
+   *  self-exit was recorded as a plain `status:'completed'` with no reason and
+   *  NO reap-log row, so "why did my session vanish?" was unanswerable from the
+   *  records — which is itself a defect when the exit is the bug. */
+  type: 'reaped' | 'skipped' | 'notify' | 'exited';
   session: string;
   tmuxSession: string;
   /** The reason the killer requested (e.g. 'idle-zombie', 'age-limit'). */
@@ -135,6 +141,19 @@ export interface ReapLogEntry {
   topicId?: number;
   /** Notify entries: the outcome this record asserts. */
   outcome?: ReapNotifyOutcome;
+  /** Exited entries: how long the session had been up when its process ended. */
+  uptimeSeconds?: number;
+  /** Exited entries: the framework the session was launched on, when known. */
+  framework?: string;
+  /** Exited entries: the last pane tail instar SAW before the process ended —
+   *  REDACTED through the live-tail credential scrubber and clamped (see
+   *  `recordExited`). Present only when the monitor had sampled the pane (it
+   *  samples the startup window, where silent deaths cluster). This is the
+   *  evidence a vanished session otherwise takes with it. */
+  lastTail?: string;
+  /** Exited entries: how many credential redactions the scrubber applied to
+   *  `lastTail` (so a reader knows the tail was touched, and how much). */
+  lastTailRedactions?: number;
 }
 
 export interface ReapLogPage {
@@ -236,6 +255,56 @@ export class ReapLog {
    * once at terminal state. Append-only; consumers take the latest record
    * per noticeId as the current state.
    */
+  /**
+   * A session's process ended ON ITS OWN — no reaper, no operator, no kill.
+   *
+   * 2026-08-22: every interactive codex session died ~18s after spawn and each
+   * death was recorded as `status:'completed'`, reason null, no reap-log row.
+   * The charter that found the cause named this as a defect in its own right:
+   * "nobody can debug this from the records alone." This row is the fix for
+   * THAT — the exit lands in the same log every other session end lands in,
+   * with its uptime and the last pane tail the monitor saw.
+   *
+   * `lastTail` is the one field here that carries pane CONTENT. It goes through
+   * the SAME credential redactor the dashboard live-tail uses (the existing
+   * chokepoint for exporting pane text — not a second, divergent scrubber) and
+   * is clamped to a handful of lines, INSIDE this method, so no caller can write
+   * an unscrubbed or unbounded tail into a world-readable log.
+   */
+  recordExited(e: {
+    session: string;
+    tmuxSession: string;
+    /** e.g. 'process-exited' / 'process-exited-during-startup'. */
+    reason: string;
+    framework?: string;
+    uptimeSeconds?: number;
+    launchLane?: 'headless' | 'rerouted-interactive';
+    /** Raw last-seen pane tail; redacted + clamped here, never stored raw. */
+    lastTail?: string;
+  }): void {
+    let tail: { text: string; redactedCount: number } | undefined;
+    if (typeof e.lastTail === 'string' && e.lastTail.trim().length > 0) {
+      tail = clampTail(redactForLiveTail(e.lastTail));
+    }
+    this.append({
+      ts: new Date().toISOString(),
+      type: 'exited',
+      session: e.session,
+      tmuxSession: e.tmuxSession,
+      reason: e.reason,
+      disposition: 'terminal',
+      machine: this.machineId?.(),
+      ...(e.framework ? { framework: e.framework } : {}),
+      ...(typeof e.uptimeSeconds === 'number' && Number.isFinite(e.uptimeSeconds)
+        ? { uptimeSeconds: Math.max(0, Math.round(e.uptimeSeconds)) }
+        : {}),
+      ...(e.launchLane ? { launchLane: e.launchLane } : {}),
+      ...(tail ? { lastTail: tail.text, lastTailRedactions: tail.redactedCount } : {}),
+    });
+    // The session is gone — same skip-state hygiene as a reap.
+    this.forgetSkip(e.session);
+  }
+
   recordNotify(e: {
     noticeId: string;
     topicId: number | null;
@@ -401,7 +470,10 @@ export class ReapLog {
     // but 'notify' and 'skipped' pass through (reap-notify spec R1.3: the new
     // type MUST survive normalization or notify records vanish on read).
     const type =
-      entry.type === 'skipped' ? 'skipped' : entry.type === 'notify' ? 'notify' : 'reaped';
+      entry.type === 'skipped' ? 'skipped'
+        : entry.type === 'notify' ? 'notify'
+          : entry.type === 'exited' ? 'exited'
+            : 'reaped';
     const skipped = typeof entry.skipped === 'string' ? entry.skipped : undefined;
     const outcome =
       typeof entry.outcome === 'string' && NOTIFY_OUTCOMES.has(entry.outcome)
@@ -452,6 +524,31 @@ export class ReapLog {
       ...(typeof entry.noticeId === 'string' ? { noticeId: entry.noticeId } : {}),
       ...(typeof entry.topicId === 'number' ? { topicId: entry.topicId } : {}),
       ...(outcome ? { outcome } : {}),
+      ...(typeof entry.uptimeSeconds === 'number' && Number.isFinite(entry.uptimeSeconds)
+        ? { uptimeSeconds: entry.uptimeSeconds }
+        : {}),
+      ...(typeof entry.framework === 'string' ? { framework: entry.framework } : {}),
+      // Re-clamp on read too: a row written by a future/foreign writer can never
+      // hand an unbounded blob to a consumer of this log.
+      ...(typeof entry.lastTail === 'string'
+        ? { lastTail: entry.lastTail.slice(0, LAST_TAIL_MAX_CHARS) }
+        : {}),
+      ...(typeof entry.lastTailRedactions === 'number' && Number.isFinite(entry.lastTailRedactions)
+        ? { lastTailRedactions: entry.lastTailRedactions }
+        : {}),
     };
   }
+}
+
+/** Clamp on the last-seen tail stored in an 'exited' row: last N non-empty
+ *  lines, then a hard character cap. Bounded Accumulation — a pane dump can
+ *  never inflate this log the way the 2026-07-03 skip flood did. */
+const LAST_TAIL_MAX_LINES = 12;
+const LAST_TAIL_MAX_CHARS = 1500;
+
+function clampTail(r: { text: string; redactedCount: number }): { text: string; redactedCount: number } {
+  const lines = r.text.split('\n').filter((l) => l.trim().length > 0);
+  const kept = lines.slice(-LAST_TAIL_MAX_LINES).join('\n');
+  const text = kept.length > LAST_TAIL_MAX_CHARS ? kept.slice(-LAST_TAIL_MAX_CHARS) : kept;
+  return { text, redactedCount: r.redactedCount };
 }
