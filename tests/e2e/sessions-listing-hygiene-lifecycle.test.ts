@@ -64,7 +64,18 @@ describe('Session-listing hygiene E2E lifecycle (feature is alive)', () => {
     state.saveSession(mk({ name: 'mentor-stage-a-1', status: 'completed', launchLane: 'headless', endedAt: new Date().toISOString() }));
     state.saveSession(mk({ name: 'job-health-check-1', status: 'completed', jobSlug: 'health-check', endedAt: new Date().toISOString() }));
 
-    server = new AgentServer({ config, sessionManager: createMockSessionManager() as never, state });
+    const mismatchingReaper = {
+      snapshot: () => ({ sessions: [
+        { sessionId: 'e2e-live-task' },
+        { sessionId: 'reaper-only-session' },
+      ] }),
+    };
+    server = new AgentServer({
+      config,
+      sessionManager: createMockSessionManager() as never,
+      state,
+      sessionReaper: mismatchingReaper as never,
+    });
     await server.start();
     app = server.getApp();
   });
@@ -81,6 +92,16 @@ describe('Session-listing hygiene E2E lifecycle (feature is alive)', () => {
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body)).toBe(true);
     expect(res.body.map((s: { name: string }) => s.name)).toEqual(['live-task']);
+    const probeRows = fs.readFileSync(
+      path.join(stateDir, 'logs', 'sessions-read-discrepancies.jsonl'),
+      'utf8',
+    ).trim().split('\n').map((line) => JSON.parse(line));
+    expect(probeRows.at(-1)).toMatchObject({
+      sessionsCount: 1,
+      reaperCount: 2,
+      sessionIds: ['e2e-live-task'],
+      reaperSessionIds: ['e2e-live-task', 'reaper-only-session'],
+    });
   });
 
   it('?include=all is alive and returns the finished background runs too', async () => {
