@@ -332,6 +332,9 @@ describe("ReapLog.recordExited — a session that ended on its own leaves a trac
       reason: 'process-exited-during-startup',
       framework: 'codex-cli',
       uptimeSeconds: 18.66,
+      exitCode: 0,
+      midWork: false,
+      outcome: 'completed',
       lastTail: [
         '  Update available! 0.147.0 -> 0.149.0',
         '› 1. Update now (runs `npm install -g @openai/codex`)',
@@ -346,6 +349,7 @@ describe("ReapLog.recordExited — a session that ended on its own leaves a trac
     expect(row.framework).toBe('codex-cli');
     expect(row.uptimeSeconds).toBe(19); // rounded, finite
     expect(row.machine).toBe('m_test');
+    expect(row).toMatchObject({ exitCode: 0, midWork: false, outcome: 'completed' });
     expect(row.lastTail).toContain('Update now');
     expect(row.lastTailRedactions).toBe(0);
   });
@@ -358,6 +362,7 @@ describe("ReapLog.recordExited — a session that ended on its own leaves a trac
       session: 's',
       tmuxSession: 't',
       reason: 'process-exited',
+      outcome: 'completed',
       lastTail: 'export OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456\nAuthorization: Bearer eyJabcdefghijklmnop.qrstuvwxyz012345.ABCDEFGHIJKLMNOP\n› done',
     });
     const [row] = log.read();
@@ -369,7 +374,7 @@ describe("ReapLog.recordExited — a session that ended on its own leaves a trac
 
   it('CLAMPS the tail — a pane dump can never inflate this log (Bounded Accumulation)', () => {
     const huge = Array.from({ length: 400 }, (_, i) => `line ${i} ${'x'.repeat(80)}`).join('\n');
-    log.recordExited({ session: 's', tmuxSession: 't', reason: 'process-exited', lastTail: huge });
+    log.recordExited({ session: 's', tmuxSession: 't', reason: 'process-exited', outcome: 'completed', lastTail: huge });
     const [row] = log.read();
     expect(row.lastTail!.length).toBeLessThanOrEqual(1500);
     expect(row.lastTail!.split('\n').length).toBeLessThanOrEqual(12);
@@ -378,7 +383,7 @@ describe("ReapLog.recordExited — a session that ended on its own leaves a trac
   });
 
   it('omits the tail fields entirely when no sample was available — absence is honest, not an empty string', () => {
-    log.recordExited({ session: 's', tmuxSession: 't', reason: 'process-exited', uptimeSeconds: 3600 });
+    log.recordExited({ session: 's', tmuxSession: 't', reason: 'process-exited', outcome: 'completed', uptimeSeconds: 3600 });
     const [row] = log.read();
     expect(row.lastTail).toBeUndefined();
     expect(row.lastTailRedactions).toBeUndefined();
@@ -387,8 +392,23 @@ describe("ReapLog.recordExited — a session that ended on its own leaves a trac
 
   it("an 'exited' row is distinct from a 'reaped' row in the same log — the reader can tell a self-exit from a kill", () => {
     log.recordReaped({ session: 'a', tmuxSession: 'a', reason: 'idle-zombie' });
-    log.recordExited({ session: 'b', tmuxSession: 'b', reason: 'process-exited' });
+    log.recordExited({ session: 'b', tmuxSession: 'b', reason: 'process-exited', outcome: 'completed' });
     const types = log.read().map((r) => r.type);
     expect(types).toEqual(['reaped', 'exited']);
+  });
+
+  it('round-trips contrasting finished and stopped-mid-work rows', () => {
+    log.recordExited({
+      session: 'finished', tmuxSession: 'finished', reason: 'process-exited',
+      exitCode: 0, midWork: false, outcome: 'completed',
+    });
+    log.recordExited({
+      session: 'killed', tmuxSession: 'killed', reason: 'process-exited',
+      exitCode: -1, midWork: true, outcome: 'stopped-mid-work',
+    });
+    expect(log.read()).toMatchObject([
+      { session: 'finished', exitCode: 0, midWork: false, outcome: 'completed' },
+      { session: 'killed', exitCode: -1, midWork: true, outcome: 'stopped-mid-work' },
+    ]);
   });
 });

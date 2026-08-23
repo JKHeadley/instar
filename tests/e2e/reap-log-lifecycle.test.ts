@@ -109,4 +109,22 @@ describe('Reap-log E2E lifecycle (feature is alive)', () => {
     expect((await request(app).post('/sessions/reap-log').set(auth())).status).toBe(404);
     expect((await request(app).delete('/sessions/reap-log').set(auth())).status).toBe(404);
   });
+
+  it('preserves contrasting finished and stopped-mid-work rows through the live authenticated route', async () => {
+    reapLog.recordExited({
+      session: 'finished-worker', tmuxSession: 'finished-worker', reason: 'process-exited',
+      exitCode: 0, midWork: false, outcome: 'completed',
+    });
+    reapLog.recordExited({
+      session: 'interrupted-worker', tmuxSession: 'interrupted-worker', reason: 'process-exited',
+      exitCode: -1, midWork: true, outcome: 'stopped-mid-work',
+    });
+
+    const res = await request(app).get('/sessions/reap-log').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.entries.slice(-2)).toMatchObject([
+      { type: 'exited', session: 'finished-worker', exitCode: 0, midWork: false, outcome: 'completed' },
+      { type: 'exited', session: 'interrupted-worker', exitCode: -1, midWork: true, outcome: 'stopped-mid-work' },
+    ]);
+  });
 });

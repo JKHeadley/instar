@@ -775,6 +775,9 @@ export class SessionManager extends EventEmitter {
    * dozen lines. Memory-only; never written anywhere except the redacted row.
    */
   private readonly startupTails = new Map<string, { tail: string; at: number }>();
+  /** Terminal child status sampled from a tmux pane retained by
+   * `remain-on-exit failed`; consumed by the self-exit transition. */
+  private readonly terminalExitCodes = new Map<string, number>();
 
   /** Per-session shim directory root (one subdir per session). Used for K9 mandatory shim. */
   private shimRoot: string | null = null;
@@ -2104,6 +2107,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
             : undefined;
           const duringStartup = uptimeSeconds !== undefined && uptimeSeconds * 1000 < STARTUP_TAIL_WINDOW_MS;
           const lastSample = this.startupTails.get(session.tmuxSession);
+          const exitCode = this.terminalExitCodes.get(session.tmuxSession) ?? 0;
+          this.terminalExitCodes.delete(session.tmuxSession);
+          const midWork = exitCode !== 0;
           this.startupTails.delete(session.tmuxSession);
           fresh.status = 'completed';
           fresh.endedAt = new Date().toISOString();
@@ -2120,6 +2126,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
             reason: fresh.endedReason,
             uptimeSeconds,
             lastTail: lastSample?.tail,
+            exitCode,
+            midWork,
+            outcome: midWork ? 'stopped-mid-work' : 'completed',
           });
           this.emit('sessionComplete', fresh);
           continue;
@@ -3198,6 +3207,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           `and may survive restart until manually cleaned up`,
       });
     }
+    this.retainFailedExitStatus(tmuxSession);
     return session;
   }
 
@@ -3523,6 +3533,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       console.error(`[SessionManager] Error during rerouted ready-and-inject for "${tmuxSession}": ${err}`);
     });
 
+    this.retainFailedExitStatus(tmuxSession);
     return session;
   }
 
@@ -3654,10 +3665,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
       try {
         const { stdout } = await execFileAsync(
           this.config.tmuxPath,
-          ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}'],
+          ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}'],
           { timeout: 5000 }
         );
-        return this.classifyPaneCommand(tmuxSession, stdout.trim());
+        const fields = stdout.trim().split('||');
+        if (fields[2] === '1') {
+          const code = Number(fields[3]);
+          if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
+          return false;
+        }
+        return this.classifyPaneCommand(tmuxSession, fields.slice(0, 2).join('||'));
       } catch {
         // @silent-fallback-ok: legacy off-path body, byte-for-byte. An unprobeable
         // display-message (the session exists but the pane read failed/timed out) ⇒ assume
@@ -3681,10 +3698,28 @@ rm()  { "${shimRunner}" rm  "$@"; }
       '-t',
       `=${tmuxSession}:`,
       '-p',
-      '#{pane_current_command}||#{pane_start_command}',
+      '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}',
     ]);
     if (disp.state !== 'success') return true; // unprobeable ⇒ assume alive (preserves the legacy catch)
-    return this.classifyPaneCommand(tmuxSession, disp.stdout.trim());
+    const fields = disp.stdout.trim().split('||');
+    if (fields[2] === '1') {
+      const code = Number(fields[3]);
+      if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
+      return false;
+    }
+    return this.classifyPaneCommand(tmuxSession, fields.slice(0, 2).join('||'));
+  }
+
+  /** Keep only failed panes long enough for the monitor to read
+   * `pane_dead_status`. Clean exit (0) still follows tmux's normal teardown. */
+  private retainFailedExitStatus(tmuxSession: string): void {
+    try {
+      withSyncOp(() => execFileSync(this.config.tmuxPath, [
+        'set-option', '-t', `=${tmuxSession}:`, 'remain-on-exit', 'failed',
+      ], { encoding: 'utf-8', timeout: 5000 }));
+    } catch (err) {
+      console.warn(`[SessionManager] Could not retain failed exit status for "${tmuxSession}": ${err}`);
+    }
   }
 
   /**
@@ -5368,6 +5403,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
 
       withSyncOp(() => execFileSync(this.config.tmuxPath, tmuxArgs, { encoding: 'utf-8' }));
+      this.retainFailedExitStatus(tmuxSession);
 
       // Increase tmux scrollback buffer for dashboard history support
       try {
@@ -5755,6 +5791,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
 
       withSyncOp(() => execFileSync(this.config.tmuxPath, tmuxArgs, { encoding: 'utf-8' }));
+      this.retainFailedExitStatus(tmuxSession);
 
       // Increase tmux scrollback buffer for dashboard history support
       try {
