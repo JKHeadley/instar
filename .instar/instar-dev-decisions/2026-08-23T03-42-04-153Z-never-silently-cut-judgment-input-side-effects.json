@@ -1,0 +1,32 @@
+{
+  "ts": "2026-08-23T03:42:04.153Z",
+  "slug": "never-silently-cut-judgment-input.side-effects",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 1028,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-bounded-judgment-input.mjs",
+      "scripts/standards-coverage.mjs",
+      "skills/spec-converge/SKILL.md",
+      "skills/spec-converge/scripts/cross-model-review.mjs",
+      "src/core/InputGuard.ts",
+      "src/core/ResumeValidator.ts",
+      "src/core/StandardsRegistryParser.ts",
+      "src/core/boundedInput.ts",
+      "src/core/crossModelReviewer.ts",
+      "src/monitoring/PromptGate.ts",
+      "src/threadline/PipeSessionSpawner.ts"
+    ],
+    "addedLines": 995,
+    "deletedLines": 33
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

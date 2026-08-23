@@ -997,6 +997,27 @@ Before any high-risk action (deploying, pushing to git, modifying files outside 
 
 **Earned from:** The recurring topic-spam floods, all the same shape — a housekeeping feature spawning one topic per event: 2026-05-22 (sentinel), 2026-05-28 (collaboration-redrive), 2026-06-05 (worktree-detector, which dodged the per-source budget with unique sources — the reason the ceiling moved to the create primitive itself). Standing operator rule since 2026-07-01; directed to constitutional status 2026-07-03 (topic 29723): "any message sent to the user that didn't belong to a topic needs to go to the dedicated alerts topic; this needs to be a standard."
 
+### P24. Never Silently Cut the Data a Decision Depends On (a bound on judgment input is derived, disclosed in-band, and refuses when load-bearing)
+
+**Statement:** Any bound applied to data that becomes the **input to a judgment** — a prompt, a gate, a comparison, a review — carries three obligations the bound's mere existence does not discharge: **(1) DERIVED** in both dimensions (*how much* from what the consumer accepts and the producer emits, recorded beside the constant; *which part* from where the evidence lives — the END for anything chronological, because `slice(0, N)` keeps the preamble and discards the evidence while the remainder still reads like ordinary content); **(2) DISCLOSED IN-BAND** to the consumer, inside the data, naming the direction of the loss — a log line is not disclosure to a model that is about to answer; **(3) REFUSED when load-bearing** — if the cut removes the input the operation's correctness depends on, return a refusal or a degraded outcome, never a verdict. The tell that outranks all three: a bound that can structurally never admit a required input is a mis-specification, and its own "truncated" notice conceals it, because "truncated" describes partial loss and reads as reassurance while describing total loss.
+
+**Source:** constitution article "Never Silently Cut the Data a Decision Depends On" (Building; child of *Verify the State, Not Its Symbol*); proposed 2026-08-22 (topic 52224), **pending operator ratification** — the PARTIAL enforcement scope is itself the operator's ruling of that date. Boundary with *Expected Capacity Enforcement Is an Outcome, Not a Degradation* (storage side vs. input side). Converged audit: `docs/audits/truncated-judgment-input.md`.
+
+**Translation:**
+- For every size limit in a spec that sits in front of a decision, ask: **(A)** where does the number come from, and is that written next to it? **(B)** which END does it keep, and is that the end the decision reads? **(C)** when it cuts, does the *consumer* learn that inside what it reads? **(D)** if the cut removes the thing the check compares against, does the operation refuse — or answer anyway?
+- Disclosure is necessary and NOT sufficient. The crystallizing case disclosed correctly, in full, naming every dropped doc, and six rounds of review ran on top of it. A control that informs depends on someone reading; a control that refuses does not.
+- A partial load-bearing doc counts as OMITTED. Half a constitution cannot certify a spec against the constitution.
+- This is P20 one layer earlier: P20 stops a detector accepting a symbol for the state; this stops a working judge being handed a fabricated view of the state and asked to certify it.
+
+**Enforcement (structural):**
+- `src/core/boundedInput.ts` (`boundedTail` / `boundedHead`): keeps the correct end, writes the disclosure into the value at the cut, REFUSES a bound too small to hold its own disclosure.
+- `src/core/crossModelReviewer.ts`: `CONTEXT_BUDGET_BYTES` with its derivation recorded in place; `LOAD_BEARING_CONTEXT_SUBSTRINGS`; `runCrossModelReview` returns `degraded / context-incomplete` naming the lost docs, before the model is spent.
+- `scripts/lint-bounded-judgment-input.mjs` in the blocking `npm run lint` chain — a shrink-only ratchet over bare truncations feeding a prompt; `tests/unit/bounded-judgment-input-lint.test.ts` proves it bites.
+- This catalog entry, so the lessons-aware reviewer asks (A)–(D) of every bound in every spec.
+- **Honest state: PARTIAL.** 7 sites converted, 1 accepted with a written reason, 26 baselined shrink-only under `STD-SUBCOUNTDOWN-bounded-input-derivation-review` (2026-11-22). What is enforced today is *no new instance*, not *no instance*.
+
+**Earned from:** 2026-08-22 (topic 52224). The cross-model reviewer's context budget was 60 KB — smaller than an ordinary spec — so every referenced document was dropped in FULL on every review the machinery had ever run. Six rounds on `placement-real-capacity-scoring` were conducted with no reviewer ever seeing the parent design, the standards registry, or the lessons doc, and were reported as review. The operator named the general pattern before the cause was found: *"you tend to default to truncating data in an effort to be more data efficient — however, often it just cuts off very critical information."* The converging audit then found the same defect in its purest form in two more places only a second search angle could see: a summarizer that selected the newest 20 messages then kept the oldest of them, and a stuck-prompt detector that took the terminal's last 20 lines then cut from the top — able to discard the very prompt it exists to find and report nothing was wrong.
+
 ## Part 4 — How the lessons-aware reviewer uses this index
 
 The 8th `/spec-converge` reviewer (see `skills/spec-converge/SKILL.md`) loads this document plus the linked `feedback_*.md` files and the principles in `CLAUDE.md`, then asks for each spec under review:
@@ -1020,6 +1041,8 @@ Output: structured findings per category, with citations to this index. Findings
 ---
 
 ## Maintenance log
+
+- 2026-08-22 — Added P24 (*Never Silently Cut the Data a Decision Depends On*), pending operator ratification; source article + converged audit `docs/audits/truncated-judgment-input.md`.
 
 | Date | Change |
 |---|---|
