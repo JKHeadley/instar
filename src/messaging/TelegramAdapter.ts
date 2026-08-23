@@ -42,6 +42,7 @@ import { stopAutonomousTopic, type AutonomousJournalSeam } from '../core/Autonom
 import { AttentionTopicGuard, TopicFloodBudgetError, type AttentionTopicGuardConfig } from './AttentionTopicGuard.js';
 import { buildStallAlertDecisionContext } from './shared/StallAlertDecisionContext.js';
 import { DP_TELEGRAM_STALL_CONFIRM } from '../data/provenanceCoverage.js';
+import { AspAuthorshipJoin, type MessageAuthorship } from '../core/AspAuthorshipJoin.js';
 
 export const TELEGRAM_STALL_CONFIRM_PROMPT_ID = 'telegram-stall-confirm-v1';
 
@@ -263,6 +264,8 @@ interface LogEntry {
   forwarded?: boolean;
   /** Structural origin, stamped at the send/receive seam. */
   provenance: MessageProvenance;
+  /** Joined at read time from the ASP classification authority. */
+  authorship?: MessageAuthorship;
 }
 
 /**
@@ -816,6 +819,7 @@ export class TelegramAdapter implements MessagingAdapter {
   private sharedCommandRouter: CommandRouter | null = null;
   private sharedAuthGate: AuthGate | null = null;
   private eventBus: MessagingEventBus | null = null;
+  private readonly authorshipJoin: AspAuthorshipJoin;
 
   /** Get the event bus for external subscribers (Phase 1e). Returns null if flag is off. */
   getEventBus(): MessagingEventBus | null {
@@ -854,6 +858,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // collision that makes poll()'s cross-token detection fire continuously). The PRIMARY
     // bot passes no subDir → botStateDir === stateDir → paths are byte-for-byte unchanged.
     this.botStateDir = opts?.subDir ? path.join(stateDir, opts.subDir) : stateDir;
+    this.authorshipJoin = new AspAuthorshipJoin(path.join(this.botStateDir, 'asp-classifications.jsonl'));
     if (opts?.subDir) {
       fs.mkdirSync(this.botStateDir, { recursive: true });
     }
@@ -3731,7 +3736,7 @@ export class TelegramAdapter implements MessagingAdapter {
       } catch { /* skip malformed */ }
     }
 
-    return matches;
+    return this.authorshipJoin.join(matches);
   }
 
   /**
@@ -3760,7 +3765,7 @@ export class TelegramAdapter implements MessagingAdapter {
   getTopicHistory(topicId: number, limit: number = 20): LogEntry[] {
     if (limit <= TelegramAdapter.TAIL_CACHE_LIMIT) {
       const cached = this.topicTailCache.get(topicId);
-      if (cached) return cached.slice(-limit);
+      if (cached) return this.authorshipJoin.join(cached.slice(-limit));
       // First miss: batch-seed every LIVE topic (topicToSession) in ONE file
       // pass — the live-tail streamer enumerates exactly that set, so without
       // this its first tick would trigger one full-file scan PER topic.
@@ -3768,17 +3773,17 @@ export class TelegramAdapter implements MessagingAdapter {
         this.seedTailCacheFromLog();
         this.tailCacheSeeded = true;
         const justSeeded = this.topicTailCache.get(topicId);
-        if (justSeeded) return justSeeded.slice(-limit);
+        if (justSeeded) return this.authorshipJoin.join(justSeeded.slice(-limit));
       }
       // Not a live topic (e.g. respawn history for an unregistered topic) —
       // per-topic scan once, then cache it.
       const seeded = this.scanLogForTopic(topicId, TelegramAdapter.TAIL_CACHE_LIMIT);
       this.topicTailCache.set(topicId, seeded);
-      return seeded.slice(-limit);
+      return this.authorshipJoin.join(seeded.slice(-limit));
     }
     // Oversized request (no production caller) — direct scan, leave the cache's
     // "most recent TAIL_CACHE_LIMIT entries" invariant untouched.
-    return this.scanLogForTopic(topicId, limit);
+    return this.authorshipJoin.join(this.scanLogForTopic(topicId, limit));
   }
 
   /**
