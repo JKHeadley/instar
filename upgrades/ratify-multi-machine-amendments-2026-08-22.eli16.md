@@ -30,7 +30,7 @@ Change 5 exists because of change 1, and this is the one dependency among the fi
 
 **The new key cannot become a permanent hiding place.** It requires a date and a tracked delivery, and an expiry that has passed is itself a reported finding. That is the only reason a fourth excuse was acceptable in a list kept deliberately short.
 
-**Nothing here blocks anyone.** The parser reports and exits zero. Narrowing the credential excuse moved the report count from 73 findings to 122 across the spec corpus — 19 declarations that never named who forbids the move, and 11 surfaces thereby left undefended. That number going up is the amendment working.
+**Nothing here blocks anyone.** The parser reports and exits zero. Narrowing the credential excuse moved the report count from 94 findings to 135 across the spec corpus — 19 declarations that never named who forbids the move, and 11 surfaces thereby left undefended. That number going up is the amendment working.
 
 ## What an outside reviewer found before this shipped
 
@@ -47,7 +47,7 @@ That is what a real second pass looks like when it is allowed to say no.
 
 ## What ships when
 
-The rulebook text and the two enforced contracts ship together, so the prose and the parser cannot disagree. Fixing the 19 newly-reported declarations is separate work and is not folded in here.
+The rulebook text and the two enforced contracts ship together, so the prose and the parser cannot disagree. Fixing the 16 newly-reported declarations is separate work and is not folded in here.
 
 ## What you actually need to decide
 

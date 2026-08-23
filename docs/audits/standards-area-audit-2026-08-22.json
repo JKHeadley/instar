@@ -15,7 +15,7 @@
     "resolvedFindings": 9
   },
   "convergenceReport": "docs/specs/reports/standards-family-convergence-2026-08-22.md",
-  "convergenceSha256": "5f9d1a05a9bf52e0649d579a4f9d8d1c43a46370ff3a6fc23b77f60a8018796b",
+  "convergenceSha256": "6c2d4d26f98b521594991ac45eb91b181e082e5c52c97e86467ee7e0f8fe0b8c",
   "areas": {
     "Building": {
       "areaSha256": "2dc3982412341ab62ba2789b1ba3ae9a96430c110e1659e7faab72e968aced72",

@@ -19,7 +19,7 @@ The lint holds no blocking authority anywhere: it ships report-first (exit 0 unl
 
 ## 1. Over-block
 
-The narrowing makes 19 existing `physical-credential-locality` markers report findings, and 11 of those were the sole defence of their surface, so those surfaces now also report A1-undefended. **This is the intended effect of the amendment, not an over-block**: the operator's stated reason for Amendment 3 is that the key as written let a storage habit assert a physical constraint, and a narrowing that fails none of the cases it narrowed has narrowed nothing. It cannot over-BLOCK in the literal sense because the lint blocks nothing — total findings move 73 → 122, all report-only. The sweep to fix those 19 markers is separate work and is named as such rather than folded in here.
+The narrowing makes 19 existing `physical-credential-locality` markers report findings, and 11 of those were the sole defence of their surface, so those surfaces now also report A1-undefended. **This is the intended effect of the amendment, not an over-block**: the operator's stated reason for Amendment 3 is that the key as written let a storage habit assert a physical constraint, and a narrowing that fails none of the cases it narrowed has narrowed nothing. It cannot over-BLOCK in the literal sense because the lint blocks nothing — total findings move 73 → 122, all report-only. The sweep to fix those 16 markers is separate work and is named as such rather than folded in here.
 
 ## 2. Under-block
 
@@ -80,7 +80,7 @@ The lint changes in this artifact's §1–§8 above are the mechanical half of f
 ## Evidence pointers
 
 - `tests/unit/lint-machine-local-justification.test.ts` — 21 tests, all passing, including the withdrawn-defence arm (a bare credential marker must leave its posture reading UNDEFENDED, not merely reportable), the self-terminating arms (expired, beyond-horizon, and past-total-lifetime each fail separately), and the TEMPORARY-barrier contract (exit ref, re-review date, and `since` each tested missing).
-- Sweep before/after over `docs/specs/**`: 73 findings → 122 (`+19` credential markers now needing an authority and permanence, `+11` postures thereby left undefended, `+19` permanence findings). Report-only; no build state changes.
+- Sweep before/after over `docs/specs/**`: 94 findings → 135 (`+19` credential markers now needing an authority and permanence, `+11` postures thereby left undefended, `+19` permanence findings). Report-only; no build state changes.
 - `node scripts/lint-registry-tree-parentage.mjs` — clean, 89 articles, 40 bidirectional relations.
 - `node scripts/standards-coverage.mjs --check` — the Building and The Substrate area audits are RECORDED and current (`docs/audits/standards-area-audit-2026-08-22.json`). The ONLY remaining failure is the direction guard, which requires an operator-signed ratification per changed article; the approver key pinned in protected main is an empty placeholder. Named in the PR, not worked around.
 - `node scripts/lint-registry-insertion-placement.mjs` — clean, 89 articles, 78 declaring a placement.

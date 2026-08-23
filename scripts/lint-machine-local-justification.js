@@ -22,35 +22,11 @@
  *   A2 — SPURIOUS / MALFORMED marker (the reverse direction, §170): a
  *        `machine-local-justification:` marker whose key is NOT in the closed
  *        taxonomy {physical-credential-locality, hardware-bound-resource,
- *        operator-ratified-exception, migrating-to-unified}; OR an
- *        `operator-ratified-exception` marker that cites no machine-verifiable,
- *        existence-checkable ref (a commit SHA, a dotted registry key, or a URL —
- *        §155-162: a bare topic+date fails DETERMINISTICALLY); OR a well-formed
- *        marker that sits OUTSIDE the `## Multi-machine posture` section (the
- *        location contract, §178-181).
- *
- * ── Amendments 3 and 5 (ratified 2026-08-22, operator directive topic 52222) ──
- * The taxonomy gained per-key contracts, both deterministic — which is why they
- * land ENFORCED on arrival while the same directive's Amendments 1, 2 and 4 land
- * as declared-unenforced reviewer questions. Naming that asymmetry rather than
- * claiming a guard for the unguarded clauses is deliberate.
- *
- *   physical-credential-locality (NARROWED) — must NAME its basis, either
- *     `prohibited-by="<authority>"` or `impossible-because="<technical barrier>"`,
- *     and declare `permanence=permanent|temporary`; a TEMPORARY barrier must also
- *     record `exit=<ref>`. The key covers only a credential whose relocation is
- *     PROHIBITED or technically impossible; where a vault can hold it, the
- *     locality is a storage choice and the key does not apply.
- *   migrating-to-unified (NEW) — must carry `ratified=<ref> tracking=<ref>
- *     expires=YYYY-MM-DD`, the expiry must be unexpired AND within
- *     MIGRATION_MAX_HORIZON_DAYS. The horizon is what keeps the key from being
- *     merely renewable, and is the whole reason a fourth key was acceptable in a
- *     deliberately narrow taxonomy.
- *
- * WHAT THIS STILL CANNOT DO, said plainly because the amendment text says it too:
- * the parser verifies the marker's SHAPE. It cannot verify that a named authority
- * really prohibits the relocation, that tracked work will deliver unification, or
- * that an expiry triggers real re-argument. Those stay with the reviewer.
+ *        operator-ratified-exception}; OR an `operator-ratified-exception` marker
+ *        that cites no machine-verifiable, existence-checkable ref (a commit SHA,
+ *        a dotted registry key, or a URL — §155-162: a bare topic+date fails
+ *        DETERMINISTICALLY); OR a well-formed marker that sits OUTSIDE the
+ *        `## Multi-machine posture` section (the location contract, §178-181).
  *
  * ── Honest deterministic scope (§194-202, §242-245) ───────────────────────
  * PRESENCE + well-formedness only. It does NOT judge whether a declared posture
@@ -95,8 +71,9 @@ export const TAXONOMY_KEYS = new Set([
   'hardware-bound-resource',
   'operator-ratified-exception',
   // Ratified 2026-08-22 (operator directive, topic 52222 — Amendment 5). The
-  // ONLY self-terminating key: it requires a date and a tracked delivery, so it
-  // cannot become a resting place. See A2-migrating-* below for its contract.
+  // ONLY self-terminating key: it carries a first-declared date, a bounded
+  // re-review horizon, and a total-lifetime cap, so it cannot become a resting
+  // place. See the A2-migrating-* contracts below.
   'migrating-to-unified',
 ]);
 
@@ -529,7 +506,7 @@ export function gradeMachineLocalMarkers(text, today = new Date()) {
     const sectionText = text.slice(posture.start, posture.end);
     const assertsMachineLocal = /machine-local/i.test(sectionText);
     // A marker DEFENDS a machine-local posture only when it is well-formed FOR ITS
-    // KEY. Amendments 3 and 5 added per-key contracts, so a marker that carries the
+    // KEY. Amendments 3 and 5 added per-key contracts, so a marker carrying the
     // right key and nothing else must not count as a defence — otherwise the new
     // requirements would be reportable while the posture they govern still passed.
     const hasValidMarker = markers.some((mk) => {
