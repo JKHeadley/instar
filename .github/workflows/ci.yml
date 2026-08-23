@@ -5,6 +5,22 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # An approving review is INPUT to a check, not just metadata about it
+  # (2026-08-22). The constitutional direction guard accepts the operator's
+  # approval as proof that a registry change was authorised — but CI fired on
+  # push, long before that approval existed, so the guard ran, found no
+  # approval, and failed. Approving then changed nothing visible: the red check
+  # sat there, already finished, with no reason to run again.
+  #
+  # Found the first time the path was used for real. It only did not bite
+  # because someone was watching and re-ran the job by hand. An approval flow
+  # whose result requires a human to remember to re-run is not a flow.
+  #
+  # `submitted` covers the approval; `dismissed` matters just as much, because
+  # withdrawing an approval must re-run the guard and turn the check RED again
+  # — a gate that only re-evaluates in the direction of passing is not a gate.
+  pull_request_review:
+    types: [submitted, dismissed]
   workflow_dispatch:
 
 jobs:

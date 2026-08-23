@@ -395,6 +395,8 @@ describe('standards-coverage ratchet script', () => {
       '    branches: [main]',
       '  pull_request:',
       '    branches: [main]',
+      '  pull_request_review:',
+      '    types: [submitted, dismissed]',
       '  workflow_dispatch:',
       'jobs:',
       '  standards-coverage:',
@@ -517,7 +519,7 @@ describe('standards-coverage ratchet script', () => {
     write('.github/workflows/ci.yml', validWorkflow.replace('jobs:', "  'merge_group':\njobs:"));
     const unsupportedEvent = runFullCheck();
     expect(unsupportedEvent.code).toBe(1);
-    expect(unsupportedEvent.out).toContain('requires top-level push and pull_request CI triggers targeting main');
+    expect(unsupportedEvent.out).toContain('requires top-level push, pull_request and pull_request_review (submitted+dismissed) CI triggers targeting main');
 
     write('.github/workflows/ci.yml', [
       'on:',
@@ -551,7 +553,7 @@ describe('standards-coverage ratchet script', () => {
     ].join('\n'));
     const decoys = runFullCheck();
     expect(decoys.code).toBe(1);
-    expect(decoys.out).toContain('requires top-level push and pull_request CI triggers targeting main');
+    expect(decoys.out).toContain('requires top-level push, pull_request and pull_request_review (submitted+dismissed) CI triggers targeting main');
     expect(decoys.out).toContain('requires the standards-coverage CI job to invoke');
 
     write('.github/workflows/ci.yml', [
@@ -589,7 +591,7 @@ describe('standards-coverage ratchet script', () => {
     ].join('\n'));
     const swallowed = runFullCheck();
     expect(swallowed.code).toBe(1);
-    expect(swallowed.out).toContain('requires top-level push and pull_request CI triggers targeting main');
+    expect(swallowed.out).toContain('requires top-level push, pull_request and pull_request_review (submitted+dismissed) CI triggers targeting main');
     expect(swallowed.out).toContain('requires the standards-coverage CI job to invoke');
 
     const expressionWorkflow = (scope: 'job' | 'step') => [
