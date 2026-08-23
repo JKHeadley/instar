@@ -93,6 +93,7 @@ function makeDeps(stateDir: string, overrides: Partial<TopicLinkageDeps> = {}): 
     salienceGate,
     localAgent: 'echo',
     injectIntoSession: vi.fn().mockReturnValue(true),
+    awaitConsumption: vi.fn().mockReturnValue(true),
     isSessionAlive: vi.fn().mockReturnValue(true),
     sendTelegramToTopic: vi.fn().mockResolvedValue(undefined),
     getSessionForTopic: vi.fn().mockReturnValue('echo-topic-9210'),
@@ -648,6 +649,36 @@ describe('TopicLinkageHandler.tryRouteReplyToTopic', () => {
     expect(sendTg).not.toHaveBeenCalled();
   });
 
+  it('CONTROL 1: stored but never woken reports failure, not success', async () => {
+    const deps = makeDeps(stateDir, {
+      isSessionAlive: vi.fn().mockReturnValue(false),
+      injectIntoSession: vi.fn(),
+      awaitConsumption: vi.fn(),
+    });
+    const handler = new TopicLinkageHandler(deps);
+    handler.captureOriginOnSend({ threadId: 'stored-not-woken', remoteAgent: 'observer-2', originTopicId: 9210 });
+    const out = await handler.tryRouteReplyToTopic({
+      envelope: buildEnvelope({ threadId: 'stored-not-woken', from: 'observer-2', body: 'custodied only' }),
+      threadEntry: { remoteAgent: 'observer-2', originTopicId: 9210, originSessionName: 'idle-recipient' },
+    });
+    expect(out).toMatchObject({ kind: 'routed', deliveryMode: 'resume-pending', commitmentDelivered: false });
+  });
+
+  it('CONTROL 2: woken but never consumed reports failure, not success', async () => {
+    const deps = makeDeps(stateDir, {
+      isSessionAlive: vi.fn().mockReturnValue(true),
+      injectIntoSession: vi.fn().mockResolvedValue(true),
+      awaitConsumption: vi.fn().mockResolvedValue(false),
+    });
+    const handler = new TopicLinkageHandler(deps);
+    handler.captureOriginOnSend({ threadId: 'woken-not-consumed', remoteAgent: 'observer-2', originTopicId: 9210 });
+    const out = await handler.tryRouteReplyToTopic({
+      envelope: buildEnvelope({ threadId: 'woken-not-consumed', from: 'observer-2', body: 'wake only' }),
+      threadEntry: { remoteAgent: 'observer-2', originTopicId: 9210 },
+    });
+    expect(out).toMatchObject({ kind: 'routed', deliveryMode: 'failure-visible', commitmentDelivered: false });
+  });
+
   it('A2: a STALLED live-inject (session alive but inject unconfirmed) falls back to the surface and resolves on telegramSent', async () => {
     const sendTg = vi.fn().mockResolvedValue(undefined);
     const deps = makeDeps(stateDir, {
@@ -665,7 +696,7 @@ describe('TopicLinkageHandler.tryRouteReplyToTopic', () => {
     if (out.kind === 'routed') {
       expect(out.deliveryMode).toBe('failure-visible'); // inject never confirmed
       expect(out.telegramSent).toBe(true);               // safety-net surface fired
-      expect(out.commitmentDelivered).toBe(true);        // resolved on telegramSent
+      expect(out.commitmentDelivered).toBe(false);       // visible fallback is not recipient consumption
     }
     expect(sendTg).toHaveBeenCalledTimes(1);
   });

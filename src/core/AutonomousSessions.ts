@@ -40,6 +40,26 @@ function legacyFile(stateDir: string): string {
   return path.join(stateDir, 'autonomous-state.local.md');
 }
 
+/** Preserve and verify the exact live log before the destructive stop. */
+export function archiveAutonomousRun(stateDir: string, topic: string, file: string): string {
+  const content = fs.readFileSync(file);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const archive = path.join(autonomousDir(stateDir), `${topic}.archive-close-${stamp}.md`);
+  const tmp = `${archive}.tmp`;
+  const fd = fs.openSync(tmp, 'wx');
+  try {
+    fs.writeSync(fd, content);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, archive);
+  if (!fs.readFileSync(archive).equals(content)) {
+    throw new Error(`autonomous archive verification failed for topic ${topic}`);
+  }
+  return archive;
+}
+
 /** Pipefail-safe single-field read from a state file's frontmatter. */
 function readField(content: string, key: string): string | null {
   const m = content.match(new RegExp(`^${key}:\\s*"?([^"\\n]*)"?\\s*$`, 'm'));
@@ -363,6 +383,7 @@ export function stopAutonomousTopic(stateDir: string, topic: string, journal?: A
   const f = path.join(autonomousDir(stateDir), `${topic}.local.md`);
   if (fs.existsSync(f)) {
     emitStopped(journal, stateDir, topic, f);
+    archiveAutonomousRun(stateDir, topic, f);
     SafeFsExecutor.safeRmSync(f, { force: true, operation: 'AutonomousSessions.stopAutonomousTopic' });
     return true;
   }
@@ -387,6 +408,7 @@ export function stopAllAutonomousJobs(stateDir: string, journal?: AutonomousJour
       if (!name.endsWith('.local.md')) continue;
       const topic = name.replace(/\.local\.md$/, '');
       emitStopped(journal, stateDir, topic, path.join(dir, name));
+      archiveAutonomousRun(stateDir, topic, path.join(dir, name));
       SafeFsExecutor.safeRmSync(path.join(dir, name), { force: true, operation: 'AutonomousSessions.stopAllAutonomousJobs' });
       stoppedTopics.push(topic);
     }
