@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-22T19:55:00.000Z",
+  "reviewers": [
+    "echo:claude-opus-5",
+    "codex-cli:gpt-5.5:external-adversarial-answer-withheld",
+    "evidence-rebuttal-lens",
+    "coverage-claim-scope-lens"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 5
+  },
+  "convergenceReport": "docs/specs/reports/building-family-area-audit-2026-08-22.md",
+  "convergenceSha256": "2e23832857dfd9d7c57487abd095dd0c7ec73fb380977fd98f88f06c6961b07b",
+  "areas": {
+    "Building": {
+      "areaSha256": "c7604858900a63f36d696430faf92cece021ca8b797ca20016ea64a62010e121",
+      "verdict": "accepted"
+    },
+    "Interaction": {
+      "areaSha256": "0a3d627010b43d88a23fca5e00ccc016a643e6a14c814e87c8ad10660124d099",
+      "verdict": "accepted"
+    },
+    "Shipping": {
+      "areaSha256": "c06cffa5e7be20cf9364b6faa51d99503e375a763ab71fb7b7ba1998c04a4f22",
+      "verdict": "accepted"
+    },
+    "The Fractal": {
+      "areaSha256": "b6a5b408d865803a48b25f68a44cbdf79b5d789f7f938b43f58a14179354bd14",
+      "verdict": "accepted"
+    },
+    "The Root": {
+      "areaSha256": "e2f8e1efab200ac06d7c2deecac34b6219a3fbc51165993c2fe2557bb787cad1",
+      "verdict": "accepted"
+    },
+    "The Substrate": {
+      "areaSha256": "dc1b536bd334124bf15a12f30339ed1a54c2d44c6797a7dd5210b8e2373e934b",
+      "verdict": "accepted"
+    }
+  }
+}

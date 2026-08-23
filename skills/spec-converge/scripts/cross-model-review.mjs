@@ -457,17 +457,23 @@ async function main() {
     context: contextDocs,
   });
 
+  // BOTH paths go through `runCrossModelReview` (independent review 2026-08-22,
+  // finding C1). This branch used to call `familyEntry.review(...)` DIRECTLY,
+  // which skipped the load-bearing context refusal that lives inside
+  // `runCrossModelReview` — and since SKILL.md instructs `--family` on every
+  // call, the refusal was absent from the only path in use. `ReviewerInvokeArgs`
+  // carries just `promptText`, so this path could not have refused even in
+  // principle: the omission signal never reached it.
   const result = familyEntry
-    ? await familyEntry.review({
-        promptText: assembled.promptText,
-        // Per-family timeout (REVIEWER-DOOR-REWIRING §3.2 / D6): an explicit
-        // `--timeout-ms` wins; otherwise resolve this family's budget from the
-        // `specConverge.reviewers.timeoutMs` knob (absent ⇒ today's 120s).
-        timeoutMs: Number.isFinite(timeoutMs)
-          ? timeoutMs
-          : mod.resolveReviewerTimeoutMs(reviewerConfig, familyEntry.id),
+    ? await mod.runCrossModelReview({
+        assembled,
+        family: familyEntry.id,
         detectionOverride: detection,
-        reviewerConfig,
+        config: reviewerConfig,
+        // Per-family timeout (REVIEWER-DOOR-REWIRING §3.2 / D6): an explicit
+        // `--timeout-ms` wins; otherwise `runCrossModelReview` resolves this
+        // family's budget from the `specConverge.reviewers.timeoutMs` knob.
+        ...(Number.isFinite(timeoutMs) ? { timeoutMs } : {}),
       })
     : await mod.runCrossModelReview({
         assembled,

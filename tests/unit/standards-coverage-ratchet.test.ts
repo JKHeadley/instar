@@ -1001,7 +1001,13 @@ describe('standards-coverage ratchet script', () => {
     expect(cli.measurement).toEqual(expect.objectContaining({
       status: 'proven',
       basis: expect.objectContaining({ candidateTreeMayRaiseStrength: false }),
-      population: expect.objectContaining({ protectedBase: 88, candidate: 88, continuity: 88 }),
+      population: expect.objectContaining({ protectedBase: 88, candidate: 89, continuity: 89 }),
+      // 2026-08-22: protectedBase is measured from the MERGE-BASE with canonical
+      // main, so while this branch is unmerged it holds the pre-article count (88)
+      // and the candidate tree holds the new one (89). The asymmetry IS the
+      // measurement working — a branch is deliberately not able to raise the
+      // protected baseline about itself. Becomes 89/89/89 once merged, the same
+      // update the 2026-08-13 addition needed.
     }));
     expect(cli.enforcedRatio).toBeLessThan(library.summary.enforcedRatio);
   });
@@ -1063,7 +1069,7 @@ describe('standards-coverage ratchet script', () => {
     // rule-bound relevance plus a landed violation that makes the same test fail by assertion. The
     // protected baseline has no such ledger yet, so its honest value is 0/88; the legacy per-area
     // floors remain visible separately and are not rewritten into evidence they never established.
-    expect(report.total).toBe(88);
+    expect(report.total).toBe(89);
     expect(report.enforcedRatio).toBe(0);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',

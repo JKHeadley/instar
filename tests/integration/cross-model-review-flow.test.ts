@@ -168,6 +168,153 @@ describe('cross-model review flow — codex PRESENT', () => {
   });
 });
 
+describe('cross-model review flow — load-bearing context LOST (*Never Silently Cut the Data a Decision Depends On*)', () => {
+  it('REFUSES: degrades naming what was lost, and never reaches the model', async () => {
+    // The 2026-08-22 case, end to end. A spec larger than the whole budget with
+    // the constitutional docs attached: they cannot fit, so this is not a review.
+    let providerCalls = 0;
+    const assembled = assembleReviewerPrompt({
+      reviewerTemplate: REVIEWER_TEMPLATE,
+      specMarkdown: 'S'.repeat(80_000),
+      specPath: 'docs/specs/cm-spec.md',
+      context: [
+        { path: 'docs/STANDARDS-REGISTRY.md', content: 'R'.repeat(40_000) },
+        { path: 'docs/parent-design.md', content: 'P'.repeat(4_000) },
+      ],
+      budgetBytes: 60 * 1024,
+    });
+    expect(assembled.omittedLoadBearing).toContain('docs/STANDARDS-REGISTRY.md');
+
+    const result = await runCrossModelReview({
+      assembled,
+      detectInputs: { codexPathDetected: '/usr/bin/codex', authJsonPath: authPath, env: {} },
+      providerOverride: (() => {
+        providerCalls++;
+        return stubProvider('Verdict: CLEAN');
+      }) as never,
+    });
+
+    // It does NOT return a verdict — the whole point. Before this change the
+    // stub above would have answered CLEAN and the round would have been
+    // recorded as a clean external review.
+    expect(result.status).toBe('degraded');
+    expect(result.verdict).toBeUndefined();
+    expect(result.findings).toBeUndefined();
+    // It names exactly what it could not see, rather than "context was partial".
+    expect(result.reason).toContain('context-incomplete');
+    expect(result.reason).toContain('docs/STANDARDS-REGISTRY.md');
+    expect(result.flag).toContain('degraded: context-incomplete');
+    // And it refuses BEFORE spending the model call.
+    expect(providerCalls).toBe(0);
+  });
+
+  it('does NOT refuse when only ORDINARY context was dropped — the refusal stays narrow', async () => {
+    // A refusal that fires whenever anything is cut is a broken pipeline. Losing
+    // an ordinary referenced doc is a disclosed-partial review, which is signal.
+    const assembled = assembleReviewerPrompt({
+      reviewerTemplate: REVIEWER_TEMPLATE,
+      specMarkdown: SPEC_MARKDOWN,
+      specPath: 'docs/specs/cm-spec.md',
+      context: [{ path: 'docs/ordinary-appendix.md', content: 'A'.repeat(80_000) }],
+      budgetBytes: 4_000,
+    });
+    expect(assembled.truncated).toBe(true);
+    expect(assembled.omittedLoadBearing).toEqual([]);
+
+    const result = await runCrossModelReview({
+      assembled,
+      detectInputs: { codexPathDetected: '/usr/bin/codex', authJsonPath: authPath, env: {} },
+      providerOverride: stubProvider('Verdict: MINOR ISSUES\n- §"x" — a note.'),
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.verdict).toBe('MINOR ISSUES');
+  });
+
+  it('the RAISED budget admits a spec plus a REAL-SIZED parent design', async () => {
+    // Sized from the real case this budget was derived for: the placement spec
+    // (~147KB after the cut) with its parent design (~134KB). Under the old 60KB
+    // budget the parent alone was more than twice the whole allowance.
+    //
+    // The registry is deliberately NOT in this context set — see the test below
+    // for why it can never be.
+    const assembled = assembleReviewerPrompt({
+      reviewerTemplate: REVIEWER_TEMPLATE,
+      specMarkdown: 'S'.repeat(80_000),
+      specPath: 'docs/specs/cm-spec.md',
+      context: [
+        { path: 'docs/signal-vs-authority.md', content: 'A'.repeat(7_500) },
+        { path: 'docs/parent-design.md', content: 'P'.repeat(134_000) },
+      ],
+      // No budgetBytes — the shipped default.
+    });
+    expect(assembled.omittedLoadBearing).toEqual([]);
+    expect(assembled.promptText).toContain('PPPP');
+
+    const result = await runCrossModelReview({
+      assembled,
+      detectInputs: { codexPathDetected: '/usr/bin/codex', authJsonPath: authPath, env: {} },
+      providerOverride: stubProvider('Verdict: CLEAN'),
+    });
+    expect(result.status).toBe('ok');
+  });
+
+  it('a load-bearing doc LARGER THAN THE WHOLE BUDGET refuses with actionable advice, at any spec size', async () => {
+    // FIXTURE REALNESS (independent review 2026-08-22, finding C3). The previous
+    // version of the test above stubbed the standards registry at 40,000 bytes
+    // and asserted it fitted. The real file is >450,000 — more than 1.7x the
+    // ENTIRE budget — so the test certified a property the shipped configuration
+    // does not have. This repo ships `lint-scrape-fixture-realness.js`; a fixture
+    // an order of magnitude off the real thing is the same defect it guards.
+    //
+    // Sized from the real registry, and asserted with an EMPTY spec to make the
+    // point that no spec size can help: the doc alone overflows.
+    const registrySized = 'R'.repeat(460_000);
+    const assembled = assembleReviewerPrompt({
+      reviewerTemplate: REVIEWER_TEMPLATE,
+      specMarkdown: 'S'.repeat(10),
+      specPath: 'docs/specs/cm-spec.md',
+      context: [{ path: 'docs/STANDARDS-REGISTRY.md', content: registrySized }],
+    });
+    expect(assembled.omittedLoadBearing).toContain('docs/STANDARDS-REGISTRY.md');
+    expect(assembled.undeliverableLoadBearing).toContain('docs/STANDARDS-REGISTRY.md');
+
+    const result = await runCrossModelReview({
+      assembled,
+      detectInputs: { codexPathDetected: '/usr/bin/codex', authJsonPath: authPath, env: {} },
+      providerOverride: stubProvider('Verdict: CLEAN'),
+    });
+    // Refuses — and says something the reader can ACT on. "Use a smaller spec"
+    // would be unfollowable advice here, which is a limit hiding behind its own
+    // polite notice: the defect this whole article was earned from.
+    expect(result.status).toBe('degraded');
+    expect(result.reason).toContain('context-undeliverable');
+    expect(result.reason).toContain('no spec size admits it');
+  });
+
+  it('the per-family path refuses too — the guard is not routed around', async () => {
+    // C1: the refusal lived in `runCrossModelReview` while the skill driver
+    // called `family.review(...)` directly, so it was absent from the ONLY path
+    // in use. Both paths now enter the same chokepoint.
+    const assembled = assembleReviewerPrompt({
+      reviewerTemplate: REVIEWER_TEMPLATE,
+      specMarkdown: 'S'.repeat(200_000),
+      specPath: 'docs/specs/cm-spec.md',
+      context: [{ path: 'docs/INSTAR-DESIGN-PRINCIPLES-AND-LESSONS.md', content: 'L'.repeat(120_000) }],
+    });
+    expect(assembled.omittedLoadBearing.length).toBeGreaterThan(0);
+
+    const result = await runCrossModelReview({
+      assembled,
+      family: 'codex-cli',
+      detectInputs: { codexPathDetected: '/usr/bin/codex', authJsonPath: authPath, env: {} },
+      providerOverride: stubProvider('Verdict: CLEAN'),
+    });
+    expect(result.status).toBe('degraded');
+    expect(result.reason).toContain('context-incomplete');
+  });
+});
+
 describe('cross-model review flow — codex ABSENT', () => {
   it('returns unavailable, completes internal-only, banner reads UNAVAILABLE, spec STILL taggable (never blocks)', async () => {
     const detection = detectCrossModelReviewer({
