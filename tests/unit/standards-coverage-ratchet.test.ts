@@ -19,6 +19,68 @@ import { parseRegistryStructure } from '../../scripts/standards-registry-article
 import { inventoryStandardsArticles } from '../../scripts/standards-direction-guard.mjs';
 import { stampConverged, validateAuditReport } from '../../scripts/write-audit-convergence.mjs';
 
+// The review step's EXACT wiring, shared by every workflow fixture below so the
+// pin's literal `run` contract is exercised rather than approximated. Kept in one
+// place: three fixtures drifting independently is the duplicated-definition trap.
+const REVIEW_STEP_FIXTURE: string[] = [
+  '      - name: Fetch operator review context (direction guard path B)',
+  '        env:',
+  '          GH_TOKEN: ${{ github.token }}',
+  '          EVENT_NAME: ${{ github.event_name }}',
+  '          PR: ${{ github.event.pull_request.number }}',
+  '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
+  '          PR_AUTHOR: ${{ github.event.pull_request.user.login }}',
+  '          PUSH_SHA: ${{ github.sha }}',
+  '          OWNER_LOGIN: ${{ github.event.repository.owner.login }}',
+  '          OWNER_TYPE: ${{ github.event.repository.owner.type }}',
+  '          OUT: ${{ runner.temp }}/standards-direction-review.json',
+  '        run: |',
+  '          set -u',
+  '          assoc_failed=0',
+  '          if [ "$EVENT_NAME" != "pull_request" ] && [ "$EVENT_NAME" != "pull_request_review" ]; then',
+  '            if associated=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PUSH_SHA}/pulls" 2>/dev/null); then',
+  `              match=$(SHA="$PUSH_SHA" jq -c '[.[] | select(.merge_commit_sha == env.SHA)] | if length == 1 then .[0] else empty end' <<< "\${associated:-[]}" 2>/dev/null || echo '')`,
+  '            else',
+  "              associated='[]'",
+  "              match=''",
+  '              assoc_failed=1',
+  '            fi',
+  "            PR=''",
+  "            HEAD_SHA=''",
+  "            PR_AUTHOR=''",
+  '            if [ -n "$match" ]; then',
+  `              PR=$(jq -r '.number // empty' <<< "$match" 2>/dev/null || echo '')`,
+  `              HEAD_SHA=$(jq -r '.head.sha // empty' <<< "$match" 2>/dev/null || echo '')`,
+  `              PR_AUTHOR=$(jq -r '.user.login // empty' <<< "$match" 2>/dev/null || echo '')`,
+  '            fi',
+  `            echo "path-b: event=\${EVENT_NAME} associated=$(jq -r 'length' <<< "\${associated:-[]}" 2>/dev/null || echo unreadable) matched-pr=\${PR:-none} assoc-failed=\${assoc_failed}"`,
+  '          fi',
+  '          echo "path-b: head-sha=${HEAD_SHA:-none} owner=${OWNER_LOGIN:-none}/${OWNER_TYPE:-none}"',
+  '          if [ "$assoc_failed" = "1" ]; then',
+  `            printf '%s' '{"fetchError":"the commit-to-pull-request association call failed"}' > "$OUT"`,
+  '          elif [ -z "$PR" ]; then',
+  '            jq -n --arg headSha "$HEAD_SHA" \\',
+  '                  --arg ownerLogin "$OWNER_LOGIN" \\',
+  '                  --arg ownerType "$OWNER_TYPE" \\',
+  '                  --arg prAuthorLogin "$PR_AUTHOR" \\',
+  "               '{reviews:[], headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \\",
+  `               > "$OUT" || printf '%s' '{"fetchError":"jq could not build the review context"}' > "$OUT"`,
+  '          elif reviews=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews?per_page=100" 2>/dev/null); then',
+  `            echo "path-b: reviews=$(jq -r 'length' <<< "$reviews" 2>/dev/null || echo unreadable)"`,
+  '            jq -n --argjson reviews "$reviews" \\',
+  '                  --arg headSha "$HEAD_SHA" \\',
+  '                  --arg ownerLogin "$OWNER_LOGIN" \\',
+  '                  --arg ownerType "$OWNER_TYPE" \\',
+  '                  --arg prAuthorLogin "$PR_AUTHOR" \\',
+  "               '{reviews:$reviews, headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \\",
+  `               > "$OUT" || printf '%s' '{"fetchError":"jq could not build the review context"}' > "$OUT"`,
+  '          else',
+  `            printf '%s' '{"fetchError":"the reviews API call failed"}' > "$OUT"`,
+  '          fi',
+  '',
+];
+
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.resolve(__dirname, '../../scripts/standards-coverage.mjs');
 
@@ -356,6 +418,10 @@ describe('standards-coverage ratchet script', () => {
       '  standards-coverage:',
       '    name: Standards Enforcement Coverage',
       '    runs-on: ubuntu-latest',
+      // Pinned as of 2026-08-23: path B's token scope is declared, not inherited.
+      '    permissions:',
+      '      contents: read',
+      '      pull-requests: read',
       '    steps:',
       '      - uses: actions/checkout@v4',
       '        with:',
@@ -378,18 +444,7 @@ describe('standards-coverage ratchet script', () => {
       '          fi',
       '          git show "$BASE_SHA:docs/STANDARDS-REGISTRY.md" > "$RUNNER_TEMP/standards-registry-base.md"',
       '          git show "$BASE_SHA:.github/keyrings/telegram-principal-pub.pem" > "$RUNNER_TEMP/standards-direction-approver-base.pem"',
-      '      - name: Fetch operator review context (direction guard path B)',
-      "        if: github.event_name == 'pull_request'",
-      '        env:',
-      '          GH_TOKEN: ${{ github.token }}',
-      '          PR: ${{ github.event.pull_request.number }}',
-      '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
-      '          OWNER_LOGIN: ${{ github.event.repository.owner.login }}',
-      '          OWNER_TYPE: ${{ github.event.repository.owner.type }}',
-      '          PR_AUTHOR: ${{ github.event.pull_request.user.login }}',
-      '          OUT: ${{ runner.temp }}/standards-direction-review.json',
-      '        run: |',
-      '          echo "{}" > "$OUT"',
+      ...REVIEW_STEP_FIXTURE,
       '      - run: node scripts/standards-coverage.mjs --check',
       '        env:',
       '          STANDARDS_AREA_AUDIT_BASE_FILE: ${{ runner.temp }}/standards-area-audits-base.json',
@@ -413,6 +468,80 @@ describe('standards-coverage ratchet script', () => {
         '          STANDARDS_AREA_AUDIT_BASE_FILE: ${{ runner.temp }}/standards-area-audits-base.json',
       ));
     expect(runFullCheck().code).toBe(0);
+
+    // 2026-08-23 REGRESSION PIN — the `if:` that broke canonical main.
+    //
+    // The evidence-gathering step shipped gated `if: github.event_name ==
+    // 'pull_request'`, so on a push to main it never ran, the context file was
+    // never written, and the guard read ENOENT as "no approval" and refused —
+    // while the operator's approval sat on the pull request that had just
+    // produced that very commit. Every registry change ratified by review turned
+    // main red the moment it merged; main stayed red across three merges. The
+    // pin now refuses the gate outright, so the regression cannot return as a
+    // one-line edit nobody reads.
+    write('.github/workflows/ci.yml', validWorkflow.replace(
+      '      - name: Fetch operator review context (direction guard path B)\n',
+      '      - name: Fetch operator review context (direction guard path B)\n' +
+      "        if: github.event_name == 'pull_request'\n",
+    ));
+    const regated = runFullCheck();
+    expect(regated.code).toBe(1);
+    expect(regated.out).toContain('requires dependency install plus full-history protected-base extraction');
+
+    // Dropping either push-branch input is the same silent edit by another route:
+    // without EVENT_NAME the step cannot tell which branch it is on, and without
+    // PUSH_SHA it cannot find the pull request that produced the commit. Either
+    // one alone returns the guard to refusing on every push.
+    for (const key of ['EVENT_NAME: ${{ github.event_name }}', 'PUSH_SHA: ${{ github.sha }}']) {
+      write('.github/workflows/ci.yml', validWorkflow.replace(`          ${key}\n`, ''));
+      const dropped = runFullCheck();
+      expect(dropped.code).toBe(1);
+      expect(dropped.out).toContain('requires dependency install plus full-history protected-base extraction');
+    }
+
+    // The third route, and the one the first version of this pin MISSED (found by
+    // the independent second-pass review, 2026-08-23): the step's keys and env map
+    // were pinned but its `run` was not, so the whole push-resolution branch could
+    // be gutted — returning the guard to refusing on every push — while all the
+    // assertions above stayed green, because the fixture's body was a stub no test
+    // ever executed. A guard that only covers the route its author thought of is
+    // the closure equivalent of a test that never runs.
+    write('.github/workflows/ci.yml', validWorkflow.replace(
+      /(        run: \|\n)(?:          .*\n)+/,
+      '$1          echo "{}" > "$OUT"\n',
+    ));
+    const gutted = runFullCheck();
+    expect(gutted.code).toBe(1);
+    expect(gutted.out).toContain('requires dependency install plus full-history protected-base extraction');
+
+    // FOURTH ROUTE — the one the review TRIGGER creates, pinned the day it was
+    // added. `pull_request_review` gives this step a third caller, and it is the
+    // caller whose entire purpose is to honour an approval. Its payload is
+    // PR-shaped, but `github.sha` on a review event is the merge REF, which
+    // matches no `merge_commit_sha` — so if the branch test is narrowed back to
+    // `!= "pull_request"` alone, a review event falls into the push path,
+    // resolves no pull request, writes an empty context and refuses. The trigger
+    // added to make an approval count would then reliably reject it, and every
+    // assertion about the trigger's PRESENCE would still pass: the event fires,
+    // the job runs, the check goes red. Presence of a trigger is not handling of
+    // its event.
+    write('.github/workflows/ci.yml', validWorkflow.replace(
+      'if [ "$EVENT_NAME" != "pull_request" ] && [ "$EVENT_NAME" != "pull_request_review" ]; then',
+      'if [ "$EVENT_NAME" != "pull_request" ]; then',
+    ));
+    const reviewEventUnhandled = runFullCheck();
+    expect(reviewEventUnhandled.code).toBe(1);
+    expect(reviewEventUnhandled.out).toContain('requires dependency install plus full-history protected-base extraction');
+
+    // And the token scope is pinned, not inherited: dropping the permissions block
+    // returns the job to the repository default, which a tightened org policy can
+    // silently shrink until the association call 403s and the guard refuses forever.
+    write('.github/workflows/ci.yml', validWorkflow.replace(
+      '    permissions:\n      contents: read\n      pull-requests: read\n', '',
+    ));
+    const unscoped = runFullCheck();
+    expect(unscoped.code).toBe(1);
+    expect(unscoped.out).toContain('requires the standards-coverage CI job to invoke');
 
     write('.github/workflows/ci.yml', validWorkflow
       .replace('          fetch-depth: 0', '          fetch-depth: 0\n          ref: ${{ github.event.pull_request.base.sha }}')
@@ -473,18 +602,7 @@ describe('standards-coverage ratchet script', () => {
       '    if: false',
       '    runs-on: ubuntu-latest',
       '    steps:',
-      '      - name: Fetch operator review context (direction guard path B)',
-      "        if: github.event_name == 'pull_request'",
-      '        env:',
-      '          GH_TOKEN: ${{ github.token }}',
-      '          PR: ${{ github.event.pull_request.number }}',
-      '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
-      '          OWNER_LOGIN: ${{ github.event.repository.owner.login }}',
-      '          OWNER_TYPE: ${{ github.event.repository.owner.type }}',
-      '          PR_AUTHOR: ${{ github.event.pull_request.user.login }}',
-      '          OUT: ${{ runner.temp }}/standards-direction-review.json',
-      '        run: |',
-      '          echo "{}" > "$OUT"',
+      ...REVIEW_STEP_FIXTURE,
       '      - run: node scripts/standards-coverage.mjs --check',
       '        continue-on-error: true',
     ].join('\n'));
@@ -522,18 +640,7 @@ describe('standards-coverage ratchet script', () => {
       ...(scope === 'job' ? ["    'continue-on-error': ${{ true }}"] : []),
       '    runs-on: ubuntu-latest',
       '    steps:',
-      '      - name: Fetch operator review context (direction guard path B)',
-      "        if: github.event_name == 'pull_request'",
-      '        env:',
-      '          GH_TOKEN: ${{ github.token }}',
-      '          PR: ${{ github.event.pull_request.number }}',
-      '          HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
-      '          OWNER_LOGIN: ${{ github.event.repository.owner.login }}',
-      '          OWNER_TYPE: ${{ github.event.repository.owner.type }}',
-      '          PR_AUTHOR: ${{ github.event.pull_request.user.login }}',
-      '          OUT: ${{ runner.temp }}/standards-direction-review.json',
-      '        run: |',
-      '          echo "{}" > "$OUT"',
+      ...REVIEW_STEP_FIXTURE,
       '      - run: node scripts/standards-coverage.mjs --check',
       ...(scope === 'step' ? ["        'continue-on-error': ${{ true }}"] : []),
     ].join('\n');
@@ -1040,16 +1147,31 @@ describe('standards-coverage ratchet script', () => {
     expect(cli.measurement).toEqual(expect.objectContaining({
       status: 'proven',
       basis: expect.objectContaining({ candidateTreeMayRaiseStrength: false }),
-      population: expect.objectContaining({ protectedBase: 89, candidate: 89, continuity: 89 }),
-      // 2026-08-22: 88/89/89 while the five-amendment branch was unmerged, then
-      // 89/89/89 on merge — the transition its own comment predicted, applied
-      // here when it happened. protectedBase is measured from the MERGE-BASE
-      // (canonical main), so an unmerged branch shows the asymmetry and a merged
-      // one does not: the protected baseline is deliberately not something a
-      // branch can raise about itself. The literals are kept rather than
-      // loosened to a relation, so a change in the population stays a visible
-      // edit in a diff — which is exactly how this update got noticed.
     }));
+    // 2026-08-23: the population literals that stood here (`protectedBase: 88,
+    // candidate: 89, continuity: 89`) are GONE, and this is a correction rather
+    // than a loosening. `protectedBase` is measured against the MERGE-BASE with
+    // canonical main, so its value depends on WHERE THE TEST RUNS, not on what
+    // the registry says: on a branch that adds an article it is candidate-1, and
+    // the moment that branch merges it becomes candidate. A literal can satisfy
+    // one of those and must fail the other.
+    //
+    // That is not theoretical. This assertion turned canonical main RED on
+    // 2026-08-23 the moment PR #1965 merged — it kept expecting 88/89/89 while
+    // main had become 89/89/89 — and main stayed red through the next two
+    // merges. A ratchet that a correct merge breaks trains people to edit the
+    // ratchet, which is the opposite of what it is for.
+    //
+    // What is pinned instead is the INVARIANT the literals were standing in for,
+    // which is branch-position-independent: the candidate tree is the registry
+    // the CLI just measured, continuity tracks it, and a branch can never raise
+    // the protected baseline above itself. The article COUNT is still a
+    // deliberate hand-updated snapshot — it lives in the live-registry test
+    // below, where it is measured from the registry rather than from a diff
+    // against wherever this checkout happens to be sitting.
+    expect(cli.measurement.population.candidate).toBe(cli.total);
+    expect(cli.measurement.population.continuity).toBe(cli.total);
+    expect(cli.measurement.population.protectedBase).toBeLessThanOrEqual(cli.measurement.population.candidate);
     expect(cli.enforcedRatio).toBeLessThan(library.summary.enforcedRatio);
   });
 
@@ -1110,7 +1232,15 @@ describe('standards-coverage ratchet script', () => {
     // rule-bound relevance plus a landed violation that makes the same test fail by assertion. The
     // protected baseline has no such ledger yet, so its honest value is 0/88; the legacy per-area
     // floors remain visible separately and are not rewritten into evidence they never established.
-    expect(report.total).toBe(89);
+    //
+    // 2026-08-23: 89 -> 90. This branch adds ONE article (*Never Silently Cut the
+    // Data a Decision Depends On*) to Building, and canonical main had already
+    // moved 88 -> 89 with *Archiving May Never Mean Deleting*. Updated by
+    // re-deriving from the live registry, and the Building family's audit record
+    // was refreshed by a round that genuinely accepts
+    // (docs/specs/reports/building-family-area-audit-2026-08-23-round2.md) —
+    // never by editing this number to make a run green.
+    expect(report.total).toBe(90);
     expect(report.enforcedRatio).toBe(0);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',

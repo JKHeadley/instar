@@ -1,0 +1,32 @@
+{
+  "ts": "2026-08-22T19:01:21.151Z",
+  "slug": "never-silently-cut-judgment-input.side-effects",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 614,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-bounded-judgment-input.mjs",
+      "src/core/InputGuard.ts",
+      "src/core/ResumeValidator.ts",
+      "src/core/StandardsRegistryParser.ts",
+      "src/core/boundedInput.ts",
+      "src/core/crossModelReviewer.ts",
+      "src/monitoring/PromptGate.ts",
+      "src/threadline/PipeSessionSpawner.ts"
+    ],
+    "addedLines": 605,
+    "deletedLines": 9
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Not caused by a prior PR. The 60KB reviewer context budget was set in the spec's first draft with no recorded derivation and was never re-checked; it has been smaller than an ordinary spec for the whole life of the machinery, so referenced context was dropped in full on every review ever run. Latent from introduction. The two direction bugs (PipeSessionSpawner, PromptGate) are the same class, independently introduced, and were invisible because the retained head still reads like ordinary content. Surfaced 2026-08-22 by the operator naming the general pattern, then by a converging audit whose second search angle found what the first assumed away."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

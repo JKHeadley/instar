@@ -565,22 +565,49 @@ function main() {
   const files = argv.filter((a) => !a.startsWith('--'));
   const targets = files.length ? files : listSpecFiles();
 
+  // ── The DENOMINATOR, reported beside the verdict (2026-08-23) ──────────
+  //
+  // WHY. On 2026-08-21 this gate was found to have been matching its section
+  // heading EXACTLY while spec authors had begun numbering theirs. It saw 91 of
+  // 149 posture-carrying specs and silently skipped 58 — printing "clean" about
+  // a corpus it had never read. Nobody made a mistake; the population drifted
+  // under the instrument, and there is no diff showing the moment it broke.
+  //
+  // The matcher was widened, which fixes THAT drift. This fixes the READING,
+  // which is the part that generalises: "clean" is a sentence nobody questions,
+  // and "clean — 0 findings across 149 spec(s), 91 carrying a posture section"
+  // is one somebody does. A shrinking denominator beside a reassuring word is
+  // the cheapest thing that would have surfaced the original bug without anyone
+  // auditing the matcher, and it costs a line.
+  //
+  // `unreadable` is counted rather than swallowed for the same reason: a file
+  // that could not be read is not a file with no findings.
   const allFindings = [];
+  let scanned = 0;
+  let withPosture = 0;
+  let unreadable = 0;
   for (const file of targets) {
     let text;
     try {
       text = fs.readFileSync(file, 'utf8');
     } catch {
+      unreadable += 1;
       continue;
     }
+    scanned += 1;
+    if (findPostureSection(text)) withPosture += 1;
     const { findings } = gradeMachineLocalMarkers(text);
     for (const f of findings) allFindings.push({ file: path.relative(ROOT, path.resolve(file)), ...f });
   }
+  const population = { scanned, withPosture, unreadable, findings: allFindings.length };
+  const denominator =
+    `${scanned} spec(s) scanned, ${withPosture} carrying a posture section` +
+    (unreadable > 0 ? `, ${unreadable} UNREADABLE` : '');
 
   if (json) {
-    process.stdout.write(JSON.stringify({ findings: allFindings, strict }, null, 2) + '\n');
+    process.stdout.write(JSON.stringify({ findings: allFindings, population, strict }, null, 2) + '\n');
   } else if (allFindings.length === 0) {
-    console.log('lint-machine-local-justification: clean — no undefended or malformed markers.');
+    console.log(`lint-machine-local-justification: clean — no undefended or malformed markers (${denominator}).`);
   } else {
     const header = strict
       ? 'lint-machine-local-justification: FINDINGS (strict — blocking):'
@@ -591,7 +618,7 @@ function main() {
       console.error(`      ${f.message}`);
     }
     console.error(
-      `\n  ${allFindings.length} finding(s). Standard A: docs/STANDARDS-REGISTRY.md ` +
+      `\n  ${allFindings.length} finding(s) — ${denominator}. Standard A: docs/STANDARDS-REGISTRY.md ` +
         `("An Instar Agent Is Always a Multi-Machine Entity").`,
     );
   }

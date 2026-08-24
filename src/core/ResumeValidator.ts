@@ -23,6 +23,25 @@ import type { IntelligenceProvider } from './types.js';
 import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 import { buildBoundedContext, buildStructuredSha256Identity } from './JudgmentProvenanceLog.js';
 import { DP_RESUME_UUID_VALIDATE } from '../data/provenanceCoverage.js';
+import { boundedTail } from './boundedInput.js';
+
+/**
+ * Bound on each of the two context blocks handed to the coherence validator.
+ *
+ * DERIVED (governed by *Never Silently Cut the Data a Decision Depends On*), not chosen by feel:
+ * the caller assembles at most 10 topic messages, each already clamped to 200
+ * characters, each on its own prefixed line — so the worst ordinary case is a
+ * little over 2,000 characters. The bound is set above that, so the ordinary
+ * case is never cut and a disclosure marker in the prompt is a real signal
+ * rather than routine noise. The session block is held to the same number
+ * because the validator COMPARES the two, and an asymmetric bound would make
+ * one side systematically thinner than the other.
+ *
+ * Re-derive if the caller's message count or per-message clamp changes.
+ * (Was 1,500 with no derivation — below what the caller could produce, so the
+ * most recent messages were discarded on the ordinary path.)
+ */
+export const COHERENCE_CONTEXT_MAX_CHARS = 4000;
 
 export const RESUME_UUID_VALIDATE_PROMPT_ID = 'resume-uuid-validate-v1';
 
@@ -213,8 +232,26 @@ export async function llmValidateResumeCoherence(
     }
 
     // 3. Ask the LLM for coherence judgment (via Claude CLI, no API key needed)
-    const topicContext = topicHistory.slice(0, 1500);
-    const boundedSessionContext = sessionContext.slice(0, 1500);
+    //
+    // Bounding these is correct — an unbounded prompt is its own hazard. HOW we
+    // bound them is governed by *Never Silently Cut the Data a Decision Depends On*:
+    //
+    //  - KEEP THE END, NOT THE START. `topicHistory` is assembled oldest-first,
+    //    so the previous `.slice(0, 1500)` reliably discarded the MOST RECENT
+    //    messages — precisely the ones that say what the conversation is now
+    //    about, and precisely what this validator compares against. It was
+    //    throwing away the evidence and keeping the preamble.
+    //  - DISCLOSE IN-BAND. When a bound cuts the input, the CONSUMER of that
+    //    input is told, in the input itself. This consumer is a model, and its
+    //    fail-safe is MISMATCH — so a silent cut biases it toward declaring a
+    //    legitimate resume incoherent, and it had no way to know.
+    //  - DERIVED, NOT GUESSED. 1500 characters had no recorded derivation and
+    //    could not hold what the caller assembles: ten messages, each clamped
+    //    to 200 characters, plus per-line prefixes, exceeds it routinely. The
+    //    bound is now set above what the caller can produce, so the ordinary
+    //    case is not truncated at all, and truncation means something.
+    const topicContext = boundedTail(topicHistory, COHERENCE_CONTEXT_MAX_CHARS);
+    const boundedSessionContext = boundedTail(sessionContext, COHERENCE_CONTEXT_MAX_CHARS);
     const prompt = `You are a session-topic coherence validator. You must determine if a Claude session's context matches a Telegram topic's conversation history.
 
 TOPIC CONTEXT (what this topic is about):
