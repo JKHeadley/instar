@@ -55,6 +55,15 @@ function writeAutonomousJob(topic: number, startedAt: string): void {
   );
 }
 
+function expectStoppedRecord(topic: number): string {
+  const file = path.join(tmpDir, 'autonomous', `${topic}.local.md`);
+  expect(fs.existsSync(file)).toBe(true);
+  const content = fs.readFileSync(file, 'utf8');
+  expect(content).toMatch(/^active: false$/m);
+  expect(content).toMatch(/^stopped_at: "\d{4}-\d{2}-\d{2}T.*Z"$/m);
+  return content;
+}
+
 /** Minimal Telegram text update for one topic. */
 function textUpdate(topic: number, text: string) {
   return {
@@ -106,9 +115,9 @@ describe('TelegramAdapter emergency-stop → coherence-journal seam', () => {
       textUpdate(topic, 'stop everything'),
     );
 
-    // The autonomous file is gone (stop happened) AND the seam saw a `stopped`
-    // emit with the scanner-matching runId — proving the seam was threaded.
-    expect(fs.existsSync(path.join(tmpDir, 'autonomous', `${topic}.local.md`))).toBe(false);
+    // B-1 deliberately reversed the old delete-on-stop contract: stop preserves
+    // continuity evidence while marking the run inactive and stamped stopped.
+    expectStoppedRecord(topic);
     expect(emitted).toHaveLength(1);
     expect(emitted[0].topic).toBe(topic);
     expect(emitted[0].data.action).toBe('stopped');
@@ -134,8 +143,9 @@ describe('TelegramAdapter emergency-stop → coherence-journal seam', () => {
       ),
     ).resolves.toBeUndefined();
 
-    // The stop still happened; no emit because no seam.
-    expect(fs.existsSync(path.join(tmpDir, 'autonomous', `${topic}.local.md`))).toBe(false);
+    // B-1 deliberately reversed the old delete-on-stop contract here too; the
+    // optional-seam path must still stop the run without deleting its record.
+    expectStoppedRecord(topic);
     expect(emitted).toHaveLength(0);
   });
 });

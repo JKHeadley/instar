@@ -119,11 +119,24 @@ describe('canStartAutonomousJob — quota (refuse-new)', () => {
 });
 
 describe('stopping', () => {
-  it('stopAutonomousTopic removes exactly one', () => {
+  it('stopAutonomousTopic stops exactly one active run', () => {
     writeJob('a'); writeJob('b');
     expect(stopAutonomousTopic(stateDir, 'a')).toBe(true);
-    const jobs = listAutonomousJobs(stateDir);
-    expect(jobs.map((j) => j.topic)).toEqual(['b']);
+    expect(activeAutonomousJobs(stateDir).map((j) => j.topic)).toEqual(['b']);
+    expect(listAutonomousJobs(stateDir).map((j) => j.topic).sort()).toEqual(['a', 'b']);
+  });
+
+  it('stopAutonomousTopic preserves the topic record while making the run inactive', () => {
+    writeJob('a');
+    const file = path.join(stateDir, 'autonomous', 'a.local.md');
+    expect(fs.existsSync(file)).toBe(true);
+    expect(stopAutonomousTopic(stateDir, 'a')).toBe(true);
+    expect(fs.existsSync(file)).toBe(true);
+    const content = fs.readFileSync(file, 'utf8');
+    expect(content).toMatch(/^active: false$/m);
+    expect(content).toMatch(/^stopped_at: "/m);
+    expect(content).toContain('task');
+    expect(activeAutonomousJobs(stateDir).map((j) => j.topic)).not.toContain('a');
   });
 
   it('stopAutonomousTopic returns false for unknown topic', () => {
@@ -132,12 +145,21 @@ describe('stopping', () => {
     expect(listAutonomousJobs(stateDir).length).toBe(1);
   });
 
-  it('stopAllAutonomousJobs clears every file + legacy and writes the emergency flag', () => {
+  it('stopAllAutonomousJobs stops every run, preserves records, and writes the emergency flag', () => {
     writeJob('a'); writeJob('b'); writeLegacy('555');
     const res = stopAllAutonomousJobs(stateDir);
     expect(res.stoppedTopics.sort()).toEqual(['a', 'b']);
     expect(res.stoppedLegacy).toBe(true);
-    expect(listAutonomousJobs(stateDir)).toEqual([]);
+    expect(activeAutonomousJobs(stateDir)).toEqual([]);
+    expect(listAutonomousJobs(stateDir).map((j) => j.topic).sort()).toEqual(['555', 'a', 'b']);
+    for (const file of [
+      path.join(stateDir, 'autonomous', 'a.local.md'),
+      path.join(stateDir, 'autonomous', 'b.local.md'),
+      path.join(stateDir, 'autonomous-state.local.md'),
+    ]) {
+      expect(fs.existsSync(file)).toBe(true);
+      expect(fs.readFileSync(file, 'utf8')).toMatch(/^active: false$/m);
+    }
     expect(fs.existsSync(path.join(stateDir, 'autonomous-emergency-stop'))).toBe(true);
   });
 });
