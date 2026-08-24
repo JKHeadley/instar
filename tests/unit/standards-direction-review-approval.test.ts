@@ -93,6 +93,24 @@ describe('direction guard — path B (operator review approval)', () => {
     expect(r.reason).toContain('not an individual');
   });
 
+  it('DISTINGUISHES a failed fetch from a genuinely empty review list', () => {
+    // Both are not-approved, so the safe direction holds either way — but the
+    // REASON is what a human reads and acts on. If a failed API call reported
+    // "no review from <owner>", the operator would approve, watch it fail
+    // again, and have no way to learn the check never reached GitHub.
+    //
+    // This is the defect the first shipped version of the CI step had: it
+    // substituted an empty array on error, so a dead query and a true absence
+    // printed the same word. The two reasons must not converge.
+    const fetchFailed = evaluateOperatorReviewApproval(ctx({ reviews: undefined }));
+    const genuinelyEmpty = evaluateOperatorReviewApproval(ctx({ reviews: [] }));
+    expect(fetchFailed.approved).toBe(false);
+    expect(genuinelyEmpty.approved).toBe(false);
+    expect(fetchFailed.reason).not.toEqual(genuinelyEmpty.reason);
+    expect(fetchFailed.reason).toContain('unavailable');
+    expect(genuinelyEmpty.reason).toContain('no review from');
+  });
+
   it.each([
     ['a missing review list', { reviews: null }],
     ['a malformed head sha', { headSha: 'not-a-sha' }],

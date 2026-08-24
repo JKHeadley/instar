@@ -604,10 +604,22 @@ function validateRootSelfWiring() {
     return exactKeys(config, ['branches']) &&
       Array.isArray(config.branches) && config.branches.length === 1 && config.branches[0] === 'main';
   };
-  if (!exactKeys(workflow.on, ['push', 'pull_request', 'workflow_dispatch']) ||
+  // `pull_request_review` added 2026-08-22 and pinned, not merely permitted.
+  // The direction guard accepts the operator's approval as proof, but CI fired
+  // on push — before any approval could exist — so approving left the check
+  // red and finished, with nothing to re-run it. `dismissed` is pinned beside
+  // `submitted` because withdrawing an approval must re-run the guard and turn
+  // the check red again: a gate that only re-evaluates toward passing is not a
+  // gate. Pinning the types means neither can be dropped silently.
+  const reviewTrigger = workflow.on?.pull_request_review;
+  const reviewTriggerWired = exactKeys(reviewTrigger, ['types']) &&
+    Array.isArray(reviewTrigger.types) && reviewTrigger.types.length === 2 &&
+    reviewTrigger.types.includes('submitted') && reviewTrigger.types.includes('dismissed');
+  if (!exactKeys(workflow.on, ['push', 'pull_request', 'pull_request_review', 'workflow_dispatch']) ||
     !(workflow.on.workflow_dispatch === null || exactKeys(workflow.on.workflow_dispatch, [])) ||
+    !reviewTriggerWired ||
     !eventTargetsMain('push') || !eventTargetsMain('pull_request')) {
-    errors.push('The Root self-wiring requires top-level push and pull_request CI triggers targeting main');
+    errors.push('The Root self-wiring requires top-level push, pull_request and pull_request_review (submitted+dismissed) CI triggers targeting main');
   }
   const job = workflow.jobs?.['standards-coverage'];
   const steps = Array.isArray(job?.steps) ? job.steps : [];
@@ -666,31 +678,47 @@ function validateRootSelfWiring() {
   // protected-base step's is, so a behaviour edit here is a DECLARED edit.
   const expectedReviewRun = [
     'set -u',
-    'if [ "$EVENT_NAME" != "pull_request" ]; then',
-    "  associated=$(gh api \"repos/${GITHUB_REPOSITORY}/commits/${PUSH_SHA}/pulls\" 2>/dev/null || echo '[]')",
-    "  match=$(SHA=\"$PUSH_SHA\" jq -c '[.[] | select(.merge_commit_sha == env.SHA)] | if length == 1 then .[0] else empty end' <<< \"${associated:-[]}\" 2>/dev/null || echo '')",
+    'assoc_failed=0',
+    'if [ "$EVENT_NAME" != "pull_request" ] && [ "$EVENT_NAME" != "pull_request_review" ]; then',
+    '  if associated=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PUSH_SHA}/pulls" 2>/dev/null); then',
+    `    match=$(SHA="$PUSH_SHA" jq -c '[.[] | select(.merge_commit_sha == env.SHA)] | if length == 1 then .[0] else empty end' <<< "\${associated:-[]}" 2>/dev/null || echo '')`,
+    '  else',
+    "    associated='[]'",
+    "    match=''",
+    '    assoc_failed=1',
+    '  fi',
     "  PR=''",
     "  HEAD_SHA=''",
     "  PR_AUTHOR=''",
     '  if [ -n "$match" ]; then',
-    "    PR=$(jq -r '.number // empty' <<< \"$match\" 2>/dev/null || echo '')",
-    "    HEAD_SHA=$(jq -r '.head.sha // empty' <<< \"$match\" 2>/dev/null || echo '')",
-    "    PR_AUTHOR=$(jq -r '.user.login // empty' <<< \"$match\" 2>/dev/null || echo '')",
+    `    PR=$(jq -r '.number // empty' <<< "$match" 2>/dev/null || echo '')`,
+    `    HEAD_SHA=$(jq -r '.head.sha // empty' <<< "$match" 2>/dev/null || echo '')`,
+    `    PR_AUTHOR=$(jq -r '.user.login // empty' <<< "$match" 2>/dev/null || echo '')`,
     '  fi',
-    "  echo \"path-b: event=${EVENT_NAME} associated=$(jq -r 'length' <<< \"${associated:-[]}\" 2>/dev/null || echo unreadable) matched-pr=${PR:-none}\"",
+    `  echo "path-b: event=\${EVENT_NAME} associated=$(jq -r 'length' <<< "\${associated:-[]}" 2>/dev/null || echo unreadable) matched-pr=\${PR:-none} assoc-failed=\${assoc_failed}"`,
     'fi',
-    "reviews='[]'",
-    'if [ -n "$PR" ]; then',
-    "  reviews=$(gh api \"repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews?per_page=100\" 2>/dev/null || echo '[]')",
+    'echo "path-b: head-sha=${HEAD_SHA:-none} owner=${OWNER_LOGIN:-none}/${OWNER_TYPE:-none}"',
+    'if [ "$assoc_failed" = "1" ]; then',
+    `  printf '%s' '{"fetchError":"the commit-to-pull-request association call failed"}' > "$OUT"`,
+    'elif [ -z "$PR" ]; then',
+    '  jq -n --arg headSha "$HEAD_SHA" \\',
+    '        --arg ownerLogin "$OWNER_LOGIN" \\',
+    '        --arg ownerType "$OWNER_TYPE" \\',
+    '        --arg prAuthorLogin "$PR_AUTHOR" \\',
+    "     '{reviews:[], headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \\",
+    `     > "$OUT" || printf '%s' '{"fetchError":"jq could not build the review context"}' > "$OUT"`,
+    'elif reviews=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews?per_page=100" 2>/dev/null); then',
+    `  echo "path-b: reviews=$(jq -r 'length' <<< "$reviews" 2>/dev/null || echo unreadable)"`,
+    '  jq -n --argjson reviews "$reviews" \\',
+    '        --arg headSha "$HEAD_SHA" \\',
+    '        --arg ownerLogin "$OWNER_LOGIN" \\',
+    '        --arg ownerType "$OWNER_TYPE" \\',
+    '        --arg prAuthorLogin "$PR_AUTHOR" \\',
+    "     '{reviews:$reviews, headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \\",
+    `     > "$OUT" || printf '%s' '{"fetchError":"jq could not build the review context"}' > "$OUT"`,
+    'else',
+    `  printf '%s' '{"fetchError":"the reviews API call failed"}' > "$OUT"`,
     'fi',
-    "echo \"path-b: reviews=$(jq -r 'length' <<< \"${reviews:-[]}\" 2>/dev/null || echo unreadable) head-sha=${HEAD_SHA:-none} owner=${OWNER_LOGIN:-none}/${OWNER_TYPE:-none}\"",
-    'jq -n --argjson reviews "${reviews:-[]}" \\',
-    '      --arg headSha "$HEAD_SHA" \\',
-    '      --arg ownerLogin "$OWNER_LOGIN" \\',
-    '      --arg ownerType "$OWNER_TYPE" \\',
-    '      --arg prAuthorLogin "$PR_AUTHOR" \\',
-    "   '{reviews:$reviews, headSha:$headSha, ownerLogin:$ownerLogin, ownerType:$ownerType, prAuthorLogin:$prAuthorLogin}' \\",
-    "   > \"$OUT\" || echo '{}' > \"$OUT\"",
     '',
   ].join('\n');
   const expectedBaseSha = "${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', github.sha) }}";
