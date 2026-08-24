@@ -1891,7 +1891,15 @@ function resolveAgentFingerprint(ctx: RouteContext): string {
       if (info.fingerprint) return info.fingerprint;
       if (info.publicKey) return info.publicKey;
     }
-  } catch { /* fall through to project name */ }
+  } catch (err) {
+    DegradationReporter.getInstance().report({
+      feature: 'routes.resolveAgentFingerprint',
+      primary: 'Resolve Threadline fingerprint for mandate routing identity',
+      fallback: 'Use project name as the local agent routing fingerprint',
+      reason: err instanceof Error ? err.message : String(err),
+      impact: 'Mandate checks still deny by default on mismatch, but use a less-specific local identity.',
+    });
+  }
   return ctx.config.projectName ?? 'self';
 }
 

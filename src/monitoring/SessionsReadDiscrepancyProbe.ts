@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DegradationReporter } from './DegradationReporter.js';
 
 export const SESSIONS_READ_PROBE_MAX_BYTES = 128 * 1024;
 
@@ -40,7 +41,14 @@ export function recordSessionsReadDiscrepancy(
       fs.appendFileSync(logPath, row, { mode: 0o600 });
     }
     return true;
-  } catch {
+  } catch (err) {
+    DegradationReporter.getInstance().report({
+      feature: 'SessionsReadDiscrepancyProbe.record',
+      primary: 'Append /sessions read-surface discrepancy observation',
+      fallback: 'Skip the discrepancy row and allow GET /sessions to continue',
+      reason: err instanceof Error ? err.message : String(err),
+      impact: 'The read path remains available, but this discrepancy sample is absent from the probe log.',
+    });
     return false;
   }
 }

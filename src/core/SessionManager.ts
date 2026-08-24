@@ -3580,10 +3580,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
     try {
       const paneInfo = withSyncOp(() => execFileSync(
         this.config.tmuxPath,
-        ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}'],
+        ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}'],
         { encoding: 'utf-8', timeout: 5000 }
       )).trim();
-      const [paneCmd, startCmd] = paneInfo.split('||');
+      const fields = paneInfo.split('||');
+      if (fields[2] === '1') {
+        const code = Number(fields[3]);
+        if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
+        return false;
+      }
+      const [paneCmd, startCmd] = fields;
       // Claude Code runs as 'claude' or 'node' process
       if (paneCmd && (paneCmd.includes('claude') || paneCmd.includes('node'))) {
         return true;
