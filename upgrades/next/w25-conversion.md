@@ -20,6 +20,22 @@ Alongside it, the release removes two silent-fallback paths surfaced during inte
 (the no-silent-fallbacks ratchet tightened from 496 to 495) and carries the selected
 guard repairs proven on branches during the Window 24 measurement audit.
 
+## Summary of New Capabilities
+
+- **Stopped autonomous runs keep their record.** An emergency stop now marks the run stopped
+  (`active: false`, `stopped_at`) instead of deleting its state file — stopped runs stay
+  inspectable and auditable.
+- **Two silent-fallback paths removed** (no-silent-fallbacks ratchet tightened 496 → 495):
+  the affected code paths now surface their failure instead of quietly degrading.
+- **The Window 24 guard repairs land in a released build** — previously these fixes existed
+  only on branches; this release converts them into running behavior.
+
+## What to Tell Your User
+
+If you stop an autonomous run with an emergency stop, its record is no longer erased — you
+can still see what the run was doing and when it was stopped. Nothing you do day-to-day
+changes; this release is repairs and reliability, not new controls.
+
 ## Evidence
 
 The release candidate was built by controlled composition: each repair merged and attributed
