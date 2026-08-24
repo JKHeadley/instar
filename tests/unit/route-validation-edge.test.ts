@@ -45,6 +45,10 @@ describe('Route validation edge cases', () => {
 
   beforeAll(() => {
     project = createTempProject();
+    project.state.saveSession({
+      id: 'test-output-session', name: 'test-session', tmuxSession: 'test-test-session',
+      status: 'running', startedAt: new Date().toISOString(),
+    });
     mockSM = createMockSessionManager();
     const server = new AgentServer({
       config: fakeConfig,

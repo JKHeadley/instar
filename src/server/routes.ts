@@ -75,6 +75,17 @@ import {
   escalatedModelIds,
   normalizeTierEscalationConfig,
 } from '../core/ModelTierEscalation.js';
+
+/** Validate a decision-quality join key carried back by an advisory client. */
+export function isPlausibleDecisionRef(ref: string): boolean {
+  // Router ids are `d-<machineId8>-<uuid>` on a mesh member and `d-<uuid>`
+  // on a single-machine install. The old validator accepted only a hex token
+  // after `d-`, so every production machine id shaped like `m_03b30f` was
+  // rejected before the outcome annotator ran. Keep this stricter than a
+  // generic identifier: one optional bounded machine segment plus one UUID.
+  return /^[db]-(?:[a-z0-9_]{1,64}-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref)
+    && ref.length <= 128;
+}
 import {
   validateSummaryDeterministic,
   neutralizeInstructionShapedContent,
@@ -105,7 +116,7 @@ import type { AuthorizationRequestStore, AuthorizationRequest } from '../core/Au
 import { planTransferByNickname } from '../core/TransferByNickname.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import { averageMeasuredJobSuccessRates } from '../scheduler/JobRunHistory.js';
-import type { InstarConfig, JobPriority } from '../core/types.js';
+import type { InstarConfig, JobPriority, Session } from '../core/types.js';
 import { IntelligenceRouter } from '../core/IntelligenceRouter.js';
 import { knownComponents } from '../core/componentCategories.js';
 import { buildNatureRoutingMap, traceComponent } from '../core/natureRoutingMap.js';
@@ -156,6 +167,7 @@ import { annotateDecisionOutcome, decisionQualityRecordingLive, getDecisionAnnot
 import { annotateCompletionRealcheck } from '../core/AutonomousRealCheckAnnotator.js';
 import { DP_COMPLETION_EVALUATE, DP_MESSAGING_TONE_GATE, PROVENANCE_COVERAGE, backlogTrackerExists, findWiredWithoutGraders } from '../data/provenanceCoverage.js';
 import { CheckInReminderReconciler } from '../monitoring/CheckInReminderReconciler.js';
+import { recordSessionsReadDiscrepancy } from '../monitoring/SessionsReadDiscrepancyProbe.js';
 import { RemoteCloseAudit } from '../core/RemoteCloseAudit.js';
 import { RemoteAckStore } from '../core/RemoteAckStore.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
@@ -1630,6 +1642,18 @@ export interface RouteContext {
   startTime: Date;
 }
 
+/** Resolve any identifier advertised by GET /sessions to an active tmux pane. */
+export function resolveActiveSessionTmux(
+  sessions: Session[],
+  identifier: string,
+): string | null {
+  const active = sessions.find((session) =>
+    (session.status === 'running' || session.status === 'starting') &&
+    (session.id === identifier || session.name === identifier || session.tmuxSession === identifier),
+  );
+  return active?.tmuxSession ?? null;
+}
+
 export type SubscriptionPoolWriteCapability =
   | 'requiresEmailReconciliation'
   | 'readOnlyOrNonIdentity';
@@ -1867,8 +1891,27 @@ function resolveAgentFingerprint(ctx: RouteContext): string {
       if (info.fingerprint) return info.fingerprint;
       if (info.publicKey) return info.publicKey;
     }
-  } catch { /* fall through to project name */ }
+  } catch (err) {
+    DegradationReporter.getInstance().report({
+      feature: 'routes.resolveAgentFingerprint',
+      primary: 'Resolve Threadline fingerprint for mandate routing identity',
+      fallback: 'Use project name as the local agent routing fingerprint',
+      reason: err instanceof Error ? err.message : String(err),
+      impact: 'Mandate checks still deny by default on mismatch, but use a less-specific local identity.',
+    });
+  }
   return ctx.config.projectName ?? 'self';
+}
+
+/** Resolve the dashboard's legacy attention bound aliases into one final-result limit. */
+export function parseAttentionLimit(query: Record<string, unknown>): number | undefined {
+  for (const key of ['limit', 'count', 'take', 'pageSize']) {
+    const raw = Array.isArray(query[key]) ? query[key][0] : query[key];
+    if (typeof raw !== 'string' || !/^\d+$/.test(raw)) continue;
+    const parsed = Number(raw);
+    if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+  }
+  return undefined;
 }
 
 /**
@@ -2535,10 +2578,6 @@ export function createRoutes(ctx: RouteContext): Router {
     if (sha256Short(text) === p.textSha) return null;
     pendingAdvisories.delete(topicId);
     return { rule: p.rule, decisionRef: p.decisionRef };
-  }
-
-  function isPlausibleDecisionRef(ref: string): boolean {
-    return /^[db]-[0-9a-f]{8}(-[0-9a-f-]{8,})?[0-9a-f-]*$/i.test(ref) && ref.length <= 128;
   }
 
   function recordToneAdvisoryReaction(input: {
@@ -9195,6 +9234,23 @@ export function createRoutes(ctx: RouteContext): Router {
       sessions = sessions.filter((s) => isActiveStatus(s.status));
     }
 
+    // Observe the intermittent "empty /sessions while the reaper sees live
+    // sessions" failure at the consumer read path. Only compare the default
+    // active listing: include=all and terminal-status queries intentionally
+    // have different populations. Mismatches alone are written to a bounded
+    // JSONL file; probe I/O is fail-open and cannot break this read route.
+    if (!explicitStatus && !includeAll && ctx.sessionReaper) {
+      try {
+        const reaperSessions = ctx.sessionReaper.snapshot().sessions;
+        recordSessionsReadDiscrepancy(ctx.config.stateDir, {
+          sessionsCount: sessions.length,
+          reaperCount: reaperSessions.length,
+          sessionIds: sessions.map((s) => s.id),
+          reaperSessionIds: reaperSessions.map((s) => s.sessionId),
+        });
+      } catch { /* @silent-fallback-ok — an observability probe must not break the read it observes */ }
+    }
+
     // Which machine answered — so a session row can say where it runs. Absent
     // on single-machine installs (no pool wired), so the dashboard hides the badge.
     const selfMachineId = ctx.meshSelfId ?? null;
@@ -9486,7 +9542,10 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     const rawLines = parseInt(req.query.lines as string, 10) || 100;
     const lines = Math.min(Math.max(rawLines, 1), 10_000);
-    const output = ctx.sessionManager.captureOutput(req.params.name, lines);
+    const tmuxSession = resolveActiveSessionTmux(ctx.state.listSessions(), req.params.name);
+    const output = tmuxSession === null
+      ? null
+      : ctx.sessionManager.captureOutput(tmuxSession, lines);
 
     if (output === null) {
       res.status(404).json({ error: `Session "${req.params.name}" not found or not running` });
@@ -17155,6 +17214,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     const requestedStatus = req.query.status as string | undefined;
     const status = requestedStatus ? (normalizeAttentionStatus(requestedStatus) ?? requestedStatus) : undefined;
+    const limit = parseAttentionLimit(req.query as Record<string, unknown>);
     const selfMachineId = ctx.meshSelfId ?? null;
     // Local items are stamped with THIS machine's id at read time (mirrors the
     // sessions?scope=pool precedent — the store stays machine-agnostic; the
@@ -17187,11 +17247,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         });
       }
       const merged = await attentionPoolMerge(localItems, status);
-      res.json(merged);
+      if (limit === undefined) {
+        res.json(merged);
+      } else {
+        const items = (merged.items as Array<Record<string, unknown>>).slice(0, limit);
+        res.json({ ...merged, items, count: items.length });
+      }
       return;
     }
 
-    res.json({ items: localItems, count: localItems.length });
+    const items = limit === undefined ? localItems : localItems.slice(0, limit);
+    res.json({ items, count: items.length });
   });
 
   router.get('/attention/:id', (req, res) => {
@@ -25902,16 +25968,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const { buildPassport } = await import('../core/AgentPassport.js');
       const { OrgIntentManager } = await import('../core/OrgIntentManager.js');
-      // Best-effort identity fingerprint from threadline agent-info, else 'unresolved'.
+      // Read the canonical identity through the same manager as /threadline/health.
+      // agent-info.json is a discovery projection and may be absent or stale.
       let fingerprint = 'unresolved';
       try {
-        const fs = await import('node:fs');
-        const path = await import('node:path');
-        const infoPath = path.join(ctx.config.stateDir, '..', 'threadline', 'agent-info.json');
-        if (fs.existsSync(infoPath)) {
-          const info = JSON.parse(fs.readFileSync(infoPath, 'utf-8'));
-          fingerprint = info.fingerprint || info.publicKey || 'unresolved';
-        }
+        const { IdentityManager } = await import('../threadline/client/IdentityManager.js');
+        fingerprint = new IdentityManager(ctx.config.stateDir).get()?.fingerprint ?? 'unresolved';
       } catch { /* fingerprint stays unresolved */ }
       const parsed = new OrgIntentManager(ctx.config.stateDir).parse();
       const forbiddenActions = parsed ? parsed.constraints.map((c: { text: string }) => c.text) : [];

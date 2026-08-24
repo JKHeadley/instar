@@ -1,0 +1,24 @@
+{
+  "ts": "2026-08-24T02:05:28.595Z",
+  "slug": "w25-composition-failures",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 30,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/monitoring/SessionsReadDiscrepancyProbe.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

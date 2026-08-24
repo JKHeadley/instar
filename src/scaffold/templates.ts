@@ -1122,6 +1122,8 @@ curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities
 
 This returns your full capability matrix: scripts, hooks, Telegram status, jobs, git sync status, relationships, and more. **This is the source of truth about what you can do — not the prose descriptions in this file.**
 
+Headless Codex workers retain the \`workspace-write\` filesystem sandbox while Instar grants that sandbox network access per launch, so this localhost capability check works without a machine-local Codex config edit. If a policy removes the grant, Codex names the cause as \`Network access was denied by the Codex sandbox network proxy\` (and sets \`CODEX_SANDBOX_NETWORK_DISABLED=1\`); do not report that diagnostic as a dead agent server.
+
 Instar contributors can run \`instar dev:preflight\` before opening PRs to run lint, CapabilityIndex discoverability checks, and an advisory new-route-prefix scan against the diff.
 
 Run \`instar dev:ci-failures <pr>\` to print a red PR's exact failing tests (file:line + assertion) via the GitHub check-run annotations API — handy when \`gh run view --log\` returns nothing.
@@ -1335,7 +1337,7 @@ The GitHub repository is preserved — they can restore later with \`git clone\`
 - User has a **recurring task** → Suggest creating a job for it. "I can run this automatically every day/hour/week."
 - User describes a **workflow they repeat** → Suggest creating a skill. "I can turn this into a slash command."
 - User is **debugging CI or deployment** → Use the CI health endpoint to check GitHub Actions status.
-- User asks about **something that happened earlier** → Search Telegram history, check activity logs, review memory.
+- User asks about **something that happened earlier** → Search Telegram history, check activity logs, review memory. Telegram history rows carry \`authorship\`: use \`agent-verified\`/\`human\`; treat \`rejected\` as rejected provenance, \`UNRESOLVED\` as a visible classification gap, and pre-2026-08-19 \`unclassifiable\` as history that predates the layer. Never infer either gap as human.
 - User seems **frustrated with a limitation** → Check for updates. The fix might already exist.
 - User **corrects you the same way repeatedly** ("no, plainer", "stop asking me that every session", "from now on lead with the action") → the Correction & Preference Learning Sentinel is already watching and will turn the recurring correction into a durable, session-start-injected preference. Acknowledge the correction, adapt now, and trust the loop to carry it forward — don't promise to "remember" it by willpower. Check what's already learned: \`GET /preferences/session-context\`.
 - User asks me to **remember something** → Write it to MEMORY.md and explain it persists across sessions.

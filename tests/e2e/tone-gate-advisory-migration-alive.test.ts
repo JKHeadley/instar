@@ -33,6 +33,9 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { resolveToneGateOperatorConfig } from '../../src/core/MessagingToneGate.js';
 import { annotateDecisionOutcome, decisionQualityRecordingLive } from '../../src/core/DecisionQualityRecorderImpl.js';
 import { DP_MESSAGING_TONE_GATE } from '../../src/data/provenanceCoverage.js';
+import { getDecisionQualityRecorder } from '../../src/core/decisionQualityTypes.js';
+import type { DecisionQualityRecorderImpl } from '../../src/core/DecisionQualityRecorderImpl.js';
+import { MessagingToneGate } from '../../src/core/MessagingToneGate.js';
 
 function createMockSessionManager() {
   return {
@@ -94,6 +97,9 @@ describe('Tone-gate advisory migration E2E lifecycle (feature is alive)', () => 
       sessionManager: createMockSessionManager() as any,
       state: new StateManager(stateDir),
       telegram: createStubTelegram() as any,
+      messagingToneGate: new MessagingToneGate({
+        evaluate: async () => JSON.stringify({ pass: true, rule: '', issue: '', suggestion: '' }),
+      } as never, { advisoryMigration: true }),
     });
     await server.start();
     app = server.getApp();
@@ -159,6 +165,53 @@ describe('Tone-gate advisory migration E2E lifecycle (feature is alive)', () => 
     // quality seam were dark or dry-run (its DEFAULT), the gate would keep its
     // authority instead of trading it for evidence that never lands.
     expect(decisionQualityRecordingLive()).toBe(true);
+  });
+
+  it('a production machine-prefixed reaction lands and GET /decision-quality reports a settled grade', async () => {
+    const correlationId = 'd-m_03b30f-00000000-0000-4000-8000-000000000004';
+    const recorder = getDecisionQualityRecorder() as DecisionQualityRecorderImpl | null;
+    expect(recorder).not.toBeNull();
+    recorder!.recordSettlement({
+      correlationId,
+      mintedBy: 'router',
+      enrolled: true,
+      provenance: {
+        decisionPoint: DP_MESSAGING_TONE_GATE,
+        context: { channel: 'telegram' },
+        optionsPresented: ['pass', 'advisory'],
+        promptId: 'tone-gate-sigv1',
+      },
+      settledAttempt: { model: 'gpt-5.4-mini', framework: 'codex-cli', usage: { inputTokens: 5, outputTokens: 2 } },
+      verdictClass: 'advisory',
+      mintedAtMs: Date.now() - 100,
+      settledAtMs: Date.now(),
+    } as never);
+
+    const sentBefore = sent.length;
+    const reaction = await request(app)
+      .post('/telegram/reply/9004')
+      .set({ Authorization: `Bearer ${AUTH}` })
+      .send({
+        text: 'I revised the message to remove the unnecessary internal path.',
+        metadata: {
+          toneAdvisoryComplied: 'B2_FILE_PATH',
+          toneAdvisoryDecisionRef: correlationId,
+        },
+      });
+    expect(reaction.status).toBe(200);
+    expect(sent).toHaveLength(sentBefore + 1);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const read = await request(app).get('/decision-quality').set({ Authorization: `Bearer ${AUTH}` });
+    expect(read.status).toBe(200);
+    const point = read.body.points.find((row: { decisionPoint: string }) => row.decisionPoint === DP_MESSAGING_TONE_GATE);
+    expect(point).toMatchObject({
+      settledGrades: 1,
+      gradeDistribution: { right: 1, wrong: 0, unknown: 0, selfReportOnly: true },
+      byRule: { 'tone-agent-complied-v1': { right: 1, wrong: 0, unknown: 0 } },
+    });
+    // Keep the pre-existing credential-wall assertions independent of this send.
+    sent.length = 0;
   });
 
   it('REJECTS an impostor annotator claiming the rule (self-report cannot be forged by another component)', () => {
