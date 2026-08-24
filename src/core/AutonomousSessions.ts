@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { JobPriority } from './types.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 /** Default concurrent autonomous-job cap when config doesn't specify one. */
 export const DEFAULT_MAX_CONCURRENT_AUTONOMOUS = 5;
@@ -362,7 +363,14 @@ function markStoppedPreservingRecord(file: string): boolean {
   let content: string;
   try {
     content = fs.readFileSync(file, 'utf8');
-  } catch {
+  } catch (err) {
+    DegradationReporter.getInstance().report({
+      feature: 'AutonomousSessions.stop.preserve.read',
+      primary: 'Read autonomous run state before preserving a stopped record',
+      fallback: 'Report that the stop record could not be updated and return false to the caller',
+      reason: err instanceof Error ? err.message : String(err),
+      impact: 'The session stop may still proceed through the caller, but continuity evidence for this run was not marked inactive.',
+    });
     return false;
   }
   const stamp = new Date().toISOString();
@@ -425,8 +433,14 @@ export function stopAllAutonomousJobs(stateDir: string, journal?: AutonomousJour
   }
   try {
     fs.writeFileSync(path.join(stateDir, 'autonomous-emergency-stop'), `stopped-all ${new Date().toISOString()}\n`);
-  } catch {
-    /* best-effort flag */
+  } catch (err) {
+    DegradationReporter.getInstance().report({
+      feature: 'AutonomousSessions.stopAll.emergencyFlag',
+      primary: 'Write autonomous emergency-stop flag after stopping all recorded runs',
+      fallback: 'Continue with preserved inactive run records but without the belt-and-suspenders stop flag',
+      reason: err instanceof Error ? err.message : String(err),
+      impact: 'Already recorded runs are inactive, but a concurrently exiting session may miss the emergency-stop flag backstop.',
+    });
   }
   return { stoppedTopics, stoppedLegacy };
 }
