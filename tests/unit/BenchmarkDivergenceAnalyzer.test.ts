@@ -224,6 +224,29 @@ describe('the pass — verdicts over the pool-merged window', () => {
     expect(a.mirrorStatus()).toMatchObject({ present: false, stale: true });
   });
 
+  it('a PRESENT mirror goes stale strictly past the threshold — both sides of the boundary, on an injected clock', () => {
+    // 2026-08-24: the e2e aliveness test asserted `stale: false` against the
+    // SHIPPED baseline, so it passed for 30 days and then turned red at a wall-clock
+    // instant with no commit involved — `capturedAt` 2026-07-24T01:20Z crossed day 31
+    // at 2026-08-24T01:20Z and every branch went red at once, main included.
+    //
+    // Staleness of a shipped artifact is a fact about the CALENDAR, not about the
+    // wiring, so it does not belong in an aliveness assertion. It belongs here,
+    // where the clock is an input. Both sides are pinned: a fix that made nothing
+    // ever stale would satisfy a one-sided test and destroy the signal.
+    const capturedAt = '2026-07-08T00:00:00.000Z';
+    writeMatchingMirror({ capturedAt });
+    const day = 86_400_000;
+
+    nowMs = Date.parse(capturedAt) + 30 * day;
+    expect(analyzer().mirrorStatus()).toMatchObject({ present: true, staleDays: 30, stale: false });
+
+    nowMs = Date.parse(capturedAt) + 31 * day;
+    expect(analyzer().mirrorStatus()).toMatchObject({ present: true, staleDays: 31, stale: true });
+
+    nowMs = T0;
+  });
+
   it('drifted benched hash ⇒ precondition-failed / prompt-drifted (a benchmark bug, never a model verdict)', async () => {
     writeMatchingMirror({ hashOverride: 'b'.repeat(64) });
     seedDecisions('2026-07-05', 30, { right: 5, wrong: 25 }); // would be divergent-worse — suppressed
