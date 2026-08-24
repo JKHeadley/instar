@@ -360,4 +360,59 @@ describe('lint-machine-local-justification (Standard A marker floor)', () => {
     expect(r.code).toBe(1);
     expect(r.stderr).toContain('A2-migrating-expired');
   });
+
+  // ── The denominator beside the verdict (2026-08-23) ──────────────────────
+  // This gate once printed "clean" about a corpus it had never read: it matched
+  // its heading exactly while authors numbered theirs, seeing 91 of 149 specs
+  // and skipping 58. The matcher was widened, which fixes that drift. These
+  // pin the READING — "clean" is a sentence nobody questions; "clean, N of M"
+  // is one somebody does.
+  describe('reports its population beside its verdict', () => {
+    it('names the denominator on a CLEAN run', () => {
+      const r = runLint(fx('A-good-ratified.md'));
+      expect(r.stdout).toContain('clean');
+      expect(r.stdout).toMatch(/1 spec\(s\) scanned/);
+      expect(r.stdout).toMatch(/1 carrying a posture section/);
+    });
+
+    it('names the denominator on a FINDINGS run too', () => {
+      // The failing path is where a shrinking population is most dangerous:
+      // a reader sees findings, assumes the sweep was whole, and never asks
+      // how many specs it actually reached.
+      const r = runLint(fx('A-bad-undefended.md'));
+      expect(r.stderr).toMatch(/spec\(s\) scanned/);
+      expect(r.stderr).toMatch(/carrying a posture section/);
+    });
+
+    it('exposes the population in the JSON surface', () => {
+      const r = runLint('--json', fx('A-good-ratified.md'));
+      const parsed = JSON.parse(r.stdout) as {
+        population: { scanned: number; withPosture: number; unreadable: number; findings: number };
+      };
+      expect(parsed.population).toEqual({ scanned: 1, withPosture: 1, unreadable: 0, findings: 0 });
+    });
+
+    it('COUNTS an unreadable file rather than swallowing it', () => {
+      // A file that could not be read is not a file with no findings. Silently
+      // skipping it is the same defect one layer down: the sweep shrinks and
+      // the verdict does not change.
+      const r = runLint('--json', fx('A-good-ratified.md'), fx('does-not-exist.md'));
+      const parsed = JSON.parse(r.stdout) as { population: { scanned: number; unreadable: number } };
+      expect(parsed.population.scanned).toBe(1);
+      expect(parsed.population.unreadable).toBe(1);
+    });
+
+    it('SHOWS the unreadable count in the human output when non-zero', () => {
+      const r = runLint(fx('A-good-ratified.md'), fx('does-not-exist.md'));
+      expect(r.stdout).toContain('UNREADABLE');
+    });
+
+    it('distinguishes a one-file run from a whole-corpus run', () => {
+      // The property the incident turned on: two runs of very different reach
+      // must not print the same reassuring sentence.
+      const one = runLint(fx('A-good-ratified.md'));
+      const two = runLint(fx('A-good-ratified.md'), fx('A-good-defended.md'));
+      expect(one.stdout).not.toEqual(two.stdout);
+    });
+  });
 });

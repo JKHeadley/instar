@@ -19,7 +19,7 @@ The lint holds no blocking authority anywhere: it ships report-first (exit 0 unl
 
 ## 1. Over-block
 
-The narrowing makes 19 existing `physical-credential-locality` markers report findings, and 11 of those were the sole defence of their surface, so those surfaces now also report A1-undefended. **This is the intended effect of the amendment, not an over-block**: the operator's stated reason for Amendment 3 is that the key as written let a storage habit assert a physical constraint, and a narrowing that fails none of the cases it narrowed has narrowed nothing. It cannot over-BLOCK in the literal sense because the lint blocks nothing — total findings move 73 → 122, all report-only. The sweep to fix those 16 markers is separate work and is named as such rather than folded in here.
+The narrowing makes 16 existing `physical-credential-locality` markers report findings, and 9 of those were the sole defence of their surface, so those surfaces now also report A1-undefended. **This is the intended effect of the amendment, not an over-block**: the operator's stated reason for Amendment 3 is that the key as written let a storage habit assert a physical constraint, and a narrowing that fails none of the cases it narrowed has narrowed nothing. It cannot over-BLOCK in the literal sense because the lint blocks nothing — total findings move 94 → 135, all report-only. The sweep to fix those 16 markers is separate work and is named as such rather than folded in here.
 
 ## 2. Under-block
 
