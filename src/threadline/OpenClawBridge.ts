@@ -16,6 +16,8 @@
  * all dependencies are injected via config.
  */
 
+import { randomBytes } from 'node:crypto';
+
 import type { AgentTrustManager, AgentTrustLevel } from './AgentTrustManager.js';
 import type { ComputeMeter, MeterCheckResult } from './ComputeMeter.js';
 import type { ContextThreadMap } from './ContextThreadMap.js';
@@ -106,6 +108,33 @@ const DEFAULT_TRUST_LEVEL: AgentTrustLevel = 'untrusted';
 const DEFAULT_TOKEN_ESTIMATE = 500;
 
 // ── Implementation ─────────────────────────────────────────────────────
+
+/**
+ * Mint a threadId for a (room, agent) pair.
+ *
+ * THE CLOCK IS NOT AN IDENTIFIER. The first version was
+ * `openclaw-${roomId}-${Date.now().toString(36)}` — no agent component and no
+ * entropy, so its ONLY distinguishing input was the millisecond. Two different
+ * agents resolving a thread in the SAME room within the same millisecond
+ * received the SAME threadId, and `ContextThreadMap`'s reverse index then
+ * collapsed both agents onto one thread. That is not a cosmetic collision:
+ * isolation between two agents' conversations in a shared room is exactly what
+ * the threadId is for, so the failure mode is one agent addressing another's
+ * thread.
+ *
+ * It surfaced as an intermittent e2e failure (Scenario 8, 2026-08-23) because
+ * it needs two calls inside one millisecond — a race that gets MORE likely as
+ * the code gets faster, which is the wrong direction for a correctness property
+ * to move in. Fixed with real entropy rather than by spacing the calls out: a
+ * uniqueness property that depends on how fast the caller runs is not a
+ * property.
+ *
+ * The timestamp is kept for readability and rough ordering. Uniqueness comes
+ * from the random suffix, never from the timestamp.
+ */
+function newThreadId(roomId: string): string {
+  return `openclaw-${roomId}-${Date.now().toString(36)}-${randomBytes(8).toString('hex')}`;
+}
 
 export class OpenClawBridge {
   private readonly config: OpenClawBridgeConfig;
@@ -446,7 +475,7 @@ export class OpenClawBridge {
       }
 
       // Create new mapping — generate a threadId from the roomId
-      const threadId = `openclaw-${roomId}-${Date.now().toString(36)}`;
+      const threadId = newThreadId(roomId);
       this.config.contextThreadMap.set(roomId, threadId, agentIdentity);
       this.metrics.threadsActive++;
       return { threadId, isNewThread: true };
@@ -459,7 +488,7 @@ export class OpenClawBridge {
       return { threadId: existingThreadId, isNewThread: false };
     }
 
-    const threadId = `openclaw-${roomId}-${Date.now().toString(36)}`;
+    const threadId = newThreadId(roomId);
     this.roomToThread.set(key, threadId);
     this.metrics.threadsActive++;
     return { threadId, isNewThread: true };
