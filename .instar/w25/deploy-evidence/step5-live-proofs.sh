@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Step 5 — live consumer verification per ref, against the pinned pre-deploy baselines. PASS/FAIL per line. Full requests, every header.
+set -uo pipefail; cd /Users/dabombstudio/.instar/agents/echo; AUTH=$(node .instar/scripts/secret-get.mjs authToken); H='X-Instar-Request: 1'
+p(){ printf "%-8s %-16s %s\n" "$1" "$2" "$3"; }
+# fix-3 #4: attention READ honours limit (before: 146 rows for limit=2)
+n=$(curl -s -H "Authorization: Bearer $AUTH" "http://localhost:4042/attention?limit=2" | python3 -c "import json,sys; d=json.load(sys.stdin); r=d if isinstance(d,list) else (d.get('items') or d.get('attention') or []); print(len(r))"); [ "$n" -le 2 ] && p PASS fix-3/#4 "attention?limit=2 -> $n rows (before 146)" || p FAIL fix-3/#4 "attention?limit=2 -> $n rows (before 146)"
+# fix-3 #26: passport fingerprint equals canonical (before: unresolved)
+c=$(curl -s -H "Authorization: Bearer $AUTH" http://localhost:4042/provenance | python3 -c "import json,sys; print(json.load(sys.stdin).get('fingerprint') or '')"); f=$(curl -s -H "Authorization: Bearer $AUTH" http://localhost:4042/passport | python3 -c "import json,sys; print(json.load(sys.stdin).get('fingerprint') or '')"); [ -n "$c" ] && [ "$f" = "$c" ] && p PASS fix-3/#26 "passport=${f:0:12} == canonical" || p FAIL fix-3/#26 "passport='$f' canonical='${c:0:12}'"
+# b2: real history rows carry authorship (before: 0 of 5)
+a=$(curl -s -H "Authorization: Bearer $AUTH" -H "$H" "http://localhost:4042/telegram/topics/29723/messages?limit=5" | python3 -c "import json,sys; d=json.load(sys.stdin); r=d if isinstance(d,list) else (d.get('messages') or d.get('rows') or []); print(sum(1 for x in r if isinstance(x,dict) and 'authorship' in x),'/',len(r))"); [[ "$a" == 5* ]] || [[ "$a" == [1-9]* ]] && p PASS b2 "authorship on $a rows (before 0/5)" || p FAIL b2 "authorship on $a rows (before 0/5)"
+# fix-2 #22 + fix-4 #1: still-live re-checks
+s=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $AUTH" "http://localhost:4042/blockers/self-unblock-runs?limit=1"); [ "$s" = 200 ] && p PASS fix-2/#22 "self-unblock-runs -> 200" || p FAIL fix-2/#22 "-> $s"
+s=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $AUTH" -H "$H" "http://localhost:4042/conformance/coverage/health?topicId=29723"); [ "$s" = 200 ] && p PASS fix-4/#1 "conformance health (+topic,+header) -> 200" || p FAIL fix-4/#1 "-> $s"
+# lane-f and fix-1 need EVENTS — see step5-proof-procedures.md; report their CURRENT state so the runner sees the before.
+r=$(grep '"type":"exited"' logs/reap-log.jsonl | grep 'w25-proof-f-clean-exit' | tail -1); if [ -z "$r" ]; then p INFO lane-f "no w25-proof-f-clean-exit row yet — run the controlled clean-exit procedure first"; else v=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); ok=isinstance(d.get('midWork'),bool) and d.get('outcome') in ('completed','stopped-mid-work'); print('PASS' if ok else 'FAIL','exitCode',d.get('exitCode'),'midWork',d.get('midWork'),'outcome',d.get('outcome'))" "$r"); p "${v%% *}" lane-f "${v#* } (before: all three null; row shape from lane-f's diff)"; fi
+g=$(curl -s -H "Authorization: Bearer $AUTH" "http://localhost:4042/decision-quality?sinceHours=24" | python3 -c "import json,sys; d=json.load(sys.stdin); pts=d.get('points') or []; print(sum((x.get('grades') or {}).get('right',0)+(x.get('grades') or {}).get('wrong',0) for x in pts))"); p INFO fix-1/#19 "settled grades 24h: $g  (needs the wrong-arm procedure; before 0)"
+# lane-e: probe present in the running server?
+e=$(grep -c "SessionsReadDiscrepancy\|sessions-read discrepancy" logs/server.log); [ "$e" -gt 0 ] && p PASS lane-e "probe lines in server.log: $e (before 0)" || p FAIL lane-e "probe lines in server.log: 0 (before 0)"

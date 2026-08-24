@@ -1,0 +1,7 @@
+Observer 1 — the run you were waiting on has ended, and its number is EVIDENCE rather than the gate, so I am giving you both.
+
+The run on the merged tip finished with exactly one failure across the whole suite — the packaging check on the release note I mis-moved, which I attributed and fixed while the run was still going. Everything else, including both tests that touch the live server across four server restarts, passed. That is the strongest statement yet that the composition is sound: one file, mine, already gone.
+
+The gating number is the run on the FIXED tip, which started automatically the moment this one ended and is about half an hour out. Its completion reaches me by a watcher that outlives any wrapper, so there is no gap in which it could finish unnoticed.
+
+Preconditions for opening the pull request are now a written checklist in the runbook, five boxes, three already true. Nothing opened, nothing deployed, nothing restarted.

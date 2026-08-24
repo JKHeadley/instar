@@ -1,0 +1,72 @@
+diff --git a/src/core/SessionManager.ts b/src/core/SessionManager.ts
+index 82d5969a7..cc379cd82 100644
+--- a/src/core/SessionManager.ts
++++ b/src/core/SessionManager.ts
+@@ -3580,10 +3580,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
+     try {
+       const paneInfo = withSyncOp(() => execFileSync(
+         this.config.tmuxPath,
+-        ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}'],
++        ['display-message', '-t', `=${tmuxSession}:`, '-p', '#{pane_current_command}||#{pane_start_command}||#{pane_dead}||#{pane_dead_status}'],
+         { encoding: 'utf-8', timeout: 5000 }
+       )).trim();
+-      const [paneCmd, startCmd] = paneInfo.split('||');
++      const fields = paneInfo.split('||');
++      if (fields[2] === '1') {
++        const code = Number(fields[3]);
++        if (Number.isFinite(code)) this.terminalExitCodes.set(tmuxSession, Math.trunc(code));
++        return false;
++      }
++      const [paneCmd, startCmd] = fields;
+       // Claude Code runs as 'claude' or 'node' process
+       if (paneCmd && (paneCmd.includes('claude') || paneCmd.includes('node'))) {
+         return true;
+diff --git a/src/monitoring/SessionsReadDiscrepancyProbe.ts b/src/monitoring/SessionsReadDiscrepancyProbe.ts
+index ace245419..c4fb19093 100644
+--- a/src/monitoring/SessionsReadDiscrepancyProbe.ts
++++ b/src/monitoring/SessionsReadDiscrepancyProbe.ts
+@@ -1,6 +1,7 @@
+ import fs from 'node:fs';
+ import os from 'node:os';
+ import path from 'node:path';
++import { DegradationReporter } from './DegradationReporter.js';
+ 
+ export const SESSIONS_READ_PROBE_MAX_BYTES = 128 * 1024;
+ 
+@@ -40,7 +41,14 @@ export function recordSessionsReadDiscrepancy(
+       fs.appendFileSync(logPath, row, { mode: 0o600 });
+     }
+     return true;
+-  } catch {
++  } catch (err) {
++    DegradationReporter.getInstance().report({
++      feature: 'SessionsReadDiscrepancyProbe.record',
++      primary: 'Append /sessions read-surface discrepancy observation',
++      fallback: 'Skip the discrepancy row and allow GET /sessions to continue',
++      reason: err instanceof Error ? err.message : String(err),
++      impact: 'The read path remains available, but this discrepancy sample is absent from the probe log.',
++    });
+     return false;
+   }
+ }
+diff --git a/src/server/routes.ts b/src/server/routes.ts
+index 0fb558ca2..f1b7ec144 100644
+--- a/src/server/routes.ts
++++ b/src/server/routes.ts
+@@ -1891,7 +1891,15 @@ function resolveAgentFingerprint(ctx: RouteContext): string {
+       if (info.fingerprint) return info.fingerprint;
+       if (info.publicKey) return info.publicKey;
+     }
+-  } catch { /* fall through to project name */ }
++  } catch (err) {
++    DegradationReporter.getInstance().report({
++      feature: 'routes.resolveAgentFingerprint',
++      primary: 'Resolve Threadline fingerprint for mandate routing identity',
++      fallback: 'Use project name as the local agent routing fingerprint',
++      reason: err instanceof Error ? err.message : String(err),
++      impact: 'Mandate checks still deny by default on mismatch, but use a less-specific local identity.',
++    });
++  }
+   return ctx.config.projectName ?? 'self';
+ }
+ 
