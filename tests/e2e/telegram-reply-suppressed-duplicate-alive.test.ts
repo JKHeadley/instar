@@ -30,16 +30,21 @@ import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const TEMPLATE = path.resolve('src/templates/scripts/telegram-reply.sh');
+const PRE_SUPPRESSION_FIX_FIXTURE = path.resolve(
+  'tests/fixtures/relay-history/telegram-reply-pre-suppression.sh',
+);
 const PRIOR_SHIPPED_SHA =
   '4464581188f5c736a62edac5e6a2edecfcfcd365557a18e514b741731bed6e0b';
 const TOPIC = '29723';
 
-/** The pre-fix shipped script: the current template minus the 7-line branch. */
+/**
+ * The real pre-fix shipped script. Keep this pinned to repository history
+ * rather than deriving it from the current template, because today's template
+ * may contain unrelated later changes that never existed in this deployed
+ * version.
+ */
 function priorShippedContent(): string {
-  const lines = fs.readFileSync(TEMPLATE, 'utf-8').split('\n');
-  const start = lines.findIndex(l => l.includes('get("suppressedDuplicate") is True'));
-  if (start === -1) throw new Error('suppression branch not found in template');
-  return [...lines.slice(0, start), ...lines.slice(start + 7)].join('\n');
+  return fs.readFileSync(PRE_SUPPRESSION_FIX_FIXTURE, 'utf-8');
 }
 
 /**

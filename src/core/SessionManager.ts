@@ -3788,6 +3788,34 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Kill the running session whose TMUX NAME is `tmuxSession`, resolving that
+   * name to the session id first.
+   *
+   * W26 lane 1 — the stop that does not stop. `killSession(sessionId)` resolves
+   * its argument through the state store BY ID. The emergency-stop path was
+   * handing it a tmux name, so the lookup missed and it returned `false`
+   * silently while every caller reported "killed". This helper is the one place
+   * that resolution lives, so the two emergency-stop call sites (the
+   * `onSentinelKillSession` wiring and the route's direct fallback) cannot drift
+   * apart, and the resolution is unit-testable in isolation.
+   *
+   * Returns the REAL outcome: `false` when no running session carries that tmux
+   * name (a miss the caller must report as a failed kill, never as success), and
+   * `false` when the underlying kill itself fails. Resolves against the state
+   * record (status `running`) rather than a live tmux probe, so a wedged or
+   * already-dead pane is still resolved and `killSession` — which is defensive
+   * about a pane that is already gone — reconciles the record.
+   */
+  killSessionByTmuxName(tmuxSession: string): boolean {
+    if (!tmuxSession) return false;
+    const session = this.state
+      .listSessions({ status: 'running' })
+      .find((s) => s.tmuxSession === tmuxSession);
+    if (!session) return false;
+    return this.killSession(session.id);
+  }
+
+  /**
    * Check if a tmux session has active (non-baseline) child processes.
    * Returns true if the session is doing real work — running tools, bash commands,
    * subagents, etc. Returns false if only baseline processes (MCP servers, caffeinate)

@@ -16411,7 +16411,21 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
           } catch { /* best effort */ }
         }
-        return sessionManager.killSession(sessionName);
+        // W26 lane 1 — the stop that does not stop.
+        // `killSession` takes a session ID and resolves it through the state
+        // store; it was being handed a TMUX NAME, so the lookup missed and it
+        // returned false silently while every caller reported "killed". Resolve
+        // the id via the single shared helper, and make a miss LOUD rather than
+        // a quiet false.
+        const killed = sessionManager.killSessionByTmuxName(sessionName);
+        if (!killed) {
+          console.error(
+            `[sentinel] KILL FAILED for "${sessionName}": no running session with that tmux name, ` +
+            'or the kill returned false. The session was NOT killed — reporting failure ' +
+            'rather than a kill that did not happen.',
+          );
+        }
+        return killed;
       };
       telegram.onSentinelPauseSession = (sessionName: string) => {
         // Save resume UUID so if the session dies during pause, respawn can --resume

@@ -25,6 +25,8 @@ describe('E2E: autonomous emergency-stop preserves state record', () => {
   let server: Server;
   let baseUrl: string;
   let killed: string[];
+  let killOutcome: boolean;
+  let sent: string[]; // what the PERSON in the topic is told
 
   beforeEach(async () => {
     projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-emergency-stop-e2e-'));
@@ -41,6 +43,8 @@ describe('E2E: autonomous emergency-stop preserves state record', () => {
     ProcessIntegrity.reset();
     ProcessIntegrity.initialize('1.2.36', null);
     killed = [];
+    killOutcome = true;
+    sent = [];
 
     const config = {
       projectName: 'emergency-stop-e2e',
@@ -59,7 +63,7 @@ describe('E2E: autonomous emergency-stop preserves state record', () => {
       state,
       sessionManager: {
         listRunningSessions: () => [],
-        killSession: (name: string) => { killed.push(name); return true; },
+        killSession: (name: string) => { killed.push(name); return killOutcome; },
       } as never,
       sentinel: {
         decideInboundDisposition: async () => ({
@@ -71,8 +75,8 @@ describe('E2E: autonomous emergency-stop preserves state record', () => {
       telegram: {
         logInboundMessage: () => {},
         getSessionForTopic: () => SESSION,
-        onSentinelKillSession: (name: string) => { killed.push(name); return true; },
-        sendToTopic: async () => {},
+        onSentinelKillSession: (name: string) => { killed.push(name); return killOutcome; },
+        sendToTopic: async (_topic: number, text: string) => { sent.push(text); },
         onTopicMessage: () => { throw new Error('emergency stop routed to session'); },
       } as never,
       scheduler: null,
@@ -133,5 +137,48 @@ describe('E2E: autonomous emergency-stop preserves state record', () => {
     const content = fs.readFileSync(stateFile, 'utf8');
     expect(content).toMatch(/^active: false$/m);
     expect(content).toContain('release evidence in progress');
+    // The person in the topic is told the truth: it was terminated.
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatch(/^Session terminated\./);
+  });
+
+  // Both sides of the decision boundary on the production init path: a kill that
+  // FAILS must report failure (killed:false) — never the original false
+  // killed:true — while the record is still preserved.
+  it('reports killed:false when the kill fails, and STILL leaves the record intact', async () => {
+    killOutcome = false; // the emergency-stop kill does not land
+    const stateFile = path.join(stateDir, 'autonomous', `${TOPIC}.local.md`);
+    const res = await fetch(`${baseUrl}/internal/telegram-forward`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${AUTH_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        topicId: TOPIC,
+        text: 'stop everything',
+        fromUserId: 1,
+        fromUsername: 'operator',
+        fromFirstName: 'Operator',
+        messageId: 2,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, sentinel: 'emergency-stop', killed: false });
+    expect(killed).toContain(SESSION); // the kill was attempted against the bound session
+    // The record-preservation half still holds even when the kill fails.
+    expect(fs.existsSync(stateFile)).toBe(true);
+    const content = fs.readFileSync(stateFile, 'utf8');
+    expect(content).toMatch(/^active: false$/m);
+    expect(content).toContain('release evidence in progress');
+    // The message a PERSON reads must not claim termination when the kill
+    // failed: it says the session is still running AND that the stop was
+    // recorded, in plain English with no internal identifiers.
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toMatch(/terminated/i);
+    expect(sent[0]).toMatch(/still running/i);
+    expect(sent[0]).toMatch(/recorded/i);
+    expect(sent[0]).not.toContain(SESSION);
   });
 });

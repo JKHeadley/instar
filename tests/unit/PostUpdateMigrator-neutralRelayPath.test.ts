@@ -89,4 +89,10 @@ describe('PostUpdateMigrator — framework-neutral telegram-reply mirror (Gap 4)
     expect(fs.existsSync(neutralPath)).toBe(false);
     expect(fs.existsSync(claudePath)).toBe(false);
   });
+
+  it('recognizes the last shipped decision-ref-corrupt relay for in-place upgrade', () => {
+    expect(PostUpdateMigrator.TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS.has(
+      '74ee09b4d4d537ddfe032f3192cab08b4f2f956fdb1e1b3ccd94b26dc218fb52',
+    )).toBe(true);
+  });
 });

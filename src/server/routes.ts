@@ -7,6 +7,7 @@
 
 import { Router } from 'express';
 import { telegramFetch } from '../messaging/telegram-egress.js';
+import { emergencyStopUserMessage } from '../messaging/shared/emergencyStopUserMessage.js';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import { execFileSync } from 'node:child_process';
 import { createHash, timingSafeEqual, randomUUID } from 'node:crypto';
@@ -22548,15 +22549,35 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             sessionName = ctx.telegram?.getSessionForTopic(Number(topicId)) ?? null;
           }
           if (decision.disposition === 'kill') {
+            // Default false: no kill has happened yet at this point, and an
+            // unset outcome must never read as success.
+            let killOutcome = false;
             if (sessionName) {
+              // W26 lane 1 — report what happened, not what was attempted.
+              // The outcome used to be discarded here and `killed` was derived
+              // from whether a session NAME resolved, so a kill that never
+              // landed still answered killed:true and logged "killed session".
               if (ctx.telegram?.onSentinelKillSession) {
-                ctx.telegram.onSentinelKillSession(sessionName); // saves resume UUID + kills
+                killOutcome = ctx.telegram.onSentinelKillSession(sessionName) === true; // saves resume UUID + kills
               } else {
-                try { ctx.sessionManager?.killSession(sessionName); } catch { /* best-effort */ }
+                try {
+                  // killSession resolves by session ID, so a tmux name must be
+                  // translated first — passing the name straight through is the
+                  // original defect and returns false silently. The shared helper
+                  // owns that resolution and returns the REAL outcome.
+                  killOutcome = ctx.sessionManager?.killSessionByTmuxName(sessionName) === true;
+                } catch { killOutcome = false; }
               }
               // Clear this topic's autonomous job so it doesn't zombie-resume.
               try { stopAutonomousTopic(ctx.config.stateDir, String(topicId), ctx.state.getCoherenceJournal()); } catch { /* best-effort */ }
-              console.log(`[telegram-forward] sentinel emergency-stop: killed session "${sessionName}" for topic ${topicId}`);
+              if (killOutcome) {
+                console.log(`[telegram-forward] sentinel emergency-stop: killed session "${sessionName}" for topic ${topicId}`);
+              } else {
+                console.error(
+                  `[telegram-forward] sentinel emergency-stop: KILL FAILED for session "${sessionName}" ` +
+                  `(topic ${topicId}) — the session was NOT killed. The stop record is still preserved.`,
+                );
+              }
             }
             // Emergency stop reaches the resume queue (reap-notify R2.7): the
             // MessageSentinel stop pauses the queue globally + cancels this
@@ -22570,10 +22591,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             if (decision.reason) {
               console.log(`[telegram-forward] sentinel stop reason: ${decision.reason}`);
             }
-            ctx.telegram?.sendToTopic(Number(topicId), sessionName
-              ? 'Session terminated.\n\nSend a new message to start a fresh session.'
-              : 'No active session to stop.').catch(() => { /* best-effort */ });
-            res.json({ ok: true, sentinel: 'emergency-stop', killed: !!sessionName });
+            // The text a PERSON reads is keyed on the kill OUTCOME, never on
+            // whether a session name resolved — it used to say "Session
+            // terminated." for a kill that failed (W26 lane 1 addendum).
+            ctx.telegram?.sendToTopic(Number(topicId), emergencyStopUserMessage(sessionName, killOutcome))
+              .catch(() => { /* best-effort */ });
+            // `killed` is the OUTCOME of the kill, never merely "a session name
+            // resolved" — the latter reported success for a kill that never ran.
+            res.json({ ok: true, sentinel: 'emergency-stop', killed: killOutcome });
             return;
           }
           // pause

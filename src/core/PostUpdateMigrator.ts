@@ -15876,6 +15876,13 @@ process.stdin.on('end', async () => {
     // mis-reporting version in place with a `.new` beside it, and every
     // existing agent keeps being told its suppressed sends succeeded.
     '4464581188f5c736a62edac5e6a2edecfcfcd365557a18e514b741731bed6e0b',
+    // Suppressed-duplicate honesty version, shipped immediately BEFORE the
+    // decision-ref preservation fix. In this version the relay stripped `_`
+    // from `--tone-decision-ref`, turning production refs like
+    // `d-m_03b30f-...` into unjoinable orphan outcomes. Registering it here is
+    // what lets deployed agents receive the fixed client instead of only
+    // writing a `.new` candidate beside the broken installed copy.
+    '74ee09b4d4d537ddfe032f3192cab08b4f2f956fdb1e1b3ccd94b26dc218fb52',
   ]);
 
   /**

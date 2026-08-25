@@ -23,11 +23,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { StateManager } from '../../src/core/StateManager.js';
+import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { resolveToneGateOperatorConfig } from '../../src/core/MessagingToneGate.js';
@@ -61,6 +63,60 @@ function createStubTelegram() {
       return { ok: true };
     },
   };
+}
+
+function runInstalledReplyScript(opts: {
+  scriptPath: string;
+  agentHome: string;
+  decisionRef: string;
+}): Promise<{ status: number | null; body: any; stdout: string; stderr: string }> {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tone-advisory-client-e2e-bin-'));
+  const bodyPath = path.join(binDir, 'body.json');
+  const curlStub = path.join(binDir, 'curl');
+  fs.writeFileSync(curlStub, `#!/bin/sh
+prev=''
+for arg in "$@"; do
+  if [ "$prev" = "-d" ]; then
+    printf '%s' "$arg" > '${bodyPath}'
+  fi
+  prev="$arg"
+done
+printf '%s\\n%s\\n' '{"ok":true}' '200'
+`);
+  fs.chmodSync(curlStub, 0o755);
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('bash', [
+      opts.scriptPath,
+      '--tone-complied', 'B2_FILE_PATH',
+      '--tone-decision-ref', opts.decisionRef,
+      '9005',
+      'The revised answer avoids the raw path.',
+    ], {
+      cwd: opts.agentHome,
+      env: {
+        ...process.env,
+        PATH: `${binDir}:${process.env.PATH ?? ''}`,
+        INSTAR_SENDER_CLASS: 'script',
+        INSTAR_AUTH_TOKEN: '',
+        INSTAR_PORT: '',
+      },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', c => { stdout += c.toString(); });
+    child.stderr.on('data', c => { stderr += c.toString(); });
+    child.on('error', reject);
+    child.on('close', status => {
+      const body = JSON.parse(fs.readFileSync(bodyPath, 'utf-8'));
+      SafeFsExecutor.safeRmSync(binDir, {
+        recursive: true,
+        force: true,
+        operation: 'tests/e2e/tone-gate-advisory-migration-alive.test.ts:client-bin',
+      });
+      resolve({ status, body, stdout, stderr });
+    });
+  });
 }
 
 describe('Tone-gate advisory migration E2E lifecycle (feature is alive)', () => {
@@ -212,6 +268,31 @@ describe('Tone-gate advisory migration E2E lifecycle (feature is alive)', () => 
     });
     // Keep the pre-existing credential-wall assertions independent of this send.
     sent.length = 0;
+  });
+
+  it('the production update path installs a reply client that preserves machine-prefixed decisionRefs', async () => {
+    fs.writeFileSync(
+      path.join(stateDir, 'config.json'),
+      JSON.stringify({ port: 49999, projectName: 'e2e', agentName: 'E2E' }),
+    );
+    const migration = new PostUpdateMigrator({
+      projectDir: tmpDir,
+      stateDir,
+      port: 49999,
+      hasTelegram: true,
+      projectName: 'e2e',
+    }).migrate();
+    expect(migration.errors.filter(e => e.includes('telegram-reply'))).toEqual([]);
+
+    const decisionRef = 'd-m_03b30f-00000000-0000-4000-8000-000000000005';
+    const result = await runInstalledReplyScript({
+      scriptPath: path.join(stateDir, 'scripts', 'telegram-reply.sh'),
+      agentHome: tmpDir,
+      decisionRef,
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.body.metadata.toneAdvisoryDecisionRef).toBe(decisionRef);
   });
 
   it('REJECTS an impostor annotator claiming the rule (self-report cannot be forged by another component)', () => {

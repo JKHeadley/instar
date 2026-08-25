@@ -21,17 +21,21 @@
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import express from 'express';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { createRoutes } from '../../src/server/routes.js';
 import { MessagingToneGate } from '../../src/core/MessagingToneGate.js';
+import { FeatureMetricsLedger } from '../../src/monitoring/FeatureMetricsLedger.js';
 import {
   DecisionQualityRecorderImpl,
   installDecisionQualityRecorder,
 } from '../../src/core/DecisionQualityRecorderImpl.js';
 import type { IntelligenceProvider } from '../../src/core/types.js';
+import { DP_MESSAGING_TONE_GATE } from '../../src/data/provenanceCoverage.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 /**
  * The advisory disposition is CONDITIONAL on the reaction being recordable
@@ -39,9 +43,13 @@ import type { IntelligenceProvider } from '../../src/core/types.js';
  * gate keeps its authority and returns a plain block. So an advisory test must
  * install a live recorder — and the un-installed case is itself worth asserting.
  */
+let ledger: FeatureMetricsLedger | null = null;
+const tmpDirs: string[] = [];
 function installLiveRecorder(): void {
+  ledger = new FeatureMetricsLedger({ dbPath: ':memory:' });
   installDecisionQualityRecorder(
     new DecisionQualityRecorderImpl({
+      ledger,
       config: {
         developmentAgent: true,
         provenance: { uniformSeam: { enabled: true, dryRun: false } },
@@ -113,6 +121,36 @@ function buildApp(opts: {
   return app;
 }
 
+function runReplyScript(opts: {
+  port: number;
+  args: string[];
+}): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'telegram-reply-client-int-'));
+  tmpDirs.push(dir);
+  fs.mkdirSync(path.join(dir, '.instar'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, '.instar', 'config.json'),
+    JSON.stringify({ port: opts.port, projectName: 'client-int' }),
+  );
+  return new Promise((resolve, reject) => {
+    const child = spawn('bash', [path.resolve('src/templates/scripts/telegram-reply.sh'), ...opts.args], {
+      cwd: dir,
+      env: {
+        ...process.env,
+        INSTAR_SENDER_CLASS: 'script',
+        INSTAR_AUTH_TOKEN: '',
+        INSTAR_PORT: '',
+      },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', reject);
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
 /** The founding complaint: a message whose only sin is naming a directory. */
 const PATH_MESSAGE =
   'I put the convergence report in docs/audits/tone-gate-grading.md — it lists every scenario and the verdicts.';
@@ -127,7 +165,19 @@ const B2_VERDICT = {
 describe('advisory migration through POST /telegram/reply', () => {
   let server: TestServer;
   beforeEach(() => { installLiveRecorder(); });
-  afterEach(async () => { await server?.close(); installDecisionQualityRecorder(null); });
+  afterEach(async () => {
+    await server?.close();
+    installDecisionQualityRecorder(null);
+    ledger?.close();
+    ledger = null;
+    for (const dir of tmpDirs.splice(0)) {
+      SafeFsExecutor.safeRmSync(dir, {
+        recursive: true,
+        force: true,
+        operation: 'tests/integration/telegram-reply-advisory-migration.test.ts',
+      });
+    }
+  });
 
   async function reply(topicId: number, text: string, metadata?: Record<string, unknown>) {
     const res = await fetch(`${server.url}/telegram/reply/${topicId}`, {
@@ -358,6 +408,48 @@ describe('advisory migration through POST /telegram/reply', () => {
     });
     expect(res.status).toBe(200);
     expect(sent).toHaveLength(1);
+  });
+
+  it('the documented reply client preserves a machine-prefixed decisionRef and settles the outcome', async () => {
+    const sent: Array<{ topicId: number; text: string }> = [];
+    const gate = new MessagingToneGate(
+      makeProvider({ pass: true, rule: '', issue: '', suggestion: '' }),
+      { advisoryMigration: true },
+    );
+    server = await listen(buildApp({ toneGate: gate, sent }));
+    const port = Number(new URL(server.url).port);
+    const correlationId = 'd-m_03b30f-00000000-0000-4000-8000-000000000111';
+    expect(ledger).not.toBeNull();
+    ledger!.recordDecision({
+      correlationId,
+      decisionPoint: DP_MESSAGING_TONE_GATE,
+      feature: 'messaging-tone-gate',
+      verdictClass: 'advisory',
+      mintedBy: 'router',
+      volumeClass: 'all',
+      contentClass: 'identity-only',
+      ts: Date.now() - 100,
+    });
+
+    const result = await runReplyScript({
+      port,
+      args: [
+        '--tone-complied', 'B2_FILE_PATH',
+        '--tone-decision-ref', correlationId,
+        '204',
+        'The revised answer avoids the raw path.',
+      ],
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(sent).toHaveLength(1);
+    await new Promise((resolve) => setImmediate(resolve));
+    const point = ledger!.decisionQualityRollupDaily({ decisionPoint: DP_MESSAGING_TONE_GATE })[0];
+    expect(point).toMatchObject({
+      right: 1,
+      wrong: 0,
+      orphanOutcomes: 0,
+    });
   });
 });
 
