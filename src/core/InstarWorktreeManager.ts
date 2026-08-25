@@ -605,7 +605,7 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<Creat
   // Per-worktree git identity. Cosmetic attribution, not authority. Signing
   // configuration (user.signingkey, commit.gpgsign, gpg.format,
   // gpg.ssh.allowedSignersFile) is deliberately untouched.
-  setLocalGitIdentity(worktreePath, agentName);
+  setLocalGitIdentity(worktreePath, instarRepo, opts.stateDir ?? path.join(agentHome, '.instar'));
   ensureHuskyHooksActive(worktreePath);
 
   const shareNodeModules = opts.shareNodeModules ?? true;
@@ -697,12 +697,70 @@ function classifyWorktreeAddError(stderr: string, worktreePath: string, repoPath
   return `worktree add failed: ${stderr}`;
 }
 
-function setLocalGitIdentity(worktreePath: string, agentName: string): void {
+export type CommitIdentity = { name: string; email: string };
+
+/**
+ * Resolve the identity a worktree commits as. NEVER invents one.
+ *
+ * Order: (1) `git.commitIdentity` in the agent's config.json; (2) the agent
+ * repo's own user.name/user.email; (3) nothing — the caller must refuse.
+ *
+ * No domain is hardcoded here, deliberately. This function used to stamp
+ * `<agent>@instar.local`, an address linked to no account, which trips
+ * GitHub's `require_extra_approval_for_unattributed_changes` and turns every
+ * release into a human approval. Substituting a different hardcoded domain
+ * would swap one invented identity for another; the point is that an identity
+ * nobody configured must not be minted at all.
+ */
+export function resolveCommitIdentity(instarRepo: string, stateDir: string): CommitIdentity | null {
+  // Rung 1 — explicit configuration wins.
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8'));
+    const id = cfg?.git?.commitIdentity;
+    if (
+      id && typeof id.name === 'string' && typeof id.email === 'string'
+      && id.name.trim() !== '' && id.email.trim() !== ''
+    ) {
+      return { name: id.name.trim(), email: id.email.trim() };
+    }
+  } catch {
+    // @silent-fallback-ok — an absent, unreadable or malformed config is not an
+    //   error here: it simply means rung 1 has nothing to say. Rung 3 still
+    //   refuses if every rung comes up empty, so nothing is minted silently.
+  }
+
+  // Rung 2 — inherit whatever the agent's own repository commits as.
+  const readOp = 'src/core/InstarWorktreeManager.ts:resolveCommitIdentity';
+  // `config --get <key>` is the unambiguous READ form: the bare `config <key>`
+  // shape is classified destructive by SafeGitExecutor's read funnel (it cannot
+  // tell a read from a write), and a missing key exits non-zero, which tryGit
+  // turns into the "absent" branch below rather than a crash.
+  const nameRes = tryGit(['-C', instarRepo, 'config', '--get', 'user.name'], instarRepo, readOp, 'read');
+  const emailRes = tryGit(['-C', instarRepo, 'config', '--get', 'user.email'], instarRepo, readOp, 'read');
+  const name = nameRes.ok ? nameRes.stdout.trim() : '';
+  const email = emailRes.ok ? emailRes.stdout.trim() : '';
+  if (name !== '' && email !== '') return { name, email };
+
+  // Rung 3 — refuse. Do NOT mint.
+  return null;
+}
+
+function setLocalGitIdentity(worktreePath: string, instarRepo: string, stateDir: string): void {
+  const identity = resolveCommitIdentity(instarRepo, stateDir);
+  if (!identity) {
+    throw new Error(
+      'refusing to create the worktree: no commit identity is configured. Set '
+      + '"git": { "commitIdentity": { "name": ..., "email": ... } } in the agent config, or set '
+      + 'user.name and user.email on the agent repository. A worktree that commits as an '
+      + 'unattributed identity costs a human approval at release time, so this refuses rather '
+      + 'than inventing one.',
+    );
+  }
   // Set only user.name + user.email. Do not touch signing configuration —
   // global user.signingkey / commit.gpgsign / gpg.format flow through unchanged.
   const idOp = 'src/core/InstarWorktreeManager.ts:setLocalGitIdentity';
-  tryGit(['-C', worktreePath, 'config', 'user.name', `Instar Agent (${agentName})`], worktreePath, idOp, 'write');
-  tryGit(['-C', worktreePath, 'config', 'user.email', `${agentName}@instar.local`], worktreePath, idOp, 'write');
+  tryGit(['-C', worktreePath, 'config', 'user.name', identity.name], worktreePath, idOp, 'write');
+  tryGit(['-C', worktreePath, 'config', 'user.email', identity.email], worktreePath, idOp, 'write');
 }
 
 function maybeSymlinkNodeModules(instarRepo: string, worktreePath: string): void {
