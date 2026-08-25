@@ -414,11 +414,9 @@ if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ] \
   # ── Tone-gate reaction metadata ─────────────────────────────────────────
   # Without these four the migration is inert through the only sanctioned send
   # path: the agent would be told by the 422 to override and have no way to do
-  # it. Rule ids are charset-clamped; decision refs are accepted only in the
-  # router correlation-id shape (`d-<uuid>` / `d-<machine>-<uuid>`, same for
-  # `b-`) so production machine ids like `m_03b30f` survive byte-for-byte
-  # without admitting shell- or JSON-hostile text. The reason is JSON-escaped via
-  # python3 (the only field that can contain arbitrary prose).
+  # it. Values are charset-clamped — a rule id and a correlation id have narrow
+  # alphabets, and the reason is JSON-escaped via python3 (the only field that
+  # can contain arbitrary prose).
   if [ -n "$TONE_ACK" ]; then
     TONE_ACK_CLEAN=$(printf '%s' "$TONE_ACK" | tr -cd 'A-Z0-9_' | cut -c1-64)
     [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
@@ -434,13 +432,7 @@ if [ -n "$MESSAGE_KIND" ] || [ -n "$SENDER_CLASS" ] || [ -n "$JOB_SLUG" ] \
     META_PARTS="${META_PARTS}\"toneAdvisoryComplied\":\"${TONE_COMPLIED_CLEAN}\""
   fi
   if [ -n "$TONE_DECISION_REF" ]; then
-    TONE_REF_CLEAN=$(printf '%s' "$TONE_DECISION_REF" | python3 -c '
-import re, sys
-ref = sys.stdin.read()[:129]
-pat = re.compile(r"^[db]-(?:[A-Za-z0-9_]{1,64}-)?[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
-if len(ref) <= 128 and pat.fullmatch(ref):
-    sys.stdout.write(ref)
-' 2>/dev/null || printf '')
+    TONE_REF_CLEAN=$(printf '%s' "$TONE_DECISION_REF" | tr -cd 'a-zA-Z0-9-' | cut -c1-128)
     [ -n "$META_PARTS" ] && META_PARTS="${META_PARTS},"
     META_PARTS="${META_PARTS}\"toneAdvisoryDecisionRef\":\"${TONE_REF_CLEAN}\""
   fi
@@ -527,13 +519,6 @@ HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 
 if [ "$HTTP_CODE" = "200" ]; then
-  if printf '%s' "$BODY" | python3 -c 'import sys,json; raise SystemExit(0 if json.load(sys.stdin).get("suppressedDuplicate") is True else 1)' 2>/dev/null; then
-    SUPPRESSED_DELIVERY_ID=$(printf '%s' "$BODY" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("deliveryId", ""))' 2>/dev/null || echo "")
-    DELIVERY_ID_DETAIL=""
-    [ -n "$SUPPRESSED_DELIVERY_ID" ] && DELIVERY_ID_DETAIL="; delivery id $SUPPRESSED_DELIVERY_ID"
-    echo "NOT SENT — suppressed duplicate for topic $TOPIC_ID${DELIVERY_ID_DETAIL}; an identical message was already delivered to that topic recently"
-    exit 1
-  fi
   echo "Sent $(echo "$MSG" | wc -c | tr -d ' ') chars to topic $TOPIC_ID"
 elif [ "$HTTP_CODE" = "408" ]; then
   # Request timeout on the server side — the outbound path (tone gate + Telegram API)

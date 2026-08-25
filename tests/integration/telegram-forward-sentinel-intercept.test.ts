@@ -43,7 +43,7 @@ function buildContext(
   stateDir: string,
   decideImpl: (msg: string) => Promise<{ disposition: 'kill' | 'pause' | 'route-through'; category: SentinelCategory; reason?: string }>,
   spies: Spies,
-  opts: { withSession: boolean } = { withSession: true },
+  opts: { withSession: boolean; killOutcome?: boolean } = { withSession: true },
 ): RouteContext {
   // Persistent topic→session registry (the resolver's primary source).
   if (opts.withSession) {
@@ -80,7 +80,7 @@ function buildContext(
       onTopicMessage: (m: { content: string }) => { spies.routed.push(m.content); },
       logInboundMessage: () => {},
       getSessionForTopic: (_t: number) => (opts.withSession ? SESSION : null),
-      onSentinelKillSession: (name: string) => { spies.killed.push(name); return true; },
+      onSentinelKillSession: (name: string) => { spies.killed.push(name); return opts.killOutcome ?? true; },
       onSentinelPauseSession: (name: string) => { spies.paused.push(name); },
       sendToTopic: async (_t: number, msg: string) => { spies.sent.push(msg); },
     } as never,
@@ -152,6 +152,51 @@ describe('/internal/telegram-forward — sentinel emergency-stop/pause intercept
     expect(spies.routed).toHaveLength(0);    // message was NOT delivered to the session
     expect(fs.existsSync(stateFile)).toBe(true); // record survives emergency stop
     expect(fs.readFileSync(stateFile, 'utf8')).toMatch(/^active: false$/m);
+    // The thing a person reads: a kill that landed is reported as terminated.
+    expect(spies.sent).toHaveLength(1);
+    expect(spies.sent[0]).toMatch(/^Session terminated\./);
+  });
+
+  // ── MUST-FAIL ARM 2: a false killed:true ────────────────────────────────
+  // The session name resolves (a session IS bound to the topic), but the kill
+  // itself does not land. The response must report the OUTCOME (killed:false),
+  // never merely "a session name resolved" — the latter is the original defect
+  // (`killed: !!sessionName`) that answered killed:true for a kill that never
+  // ran. The record is still preserved regardless.
+  it('disposition kill whose kill FAILS reports killed:false and STILL preserves the record', async () => {
+    fs.mkdirSync(path.join(stateDir, 'autonomous'), { recursive: true });
+    const stateFile = path.join(stateDir, 'autonomous', `${TOPIC}.local.md`);
+    fs.writeFileSync(
+      stateFile,
+      `---\nactive: true\npaused: false\nreport_topic: "${TOPIC}"\nstarted_at: "2026-08-23T00:00:00Z"\n---\n\nlive notes\n`,
+    );
+    const ctx = buildContext(
+      stateDir,
+      async () => ({ disposition: 'kill', category: 'emergency-stop', reason: 'exact match: stop' }),
+      spies,
+      { withSession: true, killOutcome: false }, // the kill does not land
+    );
+    const res = await forward(makeApp(ctx), 'stop everything');
+    expect(res.status).toBe(200);
+    // The arm that would have caught the original defect:
+    expect(res.body).toMatchObject({ ok: true, sentinel: 'emergency-stop', killed: false });
+    expect(spies.killed).toContain(SESSION);   // the kill was ATTEMPTED against the bound session
+    expect(spies.routed).toHaveLength(0);       // the message was NOT delivered to the session
+    // The half that already worked must keep working — the record is preserved
+    // and stamped inactive even though the kill failed.
+    expect(fs.existsSync(stateFile)).toBe(true);
+    expect(fs.readFileSync(stateFile, 'utf8')).toMatch(/^active: false$/m);
+    // The message the PERSON receives must not claim termination. The JSON
+    // above is read by machines; this line is read by someone who will act on
+    // it. It used to branch on `sessionName` (a name resolved) rather than on
+    // the kill outcome, so a failed kill still told the operator
+    // "Session terminated." — the exact defect this lane exists to remove.
+    expect(spies.sent).toHaveLength(1);
+    const userMessage = spies.sent[0];
+    expect(userMessage).not.toMatch(/terminated/i);
+    expect(userMessage).toMatch(/still running/i);   // plainly: it did NOT stop
+    expect(userMessage).toMatch(/recorded/i);        // ...and the stop record was preserved
+    expect(userMessage).not.toContain(SESSION);      // plain English — no internal identifiers
   });
 
   it('disposition pause → pauses the session and does NOT route (deterministic pause)', async () => {
@@ -204,6 +249,10 @@ describe('/internal/telegram-forward — sentinel emergency-stop/pause intercept
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ ok: true, sentinel: 'emergency-stop', killed: false });
     expect(spies.routed).toHaveLength(0);
+    expect(spies.killed).toHaveLength(0); // nothing to kill, so nothing was attempted
+    // Third state of the user-facing text: no session to stop (not "terminated",
+    // not "still running").
+    expect(spies.sent).toEqual(['No active session to stop.']);
   });
 });
 

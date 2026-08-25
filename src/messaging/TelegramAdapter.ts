@@ -19,6 +19,7 @@ import { NotificationBatcher, NotificationTier } from './NotificationBatcher.js'
 import type { ContentValidationConfig } from './TopicContentValidator.js';
 import { validateTopicContent, getTopicPurpose, classifyContent } from './TopicContentValidator.js';
 import { SHARED_INFRA_FLAGS } from './shared/FeatureFlags.js';
+import { emergencyStopUserMessage } from './shared/emergencyStopUserMessage.js';
 import { MessageLogger, type LogEntry as SharedLogEntry } from './shared/MessageLogger.js';
 import type { MessageProvenance } from './shared/MessageProvenance.js';
 import { SessionChannelRegistry } from './shared/SessionChannelRegistry.js';
@@ -4987,8 +4988,22 @@ export class TelegramAdapter implements MessagingAdapter {
           const sessionName = this.topicToSession.get(numericTopicId);
           if (classification.category === 'emergency-stop' && sessionName) {
             console.log(`[sentinel] Emergency stop for session "${sessionName}" in topic ${numericTopicId}`);
+            // W26 lane 1 — the conversational stop path must not swallow a
+            // failed kill either. Default false: no kill has happened yet, and
+            // an unset outcome must never read as success (a missing kill
+            // handler means nothing was killed).
+            let killed = false;
             if (this.onSentinelKillSession) {
-              this.onSentinelKillSession(sessionName);
+              killed = this.onSentinelKillSession(sessionName) === true;
+            }
+            if (!killed) {
+              // The record below is preserved regardless, but a kill that did
+              // not land is logged as a failure, never as silence that reads
+              // like success.
+              console.error(
+                `[sentinel] KILL FAILED for session "${sessionName}" in topic ${numericTopicId} — ` +
+                'the session was NOT killed. Stop custody and the run record still proceed.',
+              );
             }
             // Durable Inbound Message Queue §3.6: the stop reaches custody —
             // queued rows for this topic settle terminal (operator-stop),
@@ -5007,9 +5022,9 @@ export class TelegramAdapter implements MessagingAdapter {
             if (classification.reason) {
               console.log(`[sentinel] Stop reason: ${classification.reason}`);
             }
-            await this.sendToTopic(numericTopicId,
-              `Session terminated.\n\nSend a new message to start a fresh session.`
-            ).catch(() => {});
+            // The text a PERSON reads is keyed on the kill OUTCOME — it used to
+            // say "Session terminated." for a kill that failed (W26 lane 1).
+            await this.sendToTopic(numericTopicId, emergencyStopUserMessage(sessionName, killed)).catch(() => {});
           } else if (classification.category === 'pause' && sessionName) {
             console.log(`[sentinel] Pause for session "${sessionName}" in topic ${numericTopicId}`);
             if (this.onSentinelPauseSession) {

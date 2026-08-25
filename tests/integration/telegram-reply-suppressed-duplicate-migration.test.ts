@@ -24,36 +24,33 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[] };
 
 const TEMPLATE = path.resolve('src/templates/scripts/telegram-reply.sh');
+const PRE_SUPPRESSION_FIX_FIXTURE = path.resolve(
+  'tests/fixtures/relay-history/telegram-reply-pre-suppression.sh',
+);
 
 /**
- * The SHA this PR registers — the version shipped immediately BEFORE the fix.
- * Every agent in the field is running this exact content.
+ * The SHA registered by the suppressed-duplicate honesty fix — the version
+ * shipped immediately BEFORE that fix.
  */
 const PRIOR_SHIPPED_SHA =
   '4464581188f5c736a62edac5e6a2edecfcfcd365557a18e514b741731bed6e0b';
 
+/**
+ * The SHA registered by the decision-ref preservation fix — the version shipped
+ * immediately BEFORE that fix.
+ */
+const DECISION_REF_CORRUPT_SHIPPED_SHA =
+  '74ee09b4d4d537ddfe032f3192cab08b4f2f956fdb1e1b3ccd94b26dc218fb52';
+
 const SUPPRESSION_MARKER = 'suppressedDuplicate';
 
 /**
- * Reconstruct the pre-fix shipped script by removing the seven-line
- * suppression branch from the current template.
- *
- * Deriving it (rather than pasting a 42KB literal) is deliberate: the
- * reconstruction is only valid if it hashes to the SHA actually registered in
- * the migrator, which the first test asserts. That single assertion is what
- * proves the registered constant is genuinely "current template minus this
- * fix" — a typo'd or stale hash there would silently strand every deployed
- * agent on a `.new` candidate, which is exactly the failure this PR fixes.
+ * Read the actual pre-fix shipped script from a pinned fixture. This must not
+ * be reconstructed from today's template: later unrelated template changes
+ * would create a synthetic version that never shipped.
  */
 function priorShippedContent(): string {
-  const lines = fs.readFileSync(TEMPLATE, 'utf-8').split('\n');
-  const start = lines.findIndex(l => l.includes(`get("${SUPPRESSION_MARKER}") is True`));
-  if (start === -1) throw new Error('suppression branch not found in template');
-  const removed = lines.slice(start, start + 7);
-  if (removed[6].trim() !== 'fi') {
-    throw new Error(`expected the 7-line branch to close with "fi", got: ${removed[6]}`);
-  }
-  return [...lines.slice(0, start), ...lines.slice(start + 7)].join('\n');
+  return fs.readFileSync(PRE_SUPPRESSION_FIX_FIXTURE, 'utf-8');
 }
 
 function sha256(text: string): string {
@@ -106,11 +103,12 @@ describe('suppressed-duplicate honesty — post-update migration', () => {
     });
   });
 
-  it('registers the EXACT sha of the shipped pre-fix template', () => {
-    // If this fails, the migrator's registered hash does not describe any real
-    // deployed script, and the migration reaches nobody.
+  it('registers the EXACT deployed relay shas this migration must reach', () => {
+    // If either membership check fails, a real deployed stock script is treated
+    // as unknown/user-modified and the update path only writes a `.new` file.
     expect(sha256(priorShippedContent())).toBe(PRIOR_SHIPPED_SHA);
     expect(PostUpdateMigrator.TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS.has(PRIOR_SHIPPED_SHA)).toBe(true);
+    expect(PostUpdateMigrator.TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS.has(DECISION_REF_CORRUPT_SHIPPED_SHA)).toBe(true);
   });
 
   it('the pre-fix script genuinely lacks the fix (the "before" state is real)', () => {
