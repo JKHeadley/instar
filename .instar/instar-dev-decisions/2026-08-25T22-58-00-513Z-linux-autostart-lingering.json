@@ -1,0 +1,23 @@
+{
+  "ts": "2026-08-25T22:58:00.513Z",
+  "slug": "linux-autostart-lingering",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 150,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/cli.ts",
+      "src/commands/setup.ts"
+    ],
+    "addedLines": 148,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
