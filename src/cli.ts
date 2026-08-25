@@ -1912,13 +1912,25 @@ autostartCmd
   .option('-d, --dir <path>', 'Project directory')
   .action(async (opts) => {
     const { loadConfig } = await import('./core/Config.js');
-    const { installAutoStart } = await import('./commands/setup.js');
+    const { installAutoStart, takeLastLingerOutcome, describeLingerOutcome, currentSystemdUser } =
+      await import('./commands/setup.js');
     const config = loadConfig(opts.dir);
     const hasTelegram = config.messaging?.some((m: { type: string }) => m.type === 'telegram') ?? false;
     const installed = installAutoStart(config.projectName, config.projectDir, hasTelegram);
     if (installed) {
       console.log(pc.green(`Auto-start installed for "${config.projectName}".`));
-      console.log(pc.dim('Your agent will start automatically when you log in.'));
+      // On Linux, "installed" and "starts at boot" are different facts: an
+      // enabled user service only runs while that user holds a login session
+      // unless lingering is on. Report which one is actually true rather than
+      // the old unconditional "starts when you log in" (2026-08-25, headless
+      // Linux host — the message was true in a way that meant never).
+      const linger = takeLastLingerOutcome();
+      if (linger) {
+        const line = describeLingerOutcome(linger, currentSystemdUser());
+        console.log(linger === 'needs-privilege' ? pc.yellow(line) : pc.dim(line));
+      } else {
+        console.log(pc.dim('Your agent will start automatically when you log in.'));
+      }
     } else {
       console.log(pc.red('Failed to install auto-start.'));
       console.log(pc.dim(`Platform: ${process.platform} — auto-start supports macOS and Linux.`));

@@ -1857,6 +1857,133 @@ ${argsXml}
   }
 }
 
+/**
+ * Whether the systemd user manager for `user` survives logout — i.e. whether an
+ * enabled user service actually starts at BOOT rather than only at login.
+ *
+ * Returns `null` when the question cannot be answered (no loginctl, command
+ * failed) — the caller must report that honestly rather than assuming either
+ * answer.
+ */
+export function readLingerState(
+  user: string,
+  run: (cmd: string, args: string[]) => string = (cmd, args) =>
+    // stderr is piped, not inherited: loginctl writes "Failed to look up user
+    // <x>" for an unknown account, and a setup step must not leak a raw system
+    // error into the operator's terminal on a path it handles cleanly.
+    execFileSync(cmd, args, { encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }),
+): boolean | null {
+  try {
+    // lint-allow-sync-spawn: a bounded one-shot install-time query, never on a hot path.
+    const out = run('loginctl', ['show-user', user, '-p', 'Linger']);
+    const m = out.match(/Linger=(yes|no)/);
+    return m ? m[1] === 'yes' : null;
+  } catch {
+    // @silent-fallback-ok: no loginctl / unknown user → unanswerable, not "no".
+    return null;
+  }
+}
+
+/**
+ * Result of trying to make a Linux auto-start service survive logout.
+ *
+ * WHY THIS EXISTS (2026-08-25, first headless Linux host). `instar autostart
+ * install` wrote a correct systemd USER service, enabled it, started it, and
+ * printed "your agent will start automatically when you log in." On Linux a
+ * per-user service only runs while that user holds a login session, and does
+ * NOT start at boot unless LINGERING is enabled for the account. It was not.
+ *
+ * On a desktop Mac the distinction never bites, because someone is logged in.
+ * On a headless box it is the whole problem: the agent comes up when you SSH
+ * in and dies when you disconnect. The message was not false — it was true in a
+ * way that means NEVER on a machine nobody logs into.
+ *
+ * `enabled-already` / `enabled-now` — starts at boot.
+ * `needs-privilege`  — loginctl refused; the operator must run the named
+ *                      command. The service still works at login.
+ * `unavailable`      — no loginctl (a container, a non-systemd distro). The
+ *                      service still works at login.
+ *
+ * Note the deliberate absence of a sudo attempt: a setup step must not silently
+ * escalate privilege. It reports the exact command instead.
+ */
+export type LingerOutcome = 'enabled-already' | 'enabled-now' | 'needs-privilege' | 'unavailable';
+
+/**
+ * The lingering outcome from the most recent Linux auto-start install, so the
+ * CLI can report the truth without changing `installAutoStart`'s boolean
+ * contract (four callers depend on it). Null on macOS and before any install.
+ */
+let lastLingerOutcome: LingerOutcome | null = null;
+
+/** Read (and clear) the lingering outcome of the last Linux auto-start install. */
+export function takeLastLingerOutcome(): LingerOutcome | null {
+  const out = lastLingerOutcome;
+  lastLingerOutcome = null;
+  return out;
+}
+
+/** Test seam: set the carrier directly. */
+export function _setLastLingerOutcomeForTest(o: LingerOutcome | null): void {
+  lastLingerOutcome = o;
+}
+
+export function ensureLinuxLingering(
+  user: string,
+  deps: {
+    read?: (user: string) => boolean | null;
+    enable?: (user: string) => void;
+  } = {},
+): LingerOutcome {
+  const read = deps.read ?? ((u: string) => readLingerState(u));
+  const before = read(user);
+  if (before === true) return 'enabled-already';
+  if (before === null) return 'unavailable';
+  try {
+    const enable =
+      deps.enable ??
+      ((u: string) => {
+        // lint-allow-sync-spawn: bounded one-shot at install time.
+        execFileSync('loginctl', ['enable-linger', u], { stdio: 'ignore', timeout: 5000 });
+      });
+    enable(user);
+  } catch {
+    // @silent-fallback-ok: polkit refused (common when not root) — reported to
+    // the operator by the caller as a named command, never silently swallowed.
+    return 'needs-privilege';
+  }
+  // Verify rather than trust the exit code — the whole defect being fixed here
+  // is a step that reported success without producing its effect.
+  return read(user) === true ? 'enabled-now' : 'needs-privilege';
+}
+
+/** The system user whose systemd user-manager owns the installed service. */
+export function currentSystemdUser(): string {
+  return process.env.USER || process.env.LOGNAME || os.userInfo().username;
+}
+
+/**
+ * Human-readable truth about when the installed Linux service actually starts.
+ * The CLI prints this INSTEAD of an unconditional "starts when you log in".
+ */
+export function describeLingerOutcome(outcome: LingerOutcome, user: string): string {
+  switch (outcome) {
+    case 'enabled-already':
+    case 'enabled-now':
+      return 'Your agent will start automatically when this machine boots, with nobody logged in.';
+    case 'needs-privilege':
+      return [
+        'Your agent will start when you log in — but NOT at boot.',
+        `On a machine nobody logs into, that means never. To fix it: sudo loginctl enable-linger ${user}`,
+      ].join('\n');
+    case 'unavailable':
+      return [
+        'Your agent will start when you log in.',
+        'Whether it also starts at boot could not be determined on this system.',
+      ].join('\n');
+  }
+}
+
 function installLinuxSystemdService(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
   const serviceName = `instar-${projectName}.service`;
   const serviceDir = path.join(os.homedir(), '.config', 'systemd', 'user');
@@ -1895,6 +2022,13 @@ WantedBy=default.target
     execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
     execFileSync('systemctl', ['--user', 'enable', serviceName], { stdio: 'ignore' });
     execFileSync('systemctl', ['--user', 'start', serviceName], { stdio: 'ignore' });
+    // Enabling the unit is not enough on Linux: without lingering, the user's
+    // systemd manager exits at logout and an "enabled" service never starts at
+    // boot. Attempted here; the OUTCOME is reported by the caller (see
+    // describeLingerOutcome) rather than folded into this boolean, because a
+    // service that works only at login is still a successful install — it is
+    // just not the thing the old message claimed.
+    lastLingerOutcome = ensureLinuxLingering(currentSystemdUser());
     return true;
   } catch {
     return false;
