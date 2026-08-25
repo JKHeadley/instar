@@ -6120,12 +6120,6 @@ setTimeout(() => process.exit(0), 2000);
     let patched = false;
     const port = this.config.port;
 
-    if (!content.includes('Telegram history authorship verdicts:')) {
-      content += '\n- **Telegram history authorship verdicts:** re-read rows carry `authorship`. Use `agent-verified`/`human`; treat `rejected` as rejected provenance, `UNRESOLVED` as a visible classification gap, and pre-2026-08-19 `unclassifiable` as history that predates the layer. Never infer either gap as human.\n';
-      patched = true;
-      result.upgraded.push('CLAUDE.md: added Telegram history authorship verdict awareness');
-    }
-
     if (!content.includes('Registry First — capability registry:')) {
       content += '\n- **Registry First — capability registry:** when asking which machine can serve a capability, consult `GET /capability-registry`; it distinguishes unavailable, unobserved, stale, and available evidence.\n';
       patched = true;
@@ -9686,13 +9680,45 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
 
 **Why:** the macOS sandbox can revoke filesystem access to anything outside the agent home mid-session, with no in-session recovery path. The agent home (\`~/.instar/agents/<agent>/\`) is the one location the sandbox cannot revoke. \`instar worktree create\` places the worktree at \`~/.instar/agents/<agent>/.worktrees/<slug>/\` and refuses any other destination. Spec: \`docs/specs/AGENT-WORKTREE-CONVENTION-SPEC.md\`.
 
-**Caveat — git identity env vars:** the CLI sets per-worktree \`user.name\` / \`user.email\` to \`Instar Agent (<name>)\` / \`<name>@instar.local\`. \`GIT_AUTHOR_NAME\` / \`GIT_COMMITTER_EMAIL\` in the calling environment override that local config. Agents that care about commit attribution must avoid exporting those vars.
+**Commit identity — resolved, never invented:** the CLI sets each worktree's \`user.name\` / \`user.email\` from the first of these that answers: \`git.commitIdentity\` \`{name,email}\` in \`.instar/config.json\`, else the agent repo's own \`user.name\` / \`user.email\`. If neither is configured it REFUSES to create the worktree and names the missing setting, rather than minting an address nobody chose — an unattributed author costs a human approval at release time. **Caveat — env vars:** \`GIT_AUTHOR_NAME\` / \`GIT_COMMITTER_EMAIL\` in the calling environment override the worktree's local config at commit time. Agents that care about commit attribution must avoid exporting those vars.
 `;
       content += '\n' + section;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Worktree Convention section');
     } else {
       result.skipped.push('CLAUDE.md: Worktree Convention section already present');
+    }
+
+    // W26 item 0(a) — refresh the Worktree Convention's identity paragraph on
+    // agents that ALREADY carry the section. The insert above is add-if-absent,
+    // so without this those agents would keep reading the old promise: that the
+    // CLI stamps `<name>@instar.local`. It no longer does — it resolves the
+    // identity (config -> agent repo -> refuse). A doc that describes behaviour
+    // the code stopped performing is the same class of defect as a stop that
+    // reports a kill it never made.
+    //
+    // Idempotent by construction: it only fires while the stale sentence is
+    // still present, and what it writes does not contain that sentence. This
+    // migration must NEVER write an identity of its own — it cannot know one,
+    // and inventing one is the exact failure the code change removed.
+    if (content.includes('**Caveat — git identity env vars:**') && content.includes('@instar.local')) {
+      const staleParagraph = /\*\*Caveat — git identity env vars:\*\*[^\n]*\n/;
+      if (staleParagraph.test(content)) {
+        const refreshed =
+          '**Commit identity — resolved, never invented:** the CLI sets each worktree\'s `user.name` / '
+          + '`user.email` from the first of these that answers: `git.commitIdentity` `{name,email}` in '
+          + '`.instar/config.json`, else the agent repo\'s own `user.name` / `user.email`. If neither is '
+          + 'configured it REFUSES to create the worktree and names the missing setting, rather than minting '
+          + 'an address nobody chose — an unattributed author costs a human approval at release time. '
+          + '**Caveat — env vars:** `GIT_AUTHOR_NAME` / `GIT_COMMITTER_EMAIL` in the calling environment '
+          + 'override the worktree\'s local config at commit time. Agents that care about commit attribution '
+          + 'must avoid exporting those vars.\n';
+        content = content.replace(staleParagraph, refreshed);
+        patched = true;
+        result.upgraded.push(
+          'CLAUDE.md: refreshed the Worktree Convention commit-identity paragraph (resolved, never minted)',
+        );
+      }
     }
 
     // Graduated Feature Rollout (§4.5): the Registry-First table must route
