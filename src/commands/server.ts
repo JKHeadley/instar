@@ -13696,13 +13696,21 @@ export async function startServer(options: StartOptions): Promise<void> {
     });
     // Compose the host identity resolver: REAL oracle (slot blob → email) → pool (email → accountId).
     const { CredentialIdentityOracle: CredSwapOracle } = await import('../core/CredentialIdentityOracle.js');
+    const { resolveClaudeSlotAccountId } = await import('../core/InUseAccountResolver.js');
     const credSwapOracle = new CredSwapOracle();
     const credResolveIdentity: import('../core/CredentialSwapExecutor.js').ResolveSlotIdentity = async (slot: string) => {
-      const r = await credSwapOracle.resolveSlotTenant(slot);
-      if (r.unavailable || !r.email) return { unavailable: true, reason: r.reason ?? 'oracle unavailable' };
-      const matches = subscriptionPool.list().filter((a) => a.email && a.email === r.email);
-      if (matches.length !== 1) return { unavailable: true, reason: `ambiguous/unknown email (${matches.length} pool matches)` };
-      return { accountId: matches[0].id };
+      // The oracle probed Anthropic's OAuth profile endpoint, so its email denotes a CLAUDE
+      // login and nothing else. The pool mapping lives in `resolveClaudeSlotAccountId` — one
+      // shared, tested definition — because this lookup previously searched the WHOLE pool:
+      // an operator who backs a Claude subscription AND a Codex subscription with the same
+      // Google account has two rows carrying one email, and the unscoped lookup read that as
+      // a genuine 2-way collision -> `unavailable` -> `missing-local-login`, asking the
+      // operator to re-authenticate a login that was present, unexpired and valid. Verified
+      // 2026-08-26: both of this machine's flagged accounts were exactly the dual-subscription
+      // pair, and both resolved cleanly through the oracle. A collision WITHIN claude-code is
+      // still genuine ambiguity and still fails closed — this resolver gates credential MOVES,
+      // so it must never guess which of two homes a blob belongs to.
+      return resolveClaudeSlotAccountId(subscriptionPool.list(), await credSwapOracle.resolveSlotTenant(slot));
     };
     let quotaPollerRef: import('../core/QuotaPoller.js').QuotaPoller | null = null;
     const credentialSwapExecutor = new CredentialSwapExecutor({
