@@ -175,6 +175,57 @@ here because the rule is what makes the `consumer` field meaningful: for a
 capped, ranked, or filtered view, "the consumer" is *the visible slice*, not the
 store. The field's guidance text says so explicitly.
 
+### 4.1 The mirror error — an average over a selected set measures the selection
+
+The rule above guards one direction: generalizing from the whole store to the
+slice the consumer reads. The opposite direction failed live on 2026-08-26 and
+belongs beside it (LRN-022; proposal EVO-015).
+
+> **Never generalize from a hand-picked slice to the population — and treat it
+> as disqualifying when the picking criterion correlates with the axis being
+> measured.**
+
+MEASURED. A hygiene pass reported the durable memory class as 212 lessons ×
+280 words = 59,360 words = 11× the 5,000-word budget. The 280-word figure was
+the average size of the **pinned** entries. Pinning is a deliberate act prior
+passes performed on hand-authored, detailed lessons, so the pinned set *is* the
+large-entry set — selected on exactly the axis under measurement. Direct
+measurement over all rows: 228 lessons = 11,799 words = 2.4× budget. Unpinned
+entries average 242 chars; pinned average 1,745 (7.2×). Fourteen hand-authored
+pinned entries hold 38% of the file in 7% of the slots.
+
+COST. Two work items (proposal EVO-007, action ACT-292) reached approved state
+on that one unchecked average, and the remedy it implied — a per-item
+compression stage across every exported entity — was aimed at a defect the
+population does not have. The refuting check needed no new data collection.
+
+THE TELL WAS ALREADY ON THE SCREEN. The unpinned population is uniform at
+198–242 average chars across *every* entity type (decision 242, lesson 242,
+pattern 238, fact 223, project 212, tool 203, person 198) because one write site
+generates them all. Uniformity across categories that have no reason to be
+uniform is the signature of a single producer: a per-item size defect cannot
+exist in a machine-written population produced by one writer.
+
+SELECTED SETS TO TREAT AS SUSPECT BY DEFAULT — pinned vs unpinned, retained vs
+dropped, escalated vs routine, alerted vs silent, sampled vs full. Each is a
+selection, and an average over it measures the selection.
+
+### 4.2 Reporting form — every average carries its n and its selector
+
+Both rules above are unenforceable on a bare number, and cheap to satisfy in the
+report:
+
+> **A reported average states the sample size it was taken over and the rule
+> that chose the sample.**
+
+"280 words" and "228 lessons averaging 52 words, measured over all rows" cost
+the same to write; only the second can be checked. This is a **reporting-format
+requirement on measurement prose, not a schema field** — a field here would be
+enforcement theatre, because nothing can verify a free-text selector string. It
+is recorded as a spec-level rule for the same reason §4 is: the `consumer` field
+is only meaningful if the number attached to it is checkable.
+
+
 ## 5. Acceptance criteria
 
 1. A learning asserting no consequence applies exactly as today (200, no new

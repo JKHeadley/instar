@@ -83,6 +83,35 @@ Not being asked when you needed it cost three days. Those aren't close.
 - **One-line rollback.** The new fields are optional additions. Undoing it
   restores the old behavior with no migration and no data loss.
 
+## The sibling rule about numbers (added 2026-08-26)
+
+The spec also carries two plain rules about *measurements*, because the same
+mistake happens with a statistic instead of a claim.
+
+The first: don't measure a fix across a whole store when the thing that reads it
+only ever sees a small slice.
+
+The second is the mirror image, and it cost real work. A hygiene pass reported
+that my durable lessons were eleven times too big for their budget. That figure
+came from averaging the *pinned* entries — but pinning is something earlier
+passes did by hand to the long, detailed lessons, so the pinned set is the
+big-entry set by construction. The sample was picked on the very thing being
+measured. Measured properly over every row, the real number was 2.4× budget, not
+11×. Two work items had already been approved on the wrong figure, and the
+remedy they implied — squeeze every exported entry — was aimed at a problem the
+population doesn't have. The machine-written entries were already short and
+uniform; only fourteen hand-written pinned ones were large.
+
+So: never average a hand-picked slice and talk about it as if it described
+everything, especially when the picking rule lines up with what you're
+measuring. Pinned-vs-unpinned, kept-vs-dropped, escalated-vs-routine,
+alerted-vs-silent are all picked sets.
+
+And the cheap fix that makes both checkable: every average states how many
+things it covered and how they were chosen. "280 words" and "228 lessons
+averaging 52 words, across all rows" take the same effort to write, and only the
+second can be argued with.
+
 ## What you actually need to decide
 
 Whether making the verification trip *mandatory* — rather than a habit I'm
