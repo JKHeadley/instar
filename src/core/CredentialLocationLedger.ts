@@ -28,6 +28,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { emailEquals } from './InUseAccountResolver.js';
 
 /** The on-disk schema version this module writes. Bumped only on a breaking shape change. */
 export const CREDENTIAL_LEDGER_SCHEMA_VERSION = 1;
@@ -463,7 +464,7 @@ export class CredentialLocationLedger {
         continue;
       }
 
-      const matches = claudeAccounts.filter((a) => a.email && a.email === result.email);
+      const matches = claudeAccounts.filter((a) => emailEquals(a.email, result.email));
       if (matches.length === 1) {
         this.store.assignments.push({
           slot,
@@ -554,7 +555,7 @@ export class CredentialLocationLedger {
         continue;
       }
 
-      const matches = claudeAccounts.filter((a) => a.email && a.email === result.email);
+      const matches = claudeAccounts.filter((a) => emailEquals(a.email, result.email));
       if (matches.length === 1) {
         const matchId = matches[0].id;
         if (!existing.quarantined && existing.accountId === matchId) {

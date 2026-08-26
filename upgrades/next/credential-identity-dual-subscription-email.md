@@ -1,0 +1,102 @@
+---
+change_type: fix
+---
+
+## What Changed
+
+If one Google account backs **both** a Claude subscription and a Codex subscription, instar reported
+that account's Claude login as **missing** — permanently, on a machine where the login was present,
+unexpired and working.
+
+The chain: `CredentialIdentityOracle` asks Anthropic's OAuth profile endpoint who a stored login
+belongs to and gets an email back. `credResolveIdentity` then mapped that email to a pool account by
+filtering **the entire pool** and insisting on exactly one match. Two subscriptions sharing one Gmail
+address are two pool rows carrying one email, so the lookup saw a 2-way collision that does not exist
+at the provider, returned `unavailable`, and `planCredentialIdentityRepair` swept the account into
+`ownerReloginAccountIds` — which `server.ts` stamps as `actualAccountId: 'missing-local-login'`,
+`repairState: 'owner-relogin-required'`.
+
+It could not self-clear. The only path that clears the flag — `QuotaPoller.reconcileIdentity` —
+calls the same resolver, gets the same `unavailable`, and correctly refuses to mutate state on an
+uncertain reading. So the flag latched, and re-signing in did not help, because the login was never
+the problem.
+
+An Anthropic-issued email is an assertion about a **Claude** login; a codex-cli row was never a
+legitimate candidate. The lookup is now scoped to anthropic/claude-code accounts.
+
+That rule already existed one module over — `matchAccountByEmail` in `InUseAccountResolver` has
+scoped itself to Claude accounts since it was written, with a comment saying exactly why. The
+credential resolver re-implemented the lookup and never inherited it. Rather than paste the filter
+into a second place and leave two copies to drift apart again, the pool-mapping half of
+`credResolveIdentity` is lifted into one exported, tested function `resolveClaudeSlotAccountId`
+that `server.ts` calls, over a shared candidate helper and a shared normalized email comparison.
+
+`matchAccountByEmail` keeps its first-match policy; the credential resolver keeps its strict
+fail-closed policy, because it gates credential **moves** and must never guess which home a blob
+belongs to. A genuine collision between two *Claude* accounts still refuses to resolve.
+
+The scope is `framework === 'claude-code'` and deliberately does **not** also require
+`provider === 'anthropic'`: `SubscriptionPool` validates the two fields independently, and
+`buildCredentialRepairPlan` selects the accounts it plans over on framework alone — so a candidate
+predicate narrower than that selection set would manufacture the very false alarm being deleted.
+The candidate set must equal the selection set.
+
+Two adjacent latent defects were closed on the way: `CredentialLocationLedger`'s two email
+comparisons used raw `===` with no trim or case-fold, so a differently-cased provider email would
+have reproduced the same contradiction in the opposite direction; both now share the normalized
+comparison.
+
+## Evidence
+
+Measured on a live 4-machine / 8-account pool, 2026-08-26:
+
+- Exactly 2 of 8 accounts carried `owner-relogin-required` / `missing-local-login`, both stamped
+  `2026-08-25T03:29:54Z` and unchanged for ~37h.
+- Those 2 are exactly the 2 claude-code accounts whose email is also carried by a codex-cli account.
+  The other 4 claude-code accounts have unique emails and carried no drift. 2/2, no false members.
+- `readClaudeOauthAsyncDetailed` on both flagged slots: access token present, refresh token present,
+  `expiresAt` in the future, Max subscription, full scopes. The credentials were never missing.
+- `CredentialIdentityOracle.resolveSlotTenant` on both: resolved, correct email. The oracle half was
+  never failing — only the pool mapping after it.
+- The two surfaces were visibly contradicting each other, which is what made this findable:
+  `.instar/credential-locations.json` reported both slots `quarantined: false` with a recent
+  `lastVerifiedAt`, because `CredentialLocationLedger` already filters to claude-code accounts and
+  therefore never had the bug. The pool said missing; the ledger said verified.
+- Replaying `buildCredentialRepairPlan`'s exact composition against the live pool reproduced
+  `ownerReloginAccountIds: ['justin-gmail','sagemind-justin']`; the same replay through the scoped
+  lookup produced `[]`, `complete: true`.
+
+15 unit tests, all against the exported function `server.ts` actually calls. The dual-subscription
+case resolving to one candidate; a genuine two-Claude collision still failing closed; provider-case
+normalization; the off-provider claude-code row staying matchable; absent/blank/unknown email; an
+unavailable oracle passed through with its reason intact; `matchAccountByEmail` behaviour preserved;
+and the composed `resolveClaudeSlotAccountId` → `planCredentialIdentityRepair` chain asserted in
+both directions.
+
+Test adequacy was verified by mutation, not asserted. An earlier version of this change tested a
+hand-copied closure inside the test file; reverting the production callsite left all of it green —
+a guard that certified itself. That is fixed structurally by exporting the real callsite, and
+reintroducing the pre-fix predicate now fails 7 of the 15 tests.
+
+## What to Tell Your User
+
+If you use the same Google account for a Claude subscription and a Codex subscription, instar has
+been telling you those accounts need signing in again when they did not — and re-signing in would
+not have made it stop, because the flag could not clear itself.
+
+After this update the affected accounts clear on their own at the next identity poll, with no taps
+from you. They also return to the pool the agent draws capacity from: an account carrying that flag
+is excluded from selection, so a paid subscription flagged this way was sitting unused.
+
+This does not change anything for an account whose email is unique to one subscription, and it does
+not make instar guess: if two *Claude* accounts genuinely shared an email, it still refuses to
+resolve and still asks you.
+
+Honest limit: this removes one manufactured source of "sign in again" churn. It does not tell you how
+often sign-ins genuinely go stale, because nothing has ever recorded a sign-in — that measurement is
+separate work, and it belongs before any attempt to automate the sign-in flow.
+
+## Summary of New Capabilities
+
+None. This is a correctness fix to an existing detector — no new route, no new state, no new config
+key, no new agent-facing surface.

@@ -32,7 +32,7 @@ const ACCOUNTS: SubscriptionAccount[] = [
 ];
 
 describe('matchAccountByEmail', () => {
-  it('matches case-insensitively and only anthropic/claude-code', () => {
+  it('matches case-insensitively and only claude-code', () => {
     expect(matchAccountByEmail(ACCOUNTS, 'HEADLEY.JUSTIN@GMAIL.COM')).toBe('gmail');
     expect(matchAccountByEmail(ACCOUNTS, 'justin@sagemindai.io')).toBe('sagemind');
   });
