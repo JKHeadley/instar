@@ -43,6 +43,10 @@ describe('isNeverServed (unit)', () => {
     expect(NEVER_SERVED_PREFIXES).toContain('.instar/state/judgment-provenance/');
     expect(NEVER_SERVED_PREFIXES).toContain('.instar/state/external-hog-decisions.json');
     expect(NEVER_SERVED_PREFIXES).toContain('.instar/state/claim-verification/');
+    expect(NEVER_SERVED_PREFIXES).toContain('state/subscription-pool');
+    expect(NEVER_SERVED_PREFIXES).toContain('.instar/state/subscription-pool');
+    expect(NEVER_SERVED_PREFIXES).toContain('state/subscription-login-ledger');
+    expect(NEVER_SERVED_PREFIXES).toContain('.instar/state/subscription-login-ledger');
   });
 
   it('matches PRODUCTION-layout paths under the prefix and the bare dir itself', () => {
@@ -51,6 +55,11 @@ describe('isNeverServed (unit)', () => {
     expect(isNeverServed('.instar/state/judgment-provenance')).toBe(true); // bare dir (list target)
     expect(isNeverServed('.instar/state/judgment-provenance/')).toBe(true);
     expect(isNeverServed('.instar/state/external-hog-decisions.json')).toBe(true);
+    expect(isNeverServed('.instar/state/subscription-pool/accounts.json')).toBe(true);
+    expect(isNeverServed('.instar/state/subscription-pool.initialized.json')).toBe(true);
+    expect(isNeverServed('state/subscription-pool.candidate-old-new/accounts.json')).toBe(true);
+    expect(isNeverServed('.instar/state/subscription-login-ledger/ledger.db')).toBe(true);
+    expect(isNeverServed('.instar/state/subscription-login-ledger-refusals.json')).toBe(true);
     expect(isNeverServed('.instar/state/claim-verification/claim-benchmark-v1.jsonl')).toBe(true);
   });
 

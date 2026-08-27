@@ -196,6 +196,22 @@ describe('BackupManager', () => {
       expect(warnSpy).toHaveBeenCalled();
     });
 
+    it('never backs up machine-local subscription authority or login evidence', () => {
+      fs.mkdirSync(path.join(stateDir, 'state', 'subscription-pool'), { recursive: true });
+      fs.mkdirSync(path.join(stateDir, 'state', 'subscription-login-ledger'), { recursive: true });
+      fs.writeFileSync(path.join(stateDir, 'state', 'subscription-pool', 'accounts.json'), '{}');
+      fs.writeFileSync(path.join(stateDir, 'state', 'subscription-login-ledger', 'ledger.db'), 'sqlite');
+      fs.writeFileSync(path.join(stateDir, 'state', 'subscription-login-ledger-refusals.json'), '{}');
+      const manager = new BackupManager(stateDir, { includeFiles: [
+        'state/subscription-pool/accounts.json',
+        'state/subscription-login-ledger/ledger.db',
+        'state/subscription-login-ledger-refusals.json',
+      ] });
+      const snapshot = manager.createSnapshot('manual');
+      expect(snapshot.files.some((file) => file.includes('subscription-pool'))).toBe(false);
+      expect(snapshot.files.some((file) => file.includes('subscription-login-ledger'))).toBe(false);
+    });
+
     it('DEFAULT_CONFIG.includeFiles contains no entries under .instar/secrets/', () => {
       // Defense in depth: even if a bug adds a secrets-path entry to the
       // defaults, this test catches it before any agent snapshots secrets.

@@ -50,6 +50,12 @@ import type { ComponentHealth } from './types.js';
 import type { SubscriptionAccountMetaReplicationEmitter } from './SubscriptionAccountMetaReplicatedStore.js';
 import type { IdentityOracle } from './CredentialLocationLedger.js';
 import { frameworkHasNoUsageSurface } from './frameworkFacts.js';
+import {
+  SubscriptionPoolAuthorityReadError,
+  SubscriptionPoolAuthorityStore,
+  parseAccountsAuthority,
+  readAuthorityFileBounded,
+} from './SubscriptionPoolAuthority.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -272,6 +278,60 @@ export interface SubscriptionAccountEmailGap {
 export interface SubscriptionPoolConfig {
   /** Agent stateDir (e.g. `.instar`). The store lives at <stateDir>/subscription-pool.json. */
   stateDir: string;
+  /** Persisted MachineIdentityManager id. Omit only in legacy/test compatibility callers. */
+  machineId?: string | null;
+}
+
+export type SubscriptionPoolAvailabilityReason =
+  | 'not-initialized'
+  | 'io-read'
+  | 'io-stat'
+  | 'size-limit'
+  | 'row-limit'
+  | 'parse'
+  | 'root-version'
+  | 'root-shape'
+  | 'invalid-row'
+  | 'duplicate-id'
+  | 'machine-identity-unavailable'
+  | 'foreign-authority'
+  | 'initialization-incomplete'
+  | 'missing-after-initialization'
+  | 'recovery-conflict';
+
+export interface SubscriptionPoolAvailability {
+  state: 'unconfigured' | 'ready' | 'invalid' | 'unavailable';
+  reason: SubscriptionPoolAvailabilityReason | null;
+  maintenance: 'rollback-cleanup-pending' | null;
+}
+
+export interface BoundedSubscriptionAccountScan {
+  accounts: SubscriptionAccount[];
+  truncated: boolean;
+  examined: number;
+}
+
+export class SubscriptionPoolUnavailableError extends Error {
+  readonly code = 'subscription-pool-unavailable';
+  constructor(readonly availability: SubscriptionPoolAvailability) {
+    super(`subscription pool authority is ${availability.state}`);
+    this.name = 'SubscriptionPoolUnavailableError';
+  }
+}
+
+export interface SubscriptionPoolMutationResult {
+  committed: true;
+  cleanupPending: boolean;
+}
+
+export class SubscriptionPoolCleanupPendingError extends Error {
+  readonly code = 'subscription-pool-cleanup-pending';
+  readonly priorCommitMayHaveSucceeded = true;
+  readonly recovery = 're-read-and-restart';
+  constructor() {
+    super('subscription pool rollback cleanup is pending; re-read state and restart before mutating');
+    this.name = 'SubscriptionPoolCleanupPendingError';
+  }
 }
 
 export interface SubscriptionEmailBindingAuthority {
@@ -338,6 +398,7 @@ const FRAMEWORKS: readonly SubscriptionFramework[] = SUBSCRIPTION_FRAMEWORKS;
 const STATUSES: readonly SubscriptionAccountStatus[] = SUBSCRIPTION_STATUSES;
 const VERIFIED_EMAIL_COMMIT = Symbol('verified-email-commit');
 const VERIFIED_ACCOUNT_ADD = Symbol('verified-account-add');
+export const MAX_BOUNDED_POOL_SCAN = 4_096;
 
 /** Provider-scoped identity comparison; intentionally does not rewrite aliases. */
 export function normalizeSubscriptionEmail(value: unknown): { display: string; key: string } {
@@ -384,6 +445,17 @@ export class ValidationError extends Error {
 export class SubscriptionPool {
   private storePath: string;
   private store: SubscriptionPoolStore;
+  private accountIndex = new Map<string, StoredSubscriptionAccount>();
+  private authorityStore: SubscriptionPoolAuthorityStore<StoredSubscriptionAccount> | null = null;
+  private authorityGeneration: string | null = null;
+  private pendingMaintenance: 'rollback-cleanup-pending' | null = null;
+  private lastMutationResult: SubscriptionPoolMutationResult = { committed: true, cleanupPending: false };
+  private machineIdentityUnavailable = false;
+  private availability: SubscriptionPoolAvailability = {
+    state: 'unconfigured',
+    reason: 'not-initialized',
+    maintenance: null,
+  };
   /**
    * WS5.2 §6.1a — optional emit seam for cross-machine registry follow-me (metadata only).
    * Wired in server.ts ONLY when `multiMachine.accountFollowMe` resolves enabled; null = no
@@ -395,7 +467,32 @@ export class SubscriptionPool {
 
   constructor(config: SubscriptionPoolConfig) {
     this.storePath = path.join(config.stateDir, 'subscription-pool.json');
+    this.machineIdentityUnavailable = config.machineId === null;
+    if (config.machineId) {
+      this.authorityStore = new SubscriptionPoolAuthorityStore(
+        config.stateDir,
+        config.machineId,
+        (value): value is StoredSubscriptionAccount => this.isStoredAccount(value),
+      );
+    }
     this.store = this.load();
+    this.rebuildIndex();
+  }
+
+  static getContractCapability(): { version: 1 } {
+    return { version: 1 };
+  }
+
+  getContractCapability(): { version: 1 } {
+    return SubscriptionPool.getContractCapability();
+  }
+
+  getAvailability(): SubscriptionPoolAvailability {
+    return { ...this.availability };
+  }
+
+  getLastMutationResult(): SubscriptionPoolMutationResult {
+    return { ...this.lastMutationResult };
   }
 
   /** Inject the follow-me meta emitter (server.ts, gated behind accountFollowMe). */
@@ -407,6 +504,7 @@ export class SubscriptionPool {
 
   /** All accounts (a shallow copy — callers can't mutate the store). */
   list(): SubscriptionAccount[] {
+    this.assertReadable();
     return this.store.accounts
       .filter((a): a is SubscriptionAccount => typeof a.email === 'string' && a.email.trim().length > 0)
       .map((a) => ({ ...a }));
@@ -414,6 +512,7 @@ export class SubscriptionPool {
 
   /** Legacy rows are visible for repair, but never enter normal selectors. */
   listEmailGaps(): SubscriptionAccountEmailGap[] {
+    this.assertReadable();
     return this.store.accounts
       .filter((a) => !a.email?.trim())
       .map((a) => ({
@@ -429,8 +528,22 @@ export class SubscriptionPool {
 
   /** One account by id, or null. */
   get(id: string): SubscriptionAccount | null {
-    const found = this.store.accounts.find((a) => a.id === id);
+    this.assertReadable();
+    const found = this.accountIndex.get(id);
     return found?.email?.trim() ? { ...found, email: found.email } : null;
+  }
+
+  scanAccountsBounded(limit: number = MAX_BOUNDED_POOL_SCAN): BoundedSubscriptionAccountScan {
+    this.assertReadable();
+    const boundedLimit = Math.max(0, Math.min(Math.floor(limit), MAX_BOUNDED_POOL_SCAN));
+    const prefix = this.store.accounts.slice(0, boundedLimit);
+    return {
+      accounts: prefix
+        .filter((account): account is SubscriptionAccount => !!account.email?.trim())
+        .map((account) => ({ ...account })),
+      truncated: this.store.accounts.length > prefix.length,
+      examined: prefix.length,
+    };
   }
 
   /**
@@ -455,6 +568,7 @@ export class SubscriptionPool {
    * rejected — the registry never stores tokens.
    */
   [VERIFIED_ACCOUNT_ADD](input: AddAccountInput, rawExtra?: Record<string, unknown>): SubscriptionAccount {
+    this.assertAvailable(true);
     this.assertNoCredentialFields(input as unknown as Record<string, unknown>);
     if (rawExtra) this.assertNoCredentialFields(rawExtra);
 
@@ -497,7 +611,7 @@ export class SubscriptionPool {
     const next = this.cloneStore();
     next.accounts.push(account);
     this.persist(next);
-    this.store = next;
+    this.publish(next);
     this.metaReplication?.emitPut(account);
     return { ...account };
   }
@@ -519,6 +633,7 @@ export class SubscriptionPool {
     email: string,
     patch?: Pick<UpdateAccountInput, 'nickname' | 'configHome' | 'status'>,
   ): SubscriptionAccount | null {
+    this.assertAvailable();
     const next = this.cloneStore();
     const acct = next.accounts.find((candidate) => candidate.id === id);
     if (!acct) return null;
@@ -541,7 +656,7 @@ export class SubscriptionPool {
     }
     acct.version += 1;
     this.persist(next);
-    this.store = next;
+    this.publish(next);
     this.metaReplication?.emitPut(acct as SubscriptionAccount);
     return { ...acct } as SubscriptionAccount;
   }
@@ -552,6 +667,7 @@ export class SubscriptionPool {
    * Throws ValidationError on bad field values or credential-bearing input.
    */
   update(id: string, patch: UpdateAccountInput, rawExtra?: Record<string, unknown>): SubscriptionAccount | null {
+    this.assertAvailable();
     this.assertNoCredentialFields(patch as unknown as Record<string, unknown>);
     if (rawExtra) this.assertNoCredentialFields(rawExtra);
 
@@ -620,7 +736,7 @@ export class SubscriptionPool {
 
     acct.version += 1;
     this.persist(next);
-    this.store = next;
+    this.publish(next);
     // Re-emit on any mutation — a peer must SEE a status/quota change (§6.1a holder stream).
     this.metaReplication?.emitPut(acct as SubscriptionAccount);
     return { ...acct } as SubscriptionAccount;
@@ -628,13 +744,14 @@ export class SubscriptionPool {
 
   /** Remove an account. Returns true if one was removed. */
   remove(id: string): boolean {
+    this.assertAvailable();
     const next = this.cloneStore();
     const before = next.accounts.length;
     next.accounts = next.accounts.filter((a) => a.id !== id);
     const removed = next.accounts.length < before;
     if (removed) {
       this.persist(next);
-      this.store = next;
+      this.publish(next);
       this.metaReplication?.emitDelete(id, new Date().toISOString());
     }
     return removed;
@@ -668,23 +785,82 @@ export class SubscriptionPool {
   }
 
   private load(): SubscriptionPoolStore {
-    try {
-      if (fs.existsSync(this.storePath)) {
-        const data = JSON.parse(fs.readFileSync(this.storePath, 'utf-8'));
-        if (data && data.version === 1 && Array.isArray(data.accounts)) {
-          // Backfill version field on any pre-CAS record (defensive).
-          for (const a of data.accounts) {
-            if (typeof a.version !== 'number') a.version = 1;
-          }
-          return data as SubscriptionPoolStore;
-        }
-      }
-    } catch {
-      // @silent-fallback-ok — corrupt/unreadable store starts fresh; the
-      // registry is metadata only, never credentials, so a fresh start loses
-      // nothing irrecoverable (the operator re-enrolls / accounts re-detect).
+    if (this.machineIdentityUnavailable) {
+      this.availability = {
+        state: 'unavailable', reason: 'machine-identity-unavailable', maintenance: null,
+      };
+      return { version: 1, accounts: [], lastModified: new Date().toISOString() };
     }
-    return { version: 1, accounts: [], lastModified: new Date().toISOString() };
+    if (this.authorityStore) {
+      try {
+        const snapshot = this.authorityStore.loadSteadyState();
+        if (snapshot) {
+          this.authorityGeneration = snapshot.generation;
+          this.pendingMaintenance = snapshot.cleanupPending ? 'rollback-cleanup-pending' : null;
+          this.availability = {
+            state: 'ready', reason: null, maintenance: this.pendingMaintenance,
+          };
+          return {
+            version: 1,
+            accounts: snapshot.accounts,
+            lastModified: new Date().toISOString(),
+          };
+        }
+      } catch (error) {
+        const reason = error instanceof SubscriptionPoolAuthorityReadError ? error.reason : 'io-read';
+        this.availability = {
+          state: reason === 'io-read' || reason === 'io-stat' ? 'unavailable' : 'invalid',
+          reason,
+          maintenance: null,
+        };
+        return { version: 1, accounts: [], lastModified: new Date().toISOString() };
+      }
+    }
+    if (!fs.existsSync(this.storePath)) {
+      this.availability = { state: 'unconfigured', reason: 'not-initialized', maintenance: null };
+      return { version: 1, accounts: [], lastModified: new Date().toISOString() };
+    }
+    try {
+      const captured = readAuthorityFileBounded(this.storePath);
+      const accounts = parseAccountsAuthority<StoredSubscriptionAccount>(captured, (value): value is StoredSubscriptionAccount => this.isStoredAccount(value));
+      for (const account of accounts) {
+        if (typeof account.version !== 'number') account.version = 1;
+      }
+      const root = JSON.parse(captured.bytes.toString('utf8')) as SubscriptionPoolStore;
+      this.availability = { state: 'ready', reason: null, maintenance: null };
+      return { ...root, accounts };
+    } catch (error) {
+      const reason = error instanceof SubscriptionPoolAuthorityReadError ? error.reason : 'io-read';
+      const unavailable = reason === 'io-read' || reason === 'io-stat';
+      this.availability = {
+        state: unavailable ? 'unavailable' : 'invalid',
+        reason,
+        maintenance: null,
+      };
+      return { version: 1, accounts: [], lastModified: new Date().toISOString() };
+    }
+  }
+
+  private assertAvailable(firstCreate = false): void {
+    if (this.pendingMaintenance) throw new SubscriptionPoolCleanupPendingError();
+    if (this.availability.state === 'ready') return;
+    if (firstCreate && this.availability.state === 'unconfigured') return;
+    throw new SubscriptionPoolUnavailableError(this.getAvailability());
+  }
+
+  private assertReadable(): void {
+    if (this.availability.state === 'ready' || this.availability.state === 'unconfigured') return;
+    throw new SubscriptionPoolUnavailableError(this.getAvailability());
+  }
+
+  private rebuildIndex(): void {
+    this.accountIndex = new Map(this.store.accounts.map((account) => [account.id, account]));
+  }
+
+  private publish(next: SubscriptionPoolStore): void {
+    this.store = next;
+    this.availability = { state: 'ready', reason: null, maintenance: this.pendingMaintenance };
+    this.rebuildIndex();
   }
 
   private cloneStore(): SubscriptionPoolStore {
@@ -693,11 +869,33 @@ export class SubscriptionPool {
 
   private persist(next: SubscriptionPoolStore): void {
     next.lastModified = new Date().toISOString();
+    if (this.authorityStore && !fs.existsSync(this.storePath)) {
+      const snapshot = this.authorityGeneration
+        ? this.authorityStore.update(this.authorityGeneration, next)
+        : this.authorityStore.create(next);
+      this.authorityGeneration = snapshot.generation;
+      this.pendingMaintenance = snapshot.cleanupPending ? 'rollback-cleanup-pending' : null;
+      this.lastMutationResult = { committed: true, cleanupPending: snapshot.cleanupPending };
+      return;
+    }
     const dir = path.dirname(this.storePath);
     fs.mkdirSync(dir, { recursive: true });
     const tmpPath = `${this.storePath}.${process.pid}.tmp`;
     fs.writeFileSync(tmpPath, JSON.stringify(next, null, 2) + '\n');
     fs.renameSync(tmpPath, this.storePath);
+    this.lastMutationResult = { committed: true, cleanupPending: false };
+  }
+
+  private isStoredAccount(value: unknown): value is StoredSubscriptionAccount {
+    if (!value || typeof value !== 'object') return false;
+    const account = value as Partial<StoredSubscriptionAccount>;
+    return typeof account.id === 'string' && ID_RE.test(account.id)
+      && typeof account.nickname === 'string' && account.nickname.trim().length > 0
+      && PROVIDERS.includes(account.provider as SubscriptionProvider)
+      && FRAMEWORKS.includes(account.framework as SubscriptionFramework)
+      && typeof account.configHome === 'string' && account.configHome.trim().length > 0
+      && STATUSES.includes(account.status as SubscriptionAccountStatus)
+      && typeof account.enrolledAt === 'string';
   }
 }
 

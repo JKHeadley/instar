@@ -605,7 +605,7 @@ export class FeedbackDrainStore {
     const claim = this.db.transaction(() => {
       this.assertOrInitializeOwnerAuthorityEpoch(input.ownerAuthorityEpoch);
       const now = input.now ?? this.now();
-      const row = this.db.prepare(`SELECT work_id FROM work WHERE state IN ('queued','retryable') AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY created_at,work_id LIMIT 1`).get(now) as { work_id: string } | undefined;
+      const row = this.db.prepare(`SELECT work_id FROM work WHERE state IN ('queued','retryable') AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY first_seen_at,created_at,work_id LIMIT 1`).get(now) as { work_id: string } | undefined;
       if (!row) return null;
       const token = this.tokenFactory();
       const tokenHash = this.hashToken(token);

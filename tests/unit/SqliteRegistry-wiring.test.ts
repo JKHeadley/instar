@@ -67,6 +67,8 @@ const LONG_LIVED_STORES = [
   'src/feedback-factory/drain/FeedbackDrainStore.ts',
   // Self-heal episode state may remain open for governor queue continuation.
   'src/core/SelfHealGate.ts',
+  // Passive subscription sign-in history is process-lifetime durable state.
+  'src/core/SubscriptionLoginLedger.ts',
 ];
 
 /**

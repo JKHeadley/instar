@@ -102,6 +102,20 @@ describe('FeedbackDrainStore', () => {
     expect(second).toMatchObject({ runId: first.runId, state: 'accepted', acquired: false });
   });
 
+  it('claims the oldest reported work first when rows are enqueued in the same clock tick', () => {
+    const auth = authority();
+    for (const [clusterId, firstSeenAt] of [['newer', 2], ['oldest', 1]] as const) {
+      store.ensureReadiness(clusterId, now);
+      store.approveReady({ clusterId, approvalKey: `approval-${clusterId}`, authorityId: auth.authorityId,
+        authorityGeneration: auth.generation, evidenceHash: `evidence-${clusterId}`, ...APPROVAL_BINDING });
+      store.enqueue({ clusterId, title: clusterId, summary: 'fairness', priority: 'normal', reportCount: 1,
+        firstSeenAt, lastSeenAt: 2, authorityRef: 'decision-1', evidenceRef: `evidence-${clusterId}` });
+    }
+
+    expect(store.claimNext({ consumerId: 'test', ownerAuthorityEpoch: 7, leaseMs: 1_000 })?.clusterId)
+      .toBe('oldest');
+  });
+
   it('persists bounded agent-request replay protection instead of relying on process memory', () => {
     expect(store.admitRequestNonce('reader', 'nonce-1234567890123456', { now, ttlMs: 10_000 })).toBe(true);
     expect(store.admitRequestNonce('reader', 'nonce-1234567890123456', { now, ttlMs: 10_000 })).toBe(false);

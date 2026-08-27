@@ -6946,6 +6946,23 @@ Rule: I do not state that work landed inside another agent's state unless I have
       result.upgraded.push('CLAUDE.md: added Subscription Pool (multi-account quota + enrollment) section');
     }
 
+    // Passive sign-in reliability ledger awareness for existing agents. The
+    // route is useful only if the conversational agent knows to distinguish
+    // corroborated status incidents from provisional credential-read windows.
+    if (
+      content.includes('Subscription Pool (multi-account quota') &&
+      !content.includes('Sign-in reliability history (passive, never repair authority)')
+    ) {
+      const seePoolAnchor = '· poll all now: `POST /subscription-pool/poll`.';
+      const ledgerBullet =
+        '\n- **Sign-in reliability history (passive, never repair authority)** — `GET /subscription-pool/login-history?summary=1&days=7` shows exchange-corroborated re-login episodes separately from provisional credential-read observations. Missing credentials require 3 matching passes spanning 30 minutes before an observation window opens, and never disable an account or trigger login/repair by themselves. Raw reads are bounded to 30 days and 500 rows. Use this when asked “how often do subscriptions need sign-in again?” or “was this a real auth failure or a credential-store visibility gap?”.';
+      if (content.includes(seePoolAnchor)) {
+        content = content.replace(seePoolAnchor, seePoolAnchor + ledgerBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added passive subscription sign-in history awareness');
+      }
+    }
+
     // Pre-limit (proactive) swap awareness. Existing agents that ALREADY carry the
     // Subscription Pool section won't get the new bullet from the section-install
     // guard above (it skips agents that already have the section). Patch it in

@@ -243,6 +243,22 @@ describe('QuotaPoller', () => {
     );
   });
 
+  it('records credential absence without changing pool status or creating repair authority', async () => {
+    const observations: unknown[] = [];
+    const p = new QuotaPoller({
+      pool,
+      tokenResolver: () => ({ observationOnly: true, reason: 'credential-absent-or-unreadable' }),
+      loginObservationSink: (input) => observations.push(input),
+    });
+    pool.addFixture({ ...ACCT, status: 'active' });
+    expect(await p.pollAccount(pool.get('claude-1')!)).toBeNull();
+    expect(pool.get('claude-1')!.status).toBe('active');
+    expect(observations).toMatchObject([{
+      accountId: 'claude-1',
+      outcome: { kind: 'observation-absence', causeClass: 'credential-absent-or-unreadable' },
+    }]);
+  });
+
   it('pollAccount flags needs-reauth on a 401 when the refresh token is dead', async () => {
     // 401 AND the refresher reports no usable refresh token → genuine re-auth.
     const p = new QuotaPoller({

@@ -1,0 +1,29 @@
+# Subscription sign-in reliability history
+
+## What Changed
+
+Instar now keeps private, bounded, machine-local evidence of subscription sign-in reliability. Confirmed `needs-reauth` transitions become status episodes with closed cause classes; repeated credential-store absence becomes a separate provisional observation window only after three matching passes spanning at least thirty minutes. Absence alone never disables an account, starts a login, selects an account, or triggers repair.
+
+The subscription-pool authority also gains a bounded generation-and-witness storage contract with crash recovery and typed cleanup-pending maintenance. Pool reads no longer turn corrupt or unavailable authority into an empty account list. The new authenticated login-history route exposes local summaries and retained raw evidence while keeping credentials, email addresses, codes, and tokens out of the ledger.
+
+## What to Tell Your User
+
+You can now ask me how often subscription accounts really needed sign-in again, how long those episodes lasted, and whether an apparent problem was only a provisional credential-store visibility gap. I keep confirmed incidents and provisional read problems separate, so a temporary keychain read failure does not become another unnecessary sign-in prompt.
+
+No setup is required. The history is private to each machine, bounded to thirty-day API windows and one hundred eighty days of local retention, and never performs sign-in or repair by itself.
+
+## Summary of New Capabilities
+
+- Private sign-in reliability history for subscription accounts.
+- Confirmed re-login episodes separated from provisional credential-read observations.
+- Three-pass and thirty-minute floor before a missing-credential observation window opens.
+- Bounded admission, storage, retention, API windows, and pool authority reads.
+- Crash-safe subscription-pool authority updates with visible cleanup-pending maintenance.
+- Agent awareness and update migration so existing agents know when to consult the history.
+
+## Evidence
+
+- Unit coverage exercises authority create, update, crash recovery, cleanup failure, admission, episode reduction, absence floors, retention, privacy exclusions, and quota-poller behavior.
+- Integration coverage exercises authenticated pool mutations and the login-history route.
+- Production-lifecycle E2E coverage boots the real server and verifies that login history is alive rather than returning an unwired response.
+- The focused regression set passed ninety tests; the TypeScript build, full lint suite, and capability-discoverability preflight passed.
