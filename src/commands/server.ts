@@ -22641,6 +22641,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           const peerUrl = (machineId: string): string | null => {
             const entry = meshIdMgr.getActiveMachines().find((m) => m.machineId === machineId)?.entry;
             if (!entry) return null;
+            // Mesh initialization is best-effort; the shared funnel preserves
+            // legacy reachability when it degraded before resolver assignment.
             return resolveMeshPeerUrl(meshResolver, machineId, entry.endpoints, entry.lastKnownUrl);
           };
           _meshSelfId = meshSelfId;

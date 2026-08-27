@@ -17,3 +17,4 @@ Optional mesh degradation can no longer become a server-start prerequisite.
 Unit, integration, and production-wiring lifecycle tests cover all three paths.
 Independent lifecycle review additionally pins that an initialized resolver's
 explicit “no safe route” result is never overridden by the legacy fallback.
+The production wiring documents that mesh construction is intentionally best-effort.

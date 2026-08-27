@@ -64,6 +64,7 @@ Pure code hotfix: revert and ship another patch. No persistent state, migration,
 ## Conclusion
 
 The fallback contains an optional-subsystem failure at the correct dependency boundary while keeping successful mesh behavior unchanged. The live before/after restart and all three test tiers support shipping after independent lifecycle review and green CI.
+The production closure now also states its best-effort initialization contract at the call site.
 
 ## Second-pass review (if required)
 
