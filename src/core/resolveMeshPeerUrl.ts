@@ -13,5 +13,6 @@ export function resolveMeshPeerUrl(
   endpoints: MeshEndpoint[] | undefined,
   lastKnownUrl: string | undefined,
 ): string | null {
-  return resolver?.resolve(machineId, endpoints, lastKnownUrl)[0]?.url ?? lastKnownUrl ?? null;
+  if (!resolver) return lastKnownUrl ?? null;
+  return resolver.resolve(machineId, endpoints, lastKnownUrl)[0]?.url ?? null;
 }

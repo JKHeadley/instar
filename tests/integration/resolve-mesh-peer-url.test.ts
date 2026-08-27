@@ -24,5 +24,8 @@ describe('mesh peer URL integration', () => {
 
     expect(resolveMeshPeerUrl(resolver, 'm-peer', endpoints, 'http://legacy-peer')).toBe('http://100.64.1.2:4042');
     expect(resolveMeshPeerUrl(undefined, 'm-peer', endpoints, 'http://legacy-peer')).toBe('http://legacy-peer');
+
+    const rejectingResolver = { resolve: () => [] } as unknown as PeerEndpointResolver;
+    expect(resolveMeshPeerUrl(rejectingResolver, 'm-peer', endpoints, 'http://legacy-peer')).toBeNull();
   });
 });

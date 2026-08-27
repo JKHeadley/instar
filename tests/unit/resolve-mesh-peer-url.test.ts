@@ -16,4 +16,9 @@ describe('resolveMeshPeerUrl', () => {
     expect(resolveMeshPeerUrl(resolver, 'm-peer', [], 'http://legacy-peer')).toBe('https://mesh-peer');
     expect(resolve).toHaveBeenCalledWith('m-peer', [], 'http://legacy-peer');
   });
+
+  it('does not bypass an available resolver that rejects every candidate', () => {
+    const resolver = { resolve: vi.fn(() => []) } as never;
+    expect(resolveMeshPeerUrl(resolver, 'm-peer', [], 'http://legacy-peer')).toBeNull();
+  });
 });

@@ -15,4 +15,5 @@ uses the peer's legacy registry URL, or reports no route if neither source exist
 Optional mesh degradation can no longer become a server-start prerequisite.
 
 Unit, integration, and production-wiring lifecycle tests cover all three paths.
-
+Independent lifecycle review additionally pins that an initialized resolver's
+explicit “no safe route” result is never overridden by the legacy fallback.
