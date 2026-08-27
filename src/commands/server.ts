@@ -160,6 +160,7 @@ import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForward
 import { formatForwardedTopicContext } from '../core/ForwardedTopicContext.js';
 import { resolveAdvertisedMeshUrl, advertiseSelfMeshUrl, detectTailscaleIp, pickPrimaryLanIp, computeSelfMeshEndpoints, advertiseSelfMeshEndpoints, resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { PeerEndpointResolver } from '../core/PeerEndpointResolver.js';
+import { resolveMeshPeerUrl } from '../core/resolveMeshPeerUrl.js';
 import { RelayRefusedError, isRelayRefusal, relayOutbound } from '../core/TelegramRelay.js';
 import { GitSyncManager } from '../core/GitSync.js';
 import { RegistrySyncDebouncer } from '../core/RegistrySyncDebouncer.js';
@@ -22640,7 +22641,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           const peerUrl = (machineId: string): string | null => {
             const entry = meshIdMgr.getActiveMachines().find((m) => m.machineId === machineId)?.entry;
             if (!entry) return null;
-            return meshResolver.resolve(machineId, entry.endpoints, entry.lastKnownUrl)[0]?.url ?? null;
+            // Mesh initialization is best-effort; the shared funnel preserves
+            // legacy reachability when it degraded before resolver assignment.
+            return resolveMeshPeerUrl(meshResolver, machineId, entry.endpoints, entry.lastKnownUrl);
           };
           _meshSelfId = meshSelfId;
           // U4.4 — the offer transport (HOLDER side) + the post-hand-back delivery

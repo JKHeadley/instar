@@ -1,0 +1,18 @@
+# Mesh resolver startup fallback
+
+## Summary of New Capabilities
+
+- The server now remains available when optional mesh initialization degrades before its endpoint resolver is constructed.
+
+## What Changed
+
+- Session-pool peer routing falls back to the registry's legacy peer URL instead of crashing startup when the optional mesh resolver is unavailable.
+
+## What to Tell Your User
+
+Agent servers now keep starting if optional multi-machine mesh setup degrades; peer routing falls back to its existing registry URL.
+
+## Evidence
+
+- Before: restarting Echo with mesh initialization degraded terminated startup with `TypeError: Cannot read properties of undefined (reading 'resolve')` in the production session-pool peer URL closure.
+- After: applying the undefined-safe funnel to the installed build allowed the same configured server to bind and answer `/updates/status`; the permanent source path is pinned at unit, integration, and E2E tiers.

@@ -45,7 +45,7 @@ describe('mesh URL advertisement wiring', () => {
     const peerUrlIdx = server.indexOf('const peerUrl = (machineId: string): string | null =>');
     expect(peerUrlIdx).toBeGreaterThan(0);
     const block = server.slice(peerUrlIdx, peerUrlIdx + 500);
-    expect(block).toContain('meshResolver.resolve(machineId, entry.endpoints, entry.lastKnownUrl)');
+    expect(block).toContain('resolveMeshPeerUrl(meshResolver, machineId, entry.endpoints, entry.lastKnownUrl)');
     expect(block).not.toContain('entry.lastKnownUrl ?? null');
   });
 
