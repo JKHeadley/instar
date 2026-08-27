@@ -9919,6 +9919,10 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       patched = true;
       result.upgraded.push('CLAUDE.md: added Honest progress messaging section');
     }
+    if (!content.includes('Command-watchdog attribution:')) {
+      content += `\n- **Command-watchdog attribution:** \`SessionWatchdog\` never interrupts known bounded external waiters (including safe-merge and GitHub watch commands). If it successfully interrupts a genuinely stuck command, its audit entry names \`principal: session-watchdog\` and \`operatorInitiated: false\`; Codex's generic "aborted by user" text is transport wording, not proof the operator acted. The watchdog makes one process-local, liveness-gated continuation attempt so the task usually resumes without another user message; delivery is not durable across server restart.\n`;
+      result.upgraded.push('CLAUDE.md: added command-watchdog attribution awareness');
+    }
     // Existing agents may already carry older guidance that promised summaries.
     // Append an authoritative correction rather than rewriting operator-authored
     // content. The unique heading makes the migration idempotent and mirrors to
