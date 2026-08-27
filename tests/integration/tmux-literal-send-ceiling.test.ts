@@ -119,12 +119,23 @@ describe.skipIf(!HAVE_TMUX)('tmux send-keys -l argv ceiling', () => {
     const chunks = chunkLiteralForTmux(OUTAGE_PAYLOAD);
     expect(chunks.length).toBeGreaterThan(1);
 
+    let deliveredBytes = 0;
     for (const chunk of chunks) {
       const r = spawnSync(tmuxPath, buildLiteralSendArgs(`=${session}:`, chunk), {
         encoding: 'utf-8',
         timeout: 10_000,
       });
       expect(r.status, `chunk send failed: ${r.stderr}`).toBe(0);
+
+      // `send-keys` returning only proves that tmux accepted the key batch; it
+      // does not prove the receiving pseudo-terminal has drained it. On a
+      // loaded runner, enqueueing every chunk back-to-back can overflow that
+      // transient queue and lose a suffix even though every command exits 0.
+      // Production consumers continuously drain their interactive pane. This
+      // deliberately primitive `cat` receiver needs the equivalent backpressure
+      // so the control measures argv chunking rather than PTY scheduling luck.
+      deliveredBytes += Buffer.byteLength(chunk, 'utf-8');
+      expect(drain(outFile, deliveredBytes)).toBe(deliveredBytes);
     }
 
     const expected = Buffer.byteLength(OUTAGE_PAYLOAD, 'utf-8');

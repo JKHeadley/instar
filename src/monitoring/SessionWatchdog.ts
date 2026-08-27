@@ -123,10 +123,53 @@ export interface InterventionEvent {
   stuckCommand: string;
   stuckPid: number;
   timestamp: number;
+  /** The actor that caused the interruption. Never infer a human principal from Ctrl+C. */
+  principal: 'session-watchdog';
+  /** Stable lifecycle reason for audit/correlation with framework turn-aborted events. */
+  reason: 'stuck-command-judge';
+  operatorInitiated: false;
   /** Outcome tracking — filled in after a delay */
   outcome?: 'recovered' | 'died' | 'unknown';
   /** Time in ms between intervention and outcome determination */
   outcomeDelayMs?: number;
+}
+
+export interface ProtectedWaitEvidence {
+  protected: boolean;
+  reason?: 'safe-merge-wait' | 'github-run-watch' | 'bounded-wait-output';
+}
+
+/**
+ * Deterministic guard for commands whose purpose is to wait for external state.
+ * These must not be handed to the probabilistic stuck judge: a quiet waiter is
+ * healthy by definition, and Ctrl+C aborts the entire Codex turn.
+ */
+const MAX_PROTECTED_WAIT_MS = 2 * 60 * 60 * 1_000;
+
+export function classifyProtectedWait(
+  command: string,
+  recentOutput = '',
+  elapsedMs = 0,
+): ProtectedWaitEvidence {
+  // Protection is a bounded floor, not permanent immunity. Past two hours the
+  // normal contextual judge gets authority even if the original argv matches.
+  if (elapsedMs > MAX_PROTECTED_WAIT_MS) return { protected: false };
+  const normalized = command.toLowerCase();
+  const argv = normalized.trim().split(/\s+/);
+  const executableIndex = /(?:^|\/)node(?:\.exe)?$/.test(argv[0] ?? '') ? 1 : 0;
+  if (/(?:^|\/)safe-merge(?:\.mjs|\.js)?$/.test(argv[executableIndex] ?? '')) {
+    return { protected: true, reason: 'safe-merge-wait' };
+  }
+  const ghExecutable = /(?:^|\/)gh(?:\.exe)?$/.test(argv[0] ?? '');
+  const ghRunWatch = argv[1] === 'run' && argv[2] === 'watch';
+  const ghPrChecksWatch = argv[1] === 'pr' && argv[2] === 'checks' && argv.includes('--watch');
+  if (ghExecutable && (ghRunWatch || ghPrChecksWatch)) {
+    return { protected: true, reason: 'github-run-watch' };
+  }
+  if (/\bwaiting\b[\s\S]{0,160}\b(?:deadline|timeout|poll|checks?)\b/i.test(recentOutput)) {
+    return { protected: true, reason: 'bounded-wait-output' };
+  }
+  return { protected: false };
 }
 
 /** Aggregated watchdog stats for telemetry */
@@ -251,6 +294,8 @@ export class SessionWatchdog extends EventEmitter {
 
   /** Pending outcome checks — maps sessionName to intervention event */
   private pendingOutcomeChecks = new Map<string, InterventionEvent>();
+  /** Exactly-once continuation prompts keyed by the intervention timestamp. */
+  private continuationPrompts = new Set<number>();
 
   /** Cooldowns for compaction-idle detection — prevents repeated emissions */
   private compactionIdleCooldowns = new Map<string, number>(); // sessionName → timestamp
@@ -410,6 +455,15 @@ export class SessionWatchdog extends EventEmitter {
       // Pass recent tmux output so the LLM can see what the session is actually doing,
       // not just the (often truncated) child command name.
       const recentOutput = this.sessionManager.captureOutput(tmuxSession, 30) ?? '';
+      const protectedWait = classifyProtectedWait(stuckChild.command, recentOutput, stuckChild.elapsedMs);
+      if (protectedWait.protected) {
+        console.log(
+          `[Watchdog] "${tmuxSession}": protected external wait (${protectedWait.reason}) — refusing to interrupt`,
+        );
+        // Re-evaluate on every poll. A waiter must not gain permanent PID
+        // immunity from one historical match if its evidence later changes.
+        return;
+      }
       const isStuck = await this.isCommandStuck(stuckChild.command, stuckChild.elapsedMs, recentOutput);
       if (!isStuck) {
         // LLM says legitimate — temporarily exclude this PID from future checks
@@ -446,8 +500,14 @@ export class SessionWatchdog extends EventEmitter {
         `${stuckChild.command.slice(0, 80)} — sending Ctrl+C`
       );
 
-      this.sessionManager.sendKey(tmuxSession, 'C-c');
-      this.recordIntervention(tmuxSession, EscalationLevel.CtrlC, 'Sent Ctrl+C', stuckChild);
+      const interrupted = this.sessionManager.sendKey(tmuxSession, 'C-c');
+      if (!interrupted) {
+        console.warn(`[Watchdog] "${tmuxSession}": Ctrl+C delivery failed — refusing to inject continuation input`);
+        this.escalationState.delete(tmuxSession);
+        return;
+      }
+      const intervention = this.recordIntervention(tmuxSession, EscalationLevel.CtrlC, 'Sent Ctrl+C', stuckChild);
+      this.scheduleSupervisorContinuation(intervention);
     } else if (existing) {
       this.escalationState.delete(tmuxSession);
     }
@@ -612,10 +672,14 @@ export class SessionWatchdog extends EventEmitter {
       state.level = EscalationLevel.CtrlC;
       state.levelEnteredAt = now;
       state.retryCount++;
-      this.sessionManager.sendKey(tmuxSession, 'C-c');
-      this.recordIntervention(tmuxSession, EscalationLevel.CtrlC, `Retry ${state.retryCount}: Sent Ctrl+C`, {
-        pid: state.stuckChildPid, command: state.stuckCommand, elapsedMs: 0,
-      });
+      const interrupted = this.sessionManager.sendKey(tmuxSession, 'C-c');
+      if (interrupted) {
+        this.recordIntervention(tmuxSession, EscalationLevel.CtrlC, `Retry ${state.retryCount}: Sent Ctrl+C`, {
+          pid: state.stuckChildPid, command: state.stuckCommand, elapsedMs: 0,
+        });
+      } else {
+        console.warn(`[Watchdog] "${tmuxSession}": retry Ctrl+C delivery failed — not recording a false intervention`);
+      }
       return;
     }
 
@@ -1046,7 +1110,7 @@ export class SessionWatchdog extends EventEmitter {
     level: EscalationLevel,
     action: string,
     child: { pid: number; command: string; elapsedMs: number },
-  ): void {
+  ): InterventionEvent {
     const event: InterventionEvent = {
       sessionName,
       level,
@@ -1054,6 +1118,9 @@ export class SessionWatchdog extends EventEmitter {
       stuckCommand: child.command.slice(0, 200),
       stuckPid: child.pid,
       timestamp: Date.now(),
+      principal: 'session-watchdog',
+      reason: 'stuck-command-judge',
+      operatorInitiated: false,
     };
     this.interventionHistory.push(event);
     if (this.interventionHistory.length > 50) {
@@ -1070,6 +1137,28 @@ export class SessionWatchdog extends EventEmitter {
 
     // Persist to JSONL
     this.persistEvent(event);
+    return event;
+  }
+
+  /**
+   * Codex renders any terminal Ctrl+C as "aborted by user", even when Instar
+   * sent it. Re-enter the now-idle turn with explicit attribution so safe work
+   * does not remain abandoned until the operator checks in.
+   */
+  private scheduleSupervisorContinuation(event: InterventionEvent): void {
+    if (this.continuationPrompts.has(event.timestamp)) return;
+    this.continuationPrompts.add(event.timestamp);
+    setTimeout(() => {
+      try {
+        if (!this.sessionManager.isSessionAlive(event.sessionName)) return;
+        this.sessionManager.sendInput(
+          event.sessionName,
+          '[system] The SessionWatchdog—not the operator—interrupted the previous command after its stuck-command judge fired. Verify any partial side effects from the durable source of truth, then continue the same task.',
+        );
+      } finally {
+        this.continuationPrompts.delete(event.timestamp);
+      }
+    }, 1_500);
   }
 
   /**

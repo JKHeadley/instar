@@ -25,5 +25,13 @@ export default defineConfig(withTestRunnerBound('e2e', {
     // comment described is gone; the cost argument above is the reason that
     // remains.
     globalSetup: ['tests/setup/ensure-registry-asset.globalSetup.ts'],
+    // E2E tests spawn shipped scripts and real framework-shaped sessions. Keep
+    // the same live-agent environment isolation as the default suite so an
+    // ambient INSTAR_FRAMEWORK/AGENT_HOME cannot redirect a fixture into the
+    // operator's running agent.
+    setupFiles: ['./tests/vitest-setup.ts'],
+    // Real tmux/session fixtures include legacy prefix-wide cleanup helpers.
+    // Keep files sequential so one suite cannot reap another suite's live pane.
+    fileParallelism: false,
   },
 }));
