@@ -10115,6 +10115,16 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
                 return set;
               },
+              idleTopicSnapshot: () => {
+                const idle = new Map<number, string>();
+                for (const s of sessionManager.listRunningSessions()) {
+                  const topicId = resolveTopicForTmux(s.tmuxSession);
+                  if (topicId == null) continue;
+                  const frame = sessionManager.captureOutput(s.tmuxSession, 60);
+                  if (frame && SessionReaper.isPositivelyIdle(s.framework, frame)) idle.set(topicId, s.tmuxSession);
+                }
+                return idle;
+              },
               queuePaused: () => rq.isPaused(),
               topicInResumeQueue: (topicId) =>
                 rq.list().some((e) => e.topicId === topicId && (e.status === 'queued' || e.status === 'starting')),
@@ -10207,6 +10217,15 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // no-op when the flag is OFF / single-machine, and best-effort (a lost
                 // CAS / owned-by-peer race withholds — never undoes the live spawn).
                 _claimOwnershipForAutonomousSpawn?.(topicId);
+              },
+              recoverIdle: async ({ sessionName }) => {
+                if (!_sessionRefresh) return false;
+                const result = await _sessionRefresh.refreshSession({
+                  sessionName,
+                  fresh: true,
+                  reason: 'autonomous-completed-turn-continuation',
+                });
+                return result.ok;
               },
               claimInflight: (topicId) => {
                 if (livenessInflight.has(topicId)) return false; // CAS: someone holds it
@@ -25489,7 +25508,25 @@ export async function startServer(options: StartOptions): Promise<void> {
           return { merged, open, digest: createHash('sha256').update(JSON.stringify({ merged, open })).digest('hex') };
         };
         autonomousThroughputFloor = new AutonomousThroughputFloor({
-          listRuns: () => activeAutonomousJobs(config.stateDir).flatMap(job => { const topicId = Number(job.topic); const startedAt = Date.parse(job.startedAt ?? ''); if (!Number.isSafeInteger(topicId) || topicId <= 0 || !Number.isFinite(startedAt)) return []; const markers = readAutonomousRunMarkers(config.stateDir, topicId); return [{ signalRunId: `topic:${topicId}:${job.startedAt}`, topicId, startedAt, telegramBacked: Boolean(telegram), registeredMachineCount: _listPoolMachines?.().length || 1, midMove: !markers || Boolean(markers.movedTo || markers.moveSuspended) }]; }),
+          listRuns: () => activeAutonomousJobs(config.stateDir).flatMap(job => {
+            const topicId = Number(job.topic);
+            const startedAt = Date.parse(job.startedAt ?? '');
+            if (!Number.isSafeInteger(topicId) || topicId <= 0 || !Number.isFinite(startedAt)) return [];
+            const markers = readAutonomousRunMarkers(config.stateDir, topicId);
+            const ownershipRecord = sessionOwnershipRegistry?.read(String(topicId)) ?? null;
+            const ownership = ownershipRecord?.status === 'active'
+              ? (ownershipRecord.ownerMachineId === _meshSelfId ? 'local-active' as const : 'remote-active' as const)
+              : 'unknown' as const;
+            return [{
+              signalRunId: `topic:${topicId}:${job.startedAt}`,
+              topicId,
+              startedAt,
+              telegramBacked: Boolean(telegram),
+              registeredMachineCount: _listPoolMachines?.().length || 1,
+              ownership,
+              midMove: !markers || Boolean(markers.movedTo || markers.moveSuspended),
+            }];
+          }),
           sweep: async (_run, previous) => { try { const next = await snapshot(previous); return { status: 'ok' as const, snapshot: next, meaningfulDelta: previous ? hasMeaningfulDeliverableDelta(previous, next) : false }; } catch (error) { const msg = error instanceof Error ? error.message : ''; return { status: 'unknown' as const, failure: /invalid-scope/.test(msg) ? 'invalid-scope' as const : /timed out|ETIMEDOUT/.test(msg) ? 'timeout' as const : 'github-read' as const }; } },
           observeOutbound: (run, cursor) => { const rows = telegram?.getTopicHistory(run.topicId, 100) ?? []; const newest = [...rows].reverse().find(row => !row.fromUser); const covered = rows.length < 100 || rows.some(row => Date.parse(row.timestamp) <= run.startedAt || row.timestamp === cursor); return { coverage: covered ? 'proven' as const : 'unknown' as const, newestOutboundAt: newest ? Date.parse(newest.timestamp) : undefined, cursor: rows.at(-1)?.timestamp }; },
           loadState: loadTf,

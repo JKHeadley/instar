@@ -1,0 +1,42 @@
+# Stall Sentinel Recovery
+
+<!-- bump: patch -->
+
+## What Changed
+
+Autonomous throughput monitoring no longer disables itself merely because the
+machine registry contains stale or additional entries. A Telegram-backed run
+with durable local ownership remains eligible, while remote, moving, unknown,
+invalid, and non-Telegram runs now report distinct typed refusal reasons.
+
+The autonomous liveness reconciler now detects a live session whose Codex turn
+has positively completed and revives it through the canonical fresh-session
+refresh path. The recovery retains the existing debounce, ownership, lease,
+stop, quota, pressure, and concurrency gates. Failed or unwired recovery is
+audited and escalated instead of being hidden behind an ineffective terminal
+nudge.
+
+Cross-model review config resolution also no longer imports the checkout
+owner's agent config when the script is invoked from an unrelated repository.
+The legacy package-root fallback is now confined to callers inside that package
+tree.
+
+## What to Tell Your User
+
+Autonomous runs that are locally owned will no longer be silently excluded by
+stale machine registrations. If a Codex turn finishes while autonomous work is
+still active, instar can structurally start the next turn instead of typing into
+an already-completed terminal and assuming it resumed.
+
+## Summary of New Capabilities
+
+No new operator action is required. Existing agents receive the behavior and
+agent-awareness update through the normal post-update migration path.
+
+## Evidence
+
+Unit, HTTP integration, and production-lifecycle E2E tests cover typed
+eligibility boundaries, durable local ownership in a multi-machine registry,
+completed-turn revival, failed-revival escalation, and the live status route.
+The affected verification gate passes 91/91 tests and the TypeScript build is
+green.
