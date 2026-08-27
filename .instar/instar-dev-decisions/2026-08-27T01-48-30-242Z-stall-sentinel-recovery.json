@@ -1,0 +1,30 @@
+{
+  "ts": "2026-08-27T01:48:30.242Z",
+  "slug": "stall-sentinel-recovery",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 191,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "skills/spec-converge/scripts/cross-model-review.mjs",
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/monitoring/AutonomousLivenessReconciler.ts",
+      "src/monitoring/AutonomousThroughputFloor.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 182,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

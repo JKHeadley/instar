@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AutonomousThroughputFloor, deterministicHoldAllowed, hasMeaningfulDeliverableDelta, type DeliverableSnapshot, type ThroughputFloorRunState, type ThroughputRun } from '../../src/monitoring/AutonomousThroughputFloor.js';
+import { AutonomousThroughputFloor, deterministicHoldAllowed, hasMeaningfulDeliverableDelta, ineligibilityReason, type DeliverableSnapshot, type ThroughputFloorRunState, type ThroughputRun } from '../../src/monitoring/AutonomousThroughputFloor.js';
 
-const run: ThroughputRun = { signalRunId: 'topic:1:start', topicId: 1, startedAt: 1_000, telegramBacked: true, registeredMachineCount: 1, midMove: false };
+const run: ThroughputRun = { signalRunId: 'topic:1:start', topicId: 1, startedAt: 1_000, telegramBacked: true, registeredMachineCount: 1, ownership: 'unknown', midMove: false };
 const snap = (head: string, tree = head, descendsPrevious = false): DeliverableSnapshot => ({ merged: [], open: [{ number: 1, headSha: head, treeSha: tree, descendsPrevious }], digest: `${head}:${tree}` });
 
 describe('AutonomousThroughputFloor PULL/AUDIT-only', () => {
@@ -16,6 +16,30 @@ describe('AutonomousThroughputFloor PULL/AUDIT-only', () => {
   it('preserves deterministic HOLD without claiming missing lane truth', () => {
     expect(deterministicHoldAllowed({ openApprovalGate: true, allNonGatedLanesSaturated: true })).toBe(true);
     expect(deterministicHoldAllowed({ openApprovalGate: true, allNonGatedLanesSaturated: false })).toBe(false);
+  });
+
+  it('reports each eligibility boundary with a typed reason', () => {
+    expect(ineligibilityReason({ ...run, signalRunId: '' })).toBe('invalid-run');
+    expect(ineligibilityReason({ ...run, telegramBacked: false })).toBe('not-telegram-backed');
+    expect(ineligibilityReason({ ...run, midMove: true })).toBe('ownership-move-in-progress');
+    expect(ineligibilityReason({ ...run, ownership: 'remote-active' })).toBe('ownership-remote');
+    expect(ineligibilityReason({ ...run, registeredMachineCount: 4 })).toBe('ownership-unproven-multi-machine');
+  });
+
+  it('judges a locally owned run even when stale machine registrations exist', async () => {
+    const audit = vi.fn();
+    const multiMachineRun = { ...run, registeredMachineCount: 4, ownership: 'local-active' as const };
+    const floor = new AutonomousThroughputFloor({
+      listRuns: () => [multiMachineRun],
+      sweep: async () => ({ status: 'ok', snapshot: snap('a'), meaningfulDelta: false }),
+      observeOutbound: () => ({ coverage: 'proven' }),
+      loadState: () => null,
+      saveState: () => {},
+      audit,
+      now: () => 10_000_000,
+    }, { enabled: true });
+    await floor.tick();
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ decision: 'baseline', reason: 'first-successful-observation' }));
   });
 
   it('audits a dual flatline without any action seam', async () => {

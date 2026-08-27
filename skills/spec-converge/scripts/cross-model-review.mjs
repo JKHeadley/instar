@@ -289,8 +289,16 @@ function resolveReviewerConfigPath(explicitPath) {
     if (parent === dir) break;
     dir = parent;
   }
+  // The legacy package-root fallback is only coherent for callers operating
+  // inside that package tree. Without this boundary, invoking the checkout's
+  // script from an unrelated repo can silently inherit the checkout owner's
+  // agent config, defeating both isolation and the authorship guard above.
+  const cwdRelativeToRoot = path.relative(ROOT, process.cwd());
+  const cwdIsInsideRoot =
+    cwdRelativeToRoot === '' ||
+    (!cwdRelativeToRoot.startsWith(`..${path.sep}`) && cwdRelativeToRoot !== '..' && !path.isAbsolute(cwdRelativeToRoot));
   const legacy = path.join(ROOT, '.instar', 'config.json');
-  if (fs.existsSync(legacy) && acceptCandidate(legacy)) return { path: legacy };
+  if (cwdIsInsideRoot && fs.existsSync(legacy) && acceptCandidate(legacy)) return { path: legacy };
   return { path: null };
 }
 

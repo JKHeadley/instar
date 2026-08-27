@@ -6595,6 +6595,16 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Autonomous Throughput Floor section');
     }
+    const oldThroughputFloor = 'A pull/audit-only view measures project PR movement and manager outbound silence for active autonomous runs. It never notifies, dispatches, remediates, or creates attention.';
+    if (content.includes(oldThroughputFloor) && !content.includes('stale machine registrations cannot globally disable the floor')) {
+      content = content.replace(
+        oldThroughputFloor,
+        'A pull/audit-only view measures project PR movement and manager outbound silence for active autonomous runs. Eligibility is ownership-aware: in a multi-machine pool, only the durable active topic owner judges the run, so stale machine registrations cannot globally disable the floor. Ineligible rows name the exact failed boundary instead of collapsing everything into scope-or-ownership-ineligible.',
+      );
+      content += `\nThe AutonomousLivenessReconciler also detects an active autonomous run whose live Codex/Claude process is positively at a completed-turn prompt. Because a newline cannot revive a turn that already ended, it uses the canonical SessionRefresh funnel after the normal ownership/lease/debounce/safety gates; failure raises one aggregated attention item. Read \`GET /autonomous/liveness\`; conditions include \`terminal-turn\` and \`turn-revived\`.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added ownership-aware throughput eligibility and completed-turn revival');
+    }
 
     // Parallel-Hand PR Lease (parallel-hand-pr-lease.md) — Agent Awareness + Migration
     // Parity: an agent that doesn't know this exists will be confused when a `git push`

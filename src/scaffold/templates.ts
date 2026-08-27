@@ -1729,7 +1729,9 @@ A proactive backstop that posts ONE purely-observational liveness line when an a
 
 ## Autonomous Throughput Floor
 
-A pull/audit-only view measures project PR movement and manager outbound silence for active autonomous runs. It never notifies, dispatches, remediates, or creates attention. Read \`GET /autonomous/throughput-floor\` when investigating a quiet run. HOLD still requires an actual open approval gate plus authoritative saturation of every non-gated lane; v1 has no lane authority and cannot grant HOLD. A proactive surface is follow-on work gated on a separately converged SelfHealGate.
+A pull/audit-only view measures project PR movement and manager outbound silence for active autonomous runs. Read \`GET /autonomous/throughput-floor\` when investigating a quiet run. Eligibility is ownership-aware: in a multi-machine pool, only the machine with the durable active topic ownership record judges the run, so stale machine registrations cannot globally disable the floor. Ineligible rows name the exact boundary (invalid run, non-Telegram scope, remote/unproven ownership, or move in progress), never the collapsed \`scope-or-ownership-ineligible\` label. HOLD still requires an actual open approval gate plus authoritative saturation of every non-gated lane; the floor has no lane authority and cannot grant HOLD.
+
+The AutonomousLivenessReconciler also covers a second dead-work shape: an autonomous run can remain active while its Codex/Claude process sits at a positively identified completed-turn prompt. A newline cannot revive a turn that already ended, so after the normal debounce, ownership, lease, stop, pressure, quota, and loop-cap gates, the reconciler replaces that session through the canonical SessionRefresh funnel. A failed refresh raises one aggregated attention item instead of silently nudging forever. Read \`GET /autonomous/liveness\`; conditions include \`terminal-turn\` and \`turn-revived\`.
 `;
 
   if (hasTelegram) {

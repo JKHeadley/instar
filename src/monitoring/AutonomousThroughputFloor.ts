@@ -18,8 +18,21 @@ export interface ThroughputRun {
   startedAt: number;
   telegramBacked: boolean;
   registeredMachineCount: number;
+  /**
+   * Durable ownership verdict for this topic on the evaluating machine. In a
+   * multi-machine pool, only the active owner may judge the run. `unknown` is
+   * accepted only for the legacy/single-machine case.
+   */
+  ownership: 'local-active' | 'remote-active' | 'unknown';
   midMove: boolean;
 }
+
+export type ThroughputIneligibilityReason =
+  | 'invalid-run'
+  | 'not-telegram-backed'
+  | 'ownership-remote'
+  | 'ownership-unproven-multi-machine'
+  | 'ownership-move-in-progress';
 
 export type SweepFailureClass = 'timeout' | 'rate-limited' | 'auth' | 'invalid-scope' | 'git-read' | 'github-read';
 
@@ -130,9 +143,8 @@ export class AutonomousThroughputFloor {
   }
 
   private async evaluate(run: ThroughputRun, now: number): Promise<void> {
-    if (!validRun(run) || !run.telegramBacked || run.registeredMachineCount !== 1 || run.midMove) {
-      return this.record(run, now, 'ineligible', 'scope-or-ownership-ineligible');
-    }
+    const ineligible = ineligibilityReason(run);
+    if (ineligible) return this.record(run, now, 'ineligible', ineligible);
     const loaded = this.deps.loadState(run.signalRunId);
     if (loaded && 'corrupt' in loaded) return this.record(run, now, 'unknown', 'state-corrupt');
     let state = loaded;
@@ -200,4 +212,14 @@ function baseline(run: ThroughputRun, now: number, outbound: OutboundObservation
   return { version: 1, signalRunId: run.signalRunId, lastDeliverableDeltaAt: now, lastManagerOutboundAt: Math.max(run.startedAt, outbound.newestOutboundAt ?? run.startedAt), lastHistoryCursor: outbound.cursor, consecutiveSweepFailures: 0, nextSweepAt: now };
 }
 function validRun(run: ThroughputRun): boolean { return Boolean(run.signalRunId) && Number.isSafeInteger(run.topicId) && run.topicId > 0 && Number.isFinite(run.startedAt) && run.startedAt > 0; }
+export function ineligibilityReason(run: ThroughputRun): ThroughputIneligibilityReason | null {
+  if (!validRun(run)) return 'invalid-run';
+  if (!run.telegramBacked) return 'not-telegram-backed';
+  if (run.midMove) return 'ownership-move-in-progress';
+  if (run.ownership === 'remote-active') return 'ownership-remote';
+  if (run.registeredMachineCount > 1 && run.ownership !== 'local-active') {
+    return 'ownership-unproven-multi-machine';
+  }
+  return null;
+}
 function invalidTime(value: number, now: number): boolean { return !Number.isFinite(value) || value < 0 || value > now + 30_000; }
