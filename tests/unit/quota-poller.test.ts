@@ -426,12 +426,12 @@ describe('QuotaPoller', () => {
     expect(await defaultTokenResolver({ ...ACCT, framework: 'pi-cli', status: 'active', enrolledAt: '', version: 1 })).toBeNull();
   });
 
-  it('defaultTokenResolver never returns a non-oauth token (file path, non-darwin only)', async () => {
+  it('defaultTokenResolver classifies a non-oauth token without returning the token (file path, non-darwin only)', async () => {
     if (process.platform === 'darwin') return; // keychain path not hermetically testable
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'chome-'));
     fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'not-an-oauth-token' } }));
     const tok = await defaultTokenResolver({ ...ACCT, configHome: home, status: 'active', enrolledAt: '', version: 1 });
-    expect(tok).toBeNull(); // rejected: doesn't start with sk-ant-oat
+    expect(tok).toEqual({ observationOnly: true, reason: 'credential-token-shape-invalid' });
     try { SafeFsExecutor.safeRmSync(home, { recursive: true, force: true, operation: 'tests/unit/quota-poller.test.ts:home-cleanup' }); } catch { /* @silent-fallback-ok */ }
   });
 });
