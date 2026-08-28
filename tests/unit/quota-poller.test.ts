@@ -243,6 +243,22 @@ describe('QuotaPoller', () => {
     );
   });
 
+  it('records credential absence without changing pool status or creating repair authority', async () => {
+    const observations: unknown[] = [];
+    const p = new QuotaPoller({
+      pool,
+      tokenResolver: () => ({ observationOnly: true, reason: 'credential-absent-or-unreadable' }),
+      loginObservationSink: (input) => observations.push(input),
+    });
+    pool.addFixture({ ...ACCT, status: 'active' });
+    expect(await p.pollAccount(pool.get('claude-1')!)).toBeNull();
+    expect(pool.get('claude-1')!.status).toBe('active');
+    expect(observations).toMatchObject([{
+      accountId: 'claude-1',
+      outcome: { kind: 'observation-absence', causeClass: 'credential-absent-or-unreadable' },
+    }]);
+  });
+
   it('pollAccount flags needs-reauth on a 401 when the refresh token is dead', async () => {
     // 401 AND the refresher reports no usable refresh token → genuine re-auth.
     const p = new QuotaPoller({
@@ -410,12 +426,12 @@ describe('QuotaPoller', () => {
     expect(await defaultTokenResolver({ ...ACCT, framework: 'pi-cli', status: 'active', enrolledAt: '', version: 1 })).toBeNull();
   });
 
-  it('defaultTokenResolver never returns a non-oauth token (file path, non-darwin only)', async () => {
+  it('defaultTokenResolver classifies a non-oauth token without returning the token (file path, non-darwin only)', async () => {
     if (process.platform === 'darwin') return; // keychain path not hermetically testable
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'chome-'));
     fs.writeFileSync(path.join(home, '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'not-an-oauth-token' } }));
     const tok = await defaultTokenResolver({ ...ACCT, configHome: home, status: 'active', enrolledAt: '', version: 1 });
-    expect(tok).toBeNull(); // rejected: doesn't start with sk-ant-oat
+    expect(tok).toEqual({ observationOnly: true, reason: 'credential-token-shape-invalid' });
     try { SafeFsExecutor.safeRmSync(home, { recursive: true, force: true, operation: 'tests/unit/quota-poller.test.ts:home-cleanup' }); } catch { /* @silent-fallback-ok */ }
   });
 });

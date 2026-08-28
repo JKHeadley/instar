@@ -897,6 +897,8 @@ export interface RouteContext {
   /** SubscriptionPool (multi-account subscription registry, P1.1 of the
    *  Subscription & Auth Standard). Null until an operator opts in / enrolls. */
   subscriptionPool: import('../core/SubscriptionPool.js').SubscriptionPool | null;
+  /** Local bounded sign-in evidence store. Null when bootstrap compatibility/open failed. */
+  subscriptionLoginLedger?: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null;
   /** Provider identity proof seam; production lazily uses CredentialIdentityOracle. */
   subscriptionIdentityOracle?: {
     resolveSlotTenant(slot: string): Promise<{ email?: string; unavailable?: boolean; reason?: string }>;
@@ -29567,6 +29569,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // GET routes return { enabled: false } when the pool is not configured so
   // they answer 200 (not 503) on every install.
 
+  // Keep the read surface compatible with the small SubscriptionPool-shaped
+  // seams used by older embedders and route tests. Static foundation v1 is an
+  // additive capability: absence of its introspection methods means "legacy
+  // readable", not an exception that strands an async Express request.
+  const subscriptionPoolAvailability = () => {
+    const pool = ctx.subscriptionPool as (typeof ctx.subscriptionPool & {
+      getAvailability?: () => import('../core/SubscriptionPool.js').SubscriptionPoolAvailability;
+    }) | null;
+    return pool?.getAvailability?.() ?? (pool ? {
+      state: 'ready' as const,
+      reason: null,
+      maintenance: null,
+    } : null);
+  };
+
   const subscriptionEmailReconciliation = () => {
     const barrier = ctx.subscriptionEmailBarrier;
     if (barrier && typeof barrier.snapshot === 'function') return barrier.snapshot();
@@ -29575,15 +29592,51 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       : barrier?.isBlocking() ? 'running' : 'complete';
     return {
       state,
-      unresolvedCount: ctx.subscriptionPool?.listEmailGaps?.().length ?? 0,
+      unresolvedCount: ctx.subscriptionPool && (
+        subscriptionPoolAvailability()?.state === 'ready' ||
+        subscriptionPoolAvailability()?.state === 'unconfigured'
+      ) && typeof (ctx.subscriptionPool as { listEmailGaps?: unknown }).listEmailGaps === 'function'
+        ? ctx.subscriptionPool.listEmailGaps().length : 0,
       repairRunsFreshProbe: true as const,
     };
+  };
+  const subscriptionPoolFailureBody = () => {
+    const availability = subscriptionPoolAvailability();
+    return {
+      error: 'subscription-pool-authority-unavailable',
+      availability: availability?.state ?? 'unavailable',
+      reason: availability?.reason ?? 'io-read',
+      maintenance: availability?.maintenance ?? null,
+    };
+  };
+  const subscriptionPoolReadable = (): boolean => {
+    const state = subscriptionPoolAvailability()?.state;
+    return state === 'ready' || state === 'unconfigured';
   };
   const enforceSubscriptionPoolWriteCapability = (route: string) =>
     (_req: ExpressRequest, res: ExpressResponse, next: () => void): void => {
     const capability = SUBSCRIPTION_POOL_WRITE_CAPABILITIES[route];
     if (!capability) {
       res.status(500).json({ error: 'Subscription identity mutation route is not classified.' });
+      return;
+    }
+    if (ctx.subscriptionPool && !subscriptionPoolReadable()) {
+      res.status(503).json(subscriptionPoolFailureBody());
+      return;
+    }
+    if (subscriptionPoolAvailability()?.maintenance === 'rollback-cleanup-pending') {
+      res.status(409).json({
+        error: 'subscription-pool-cleanup-pending',
+        priorCommitMayHaveSucceeded: true,
+        recovery: 're-read-and-restart',
+      });
+      return;
+    }
+    if (
+      subscriptionPoolAvailability()?.state === 'unconfigured' &&
+      (route === 'PATCH /subscription-pool/:id' || route === 'DELETE /subscription-pool/:id')
+    ) {
+      res.status(503).json(subscriptionPoolFailureBody());
       return;
     }
     if (capability === 'readOnlyOrNonIdentity' || !ctx.subscriptionEmailBarrier?.isBlocking()) {
@@ -29598,7 +29651,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
   };
   const subscriptionEmailGaps = () =>
-    (ctx.subscriptionPool?.listEmailGaps?.() ?? []).map((account) => ({
+    (ctx.subscriptionPool && subscriptionPoolReadable() &&
+      typeof (ctx.subscriptionPool as { listEmailGaps?: unknown }).listEmailGaps === 'function'
+      ? ctx.subscriptionPool.listEmailGaps() : []).map((account) => ({
       accountId: account.accountId,
       nickname: account.nickname,
       provider: account.provider,
@@ -29625,7 +29680,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const selfMachineNickname = selfMachineId
         ? (ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname ?? null)
         : null;
-      const localRows = ctx.subscriptionPool?.list() ?? [];
+      const localAvailability = subscriptionPoolAvailability();
+      const localReadable = !ctx.subscriptionPool || subscriptionPoolReadable();
+      const localRows = ctx.subscriptionPool && localReadable ? ctx.subscriptionPool.list() : [];
       const selfAccounts = localRows.map((a) => ({
         ...a,
         machineId: selfMachineId,
@@ -29635,6 +29692,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
       const peers = ctx.resolvePeerUrls?.() ?? [];
       const failed: Array<{ machineId: string; error: string }> = [];
+      if (ctx.subscriptionPool && !localReadable) {
+        failed.push({
+          machineId: selfMachineId ?? 'self',
+          error: localAvailability?.state === 'invalid'
+            ? 'peer-pool-invalid'
+            : 'peer-pool-unavailable',
+        });
+      } else if (localAvailability?.state === 'unconfigured') {
+        failed.push({ machineId: selfMachineId ?? 'self', error: 'peer-pool-unconfigured' });
+      }
       const remote: Record<string, unknown>[] = [];
       const remoteEmailGaps: Record<string, unknown>[] = [];
       const remoteReconciliation: Array<{
@@ -29731,6 +29798,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ enabled: false, accounts: [] });
       return;
     }
+    if (!subscriptionPoolReadable()) {
+      res.status(503).json(subscriptionPoolFailureBody());
+      return;
+    }
     const accounts = ctx.subscriptionPool.list();
     const emailGaps = subscriptionEmailGaps();
     res.json({
@@ -29740,6 +29811,69 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       emailGaps,
       emailReconciliation: subscriptionEmailReconciliation(),
     });
+  });
+
+  // Literal route before /:id: bounded local sign-in evidence. Pool fan-out is
+  // added at this same read boundary; authority degradation remains data while
+  // bootstrap incompatibility/store absence is a typed 503.
+  router.get('/subscription-pool/login-history', (req, res) => {
+    if (ctx.subscriptionPool?.getContractCapability().version !== 1) {
+      res.status(503).json({
+        error: 'ledger-foundation-incompatible',
+        requiredVersion: 1,
+      });
+      return;
+    }
+    if (!ctx.subscriptionLoginLedger) {
+      res.status(503).json({ error: 'store-unavailable' });
+      return;
+    }
+    const accountId = typeof req.query.accountId === 'string' ? req.query.accountId : undefined;
+    const rawLimit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+    try {
+      const days = typeof req.query.days === 'string' ? Number(req.query.days) : 7;
+      if (!Number.isFinite(days) || days <= 0 || days > 30) throw new Error('invalid days');
+      const since = new Date(Date.now() - days * 24 * 60 * 60_000).toISOString();
+      const episodes = ctx.subscriptionLoginLedger.listEpisodes({ accountId, limit: rawLimit, since });
+      const credentialReadObservationWindows = ctx.subscriptionLoginLedger
+        .listCredentialReadWindows(accountId, since, rawLimit ?? 100);
+      const coverage = ctx.subscriptionLoginLedger.listCoverage(accountId, since);
+      const summary = req.query.summary === '1' ? {
+        statusEpisodes: {
+          total: episodes.length,
+          resolved: episodes.filter((row) => row.outcome === 'resolved').length,
+          open: episodes.filter((row) => row.closedAt === null).length,
+          cancelled: episodes.filter((row) => row.outcome === 'cancelled').length,
+          causeClassCounts: Object.fromEntries([...new Set(episodes.map((row) => row.causeClass))]
+            .map((cause) => [cause, episodes.filter((row) => row.causeClass === cause).length])),
+        },
+        credentialReadObservationWindows: {
+          total: credentialReadObservationWindows.length,
+          resolved: credentialReadObservationWindows.filter((row) => row.outcome === 'resolved-read-window').length,
+          open: credentialReadObservationWindows.filter((row) => row.closedAt === null).length,
+          evidenceMaturity: 'provisional-credential-read',
+          floorPasses: 3,
+          floorMinutes: 30,
+        },
+        coverage: {
+          observedBuckets: coverage.filter((row) => row.class === 'auth-path-observed').length,
+          unmeasuredBuckets: coverage.filter((row) => row.class !== 'auth-path-observed').length,
+        },
+      } : undefined;
+      res.json({
+        enabled: true,
+        authority: ctx.subscriptionPool.getAvailability(),
+        health: ctx.subscriptionLoginLedger.getHealth(),
+        watermark: ctx.subscriptionLoginLedger.getWatermark(),
+        window: { days, since },
+        count: episodes.length,
+        episodes,
+        credentialReadObservationWindows,
+        ...(summary ? { summary } : {}),
+      });
+    } catch {
+      res.status(400).json({ error: 'invalid-login-history-filter' });
+    }
   });
 
   // D5 (topic 29836) — record-state ⟂ pane-liveness. A pending login is only genuinely
@@ -29957,6 +30091,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(404).json({ error: 'SubscriptionPool not configured' });
       return;
     }
+    if (!subscriptionPoolReadable()) {
+      res.status(503).json(subscriptionPoolFailureBody());
+      return;
+    }
     const account = ctx.subscriptionPool.get(req.params.id);
     if (!account) {
       res.status(404).json({ error: `account ${req.params.id} not found` });
@@ -30015,7 +30153,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         { id, nickname, provider, framework, configHome, status, email },
         req.body,
       );
-      res.status(201).json(account);
+      res.status(201).json({ ...account, ...ctx.subscriptionPool.getLastMutationResult() });
     } catch (err) {
       const code = err instanceof Error && 'code' in err ? String(err.code) : undefined;
       const isValidation = err instanceof Error && err.name === 'ValidationError';
@@ -30067,7 +30205,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(404).json({ error: `account ${req.params.id} not found` });
         return;
       }
-      res.json(updated);
+      res.json({ ...updated, ...ctx.subscriptionPool.getLastMutationResult() });
     } catch (err) {
       const isValidation = err instanceof Error && err.name === 'ValidationError';
       res.status(isValidation ? 400 : 500).json({
@@ -30086,7 +30224,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(404).json({ error: `account ${req.params.id} not found` });
       return;
     }
-    res.json({ removed: true, id: req.params.id });
+    res.json({ removed: true, id: req.params.id, ...ctx.subscriptionPool.getLastMutationResult() });
   });
 
   // ── Subscription quota (P1.2 — QuotaPoller, decision C hybrid read) ──

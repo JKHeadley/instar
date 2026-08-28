@@ -13,6 +13,7 @@ import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { createRoutes } from '../../src/server/routes.js';
 import { SubscriptionPool } from '../../src/core/SubscriptionPool.js';
+import { SubscriptionLoginLedger } from '../../src/core/SubscriptionLoginLedger.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 interface TestServer { url: string; close: () => Promise<void>; }
@@ -30,18 +31,21 @@ describe('/subscription-pool routes (integration over HTTP)', () => {
   let dir: string;
   let oracleResult: { email?: string; unavailable?: boolean };
   let reconciliationBlocking: boolean;
+  let ledger: SubscriptionLoginLedger;
 
   beforeEach(async () => {
     oracleResult = { email: 'owner@example.com' };
     reconciliationBlocking = false;
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'subpool-int-'));
     const pool = new SubscriptionPool({ stateDir: dir });
+    ledger = new SubscriptionLoginLedger({ stateDir: dir, machineId: 'test-machine', writeEnabled: true });
     const app = express();
     app.use(express.json());
     const ctx: any = {
       config: { authToken: 'test', stateDir: dir, port: 0, dashboardPin: '123456' },
       startTime: new Date(),
       subscriptionPool: pool,
+      subscriptionLoginLedger: ledger,
       subscriptionIdentityOracle: {
         resolveSlotTenant: async () => oracleResult,
       },
@@ -74,6 +78,38 @@ describe('/subscription-pool routes (integration over HTTP)', () => {
     expect(r.status).toBe(200);
     expect(r.body.enabled).toBe(true);
     expect(r.body.count).toBe(0);
+  });
+
+  it('serves bounded login history on the literal route without confusing it for an account id', async () => {
+    ledger.recordStatus({
+      accountId: 'claude-acct-1',
+      status: 'needs-reauth',
+      at: '2026-08-26T20:00:00.000Z',
+      causeClass: 'no-refresh-token',
+    });
+
+    const result = await api('/subscription-pool/login-history?accountId=claude-acct-1&limit=1&summary=1');
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({
+      enabled: true,
+      authority: { state: 'unconfigured', reason: 'not-initialized' },
+      health: { state: 'ok', readonly: false },
+      count: 1,
+      episodes: [{
+        accountId: 'claude-acct-1',
+        machineId: 'test-machine',
+        causeClass: 'no-refresh-token',
+        closedAt: null,
+      }],
+      credentialReadObservationWindows: [],
+      summary: {
+        statusEpisodes: { total: 1, open: 1 },
+        credentialReadObservationWindows: {
+          total: 0, evidenceMaturity: 'provisional-credential-read', floorPasses: 3, floorMinutes: 30,
+        },
+      },
+    });
+    expect((await api('/subscription-pool/login-history?days=31')).status).toBe(400);
   });
 
   it('full CRUD lifecycle over HTTP', async () => {
@@ -152,9 +188,57 @@ describe('/subscription-pool routes (integration over HTTP)', () => {
     expect(list.body.count).toBe(0);
   });
 
-  it('GET/PATCH/DELETE on unknown id return 404', async () => {
+  it('safe reads stay empty while unconfigured and non-first-create mutations return typed 503', async () => {
     expect((await api('/subscription-pool/nope')).status).toBe(404);
-    expect((await api('/subscription-pool/nope', { method: 'PATCH', body: '{}' })).status).toBe(404);
-    expect((await api('/subscription-pool/nope', { method: 'DELETE' })).status).toBe(404);
+    expect(await api('/subscription-pool/nope', { method: 'PATCH', body: '{}' })).toMatchObject({
+      status: 503, body: { availability: 'unconfigured', reason: 'not-initialized' },
+    });
+    expect(await api('/subscription-pool/nope', { method: 'DELETE' })).toMatchObject({
+      status: 503, body: { availability: 'unconfigured', reason: 'not-initialized' },
+    });
+  });
+
+  it('maps invalid authority to typed 503 and never reports zero accounts', async () => {
+    const invalidDir = path.join(dir, 'invalid-agent');
+    fs.mkdirSync(invalidDir);
+    fs.writeFileSync(path.join(invalidDir, 'subscription-pool.json'), '{broken');
+    const invalidPool = new SubscriptionPool({ stateDir: invalidDir });
+    const app = express();
+    app.use(express.json());
+    app.use(createRoutes({
+      config: { authToken: 'test', stateDir: invalidDir, port: 0, dashboardPin: '123456' },
+      startTime: new Date(),
+      subscriptionPool: invalidPool,
+      subscriptionEmailBarrier: { isBlocking: () => false },
+    } as any));
+    const invalidServer = await listen(app);
+    try {
+      const request = (p: string, init?: RequestInit) =>
+        fetch(invalidServer.url + p, { headers: { 'Content-Type': 'application/json' }, ...init })
+          .then(async (r) => ({ status: r.status, body: await r.json() }));
+      expect(await request('/subscription-pool')).toMatchObject({
+        status: 503,
+        body: {
+          error: 'subscription-pool-authority-unavailable',
+          availability: 'invalid',
+          reason: 'parse',
+          maintenance: null,
+        },
+      });
+      expect(await request('/subscription-pool/nope')).toMatchObject({
+        status: 503, body: { availability: 'invalid', reason: 'parse' },
+      });
+      expect(await request('/subscription-pool/nope', { method: 'PATCH', body: '{}' })).toMatchObject({
+        status: 503, body: { availability: 'invalid', reason: 'parse' },
+      });
+      const unified = await request('/subscription-pool?scope=pool');
+      expect(unified.status).toBe(200);
+      expect(unified.body.accounts).toEqual([]);
+      expect(unified.body.pool.failed).toEqual([
+        { machineId: 'self', error: 'peer-pool-invalid' },
+      ]);
+    } finally {
+      await invalidServer.close();
+    }
   });
 });

@@ -47,6 +47,10 @@ import {
 } from './OAuthRefresher.js';
 import type { CredentialLocationGate } from './CredentialLocationGate.js';
 import type { CredentialLocationLedger } from './CredentialLocationLedger.js';
+import type {
+  SubscriptionLoginCauseClass,
+  SubscriptionLoginSettledOutcome,
+} from './SubscriptionLoginLedger.js';
 import {
   readLatestCodexUsage,
   type CodexUsageSnapshot,
@@ -64,7 +68,9 @@ import {
 export type TokenResolution =
   | string
   | null
-  | { reauthNeeded: true; reason: 'unparseable-credential-blob' };
+  | { reauthNeeded: true; reason: 'unparseable-credential-blob' }
+  | { observationOnly: true; reason:
+      'credential-absent-or-unreadable' | 'credential-missing-oauth-block' | 'credential-token-shape-invalid' };
 
 export type TokenResolver = (
   account: SubscriptionAccount,
@@ -123,6 +129,16 @@ export interface QuotaPollerConfig {
   /** One deduped attention item per drift episode (id is stable until self-close). */
   emitIdentityDriftAttention?: (item: { id: string; title: string; summary: string }) => void | Promise<void>;
   onIdentityRestored?: (accountId: string, attentionId: string) => void | Promise<void>;
+  /** Passive evidence sink. It cannot select accounts, mutate pool authority, or trigger repair. */
+  loginObservationSink?: (input: {
+    accountId: string;
+    at: string;
+    outcome: SubscriptionLoginSettledOutcome;
+    pollIntervalMs: number;
+  }) => void;
+  loginAdmission?: (cells: Array<{
+    accountId: string; supported: boolean; disabled: boolean; at: string;
+  }>) => Set<string>;
 }
 
 /** Outcome of a single usage read (internal). */
@@ -164,12 +180,18 @@ export async function defaultTokenResolver(
   // contention that was seconds, and across N accounts a burst (the residual freeze this fixes).
   const read = await readClaudeOauthAsyncDetailed(account.configHome);
   if (!read.ok) {
-    return read.reason === 'unparseable'
-      ? { reauthNeeded: true, reason: 'unparseable-credential-blob' }
-      : null;
+    if (read.reason === 'unparseable') return { reauthNeeded: true, reason: 'unparseable-credential-blob' };
+    return {
+      observationOnly: true,
+      reason: read.reason === 'missing-oauth-block'
+        ? 'credential-missing-oauth-block'
+        : 'credential-absent-or-unreadable',
+    };
   }
   const tok = read.oauth.accessToken;
-  return typeof tok === 'string' && tok.startsWith('sk-ant-oat') ? tok : null;
+  return typeof tok === 'string' && tok.startsWith('sk-ant-oat')
+    ? tok
+    : { observationOnly: true, reason: 'credential-token-shape-invalid' };
 }
 
 /**
@@ -356,6 +378,8 @@ export class QuotaPoller {
   private readonly locationLedger?: CredentialLocationLedger;
   private readonly emitIdentityDriftAttention?: QuotaPollerConfig['emitIdentityDriftAttention'];
   private readonly onIdentityRestored?: QuotaPollerConfig['onIdentityRestored'];
+  private readonly loginObservationSink?: QuotaPollerConfig['loginObservationSink'];
+  private readonly loginAdmission?: QuotaPollerConfig['loginAdmission'];
   private readonly identityCache = new Map<string, { at: number; value: Awaited<ReturnType<NonNullable<QuotaPollerConfig['resolveSlotIdentity']>>> }>();
   private readonly attributionByExpected = new Map<string, string>();
   private interval: ReturnType<typeof setInterval> | null = null;
@@ -382,6 +406,8 @@ export class QuotaPoller {
     this.locationLedger = config.locationLedger;
     this.emitIdentityDriftAttention = config.emitIdentityDriftAttention;
     this.onIdentityRestored = config.onIdentityRestored;
+    this.loginObservationSink = config.loginObservationSink;
+    this.loginAdmission = config.loginAdmission;
   }
 
   private async identityForSlot(slot: string) {
@@ -513,7 +539,20 @@ export class QuotaPoller {
     }
   }
 
-  private markNeedsReauth(account: SubscriptionAccount, reason: string): void {
+  private observe(accountId: string, outcome: SubscriptionLoginSettledOutcome): void {
+    try {
+      this.loginObservationSink?.({
+        accountId,
+        at: new Date(this.now()).toISOString(),
+        outcome,
+        pollIntervalMs: this.pollIntervalMs,
+      });
+    } catch (error) {
+      this.logger.warn(`[QuotaPoller] login observation refused for ${accountId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private markNeedsReauth(account: SubscriptionAccount, reason: SubscriptionLoginCauseClass): void {
     try {
       this.pool.update(account.id, { status: 'needs-reauth' });
     } catch {
@@ -577,8 +616,17 @@ export class QuotaPoller {
 
     const tokenResolution = await this.tokenResolver(slotAccount);
     if (typeof tokenResolution !== 'string') {
-      if (tokenResolution?.reauthNeeded) {
+      if (tokenResolution && 'reauthNeeded' in tokenResolution && tokenResolution.reauthNeeded) {
         this.markNeedsReauth(slotAccount, tokenResolution.reason);
+        this.observe(slotAccount.id, {
+          kind: 'transition-to-needs-reauth',
+          causeClass: tokenResolution.reason,
+          corroboration: 'status-preexisting',
+        });
+        return null;
+      }
+      if (tokenResolution && 'observationOnly' in tokenResolution && tokenResolution.observationOnly) {
+        this.observe(slotAccount.id, { kind: 'observation-absence', causeClass: tokenResolution.reason });
         return null;
       }
       this.logger.warn(`[QuotaPoller] no resolvable token for account ${account.id} — skipping`);
@@ -603,14 +651,29 @@ export class QuotaPoller {
           return null;
         }
         // No refresh token, or the exchange was rejected — genuine re-auth.
-        this.markNeedsReauth(slotAccount, refreshed.reason);
+        const causeClass: SubscriptionLoginCauseClass = refreshed.reason === 'read-failed'
+          ? 'refresh-read-failed'
+          : refreshed.reason === 'unsupported-account'
+            ? 'unrecognized-reason'
+            : refreshed.reason;
+        this.markNeedsReauth(slotAccount, causeClass);
+        this.observe(slotAccount.id, {
+          kind: 'transition-to-needs-reauth',
+          causeClass,
+          corroboration: 'exchange-corroborated',
+        });
         return null;
       }
       const retry = await this.readUsage(refreshed.accessToken);
       if (retry === null) return null; // network blip on the retry → next cycle
       if (retry.authFailed) {
         // Fresh token still rejected — treat as genuinely failed.
-        this.markNeedsReauth(slotAccount, 'usage still auth-failed after refresh');
+        this.markNeedsReauth(slotAccount, 'still-authfailed-after-refresh');
+        this.observe(slotAccount.id, {
+          kind: 'transition-to-needs-reauth',
+          causeClass: 'still-authfailed-after-refresh',
+          corroboration: 'exchange-corroborated',
+        });
         return null;
       }
       // Recovered silently — no operator action needed. Record for visibility.
@@ -646,12 +709,25 @@ export class QuotaPoller {
   async pollAll(): Promise<{ polled: number; failed: number }> {
     let polled = 0;
     let failed = 0;
-    for (const account of this.pool.list()) {
-      const supported =
-        (account.provider === 'anthropic' && account.framework === 'claude-code') ||
-        (account.provider === 'openai' && account.framework === 'codex-cli');
-      if (!supported) continue;
-      if (account.status === 'disabled') continue;
+    const scan = this.pool.scanAccountsBounded(4_096);
+    const nowIso = new Date(this.now()).toISOString();
+    const admitted = this.loginAdmission?.(scan.accounts.map((account) => ({
+      accountId: account.id,
+      supported: isQuotaPollSupportedAccount(account),
+      disabled: account.status === 'disabled',
+      at: nowIso,
+    }))) ?? new Set(scan.accounts.map((account) => account.id));
+    for (const account of scan.accounts) {
+      if (!admitted.has(account.id)) continue;
+      const supported = isQuotaPollSupportedAccount(account);
+      if (!supported) {
+        this.observe(account.id, { kind: 'skipped-unsupported-framework' });
+        continue;
+      }
+      if (account.status === 'disabled') {
+        this.observe(account.id, { kind: 'skipped-disabled' });
+        continue;
+      }
       const snap = await this.pollAccount(account);
       if (!snap) {
         failed++;
@@ -670,6 +746,9 @@ export class QuotaPoller {
       } catch {
         // @silent-fallback-ok: persistence best-effort; snapshot retained in memory
       }
+      this.observe(attributedId, account.status === 'needs-reauth'
+        ? { kind: 'transition-to-active' }
+        : { kind: 'resolved-clean' });
     }
     return { polled, failed };
   }
@@ -704,4 +783,9 @@ export class QuotaPoller {
   lastSnapshot(accountId: string): AccountQuotaSnapshot | null {
     return this.lastByAccount.get(accountId) ?? null;
   }
+}
+
+export function isQuotaPollSupportedAccount(account: SubscriptionAccount): boolean {
+  return (account.provider === 'anthropic' && account.framework === 'claude-code') ||
+    (account.provider === 'openai' && account.framework === 'codex-cli');
 }

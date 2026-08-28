@@ -330,6 +330,7 @@ export class AgentServer {
     wsManager: import('./WebSocketManager.js').WebSocketManager | null;
     workQueue?: WorkQueueRegistry | null;
     pendingRelayLookup?: (deliveryId: string) => boolean;
+    subscriptionLoginLedger?: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null;
     autonomousLivenessReconciler?:
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null;
@@ -337,6 +338,7 @@ export class AgentServer {
   } | null = null;
   private deliverySentinel: DeliveryFailureSentinel | null = null;
   private deliveryStore: PendingRelayStore | null = null;
+  private subscriptionLoginLedger: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null = null;
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private tokenLedger: TokenLedger | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
@@ -536,6 +538,16 @@ export class AgentServer {
     this.classReviewStore?.setRemoteReader(reader);
   }
 
+  /** Bind the production ledger before listen() exposes the route context. */
+  setSubscriptionLoginLedger(
+    ledger: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null,
+  ): void {
+    if (this.server) throw new Error('subscription login ledger must be bound before server start');
+    if (!this.routeContext) throw new Error('route context is not initialized');
+    this.subscriptionLoginLedger = ledger;
+    this.routeContext.subscriptionLoginLedger = ledger;
+  }
+
   constructor(options: {
     config: InstarConfig;
     sessionManager: SessionManager;
@@ -581,6 +593,7 @@ export class AgentServer {
     standDownRegistry?: import('../core/StandDownRegistry.js').StandDownRegistry;
     standDownAudit?: import('../core/StandDownAudit.js').StandDownAudit;
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
+    subscriptionLoginLedger?: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null;
     subscriptionIdentityOracle?: import('../core/CredentialLocationLedger.js').IdentityOracle;
     subscriptionEmailBinding?: import('../core/SubscriptionPool.js').SubscriptionEmailBindingAuthority;
     subscriptionEmailBarrier?: import('../core/SubscriptionPool.js').SubscriptionEmailReconciliationBarrier;
@@ -993,6 +1006,7 @@ export class AgentServer {
     threadlineFlowBridge?: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge;
   }) {
     this.config = options.config;
+    this.subscriptionLoginLedger = options.subscriptionLoginLedger ?? null;
     this.subscriptionEmailBarrier = options.subscriptionEmailBarrier ?? null;
     this.meshBindActive = options.meshBindActive ?? false;
     this.telegramAdapter = options.telegram ?? null;
@@ -3824,6 +3838,7 @@ export class AgentServer {
       standDownRegistry: options.standDownRegistry ?? null,
       standDownAudit: options.standDownAudit ?? null,
       subscriptionPool: options.subscriptionPool ?? null,
+      subscriptionLoginLedger: options.subscriptionLoginLedger ?? null,
       subscriptionIdentityOracle: options.subscriptionIdentityOracle,
       subscriptionEmailBinding: options.subscriptionEmailBinding,
       subscriptionEmailBarrier: options.subscriptionEmailBarrier,
@@ -6008,6 +6023,11 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    if (this.subscriptionLoginLedger) {
+      try { this.subscriptionLoginLedger.close(); }
+      catch (error) { console.warn('[subscription-login-ledger] clean stop failed:', error); }
+      this.subscriptionLoginLedger = null;
+    }
     try { this.undatedActionResurfacer?.stop(); } catch { /* @silent-fallback-ok: shutdown continues after a timer-cleanup fault */ }
     this.undatedActionResurfacer = null;
     if (this.claimObservationHousekeeperTimer) {

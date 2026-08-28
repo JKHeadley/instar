@@ -55,6 +55,16 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // per-machine-state posture as 'state/pr-hand-leases.json'. stateDir-relative
   // literal.
   'state/external-hog-decisions.json',
+  // Subscription authority is physical-credential-local machine state. The
+  // prefix covers the active directory, initialized witness, candidate,
+  // rollback, and atomic temp siblings. Keep both relative forms because
+  // callers may express paths relative to stateDir or projectDir.
+  'state/subscription-pool',
+  '.instar/state/subscription-pool',
+  // Login reliability evidence is physical-credential-local and may include
+  // machine identity, SQLite WAL/SHM, watermark, and refusal sidecar siblings.
+  'state/subscription-login-ledger',
+  '.instar/state/subscription-login-ledger',
 ]);
 
 /**

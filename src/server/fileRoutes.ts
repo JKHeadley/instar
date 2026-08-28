@@ -108,6 +108,13 @@ export const NEVER_SERVED_PREFIXES = [
   // meter spec §5.3) — the dashboard file editor must not read or rewrite it
   // (serve-deny implies edit-deny via isNeverEditable).
   '.instar/state/external-hog-decisions.json',
+  // Machine-bound subscription authority: active directory, witness,
+  // candidates, rollbacks, and atomic temp siblings. Dual-root is required:
+  // production paths include `.instar/`, legacy/test paths may not.
+  'state/subscription-pool',
+  '.instar/state/subscription-pool',
+  'state/subscription-login-ledger',
+  '.instar/state/subscription-login-ledger',
   'state/claim-verification/',
   '.instar/state/claim-verification/',
   // The agent's own config: round-13 fenced it as never-EDITABLE because it
