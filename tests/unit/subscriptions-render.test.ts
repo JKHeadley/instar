@@ -77,6 +77,27 @@ describe('countdown', () => {
   });
 });
 
+describe('assisted re-login account controls', () => {
+  it('renders one-click repair without exposing hostile episode data as markup', () => {
+    const target = doc.createElement('div');
+    renderAccounts(doc, target, [{ id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', status: 'needs-reauth' }], NOW, null, [
+      { id: 'repair-<img src=x onerror=1>', accountId: 'a1', state: 'suggested' },
+    ]);
+    const button = target.querySelector('[data-relogin-action="approve"]');
+    expect(button?.textContent).toBe('Repair sign-in');
+    expect(target.querySelector('img')).toBeNull();
+  });
+
+  it('shows cancel for an active repair and retry only for a safe failed terminal', () => {
+    const account = [{ id: 'a1', nickname: 'personal', provider: 'anthropic', framework: 'claude-code', status: 'needs-reauth' }];
+    const target = doc.createElement('div');
+    renderAccounts(doc, target, account, NOW, null, [{ id: 'r1', accountId: 'a1', state: 'browser-driving' }]);
+    expect(target.querySelector('[data-relogin-action="cancel"]')).toBeTruthy();
+    renderAccounts(doc, target, account, NOW, null, [{ id: 'r1', accountId: 'a1', state: 'failed' }]);
+    expect(target.querySelector('[data-relogin-action="retry"]')).toBeTruthy();
+  });
+});
+
 describe('friendly wording', () => {
   it('maps status + provider to plain words', () => {
     expect(friendlyStatus('rate-limited')).toBe('At its limit');

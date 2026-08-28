@@ -115,6 +115,8 @@ export const NEVER_SERVED_PREFIXES = [
   '.instar/state/subscription-pool',
   'state/subscription-login-ledger',
   '.instar/state/subscription-login-ledger',
+  'state/subscription-relogin',
+  '.instar/state/subscription-relogin',
   'state/claim-verification/',
   '.instar/state/claim-verification/',
   // The agent's own config: round-13 fenced it as never-EDITABLE because it

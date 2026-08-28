@@ -495,6 +495,9 @@ describe('lint-dev-agent-dark-gate', () => {
       '1976': 'cartographer.freshnessSweep.enabled',
       '2021': 'cartographer.conformanceAudit.llmEnrichment.enabled',
       '2046': 'cartographer.subtreeNav.llmRerank.enabled',
+      // Assisted relogin is intentionally fleet-dark until a per-agent
+      // promotion; the exclusion registry classifies it as action-bearing.
+      '2111': 'subscriptionPool.assistedRelogin.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

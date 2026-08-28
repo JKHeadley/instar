@@ -3706,6 +3706,15 @@
       .sub-account-meta { font-size:12px; opacity:.6; margin:2px 0 2px; }
       .sub-account-email { font-size:12px; opacity:.5; margin:0 0 10px; }
       .sub-account-noquota { font-size:12px; opacity:.6; }
+      .sub-profile-provision { border:1px solid var(--border,#2a2a2a); border-left:4px solid #16a34a;
+        border-radius:10px; padding:14px 16px; display:flex; flex-direction:column; gap:10px; }
+      .sub-profile-title { font-size:16px; font-weight:650; }
+      .sub-profile-copy { margin:0; font-size:13px; line-height:1.5; opacity:.78; }
+      .sub-profile-input { width:100%; box-sizing:border-box; min-height:44px; padding:10px 12px;
+        font-size:16px; border:1px solid var(--border,#2a2a2a); border-radius:8px; background:transparent; color:inherit; }
+      .sub-profile-create { min-height:44px; padding:10px 14px; font-size:14px; font-weight:600;
+        border-radius:8px; border:1px solid #16a34a; background:rgba(22,163,74,.12); color:inherit; cursor:pointer; }
+      .sub-profile-status { min-height:18px; font-size:12px; line-height:1.45; opacity:.8; }
       .sub-quota { margin:8px 0; }
       .sub-quota-head { display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px; }
       .sub-quota-label { opacity:.8; }
@@ -3773,6 +3782,11 @@
            your subscriptions (ws52-operator-tap-not-text Part A). Leads the panel as the primary
            action when present; silent otherwise. -->
       <div id="subFollowMe"></div>
+      <section class="ph-section">
+        <h3 class="ph-h">Dedicated browser profiles</h3>
+        <p class="ph-h-sub">Prepare a private Chrome profile for one Google account. The agent handles the machine; you only respond to a secure password, verification, or approval link when the provider truly requires it.</p>
+        <div id="subProfileProvision"></div>
+      </section>
       <!-- Account × Machine matrix (account-machine-matrix) — at-a-glance "which account is set up
            on which machine," with a one-tap "Set up" per empty cell that runs the whole sign-in in
            the dashboard (PIN → sign-in link → paste the code). Hidden when there's nothing to show. -->
@@ -4146,6 +4160,9 @@
     // ── State ────────────────────────────────────────────────
     let ws = null;
     let token = '';
+    // Short-lived proof of a recent PIN unlock. Kept in memory only: the durable
+    // API token is intentionally insufficient for operator-only actions.
+    let operatorSessionToken = '';
     let sessions = [];
     // Sessions running on OTHER machines in the pool (GET /sessions?scope=pool).
     // Kept separate from `sessions` because the WebSocket replaces that array
@@ -4193,6 +4210,8 @@
         .then(data => {
           if (data && data.token) {
             token = data.token;
+            operatorSessionToken = typeof data.operatorSessionToken === 'string'
+              ? data.operatorSessionToken : '';
           } else {
             // Fall back: treat input as raw Bearer token
             token = pin;
@@ -9670,6 +9689,7 @@
           accounts: document.getElementById('subAccounts'),
           followMe: document.getElementById('subFollowMe'),
           matrix: document.getElementById('subMatrix'),
+          profileProvision: document.getElementById('subProfileProvision'),
         };
         // Pass opts through (method/body/signal) so the controller can POST the follow-me
         // scan + the PIN-gated issue-for-machine, not just GET.
@@ -9677,7 +9697,10 @@
           ...opts,
           headers: { 'Authorization': `Bearer ${token}`, ...(opts.headers || {}) },
         });
-        __subController = __subModule.createController({ doc: document, els, fetchImpl });
+        __subController = __subModule.createController({
+          doc: document, els, fetchImpl,
+          getOperatorSessionToken: () => operatorSessionToken,
+        });
       }
       __subController.start();
     }

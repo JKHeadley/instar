@@ -293,6 +293,13 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/unfork', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/attention', domain: 'machine-local', story: attentionStory });
+  const subscriptionReloginStory: ConvergenceStory = {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'repair authority is bound to a physical config home, browser profile, tmux pane, and host browser seat; durable rows live only under the machine-local state exclusion and never replicate',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/subscription-relogin/', domain: 'machine-local', story: subscriptionReloginStory });
   const classReviewStory: ConvergenceStory = {
     logical: 'ws2x-replicated',
     onSharedGitSyncedPath: true,
@@ -377,6 +384,18 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       logical: 'per-machine-path',
       onSharedGitSyncedPath: false,
       note: 'ownership-checked release mutates the same host-wide browser-seat lease outside project git sync',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/playwright-profiles/provision',
+    domain: 'machine-local',
+    story: {
+      logical: 'git-sync-excluded',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'the PIN-scoped operation materializes browser cookies/user-data and the profile registry under this agent home; both are physical machine-local identity state excluded from project git sync, and peers may observe but never replay the provisioning write',
     },
   });
 

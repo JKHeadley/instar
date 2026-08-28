@@ -1,0 +1,52 @@
+{
+  "ts": "2026-08-28T18:26:47.122Z",
+  "slug": "assisted-subscription-relogin",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 26,
+  "loc": 2312,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/AnthropicReloginBrowserDriver.ts",
+      "src/core/BackupManager.ts",
+      "src/core/ChromeCdpReloginBrowser.ts",
+      "src/core/ClaudePasteBackController.ts",
+      "src/core/EnrollmentWizard.ts",
+      "src/core/PlaywrightProfileRegistry.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SubscriptionReloginOrchestrator.ts",
+      "src/core/SubscriptionReloginPolicy.ts",
+      "src/core/SubscriptionReloginRuntime.ts",
+      "src/core/SubscriptionReloginService.ts",
+      "src/core/SubscriptionReloginStore.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/componentCategories.ts",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/data/llmBenchCoverage.ts",
+      "src/data/provenanceCoverage.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/DashboardOperatorSessionStore.ts",
+      "src/server/fileRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 2211,
+    "deletedLines": 101
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

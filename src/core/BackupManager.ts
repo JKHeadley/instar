@@ -65,6 +65,11 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // machine identity, SQLite WAL/SHM, watermark, and refusal sidecar siblings.
   'state/subscription-login-ledger',
   '.instar/state/subscription-login-ledger',
+  // Assisted repair state is machine-bound and correlates local login/profile
+  // authority. Never restore it onto another machine or duplicate an in-flight
+  // repair through backup replication.
+  'state/subscription-relogin',
+  '.instar/state/subscription-relogin',
 ]);
 
 /**

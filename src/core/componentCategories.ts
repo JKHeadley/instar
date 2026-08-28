@@ -90,6 +90,7 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   OverrideDetector: 'gate',
   TaskClassifier: 'gate',
   FeedbackReadinessArbiter: 'gate',
+  'subscription-relogin-supervisor': 'gate', // closed-action validator over provider browser state
 
   // ── Reflectors / reviewers (deeper after-the-fact analysis) ──
   JobReflector: 'reflector',

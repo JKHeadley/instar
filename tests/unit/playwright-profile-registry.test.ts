@@ -203,6 +203,25 @@ describe('PlaywrightProfileRegistry — assignAccount', () => {
     expect(reg.listProfiles()[0].accounts).toHaveLength(1);
   });
 
+  it('persists deterministic secret-role bindings by vault name only', () => {
+    const reg = makeRegistry(h);
+    const acct = reg.assignAccount('default', {
+      service: 'google', identity: 'person@example.test', owner: 'operator',
+      vaultRefs: ['google_password_justin'],
+      vaultBindings: { password: 'google_password_justin' }, loginMethod: 'password',
+    });
+    expect(acct.vaultBindings).toEqual({ password: 'google_password_justin' });
+    expect(reg.listProfiles()[0].accounts[0].vaultBindings).toEqual({ password: 'google_password_justin' });
+  });
+
+  it('rejects unlisted, malformed, or unknown secret-role bindings', () => {
+    const reg = makeRegistry(h);
+    expect(() => reg.assignAccount('default', { service: 'google', identity: 'a', owner: 'operator',
+      vaultRefs: [], vaultBindings: { password: 'google_password_justin' } })).toThrow(/present in vaultRefs/);
+    expect(() => reg.assignAccount('default', { service: 'google', identity: 'a', owner: 'operator',
+      vaultRefs: ['google_password_justin'], vaultBindings: { recovery: 'google_password_justin' } as any })).toThrow(/only non-empty/);
+  });
+
   it('rejects an unknown vault ref with 409', () => {
     const reg = makeRegistry(h);
     try {
@@ -583,6 +602,16 @@ describe('PlaywrightProfileRegistry — computeActivation (D10)', () => {
     reg.writeActivation(plan);
     const written = JSON.parse(fs.readFileSync(path.join(h.root, '.claude', 'settings.json'), 'utf8'));
     expect(written.mcpServers.playwright.args).toEqual(['@playwright/mcp@latest', '--user-data-dir', path.resolve(dir)]);
+  });
+
+  it('materializes a registered custom profile as a private idempotent directory', () => {
+    const reg = makeRegistry(h);
+    const profile = reg.createProfile({ id: 'remote-google' });
+    expect(fs.existsSync(profile.userDataDir!)).toBe(false);
+    const first = reg.materializeProfileDirectory('remote-google');
+    expect(first.created).toBe(true);
+    expect(fs.statSync(first.userDataDir).mode & 0o777).toBe(0o700);
+    expect(reg.materializeProfileDirectory('remote-google').created).toBe(false);
   });
 });
 

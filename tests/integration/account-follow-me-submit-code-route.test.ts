@@ -83,6 +83,11 @@ function buildCtx(dir: string, opts: {
     startTime: new Date(),
     meshSelfId: 'this-machine',
     subscriptionPool: pool,
+    subscriptionIdentityOracle: {
+      resolveSlotTenant: async () => opts.credentialPresent
+        ? { email: opts.oracleEmail ?? 'approved@x.com' }
+        : { unavailable: true, reason: 'no credential' },
+    },
     enrollmentWizard,
     // sendInput records the code reached a pane; default returns true (delivered).
     // captureOutput feeds the readiness check — default is a ready paste-code prompt frame.

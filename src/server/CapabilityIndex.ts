@@ -105,6 +105,26 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'subscriptionRelogin',
+    prefixes: ['/subscription-relogin'],
+    description: 'Approval-gated assisted Claude Code sign-in repair. A corroborated open authentication incident becomes one exact account/profile repair proposal; one operator click authorizes a bounded autonomous provider-native login. Secrets never enter prompts, logs, or API responses, and success requires verified identity, authenticated use, pool activation, and closure of the exact source incident.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.subscriptionRelogin,
+      mode: ctx.config.subscriptionPool?.assistedRelogin?.enabled === true
+        ? (ctx.config.subscriptionPool.assistedRelogin.dryRun === true
+          ? 'observe'
+          : (ctx.config.subscriptionPool.assistedRelogin.mode ?? 'approval'))
+        : 'off',
+      endpoints: [
+        'GET /subscription-relogin',
+        'GET /subscription-relogin/:episodeId/events',
+        'POST /subscription-relogin/:episodeId/approve',
+        'POST /subscription-relogin/:episodeId/cancel',
+        'POST /subscription-relogin/:episodeId/retry',
+      ],
+    }),
+  },
+  {
     key: 'credentialRepointing',
     prefixes: ['/credentials'],
     description: 'Live credential re-pointing (WS5.2) — manual levers that MOVE a pool account\'s OAuth credential between config-home "slots" without restarting the sessions reading them (the staged §2.3 exchange), plus the ledger census + the single secret-scrub audit chokepoint. POST /credentials/swap exchanges two slots\' credentials live; POST /credentials/set-default flips which account ~/.claude serves (CMT-1337 zero-touch default flip); POST /credentials/restore-enrollment tears down to the enrollment layout, parking any identity-incoherent blob one-directionally (never exchanged into a healthy slot). GET /credentials/locations is the ledger read (slot ↔ account, since, lastVerifiedAt, quarantine, journal tail, mode); GET /credentials/rebalancer is the autonomous-balancer surface (503 in Increment A). All levers are DETECTIVE controls — operator notification + audit + param-validate + per-pair cooldown + a §0.g force budget on force:true. No token material ever exits any /credentials/* surface (the CredentialAuditEmit scrub chokepoint). Ships DARK behind subscriptionPool.credentialRepointing.enabled — every lever 503s/no-ops while disabled (byte-for-byte today\'s behavior).',

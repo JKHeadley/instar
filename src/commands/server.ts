@@ -90,6 +90,7 @@ import type { TopicProfileStore } from '../core/TopicProfileStore.js';
 import type { TopicResumeMap } from '../core/TopicResumeMap.js';
 import type { IdleReading } from '../core/classifyProfileChange.js';
 import { closeAllSqlite } from '../core/SqliteRegistry.js';
+import { DP_SUBSCRIPTION_RELOGIN_ACTION } from '../data/provenanceCoverage.js';
 import { SessionManager, type SessionTerminateAuthority, IDLE_PROMPT_PATTERNS } from '../core/SessionManager.js';
 import { configureSyncOpMarker, defaultInflightMarkerReader } from '../core/InFlightSyncOpMarker.js';
 import { StateManager } from '../core/StateManager.js';
@@ -14122,7 +14123,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // a 2nd account never clobbers the 1st.
     const { PendingLoginStore } = await import('../core/PendingLoginStore.js');
     const { EnrollmentWizard } = await import('../core/EnrollmentWizard.js');
-    const { FrameworkLoginDriver, enrollPaneSessionName, enrollmentBrowserEnv, enrollmentIsolationEnv, enrollmentCredentialPath } = await import('../core/FrameworkLoginDriver.js');
+    const { FrameworkLoginDriver, enrollPaneSessionName, enrollmentBrowserEnv, enrollmentIsolationEnv,
+      enrollmentCredentialPath } = await import('../core/FrameworkLoginDriver.js');
     const DEFAULT_ENROLL_LOGIN_COMMANDS: Record<string, string> = {
       'claude-code': 'claude auth login',
       'codex-cli': 'codex login',
@@ -14444,6 +14446,94 @@ export async function startServer(options: StartOptions): Promise<void> {
       interactiveReservePct: 0.4,
       maxDailyCents: promiseBeaconCfg.maxDailyLlmSpendCents ?? 100,
     });
+    // Assisted subscription re-login — explicit opt-in, dry-run/observe by default.
+    // Constructed from the existing authority owners; no credential/token is copied.
+    let subscriptionReloginRuntime: import('../core/SubscriptionReloginRuntime.js').SubscriptionReloginRuntime | null = null;
+    const reloginCfg = config.subscriptionPool?.assistedRelogin;
+    if (reloginCfg?.enabled === true && subscriptionLoginLedger && subscriptionPoolMachineId && sharedIntelligence) {
+      try {
+        const [{ createSubscriptionReloginRuntime }, { PlaywrightProfileRegistry }, { SecretStore },
+          { secretKeyPaths }, { ClaudePasteBackController }, { ChromeCdpReloginBrowser }] = await Promise.all([
+          import('../core/SubscriptionReloginRuntime.js'), import('../core/PlaywrightProfileRegistry.js'),
+          import('../core/SecretStore.js'), import('../core/SecretSync.js'),
+          import('../core/ClaudePasteBackController.js'), import('../core/ChromeCdpReloginBrowser.js'),
+        ]);
+        const vault = new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey });
+        const profiles = new PlaywrightProfileRegistry({ stateDir: config.stateDir, projectDir: config.projectDir,
+          listVaultNames: () => {
+            try { return secretKeyPaths(vault.read()); }
+            catch { return null; }
+          } });
+        const pasteBack = new ClaudePasteBackController({
+          captureOutput: (session, lines) => sessionManager.captureOutput(session, lines),
+          sendInput: (session, input) => sessionManager.sendInput(session, input),
+          clearHistory: (session) => {
+            const tmux = detectTmuxPath(); if (!tmux) throw new Error('tmux-unavailable');
+            execFileSync(tmux, ['clear-history', '-t', `=${session}:`], { stdio: 'ignore' });
+          },
+          credentialReady: async (login) => {
+            if (!login.configHome) return false;
+            const result = await subscriptionIdentityOracle.resolveSlotTenant(login.configHome);
+            return !('unavailable' in result) && typeof result.email === 'string' && result.email.length > 0;
+          },
+        });
+        const notify = telegram ? async (episode: import('../core/SubscriptionReloginStore.js').SubscriptionReloginEpisode,
+          deliveryKey: string, kind: 'approval' | 'operator-only' | 'terminal') => {
+          const summary = kind === 'approval'
+            ? 'A Claude Code subscription sign-in needs repair. Open Subscriptions and tap Repair sign-in once.'
+            : kind === 'operator-only'
+              ? 'Automated sign-in paused at a provider security challenge. Open Subscriptions to continue.'
+              : episode.state === 'succeeded'
+                ? 'Claude Code subscription sign-in was repaired and verified.'
+                : `Claude Code subscription repair ended in ${episode.state}. Open Subscriptions for the redacted audit.`;
+          await telegram!.createAttentionItem({ id: deliveryKey.replace(/:/g, '-'), title: 'Claude Code sign-in repair',
+            summary, description: summary, category: 'subscription-relogin',
+            priority: kind === 'terminal' && episode.state === 'succeeded' ? 'NORMAL' : 'HIGH',
+            sourceContext: 'assisted-subscription-relogin' });
+        } : undefined;
+        subscriptionReloginRuntime = createSubscriptionReloginRuntime({ stateDir: config.stateDir,
+          projectDir: config.projectDir, machineId: subscriptionPoolMachineId,
+          mode: reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval'),
+          pool: subscriptionPool, ledger: subscriptionLoginLedger, enrollment: enrollmentWizard,
+          profiles, quotaPoller, identityOracle: subscriptionIdentityOracle, pasteBack,
+          createBrowser: (userDataDir) => new ChromeCdpReloginBrowser({ userDataDir }),
+          resolveSecret: async (name) => { const value = vault.get(name); return typeof value === 'string' ? value : null; },
+          supervise: async ({ snapshot, allowedActions }) => {
+            const prompt = [
+              'You are a Tier-1 validator for a bounded Claude sign-in browser worker.',
+              'Choose exactly one action from allowedActions. Output only that action token.',
+              'You cannot authorize an account, broaden scopes/origins, retrieve secrets, or declare success.',
+              `closedSnapshot=${JSON.stringify(snapshot)}`,
+              `allowedActions=${JSON.stringify(allowedActions)}`,
+            ].join('\n');
+            const raw = await sharedLlmQueue.enqueue('background', (signal) => sharedIntelligence!.evaluate(prompt, {
+              model: 'fast', maxTokens: 20, temperature: 0, signal,
+              attribution: { component: 'subscription-relogin-supervisor' },
+              provenance: {
+                decisionPoint: DP_SUBSCRIPTION_RELOGIN_ACTION,
+                context: { ...snapshot },
+                optionsPresented: [...allowedActions],
+                promptId: 'subscription-relogin-action-v1',
+              },
+            }), 1);
+            const action = raw.trim() as import('../core/AnthropicReloginBrowserDriver.js').ReloginBrowserAction;
+            if (!allowedActions.includes(action)) throw new Error('relogin-supervisor-invalid-action');
+            return action;
+          },
+          onSuggested: notify ? (episode, key) => notify(episode, key, 'approval') : undefined,
+          onOperatorOnly: notify ? (episode, key) => notify(episode, key, 'operator-only') : undefined,
+          onTerminal: notify ? (episode, key) => notify(episode, key, 'terminal') : undefined,
+          allowedScopes: reloginCfg.allowedScopes ?? [], tickMs: reloginCfg.tickMs,
+          maxAttempts: reloginCfg.maxAttempts, retryBaseMs: reloginCfg.retryBaseMs,
+        });
+        subscriptionReloginRuntime.start();
+        console.log(pc.green(`  Assisted subscription re-login: ${reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval')}`));
+      } catch (error) {
+        // @silent-fallback-ok — bootstrap refusal is logged and the runtime is explicitly darkened; routes return typed 503.
+        console.warn(`[subscription-relogin] bootstrap refused: ${error instanceof Error ? error.message : String(error)}`);
+        subscriptionReloginRuntime?.close(); subscriptionReloginRuntime = null;
+      }
+    }
     // sharedLlmQueue is wired into both PromiseBeacon (background lane) and
     // PresenceProxy (interactive lane) below.
 
@@ -25644,6 +25734,13 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     const server = new AgentServer({ config, singleInstanceLock, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, getLastRelayEvent: threadlineGetLastRelayEvent, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     server.setSubscriptionLoginLedger(subscriptionLoginLedger);
+    server.setSubscriptionRelogin(subscriptionReloginRuntime ? {
+      store: subscriptionReloginRuntime.store,
+      approve: (episodeId) => subscriptionReloginRuntime!.service.approve(episodeId),
+      cancel: (episodeId) => subscriptionReloginRuntime!.service.cancel(episodeId),
+      retry: (episodeId) => subscriptionReloginRuntime!.service.retry(episodeId),
+      close: () => subscriptionReloginRuntime!.close(),
+    } : null);
     server.setWorkQueue(workQueue);
     if (_stateSyncStoresResolved?.classReview?.enabled && replicatedPeerStreamReader) {
       const { CLASS_REVIEW_STORE_KEY, classReviewFromOriginRecord } = await import('../core/ClassReviewReplicatedStore.js');

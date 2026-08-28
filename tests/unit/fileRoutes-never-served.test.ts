@@ -47,6 +47,8 @@ describe('isNeverServed (unit)', () => {
     expect(NEVER_SERVED_PREFIXES).toContain('.instar/state/subscription-pool');
     expect(NEVER_SERVED_PREFIXES).toContain('state/subscription-login-ledger');
     expect(NEVER_SERVED_PREFIXES).toContain('.instar/state/subscription-login-ledger');
+    expect(NEVER_SERVED_PREFIXES).toContain('state/subscription-relogin');
+    expect(NEVER_SERVED_PREFIXES).toContain('.instar/state/subscription-relogin');
   });
 
   it('matches PRODUCTION-layout paths under the prefix and the bare dir itself', () => {
@@ -60,6 +62,7 @@ describe('isNeverServed (unit)', () => {
     expect(isNeverServed('state/subscription-pool.candidate-old-new/accounts.json')).toBe(true);
     expect(isNeverServed('.instar/state/subscription-login-ledger/ledger.db')).toBe(true);
     expect(isNeverServed('.instar/state/subscription-login-ledger-refusals.json')).toBe(true);
+    expect(isNeverServed('.instar/state/subscription-relogin/repairs.db')).toBe(true);
     expect(isNeverServed('.instar/state/claim-verification/claim-benchmark-v1.jsonl')).toBe(true);
   });
 

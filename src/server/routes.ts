@@ -827,6 +827,8 @@ export interface RouteContext {
   /** Unified work-intake registry; absent while fleet rollout is dark. */
   workQueue?: WorkQueueRegistry | null;
   config: InstarConfig;
+  /** Verifies a short-lived proof minted only after a successful dashboard PIN unlock. */
+  verifyDashboardOperatorSession?: (token: string | undefined) => boolean;
   /** Live-config READ handle (mtime-staleness re-reader). Routes that must
    *  honor config flips WITHOUT a restart (outbound-advisory rollback
    *  contract — spec outbound-jargon-filepath-gap §5) read through this.
@@ -899,6 +901,14 @@ export interface RouteContext {
   subscriptionPool: import('../core/SubscriptionPool.js').SubscriptionPool | null;
   /** Local bounded sign-in evidence store. Null when bootstrap compatibility/open failed. */
   subscriptionLoginLedger?: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null;
+  /** Approval-gated autonomous subscription repair. Null means deliberately dark/unwired. */
+  subscriptionRelogin?: {
+    store: import('../core/SubscriptionReloginStore.js').SubscriptionReloginStore;
+    approve: (episodeId: string) => Promise<import('../core/SubscriptionReloginStore.js').SubscriptionReloginEpisode>;
+    cancel: (episodeId: string) => Promise<import('../core/SubscriptionReloginStore.js').SubscriptionReloginEpisode>;
+    retry?: (episodeId: string) => Promise<import('../core/SubscriptionReloginStore.js').SubscriptionReloginEpisode>;
+    close?: () => void;
+  } | null;
   /** Provider identity proof seam; production lazily uses CredentialIdentityOracle. */
   subscriptionIdentityOracle?: {
     resolveSlotTenant(slot: string): Promise<{ email?: string; unavailable?: boolean; reason?: string }>;
@@ -24922,6 +24932,75 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
+  // POST /playwright-profiles/provision — phone-complete compound operation for
+  // the Subscriptions dashboard. One recent PIN unlock creates (or reuses) the
+  // dedicated registry row, materializes its jailed 0700 directory, and assigns
+  // exactly one Google identity. Secret VALUES are never accepted here: optional
+  // bindings are vault NAMES only, using the same fail-closed validation as the
+  // lower-level account route.
+  router.post('/playwright-profiles/provision', (req, res) => {
+    if (!playwrightFeatureEnabled()) {
+      res.status(503).json({ error: 'playwright profile registry disabled' });
+      return;
+    }
+    const operatorProof = typeof req.header('X-Instar-Operator-Session') === 'string'
+      ? req.header('X-Instar-Operator-Session')
+      : undefined;
+    if (!ctx.verifyDashboardOperatorSession?.(operatorProof)) {
+      res.status(401).json({ error: 'recent dashboard PIN unlock required' });
+      return;
+    }
+    const { profileId, identity, loginMethod, passwordVaultName, totpVaultName } = req.body || {};
+    if (typeof profileId !== 'string' || typeof identity !== 'string') {
+      res.status(400).json({ error: 'profileId and identity are required' });
+      return;
+    }
+    try {
+      const registry = buildPlaywrightRegistry();
+      const existing = registry.listProfiles().find((profile) => profile.id === profileId);
+      const profile = existing ?? registry.createProfile({
+        id: profileId,
+        description: `Dedicated Google sign-in profile for ${identity}`,
+      });
+      if (profile.isDefault) {
+        res.status(409).json({ error: 'a dedicated custom profile is required' });
+        return;
+      }
+      const materialized = registry.materializeProfileDirectory(profile.id);
+      const bindings = {
+        ...(typeof passwordVaultName === 'string' && passwordVaultName ? { password: passwordVaultName } : {}),
+        ...(typeof totpVaultName === 'string' && totpVaultName ? { totp: totpVaultName } : {}),
+      };
+      const vaultRefs = [...new Set(Object.values(bindings))];
+      const account = registry.assignAccount(profile.id, {
+        service: 'google',
+        identity,
+        owner: 'operator',
+        vaultRefs,
+        ...(vaultRefs.length > 0 ? { vaultBindings: bindings } : {}),
+        loginMethod,
+        note: 'Provisioned remotely from the Instar Subscriptions dashboard.',
+      });
+      appendPlaywrightAudit('provision', profile.id, {
+        service: account.service,
+        identity: account.identity,
+        owner: account.owner,
+        vaultRefs: account.vaultRefs,
+        directoryCreated: materialized.created,
+        dryRun: false,
+      });
+      res.status(existing ? 200 : 201).json({
+        profile: registry.listProfiles().find((candidate) => candidate.id === profile.id),
+        account,
+        readyForAutomation: true,
+        needsSecureCredentialDrop: vaultRefs.length === 0 && account.loginMethod !== 'session-cookie',
+      });
+    } catch (err) {
+      if (handlePlaywrightError(err, res)) return;
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to provision playwright profile' });
+    }
+  });
+
   // POST /playwright-profiles/:id/accounts — assign an account (owner REQUIRED; ref-validation D17).
   router.post('/playwright-profiles/:id/accounts', (req, res) => {
     if (!playwrightFeatureEnabled()) {
@@ -24929,10 +25008,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     const profileId = req.params.id;
-    const { service, identity, owner, vaultRefs, loginMethod, note } = req.body || {};
+    const { service, identity, owner, vaultRefs, vaultBindings, loginMethod, note } = req.body || {};
     try {
       const account = buildPlaywrightRegistry().assignAccount(profileId, {
-        service, identity, owner, vaultRefs, loginMethod, note,
+        service, identity, owner, vaultRefs, vaultBindings, loginMethod, note,
       });
       appendPlaywrightAudit('assign', profileId, {
         service: account.service, identity: account.identity, owner: account.owner, vaultRefs: account.vaultRefs, dryRun: false,
@@ -29876,6 +29955,100 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
+  // Assisted subscription re-login: one verified approval, then the service
+  // owns the bounded autonomous flow. The store exposes closed metadata only.
+  router.get('/subscription-relogin', (req, res) => {
+    if (!ctx.subscriptionRelogin) {
+      res.status(503).json({ enabled: false, error: 'subscription re-login is not configured' });
+      return;
+    }
+    try {
+      const state = typeof req.query.state === 'string' ? req.query.state : undefined;
+      const accountId = typeof req.query.accountId === 'string' ? req.query.accountId : undefined;
+      const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+      res.json({ enabled: true, episodes: ctx.subscriptionRelogin.store.list({
+        state: state as import('../core/SubscriptionReloginStore.js').SubscriptionReloginState | undefined,
+        accountId, limit,
+      }) });
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : 'invalid re-login query' });
+    }
+  });
+
+  router.get('/subscription-relogin/:episodeId/events', (req, res) => {
+    if (!ctx.subscriptionRelogin) {
+      res.status(503).json({ enabled: false, error: 'subscription re-login is not configured' });
+      return;
+    }
+    try {
+      const episode = ctx.subscriptionRelogin.store.get(req.params.episodeId);
+      if (!episode) { res.status(404).json({ error: 're-login episode not found' }); return; }
+      const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+      res.json({ enabled: true, episode, events: ctx.subscriptionRelogin.store.listEvents(episode.id, limit) });
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : 'invalid re-login query' });
+    }
+  });
+
+  const requireReloginOperatorPin = (req: ExpressRequest, res: ExpressResponse): boolean => {
+    const operatorSession = req.get('X-Instar-Operator-Session');
+    if (ctx.verifyDashboardOperatorSession?.(operatorSession)) return true;
+    const supplied = typeof req.body?.pin === 'string' ? req.body.pin : '';
+    const expected = ctx.config.dashboardPin ?? '';
+    const ok = supplied.length > 0 && supplied.length === expected.length
+      && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+    if (!ok) res.status(401).json({ error: 'Dashboard PIN required.' });
+    return ok;
+  };
+
+  router.post('/subscription-relogin/:episodeId/approve', async (req, res) => {
+    if (!ctx.subscriptionRelogin) {
+      res.status(503).json({ enabled: false, error: 'subscription re-login is not configured' });
+      return;
+    }
+    if (!requireReloginOperatorPin(req, res)) return;
+    try {
+      const episode = await ctx.subscriptionRelogin.approve(req.params.episodeId);
+      res.status(202).json({ enabled: true, accepted: true, episode });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 're-login approval failed';
+      const status = message === 'relogin-episode-not-found' ? 404
+        : /mismatch|approvable|conflict|closed|expired/.test(message) ? 409 : 500;
+      res.status(status).json({ error: message });
+    }
+  });
+
+  router.post('/subscription-relogin/:episodeId/cancel', async (req, res) => {
+    if (!ctx.subscriptionRelogin) {
+      res.status(503).json({ enabled: false, error: 'subscription re-login is not configured' });
+      return;
+    }
+    if (!requireReloginOperatorPin(req, res)) return;
+    try {
+      const episode = await ctx.subscriptionRelogin.cancel(req.params.episodeId);
+      res.json({ enabled: true, cancelled: episode.state === 'cancelled', episode });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 're-login cancellation failed';
+      res.status(message === 'relogin-episode-not-found' ? 404 : 409).json({ error: message });
+    }
+  });
+
+  router.post('/subscription-relogin/:episodeId/retry', async (req, res) => {
+    if (!ctx.subscriptionRelogin?.retry) {
+      res.status(503).json({ enabled: false, error: 'subscription re-login retry is not configured' });
+      return;
+    }
+    if (!requireReloginOperatorPin(req, res)) return;
+    try {
+      const episode = await ctx.subscriptionRelogin.retry(req.params.episodeId);
+      res.status(202).json({ enabled: true, accepted: true, episode });
+    } catch (error) {
+      // @silent-fallback-ok — the route returns the typed operator-visible conflict; it does not fall back.
+      const message = error instanceof Error ? error.message : 're-login retry failed';
+      res.status(message === 'relogin-episode-not-found' ? 404 : 409).json({ error: message });
+    }
+  });
+
   // D5 (topic 29836) — record-state ⟂ pane-liveness. A pending login is only genuinely
   // submittable while its interactive sign-in pane is ALIVE on this machine; a record that
   // says "pending" with no pane behind it is a zombie the operator can pour a code into
@@ -30678,111 +30851,79 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     followMeSubmitInFlight.add(id);
     try {
-    const paneSession = enrollPaneSessionName(login.framework, login.configHome);
-    const tmuxPath = ctx.config.sessions?.tmuxPath;
-    // Readiness check — FAILS CLOSED (internal security review; Signal-vs-Authority "safety guard
-    // on an irreversible action"). Typing a live auth code into a pane that is NOT at the code
-    // prompt (the login exited → a SHELL) would execute it (leak + garbage). We must be able to
-    // CAPTURE + VERIFY the pane before typing; if we cannot, we REFUSE rather than blind-type.
-    // This guard previously skipped when captureOutput was absent — an open bypass of FD13.
-    if (typeof ctx.sessionManager.captureOutput !== 'function') {
-      res.status(503).json({ error: `cannot verify the login pane on this machine — code not delivered` });
+    if (typeof ctx.sessionManager?.captureOutput !== 'function') {
+      res.status(503).json({ error: 'cannot verify the login pane on this machine — code not delivered' });
       return;
     }
-    let rawFrame: string | null = null;
-    try { rawFrame = ctx.sessionManager.captureOutput(paneSession, 12); }
-    catch { rawFrame = null; /* @silent-fallback-ok — refusal path, not degradation: null → explicit pane-dead 409 below (fails closed, never blind-types) */ }
-    const frame = rawFrame || '';
-    const lastLine = frame.split('\n').map((l) => l.trimEnd()).filter((l) => l.length > 0).pop() ?? '';
-    // POSITIVE: the paste-code prompt is present (last ~12 lines, near the live prompt, so old
-    // scrollback can't satisfy it — codex r5 #1). NEGATIVE: the last visible line is NOT a shell
-    // prompt (codex r6 #1) — an exited login drops to a shell ending in $/%/# ; the real Claude
-    // prompt ends in '>'. Both must hold, on a non-empty frame, before a single char is typed.
-    const looksReady = /paste/i.test(frame) && /code/i.test(frame);
-    const looksLikeShell = /[#$%]\s*$/.test(lastLine);
-    // D5 (topic 29836): a DEAD pane (captureOutput null / empty frame — the sign-in window is
-    // gone entirely) is a DISTINCT terminal state from a live-but-not-ready pane. The dashboard
-    // maps `pane-dead` to an explicit "needs a restart" presentation with a working restart
-    // affordance — never a "may have closed" guess. Wording floor: the message only references
-    // affordances that exist on the surface it lands on (the grid's Retry — never "Approve").
-    if (rawFrame == null || !frame.trim()) {
+    const { ClaudePasteBackController } = await import('../core/ClaudePasteBackController.js');
+    const pasteBack = new ClaudePasteBackController({
+      captureOutput: (session, lines) => ctx.sessionManager!.captureOutput(session, lines),
+      sendInput: (session, input) => ctx.sessionManager!.sendInput(session, input),
+      clearHistory: (session) => {
+        const tmuxPath = ctx.config.sessions?.tmuxPath;
+        if (!tmuxPath) throw new Error('tmux unavailable');
+        withSyncOp(() => execFileSync(tmuxPath, ['clear-history', '-t', `=${session}:`], { stdio: 'ignore' }));
+      },
+      credentialReady: async (candidate) => {
+        if (!candidate.configHome || !ctx.subscriptionIdentityOracle) return false;
+        const result = await ctx.subscriptionIdentityOracle.resolveSlotTenant(candidate.configHome);
+        return !('unavailable' in result) && typeof result.email === 'string' && result.email.length > 0;
+      },
+      // Preserve this legacy endpoint's short hand-off window: it only needs to
+      // hold the per-login mutex long enough for the immediate credential write.
+      // The autonomous relogin orchestrator uses the controller's longer default.
+      waitMs: 2_000,
+      pollMs: 2_000,
+    });
+    const controller = new AbortController();
+    const outcome = await pasteBack.finish(login, trimmedCode, controller.signal);
+    const logOutcome = (value: string, extra = '') =>
+      console.log(`[follow-me] submit-code outcome=${value} id=${id}${extra ? ' ' + extra : ''}`);
+    if (outcome === 'pane-dead') {
       const freshLogin = await ctx.enrollmentWizard.refresh(id);
       if (freshLogin) {
-        res.status(409).json({
-          code: 'login-expired-fresh-ready',
-          error: 'that code belonged to an expired sign-in — a fresh sign-in is ready now',
-          freshLogin,
-        });
-        return;
+        res.status(409).json({ code: 'login-expired-fresh-ready',
+          error: 'that code belonged to an expired sign-in — a fresh sign-in is ready now', freshLogin });
+      } else {
+        res.status(410).json({ code: 'login-expired',
+          error: 'that sign-in has expired — start a fresh sign-in from this account’s grid cell' });
       }
-      res.status(410).json({
-        code: 'login-expired',
-        error: 'that sign-in has expired — start a fresh sign-in from this account’s grid cell',
-      });
       return;
     }
-    if (!looksReady || looksLikeShell) {
-      res.status(409).json({ code: 'pane-not-ready', error: `the sign-in window isn't at its code prompt yet — give it a moment and try again, or restart the sign-in from the dashboard grid` });
+    if (outcome === 'pane-not-ready') {
+      res.status(409).json({ code: 'pane-not-ready',
+        error: `the sign-in window isn't at its code prompt yet — give it a moment and try again, or restart the sign-in from the dashboard grid` });
       return;
     }
-    // Type the code into the pane (sendInput appends Enter). NEVER log the code value.
-    const sent = ctx.sessionManager.sendInput(paneSession, code.trim());
-    if (!sent) {
+    if (outcome === 'send-failed') {
       res.status(502).json({ error: 'could not deliver the code to the login — try again, or restart the sign-in from the dashboard grid' });
       return;
     }
-    // Residual hardening (codex r3 #2): the code echoes into the pane's tmux scrollback. The
-    // code is single-use + short-lived, but clear the pane history best-effort so it does not
-    // linger in scrollback on the target machine. Never fatal if it fails.
-    let cleared = false;
-    if (tmuxPath) {
-      try { execFileSync(tmuxPath, ['clear-history', '-t', `=${paneSession}:`], { stdio: 'ignore' }); cleared = true; }
-      catch { /* @silent-fallback-ok: scrollback clear is best-effort residual hardening */ }
+    if (outcome === 'invalid-code') {
+      res.status(400).json({ error: 'that does not look like a sign-in code — paste only the code the page gave you' });
+      return;
     }
-    console.log(`[follow-me] submitted operator code to login "${id}" (value redacted; scrollback cleared=${cleared})`);
-    // Observability (Observability standard): every terminal outcome is logged on a
-    // single greppable key so submit-code success/timeout/error rates are auditable
-    // across the loop without surfacing the code value. `[follow-me] submit-code outcome=…`.
-    const logOutcome = (outcome: string, extra = '') =>
-      console.log(`[follow-me] submit-code outcome=${outcome} id=${id}${extra ? ' ' + extra : ''}`);
-    // Drive to a real outcome (FD5): poll for the credential the login writes to its
-    // configHome, then run the S7 email-gate complete + add to pool. Bounded; on timeout
-    // return "submitted" (the reissue/complete sweep finishes it) — never a false "done".
-    const home = login.configHome ?? '';
-    const credPath = home ? path.join(home, '.claude.json') : '';
-    const deadline = Date.now() + 30_000;
-    while (credPath && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 2_000));
-      if (fs.existsSync(credPath)) {
-        try {
-          const result = await ctx.enrollmentWizard.completeFollowMe(id, 'this machine');
-          if (result.outcome === 'validated') {
-            // Upsert (D5): a re-auth of an EXISTING pool account updates it back to active;
-            // only a genuinely-new account is added.
-            const acct = upsertValidatedAccount(result.login, result.email);
-            await reverifyCompletedEnrollment(result.login);
-            logOutcome('validated');
-            // `email` rides along so the dashboard's terminal success state can NAME the
-            // verified account ("headley.justin@gmail.com is set up on this machine") —
-            // topic 29836 D4 (invisible success). An account email, never a credential.
-            res.status(201).json({ enabled: true, outcome: 'validated', account: acct, email: result.email });
-            return;
-          }
-          if (result.outcome === 'held') {
-            logOutcome('held', `reason=${result.reason}`);
-            // Surface the gate verdict's BOTH-account detail (operator-approved vs the account
-            // the sign-in actually authenticated as) so the dashboard can say "that code signed
-            // in X — this slot needs Y" instead of a bare reason code (topic 29836 D3). Account
-            // emails only — already operator-visible on the pool surfaces; never a credential.
-            res.json({ enabled: true, outcome: 'held', reason: result.reason, expected: result.expected, got: result.got });
-            return;
-          }
-        } catch { /* keep polling until the deadline */ }
-        break;
-      }
+    if (outcome === 'pending') {
+      logOutcome('submitted');
+      res.json({ enabled: true, outcome: 'submitted', message: 'code sent; finishing sign-in' });
+      return;
     }
-    logOutcome('submitted');
-    res.json({ enabled: true, outcome: 'submitted', message: 'code sent; finishing sign-in' });
+    const result = await ctx.enrollmentWizard.completeFollowMe(id, 'this machine');
+    if (result.outcome === 'validated') {
+      const acct = upsertValidatedAccount(result.login, result.email);
+      await reverifyCompletedEnrollment(result.login);
+      logOutcome('validated');
+      res.status(201).json({ enabled: true, outcome: 'validated', account: acct, email: result.email });
+      return;
+    }
+    if (result.outcome === 'held') {
+      logOutcome('held', `reason=${result.reason}`);
+      res.json({ enabled: true, outcome: 'held', reason: result.reason,
+        expected: result.expected, got: result.got });
+      return;
+    }
+    res.status(410).json({ code: 'login-expired',
+      error: 'that sign-in has expired — start a fresh sign-in from this account’s grid cell' });
     } finally {
       followMeSubmitInFlight.delete(id);
     }

@@ -199,17 +199,21 @@ describe('BackupManager', () => {
     it('never backs up machine-local subscription authority or login evidence', () => {
       fs.mkdirSync(path.join(stateDir, 'state', 'subscription-pool'), { recursive: true });
       fs.mkdirSync(path.join(stateDir, 'state', 'subscription-login-ledger'), { recursive: true });
+      fs.mkdirSync(path.join(stateDir, 'state', 'subscription-relogin'), { recursive: true });
       fs.writeFileSync(path.join(stateDir, 'state', 'subscription-pool', 'accounts.json'), '{}');
       fs.writeFileSync(path.join(stateDir, 'state', 'subscription-login-ledger', 'ledger.db'), 'sqlite');
       fs.writeFileSync(path.join(stateDir, 'state', 'subscription-login-ledger-refusals.json'), '{}');
+      fs.writeFileSync(path.join(stateDir, 'state', 'subscription-relogin', 'repairs.db'), 'sqlite');
       const manager = new BackupManager(stateDir, { includeFiles: [
         'state/subscription-pool/accounts.json',
         'state/subscription-login-ledger/ledger.db',
         'state/subscription-login-ledger-refusals.json',
+        'state/subscription-relogin/repairs.db',
       ] });
       const snapshot = manager.createSnapshot('manual');
       expect(snapshot.files.some((file) => file.includes('subscription-pool'))).toBe(false);
       expect(snapshot.files.some((file) => file.includes('subscription-login-ledger'))).toBe(false);
+      expect(snapshot.files.some((file) => file.includes('subscription-relogin'))).toBe(false);
     });
 
     it('DEFAULT_CONFIG.includeFiles contains no entries under .instar/secrets/', () => {

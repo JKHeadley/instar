@@ -56,6 +56,9 @@ export interface PlaywrightAccount {
   owner: PlaywrightAccountOwner;
   /** Vault secret NAMES only — NEVER values (D3). */
   vaultRefs: string[];
+  /** Secret-name role bindings for deterministic browser automation. Values are
+   * names from vaultRefs, never secret values. Optional for registry v1 rows. */
+  vaultBindings?: { password?: string; totp?: string };
   /** Login method enum. */
   loginMethod: PlaywrightLoginMethod;
   /** Last-KNOWN session state — advisory, NOT a guarantee (D11). */
@@ -439,6 +442,35 @@ export class PlaywrightProfileRegistry {
     });
   }
 
+  /**
+   * Materialize one registered custom profile on this machine. This is deliberately
+   * separate from createProfile(): existing callers keep their metadata-only
+   * semantics, while remote/dashboard provisioning can make the profile immediately
+   * admissible to browser automation without anyone touching the host machine.
+   *
+   * The persisted path is re-jailed at point of use. mkdir is idempotent and never
+   * removes or overwrites profile contents.
+   */
+  materializeProfileDirectory(profileId: string): { profileId: string; userDataDir: string; created: boolean } {
+    const profile = this.ensureSeeded().profiles.find((candidate) => candidate.id === profileId);
+    if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+    if (profile.userDataDir === null) {
+      throw new PlaywrightRegistryError('the default profile has no dedicated directory', 409);
+    }
+    const userDataDir = this.jailUserDataDir(profile.userDataDir);
+    const created = !this.dirExists(userDataDir);
+    try {
+      fs.mkdirSync(userDataDir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(userDataDir, 0o700);
+    } catch (err) {
+      throw new PlaywrightRegistryError(
+        `could not create the dedicated profile directory: ${err instanceof Error ? err.message : String(err)}`,
+        500,
+      );
+    }
+    return { profileId, userDataDir, created };
+  }
+
   assignAccount(
     profileId: string,
     input: {
@@ -446,6 +478,7 @@ export class PlaywrightProfileRegistry {
       identity: string;
       owner: PlaywrightAccountOwner;
       vaultRefs?: string[];
+      vaultBindings?: { password?: string; totp?: string };
       loginMethod?: PlaywrightLoginMethod;
       note?: string;
     },
@@ -462,6 +495,18 @@ export class PlaywrightProfileRegistry {
       : 'unknown';
     const note = sanitizeStored(input.note ?? '', MAX_NOTE_CHARS);
     const vaultRefs = Array.isArray(input.vaultRefs) ? input.vaultRefs.map((r) => String(r)) : [];
+    let vaultBindings: { password?: string; totp?: string } | undefined;
+    if (input.vaultBindings !== undefined) {
+      if (!input.vaultBindings || typeof input.vaultBindings !== 'object' || Array.isArray(input.vaultBindings)) {
+        throw new PlaywrightRegistryError('vaultBindings must be an object', 400);
+      }
+      const entries = Object.entries(input.vaultBindings);
+      if (entries.some(([role, ref]) => (role !== 'password' && role !== 'totp')
+        || typeof ref !== 'string' || ref.length === 0)) {
+        throw new PlaywrightRegistryError('vaultBindings accepts only non-empty password/totp vault names', 400);
+      }
+      vaultBindings = Object.fromEntries(entries);
+    }
 
     // Ref-validation FAILS CLOSED if vault names are unreadable (D17).
     const liveNames = this.listVaultNames();
@@ -475,6 +520,10 @@ export class PlaywrightProfileRegistry {
     if (unknown.length > 0) {
       throw new PlaywrightRegistryError(`unknown vault ref(s): ${unknown.join(', ')}`, 409);
     }
+    const unlistedBindings = Object.values(vaultBindings ?? {}).filter((ref) => !vaultRefs.includes(ref));
+    if (unlistedBindings.length > 0) {
+      throw new PlaywrightRegistryError('vaultBindings must reference names present in vaultRefs', 409);
+    }
 
     return this.mutate<PlaywrightAccount>((store) => {
       const profile = store.profiles.find((p) => p.id === profileId);
@@ -486,6 +535,7 @@ export class PlaywrightProfileRegistry {
         identity,
         owner: input.owner,
         vaultRefs,
+        ...(vaultBindings && Object.keys(vaultBindings).length > 0 ? { vaultBindings } : {}),
         loginMethod,
         lastAsserted: existing?.lastAsserted ?? false,
         lastVerifiedAt: existing?.lastVerifiedAt ?? null,
