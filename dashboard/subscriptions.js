@@ -240,7 +240,7 @@ export function groupAccountsByProvider(accounts) {
  *  `inUseAccountId` (optional) is the account the agent is CURRENTLY running on —
  *  that card gets an "In use" marker so "active" (healthy) reads distinct from
  *  "actually running right now". */
-export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAccountId = null) {
+export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAccountId = null, reloginEpisodes = []) {
   if (!target) return;
   target.replaceChildren();
   if (!Array.isArray(accounts) || accounts.length === 0) {
@@ -293,6 +293,31 @@ export function renderAccounts(doc, target, accounts, now = Date.now(), inUseAcc
     const refAge = a && a.lastRefreshAt ? relativeAge(a.lastRefreshAt, now) : null;
     if (refAge) {
       card.appendChild(el(doc, 'div', 'sub-account-refresh', `Token auto-refreshed ${refAge}`));
+    }
+    const repair = Array.isArray(reloginEpisodes)
+      ? reloginEpisodes.find((episode) => episode && a && episode.accountId === a.id)
+      : null;
+    if (repair) {
+      const repairBox = el(doc, 'div', 'sub-account-repair');
+      const terminal = ['succeeded', 'refused', 'cancelled', 'failed'].includes(repair.state);
+      const label = repair.state === 'suggested' ? 'Sign-in repair is ready.'
+        : repair.state === 'succeeded' ? 'Sign-in repaired.'
+          : repair.state === 'waiting-operator-only' ? 'Sign-in needs your help.'
+            : repair.state === 'failed' ? 'Sign-in repair stopped safely.'
+              : repair.state === 'refused' ? 'Sign-in repair was refused for safety.'
+                : repair.state === 'cancelled' ? 'Sign-in repair cancelled.'
+                  : 'Repairing sign-in…';
+      repairBox.appendChild(el(doc, 'div', 'sub-account-repair-status', label));
+      const action = repair.state === 'suggested' ? ['approve', 'Repair sign-in']
+        : repair.state === 'failed' ? ['retry', 'Try repair again']
+          : (!terminal ? ['cancel', 'Cancel repair'] : null);
+      if (action) {
+        const button = el(doc, 'button', `sub-account-repair-${action[0]}`, action[1]);
+        button.setAttribute('data-relogin-action', action[0]);
+        button.setAttribute('data-relogin-id', sanitizeForDisplay(repair.id, 'label'));
+        repairBox.appendChild(button);
+      }
+      card.appendChild(repairBox);
     }
     target.appendChild(card);
   }
@@ -934,7 +959,53 @@ const URLS = {
   accountsPool: '/subscription-pool?scope=pool',
   startCell: '/subscription-pool/matrix/start-cell', // POST (PIN-gated) — start a cell's sign-in
   cancel: '/subscription-pool/follow-me/cancel', // POST (Bearer, no PIN) — cancel an in-flight cell (relay → self/peer)
+  relogin: '/subscription-relogin',
+  provisionProfile: '/playwright-profiles/provision',
 };
+
+export function renderProfileProvisioner(doc, target) {
+  if (!target) return;
+  const card = el(doc, 'div', 'sub-profile-provision');
+  card.setAttribute('data-interaction-open', '1');
+  card.appendChild(el(doc, 'div', 'sub-profile-title', 'Create a dedicated sign-in profile'));
+  card.appendChild(el(doc, 'p', 'sub-profile-copy',
+    'Instar prepares the private Chrome profile on this machine. If a password or verification step is needed, your agent will send a secure link — you never need to access this machine.'));
+
+  const identity = el(doc, 'input', 'sub-profile-input');
+  identity.setAttribute('type', 'email');
+  identity.setAttribute('inputmode', 'email');
+  identity.setAttribute('autocomplete', 'email');
+  identity.setAttribute('placeholder', 'Google account email');
+  identity.setAttribute('aria-label', 'Google account email');
+  card.appendChild(identity);
+
+  const profileId = el(doc, 'input', 'sub-profile-input');
+  profileId.setAttribute('type', 'text');
+  profileId.setAttribute('placeholder', 'Profile name, for example work-google');
+  profileId.setAttribute('aria-label', 'Profile name');
+  card.appendChild(profileId);
+
+  const method = el(doc, 'select', 'sub-profile-input');
+  method.setAttribute('aria-label', 'Sign-in method');
+  for (const [value, label] of [
+    ['session-cookie', 'Already signed in / provider approval'],
+    ['password', 'Password'],
+    ['password+totp', 'Password + authenticator'],
+  ]) {
+    const option = el(doc, 'option', '', label);
+    option.setAttribute('value', value);
+    method.appendChild(option);
+  }
+  card.appendChild(method);
+
+  const button = el(doc, 'button', 'sub-profile-create', 'Create dedicated profile');
+  button.setAttribute('type', 'button');
+  card.appendChild(button);
+  const status = el(doc, 'div', 'sub-profile-status', '');
+  status.setAttribute('aria-live', 'polite');
+  card.appendChild(status);
+  target.replaceChildren(card);
+}
 
 export function createController(opts) {
   const {
@@ -945,6 +1016,7 @@ export function createController(opts) {
     cadenceMs = 30_000,
     schedule = (fn, ms) => setTimeout(fn, ms),
     cancel = (id) => clearTimeout(id),
+    getOperatorSessionToken = () => '',
   } = opts;
 
   // matrixTransient: client-side last-attempt state per `${accountId}::${machineId}` cell (FD6 —
@@ -955,6 +1027,7 @@ export function createController(opts) {
   // add the D4 ceremony when the episode lands. recentOutcomes: client-observed terminal
   // outcomes rendered as explicit cards in the pending panel (D4 — never a vanishing line).
   const state = { timerId: null, active: false, inFlight: null, offers: [], approveWired: false,
+    reloginWired: false, reloginEpisodes: [], profileProvisionWired: false,
     matrixWired: false, matrixTransient: {}, lastPoolBody: null, lastPendingBody: null,
     matrixEpisodes: {}, recentOutcomes: [] };
 
@@ -988,17 +1061,18 @@ export function createController(opts) {
     if (state.inFlight) { try { state.inFlight.abort(); } catch { /* superseded */ } }
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : { signal: undefined, abort() {} };
     state.inFlight = controller;
-    let accountsBody, pendingBody, inUseBody, scanBody, poolBody;
+    let accountsBody, pendingBody, inUseBody, scanBody, poolBody, reloginBody;
     try {
       // in-use AND the follow-me scan are best-effort — their failure must not blank the
       // accounts list, so each is caught independently (in-use → "unknown"; scan → no card).
       // poolBody (scope=pool) feeds the account×machine matrix; best-effort (matrix is hidden if absent).
-      [accountsBody, pendingBody, inUseBody, scanBody, poolBody] = await Promise.all([
+      [accountsBody, pendingBody, inUseBody, scanBody, poolBody, reloginBody] = await Promise.all([
         fetchJson(URLS.accounts, controller),
         fetchJson(URLS.pending, controller),
         fetchJson(URLS.inUse, controller).catch(() => null),
         postJson(URLS.scan, {}, controller).then((r) => (r.ok ? r.json : null)).catch(() => null),
         fetchJson(URLS.accountsPool, controller).catch(() => null),
+        fetchJson(URLS.relogin, controller).catch(() => null),
       ]);
     } catch {
       if (controller.signal && controller.signal.aborted) return;
@@ -1015,8 +1089,55 @@ export function createController(opts) {
       return;
     }
     state.offers = scanBody && Array.isArray(scanBody.offered) ? scanBody.offered : [];
+    state.reloginEpisodes = reloginBody && Array.isArray(reloginBody.episodes) ? reloginBody.episodes : [];
+    if (els.profileProvision && !state.profileProvisionWired) {
+      renderProfileProvisioner(doc, els.profileProvision);
+      wireProfileProvisioner();
+    }
     render(accountsBody, pendingBody, inUseBody, poolBody);
     reschedule();
+  }
+
+  function wireProfileProvisioner() {
+    if (!els.profileProvision || state.profileProvisionWired) return;
+    state.profileProvisionWired = true;
+    els.profileProvision.addEventListener('click', (event) => {
+      const button = event.target && event.target.closest ? event.target.closest('.sub-profile-create') : null;
+      if (!button) return;
+      const proof = getOperatorSessionToken();
+      const identity = els.profileProvision.querySelector('[aria-label="Google account email"]')?.value?.trim() || '';
+      const profileId = els.profileProvision.querySelector('[aria-label="Profile name"]')?.value?.trim() || '';
+      const loginMethod = els.profileProvision.querySelector('[aria-label="Sign-in method"]')?.value || 'session-cookie';
+      const status = els.profileProvision.querySelector('.sub-profile-status');
+      if (!proof) { status.textContent = 'Unlock the dashboard again, then retry.'; return; }
+      if (!identity || !profileId) { status.textContent = 'Enter the Google account and a profile name.'; return; }
+      button.setAttribute('disabled', 'disabled');
+      status.textContent = 'Preparing the private profile…';
+      void (async () => {
+        try {
+          const response = await fetchImpl(URLS.provisionProfile, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Instar-Operator-Session': proof },
+            body: JSON.stringify({ profileId, identity, loginMethod }),
+          });
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            status.textContent = response.status === 401
+              ? 'Unlock the dashboard again, then retry.'
+              : `Couldn’t create the profile: ${body.error || 'try again'}`;
+            button.removeAttribute('disabled');
+            return;
+          }
+          status.textContent = loginMethod === 'session-cookie'
+            ? 'Profile ready. Your agent can now open the provider sign-in and send you any required approval link.'
+            : 'Profile ready. Your agent will send a secure credential link before the first sign-in.';
+          button.textContent = 'Profile created';
+        } catch {
+          status.textContent = 'Couldn’t reach the server — try again.';
+          button.removeAttribute('disabled');
+        }
+      })();
+    });
   }
 
   // ── Episode + outcome bookkeeping (D1/D4/D5) ───────────────────────────────
@@ -1128,7 +1249,8 @@ export function createController(opts) {
     const accounts = accountsBody && Array.isArray(accountsBody.accounts) ? accountsBody.accounts : [];
     const logins = pendingBody && Array.isArray(pendingBody.logins) ? pendingBody.logins : [];
     const inUseAccountId = inUseBody && inUseBody.activeAccountId ? inUseBody.activeAccountId : null;
-    renderAccounts(doc, els.accounts, accounts, now(), inUseAccountId);
+    renderAccounts(doc, els.accounts, accounts, now(), inUseAccountId, state.reloginEpisodes);
+    wireReloginActions();
     purgeTransients();
     // Episode reconciliation runs FIRST so a terminal transition it derives (expired /
     // landed) is visible to BOTH surfaces on this same tick (the panel card + the cell).
@@ -1166,6 +1288,44 @@ export function createController(opts) {
         renderFollowMeOffers(doc, els.followMe, state.offers);
       }
       wireApprove();
+    }
+  }
+
+  function wireReloginActions() {
+    if (!els.accounts || state.reloginWired) return;
+    state.reloginWired = true;
+    els.accounts.addEventListener('click', (event) => {
+      const button = event.target && event.target.closest ? event.target.closest('[data-relogin-action]') : null;
+      if (!button) return;
+      const action = button.getAttribute('data-relogin-action');
+      const episodeId = button.getAttribute('data-relogin-id');
+      if (!['approve', 'cancel', 'retry'].includes(action) || !episodeId) return;
+      const proof = getOperatorSessionToken();
+      if (!proof) {
+        button.textContent = 'Unlock the dashboard again';
+        return;
+      }
+      button.setAttribute('disabled', 'disabled');
+      void postReloginAction(episodeId, action, proof, button);
+    });
+  }
+
+  async function postReloginAction(episodeId, action, proof, button) {
+    try {
+      const response = await fetchImpl(`${URLS.relogin}/${encodeURIComponent(episodeId)}/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Instar-Operator-Session': proof },
+        body: '{}',
+      });
+      if (!response.ok) {
+        button.textContent = response.status === 401 ? 'Unlock the dashboard again' : 'Couldn’t start — try again';
+        button.removeAttribute('disabled');
+        return;
+      }
+      await tick();
+    } catch {
+      button.textContent = 'Couldn’t reach the server — try again';
+      button.removeAttribute('disabled');
     }
   }
 

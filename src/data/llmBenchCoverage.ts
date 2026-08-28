@@ -143,6 +143,10 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   'mentor-stage-b': { pending: 'wave-3' },
   'correction-class-review': { pending: 'wave-3' },
   'completion-claim-verify': { pending: 'wave-3' },
+  // Closed action selection over adversarial provider-page state. The task
+  // measures valid-action precision plus fail-closed behavior for injection,
+  // unknown state, identity ambiguity, and permission-expansion cases.
+  'subscription-relogin-supervisor': { task: 'subscription-relogin-action-validator' },
 };
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -197,6 +201,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   FeedbackReadinessArbiter: true,
   GoalPriorityExtractor: true,
   AlignmentReviewer: true,
+  'subscription-relogin-supervisor': true, // provider DOM classification is untrusted even after deterministic clamping
 
   // ── Gates judging user/session/operation content → true ──
   HubIntentClassifier: true, // judges an inbound hub message's bind-intent (untrusted user text)
@@ -334,6 +339,7 @@ export const CLAIM_KINDS: ReadonlyArray<ClaimKind> = [
 export type JudgesClaimsFlag = { claimKind: ClaimKind } | false | { false: string };
 
 export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
+  'subscription-relogin-supervisor': false, // selects a permitted browser action; does not credit a completion/health claim
   // The dashboard insight engine summarizes a page's own data into awareness-only
   // observations; it never credits or refuses a completion/progress/health claim
   // asserted by an agent or session → does not judge claims.
@@ -469,6 +475,9 @@ export type ParserContractFlag =
   | { false: string };
 
 export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> = {
+  'subscription-relogin-supervisor': {
+    contractTest: 'tests/unit/anthropic-relogin-browser-driver.test.ts',
+  },
   DashboardInsightEngine: {
     false:
       'output is free-text insight lines (parseInsightResponse extracts/clamps 1-3 plain-English lines, degrade-to-deterministic-floor on unparseable) — no closed verdict vocabulary is parsed',
@@ -835,6 +844,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   FeedbackReadinessArbiter: exposed(EXPOSED_USER_TOOL), // feedback titles + canonical cluster metadata
   GoalPriorityExtractor: exposed(EXPOSED_USER), // verified operator message + quoted context
   AlignmentReviewer: exposed(EXPOSED_ALL), // operator priorities + model/tool-authored run focus
+  'subscription-relogin-supervisor': exposed(EXPOSED_TOOL), // clamped provider-page state originates in browser DOM
 
   // ── Reflectors ──
   JobReflector: exposed(EXPOSED_MODEL_TOOL),

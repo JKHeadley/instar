@@ -69,6 +69,9 @@ const LONG_LIVED_STORES = [
   'src/core/SelfHealGate.ts',
   // Passive subscription sign-in history is process-lifetime durable state.
   'src/core/SubscriptionLoginLedger.ts',
+  // Assisted relogin episodes, audit events, and notification outbox are
+  // process-lifetime durable state and participate in close-on-exit cleanup.
+  'src/core/SubscriptionReloginStore.ts',
 ];
 
 /**

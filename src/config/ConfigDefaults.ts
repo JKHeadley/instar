@@ -2104,6 +2104,18 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // (a baked-in false would dark dev agents too — the #1001 shape the dark-gate lint
   // forbids for a dev-gated block).
   subscriptionPool: {
+    // Assisted re-login is authority-bearing browser + credential work. Ship
+    // fleet-dark and dry-run-first; a development install must still make an
+    // explicit local promotion to approval/live after its controlled canary.
+    assistedRelogin: {
+      enabled: false,
+      mode: 'approval',
+      dryRun: true,
+      tickMs: 30_000,
+      maxAttempts: 3,
+      retryBaseMs: 5_000,
+      allowedScopes: ['user:profile'],
+    },
     proactiveSwap: {
       // Login-loss swap trigger — DEV-GATED: enabled deliberately omitted.
       // A dev agent evaluates the exact intent but performs no session kill

@@ -148,6 +148,8 @@ export interface StartEnrollmentInput {
    *   so normal local enrollment is byte-for-byte unchanged.
    */
   remote?: boolean;
+  /** Automation owns the browser when false; defaults true for operator enrollment. */
+  openBrowser?: boolean;
   /** WS5.2 R6b — larger scrape-timeout budget (ms) used only when `remote` is true.
    *  Omitted ⇒ the driver's own default (the local-LAN budget). */
   remoteScrapeTimeoutMs?: number;
@@ -226,7 +228,7 @@ export class EnrollmentWizard {
         framework: input.framework,
         kind,
         configHome: input.configHome,
-        openBrowser: true,
+        openBrowser: input.openBrowser !== false,
         // Threaded only for remote drives; omitted ⇒ the driver's local-LAN default.
         ...(input.remote && typeof input.remoteScrapeTimeoutMs === 'number'
           ? { scrapeTimeoutMs: input.remoteScrapeTimeoutMs }

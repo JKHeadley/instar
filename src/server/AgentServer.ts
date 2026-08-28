@@ -30,6 +30,7 @@ import { ConversationRegistry } from '../core/ConversationRegistry.js';
 import { createConversationBindAuth } from '../core/conversationBindToken.js';
 import { MandateStore } from '../coordination/MandateStore.js';
 import { AuthorizationRequestStore } from '../core/AuthorizationRequestStore.js';
+import { DashboardOperatorSessionStore } from './DashboardOperatorSessionStore.js';
 import { UserManager } from '../users/UserManager.js';
 import { MandateGate } from '../coordination/MandateGate.js';
 import { MandateAudit } from '../coordination/MandateAudit.js';
@@ -306,6 +307,7 @@ export class AgentServer {
   private server: Server | null = null;
   private wsManager: WebSocketManager | null = null;
   private config: InstarConfig;
+  private readonly dashboardOperatorSessions = new DashboardOperatorSessionStore();
   /** multi-transport-mesh-comms (Layer 0.5) — see the bind site in start(). */
   private meshBindActive: boolean;
   private startTime: Date;
@@ -331,6 +333,7 @@ export class AgentServer {
     workQueue?: WorkQueueRegistry | null;
     pendingRelayLookup?: (deliveryId: string) => boolean;
     subscriptionLoginLedger?: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null;
+    subscriptionRelogin?: import('./routes.js').RouteContext['subscriptionRelogin'];
     autonomousLivenessReconciler?:
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null;
@@ -548,6 +551,13 @@ export class AgentServer {
     this.routeContext.subscriptionLoginLedger = ledger;
   }
 
+  /** Bind the fully composed repair runtime before listen() exposes its routes. */
+  setSubscriptionRelogin(runtime: import('./routes.js').RouteContext['subscriptionRelogin']): void {
+    if (this.server) throw new Error('subscription re-login must be bound before server start');
+    if (!this.routeContext) throw new Error('route context is not initialized');
+    this.routeContext.subscriptionRelogin = runtime;
+  }
+
   constructor(options: {
     config: InstarConfig;
     sessionManager: SessionManager;
@@ -594,6 +604,7 @@ export class AgentServer {
     standDownAudit?: import('../core/StandDownAudit.js').StandDownAudit;
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
     subscriptionLoginLedger?: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null;
+    subscriptionRelogin?: import('./routes.js').RouteContext['subscriptionRelogin'];
     subscriptionIdentityOracle?: import('../core/CredentialLocationLedger.js').IdentityOracle;
     subscriptionEmailBinding?: import('../core/SubscriptionPool.js').SubscriptionEmailBindingAuthority;
     subscriptionEmailBarrier?: import('../core/SubscriptionPool.js').SubscriptionEmailReconciliationBarrier;
@@ -1108,8 +1119,15 @@ export class AgentServer {
         return;
       }
 
-      // PIN correct — return the auth token
-      res.json({ token: configRef.authToken });
+      // The ordinary API token is also available to agents, so it cannot prove
+      // that a human unlocked the dashboard. Issue a separate short-lived proof
+      // for explicitly operator-gated actions.
+      const operatorSession = this.dashboardOperatorSessions.issue();
+      res.json({
+        token: configRef.authToken,
+        operatorSessionToken: operatorSession.token,
+        operatorSessionExpiresAt: operatorSession.expiresAt,
+      });
     });
 
     // Machine-to-machine routes — mounted BEFORE auth middleware because they use
@@ -3839,6 +3857,8 @@ export class AgentServer {
       standDownAudit: options.standDownAudit ?? null,
       subscriptionPool: options.subscriptionPool ?? null,
       subscriptionLoginLedger: options.subscriptionLoginLedger ?? null,
+      subscriptionRelogin: options.subscriptionRelogin ?? null,
+      verifyDashboardOperatorSession: (token: string | undefined) => this.dashboardOperatorSessions.verify(token),
       subscriptionIdentityOracle: options.subscriptionIdentityOracle,
       subscriptionEmailBinding: options.subscriptionEmailBinding,
       subscriptionEmailBarrier: options.subscriptionEmailBarrier,
@@ -6023,6 +6043,8 @@ export class AgentServer {
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
   async stop(): Promise<void> {
+    try { this.routeContext?.subscriptionRelogin?.close?.(); }
+    catch (error) { console.warn('[subscription-relogin] clean stop failed:', error); }
     if (this.subscriptionLoginLedger) {
       try { this.subscriptionLoginLedger.close(); }
       catch (error) { console.warn('[subscription-login-ledger] clean stop failed:', error); }

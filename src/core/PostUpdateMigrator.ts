@@ -357,6 +357,7 @@ A durable per-agent registry mapping each Playwright browser **profile** (a phys
 - **List profiles + accounts** (the FULL detail — identities, owner, vault key NAMES, loginMethod, last-asserted/verified, dangling-ref flags; never values): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles\`
 - **The compact boot pointer** (also injected at session start): \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles/session-context\`
 - **Create a custom profile**: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles -H 'Content-Type: application/json' -d '{"id":"justin-google","description":"..."}'\` (userDataDir auto-allocated under the agent home, or supply an absolute path jailed to it).
+- **Remote/phone-complete provisioning**: the Subscriptions dashboard creates and materializes a dedicated Google profile after a recent PIN unlock. Programmatic equivalent: \`POST /playwright-profiles/provision\` with \`X-Instar-Operator-Session\` + \`{profileId,identity,loginMethod}\`. Handle everything else yourself; if a password/TOTP is missing, send ONE Secret Drop link. Never ask the operator to access the host machine.
 - **Assign an account to a profile**: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles/default/accounts -H 'Content-Type: application/json' -d '{"service":"github","identity":"EchoOfDawn","owner":"agent","vaultRefs":["github_token"],"loginMethod":"oauth-token"}'\` (\`owner\` REQUIRED — \`agent\`|\`operator\`; refs validated against the live vault, fails CLOSED).
 - **Pick the right profile for a task**: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/playwright-profiles/resolve?service=github&identity=EchoOfDawn"\` → the owning profile + \`dirExists\`; an ambiguous service-only match returns \`{ambiguous:true, candidates}\` (disambiguate by identity — never silently pick a privileged account).
 - **Switch the browser onto a profile**: \`curl -X POST -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles/<id>/activate\` (rewrites the MCP config + restarts the session; ships \`dryRun:true\` — it LOGS the intended rewrite/refresh until a deliberate \`dryRun:false\`; reversible by activating \`default\`).
@@ -6283,6 +6284,15 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Playwright Profile Registry section');
     }
+    if (content.includes('Playwright Profile Registry') && !content.includes('/playwright-profiles/provision')) {
+      const marker = '- **Assign an account to a profile**:';
+      const addition = `- **Remote/phone-complete provisioning**: use the Subscriptions dashboard or \`POST /playwright-profiles/provision\` with a recent dashboard operator session to create + materialize a dedicated Google profile. If credentials are missing, send one Secret Drop link; never ask the operator to access the host machine.\n`;
+      const at = content.indexOf(marker);
+      if (at >= 0) content = content.slice(0, at) + addition + content.slice(at);
+      else content += `\n${addition}`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added phone-complete Playwright profile provisioning awareness');
+    }
 
     // Session Listing Hygiene (CMT-1936) — Agent Awareness Standard + Migration
     // Parity item 3: existing agents learn that GET /sessions defaults to ACTIVE
@@ -6960,6 +6970,23 @@ Rule: I do not state that work landed inside another agent's state unless I have
         content = content.replace(seePoolAnchor, seePoolAnchor + ledgerBullet);
         patched = true;
         result.upgraded.push('CLAUDE.md: added passive subscription sign-in history awareness');
+      }
+    }
+
+    // Assisted re-login awareness for existing agents. Keep this adjacent to
+    // the passive ledger bullet: the ledger observes; this separately scoped,
+    // operator-approved controller repairs only corroborated incidents.
+    if (
+      content.includes('Sign-in reliability history (passive, never repair authority)') &&
+      !content.includes('Assisted sign-in repair (one approval, then autonomous)')
+    ) {
+      const ledgerEnd = 'or “was this a real auth failure or a credential-store visibility gap?”.';
+      const repairBullet =
+        '\n- **Assisted sign-in repair (one approval, then autonomous)** — when a corroborated Claude Code authentication incident opens, `GET /subscription-relogin` shows the exact account/profile repair proposal. The operator taps **Repair sign-in** once in the dashboard; the bounded flow then handles provider-native login, CLI completion, identity verification, authenticated-use proof, pool recovery, and exact incident closure. CAPTCHA, phone confirmation, unexpected origins, identity ambiguity, or permission expansion stop in an operator-only/refused state. Never ask for or paste credentials into chat. Cancel: `POST /subscription-relogin/EPISODE/cancel`; inspect the redacted audit: `GET /subscription-relogin/EPISODE/events`.';
+      if (content.includes(ledgerEnd)) {
+        content = content.replace(ledgerEnd, ledgerEnd + repairBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added assisted subscription sign-in repair awareness');
       }
     }
 

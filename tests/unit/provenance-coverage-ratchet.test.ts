@@ -69,6 +69,7 @@ import {
   DP_DISCOVERY_EVALUATE,
   DP_RESUME_SANITY_CHECK,
   DP_MENTOR_STAGE_B_CLASSIFY,
+  DP_SUBSCRIPTION_RELOGIN_ACTION,
   getCensusEntry,
   isEnrolled,
   getVolumeClass,

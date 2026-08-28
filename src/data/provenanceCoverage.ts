@@ -333,6 +333,9 @@ export const DP_RESUME_SANITY_CHECK = 'resume-sanity-check';
 /** Bounded mentor signals → zero or more forensic issue classifications. */
 export const DP_MENTOR_STAGE_B_CLASSIFY = 'mentor-stage-b-classify';
 
+/** Redacted closed browser snapshot → one action from the deterministic allowlist. */
+export const DP_SUBSCRIPTION_RELOGIN_ACTION = 'subscription-relogin-action';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -447,6 +450,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     gradingPosture: 'measurement-only',
     gradingReason:
       'Phase 1 is signal-only and has no actuation outcome; verdict quality is collected for later benchmark and operator-label calibration.',
+  },
+  {
+    decisionPoint: DP_SUBSCRIPTION_RELOGIN_ACTION,
+    component: 'subscription-relogin-supervisor',
+    status: 'wired',
+    volumeClass: 'budget:100',
+    contentClass: 'metadata',
+    reason:
+      'A low-frequency action validator selects only from a deterministic browser allowlist; provenance stores the closed redacted snapshot and action labels, never DOM text or secrets.',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The deterministic driver rejects out-of-set output and records typed outcomes; longitudinal action-quality grading begins with the disposable canary corpus.',
   },
 
   // ── Pending (the ACT-1193 uniform-provenance retrofit backlog — §5.6: "Not

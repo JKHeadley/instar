@@ -1148,7 +1148,46 @@ function makeStandDownPressureLoop(d: Map<string, unknown>, sink: ActionSink): {
   };
 }
 
+/**
+ * subscription-relogin-redrive — models the repair service under a provider
+ * that rejects forever. Attempt count and wall-clock start are durable episode
+ * fields, so restart cannot refill the budget. The third rejected drive settles
+ * terminally; later scans see the same terminal episode/breaker and emit nothing.
+ */
+const subscriptionReloginRedrive: SelfActionController = {
+  id: 'subscription-relogin-redrive',
+  actionVerb: 'relogin-redrive',
+  models: 'src/core/SubscriptionReloginService.ts + SubscriptionReloginOrchestrator.ts (durable maxAttempts/maxWallMs and terminal breaker)',
+  modelsPath: 'src/core/SubscriptionReloginService.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 30,
+  tickMs: 30_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeSubscriptionReloginPressureLoop(f, sink),
+  },
+  makeUnderPressure(f, sink) {
+    return makeSubscriptionReloginPressureLoop(f, sink);
+  },
+};
+
+function makeSubscriptionReloginPressureLoop(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const key = 'subscription-relogin:attempts';
+  if (!f.durableState.has(key)) f.durableState.set(key, 0);
+  return {
+    tick() {
+      sink.considered += 1;
+      const attempts = f.durableState.get(key) as number;
+      if (attempts >= 3) return;
+      sink.emit({ verb: 'relogin-redrive', target: 'account-machine-cell' });
+      f.durableState.set(key, attempts + 1);
+    },
+  };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  subscriptionReloginRedrive,
   standDownMaintenance,
   evolutionActionExpirySweep,
   spendReconSweep,

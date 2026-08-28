@@ -21,20 +21,24 @@ function makeEls(doc: Document) {
   const pending = doc.createElement('div');
   const matrix = doc.createElement('div');
   const followMe = doc.createElement('div');
+  const profileProvision = doc.createElement('div');
   const root = doc.createElement('div');
   root.appendChild(followMe);
+  root.appendChild(profileProvision);
   root.appendChild(matrix);
   root.appendChild(accounts);
   root.appendChild(pending);
   doc.body.appendChild(root);
-  return { els: { accounts, pending, matrix, followMe }, root };
+  return { els: { accounts, pending, matrix, followMe, profileProvision }, root };
 }
 
 /** A scriptable fetch keyed by URL pathname; records abort signals. */
 function makeFetch() {
   const script: Record<string, { status?: number; body?: unknown; throw?: boolean }> = {};
   const signals: AbortSignal[] = [];
+  const calls: Array<{ url: string; init?: any }> = [];
   const fetchImpl = async (url: string, init?: { signal?: AbortSignal }) => {
+    calls.push({ url, init });
     if (init?.signal) signals.push(init.signal);
     const key = url.replace(/^https?:\/\/[^/]+/, '');
     const entry = script[key] ?? { status: 200, body: { enabled: true } };
@@ -45,7 +49,7 @@ function makeFetch() {
       json: async () => entry.body ?? {},
     };
   };
-  return { fetchImpl, script, signals };
+  return { fetchImpl, script, signals, calls };
 }
 
 const ACCOUNTS_OK = {
@@ -90,6 +94,53 @@ describe('Subscriptions tab controller (integration)', () => {
     expect(els.accounts.querySelector('.sub-account-nick')!.textContent).toBe('personal');
     expect(els.accounts.querySelectorAll('.sub-quota').length).toBe(2);
     expect(els.pending.querySelector('.sub-pending-code')!.textContent).toContain('7DAU-W4XJA');
+  });
+
+  it('turns one operator click into the scoped autonomous repair approval request', async () => {
+    fx.script['/subscription-pool'] = { body: { ...ACCOUNTS_OK, accounts: [{ ...ACCOUNTS_OK.accounts[0], status: 'needs-reauth' }] } };
+    fx.script['/subscription-pool/pending-logins?scope=pool'] = { body: { enabled: true, logins: [] } };
+    fx.script['/subscription-relogin'] = { body: { enabled: true, episodes: [{ id: 'repair-1', accountId: 'a1', state: 'suggested' }] } };
+    fx.script['/subscription-relogin/repair-1/approve'] = { status: 202, body: { accepted: true } };
+    const c = ctl({ getOperatorSessionToken: () => 'scoped-human-proof' });
+    c._state.active = true;
+    await c.tick();
+    (els.accounts.querySelector('[data-relogin-action="approve"]') as HTMLElement).click();
+    await flush();
+    const approval = fx.calls.find((call) => call.url === '/subscription-relogin/repair-1/approve');
+    expect(approval?.init).toMatchObject({ method: 'POST' });
+    expect(approval?.init.headers['X-Instar-Operator-Session']).toBe('scoped-human-proof');
+    expect(approval?.init.body).toBe('{}');
+  });
+
+  it('does not send approval when the dashboard has no recent PIN-unlock proof', async () => {
+    fx.script['/subscription-pool'] = { body: { ...ACCOUNTS_OK, accounts: [{ ...ACCOUNTS_OK.accounts[0], status: 'needs-reauth' }] } };
+    fx.script['/subscription-pool/pending-logins?scope=pool'] = { body: { enabled: true, logins: [] } };
+    fx.script['/subscription-relogin'] = { body: { enabled: true, episodes: [{ id: 'repair-1', accountId: 'a1', state: 'suggested' }] } };
+    const c = ctl(); c._state.active = true; await c.tick();
+    const button = els.accounts.querySelector('[data-relogin-action="approve"]') as HTMLElement;
+    button.click(); await flush();
+    expect(button.textContent).toBe('Unlock the dashboard again');
+    expect(fx.calls.some((call) => call.url.endsWith('/approve'))).toBe(false);
+  });
+
+  it('creates a dedicated Google profile from the phone surface with recent PIN proof', async () => {
+    fx.script['/subscription-pool'] = { body: ACCOUNTS_OK };
+    fx.script['/subscription-pool/pending-logins?scope=pool'] = { body: { enabled: true, logins: [] } };
+    fx.script['/playwright-profiles/provision'] = { status: 201, body: { readyForAutomation: true } };
+    const c = ctl({ getOperatorSessionToken: () => 'scoped-human-proof' });
+    c._state.active = true;
+    await c.tick();
+    els.profileProvision.querySelector('[aria-label="Google account email"]').value = 'echo@example.test';
+    els.profileProvision.querySelector('[aria-label="Profile name"]').value = 'echo-google';
+    els.profileProvision.querySelector('[aria-label="Sign-in method"]').value = 'password+totp';
+    els.profileProvision.querySelector('.sub-profile-create').click();
+    await flush();
+    const call = fx.calls.find((item) => item.url === '/playwright-profiles/provision');
+    expect(call.init.headers['X-Instar-Operator-Session']).toBe('scoped-human-proof');
+    expect(JSON.parse(call.init.body)).toEqual({
+      profileId: 'echo-google', identity: 'echo@example.test', loginMethod: 'password+totp',
+    });
+    expect(els.profileProvision.textContent).toContain('secure credential link');
   });
 
   it('feature-dark (both enabled:false) → the disabled copy, no crash', async () => {

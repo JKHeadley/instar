@@ -4181,6 +4181,19 @@ export interface InstarConfig {
    * All optional; absence preserves today's single-account behaviour.
    */
   subscriptionPool?: {
+    /** Approval-gated autonomous repair for corroborated Claude Code sign-in failures.
+     *  Absent/off stays dark. `unattended` remains evidence- and opt-in-gated by policy. */
+    assistedRelogin?: {
+      enabled?: boolean;
+      mode?: 'observe' | 'approval' | 'unattended';
+      dryRun?: boolean;
+      tickMs?: number;
+      maxAttempts?: number;
+      retryBaseMs?: number;
+      allowedScopes?: string[];
+      /** Optional attention-routing topic. Omit to use the configured attention hub. */
+      approvalTopicId?: number;
+    };
     /** Soft binding-window utilization % above which an account is "at pressure"
      *  and excluded from proactive selection (default 90). */
     swapSoftThresholdPct?: number;

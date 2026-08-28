@@ -767,6 +767,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     reason: 'real-dollar spending authority (metered-door money gate + PIN caps/arming); dark for everyone incl. dev agents until an explicit operator enable — FD-16',
   },
   {
+    configPath: 'subscriptionPool.assistedRelogin.enabled',
+    category: 'action-bearing',
+    reason: 'submits provider credentials and mutates a live Claude login; dark for everyone including development agents until reviewed approval and a disposable-identity canary',
+  },
+  {
     configPath: 'monitoring.agentWorktreeReaper.enabled',
     category: 'destructive',
     reason: 'deletes git worktrees; off+dry-run for everyone',
