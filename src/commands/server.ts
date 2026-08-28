@@ -474,7 +474,10 @@ async function handleFixCommand(topicId: number, text: string, deps: FixCommandD
     } else {
       for (const s of stale) {
         try {
-          deps.sessionManager.killSession(s.tmuxSession);
+          // killSession() resolves BY ID; handing it a tmux name misses the
+          // lookup and returns false silently ("the stop that does not stop").
+          // killSessionByTmuxName is the single place that resolution lives.
+          deps.sessionManager.killSessionByTmuxName(s.tmuxSession);
         } catch { /* best effort */ }
       }
       await send(`Found ${stale.length} stuck session${stale.length === 1 ? '' : 's'} and cleaned ${stale.length === 1 ? 'it' : 'them'} up. New sessions will start fresh when needed.`);
@@ -25784,13 +25787,29 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (tail === null) return 'unconfirmed';
               return paneIdleWithEmptyInput(tail) ? 'confirmed-idle' : 'busy';
             },
-            killForResume: async (sessionName) => sessionManager.killSession(sessionName),
+            // NB: listTopicSessions() supplies `sessionName` as the session's
+            // TMUX NAME. killSession() resolves BY ID (state/sessions/<id>.json),
+            // so passing a name here missed the lookup and returned false with no
+            // kill — "the stop that does not stop". The respawn then found the old
+            // session still alive and merely injected into it, so a framework swap
+            // silently never happened. killSessionByTmuxName is the single place
+            // that name→id resolution lives; its boolean is the REAL outcome and
+            // the orchestrator now aborts the respawn when it is false.
+            killForResume: async (sessionName) => sessionManager.killSessionByTmuxName(sessionName),
             killFresh: async (sessionName) => {
-              // Fresh respawn: clear the resume entry first so the next spawn does
-              // NOT --resume the (possibly cross-framework) transcript, then kill.
-              const topic = telegram?.getTopicForSession?.(sessionName);
-              if (topic != null && Number.isFinite(Number(topic))) _topicResumeMap?.remove(Number(topic));
-              return sessionManager.killSession(sessionName);
+              // Fresh respawn: the orchestrator has ALREADY parked this topic's
+              // resume entry (claudeResume.park -> _topicResumeMap.park) before
+              // calling us, and a parked entry is invisible to get() /
+              // getForFramework() / getProvenance() — so the next spawn cannot
+              // --resume the cross-framework transcript. This port used to ALSO
+              // call _topicResumeMap.remove(), which DELETES rather than parks;
+              // that was redundant with the park and destroyed the cheap
+              // recovery TopicResumeMap's own §8 rule protects ("'remove' means
+              // PARK, not delete"). It also made the kill-failure abort
+              // unrecoverable: unpark() finds no entry and restores nothing, so
+              // a still-live session lost its resume id to an attempt that was
+              // supposed to be a no-op.
+              return sessionManager.killSessionByTmuxName(sessionName);
             },
             spawn: async (topicKey, _resolved, _directive) => {
               // The orchestrator already killed; respawn re-resolves the (now
