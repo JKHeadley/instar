@@ -28,6 +28,7 @@ import { SlowRetrySentinelEscalation } from './SlowRetrySentinelEscalation.js';
 import { SleepWakeDetector } from '../core/SleepWakeDetector.js';
 import { cpuLoadRatio, DEFAULT_MAX_LOAD_RATIO } from '../core/cpuStarvation.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { resolveNpmInvocation } from '../utils/npmInvocation.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 // Cross-process reader for the in-flight-sync-op marker mirror file (amplifier #2,
 // spec §A.5). Dependency-light (fs+path only) so the lifeline process never loads
@@ -948,10 +949,23 @@ export class ServerSupervisor extends EventEmitter {
             ['install', installSpec, '--no-save', '--prefix', copy.prefixDir],
             ['rebuild', '--build-from-source', '--ignore-scripts', 'better-sqlite3', '--prefix', copy.prefixDir],
           ];
+          // npm on disk is not always a JS entry point: version managers
+          // (mise, asdf) ship `bin/npm` as a bash wrapper, and
+          // `spawnSync(checkNode, [npmPath, ...])` then parses bash as JS and
+          // dies with a SyntaxError before npm ever runs — so the heal could
+          // NEVER succeed on those installs and re-restored the wrong-ABI
+          // binary on every boot (observed on ln 2026-07-24, mise-managed
+          // node). Resolve the real npm-cli.js (or fall back to executing npm
+          // directly under the pinned PATH) instead.
+          const npmInvocation = resolveNpmInvocation(npmPath, checkNode);
+          if (!npmInvocation) {
+            console.error('[Supervisor] Preflight: could not resolve an npm invocation — cannot rebuild better-sqlite3');
+            continue;
+          }
           let rebuilt = false;
           let lastErr = '';
           for (const args of attempts) {
-            const r = spawnSync(checkNode, [npmPath, ...args], {
+            const r = spawnSync(npmInvocation.command, [...npmInvocation.argsPrefix, ...args], {
               encoding: 'utf-8', timeout: 120_000, cwd: this.projectDir, env: rebuildEnv,
             });
             if (r.status === 0 && verifyLoadable()) { rebuilt = true; break; }
