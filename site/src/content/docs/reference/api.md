@@ -1040,6 +1040,17 @@ Cross-machine account setup from the dashboard's Subscriptions-tab grid. Dark be
 | POST | `/subscription-pool/follow-me/enroll/:id/cancel` | Target-local: cancel a mis-tapped in-flight cell — abandon the pending login + tear down its login pane (raw `tmux kill-session`). Idempotent on a terminal record (200 `alreadyTerminal`); unknown/malformed id → 404; stands aside (409) while a code is mid-submit. Bearer-only. |
 | POST | `/subscription-pool/follow-me/cancel` | Fronting relay for cancel — dispatches to self/peer by `machineId` (offline peer → 502). The route the dashboard Cancel button calls. Body: `machineId`, `id`. |
 | POST | `/subscription-pool/follow-me/enroll/:id/complete` | Mark a follow-me login completed once the freshly-minted account passes the S7 email-gate. |
+| GET | `/subscription-relogin` | List bounded assisted re-login episodes and their current state. Returns disabled state while the dev-gated feature is dark. |
+| GET | `/subscription-relogin/:episodeId/events` | Read the bounded, redacted event history for one repair episode. |
+| POST | `/subscription-relogin/:episodeId/approve` | Approve the exact immutable repair plan shown in the dashboard. Approval cannot broaden identity, origin, or requested scope. |
+| POST | `/subscription-relogin/:episodeId/cancel` | Cancel an active repair episode. Cancellation is durable and checked again before every side effect. |
+| POST | `/subscription-relogin/:episodeId/retry` | Retry an eligible failed episode within its durable attempt, reissue, and wall-clock budgets. Uncertain non-idempotent outcomes remain operator-only. |
+
+### Dedicated browser profiles
+
+| Method | Route | Description |
+|---|---|---|
+| POST | `/playwright-profiles/provision` | Recent-dashboard-PIN route that creates a jailed, machine-local Chrome profile for one Google identity. The request accepts vault secret **names**, never secret values, and returns a phone-complete next step when password or MFA help is needed. |
 
 The quota-aware scheduler picks accounts reset-date-optimally ("use before reset")
 and guarantees a long-lived session that hits its account's quota resumes on
