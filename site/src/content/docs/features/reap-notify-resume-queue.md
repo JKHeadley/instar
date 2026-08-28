@@ -28,6 +28,16 @@ when retries exhaust). A Telegram hiccup delays a notice instead of eating it,
 and every outcome lands in the reap-log as an `enqueued` → `sent` /
 `send-failed-escalated` pair, so "did the user get told" is auditable.
 
+## One kill authority, one keep guard
+
+Every autonomous killer funnels through the single ReapAuthority
+(`SessionManager.terminateSession`), and that authority consults **`ReapGuard`** — the shared,
+stateless "is it safe to reap this session?" guard — before any session is ended. The guard runs the
+positive-evidence KEEP checks (protected sessions, live work, recovery in flight); a non-null
+verdict means the session must be kept and the terminate is a no-op. Extracting the guard out of the
+reaper means a careless new killer cannot skip the keep checks the careful one applies — they are
+the same code path.
+
 ## Killer-stamped work evidence
 
 Whether a session was mid-work is decided by the component that kills it, at

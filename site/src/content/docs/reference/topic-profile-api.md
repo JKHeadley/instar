@@ -46,6 +46,10 @@ curl -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-Request: 1" \
   none-loss (the symmetric counterpart to the Claude resume map).
 - **`TopicProfileTransferCarrier`** — carries a topic's profile across machines via the mesh
   `topic-profile-pull` verb, so when another machine acquires the topic, the pin follows.
+- **`ProfileIntentClassifier`** — the conversational ingress: an LLM-with-context recognizer that
+  decides whether a message like "use codex here" is genuinely a profile-change command (vs a
+  question or commentary), with the closed framework/model/thinking sets used only as an output
+  guardrail, never as input keyword triggers.
 
 ## Resolution & swap
 
@@ -55,3 +59,9 @@ state-detection canary verifies an independent thinking-control read; otherwise 
 `claude --resume` restart (none-loss), or a continuation from recent history when no resume point is
 capturable. The `TopicProfileOrchestrator` never profile-kills a protected session, and "switch now"
 overrides a busy session but never overrides protection.
+
+The respawn's two outcomes are audited truthfully in `logs/topic-profile-changes.jsonl`: a kill that
+does not take aborts the attempt and records `respawn-kill-failed` (breaker-attributable as
+`kill-failed`, so an unkillable session settles at the breaker instead of retrying forever), and a
+spawn that lands on a different framework than the pin records `respawn-profile-mismatch` instead of
+`respawn-applied` — the success line is written only when the switch verifiably happened.
