@@ -323,6 +323,15 @@ resolution-time divergence from the pin, so equality is the wrong test) and is o
 this change's blast radius — it is recorded in section 2 as a known gap, not deferred
 work this change was expected to carry.
 
+Post-review addendum (CI): the branch inherited a red `Docs Coverage` check from main
+(class-doc floor 54% < 55%, red on main's own latest CI run — not caused by this diff). Per the
+Zero-Failure Standard it was fixed here rather than waved through: five classes in this change's
+blast radius (`ModelTierEscalation`, `EscalationGovernor`, `EscalationHintStore`,
+`ProfileIntentClassifier`, `ReapGuard`) received genuine site-doc coverage — a new
+architecture page for the escalation trio, topic-profile feature/API sections that also document
+this fix's truthful audit events, and the reap-guard keep-check story. Docs-only; no runtime
+surface. Local `docs-coverage --check` passes at exactly the floor (260/842).
+
 Clear to ship pending second-pass concurrence.
 
 ---
