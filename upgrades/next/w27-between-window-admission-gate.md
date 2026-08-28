@@ -1,0 +1,73 @@
+<!-- bump: patch -->
+
+## What Changed
+
+W27 adds a bounded between-window admission gate for charter activation packages.
+It is available only when an operator or orchestration path explicitly invokes
+the gate through the CLI or authenticated server route; it does not run
+automatically for ordinary agents, and it is not listed as a general user-facing
+capability.
+
+Agent-facing change: the release closes reviewed defects in the two verification
+lanes that produced this candidate. The state-lifecycle lane now treats scheduler
+disable and trigger admission as live state that must be re-read and refused
+truthfully when the scheduler still cannot apply the requested state. The
+admission-and-delivery lane now makes topic binding and destination-store
+confirmation part of the surfaced result, so a row id or spawn claim is not used
+as delivery proof by itself.
+
+Operator-facing change: the between-window gate evaluates a supplied activation
+package against the local Telegram JSONL store. It checks that required observer
+and tenet receipt references exist, that receipt structure is stable enough to
+verify, that known negative controls refuse, and that the two known corpus
+mismatches are disclosed. It validates package shape and stored evidence
+references; it does not prove every observer judgment correct, reconcile the two
+corpora, or turn W27 into a clean-suite certification.
+
+The release record remains maturity-honest: the accepted claim is candidate
+regression-green by evidence. The W27 artifacts explicitly say this laptop could
+not produce a clean certifying full-suite run for either base or candidate under
+the current conditions, and listener-backed route/E2E proof was limited where the
+sandbox refused local listener binds.
+
+## What to Tell Your User
+
+- "This release makes the control-plane checks more truthful about whether work
+  was actually admitted, scheduled, and delivered."
+- "It also adds an operator-only release gate for the W27 handoff package. That
+  gate is only used when we explicitly run it; it is not something you need to
+  operate during normal use."
+- "The release is described as regression-green by evidence, not as a perfect
+  clean-suite certification."
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Between-window admission preflight | Explicit operator invocation: `instar gate between-window --package <file>` or authenticated `POST /gate/between-window-admission` |
+| Live scheduler admission truth | Automatic in the touched job trigger and toggle paths; refused live state is surfaced instead of being treated as success |
+| Topic-bound session and relay evidence | Automatic in the touched Telegram/session paths; delivery claims include destination-store confirmation where those paths produce relay results |
+
+## Evidence
+
+- `.instar/w27/deploy-evidence/gate-three/GATE-THREE-PACKAGE.md` records the
+  exact candidate worktree, the authoritative 30-file changed-candidate list,
+  the operator/internal `/gate` classification, and the hold boundary that says
+  no release steps had been performed at package assembly time.
+- `.instar/w27/deploy-evidence/candidate/CANDIDATE-GREEN-EVIDENCE.md` records
+  the accepted claim as "candidate regression-green by evidence," not a clean
+  suite claim. It records two counted full-suite attempts, both exit 1, with the
+  first run classified as 3 contention and 3 W27 candidate defects, and the
+  second run classified as 6 contention, 1 pre-existing, and 0 W27 candidate
+  defects.
+- `.instar/w27/deploy-evidence/candidate/focused-checks.exit-summary.txt`
+  records focused candidate validation: the 12-file in-process set passed 304
+  tests; scheduler lifecycle plus cartographer integration passed 2 files and 8
+  tests; Gemini live E2Es passed 2 files and 3 tests with documented precondition
+  skips; `npm run build` exited 0; and `git diff --check` exited 0. The same file
+  records listener-backed checks that were blocked by sandbox listener refusal
+  rather than counted as green.
+- `upgrades/side-effects/w27-between-window-admission-gate.md` is the matching
+  side-effects review artifact for this slug. It includes the second-pass
+  reviewer concern about same-observer duplicate receipts and the recorded
+  resolution requiring both `observer-1` and `observer-2`.

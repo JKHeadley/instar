@@ -1,0 +1,37 @@
+{
+  "ts": "2026-08-28T00:20:52.485Z",
+  "slug": "w27-between-window-admission-gate",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/TelegramRelay.ts matches relay / delivery path",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 1372,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/cli.ts",
+      "src/commands/gate.ts",
+      "src/commands/server.ts",
+      "src/core/BetweenWindowAdmissionGate.ts",
+      "src/core/CartographerTree.ts",
+      "src/core/TelegramRelay.ts",
+      "src/remediation/audit/AuditProjection.ts",
+      "src/scheduler/AgentMdJobLoader.ts",
+      "src/scheduler/JobLoader.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts",
+      "src/server/sessionSpawnTopicBinding.ts"
+    ],
+    "addedLines": 1262,
+    "deletedLines": 110
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

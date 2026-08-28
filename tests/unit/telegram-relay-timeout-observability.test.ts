@@ -19,17 +19,17 @@ function baseDeps(over: Partial<RelayDeps> = {}): RelayDeps {
     peerUrl: () => 'https://holder.example.dev',
     authToken: 'tok',
     timeoutMs: 50,
-    fetchImpl: (async () => new Response(JSON.stringify({ messageId: 7 }), { status: 200 })) as unknown as typeof fetch,
+    fetchImpl: (async () => new Response(JSON.stringify({ messageId: 7, destinationStoreConfirmed: true }), { status: 200 })) as unknown as typeof fetch,
     log: () => {},
     ...over,
   };
 }
 
 describe('relayOutbound — bounded + observable tokenless-standby relay', () => {
-  it('relays to the holder and returns the messageId on a 2xx', async () => {
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ messageId: 42 }), { status: 200 }));
+  it('relays to the holder and returns the messageId on a 2xx with destination-store confirmation', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ messageId: 42, destinationStoreConfirmed: true }), { status: 200 }));
     const r = await relayOutbound(8882, 'hi', undefined, baseDeps({ fetchImpl: fetchImpl as unknown as typeof fetch }));
-    expect(r).toEqual({ messageId: 42, topicId: 8882 });
+    expect(r).toEqual({ messageId: 42, topicId: 8882, destinationStoreConfirmed: true });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://holder.example.dev/telegram/reply/8882');
@@ -63,9 +63,18 @@ describe('relayOutbound — bounded + observable tokenless-standby relay', () =>
   });
 
   it('treats a 2xx with messageId:0 as undelivered', async () => {
-    const fetchImpl = (async () => new Response(JSON.stringify({ messageId: 0 }), { status: 200 })) as unknown as typeof fetch;
+    const fetchImpl = (async () => new Response(JSON.stringify({ messageId: 0, destinationStoreConfirmed: true }), { status: 200 })) as unknown as typeof fetch;
     const r = await relayOutbound(8882, 'x', undefined, baseDeps({ fetchImpl }));
     expect(r).toBeNull();
+  });
+
+  it('treats a 2xx with messageId but no destination-store confirmation as undelivered', async () => {
+    const log = vi.fn();
+    const fetchImpl = (async () => new Response(JSON.stringify({ messageId: 42 }), { status: 200 })) as unknown as typeof fetch;
+    const r = await relayOutbound(8882, 'x', undefined, baseDeps({ fetchImpl, log }));
+    expect(r).toBeNull();
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0][0]).toMatch(/destination-store confirmation/i);
   });
 
   it('returns null and LOGS the status on a non-2xx (was silent)', async () => {
@@ -108,7 +117,7 @@ describe('relayOutbound — bounded + observable tokenless-standby relay', () =>
     let sentBody: unknown;
     const fetchImpl = (async (_u: string, init: RequestInit) => {
       sentBody = JSON.parse(init.body as string);
-      return new Response(JSON.stringify({ messageId: 1 }), { status: 200 });
+      return new Response(JSON.stringify({ messageId: 1, destinationStoreConfirmed: true }), { status: 200 });
     }) as unknown as typeof fetch;
     await relayOutbound(8882, 'hi', { silent: true }, baseDeps({ fetchImpl }));
     expect(sentBody).toEqual({ text: 'hi', silent: true });

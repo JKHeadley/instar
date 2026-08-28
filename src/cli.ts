@@ -2570,6 +2570,18 @@ gateCmd
     return gateResetBreaker(opts);
   });
 
+gateCmd
+  .command('between-window')
+  .description('Evaluate the W27 between-window charter-admission package against the Telegram store')
+  .requiredOption('--package <path>', 'Admission package JSON')
+  .option('--store <path>', 'Override telegram-messages.jsonl path')
+  .option('--json', 'Emit the raw JSON result')
+  .option('-d, --dir <path>', 'Project directory')
+  .action(async (opts) => {
+    const { gateBetweenWindowAdmission } = await import('./commands/gate.js');
+    return gateBetweenWindowAdmission(opts);
+  });
+
 // ── `instar dev:preflight` — contributor ship-gate verifier ────────
 
 program

@@ -22,8 +22,8 @@ import path from 'node:path';
 import { ExecutionJournal } from '../core/ExecutionJournal.js';
 import { IntegrationGate } from './IntegrationGate.js';
 import { JobReflector } from '../core/JobReflector.js';
-import { loadJobs } from './JobLoader.js';
-import { readAgentMdBody } from './AgentMdJobLoader.js';
+import { formatLoadProblem, loadJobsDetailed } from './JobLoader.js';
+import { readAgentMdBody, rehydrateAgentMdJobFromLastValidatedBody } from './AgentMdJobLoader.js';
 import { hashBody } from './AgentMdLockFile.js';
 import { JobRunHistory } from './JobRunHistory.js';
 import { SkipLedger } from './SkipLedger.js';
@@ -103,6 +103,11 @@ export class JobScheduler {
   private skipLedger: SkipLedger;
   private runHistory: JobRunHistory;
   private jobs: JobDefinition[] = [];
+  private jobsSignature = '';
+  /** Loader diagnostics already reported by a quiet trigger-boundary reload
+   *  (level|exact line). Cleared per fingerprint when the diagnostic goes
+   *  away so a recurrence is reported again. */
+  private reportedLoadProblems = new Set<string>();
   private cronTasks: Map<string, Cron> = new Map();
   private queue: QueuedJob[] = [];
   private running = false;
@@ -116,6 +121,7 @@ export class JobScheduler {
 
   /** Retry state for skipped jobs: slug → { retries, lastAttempt, timer } */
   private retryState: Map<string, { retries: number; timer: ReturnType<typeof setTimeout> }> = new Map();
+  private missedJobStartupTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Retry delays in ms: 1min, 5min, 15min, 30min, 1h, 2h */
   private static readonly RETRY_DELAYS_MS = [
@@ -233,6 +239,209 @@ export class JobScheduler {
     this.stateDir = stateDir;
     this.skipLedger = new SkipLedger(stateDir);
     this.runHistory = new JobRunHistory(stateDir);
+  }
+
+  /**
+   * Compute a stable signature for the currently loaded job set.
+   * Used to avoid rebuilding cron tasks when the on-disk jobs snapshot
+   * has not actually changed.
+   */
+  private static signatureForJobs(jobs: JobDefinition[]): string {
+    return crypto.createHash('sha256').update(JSON.stringify(jobs)).digest('hex');
+  }
+
+  /**
+   * Rebuild cron tasks from the current in-memory job snapshot.
+   *
+   * The scheduler keeps the live admission view on the loaded job set and
+   * recreates cron tasks whenever the snapshot changes, so body/manifest
+   * edits become visible without a restart.
+   */
+  private rebuildCronTasks(): JobDefinition[] {
+    for (const [, task] of this.cronTasks) {
+      task.stop();
+    }
+    this.cronTasks.clear();
+
+    const enabledJobs = this.jobs.filter(j => j.enabled);
+
+    // Machine-scoped filtering — skip jobs not targeted at this machine
+    const scopedJobs = enabledJobs.filter(j => this.isJobScopedToThisMachine(j));
+    const skippedByScope = enabledJobs.length - scopedJobs.length;
+    if (skippedByScope > 0) {
+      const skippedNames = enabledJobs
+        .filter(j => !this.isJobScopedToThisMachine(j))
+        .map(j => j.slug);
+      console.log(`[scheduler] ${skippedByScope} job(s) skipped (machine scope): ${skippedNames.join(', ')}`);
+    }
+
+    for (const job of scopedJobs) {
+      try {
+        const task = new Cron(job.schedule, async () => {
+          // New cron window — reset retry state so we get fresh attempts
+          this.clearRetryState(job.slug);
+          try {
+            await this.triggerJob(job.slug, 'scheduled');
+          } catch (err) {
+            // Cron callbacks are a process-lifetime boundary. A lease demotion
+            // can race the pre-trigger read-only check and make a later shared
+            // bookkeeping write throw; contain that refusal (and every other
+            // trigger failure) here rather than creating an unhandled rejection
+            // that terminates the server.
+            console.error(`[scheduler] Scheduled trigger failed for "${job.slug}": ${err}`);
+          }
+        });
+        this.cronTasks.set(job.slug, task);
+
+        // Stamp when this job STARTED EXISTING, once. The startup missed-job
+        // sweep needs it to tell "brand-new, its window simply hasn't come yet"
+        // apart from "has been sitting here unrun through window after window".
+        // Without it the sweep could only see "no lastRun" and fired both alike
+        // (ACT-724 defect (a)). Never overwritten, so the age is real.
+        const existing = this.state.getJobState(job.slug);
+        if (!existing?.firstSeenAt) {
+          try {
+            this.state.saveJobState({
+              slug: job.slug,
+              consecutiveFailures: 0,
+              ...(existing ?? {}),
+              firstSeenAt: new Date().toISOString(),
+            });
+          } catch (err) {
+            // A bookkeeping write must never stop the scheduler from starting.
+            // Missing firstSeenAt degrades SAFE: the sweep declines to treat the
+            // job as missed (see checkMissedJobs) rather than firing it blind.
+            console.error(`[scheduler] Could not stamp firstSeenAt for "${job.slug}": ${err}`);
+          }
+        }
+      } catch (err) {
+        console.error(`[scheduler] Invalid cron expression for job "${job.slug}": ${job.schedule} — ${err instanceof Error ? err.message : err}`);
+        DegradationReporter.getInstance().report({
+          feature: 'JobScheduler.rebuildCronTasks',
+          primary: 'Register every enabled, machine-scoped job with the live cron scheduler',
+          fallback: `Skip job "${job.slug}" while keeping the remaining schedules active`,
+          reason: `Invalid cron expression "${job.schedule}": ${err instanceof Error ? err.message : String(err)}`,
+          impact: `Job "${job.slug}" will not run on schedule until its cron expression is fixed`,
+        });
+      }
+    }
+
+    return scopedJobs;
+  }
+
+  /**
+   * Reload jobs from disk and resynchronize the live scheduler if the
+   * snapshot changed. Returns true when the loaded job set changed.
+   */
+  refreshJobs(): boolean {
+    if (!this.config.jobsFile?.trim()) {
+      return false;
+    }
+
+    // The FIRST load (start(), or a trigger before start) prints the loader's
+    // boot-time audits exactly as before. Every later reload — one per
+    // admission — is quiet: re-printing the same grounding/deprecation/problem
+    // lines on every trigger is noise, and NEW problems are reported below,
+    // once per transition, instead.
+    const firstLoad = this.jobsSignature === '';
+    const loaded = loadJobsDetailed(this.config.jobsFile, { quiet: !firstLoad });
+    const nextJobs = loaded.jobs;
+
+    // Disk is the truth for the MANIFEST (existence, enabled, schedule, …);
+    // the agentmd BODY is owned by refreshAgentMdBodyIfChanged() at the
+    // trigger boundary, which validates each edit, logs the reload once, and
+    // falls back to the last validated body on an unreadable/malformed file.
+    // Two reconciliations keep that ownership intact across a disk reload:
+    //
+    //  (1) A manifest whose body FAILED to load this pass (deleted, unreadable,
+    //      malformed frontmatter, oversize, symlinked) is rehydrated from the
+    //      current on-disk manifest + the LAST VALIDATED body, instead of the
+    //      job vanishing from the live set. `enabled` still comes from disk,
+    //      so a disable/removal is refused exactly as before; a job that never
+    //      had a validated body stays dropped (nothing to fall back to).
+    //  (2) A body that loaded fine but CHANGED keeps the previously validated
+    //      body here, so the manifest-level signature does not churn (and the
+    //      cron tasks are not rebuilt) on a prose edit; the trigger-boundary
+    //      refresh then adopts the new body for the run and logs the reload.
+    const previousBySlug = new Map(this.jobs.map((j) => [j.slug, j] as const));
+    for (const failure of loaded.bodyFailures) {
+      const previous = previousBySlug.get(failure.manifest.slug);
+      if (!previous) continue;
+      // The fallback is bound to the path the CURRENT manifest resolves to: a
+      // body validated from another path (an origin change on the same slug)
+      // is never carried, so the job stays dropped rather than running the
+      // old origin's file (Observer 2 re-review, Q2).
+      const rehydrated = rehydrateAgentMdJobFromLastValidatedBody(
+        failure.manifest,
+        previous,
+        failure.expectedPath,
+      );
+      if (rehydrated) nextJobs.push(rehydrated);
+    }
+    for (const next of nextJobs) {
+      if (next.execute.type !== 'agentmd' || typeof next.body !== 'string') continue;
+      const previous = previousBySlug.get(next.slug);
+      if (
+        previous &&
+        previous.execute.type === 'agentmd' &&
+        typeof previous.body === 'string' &&
+        previous.resolvedPath === next.resolvedPath &&
+        previous.body !== next.body
+      ) {
+        next.body = previous.body;
+      }
+    }
+
+    // Report EVERY loader diagnostic the quiet reload suppressed — invalid or
+    // skipped legacy entries, a missing jobs file, legacy-shadowing, the
+    // grounding and deprecation audits, agentmd problems — once per
+    // TRANSITION (fingerprint = level + exact line), never once per trigger;
+    // a diagnostic that clears and later recurs is reported again. Body-class
+    // agentmd problems are the one exclusion: the trigger-boundary body
+    // refresh already warns about those, deduped by disk state, so a second
+    // line would be a duplicate.
+    if (!firstLoad) {
+      const bodyProblemLines = new Set(loaded.bodyFailures.map((f) => formatLoadProblem(f.problem)));
+      const seen = new Set<string>();
+      for (const d of loaded.diagnostics) {
+        if (bodyProblemLines.has(d.message)) continue;
+        const fingerprint = `${d.level}|${d.message}`;
+        seen.add(fingerprint);
+        if (this.reportedLoadProblems.has(fingerprint)) continue;
+        this.reportedLoadProblems.add(fingerprint);
+        if (d.level === 'error') console.error(d.message);
+        else console.warn(d.message);
+      }
+      for (const fingerprint of this.reportedLoadProblems) {
+        if (!seen.has(fingerprint)) this.reportedLoadProblems.delete(fingerprint);
+      }
+    }
+
+    const nextSignature = JobScheduler.signatureForJobs(nextJobs);
+    if (nextSignature === this.jobsSignature) {
+      return false;
+    }
+
+    this.jobs = nextJobs;
+    this.jobsSignature = nextSignature;
+
+    if (this.running) {
+      const enabledJobs = this.rebuildCronTasks();
+      if (this.telegram) {
+        this.ensureJobTopics(enabledJobs).catch(err => {
+          console.error(`[scheduler] Failed to ensure job topics (refresh): ${err}`);
+          DegradationReporter.getInstance().report({
+            feature: 'JobScheduler.refreshJobs',
+            primary: 'Synchronize Telegram topics after reloading the live job set',
+            fallback: 'Keep the refreshed schedules active with job topics potentially missing or stale',
+            reason: `Job-topic synchronization failed after refresh: ${err instanceof Error ? err.message : String(err)}`,
+            impact: 'Refreshed jobs can run, but their Telegram topic may be unavailable or out of date',
+          });
+        });
+      }
+    }
+
+    return true;
   }
 
   /**
@@ -418,70 +627,11 @@ export class JobScheduler {
   start(): void {
     if (this.running) return;
 
-    this.jobs = loadJobs(this.config.jobsFile);
+    this.refreshJobs();
     this.running = true;
-
-    // Phase 1b: agentmd entries now flow through the dispatch path
-    // alongside legacy entries. The Phase 1a defensive filter on
-    // execute.type === 'agentmd' has been removed; buildPrompt's
-    // 'agentmd' case returns the last validated body (refreshed from disk at
-    // each trigger boundary), and spawnJobSession
-    // threads the per-job tool allowlist into the spawn call.
+    const scopedJobs = this.rebuildCronTasks();
     const enabledJobs = this.jobs.filter(j => j.enabled);
-
-    // Machine-scoped filtering — skip jobs not targeted at this machine
-    const scopedJobs = enabledJobs.filter(j => this.isJobScopedToThisMachine(j));
     const skippedByScope = enabledJobs.length - scopedJobs.length;
-    if (skippedByScope > 0) {
-      const skippedNames = enabledJobs
-        .filter(j => !this.isJobScopedToThisMachine(j))
-        .map(j => j.slug);
-      console.log(`[scheduler] ${skippedByScope} job(s) skipped (machine scope): ${skippedNames.join(', ')}`);
-    }
-
-    for (const job of scopedJobs) {
-      try {
-        const task = new Cron(job.schedule, async () => {
-          // New cron window — reset retry state so we get fresh attempts
-          this.clearRetryState(job.slug);
-          try {
-            await this.triggerJob(job.slug, 'scheduled');
-          } catch (err) {
-            // Cron callbacks are a process-lifetime boundary. A lease demotion
-            // can race the pre-trigger read-only check and make a later shared
-            // bookkeeping write throw; contain that refusal (and every other
-            // trigger failure) here rather than creating an unhandled rejection
-            // that terminates the server.
-            console.error(`[scheduler] Scheduled trigger failed for "${job.slug}": ${err}`);
-          }
-        });
-        this.cronTasks.set(job.slug, task);
-
-        // Stamp when this job STARTED EXISTING, once. The startup missed-job
-        // sweep needs it to tell "brand-new, its window simply hasn't come yet"
-        // apart from "has been sitting here unrun through window after window".
-        // Without it the sweep could only see "no lastRun" and fired both alike
-        // (ACT-724 defect (a)). Never overwritten, so the age is real.
-        const existing = this.state.getJobState(job.slug);
-        if (!existing?.firstSeenAt) {
-          try {
-            this.state.saveJobState({
-              slug: job.slug,
-              consecutiveFailures: 0,
-              ...(existing ?? {}),
-              firstSeenAt: new Date().toISOString(),
-            });
-          } catch (err) {
-            // A bookkeeping write must never stop the scheduler from starting.
-            // Missing firstSeenAt degrades SAFE: the sweep declines to treat the
-            // job as missed (see checkMissedJobs) rather than firing it blind.
-            console.error(`[scheduler] Could not stamp firstSeenAt for "${job.slug}": ${err}`);
-          }
-        }
-      } catch (err) {
-        console.error(`[scheduler] Invalid cron expression for job "${job.slug}": ${job.schedule} — ${err instanceof Error ? err.message : err}`);
-      }
-    }
 
     // Check for missed jobs — any enabled job overdue by >1.5x its interval.
     // Delay the first evaluation by startupGraceMs (default 5s) so the HTTP
@@ -490,7 +640,9 @@ export class JobScheduler {
     const graceMs = this.config.startupGraceMs ?? 5000;
     if (graceMs > 0) {
       console.log(`[scheduler] Startup grace period: ${graceMs}ms before missed-job evaluation`);
-      setTimeout(() => {
+      this.missedJobStartupTimer = setTimeout(() => {
+        this.missedJobStartupTimer = null;
+        if (!this.running) return;
         this.checkMissedJobs(scopedJobs).catch((err) => {
           console.error(`[scheduler] Missed-job startup evaluation failed: ${err}`);
         });
@@ -531,6 +683,10 @@ export class JobScheduler {
       task.stop();
     }
     this.cronTasks.clear();
+    if (this.missedJobStartupTimer) {
+      clearTimeout(this.missedJobStartupTimer);
+      this.missedJobStartupTimer = null;
+    }
     this.queue = [];
     // Clear all retry timers
     for (const [, state] of this.retryState) {
@@ -553,9 +709,42 @@ export class JobScheduler {
    * Trigger a job by slug. Checks claims, quota, session limits, queues if at capacity.
    */
   async triggerJob(slug: string, reason: string): Promise<'triggered' | 'queued' | 'skipped'> {
+    try {
+      this.refreshJobs();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scheduler] Refusing job "${slug}" — failed to reload jobs before admission: ${message}`);
+      this.skipLedger.recordSkip(slug, 'disabled');
+      this.state.appendEvent({
+        type: 'job_skipped',
+        summary: `Job "${slug}" refused — failed to reload the live job set`,
+        timestamp: new Date().toISOString(),
+        metadata: { slug, reason, gateReason: 'reload-failed', error: message },
+      });
+      return 'skipped';
+    }
+
     const job = this.jobs.find(j => j.slug === slug);
     if (!job) {
-      throw new Error(`Unknown job: ${slug}`);
+      this.skipLedger.recordSkip(slug, 'disabled');
+      this.state.appendEvent({
+        type: 'job_skipped',
+        summary: `Job "${slug}" refused — no longer present in the live job set`,
+        timestamp: new Date().toISOString(),
+        metadata: { slug, reason, gateReason: 'job-missing' },
+      });
+      return 'skipped';
+    }
+
+    if (!job.enabled) {
+      this.skipLedger.recordSkip(slug, 'disabled');
+      this.state.appendEvent({
+        type: 'job_skipped',
+        summary: `Job "${slug}" refused — disabled in the live job set`,
+        timestamp: new Date().toISOString(),
+        metadata: { slug, reason, gateReason: 'disabled' },
+      });
+      return 'skipped';
     }
 
     this.refreshAgentMdBodyIfChanged(job);
@@ -808,6 +997,13 @@ export class JobScheduler {
   processQueue(): void {
     if (this.paused || this.queue.length === 0) return;
 
+    try {
+      this.refreshJobs();
+    } catch (err) {
+      console.error(`[scheduler] Refusing queue drain — failed to reload jobs before admission: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
     const runningSessions = this.sessionManager.listRunningSessions();
     const jobSessions = runningSessions.filter(s => s.jobSlug);
     if (jobSessions.length >= this.config.maxParallelJobs) return;
@@ -816,7 +1012,32 @@ export class JobScheduler {
     if (!next) return;
 
     const job = this.jobs.find(j => j.slug === next.slug);
-    if (!job) return;
+    if (!job) {
+      this.skipLedger.recordSkip(next.slug, 'disabled');
+      this.state.appendEvent({
+        type: 'job_skipped',
+        summary: `Job "${next.slug}" skipped — no longer present in the live job set`,
+        timestamp: new Date().toISOString(),
+        metadata: { slug: next.slug, reason: next.reason, gateReason: 'job-missing' },
+      });
+      return;
+    }
+
+    if (!job.enabled) {
+      this.skipLedger.recordSkip(next.slug, 'disabled');
+      this.state.appendEvent({
+        type: 'job_skipped',
+        summary: `Job "${next.slug}" skipped — disabled in the live job set`,
+        timestamp: new Date().toISOString(),
+        metadata: { slug: next.slug, reason: next.reason, gateReason: 'disabled' },
+      });
+      return;
+    }
+
+    // Same trigger-boundary body ownership as triggerJob(): a valid edit made
+    // while the job sat in the queue takes effect on this run; an
+    // unreadable/malformed file falls back to the last validated body.
+    this.refreshAgentMdBodyIfChanged(job);
 
     const queueGate = this.normalizeCanRunResult(this.canRunJob(job.priority));
     if (!queueGate.allowed) {
@@ -997,6 +1218,17 @@ export class JobScheduler {
         // Best-effort — session may already be dead.
       }
 
+      const existingState = this.state.getJobState(run.slug);
+      const jobState: JobState = {
+        slug: run.slug,
+        lastRun: existingState?.lastRun ?? run.startedAt,
+        lastResult: 'timeout',
+        lastError: `Reaped on wake — effective elapsed ${Math.round(effectiveElapsed / 60_000)}m (cumulative sleep ${Math.round(cumulativeSleepMs / 60_000)}m subtracted) exceeded ${expMin}min × ${multiplier} threshold`,
+        consecutiveFailures: (existingState?.consecutiveFailures ?? 0) + 1,
+        nextScheduled: this.getNextRun(run.slug),
+      };
+      this.state.saveJobState(jobState);
+
       try {
         this.runHistory.recordCompletion({
           runId,
@@ -1167,7 +1399,10 @@ export class JobScheduler {
       const rawOutput = [stdout, stderr].filter(Boolean).join('\n');
       const output = rawOutput.slice(-1000);
       const lastAssessment = parseInstrumentAssessment(rawOutput) ?? undefined;
-      this.runHistory.recordCompletion({ runId, result: 'success', outputSummary: output || undefined });
+      // Charter clause 1(c): durable job state is saved BEFORE the run-history
+      // completion is recorded, matching the model-session and wake-reaper paths.
+      // A crash between the two must never leave a completed run pointing at
+      // stale job state.
       this.state.saveJobState({
         slug: job.slug,
         lastRun: new Date().toISOString(),
@@ -1177,6 +1412,7 @@ export class JobScheduler {
         consecutiveFailures: 0,
         nextScheduled: this.getNextRun(job.slug),
       });
+      this.runHistory.recordCompletion({ runId, result: 'success', outputSummary: output || undefined });
       this.clearFailureAlertState(job.slug);
       this.releaseClaim(job.slug, 'success');
     }).catch((err: unknown) => {
@@ -1188,9 +1424,10 @@ export class JobScheduler {
       const output = rawOutput.slice(-1000);
       const lastAssessment = parseInstrumentAssessment(rawOutput) ?? undefined;
       const result = errorMsg.includes('timed out') || errorMsg.includes('ETIMEDOUT') ? 'timeout' : 'failure';
-      this.runHistory.recordCompletion({ runId, result, error: errorMsg, outputSummary: output || undefined });
       const previous = this.state.getJobState(job.slug);
       const consecutiveFailures = (previous?.consecutiveFailures ?? 0) + 1;
+      // Charter clause 1(c): durable job state first, then the run-history record.
+      // `consecutiveFailures` is still read from the PRE-save state above.
       this.state.saveJobState({
         slug: job.slug,
         lastRun: new Date().toISOString(),
@@ -1200,6 +1437,7 @@ export class JobScheduler {
         consecutiveFailures,
         nextScheduled: this.getNextRun(job.slug),
       });
+      this.runHistory.recordCompletion({ runId, result, error: errorMsg, outputSummary: output || undefined });
       void this.alertOnConsecutiveFailures(job, consecutiveFailures, errorMsg);
       this.releaseClaim(job.slug, 'failure');
       this.scheduleRetry(job.slug, 'error');
@@ -1340,7 +1578,13 @@ export class JobScheduler {
         type: 'job_error',
         summary: `Job "${job.slug}" failed to spawn: ${errorMsg}`,
         timestamp: new Date().toISOString(),
-        metadata: { slug: job.slug, consecutiveFailures: failures },
+        metadata: {
+          slug: job.slug,
+          consecutiveFailures: failures,
+          error: errorMsg,
+          terminal: true,
+          retry: 'next-trigger',
+        },
       });
 
       void this.alertOnConsecutiveFailures(job, failures, errorMsg);
@@ -1533,6 +1777,17 @@ export class JobScheduler {
       // Session may already be dead — that's fine
     }
 
+    const existingState = this.state.getJobState(job.slug);
+    const jobState: JobState = {
+      slug: job.slug,
+      lastRun: existingState?.lastRun ?? new Date().toISOString(),
+      lastResult: failed ? 'failure' : 'success',
+      lastError: failed ? `Session ${session.status} (${session.name})` : undefined,
+      consecutiveFailures: failed ? (existingState?.consecutiveFailures ?? 0) + 1 : 0,
+      nextScheduled: this.getNextRun(job.slug),
+    };
+    this.state.saveJobState(jobState);
+
     // Record completion in run history (with output summary)
     const runId = this.activeRunIds.get(session.name);
     if (runId) {
@@ -1561,16 +1816,6 @@ export class JobScheduler {
     if (activeJob?.slug === job.slug) {
       this.state.delete('active-job');
     }
-    const existingState = this.state.getJobState(job.slug);
-    const jobState: JobState = {
-      slug: job.slug,
-      lastRun: existingState?.lastRun ?? new Date().toISOString(),
-      lastResult: failed ? 'failure' : 'success',
-      lastError: failed ? `Session ${session.status} (${session.name})` : undefined,
-      consecutiveFailures: failed ? (existingState?.consecutiveFailures ?? 0) + 1 : 0,
-      nextScheduled: this.getNextRun(job.slug),
-    };
-    this.state.saveJobState(jobState);
 
     if (!failed) {
       this.clearFailureAlertState(job.slug);

@@ -35,9 +35,19 @@ vi.mock('croner', () => ({
   Cron: vi.fn().mockImplementation(() => ({ stop: vi.fn() })),
 }));
 
-vi.mock('../../src/scheduler/JobLoader.js', () => ({
-  loadJobs: vi.fn().mockReturnValue([]),
-}));
+vi.mock('../../src/scheduler/JobLoader.js', () => {
+  const loadJobs = vi.fn().mockReturnValue([]);
+  return {
+    loadJobs,
+    // The scheduler's trigger-boundary reload uses the detailed loader; keep
+    // the mock derived from `loadJobs` so a mocked return value still steers
+    // what the scheduler sees.
+    loadJobsDetailed: vi.fn((jobsFile: string) => ({
+      jobs: loadJobs(jobsFile), problems: [], bodyFailures: [], diagnostics: [],
+    })),
+    formatLoadProblem: vi.fn((p: { message: string }) => p.message),
+  };
+});
 
 describe('server Telegram send-side composition', () => {
   let tmpDir: string;

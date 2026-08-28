@@ -23,7 +23,7 @@ function deps(fetchImpl: typeof fetch) {
 describe('relayOutbound — kind metadata survives the hop', () => {
   it('forwards metadata in the holder POST body', async () => {
     const fetchImpl = vi.fn(async () =>
-      new Response(JSON.stringify({ ok: true, messageId: 9 }), { status: 200 }),
+      new Response(JSON.stringify({ ok: true, messageId: 9, destinationStoreConfirmed: true }), { status: 200 }),
     ) as unknown as typeof fetch;
 
     const kindMetadata = {
@@ -34,7 +34,7 @@ describe('relayOutbound — kind metadata survives the hop', () => {
       advisoryCodes: ['RAW_FILE_PATH'],
     };
     const result = await relayOutbound(12476, 'queued reminder', { kindMetadata }, deps(fetchImpl));
-    expect(result).toEqual({ messageId: 9, topicId: 12476 });
+    expect(result).toEqual({ messageId: 9, topicId: 12476, destinationStoreConfirmed: true });
 
     const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse((init as RequestInit).body as string);
@@ -44,7 +44,7 @@ describe('relayOutbound — kind metadata survives the hop', () => {
 
   it('no metadata → identical legacy body (no metadata key)', async () => {
     const fetchImpl = vi.fn(async () =>
-      new Response(JSON.stringify({ ok: true, messageId: 3 }), { status: 200 }),
+      new Response(JSON.stringify({ ok: true, messageId: 3, destinationStoreConfirmed: true }), { status: 200 }),
     ) as unknown as typeof fetch;
 
     await relayOutbound(12476, 'plain reply', undefined, deps(fetchImpl));
@@ -54,13 +54,27 @@ describe('relayOutbound — kind metadata survives the hop', () => {
   });
 
   it('carries structural provenance independently of message kind', async () => {
+    // The holder MUST confirm the destination store: without
+    // `destinationStoreConfirmed: true` relayOutbound returns null, and a
+    // body-only assertion would pass while proving no delivery at all.
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true, messageId: 4, destinationStoreConfirmed: true }), { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    const result = await relayOutbound(12476, 'direct adapter alert', { provenance: 'automation' }, deps(fetchImpl));
+    expect(result).toEqual({ messageId: 4, topicId: 12476, destinationStoreConfirmed: true });
+
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.metadata).toEqual({ provenance: 'automation' });
+  });
+
+  it('returns null when the holder does NOT confirm the destination store', async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ ok: true, messageId: 4 }), { status: 200 }),
     ) as unknown as typeof fetch;
 
-    await relayOutbound(12476, 'direct adapter alert', { provenance: 'automation' }, deps(fetchImpl));
-    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0];
-    const body = JSON.parse((init as RequestInit).body as string);
-    expect(body.metadata).toEqual({ provenance: 'automation' });
+    const result = await relayOutbound(12476, 'unconfirmed alert', { provenance: 'automation' }, deps(fetchImpl));
+    expect(result).toBeNull();
   });
 });

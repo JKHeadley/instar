@@ -219,9 +219,15 @@ vi.mock('croner', () => ({
 
 vi.mock('../../src/scheduler/JobLoader.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/scheduler/JobLoader.js')>();
+  const loadJobs = vi.fn().mockReturnValue([]);
   return {
     ...actual,
-    loadJobs: vi.fn().mockReturnValue([]),
+    loadJobs,
+    // Keep the detailed loader (used by the scheduler's trigger-boundary
+    // reload) derived from the mocked `loadJobs`.
+    loadJobsDetailed: vi.fn((jobsFile: string) => ({
+      jobs: loadJobs(jobsFile), problems: [], bodyFailures: [], diagnostics: [],
+    })),
   };
 });
 
