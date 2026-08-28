@@ -100,6 +100,7 @@ rollback are complete; no ship-blocking concern was found.
 - Profile/dashboard extension: 165 focused tests passed.
 - Final authoritative three-tier gate after the extension: 50,265 unit + 4,061 integration + 3,110 E2E = 57,436 tests passed, zero failures.
 - Build and static preflight passed. CI/deployment/disposable live-canary evidence remains release-blocking.
+- CI portability repair: Chrome discovery now covers macOS and Linux paths; the real-process integration runs when Chrome exists and explicitly skips on browserless runners instead of treating CI inventory as a product failure.
 
 ## Class-Closure Declaration (display-only mirror)
 

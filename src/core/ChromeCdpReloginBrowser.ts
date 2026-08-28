@@ -16,6 +16,20 @@ export interface ChromeCdpReloginBrowserOptions {
   operationTimeoutMs?: number;
 }
 
+const CHROME_EXECUTABLE_CANDIDATES = [
+  process.env.CHROME_PATH,
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Chromium.app/Contents/MacOS/Chromium',
+  '/usr/bin/google-chrome-stable',
+  '/usr/bin/google-chrome',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+].filter((candidate): candidate is string => Boolean(candidate));
+
+export function resolveChromeExecutable(): string | null {
+  return CHROME_EXECUTABLE_CANDIDATES.find((candidate) => fs.existsSync(candidate)) ?? null;
+}
+
 interface CdpResponse { id?: number; result?: Record<string, unknown>; error?: { message?: string } }
 
 /**
@@ -35,7 +49,8 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
   private pending = new Map<number, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
 
   constructor(options: ChromeCdpReloginBrowserOptions) {
-    this.chromePath = options.chromePath ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    this.chromePath = options.chromePath ?? resolveChromeExecutable()
+      ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
     this.userDataDir = path.resolve(options.userDataDir);
     this.headless = options.headless ?? false;
     this.launchTimeoutMs = Math.max(1_000, Math.min(30_000, options.launchTimeoutMs ?? 10_000));

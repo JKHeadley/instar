@@ -4,7 +4,7 @@
   "sessionId": "837370b6-ed54-4cef-bc23-4915d7374189",
   "timestamp": "2026-08-28T18:27:56.866Z",
   "artifactPath": "upgrades/side-effects/assisted-subscription-relogin.md",
-  "artifactSha256": "3e4c8700764ad18f71f0aa4e0e72e27c106d69c29d23fed780f7a6cb8bc0fdea",
+  "artifactSha256": "a50f1d37fa2e19baa873b000585e51630e8c62bb30425b795685625344954789",
   "specPath": "docs/specs/assisted-subscription-relogin.md",
   "coveredFiles": [
     "src/commands/server.ts",

@@ -2,7 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ChromeCdpReloginBrowser } from '../../src/core/ChromeCdpReloginBrowser.js';
+import {
+  ChromeCdpReloginBrowser,
+  resolveChromeExecutable,
+} from '../../src/core/ChromeCdpReloginBrowser.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const dirs: string[] = [];
@@ -13,7 +16,7 @@ afterEach(() => {
 });
 
 describe('ChromeCdpReloginBrowser real process', () => {
-  it('launches isolated Chrome, returns closed page state, fills, clicks, and closes', async () => {
+  it.skipIf(resolveChromeExecutable() === null)('launches isolated Chrome, returns closed page state, fills, clicks, and closes', async () => {
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'relogin-chrome-profile-'));
     dirs.push(profile);
     const browser = new ChromeCdpReloginBrowser({ userDataDir: profile, headless: true });
