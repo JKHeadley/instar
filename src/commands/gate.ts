@@ -18,6 +18,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import pc from 'picocolors';
+import { evaluateBetweenWindowAdmission } from '../core/BetweenWindowAdmissionGate.js';
 
 type GateMode = 'off' | 'shadow' | 'enforce';
 
@@ -245,5 +246,55 @@ export async function gateLog(opts: { tail?: string; dir?: string }): Promise<vo
     if (ev.reasonPreview) {
       console.log(pc.gray(`    ${ev.reasonPreview.slice(0, 120)}`));
     }
+  }
+}
+
+// ── `instar gate between-window --package <file>` ───────────────────
+
+export async function gateBetweenWindowAdmission(opts: {
+  package: string;
+  dir?: string;
+  store?: string;
+  json?: boolean;
+}): Promise<void> {
+  if (!opts.package) {
+    console.error(pc.red('--package is required'));
+    process.exit(1);
+  }
+
+  const projectDir = opts.dir ? path.resolve(opts.dir) : process.cwd();
+  const stateDir = path.join(projectDir, '.instar');
+  const packagePath = path.resolve(opts.package);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(packagePath, 'utf-8'));
+  } catch (err) {
+    console.error(pc.red(`between-window admission package unreadable: ${err instanceof Error ? err.message : String(err)}`));
+    process.exit(1);
+  }
+
+  const result = evaluateBetweenWindowAdmission({
+    stateDir,
+    package: parsed,
+    storePath: opts.store,
+  });
+
+  if (opts.json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else if (result.admitted) {
+    console.log(pc.green('between-window admission: PASS'));
+    console.log(`  full-history receipts: ${result.checked.fullHistoryReceipts}`);
+    console.log(`  tenet receipts:        ${result.checked.tenetReceipts}`);
+    console.log(`  corpus mismatches:     ${result.corpusMismatches.length} surfaced`);
+  } else {
+    console.log(pc.red('between-window admission: REFUSE'));
+    for (const issue of result.issues) {
+      console.log(`  ${issue.code} ${issue.path}: ${issue.message}`);
+    }
+  }
+
+  if (!result.admitted) {
+    process.exit(1);
   }
 }

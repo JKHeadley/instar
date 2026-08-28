@@ -60,6 +60,8 @@ export interface MockSessionManager {
   killSession: (sessionId: string) => boolean;
   captureOutput: (tmuxSession: string, lines?: number) => string | null;
   sendInput: (tmuxSession: string, input: string) => boolean;
+  on: (event: string, listener: (...args: unknown[]) => void) => MockSessionManager;
+  getProtectedSessions: () => string[];
 
   // Test controls
   _sessions: Session[];
@@ -115,6 +117,10 @@ export function createMockSessionManager(): MockSessionManager {
     captureOutput: () => 'mock output',
 
     sendInput: (tmuxSession: string) => mock._aliveSet.has(tmuxSession),
+
+    on: () => mock,
+
+    getProtectedSessions: () => [],
   };
 
   return mock;

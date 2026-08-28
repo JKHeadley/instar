@@ -160,6 +160,7 @@ import {
 import { GUARD_MANIFEST } from '../monitoring/guardManifest.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
+import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding } from './sessionSpawnTopicBinding.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { decorateWithRopeCondition } from './poolRopeCondition.js';
 // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
@@ -229,6 +230,7 @@ import {
 import { dashboardRefreshFailure } from './DashboardRefreshDiagnostics.js';
 import { KNOWN_GEMINI_MODELS } from '../providers/adapters/gemini-cli/models.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
+import { evaluateBetweenWindowAdmission } from '../core/BetweenWindowAdmissionGate.js';
 
 const execFile = promisify(execFileCb);
 
@@ -2286,6 +2288,17 @@ export function createRoutes(ctx: RouteContext): Router {
     }
     return false;
   };
+
+  // @write-domain:none — pure evaluation: reads the 43003/reaffirmation stores
+  // under stateDir and answers admitted/refused; it persists nothing
+  // (standby-write-reconciliation §3.5 declaration, W27 Observer 2 finding B).
+  router.post('/gate/between-window-admission', (req, res) => {
+    const result = evaluateBetweenWindowAdmission({
+      stateDir: ctx.config.stateDir,
+      package: req.body,
+    });
+    return res.status(result.admitted ? 200 : 409).json(result);
+  });
 
   // Content-hash dedup for the agent-to-agent relay-agent ingress path. Guards
   // the duplicate-reply bug where a sender that times out on the receiver's
@@ -9876,7 +9889,7 @@ export function createRoutes(ctx: RouteContext): Router {
   // Default: 10 spawns per 60 seconds, which is generous for normal use.
   const spawnLimiter = rateLimiter(60_000, 10);
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
-    const { name, prompt, model, jobSlug, framework, ultracode } = req.body;
+    const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole } = req.body;
 
     if (!name || !prompt) {
       res.status(400).json({ error: '"name" and "prompt" are required' });
@@ -9963,9 +9976,36 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    const topicBindingResult = resolveSessionSpawnTopicBinding({ name, topicId, topicName, requireTopicBinding, spawnRole });
+    if (!topicBindingResult.ok) {
+      res.status(400).json({ error: topicBindingResult.error });
+      return;
+    }
+    const parsedTopicId = topicBindingResult.binding.topicId;
+    const cleanTopicName = topicBindingResult.binding.topicName;
+
+    const persistTopicBinding = (boundTopicId: number, tmuxSession: string): void => {
+      if (ctx.telegram?.registerTopicSession) {
+        ctx.telegram.registerTopicSession(boundTopicId, tmuxSession, cleanTopicName);
+        return;
+      }
+      persistDiskTopicSessionBinding({
+        stateDir: ctx.config.stateDir,
+        topicId: boundTopicId,
+        tmuxSession,
+        topicName: cleanTopicName,
+      });
+    };
+
     try {
-      const session = await ctx.sessionManager.spawnSession({ name, prompt, model, jobSlug, framework, ultracode });
-      res.status(201).json(session);
+      const session = await ctx.sessionManager.spawnSession({ name, prompt, model, jobSlug, framework, ultracode, topicId: parsedTopicId });
+      if (parsedTopicId !== undefined) {
+        persistTopicBinding(parsedTopicId, session.tmuxSession);
+      }
+      res.status(201).json({
+        ...session,
+        ...(parsedTopicId !== undefined ? { topicId: parsedTopicId, topicBound: true } : {}),
+      });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -14748,6 +14788,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
     try {
       const result = await ctx.scheduler.triggerJob(req.params.slug, reason);
+      if (result === 'skipped') {
+        res.status(409).json({ slug: req.params.slug, result, error: 'Job admission refused by live scheduler' });
+        return;
+      }
       res.json({ slug: req.params.slug, result });
     } catch (err) {
       res.status(404).json({ error: err instanceof Error ? err.message : String(err) });
@@ -14811,6 +14855,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
       const result = await ctx.scheduler.triggerJob(slug, 'dashboard-manual');
       const runId = `manual-${slug}-${Date.now().toString(36)}`;
+      if (result === 'skipped') {
+        manualTriggerConcurrent = Math.max(0, manualTriggerConcurrent - 1);
+        manualTriggerLastRun.delete(slug);
+        res.status(409).json({ error: 'Job admission refused by live scheduler', runId, result });
+        return;
+      }
 
       // Decrement concurrent counter after a reasonable time
       // (the job itself is tracked by the scheduler, this just gates manual triggers)
@@ -14884,6 +14934,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     } catch (err) {
       res.status(500).json({ error: `Failed to update job config: ${err instanceof Error ? err.message : String(err)}` });
+      return;
+    }
+
+    try {
+      ctx.scheduler.refreshJobs();
+    } catch (err) {
+      res.status(500).json({ error: `Updated ${slug} on disk, but failed to refresh the live scheduler: ${err instanceof Error ? err.message : String(err)}` });
+      return;
+    }
+
+    const liveJob = ctx.scheduler.getJobs().find(j => j.slug === slug);
+    if (!liveJob || liveJob.enabled !== body.enabled) {
+      res.status(500).json({
+        error: `Updated ${slug} on disk, but the live scheduler still reports enabled=${liveJob?.enabled ?? 'missing'} instead of ${body.enabled}`,
+      });
       return;
     }
 
@@ -15745,6 +15810,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (!isProxy) {
         ctx.sessionManager.clearInjectionTracker(topicId);
       }
+      let destinationStoreConfirmed = false;
+      try {
+        const history = ctx.telegram.getTopicHistory?.(topicId, 20) ?? [];
+        destinationStoreConfirmed = history.some((m) =>
+          m.messageId === sendResult?.messageId &&
+          m.topicId === topicId &&
+          m.fromUser === false
+        );
+      } catch {
+        destinationStoreConfirmed = false;
+      }
       // ── Usher precision, path (a): the agent's genuine reply just went out. If
       // it actually USED a faded context the Usher re-surfaced for this topic,
       // mark that signal acted — the precision numerator that gates rung-5
@@ -15819,7 +15895,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           /* @silent-fallback-ok — §2.4(5) acked-audit is observe-only; never affects delivery */
         }
       }
-      res.json({ ok: true, topicId, messageId: sendResult?.messageId });
+      res.json({ ok: true, topicId, messageId: sendResult?.messageId, destinationStoreConfirmed });
     } catch (err) {
       // The send failed → release the in-flight reservation so the legitimate
       // retry of this exact text is not wrongly suppressed as a duplicate. Safe

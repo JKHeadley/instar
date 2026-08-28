@@ -120,17 +120,21 @@ async function appendUnmatched(writer: AuditWriter, n: number, overrides?: Parti
 
 describe('NovelFailureReviewer (Tier-3 S-1)', () => {
   let tmpDirs: string[] = [];
+  let projections: AuditProjection[] = [];
 
   beforeEach(() => {
     tmpDirs = [];
+    projections = [];
   });
 
   afterEach(() => {
+    for (const projection of projections) projection.close();
     for (const d of tmpDirs) cleanup(d);
   });
 
-  function track<T extends { tmpDir: string }>(s: T): T {
+  function track<T extends { tmpDir: string; projection?: AuditProjection }>(s: T): T {
     tmpDirs.push(s.tmpDir);
+    if (s.projection) projections.push(s.projection);
     return s;
   }
 
@@ -688,6 +692,7 @@ describe('NovelFailureReviewer (Tier-3 S-1)', () => {
     tmpDirs.push(tmpDir);
     const vault = await RemediationKeyVault.forStateDir(tmpDir, envOpts());
     const projection = new AuditProjection(tmpDir, { machineId: 'm-test' });
+    projections.push(projection);
     expect(
       () =>
         new NovelFailureReviewer({

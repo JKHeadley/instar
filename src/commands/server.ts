@@ -2831,6 +2831,11 @@ export function wireTelegramRouting(
           // metadata, never from `content` — content cannot forge it.
           { reDelivered: msg.metadata?.replay === true },
         );
+        if (injected === false) {
+          console.error(`[telegram→session] Injection FAILED for topic ${topicId} into ${targetSession}; not sending delivery confirmation`);
+          telegram.sendToTopic(topicId, `❌ Message could not be delivered to the session. Try sending it again in a moment.`).catch(() => {});
+          return;
+        }
         if (injected) confirmLocalSessionPoolClaim();
         // Delivery confirmation — only when WE own polling. When lifeline owns
         // polling (--no-telegram / standby), it already sends its own confirmation.
@@ -3049,10 +3054,13 @@ export function wireTelegramRouting(
       if (!handover.commitReceipt()) return { kind: 'handover-refused' };
       if (handover.stopRecheck()) return { kind: 'stopped-before-inject' };
       try {
-        sessionManager.injectTelegramMessage(
+        const injected = sessionManager.injectTelegramMessage(
           targetSession, topicId, dmsg.payload, topicName, senderFirstName, senderUserId,
           Number(dmsg.messageId.replace(/^\D*/, '')) || undefined,
         );
+        if (injected === false) {
+          return { kind: 'local-delivered', injectError: 'inject-returned-false' };
+        }
         telegram.trackMessageInjection(topicId, targetSession, dmsg.payload);
         // 1s inter-inject pacing for same-session runs (§3.1, pinned round-6).
         await new Promise((r) => setTimeout(r, 1000));
@@ -22045,7 +22053,11 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // flip the receipt's injected marker on success; a CAUGHT
                 // failure reports at error time — never silent.
                 try {
-                  sessionManager.injectTelegramMessage(existing, topicId, text, tg.getTopicName?.(topicId) ?? undefined);
+                  const injected = sessionManager.injectTelegramMessage(existing, topicId, text, tg.getTopicName?.(topicId) ?? undefined);
+                  if (injected === false) {
+                    _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, 'inject-returned-false');
+                    return;
+                  }
                   tg.trackMessageInjection(topicId, existing, text);
                   _inboundQueue?.markRemoteInjected(cmd.session, cmd.messageId);
                 } catch (err) {

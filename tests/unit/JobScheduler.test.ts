@@ -3,6 +3,9 @@ import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { createTempProject, createMockSessionManager, createSampleJobsFile } from '../helpers/setup.js';
 import type { TempProject, MockSessionManager } from '../helpers/setup.js';
 import type { JobSchedulerConfig, JobDefinition } from '../../src/core/types.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { buildSyntheticAgent, mkAgentMd, mkManifest } from './scheduler/agentmd-helpers.js';
 
 describe('JobScheduler', () => {
   let project: TempProject;
@@ -90,12 +93,13 @@ describe('JobScheduler', () => {
       expect(mockSM._spawnCount).toBe(1);
     });
 
-    it('throws for unknown job', async () => {
+    it('refuses unknown job', async () => {
       createScheduler();
       scheduler.start();
 
-      await expect(scheduler.triggerJob('nonexistent', 'test'))
-        .rejects.toThrow('Unknown job: nonexistent');
+      const result = await scheduler.triggerJob('nonexistent', 'test');
+      expect(result).toBe('skipped');
+      expect(mockSM._spawnCount).toBe(0);
     });
 
     it('queues when at max parallel jobs', async () => {
@@ -131,6 +135,107 @@ describe('JobScheduler', () => {
       const result = await scheduler.triggerJob('health-check', 'test');
       expect(result).toBe('skipped');
       expect(mockSM._spawnCount).toBe(0);
+    });
+
+    it('re-reads a changed job body from disk without restarting', async () => {
+      jobsFile = createSampleJobsFile(project.stateDir, [
+        {
+          slug: 'health-check',
+          name: 'Health Check',
+          description: 'Live body refresh test',
+          schedule: '0 * * * *',
+          priority: 'medium',
+          expectedDurationMinutes: 5,
+          model: 'haiku',
+          enabled: true,
+          execute: { type: 'prompt', value: 'original body' },
+        },
+      ]);
+      createScheduler();
+      scheduler.start();
+
+      await scheduler.triggerJob('health-check', 'test');
+      await new Promise(r => setTimeout(r, 50));
+      expect(mockSM._lastSpawnArgs?.prompt).toContain('original body');
+
+      const jobs = JSON.parse(fs.readFileSync(jobsFile, 'utf-8')) as Array<Record<string, unknown>>;
+      (jobs[0].execute as { value: string }).value = 'updated body';
+      fs.writeFileSync(jobsFile, JSON.stringify(jobs, null, 2));
+      scheduler.refreshJobs();
+      expect(scheduler.getJobs().find(j => j.slug === 'health-check')?.execute.value).toBe('updated body');
+    });
+
+    it('re-reads a changed agentmd body from disk on the next admission without restarting', async () => {
+      const agent = buildSyntheticAgent({
+        jobsJson: [],
+        manifests: {
+          'live-agentmd': mkManifest({
+            slug: 'live-agentmd',
+            origin: 'user',
+            schedule: '0 * * * *',
+            priority: 'medium',
+            model: 'haiku',
+            expectedDurationMinutes: 5,
+            enabled: true,
+            execute: { type: 'agentmd' },
+          }),
+        },
+        userMd: {
+          'live-agentmd': mkAgentMd({
+            body: '# Live Agentmd\n\noriginal markdown body\n',
+          }),
+        },
+      });
+
+      try {
+        scheduler = new JobScheduler(
+          { ...makeConfig(), jobsFile: agent.jobsFile },
+          mockSM as any,
+          project.state,
+          project.stateDir,
+        );
+        scheduler.start();
+        expect(scheduler.getJobs().find(j => j.slug === 'live-agentmd')?.body).toContain('original markdown body');
+
+        fs.writeFileSync(
+          path.join(agent.jobsRoot, 'user', 'live-agentmd.md'),
+          mkAgentMd({ body: '# Live Agentmd\n\nupdated markdown body\n' }),
+        );
+
+        const result = await scheduler.triggerJob('live-agentmd', 'test');
+        expect(result).toBe('triggered');
+        await new Promise(r => setTimeout(r, 50));
+        expect(mockSM._lastSpawnArgs?.prompt).toContain('updated markdown body');
+      } finally {
+        agent.cleanup();
+      }
+    });
+
+    it('refuses to admit a job once its enabled flag changes on disk', async () => {
+      jobsFile = createSampleJobsFile(project.stateDir, [
+        {
+          slug: 'health-check',
+          name: 'Health Check',
+          description: 'Live disable test',
+          schedule: '0 * * * *',
+          priority: 'medium',
+          expectedDurationMinutes: 5,
+          model: 'haiku',
+          enabled: true,
+          execute: { type: 'prompt', value: 'body' },
+        },
+      ]);
+      createScheduler();
+      scheduler.start();
+
+      const jobs = JSON.parse(fs.readFileSync(jobsFile, 'utf-8')) as Array<Record<string, unknown>>;
+      jobs[0].enabled = false;
+      fs.writeFileSync(jobsFile, JSON.stringify(jobs, null, 2));
+
+      const result = await scheduler.triggerJob('health-check', 'test');
+      expect(result).toBe('skipped');
+      expect(mockSM._spawnCount).toBe(0);
+      expect(scheduler.getJobs().find(j => j.slug === 'health-check')?.enabled).toBe(false);
     });
   });
 
@@ -307,6 +412,14 @@ describe('JobScheduler', () => {
       const jobState = project.state.getJobState('health-check');
       expect(jobState?.lastResult).toBe('failure');
       expect(jobState?.consecutiveFailures).toBe(1);
+
+      const events = project.state.queryEvents({ type: 'job_error' });
+      expect(events[0].metadata).toMatchObject({
+        slug: 'health-check',
+        error: 'tmux failed',
+        terminal: true,
+        retry: 'next-trigger',
+      });
     });
   });
 
@@ -513,6 +626,127 @@ describe('JobScheduler', () => {
   });
 
   describe('notifyJobComplete', () => {
+    it('saves the job state before recording terminal completion', async () => {
+      createScheduler();
+      scheduler.start();
+
+      await scheduler.triggerJob('health-check', 'test');
+      await new Promise(r => setTimeout(r, 50));
+
+      const session = mockSM._sessions[mockSM._sessions.length - 1];
+      session.status = 'completed';
+      project.state.saveSession(session);
+
+      const sequence: string[] = [];
+      const originalSave = project.state.saveJobState.bind(project.state);
+      const originalRecord = (scheduler as any).runHistory.recordCompletion.bind((scheduler as any).runHistory);
+
+      vi.spyOn(project.state, 'saveJobState').mockImplementation((jobState) => {
+        sequence.push(`save:${jobState.lastResult}`);
+        return originalSave(jobState);
+      });
+      vi.spyOn((scheduler as any).runHistory, 'recordCompletion').mockImplementation((opts) => {
+        sequence.push(`record:${opts.result}`);
+        return originalRecord(opts);
+      });
+
+      await scheduler.notifyJobComplete(session.id, session.tmuxSession);
+
+      expect(sequence).toEqual(['save:success', 'record:success']);
+      expect(project.state.getJobState('health-check')?.lastResult).toBe('success');
+    });
+
+    // Observer-2 finding 2: script jobs terminate in their own then/catch, NOT via
+    // notifyJobComplete. Both of those terminal paths must obey the same charter
+    // clause 1(c) ordering the model-session path above asserts.
+    function scriptJobsFile(script: string): string {
+      return createSampleJobsFile(project.stateDir, [
+        {
+          slug: 'script-job',
+          name: 'Script Job',
+          description: 'Script terminal-path ordering',
+          schedule: '0 * * * *',
+          priority: 'medium',
+          expectedDurationMinutes: 5,
+          model: 'haiku',
+          enabled: true,
+          execute: { type: 'script', value: script },
+        },
+      ]);
+    }
+
+    function traceTerminalOrder(): string[] {
+      const sequence: string[] = [];
+      const originalSave = project.state.saveJobState.bind(project.state);
+      const originalRecord = (scheduler as any).runHistory.recordCompletion.bind((scheduler as any).runHistory);
+      vi.spyOn(project.state, 'saveJobState').mockImplementation((jobState) => {
+        sequence.push(`save:${jobState.lastResult}`);
+        return originalSave(jobState);
+      });
+      vi.spyOn((scheduler as any).runHistory, 'recordCompletion').mockImplementation((opts) => {
+        sequence.push(`record:${opts.result}`);
+        return originalRecord(opts);
+      });
+      return sequence;
+    }
+
+    // A script job's terminal work runs in a fire-and-forget then/catch, so wait for
+    // the run-history record specifically — sequence length alone would be satisfied
+    // by the pre-terminal `save:pending` write that triggerJob performs.
+    async function waitForTerminal(sequence: string[]): Promise<void> {
+      for (let i = 0; i < 200 && !sequence.some(e => e.startsWith('record:')); i++) {
+        await new Promise(r => setTimeout(r, 25));
+      }
+    }
+
+    it('saves the job state before recording completion on script-job SUCCESS', async () => {
+      jobsFile = scriptJobsFile('exit 0');
+      createScheduler();
+      scheduler.start();
+      const sequence = traceTerminalOrder();
+
+      await scheduler.triggerJob('script-job', 'test');
+      await waitForTerminal(sequence);
+
+      // Full lifecycle: the trigger-time pending save, then the terminal save,
+      // then the terminal record. Also proves no extra terminal write sneaks in.
+      expect(sequence).toEqual(['save:pending', 'save:success', 'record:success']);
+      expect(project.state.getJobState('script-job')?.lastResult).toBe('success');
+    });
+
+    it('saves the job state before recording completion on script-job FAILURE', async () => {
+      jobsFile = scriptJobsFile('exit 7');
+      createScheduler();
+      scheduler.start();
+      const sequence = traceTerminalOrder();
+
+      await scheduler.triggerJob('script-job', 'test');
+      await waitForTerminal(sequence);
+
+      // Full lifecycle: the trigger-time pending save, then the terminal save,
+      // then the terminal record. Also proves no extra terminal write sneaks in.
+      expect(sequence).toEqual(['save:pending', 'save:failure', 'record:failure']);
+      expect(project.state.getJobState('script-job')?.lastResult).toBe('failure');
+    });
+
+    // The timeout verdict is produced by the SAME catch block as failure — only the
+    // `result` discriminant differs — so this asserts the discriminant AND the ordering
+    // without waiting out a real (>=120s) execFile timeout.
+    it('saves the job state before recording completion on script-job TIMEOUT', async () => {
+      jobsFile = scriptJobsFile('echo "operation timed out" >&2; exit 1');
+      createScheduler();
+      scheduler.start();
+      const sequence = traceTerminalOrder();
+
+      await scheduler.triggerJob('script-job', 'test');
+      await waitForTerminal(sequence);
+
+      // Full lifecycle: the trigger-time pending save, then the terminal save,
+      // then the terminal record. Also proves no extra terminal write sneaks in.
+      expect(sequence).toEqual(['save:pending', 'save:timeout', 'record:timeout']);
+      expect(project.state.getJobState('script-job')?.lastResult).toBe('timeout');
+    });
+
     it('updates job state with success on completed session', async () => {
       createScheduler();
       scheduler.start();
