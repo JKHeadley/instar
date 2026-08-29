@@ -83,3 +83,14 @@ change that opens the proper door.
 Nothing new — this is your least-human-effort directive, made survivable: zero taps for
 every legitimate case, one tap reserved for the case where the evidence itself says
 "this could be theft."
+
+## One correction the review forced (worth knowing)
+
+The recovery-key idea only works if the recovery key is stored somewhere that survives the
+very failure it's for. On Macs it is — the system keychain outlives a folder getting deleted.
+On a plain Linux/Windows-WSL machine, the vault's own key lives *in the folder that
+disappeared*, so stashing the recovery key there would vanish right alongside everything else.
+So: machines with a real system keychain get the fully-automatic recovery; machines without
+one honestly say "no auto-recovery here — I'll ask for one tap if the rare double-failure
+ever hits," instead of pretending to be protected. That's safer than a guarantee that
+evaporates exactly when you need it.

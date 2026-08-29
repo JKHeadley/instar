@@ -99,6 +99,10 @@ approve, AND git-sync replication-apply — pass through ONE serialized mutation
 including replication-apply:
 
 - **keyEpoch monotonicity:** refuse any write whose `keyEpoch <= stored`.
+- **recoveryEpoch monotonicity (independent):** the recovery pubkey field carries its own
+  monotonic `recoveryEpoch` + tombstone; refuse a write whose `recoveryEpoch <= stored`. A
+  signing-key rotation write that ALSO mutates the recovery pubkey is REFUSED — replacing the
+  recovery pubkey is a separate, dashboard-PIN-gated operator operation (§4.5).
 - **Tombstone:** the superseded key's fingerprint is recorded; any future write (including
   a continuity-chained or replicated one) rooted at or below a tombstoned epoch is refused.
 - **Sticky revocation:** a revoked machine cannot be written back to active except by an
@@ -110,7 +114,9 @@ of the following never-writable through any bearer-authenticated surface AND nev
 from an unverified replication pull:
 
 - `.instar/machine/**`, `.instar/machines/**` (identity files) — files-API never-editable
-  + `FileClassifier` never-sync; git-sync applies identity changes ONLY through §4.0's
+  + `FileClassifier` never-sync + added to `NEVER_SERVED_PREFIXES` (round-3: today identity/
+  key-file protection rides ONLY the `*.key` filename rule at `fileRoutes.ts:26`; the prefix
+  set does not yet contain `.instar/machine/`, so the directory must be added explicitly); git-sync applies identity changes ONLY through §4.0's
   funnel (epoch/tombstone/revocation checked), never file-level whole-file merge. A pulled
   commit that would change a stored `signingPublicKey` outside the funnel is refused and
   routed to quarantine + alert.
@@ -162,10 +168,13 @@ Auto-accept requires ALL of:
    revocation per §4.0).
 3. `keyEpoch == stored + 1` EXACTLY (round-2 H3/F4 — not merely `>`; an unbounded forward
    jump would let one takeover tombstone the whole epoch space and permanently lock out the
-   real machine). The claimant learns `stored` from the replicated public metadata it
-   restores from (the same copy that restored the machineId in incident A), so a key-lost
-   machine derives `stored+1` WITHOUT any refusal-oracle leak. Genesis: an absent stored
-   epoch reads as 0; migration backfills `keyEpoch: 0` (FD12).
+   real machine). The claimant learns `stored` as the MAX across live peers' replicated
+   public metadata (round-3: under partial acceptance peers can legitimately hold different
+   stored epochs; max-across-live-peers is the derivation, and condition 6 distinguishes a
+   lagging peer — same fingerprint, lower epoch — from a genuine fingerprint DIVERGENCE at
+   equal epoch: only the latter quarantines). A key-lost machine derives `stored+1` WITHOUT
+   any refusal-oracle leak. Genesis: an absent stored epoch reads as 0; migration backfills
+   `keyEpoch: 0` and `recoveryEpoch: 0` (FD12).
 4. **The peer's OWN ISSUED inbound-refusal evidence** (round-2 F1, the direction fix): this
    peer has itself REFUSED ≥K inbound envelopes claiming that machineId as
    `signature-invalid` over ≥M minutes — a new durable per-machineId issued-refusal counter
@@ -173,21 +182,27 @@ Auto-accept requires ALL of:
    peer does not hold in incident A because peer→claimant traffic kept working). Necessary,
    never sufficient — an attacker CAN induce it by sending new-key-signed traffic, which is
    why 4 never stands alone.
-5. **Independent corroboration — the verified source address (5a is the SOLE automatic
-   leg).** The re-announce arrived from an endpoint this peer VERIFIED under the INCUMBENT
-   key within a tight window before failure onset, over an AUTHENTICATED transport class
-   (Tailscale / tunnel-authenticated) — never a bare-LAN address (round-2 H4: closes
-   DHCP/ARP endpoint-hijack of a dark machine). In incident A this holds (the Studio's
-   Tailscale address was alive under the old key up to the rotation). **Replicated-metadata
-   corroboration (former 5b) is DROPPED as an automatic leg** (round-2: it rides a
-   replication channel whose `verifyPulledCommits()` is a stub, is itself the incident-A
-   write path, and is circular in the legitimate case); it survives only as display/advisory
-   in the §4.3 dashboard.
-6. **Cross-peer fingerprint agreement** (round-2 F1/F3 — the quorum replacement): a
-   read-time check over already-replicated PROMOTED identity. If any other LIVE peer holds a
-   DIFFERENT signing fingerprint for this machineId at this epoch, the claim QUARANTINES
-   (never last-writer-wins). An automated detector (§4.3) raises URGENT on such divergence
-   rather than leaving it to a human reading dashboard rows.
+5. **Condition-5 evidence — two paths, continuity FIRST (round-3 restructure).**
+   - **5-primary (continuity signature):** if the peer holds a non-tombstoned recovery
+     pubkey for this machineId (the `has-recovery-key` state), a valid continuity signature
+     (§4.5) against it is MANDATORY and sufficient for condition 5 — it supersedes 5a below,
+     and 5a is FORBIDDEN for that machineId (closes the downgrade). Cryptographic legitimacy
+     a token-holder cannot forge.
+   - **5a-fallback (verified source address, ONLY when no recovery pubkey is on record —
+     the transitional window):** the re-announce arrived from an endpoint this peer VERIFIED
+     under the INCUMBENT key within a tight window before failure onset, over an
+     AUTHENTICATED transport class (Tailscale / tunnel-authenticated) — never a bare-LAN
+     address (round-2 H4: closes DHCP/ARP endpoint-hijack). Incident A satisfies it (the
+     Studio's Tailscale address was alive under the old key up to the rotation).
+   - Replicated-metadata corroboration (former 5b) remains DROPPED as an automatic leg
+     (round-2); display/advisory only.
+6. **Cross-peer fingerprint agreement** (round-2 F1/F3 — the quorum replacement; round-3:
+   covers BOTH keys): a read-time check over already-replicated PROMOTED identity. If any
+   other LIVE peer holds a DIFFERENT signing fingerprint at this `keyEpoch` OR a different
+   recovery pubkey at this `recoveryEpoch`, the claim QUARANTINES (never last-writer-wins) —
+   a continuity-signature acceptance (5-primary) does NOT bypass this; it must still pass
+   recovery-pubkey cross-peer agreement, so one poisoned peer cannot be taken over in
+   isolation. The §4.3 detector raises URGENT on either divergence.
 7. Rate/breaker budget OK (FD2), and no unacked ACCEPTED rotation entry exists for this
    machineId (§4.3 — refusals/quarantines never arm the suspend).
 
@@ -207,6 +222,13 @@ is the SINGLE notice raiser: one HIGH non-coalescing item per episode keyed
 `machineId+keyEpoch`, posted on first acceptance and EDITED with per-peer outcomes.
 
 ### 4.2 Observed endpoints (incident B)
+
+**Why not a static `advertisedAddress` config override?** (round-3 external.) For incident B
+specifically — one machine with a known, stable Tailscale address it cannot self-see — an
+operator-set `advertisedAddress` is one config line and zero new machinery, and IS offered as
+the immediate manual fix. The observed-endpoint machinery below is the AUTOMATIC path so a
+NAT'd/VM machine recovers with no operator action at all (the least-human-effort directive);
+the two coexist — a static override always wins when set.
 
 As round-1/round-2: observation only from FULL-`verifyEnvelope` inbound RPCs on direct
 listeners (never bearer-only, never tunnel/proxy-fronted, never `X-Forwarded-For`);
@@ -270,45 +292,87 @@ PIN quarantine.
 
 The mechanism that makes even the total-loss + address-change case zero-touch AND secure
 against a token-holder. At pair time each machine mints a SECOND ("recovery") keypair. Its
-PUBLIC half is stored by peers (replicated as identity metadata, applied only through the
-§4.0 funnel). Its PRIVATE half is escrowed OUTSIDE `.instar/machine/**`, in a location the
-bearer token / files API cannot read.
+PUBLIC half is bound into the operator-minted pairing exchange and stored by peers (never
+introduced or replaced over the bearer re-announce path — that channel is the threat model).
+Its PRIVATE half is escrowed in the machine's SecretStore.
 
-On rotation the machine signs the SIX-field binding of §4.1 with BOTH the new signing key
-(proof-of-possession) AND the RECOVERY key (continuity signature). Peers verify the
-continuity signature against the stored recovery public key → cryptographic legitimacy,
-because only the real machine holds the recovery private key. A valid continuity signature
-BECOMES §4.1's condition 5 (superseding the 5a source-address heuristic and, with it,
-condition 4's issued-refusal requirement — a continuity signature is strictly stronger
-first-hand evidence than either), giving a fully automatic, token-adversary-proof accept in
-every case where the recovery key survived — including the double-fault case 5a cannot cover.
+On rotation the machine co-signs the SIX-field binding of §4.1 with BOTH the new signing key
+(possession) AND the RECOVERY key (continuity). A valid continuity signature verified
+against the peer's stored recovery public key is cryptographic legitimacy a token-holder
+cannot forge.
 
-**Escrow location (operator-selectable at pair time; default the strongest available):**
+**Escrow survival is VERIFIED, not assumed (round-3 critical — the load-bearing fix).** The
+recovery private key is sealed under SecretStore's AES-256-GCM master key. That master key
+is keychain-backed on machines with an OS keychain, but FILE-backed at
+`.instar/machine/secrets-master.key` (`SecretStore.ts:112`) on a keychain-less machine
+(headless Linux, WSL — incident B's Mama PC is `platform: linux`). A file-backed master key
+lives INSIDE the exact directory whose disappearance is incident A, so vault-escrow there
+does NOT survive the double-fault it exists for. Therefore:
 
-1. **Operator vault (default when a vault backend is configured).** The recovery private
-   key is sealed into the operator's SecretStore (AES-256-GCM, master key NOT derivable
-   from the bearer token). Survives total loss of `.instar/machine/**`. The one setup cost
-   Justin approved.
-2. **Peer-sealed shares (fallback / additional copy).** The recovery private key is split
-   (Shamir k-of-n over the pool) and each share sealed to a PEER machine's encryption key,
-   so recovery needs a quorum of peers to co-sign a recovery-key-use authorization — no
-   single compromised peer can wield it, and it survives as long as k peers survive.
+- Vault-escrow is offered ONLY when `SecretStore.isKeychainBacked === true`, checked at pair
+  time (`SecretStore.ts:446`). The silent keychain→file degradation is surfaced LOUDLY at
+  pair time, not left to a DegradationReporter note.
+- A machine WITHOUT a keychain-backed vault does NOT escrow a recovery key. It stays on the
+  §4.1 corroboration path (5a where the address is stable — incident A — else the PIN
+  quarantine), and its `has-recovery-key` state is explicitly FALSE and surfaced ("no
+  recovery escrow — this machine's rare double-fault recovery needs an operator tap"), so
+  the operator is never misled into believing protection exists.
 
-**The recovery key's own lifecycle (review-critical — it is now the root of trust):**
+**Shamir peer-sealed shares are OUT OF SCOPE of this spec** (round-3: lessons F3 /
+adversarial #3 / security #2). They degenerate on a small mesh (a 2-machine pool forces
+k=1, so one peer holds the whole key), do NOT raise the bar against THIS spec's shared-token
+adversary (the token reaches RCE on every peer to steal shares), and their only use case —
+the no-keychain machine — is already covered by the PIN fallback above. Replacing a rare
+one-time tap with a permanent quorum-crypto subsystem is a net-negative trade. If ever
+wanted, peer-shares is its own follow-on spec with its own convergence.
 
-- **Compromise / rotation of the recovery key itself** is an operator-only action (it
-  cannot be self-service, or a token-holder who somehow obtained it could entrench). It
-  goes through the §4.0 funnel with its own epoch, and rotating it re-seals fresh escrow.
-- **Recovery key never signs ordinary traffic** — it is used ONLY to authorize a signing-key
-  rotation, minimizing its exposure (it is offline/sealed except during a rotation event).
-- **Loss of the recovery key** (both the escrow AND the live copy gone) is the ONLY residual
-  case that falls back to §4.1's corroboration-or-PIN path — strictly no worse than the
-  pre-escrow design, and now genuinely rare (it requires losing two independently-escrowed
-  secrets at once).
-- **At-rest honesty:** the vault-escrow option means the recovery private key exists sealed
-  on this machine's disk (encrypted); the peer-shares option means k peers each hold a
-  sealed share. Neither is readable by the bearer token, but both are stated plainly so the
-  operator knows where the root-of-trust material physically lives.
+**The recovery pubkey is now the root of trust and gets the SAME rigor as the signing key
+(round-3: adversarial #1/#2/#4, security #3, lessons F2).**
+
+- **Own epoch + tombstone.** The recovery pubkey carries its own monotonic `recoveryEpoch`
+  and tombstone in `.instar/state/identity-epochs.json`, independent of the signing
+  `keyEpoch`. The §4.0 funnel REFUSES any signing-key rotation write that also mutates the
+  recovery pubkey — replacing the recovery pubkey is a SEPARATE, dashboard-PIN-gated operator
+  operation (never bearer-reachable), so a single signing-key takeover cannot install an
+  attacker recovery pubkey and entrench.
+- **Mandatory-when-present (closes the downgrade).** If a peer holds a non-tombstoned
+  recovery pubkey for a machineId, a valid continuity signature is MANDATORY for auto-accept
+  and the 5a heuristic is FORBIDDEN for that machineId. The stored recovery pubkey (in the
+  funnel-protected never-editable identity store) IS the `has-recovery-key` flag — not
+  spoofable — and its presence disables the weaker path, so a token-holder cannot omit the
+  continuity signature to force 5a.
+- **Cross-peer agreement extends to the recovery pubkey.** A continuity signature may accept
+  (and short-circuit §4.1(6)'s signing-fingerprint conflict) ONLY if the recovery pubkey it
+  verifies against is cross-peer-consistent at its `recoveryEpoch`; a recovery pubkey that
+  diverges across live peers QUARANTINES (URGENT), so one poisoned peer cannot be taken over
+  in isolation. The §4.3 divergence detector covers the recovery pubkey too.
+- **Recovery-key use is bound + replay-safe.** Every recovery-key use (continuity signature,
+  and any recovery-key rotation) is over a single-use nonce covering
+  `(machineId ‖ keyEpoch ‖ new-signing-fp ‖ new-recovery-fp ‖ recoveryEpoch)`.
+
+**The recovery key's own lifecycle:**
+
+- Rotation is DASHBOARD-PIN-gated (never bearer), through the §4.0 funnel, with its own
+  epoch; it re-seals fresh escrow.
+- It signs ONLY signing-key rotations, never ordinary traffic — sealed/offline except during
+  a rotation event.
+- Loss of BOTH the escrow AND the live copy falls back to §4.1's corroboration-or-PIN path
+  (strictly no worse than pre-escrow) AND raises URGENT "recovery escrow missing" so a forced
+  downgrade (an attacker deleting the sealed blob) is loud, never silent.
+- **At-rest honesty:** on a keychain-backed machine the recovery private key exists sealed on
+  disk, decryptable only via the OS keychain master key (which survives `.instar/machine/**`
+  loss and is not bearer-derivable — `SecretStore.ts:297`, `*.key` read-blocked at
+  `fileRoutes.ts:26`).
+
+**Token-adversary-proof scope (honest, per §4.4).** The continuity signature is
+token-adversary-proof under "bearer WITHOUT code execution." A bearer→RCE path
+(`.claude/settings.json` hooks, `.git/hooks/**`, `.instar/hooks/**` — pre-existing debt,
+tracked follow-up) reaches private-key theft on any machine and is out of this spec's closure
+scope; §4.4's boundary claim and this one are both scoped to direct writes.
+
+Prior art (for reviewers): monotonic epochs + exact-increment + tombstones + an offline
+recovery key is TUF/DID root-key rotation; the `== stored+1` rule is TUF's fast-forward
+defense.
 
 ## 5. Decision (operator directive 2026-08-29 + round-1/2 revision)
 
@@ -325,12 +389,14 @@ every case where the recovery key survived — including the double-fault case 5
   claim — this fails SAFE (to a human) and is correct; a valid continuity signature
   short-circuits the conflict (cryptographic identity beats a racing bare claim).
 - **Observed endpoints:** fully automatic (§4.2).
-- **Escrow (§4.5): ADOPTED** (operator-approved 2026-08-29). The escrowed recovery key's
-  continuity signature is the PRIMARY condition-5 evidence; it moves the double-fault case
-  (key loss + address change) from tap to fully automatic, and is token-adversary-proof. The
-  5a source-address heuristic remains as the fallback for the transitional window before
-  every machine has an escrowed recovery key, and the PIN quarantine remains for the now-rare
-  case where the recovery key itself is also lost.
+- **Escrow (§4.5): ADOPTED** (operator-approved 2026-08-29), scoped to KEYCHAIN-BACKED
+  vault-escrow only (round-3: a file-backed vault does not survive incident A; Shamir
+  peer-shares dropped to a follow-on spec). On a keychain-backed machine the continuity
+  signature is the PRIMARY, MANDATORY condition-5 evidence and makes the double-fault case
+  fully automatic + token-adversary-proof; 5a is used ONLY for a machineId with no recovery
+  pubkey on record. A machine without a keychain-backed vault carries no recovery key, is
+  surfaced as such, and uses 5a (incident A) or the PIN (double fault) — never silently
+  "protected".
 - Option 3 (continuity-chained PLANNED rotation) is SUBSUMED by §4.5's continuity signature.
 
 ### 5b. History (non-normative)
@@ -374,7 +440,8 @@ never post (prevents N-notices / zero-notices).
 | Cross-peer fingerprint agreement | invariant | Read-time equality check over replicated promoted identity (§4.1(6)); disagreement → quarantine, never a pick. |
 | Observed-endpoint promotion | invariant | Declared floor (§4.2): ≥3 obs/≥30 min local + dial-back + not-shared-egress + rotation quarantine. Pre-commitment: any adaptive/scored element added later makes this a judgment-candidate requiring floor+arbiter. |
 | One-notice raiser election | invariant | Claimant posts on first acceptance; episode-scoped dedupe on machineId+keyEpoch. |
-| Continuity-signature verification (§4.5) | invariant | Deterministic Ed25519 verify of the rotation binding against the stored recovery public key; a valid signature is condition-5 evidence superseding the 5a heuristic. Recovery-key rotation is an operator action through the §4.0 funnel. |
+| has-recovery-key predicate + downgrade posture | invariant | The `has-recovery-key` state = a non-tombstoned recovery pubkey on record in the funnel-protected identity store (not spoofable). When TRUE, a continuity signature is MANDATORY and 5a is FORBIDDEN for that machineId; a re-announce lacking a valid continuity signature QUARANTINES (never falls to 5a) — closes the omit-the-signature downgrade. |
+| Continuity-signature verification (§4.5) | invariant | Deterministic Ed25519 verify of the rotation binding against the stored recovery public key at its `recoveryEpoch`; a valid signature is condition-5 evidence, MANDATORY-when-present, and must still pass recovery-pubkey cross-peer agreement (§4.1(6)). Recovery-key rotation is dashboard-PIN-gated through the §4.0 funnel, never bearer. |
 | Quarantine approve/deny | invariant | Deterministic routing to the operator's single-use, content-hash-bound dashboard-PIN decision; the operator is the arbiter (Know Your Principal). The machine-side routing is deterministic; the human decision sits above the classified machine surface. |
 
 ## Frontloaded Decisions
@@ -387,10 +454,12 @@ never post (prevents N-notices / zero-notices).
    scalability F3 — a governor deny parks the per-peer entry in the pending ledger, never
    consumes an attempt); backoff 1m→5m→30m→6h; P19 breaker. A CAS refusal is a retryable
    per-peer attempt, NOT a new episode and NOT a keyEpoch-budget consumer.
-3. **Rollout ladder:** `multiMachine.identityReannounce = {enabled, dryRun}` and
+3. **Rollout ladder:** `multiMachine.identityReannounce = {enabled, dryRun}`,
    `multiMachine.observedEndpoints = {enabled, dryRun, corroborationObservations: 3,
-   corroborationWindowMinutes: 30, ttlDays: 7, rotationQuarantineHours: 1}`. Dev-gated dark
-   on fleet, dryRun:true on dev (peer-side would-accept verdicts logged too). Graduation:
+   corroborationWindowMinutes: 30, ttlDays: 7, rotationQuarantineHours: 1}`, and
+   `multiMachine.recoveryKeyEscrow = {enabled, dryRun}` (keychain-gated at pair time). All
+   dev-gated dark on fleet, dryRun:true on dev (peer-side would-accept verdicts logged too).
+   Graduation:
    ≥14 days dry-run with zero false would-accept verdicts PLUS required NEGATIVE rehearsals
    (round-2 lessons F5 — silence is not health): an injected uncorroborated claim MUST
    quarantine, a replayed/old-epoch claim MUST be refused, a cross-peer-conflict claim MUST
@@ -416,16 +485,36 @@ never post (prevents N-notices / zero-notices).
    set ships in the SAME PR as the accept route; git-sync applies identity changes only
    through the §4.0 funnel; fleet sequencing is machine-coherence-gated; the bearer→RCE
    surface (`.claude/settings.json`, `.git/`, `.instar/hooks/`) is a tracked follow-up.
-10. **Escrow (§4.5) — ADOPTED:** recovery keypair minted at pair time; public half
-    replicated (funnel-applied), private half escrowed to the operator vault (default) or
-    Shamir k-of-n peer-sealed shares; continuity signature is the primary condition-5
-    evidence; recovery-key rotation is operator-only through the §4.0 funnel; recovery key
-    signs ONLY rotations, never ordinary traffic. A transitional machine without an escrowed
-    recovery key uses the 5a fallback until it has one.
+10. **Escrow (§4.5) — ADOPTED, keychain-vault only.** Flag
+    `multiMachine.recoveryKeyEscrow = {enabled, dryRun}` (dark-on-fleet, dryRun-on-dev; in
+    the FD3 ladder + FD12 `migrateConfig`). Recovery keypair minted at pair time on a
+    machine whose `SecretStore.isKeychainBacked === true`; public half bound into the
+    operator-minted pairing exchange + replicated (funnel-applied with its own
+    `recoveryEpoch`/tombstone); private half sealed in the keychain-backed vault. Continuity
+    signature is the primary, MANDATORY condition-5 evidence when a recovery pubkey is on
+    record; recovery-key rotation is dashboard-PIN-gated through the funnel; the recovery key
+    signs ONLY rotations. A machine WITHOUT a keychain-backed vault mints no recovery key,
+    surfaces `has-recovery-key:false`, and uses 5a/PIN — never silent. Shamir peer-shares
+    are OUT OF SCOPE (own follow-on spec).
+    - **Retro-mint (FD12):** existing already-paired machines have no recovery keypair; on
+      first post-upgrade boot a keychain-backed machine mints + escrows one and establishes
+      its recovery pubkey via an operator-confirmed step (the pairing-trust channel, never
+      the bearer re-announce path). Without this, "until it has one" is unreachable.
+    - **De-pair teardown:** on de-pair, the machine destroys its sealed recovery key and
+      peers tombstone its recovery pubkey; there are no peer-held shares to re-seal (Shamir
+      dropped), so the round-2 k-of-n-below-k hazard does not arise.
+    - **Transitional-window closure:** graduation adds "no machine remains without an
+      escrowed recovery key past horizon H (keychain-backed machines only)" as a tracked,
+      alerting condition, so a stuck-transitional machine is an incident, not a silent weak
+      path.
 11. **Liveness propagation:** `auth-rejected` is proof-of-life for every liveness consumer;
     it blocks stale-owner-release death evidence for that peer.
-12. **Migration & rollout parity:** `migrateConfig()` adds the two config blocks
-    (existence-checked); `migrateClaudeMd()` adds the operator-facing "why did I get a
+12. **Migration & rollout parity:** `migrateConfig()` adds the THREE config blocks
+    (identityReannounce, observedEndpoints, recoveryKeyEscrow — existence-checked); the
+    stored identity schema gains a `recoveryPublicKey` field and `.instar/state/identity-epochs.json`
+    gains a `recoveryEpoch`/tombstone per machineId (backfilled absent-reads-as-0, no recovery
+    pubkey ⇒ `has-recovery-key:false`); the retro-mint path (FD10) mints recovery keypairs for
+    existing keychain-backed machines on first post-upgrade boot; `migrateClaudeMd()` adds the operator-facing "why did I get a
     key-rotation notice / what is a quarantined identity claim" section; the
     never-editable/never-sync additions ride `refreshHooksAndSettings`; keyEpoch genesis =
     absent-reads-as-0, migration backfills `keyEpoch: 0` into every existing stored identity
@@ -462,6 +551,20 @@ never post (prevents N-notices / zero-notices).
 > designed in §4–§5 here; the only decision still parked on the operator is OQ1 (escrow),
 > which the immutable carrier text (written pre-review) does not capture — this annotation,
 > not the carrier, reflects the standing state.
+
+## Reference (internal codes used above, for outside readers)
+
+- **Round-1/2/3 H*/F*/OQ*** — finding ids from the convergence review rounds (this spec's own
+  process); resolutions are folded into the sections they annotate.
+- **FD*** — Frontloaded Decision N in the section above.
+- **P19** — the constitution's "No Unbounded Loops" standard (brakes: max-attempts, backoff,
+  breaker). **P20** — "Verify the State, Not Its Symbol."
+- **WS4.1 remote-ack / WS4.4** — multi-machine-seamlessness spec increments (the signed
+  operator-ack route; pool-stable reads).
+- **Amendment 3** — the 2026-08-22 narrowing of the machine-local-justification taxonomy.
+- **TUF / DID** — The Update Framework / Decentralized Identifiers; §4.5's epoch+tombstone+
+  offline-recovery-key rotation mirrors their root-key rotation model.
+- **5a / condition N** — the §4.1 acceptance-composite legs.
 
 ## 7. Evidence
 
