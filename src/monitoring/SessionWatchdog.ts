@@ -18,6 +18,7 @@ import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
 import {
   evaluateThrottleSettle,
@@ -273,6 +274,11 @@ export class SessionWatchdog extends EventEmitter {
   private enabled = true;
   /** Liveness of the poll loop (GUARD-POSTURE-ENDPOINT-SPEC §2.2): 0 = never polled. */
   private lastPollAt = 0;
+  private readonly lastStallDecisionAt = new Map<string, string>();
+  private pollRevision = 0;
+  private inspectionAuthorityKey!: Buffer;
+  private inspectionAuthorityEpoch!: string;
+  private inspectionAuthorityPath!: string;
   private running = false;
 
   private stuckThresholdMs: number;
@@ -320,6 +326,9 @@ export class SessionWatchdog extends EventEmitter {
     this.config = config;
     this.sessionManager = sessionManager;
     this.state = state;
+    this.inspectionAuthorityPath = path.join(config.stateDir, 'window-lifecycle', 'watchdog-inspection-authority.json');
+    try { const persisted = JSON.parse(fs.readFileSync(this.inspectionAuthorityPath, 'utf8')) as { key: string; epoch: string; pollRevision: number; decisions?: Record<string, string> }; this.inspectionAuthorityKey = Buffer.from(persisted.key, 'base64'); this.inspectionAuthorityEpoch = persisted.epoch; this.pollRevision = persisted.pollRevision; for (const [name, at] of Object.entries(persisted.decisions ?? {})) this.lastStallDecisionAt.set(name, at); if (this.inspectionAuthorityKey.length !== 32 || !this.inspectionAuthorityEpoch || !Number.isSafeInteger(this.pollRevision)) throw new Error('invalid-watchdog-authority'); }
+    catch { /* @silent-fallback-ok — first boot creates durable inspection authority */ this.inspectionAuthorityKey = crypto.randomBytes(32); this.inspectionAuthorityEpoch = crypto.randomUUID(); this.persistInspectionAuthority(); }
 
     const wdConfig = config.monitoring.watchdog;
     this.stuckThresholdMs = (wdConfig?.stuckCommandSec ?? 180) * 1000;
@@ -331,6 +340,8 @@ export class SessionWatchdog extends EventEmitter {
     // Persistent log path
     this.logPath = path.join(config.stateDir, 'watchdog-interventions.jsonl');
   }
+
+  private persistInspectionAuthority(): void { fs.mkdirSync(path.dirname(this.inspectionAuthorityPath), { recursive: true, mode: 0o700 }); const decisions = Object.fromEntries(this.lastStallDecisionAt); fs.writeFileSync(this.inspectionAuthorityPath, `${JSON.stringify({ key: this.inspectionAuthorityKey.toString('base64'), epoch: this.inspectionAuthorityEpoch, pollRevision: this.pollRevision, decisions })}\n`, { mode: 0o600 }); }
 
   start(): void {
     if (this.interval) return;
@@ -380,6 +391,28 @@ export class SessionWatchdog extends EventEmitter {
     };
   }
 
+  /** Window-lifecycle authority: perform a fresh, bounded observation of every
+   * currently running session rather than treating the status registry as an
+   * inspection. The caller persists this exact per-session result. */
+  inspectSessionsForStall(observedAt = new Date().toISOString()): { observedAt: string; authorityEpoch: string; pollRevision: number; authorityProof: string; sessions: Array<{ name: string; outputObserved: boolean; escalationActive: boolean; decisionEvaluated: boolean; decisionEvaluatedAt?: string }> } {
+    const sessions = this.sessionManager.listRunningSessions().map(session => ({
+      name: session.tmuxSession,
+      outputObserved: this.sessionManager.captureOutput(session.tmuxSession, 30) !== null,
+      escalationActive: this.isManaging(session.tmuxSession),
+      decisionEvaluated: this.lastStallDecisionAt.has(session.tmuxSession),
+      decisionEvaluatedAt: this.lastStallDecisionAt.get(session.tmuxSession),
+    }));
+    const payload = JSON.stringify({ observedAt, authorityEpoch: this.inspectionAuthorityEpoch, pollRevision: this.pollRevision, sessions });
+    return { observedAt, authorityEpoch: this.inspectionAuthorityEpoch, pollRevision: this.pollRevision, authorityProof: crypto.createHmac('sha256', this.inspectionAuthorityKey).update(payload).digest('hex'), sessions };
+  }
+
+  verifyStallInspection(observation: { observedAt: string; authorityEpoch: string; pollRevision: number; authorityProof: string; sessions: unknown[] }): boolean {
+    if (observation.authorityEpoch !== this.inspectionAuthorityEpoch || observation.pollRevision > this.pollRevision) return false;
+    const payload = JSON.stringify({ observedAt: observation.observedAt, authorityEpoch: observation.authorityEpoch, pollRevision: observation.pollRevision, sessions: observation.sessions });
+    const expected = crypto.createHmac('sha256', this.inspectionAuthorityKey).update(payload).digest();
+    try { return crypto.timingSafeEqual(expected, Buffer.from(observation.authorityProof, 'hex')); } catch { /* @silent-fallback-ok — malformed proof fails closed */ return false; }
+  }
+
   // --- Core polling ---
 
   private async poll(): Promise<void> {
@@ -392,6 +425,7 @@ export class SessionWatchdog extends EventEmitter {
       for (const session of sessions) {
         try {
           await this.checkSession(session.tmuxSession);
+          this.lastStallDecisionAt.set(session.tmuxSession, new Date().toISOString());
         } catch (err) {
           console.error(`[Watchdog] Error checking "${session.tmuxSession}":`, err);
         }
@@ -399,6 +433,8 @@ export class SessionWatchdog extends EventEmitter {
         // can never monopolize the loop and starve /health (which shares it).
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
+      this.pollRevision += 1;
+      this.persistInspectionAuthority();
     } finally {
       this.running = false;
     }

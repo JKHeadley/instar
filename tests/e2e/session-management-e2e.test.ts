@@ -28,7 +28,10 @@ import { getTelegramInboundDir } from '../../src/messaging/shared/telegramInboun
 
 // ── Test Constants ──────────────────────────────────────────────────
 
-const TMUX_PREFIX = 'sess-e2e-';
+// Process-unique because multiple worktrees may run this E2E concurrently on
+// the same tmux server. A global `sess-e2e-` cleanup prefix let one suite's
+// afterEach delete another suite's live fixtures.
+const TMUX_PREFIX = `instar-sm-e2e-${process.pid}-`;
 const tmuxPath = detectTmuxPath();
 const describeMaybe = tmuxPath ? describe : describe.skip;
 const maintenanceTicks = new WeakMap<SessionManager, () => Promise<void>>();
@@ -63,9 +66,11 @@ echo "  ⏵⏵ bypass permissions on (shift+tab to cycle)                    ◐
 read -r INPUT
 echo "Received: $INPUT"
 
-# After receiving input, stay alive briefly then exit
-sleep 1
-echo "Session ended"
+# Model an interactive REPL, not a one-shot command. Tests that need natural
+# completion use createMockClaudeOneShot/createMockClaudeCrash; this fixture is
+# explicitly used by concurrent-session liveness checks and is terminated by
+# afterEach cleanup. A one-second exit here raced those checks under suite load.
+while true; do sleep 30; done
 `);
   fs.chmodSync(scriptPath, '755');
   return scriptPath;
@@ -181,7 +186,7 @@ interface TestProject {
 }
 
 function createTestProject(): TestProject {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sess-e2e-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `instar-sm-e2e-${process.pid}-`));
   const stateDir = path.join(dir, '.instar');
   fs.mkdirSync(path.join(stateDir, 'state', 'sessions'), { recursive: true });
   fs.mkdirSync(path.join(stateDir, 'state', 'jobs'), { recursive: true });

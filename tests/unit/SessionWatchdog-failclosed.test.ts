@@ -17,15 +17,19 @@
  * Both sides of every boundary are pinned below.
  */
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   SessionWatchdog,
   WATCHDOG_STUCK_JUDGE_PROMPT_ID,
 } from '../../src/monitoring/SessionWatchdog.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { DP_WATCHDOG_STUCK_JUDGE } from '../../src/data/provenanceCoverage.js';
 
 function config(hardCeilingSec?: number) {
   return {
-    stateDir: '/tmp/test-watchdog-failclosed',
+    stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'test-watchdog-failclosed-')),
     sessions: { tmuxPath: 'tmux' },
     monitoring: {
       watchdog: {
@@ -47,6 +51,28 @@ const isCommandStuck = (wd: any, cmd: string, elapsedMs: number, out = '') =>
 const MIN = 60_000;
 
 describe('SessionWatchdog — stuck-command fail-closed', () => {
+  it('publishes a poll revision only after the real poll invokes the stall decision path for every session', async () => {
+    const sessions = { listRunningSessions: () => [{ tmuxSession: 'one' }, { tmuxSession: 'two' }], captureOutput: () => 'pane output' };
+    const wd = new SessionWatchdog(config(), sessions as any, {} as any) as any;
+    const checked: string[] = []; wd.checkSession = async (name: string) => { checked.push(name); };
+    expect(wd.inspectSessionsForStall().pollRevision).toBe(0);
+    await wd.poll();
+    const observation = wd.inspectSessionsForStall('2026-08-28T20:00:00.000Z');
+    expect(checked).toEqual(['one', 'two']); expect(observation.pollRevision).toBe(1);
+    expect(observation.sessions.every((session: any) => session.decisionEvaluated && typeof session.decisionEvaluatedAt === 'string')).toBe(true);
+    expect(wd.verifyStallInspection(observation)).toBe(true);
+    expect(wd.verifyStallInspection({ ...observation, sessions: [{ ...observation.sessions[0], decisionEvaluated: false }] })).toBe(false);
+    expect(wd.verifyStallInspection({ ...observation, authorityProof: '0'.repeat(64) })).toBe(false);
+  });
+  it('verifies completed stall observations after an ordinary watchdog restart', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'watchdog-authority-')); const cfg = config(); cfg.stateDir = dir;
+    const sessions = { listRunningSessions: () => [{ tmuxSession: 'one' }], captureOutput: () => 'pane output' };
+    const first = new SessionWatchdog(cfg, sessions as any, {} as any) as any; first.checkSession = async () => {}; await first.poll();
+    const observation = first.inspectSessionsForStall('2026-08-28T20:00:00.000Z');
+    const restarted = new SessionWatchdog(cfg, sessions as any, {} as any) as any;
+    expect(restarted.verifyStallInspection(observation)).toBe(true); expect(restarted.inspectSessionsForStall().pollRevision).toBe(observation.pollRevision);
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/SessionWatchdog-failclosed.test.ts' });
+  });
   describe('LLM judge UNAVAILABLE (intelligence = null)', () => {
     it('does NOT interrupt below the hard ceiling (the fix — was fail-open)', async () => {
       const wd = makeWatchdog(30 * 60); // 30-min ceiling

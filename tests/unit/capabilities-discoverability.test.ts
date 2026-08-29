@@ -98,6 +98,16 @@ describe('Capabilities Discoverability', () => {
     expect(result.enabled).toBe(true);
   });
 
+  it('keeps the window-lifecycle capability endpoint inventory exact', () => {
+    const registered = [...routesSource.matchAll(/router\.(get|post|put|delete|patch)\s*\(\s*['"](\/window-lifecycle(?:\/[^'"]*)?)['"]/g)]
+      .map((match) => `${match[1].toUpperCase()} ${match[2]}`)
+      .sort();
+    const entry = CAPABILITY_INDEX.find((candidate) => candidate.key === 'windowLifecycle');
+    expect(entry).toBeDefined();
+    const block = entry!.build({ ctx: { config: { projectName: 'echo' } }, scripts: [], secretDrop: {} } as never) as { endpoints: string[] };
+    expect([...block.endpoints].sort()).toEqual(registered);
+  });
+
   it('no prefix is both claimed by CAPABILITY_INDEX and listed in INTERNAL_PREFIXES', () => {
     const collisions: string[] = [];
     for (const prefix of capabilityPrefixToKey.keys()) {
