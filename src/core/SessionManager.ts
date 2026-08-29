@@ -6746,13 +6746,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const framework = this.getSessionFramework(tmuxSession);
     const conversationId = String(this.getTopicBinding(tmuxSession)?.topicId ?? tmuxSession);
     let delivery: ReturnType<InboundDeliveryStore['prepare']> | null = null;
-    if (this.stageBActivation.active) {
+    // Stage B's acceptance authority is the Codex rollout adapter. Other
+    // frameworks have no matching transcript observer, so journaling them here
+    // would create permanently-dispatched rows that can only age into false
+    // unknowns and eventually block that conversation's FIFO. Keep their
+    // established injection path byte-equivalent until they gain their own
+    // generation-bound acceptance adapter.
+    if (this.stageBActivation.active && framework === 'codex-cli') {
       if (!this.inboundDeliveries || !this.inboundDeliveryHmacKey) return false;
       try {
         delivery = this.inboundDeliveries.prepare({
         conversationId,
         incarnation: tmuxSession,
-        framework: framework ?? 'unknown',
+        framework: 'codex-cli',
         envelope: text,
         hmacKey: this.inboundDeliveryHmacKey,
         ownerMachineId: this.localMachineId(),
@@ -6765,22 +6771,20 @@ rm()  { "${shimRunner}" rm  "$@"; }
           this.refreshLifecycleCompatibilityProjection();
           return true;
         }
-        if (framework === 'codex-cli') {
-          const transcriptPath = match ? this.codexRolloutPathForSession(match) : null;
-          let baseline = -1;
-          try { if (transcriptPath) baseline = fs.statSync(transcriptPath).size; } catch { // @silent-fallback-ok: missing baseline fails closed before pane mutation
-            baseline = -1;
-          }
-          const rolloutId = match?.claudeSessionId ?? null;
-          if (!transcriptPath || !rolloutId || baseline < 0
-            || !this.inboundDeliveries.bindRolloutBaseline(conversationId, delivery.deliveryId, transcriptPath, rolloutId, baseline)) {
-            this.inboundDeliveries.transition(conversationId, delivery.deliveryId, 'prepared', 'dispatch-failed');
-            this.refreshLifecycleCompatibilityProjection();
-            console.error(`[SessionManager] Refusing unverifiable Codex injection for ${tmuxSession}: rollout baseline unavailable`);
-            return false;
-          }
-          delivery = this.inboundDeliveries.get(conversationId, delivery.deliveryId);
+        const transcriptPath = match ? this.codexRolloutPathForSession(match) : null;
+        let baseline = -1;
+        try { if (transcriptPath) baseline = fs.statSync(transcriptPath).size; } catch { // @silent-fallback-ok: missing baseline fails closed before pane mutation
+          baseline = -1;
         }
+        const rolloutId = match?.claudeSessionId ?? null;
+        if (!transcriptPath || !rolloutId || baseline < 0
+          || !this.inboundDeliveries.bindRolloutBaseline(conversationId, delivery.deliveryId, transcriptPath, rolloutId, baseline)) {
+          this.inboundDeliveries.transition(conversationId, delivery.deliveryId, 'prepared', 'dispatch-failed');
+          this.refreshLifecycleCompatibilityProjection();
+          console.error(`[SessionManager] Refusing unverifiable Codex injection for ${tmuxSession}: rollout baseline unavailable`);
+          return false;
+        }
+        delivery = this.inboundDeliveries.get(conversationId, delivery.deliveryId);
         this.refreshLifecycleCompatibilityProjection();
       } catch (err) {
         console.error(`[SessionManager] Refusing unjournaled tmux injection: ${err instanceof Error ? err.message : String(err)}`);

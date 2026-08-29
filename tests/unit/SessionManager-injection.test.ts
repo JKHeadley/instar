@@ -38,6 +38,17 @@ describe('SessionManager — rawInject effect safety', () => {
     expect(method).not.toContain('maxAttempts');
   });
 
+  it('journals only sessions with the Codex acceptance observer', () => {
+    const source = fs.readFileSync(SESSION_MANAGER_SRC, 'utf-8');
+    const methodStart = source.indexOf('private rawInject(');
+    const methodEnd = source.indexOf('\n  /**', methodStart + 1);
+    const method = source.slice(methodStart, methodEnd > -1 ? methodEnd : undefined);
+
+    expect(method).toContain("this.stageBActivation.active && framework === 'codex-cli'");
+    expect(method).toContain('Refusing unverifiable Codex injection');
+    expect(method).not.toContain("framework: framework ?? 'unknown'");
+  });
+
   it('returns false and reports degradation after all attempts fail', () => {
     const source = fs.readFileSync(SESSION_MANAGER_SRC, 'utf-8');
     const methodStart = source.indexOf('private rawInject(');
