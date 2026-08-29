@@ -1,0 +1,36 @@
+## What Changed
+
+`RopeRecoveryProber` records the freshest typed auth-layer probe refusal per peer
+(`lastAuthRejectAtMs`); `RopeHealthMonitor` checks that evidence BEFORE both
+'peer-offline — expected' branches. An all-down peer with a refusal fresher than 45
+minutes classifies as the new `auth-rejected` condition — one actionable attention item
+per episode (default on, `monitoring.ropeHealth.authRejectAlertEnabled`) and a distinct
+digest sentence naming the likely key/identity mismatch. Stale, absent, or unreadable
+evidence falls through to the ordinary offline rules unchanged.
+
+## What to Tell Your User
+
+If one of your machines rotates its identity key and the others never learn about it,
+they start refusing all its messages — and until now the health monitor filed that as
+"offline — expected" because the machine's heartbeat had stopped. The heartbeat had
+stopped *because* of the key problem, so a real two-day outage stayed silent.
+
+A machine that actively answers "no, invalid signature" is provably awake. The monitor
+now treats that refusal as the proof it is, tells you loudly within minutes, and names
+the likely cause — instead of assuming the machine is asleep.
+
+## Summary of New Capabilities
+
+- A peer refusing signed messages is classified "awake but refusing" — a loud, distinct
+  state — never "offline — expected".
+- One alert per episode, delivery-honest (a failed delivery retries), content-scrubbed.
+- Only typed signature-layer refusals count; network failures and sleeping machines
+  structurally cannot trip it.
+- Fully reversible: disable the alert by config, or unwire the evidence source for
+  byte-identical old behaviour.
+
+## Evidence
+
+- Unit: `tests/unit/RopeRecoveryProber.test.ts` (+2), `tests/unit/RopeHealthMonitor.test.ts` (+6),
+  verified red-then-green against pre-fix behaviour.
+- Side-effects review: `upgrades/side-effects/rope-auth-reject-alive.md`.
