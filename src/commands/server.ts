@@ -5382,6 +5382,17 @@ export async function startServer(options: StartOptions): Promise<void> {
           getPeerEndpoints: (id) => idMgr.getMachineEndpoints(id),
           updateMachineEndpoints: (id, eps) => idMgr.updateMachineEndpoints(id, eps),
           meshTransportEnabled: meshEnabled,
+          // Invariant 2b evidence source — this machine's OWN rope-health record. A kind
+          // the peer stopped advertising is retained only while we can see it working.
+          isEndpointAlive: (id, kind) => {
+            try {
+              const row = meshResolver.snapshot().find((r) => r.peer === id && r.kind === kind);
+              return row ? !row.dead : undefined;
+            } catch {
+              // @silent-fallback-ok: no snapshot ⇒ no evidence ⇒ replace semantics.
+              return undefined;
+            }
+          },
           logger: (m) => console.log(pc.dim(m)),
         });
         leaseTransport = new HttpLeaseTransport({

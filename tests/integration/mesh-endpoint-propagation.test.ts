@@ -38,6 +38,8 @@ describe('mesh-endpoint-http-propagation receiver (integration)', () => {
   let callerId: string;
   let callerSigning: { publicKey: string; privateKey: string };
   let meshOn: boolean;
+  /** Invariant 2b evidence the app-under-test reads — `${machineId}:${kind}` ⇒ alive? */
+  let aliveEvidence: Record<string, boolean>;
 
   function buildApp(): express.Express {
     const aSigning = generateSigningKeyPair();
@@ -51,6 +53,7 @@ describe('mesh-endpoint-http-propagation receiver (integration)', () => {
       getPeerEndpoints: (id) => identityManager.getMachineEndpoints(id),
       updateMachineEndpoints: (id, eps) => identityManager.updateMachineEndpoints(id, eps),
       meshTransportEnabled: () => meshOn,
+      isEndpointAlive: (id, kind) => aliveEvidence[`${id}:${kind}`],
     });
 
     const routes = createMachineRoutes({
@@ -75,6 +78,7 @@ describe('mesh-endpoint-http-propagation receiver (integration)', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-prop-'));
     identityManager = new MachineIdentityManager(tmpDir);
     meshOn = true;
+    aliveEvidence = {};
 
     const aSigning = generateSigningKeyPair();
     receiverId = generateMachineId();
@@ -111,6 +115,36 @@ describe('mesh-endpoint-http-propagation receiver (integration)', () => {
 
   afterEach(() => {
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'tests/integration/mesh-endpoint-propagation.test.ts:afterEach' });
+  });
+
+  it('a DEGRADED advertisement over the real route keeps a rope this machine sees working', async () => {
+    // The 2026-08-29 regression, end-to-end: the peer previously advertised tailscale+lan;
+    // its agent then lost sight of its own tailscale address (an agent inside a NAT'd VM)
+    // and re-advertised lan ALONE — while this machine's rope health still showed the
+    // tailscale rope carrying traffic. It must not be replaced away.
+    identityManager.updateMachineEndpoints(callerId, [PEER_TS, PEER_LAN]);
+    aliveEvidence[`${callerId}:tailscale`] = true;
+    const app = buildApp();
+    const lease = { holder: callerId, epoch: 11, acquiredAt: 'x', expiresAt: 'y', nonce: 5 };
+    const body = { lease, reqNonce: newReqNonce(), endpoints: [PEER_LAN] };
+    const headers = signRequest(callerId, callerSigning.privateKey, body, 0);
+    expect((await request(app).post('/api/lease').set(headers).send(body)).status).toBe(200);
+
+    const stored = identityManager.getMachineEndpoints(callerId) ?? [];
+    expect(stored.map((e) => e.kind).sort()).toEqual(['lan', 'tailscale']);
+    expect(stored.find((e) => e.kind === 'tailscale')).toEqual(PEER_TS);
+  });
+
+  it('a DEGRADED advertisement DOES drop a rope this machine sees as dead', async () => {
+    identityManager.updateMachineEndpoints(callerId, [PEER_TS, PEER_LAN]);
+    aliveEvidence[`${callerId}:tailscale`] = false;
+    const app = buildApp();
+    const lease = { holder: callerId, epoch: 11, acquiredAt: 'x', expiresAt: 'y', nonce: 5 };
+    const body = { lease, reqNonce: newReqNonce(), endpoints: [PEER_LAN] };
+    const headers = signRequest(callerId, callerSigning.privateKey, body, 0);
+    expect((await request(app).post('/api/lease').set(headers).send(body)).status).toBe(200);
+
+    expect((identityManager.getMachineEndpoints(callerId) ?? []).map((e) => e.kind)).toEqual(['lan']);
   });
 
   it('POST /api/lease records the authenticated sender\'s endpoints for that peer', async () => {

@@ -15,7 +15,13 @@ const TS: MeshEndpoint = { kind: 'tailscale', url: 'http://100.64.0.9:4042' };
 const LAN: MeshEndpoint = { kind: 'lan', url: 'http://192.168.87.60:4042' };
 const CF: MeshEndpoint = { kind: 'cloudflare', url: 'https://peer.dawn-tunnel.dev' };
 
-function mkRecorder(opts: { meshOn?: boolean; known?: Record<string, MeshEndpoint[]> } = {}) {
+function mkRecorder(opts: {
+  meshOn?: boolean;
+  known?: Record<string, MeshEndpoint[]>;
+  /** Invariant 2b evidence: `${machineId}:${kind}` ⇒ alive?  Absent key ⇒ no evidence. */
+  alive?: Record<string, boolean>;
+  aliveThrows?: boolean;
+} = {}) {
   const store: Record<string, MeshEndpoint[]> = { ...(opts.known ?? {}) };
   let writes = 0;
   const rec = new PeerEndpointRecorder({
@@ -29,6 +35,14 @@ function mkRecorder(opts: { meshOn?: boolean; known?: Record<string, MeshEndpoin
       writes += 1;
     },
     meshTransportEnabled: () => opts.meshOn ?? true,
+    ...(opts.alive || opts.aliveThrows
+      ? {
+        isEndpointAlive: (id: string, kind: MeshEndpoint['kind']) => {
+          if (opts.aliveThrows) throw new Error('snapshot unavailable');
+          return opts.alive?.[`${id}:${kind}`];
+        },
+      }
+      : {}),
   });
   return { rec, store, getWrites: () => writes };
 }
@@ -109,5 +123,87 @@ describe('forged-advert-set-from-non-owner-rejected (U4.2 R-r2-5b — the per-en
     // A's entry is byte-identical — B cannot shrink A's advert set to a rope
     // it controls and manufacture "unreachable on every transport".
     expect(store['m_A']).toEqual([TS, LAN]);
+  });
+});
+
+
+/**
+ * Invariant 2b — a NON-EMPTY advertisement that omits a PROVEN kind must not discard it.
+ *
+ * Regression origin (2026-08-29): a peer whose agent runs inside a NAT'd VM could only
+ * see an unreachable virtual NIC, so it advertised `[lan]` alone. The recorder replaced
+ * `[tailscale, lan]` with `[lan]` and the mesh lost its only working route to that
+ * machine — while the tailscale rope was carrying live traffic at that very moment.
+ * Invariant 2 guarded the EMPTY advertisement; nothing guarded the degraded one.
+ */
+describe('PeerEndpointRecorder.record — invariant 2b (omitted-but-proven retention)', () => {
+  it('retains an omitted kind the health record says is ALIVE (the regression case)', () => {
+    // The merged set equals what is already stored, so invariant 4 correctly skips the
+    // write — the POINT is that tailscale survives the degraded advertisement.
+    const { rec, store } = mkRecorder({
+      known: { peer: [TS, LAN] },
+      alive: { 'peer:tailscale': true },
+    });
+    expect(rec.record('peer', [LAN])).toBe(false);
+    expect(store.peer.map((e) => e.kind).sort()).toEqual(['lan', 'tailscale']);
+    expect(store.peer.find((e) => e.kind === 'tailscale')).toEqual(TS);
+  });
+
+  it('retains the proven kind AND writes when the advertised kind actually changed', () => {
+    const movedLan: MeshEndpoint = { kind: 'lan', url: 'http://192.168.87.99:4042' };
+    const { rec, store } = mkRecorder({
+      known: { peer: [TS, LAN] },
+      alive: { 'peer:tailscale': true },
+    });
+    expect(rec.record('peer', [movedLan])).toBe(true);
+    expect(store.peer.map((e) => e.kind).sort()).toEqual(['lan', 'tailscale']);
+    expect(store.peer.find((e) => e.kind === 'lan')).toEqual(movedLan);
+    expect(store.peer.find((e) => e.kind === 'tailscale')).toEqual(TS);
+  });
+
+  it('DROPS an omitted kind the health record says is DEAD (a retired rope does not linger)', () => {
+    const { rec, store } = mkRecorder({
+      known: { peer: [TS, LAN] },
+      alive: { 'peer:tailscale': false },
+    });
+    expect(rec.record('peer', [LAN])).toBe(true);
+    expect(store.peer.map((e) => e.kind)).toEqual(['lan']);
+  });
+
+  it('DROPS an omitted kind with NO health evidence (never dialed ⇒ not proven)', () => {
+    const { rec, store } = mkRecorder({ known: { peer: [TS, LAN] }, alive: {} });
+    expect(rec.record('peer', [LAN])).toBe(true);
+    expect(store.peer.map((e) => e.kind)).toEqual(['lan']);
+  });
+
+  it('a health source that THROWS retains nothing (error ⇒ no evidence, never a retain)', () => {
+    const { rec, store } = mkRecorder({ known: { peer: [TS, LAN] }, aliveThrows: true });
+    expect(rec.record('peer', [LAN])).toBe(true);
+    expect(store.peer.map((e) => e.kind)).toEqual(['lan']);
+  });
+
+  it('an advertisement RE-advertising a kind with a new url still wins (upgrade lands)', () => {
+    const moved: MeshEndpoint = { kind: 'tailscale', url: 'http://100.64.0.77:4042' };
+    const { rec, store } = mkRecorder({
+      known: { peer: [TS] },
+      alive: { 'peer:tailscale': true },
+    });
+    expect(rec.record('peer', [moved])).toBe(true);
+    expect(store.peer).toEqual([moved]);
+  });
+
+  it('stays idempotent — a re-advertisement that merges to the SAME set skips the write', () => {
+    const { rec, getWrites } = mkRecorder({
+      known: { peer: [LAN, TS] },
+      alive: { 'peer:tailscale': true },
+    });
+    expect(rec.record('peer', [LAN])).toBe(false);
+    expect(getWrites()).toBe(0);
+  });
+
+  it('with NO health dep wired, behaviour is byte-identical to plain replace', () => {
+    const { rec, store } = mkRecorder({ known: { peer: [TS, LAN] } });
+    expect(rec.record('peer', [LAN])).toBe(true);
+    expect(store.peer.map((e) => e.kind)).toEqual(['lan']);
   });
 });
