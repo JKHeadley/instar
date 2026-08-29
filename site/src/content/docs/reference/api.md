@@ -1046,6 +1046,27 @@ Cross-machine account setup from the dashboard's Subscriptions-tab grid. Dark be
 | POST | `/subscription-relogin/:episodeId/cancel` | Cancel an active repair episode. Cancellation is durable and checked again before every side effect. |
 | POST | `/subscription-relogin/:episodeId/retry` | Retry an eligible failed episode within its durable attempt, reissue, and wall-clock budgets. Uncertain non-idempotent outcomes remain operator-only. |
 
+### Window lifecycle obligation ledger (Echo-local)
+
+The enforcement plane behind governance windows (`core/WindowLifecycleObligationLedger`): duties compiled from source documents, evidence-gated admission/closure, per-duty executor-liveness, maturation-gated enforcement. Echo-local by design — every route refuses a foreign agent/scope before state access. See the [Window Lifecycle Obligation Ledger feature page](/features/window-lifecycle-ledger/).
+
+| Method | Route | Description |
+|---|---|---|
+| GET | `/window-lifecycle` | Ledger status: compiled obligations, per-instance statuses, lifecycle state, executor bindings. |
+| POST | `/window-lifecycle/compile` | Compile the obligation ledger from the current source-document bytes (SHA-recorded, source-spanned; uncompiled operative clauses fail). |
+| POST | `/window-lifecycle/evidence` | Submit instance-bound evidence for a duty (nonce-bound; wrong-window or replayed evidence rejected). |
+| POST | `/window-lifecycle/evaluate` | Evaluate duty predicates and executor-liveness without mutating state. |
+| POST | `/window-lifecycle/tick` | Run one lifecycle tick — re-query evidence and executors, surface `open-unexecuted` findings. |
+| POST | `/window-lifecycle/transition` | Request a lifecycle state transition; refused while any gating duty lacks evidence. |
+| POST | `/window-lifecycle/native-admission` | Run the shipped between-window admission gate through the versioned adapter; exact input/output persisted, structural verdict never promoted to semantic proof. |
+| POST | `/window-lifecycle/waiver` | Apply an operator waiver — exact payload digest approved post-creation by the locally auth-bound operator; core duties non-waivable. |
+| POST | `/window-lifecycle/rollback` | Audited Echo-local rollback: ledger preserved read-only, manual ritual resumes, enforcement reported disabled. |
+| POST | `/window-lifecycle/reenable` | Re-enable after rollback; requires repair evidence and a passing dry-run suite. |
+| GET | `/window-lifecycle/enforcement` | Enforcement mode (`off` / `dry-run` / `enforced`) + maturation state. |
+| POST | `/window-lifecycle/enforcement/record-shadow` | Server-derived graduation report from the stored ledger and adjudicated shadow audit (dry-run only; unadjudicated or hash-chain-broken rows refuse). |
+| POST | `/window-lifecycle/enforcement/graduate` | Graduate dry-run → enforced on valid dual-lifecycle evidence; forged, reused, or caller-written provenance refused. |
+| POST | `/window-lifecycle/enforcement/off` | Turn the enforcement plane off (neither ticks nor blocks). |
+
 ### Dedicated browser profiles
 
 | Method | Route | Description |

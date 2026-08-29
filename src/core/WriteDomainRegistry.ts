@@ -300,6 +300,13 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     note: 'repair authority is bound to a physical config home, browser profile, tmux pane, and host browser seat; durable rows live only under the machine-local state exclusion and never replicate',
   };
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/subscription-relogin/', domain: 'machine-local', story: subscriptionReloginStory });
+  const windowLifecycleStory: ConvergenceStory = {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'Window-28 lifecycle authority is deliberately local to the Echo build-lane executor; its ledger, enforcement state, evidence registries, and signed audit artifacts live below the machine-local stateDir and are never a shared git write surface',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/window-lifecycle', domain: 'machine-local', story: windowLifecycleStory });
   const classReviewStory: ConvergenceStory = {
     logical: 'ws2x-replicated',
     onSharedGitSyncedPath: true,

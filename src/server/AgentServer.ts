@@ -338,6 +338,7 @@ export class AgentServer {
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null;
     autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
+    windowLifecycleTick?: (() => void) | null;
   } | null = null;
   private deliverySentinel: DeliveryFailureSentinel | null = null;
   private deliveryStore: PendingRelayStore | null = null;
@@ -383,6 +384,7 @@ export class AgentServer {
   private reconSweepTimer: ReturnType<typeof setInterval> | null = null;
   private featureMetricsPruneTimer: ReturnType<typeof setInterval> | null = null;
   private claimObservationHousekeeperTimer: ReturnType<typeof setInterval> | null = null;
+  private windowLifecycleTimer: ReturnType<typeof setInterval> | null = null;
   private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
   private resourceLedger: ResourceLedger | null = null;
@@ -596,6 +598,8 @@ export class AgentServer {
     orphanReaper?: import('../monitoring/OrphanProcessReaper.js').OrphanProcessReaper;
     coherenceMonitor?: import('../monitoring/CoherenceMonitor.js').CoherenceMonitor;
     commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker;
+    /** Test-only deterministic clock for the Echo W28 lifecycle. */
+    windowLifecycleNow?: () => string;
     workQueue?: WorkQueueRegistry;
     prHandLease?: import('../core/PrHandLease.js').PrHandLease;
     /** Duplicate-session stand-down registry (docs/specs/duplicate-session-standdown.md).
@@ -782,6 +786,8 @@ export class AgentServer {
     singleInstanceLock?: import('../core/SingleInstanceLock.js').SingleInstanceLock;
     /** EVERY registered, non-revoked machine (URL or not) — the /guards?scope=pool accounting boundary. */
     listPoolMachines?: () => Array<{ machineId: string; nickname?: string; lastKnownUrl?: string | null }>;
+    /** Canonical browser/profile registry factory used by route-level send guards. */
+    playwrightRegistry?: () => import('../core/PlaywrightProfileRegistry.js').PlaywrightProfileRegistry;
     /** WS4.4 "links that survive machine boundaries" — fronting proxy + holder verification handle (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4). */
     poolLink?: import('./routes.js').RouteContext['poolLink'];
     /** WS4.4(f) global pool-cache unification — the ONE shared per-peer poll cache pool-scope surfaces fan out through (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4 clause (f)). */
@@ -3808,7 +3814,8 @@ export class AgentServer {
         }
       })();
     });
-    const routeCtx = {
+    const routeCtx: import('./routes.js').RouteContext = {
+      windowLifecycleNow: options.windowLifecycleNow,
       capabilityRegistry: new CapabilityRegistryReceiver(),
       config: options.config,
       sessionManager: options.sessionManager,
@@ -4135,6 +4142,7 @@ export class AgentServer {
       resolvePeerUrls: options.resolvePeerUrls ?? null,
       guardRegistry: options.guardRegistry ?? null,
       listPoolMachines: options.listPoolMachines ?? null,
+      playwrightRegistry: options.playwrightRegistry,
       poolLink: options.poolLink ?? null,
       poolPollCache: options.poolPollCache ?? null,
       sessionPoolE2EResultStore: options.sessionPoolE2EResultStore ?? null,
@@ -4212,6 +4220,11 @@ export class AgentServer {
     }
     const routes = createRoutes(routeCtx);
     this.app.use(routes);
+    if (options.config.projectName === 'echo' && routeCtx.windowLifecycleTick) {
+      try { routeCtx.windowLifecycleTick(); } catch (error) { /* @silent-fallback-ok — failure is surfaced loudly and the periodic retry remains armed */ console.warn('[window-lifecycle] initial tick failed:', error); }
+      this.windowLifecycleTimer = setInterval(() => { try { routeCtx.windowLifecycleTick?.(); } catch (error) { /* @silent-fallback-ok — failure is surfaced loudly and retried on the next tick */ console.warn('[window-lifecycle] periodic tick failed:', error); } }, 60_000);
+      this.windowLifecycleTimer.unref?.();
+    }
     this.app.use(createThroughputRoutes({ stateDir: options.config.stateDir }));
 
     // File viewer routes (after auth middleware)
@@ -6045,6 +6058,10 @@ export class AgentServer {
   async stop(): Promise<void> {
     try { this.routeContext?.subscriptionRelogin?.close?.(); }
     catch (error) { console.warn('[subscription-relogin] clean stop failed:', error); }
+    if (this.windowLifecycleTimer) {
+      clearInterval(this.windowLifecycleTimer);
+      this.windowLifecycleTimer = null;
+    }
     if (this.subscriptionLoginLedger) {
       try { this.subscriptionLoginLedger.close(); }
       catch (error) { console.warn('[subscription-login-ledger] clean stop failed:', error); }

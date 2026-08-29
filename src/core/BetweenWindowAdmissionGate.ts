@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const BETWEEN_WINDOW_OBSERVER_TOPIC_ID = 43003;
+/** Versioned native contract consumed by the Echo W28 lifecycle adapter. */
+export const BETWEEN_WINDOW_ADMISSION_CONTRACT_VERSION = '76bc93c3d+' as const;
 
 export interface CorpusSide {
   observer: string;
