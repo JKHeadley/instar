@@ -62,6 +62,21 @@ to:
 This is a real widening, not a theoretical one, and it is the reason this document exists
 rather than a patch.
 
+**CORRECTION (2026-08-29, verified live):** the two-lock separation described above does
+not hold on current deployments. The dashboard files API (`POST /api/files/save`,
+bearer-token-authenticated, default-editable over the whole project directory) accepts
+writes to `.instar/machines/<id>/identity.json` — this is exactly how the incident was
+repaired, and all three peers accepted the write with the token alone. A leaked bearer
+token can therefore ALREADY rewrite what a machine believes about a peer's identity, with
+NO proof of anything. The boundary §2 worried about collapsing is already collapsed.
+
+Consequence: an automatic re-announce that REQUIRES proof-of-possession (the claimant
+answers a peer-issued challenge signed with the NEW key) is strictly STRONGER than the
+status quo path, not weaker. The genuine hardening opportunity is the separate follow-up
+of closing the files-API hole (make `.instar/machines/**` and `.instar/machine/**`
+never-editable), after which the §2 analysis becomes true again and would need
+re-examination — recorded below as follow-up F1.
+
 ## 3. Constraints any accepted option must satisfy
 
 1. **No silent two-day outage.** Whatever is chosen, a mesh that is refusing a peer's
@@ -133,7 +148,25 @@ degrades safely (no observation ⇒ today's behaviour).
 observations need corroboration (repeated, from multiple peers) before being trusted, and
 must never displace a working advertised endpoint — only supplement a missing one.
 
-## 5. Recommendation
+## 5. Decision (operator directive, 2026-08-29)
+
+The operator directed: *"I want the solution that takes the least amount of time/effort
+from the humans"* (topic 62395). Combined with the §2 correction — the widening Option 2's
+PIN existed to prevent is already the status quo — the decision is:
+
+**Option 1 + Option 4 + a fully-AUTOMATIC Option 2 variant (no PIN, no approval tap):**
+a machine detecting sustained `signature-invalid` re-announces automatically; the peer
+verifies proof-of-possession (challenge signed with the NEW key) and accepts; ONE loud
+notice is posted so the rotation is visible, never silent. This is zero-human-touch and
+strictly stronger than today's de-facto repair path (which requires no proof at all).
+
+**Follow-up F1 (hardening, separate):** make `.instar/machine/**` and
+`.instar/machines/**` never-editable via the files API. Once F1 lands, the automatic
+re-announce becomes the ONLY non-pairing write path to a stored identity — at that point
+the proof-of-possession requirement is the load-bearing gate and this spec's §2 analysis
+should be re-run before any further loosening.
+
+## 5b. Original recommendation (superseded by §5)
 
 **Option 1 + Option 4, and Option 2 only if the operator accepts the widening.**
 
@@ -150,7 +183,10 @@ into an implementation.
 
 ## 6. What is deliberately not decided here
 
-Whether to accept the Option-2 widening. That is the operator's call.
+~~Whether to accept the Option-2 widening.~~ DECIDED — see §5 (operator directive
+2026-08-29, recorded in the decision journal, session echo-mesh-liveness-reconciliation).
+Remaining open: none for direction; F1's implementation details are design work for its
+own PR.
 <!-- tracked: CMT-211 -->
 
 > **CMT-211** — Carry the machine-self-assertion decision to closure: (1) the operator's
