@@ -1,0 +1,21 @@
+# Window-lifecycle notify tick joins the self-action convergence ratchet
+
+## Summary of New Capabilities
+
+- The window-rulebook engine's once-a-minute issue-notify loop is now covered by the repository's self-action convergence test: sustained worst-case pressure and mid-stream restarts provably settle at one notice per issue, never a flood.
+
+## What Changed
+
+- `src/testing/selfActionRegistry.ts` gains the 30th controller model: the WindowLifecycleObligationLedger's owned tick, modeled faithfully as its real save-before-send dedupe brake (durable `surfacedIssues` recorded before dispatch, shared across periodic and mutation-route ticks, surviving reconstruction).
+- `src/server/routes.ts` gains the one-line `@self-action-controller` annotation at the real emit site, linking code to registry so the forcing lint stops flagging it.
+- No runtime behavior changes — this is the test-infrastructure debt tracked at the W28 merge (closure:gap → closure:guard), paid.
+
+## What to Tell Your User
+
+Nothing changes in behavior. The safety net under a new background notifier is now in place: if a future edit ever breaks its anti-flood brake, the test suite catches it before it ships.
+
+## Evidence
+
+- `tests/unit/self-action-convergence.test.ts`: 141/141 passing including the new entry's bounded-emission and restart-survival cases.
+- Model fidelity verified against the shipped tick (issue recorded + saved before the async send).
+- `scripts/lint-no-unregistered-self-action.js` no longer flags the window-lifecycle emit.
