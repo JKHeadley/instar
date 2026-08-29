@@ -2491,6 +2491,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const payload: Omit<GraduationReport, 'signature'> = { lifecycleId: `${kind}:${ledger.lifecycleRunId}`, lifecycleRunId: ledger.lifecycleRunId, lifecycleKind: kind, windowId: ledger.windowId, completedAt: windowNow(), falsePasses, falseBlocks, censusComplete, controlledOmissionBlocked: omissionObservedBlock, controlledOmissionReason: omissionReason, ledgerDigest, admissionDigest, closureDigest, auditDigest, producer: 'server:window-lifecycle-shadow', authorityEpoch: maturationAuthority.epoch };
     const report = { ...payload, signature: signGraduation(payload) }; fs.writeFileSync(graduationPath(kind), `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 }); return validateGraduationReport(report, kind);
   };
+  /* @self-action-controller: window-lifecycle-issue-escalation */
   ctx.windowLifecycleTick = ctx.config.projectName === WINDOW_LEDGER_AGENT ? () => {
     const enforcement = loadEnforcementState(); if (enforcement.mode === 'off') return;
     const ledger = windowStore.load(WINDOW_LEDGER_AGENT, WINDOW_LEDGER_SCOPE);

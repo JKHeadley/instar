@@ -1186,7 +1186,46 @@ function makeSubscriptionReloginPressureLoop(f: PressureFixture, sink: ActionSin
   };
 }
 
+/**
+ * window-lifecycle-issue-escalation — the WindowLifecycleObligationLedger's
+ * owned 60-second controller tick. It persists each novel issue in
+ * `ledger.surfacedIssues` BEFORE dispatch, so periodic and mutation-route ticks
+ * share one durable brake; a fixed unresolved issue emits once across reconstruction.
+ */
+const windowLifecycleIssueEscalation: SelfActionController = {
+  id: 'window-lifecycle-issue-escalation',
+  actionVerb: 'window-lifecycle-notify',
+  models: 'src/server/routes.ts (WindowLifecycleObligationLedger owned tick — surfacedIssues dedupe-before-send brake)',
+  modelsPath: 'src/server/routes.ts',
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 20,
+  tickMs: 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeWindowLifecycleIssueEscalation(f, sink),
+  },
+  makeUnderPressure: (f, sink) => makeWindowLifecycleIssueEscalation(f, sink),
+};
+
+function makeWindowLifecycleIssueEscalation(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const DURABLE_KEY = 'window-lifecycle:surfaced-issues';
+  const ISSUE = 'cadence.report.3h@window:predicate-unsatisfied';
+  return {
+    tick() {
+      sink.considered += 1;
+      const surfaced = (f.durableState.get(DURABLE_KEY) as string[] | undefined) ?? [];
+      if (surfaced.includes(ISSUE)) return;
+      // Production saves before the async send, so failure or reconstruction
+      // cannot turn the same issue into an emit loop.
+      f.durableState.set(DURABLE_KEY, [...surfaced, ISSUE]);
+      sink.emit({ verb: 'window-lifecycle-notify', target: ISSUE });
+    },
+  };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  windowLifecycleIssueEscalation,
   subscriptionReloginRedrive,
   standDownMaintenance,
   evolutionActionExpirySweep,
