@@ -1,0 +1,20 @@
+# Chrome CDP shutdown waits for profile writers
+
+## What Changed
+
+- Browser-backed assisted re-login now waits for its owned Chrome process to exit before reporting cleanup complete.
+- Shutdown uses bounded graceful and forced termination, and the real-process integration test always closes Chrome even after an assertion failure.
+
+## What to Tell Your User
+
+Assisted re-login browser cleanup is more reliable under loaded CI and production hosts. Temporary browser profiles are no longer removed while Chrome may still be writing them.
+
+## Summary of New Capabilities
+
+- Race-free completion semantics for the assisted re-login Chrome worker.
+- Bounded recovery when Chrome does not exit promptly.
+
+## Evidence
+
+- The real-Chrome integration test passed twelve consecutive stress runs and one full-suite run locally.
+- TypeScript build passed; remote CI remains the merge authority.
