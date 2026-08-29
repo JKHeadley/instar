@@ -1,0 +1,34 @@
+## What Changed
+
+The Tailscale key-expiry tier of `RopeHealthMonitor` now scans only tailnet nodes that back
+a mesh rope (plus self), rather than every node on the tailnet. `parseTailscaleStatus`
+takes an optional mesh-address set and flags each entry `backsMeshRope`; `soonestKeyExpiry`
+takes `meshScopedOnly`; `server.ts` supplies the addresses from the registry's `tailscale`
+endpoints. An unreadable or empty address source falls back to the previous tailnet-wide
+scan, so a failure is never quieter.
+
+## What to Tell Your User
+
+Your machines warn you when a Tailscale key is about to expire — but they were checking
+every device on your account, including phones and old laptops that aren't part of the
+mesh. One dead device with a lapsed key made that warning permanent, so it stopped meaning
+anything, and on 2026-08-29 it was read as a live risk and reported as one.
+
+The warning now covers only the devices your machines actually reach each other on. Same
+horizon, same wording — it just stops crying wolf about hardware that can't affect
+anything.
+
+## Summary of New Capabilities
+
+- Key-expiry warnings are scoped to devices that genuinely carry mesh traffic.
+- This machine's own key always counts, since its expiry would drop every route it has.
+- Every failure path (unreadable registry, empty list) falls back to the old tailnet-wide
+  scan — the change can make the check noisier, never quieter.
+- No device names, addresses, or account details leave the parser; addresses go in, a
+  boolean comes out.
+
+## Evidence
+
+- Unit: `tests/unit/tailscaleStatusParser.test.ts` (+6), `tests/unit/RopeHealthMonitor.test.ts` (+2),
+  verified red-then-green against pre-fix behaviour.
+- Side-effects review: `upgrades/side-effects/rope-key-expiry-mesh-scope.md`.

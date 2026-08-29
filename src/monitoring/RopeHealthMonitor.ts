@@ -100,6 +100,14 @@ export interface RopeHealthMonitorDeps {
    * then silently absent). Default impl provided; tests inject.
    */
   execTailscaleStatusJson?: () => Promise<string | null>;
+  /**
+   * The tailnet addresses that actually BACK a mesh rope (from the peers' tailscale
+   * endpoints). Supplied ⇒ the key-expiry tier considers only those nodes plus self;
+   * absent ⇒ tailnet-wide, the previous behaviour. A tailnet holds every device the
+   * operator owns, so without this a long-dead unrelated node is the permanent global
+   * minimum expiry and the warning never clears.
+   */
+  meshTailscaleAddresses?: () => string[];
   /** Durable state file (state/rope-health.json). */
   stateFilePath: string;
   recordMetric?: (event: RopeHealthMetricEvent) => void;
@@ -584,14 +592,17 @@ export class RopeHealthMonitor {
           }
           return;
         }
-        const parse = parseTailscaleStatus(raw);
+        const scope = this.safeMeshAddresses();
+        const parse = parseTailscaleStatus(raw, scope);
         if (!parse.parsed) {
           this.keyExpiryAvailable = false;
           this.keyExpirySoonest = null;
           return;
         }
         this.keyExpiryAvailable = true;
-        this.keyExpirySoonest = soonestKeyExpiry(parse, this.now());
+        this.keyExpirySoonest = soonestKeyExpiry(parse, this.now(), {
+          meshScopedOnly: scope !== undefined && scope.size > 0,
+        });
         if (this.keyExpiryWarn()) this.metric('key-expiry-warning');
       })
       .catch((err) => {
@@ -603,6 +614,24 @@ export class RopeHealthMonitor {
       .finally(() => {
         this.keyExpiryInFlight = false;
       });
+  }
+
+  /**
+   * Read the mesh-backing tailnet address set, fail-silent to undefined (⇒ tailnet-wide,
+   * the previous behaviour). Never throws into the expiry tier.
+   */
+  private safeMeshAddresses(): ReadonlySet<string> | undefined {
+    if (!this.d.meshTailscaleAddresses) return undefined;
+    try {
+      const list = this.d.meshTailscaleAddresses();
+      if (!Array.isArray(list) || list.length === 0) return undefined;
+      return new Set(list.filter((a): a is string => typeof a === 'string' && a.length > 0));
+    } catch {
+      // @silent-fallback-ok: an unreadable registry means NO scoping this pass, which is
+      // exactly the pre-scoping behaviour — never a crash, never a silent empty scope
+      // (an empty set would scope the scan down to self alone and hide a real warning).
+      return undefined;
+    }
   }
 
   private keyExpiryWarn(): boolean {

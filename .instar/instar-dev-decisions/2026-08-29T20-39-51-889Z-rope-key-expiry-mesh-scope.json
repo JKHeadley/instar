@@ -1,0 +1,24 @@
+{
+  "ts": "2026-08-29T20:39:51.889Z",
+  "slug": "rope-key-expiry-mesh-scope",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 105,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/tailscaleStatusParser.ts",
+      "src/monitoring/RopeHealthMonitor.ts"
+    ],
+    "addedLines": 100,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

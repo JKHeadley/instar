@@ -25446,6 +25446,33 @@ export async function startServer(options: StartOptions): Promise<void> {
               const t = Date.parse(r.lastHeartbeatAt);
               return Number.isFinite(t) ? t : null;
             },
+            // Scope the key-expiry tier to tailnet nodes that actually back a mesh rope:
+            // the hostnames of every registered peer's `tailscale` endpoint. Without this
+            // the scan is tailnet-wide and any long-dead device the operator still owns is
+            // the permanent soonest-expiry, so the warning never clears.
+            meshTailscaleAddresses: () => {
+              try {
+                const mgr = coordinator?.managers?.identityManager;
+                if (!mgr) return [];
+                const reg = mgr.loadRegistry();
+                const out: string[] = [];
+                for (const entry of Object.values(reg.machines ?? {}) as Array<{ endpoints?: Array<{ kind?: string; url?: string }> }>) {
+                  for (const ep of entry.endpoints ?? []) {
+                    if (typeof ep?.url !== 'string') continue;
+                    if (ep.kind !== 'tailscale') continue;
+                    try {
+                      const host = new URL(ep.url).hostname;
+                      if (host) out.push(host);
+                    } catch { /* a malformed endpoint url contributes nothing */ }
+                  }
+                }
+                return out;
+              } catch {
+                // @silent-fallback-ok: an unreadable registry ⇒ no scoping this pass,
+                // which is the pre-scoping (tailnet-wide) behaviour, never a crash.
+                return [];
+              }
+            },
             raiseAttention: (item) =>
               telegram?.createAttentionItem({
                 id: item.id,
