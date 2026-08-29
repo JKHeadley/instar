@@ -1,0 +1,40 @@
+## What Changed
+
+`PeerEndpointRecorder` gained invariant 2b: a non-empty peer advertisement that OMITS a
+rope kind no longer discards that kind when this machine's own rope-health record shows
+it currently alive. Retention requires positive evidence — a dead rope, a never-dialled
+rope, and an unreadable health source all keep the previous replace semantics, and an
+advertised kind always wins for its own kind. Wired from `meshResolver.snapshot()` in
+`server.ts`.
+
+Found live on 2026-08-29: a peer whose agent runs inside WSL can only see an unreachable
+virtual NIC, so it advertised `[lan]` alone, and the mesh discarded the working tailscale
+rope that was carrying its traffic at that moment.
+
+## What to Tell Your User
+
+If one of your machines runs its agent inside a nested environment (WSL, a container, a
+VM), it may not be able to see the address the other machines actually reach it on. When
+it announced the only address it *could* see, your other machines used to believe it and
+throw away the route that was working — leaving that machine unreachable with no way for
+it to correct the record.
+
+Now a route your machine can see carrying traffic is kept even when an announcement
+forgets to mention it. A route that has genuinely gone dead is still dropped, so nothing
+lingers forever.
+
+## Summary of New Capabilities
+
+- A peer's shorter address list can no longer delete a route this machine can see working.
+- Retention is evidence-based: only a rope the local health record reports alive is kept;
+  dead and never-dialled ropes are dropped exactly as before.
+- Fully reversible — with no health source wired the behaviour is byte-identical to the
+  previous replace semantics.
+
+## Evidence
+
+- Unit: `tests/unit/PeerEndpointRecorder.test.ts` (+8 cases), verified red-then-green
+  against pre-2b behaviour.
+- Integration: `tests/integration/mesh-endpoint-propagation.test.ts` (+2 cases) driving
+  the real `/api/lease` route with a real registry.
+- Side-effects review: `upgrades/side-effects/mesh-endpoint-degradation-retention.md`.
