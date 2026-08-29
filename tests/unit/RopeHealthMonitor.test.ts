@@ -507,6 +507,78 @@ describe('RopeHealthMonitor — key-expiry tier (R-r2-3) + content scrub + diges
     expect(everything).not.toMatch(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/);
   });
 
+  it('key-expiry is scoped to nodes backing a mesh rope — a dead unrelated node stops warning', async () => {
+    // 2026-08-29: a device offline since 2026-08-13 was the tailnet-wide soonest expiry, so
+    // the digest warned permanently while every real mesh machine was months from expiry.
+    const nowMs = Date.parse('2026-08-29T19:00:00Z');
+    const raw = JSON.stringify({
+      BackendState: 'Running',
+      Self: { TailscaleIPs: ['100.124.55.70'], KeyExpiry: '2027-02-15T03:47:45Z' },
+      Peer: {
+        mesh: { TailscaleIPs: ['100.64.165.27'], KeyExpiry: '2026-12-11T18:50:57Z' },
+        dead: { TailscaleIPs: ['100.89.225.62'], KeyExpiry: '2026-08-13T05:48:14Z' },
+      },
+    });
+    const build = (addresses?: () => string[]) => new RopeHealthMonitor(
+      {
+        snapshot: () => [],
+        selfMachineId: 'm_self',
+        listPeers: () => [],
+        readHeartbeatAtMs: () => null,
+        raiseAttention: () => undefined,
+        execTailscaleStatusJson: async () => raw,
+        ...(addresses ? { meshTailscaleAddresses: addresses } : {}),
+        stateFilePath: path.join(tmp(), 'state', 'rope-health.json'),
+        now: () => nowMs,
+      },
+      { keyExpiryCheckIntervalMs: 0, writeDebounceMs: 0 },
+    );
+
+    const scoped = build(() => ['100.64.165.27']);
+    scoped.evaluate();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(scoped.status().keyExpiry.warn).toBe(false);
+    expect(scoped.status().keyExpiry.soonest!.expiresAtIso).toBe('2026-12-11T18:50:57.000Z');
+
+    // Same input, no scope wired ⇒ the previous tailnet-wide behaviour (the dead node wins).
+    const unscoped = build();
+    unscoped.evaluate();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(unscoped.status().keyExpiry.warn).toBe(true);
+    expect(unscoped.status().keyExpiry.soonest!.inDays).toBeLessThan(0);
+  });
+
+  it('a throwing / empty address source falls back to tailnet-wide, never to a silent empty scope', async () => {
+    const nowMs = Date.parse('2026-08-29T19:00:00Z');
+    const raw = JSON.stringify({
+      BackendState: 'Running',
+      Peer: { dead: { TailscaleIPs: ['100.89.225.62'], KeyExpiry: '2026-08-13T05:48:14Z' } },
+    });
+    for (const source of [
+      () => { throw new Error('registry unreadable'); },
+      () => [] as string[],
+    ]) {
+      const monitor = new RopeHealthMonitor(
+        {
+          snapshot: () => [],
+          selfMachineId: 'm_self',
+          listPeers: () => [],
+          readHeartbeatAtMs: () => null,
+          raiseAttention: () => undefined,
+          execTailscaleStatusJson: async () => raw,
+          meshTailscaleAddresses: source as () => string[],
+          stateFilePath: path.join(tmp(), 'state', 'rope-health.json'),
+          now: () => nowMs,
+        },
+        { keyExpiryCheckIntervalMs: 0, writeDebounceMs: 0 },
+      );
+      monitor.evaluate();
+      await new Promise((r) => setTimeout(r, 10));
+      // Degrades to the pre-scoping behaviour — a real expiry is still reported, never hidden.
+      expect(monitor.status().keyExpiry.warn).toBe(true);
+    }
+  });
+
   it('digest: null when everything is ok; ≤3 sentences, machine-NAMED (nickname), when not', () => {
     const h = mkMonitor();
     h.rows.push(row('m_peer', 'tailscale', false));

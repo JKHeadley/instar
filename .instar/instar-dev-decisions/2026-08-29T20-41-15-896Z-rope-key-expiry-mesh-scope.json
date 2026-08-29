@@ -1,0 +1,27 @@
+{
+  "ts": "2026-08-29T20:41:15.896Z",
+  "slug": "rope-key-expiry-mesh-scope",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 105,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/tailscaleStatusParser.ts",
+      "src/monitoring/RopeHealthMonitor.ts"
+    ],
+    "addedLines": 100,
+    "deletedLines": 5
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "U4.5's key-expiry tier was specified against `tailscale status --json` as a whole and never scoped to mesh-relevant nodes — the tailnet was implicitly assumed to BE the mesh. Latent since U4.5 shipped; it only becomes visible once the operator's tailnet contains a node with a lapsed key that is not a mesh peer, which happened when a device went offline 2026-08-13. The permanent warning was then read as a live finding and relayed to the operator as a real risk on 2026-08-29."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}
