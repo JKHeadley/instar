@@ -110,7 +110,11 @@ including replication-apply:
   replication-apply writer. Without this the transitional-window `has-recovery-key:false`
   state is a poison point: whoever first lands a 0→1 recovery-pubkey write becomes the
   machine's root of trust. This is an enumerated funnel invariant with the same teeth as
-  monotonicity, not a prose expectation on callers.
+  monotonicity, not a prose expectation on callers. The legitimate establishment/propagation
+  channel is the operator-authenticated PAIRING-TRUST exchange (one operator action that
+  propagates the new pubkey to peers) — NOT git-replication (which the invariant refuses).
+  Authenticator class: the operator-minted pairing CODE for initial-pair ingestion; a
+  dashboard-PIN for standalone establishment / retro-mint on an already-paired machine.
 - **Tombstone:** the superseded key's fingerprint is recorded; any future write (including
   a continuity-chained or replicated one) rooted at or below a tombstoned epoch is refused.
 - **Sticky revocation:** a revoked machine cannot be written back to active except by an
@@ -145,6 +149,26 @@ boundary-restoration claim is therefore scoped to "restored with respect to DIRE
 writes," and the bearer→RCE surface is a tracked follow-up (Open questions).
 
 ### 4.1 Key rotation re-announce (incident A)
+
+**Acceptance state machine (read this first — the normative detail follows).**
+```
+detect sustained auth-rejected (typed 401, ≥K/≥M, local rotation record)  → open episode
+  → peer mints challenge nonce
+  → claimant signs six-field binding (+ recovery key if it has one)
+  → PEER EVALUATES, in order:
+       has-recovery-key(machineId)?  (non-tombstoned recovery pubkey on record)
+         YES → continuity signature REQUIRED (5-primary). valid + recovery-pubkey
+               cross-peer-consistent (or first-hand anchor) + keyEpoch==stored+1
+               + not-revoked  → ACCEPT.  missing/invalid/superseded → QUARANTINE (PIN).
+         NO  → 5a fallback: re-announce from an incumbent-verified authenticated
+               address?  yes → ACCEPT.  no (double fault / tunnel-only) → QUARANTINE (PIN).
+  → any cross-peer equal-epoch DIVERGENCE (signing bare-claim, or any recovery-pubkey)
+       → QUARANTINE (PIN, URGENT).   epoch LAG → converge + retry, never quarantine.
+  → ACCEPT writes through the §4.0 funnel; every outcome appends to the §4.3 ledger.
+```
+Every QUARANTINE is a single-use, content-hash-bound dashboard-PIN operator decision; ACCEPT
+is zero-touch. The rest of this section is the exact conditions.
+
 
 **Claimant-side trigger (deterministic, both-ways bounded):** an episode opens only when —
 
@@ -220,6 +244,11 @@ Auto-accept requires ALL of:
      epoch) is convergence, not divergence: it converges via funnel-applied replication and
      accepts on retry (never a quarantine).
    The §4.3 detector raises URGENT on a genuine (equal-epoch) divergence of either key.
+   **Live-peer set:** a peer counts as live for max-epoch derivation and divergence checks iff
+   it has produced a mesh-authenticated side-effect (a signed RPC this peer verified, or a
+   fresh capacity heartbeat) within the liveness window; `auth-rejected` counts as proof-of-
+   life (PR #1995) but a bare unreachable/dark peer does NOT participate (its stale copy is
+   neither a divergence vote nor a max-epoch source).
 7. Rate/breaker budget OK (FD2), and no unacked ACCEPTED rotation entry exists for this
    machineId (§4.3 — refusals/quarantines never arm the suspend).
 
@@ -347,6 +376,13 @@ the no-keychain machine — is already covered by the PIN fallback above. Replac
 one-time tap with a permanent quorum-crypto subsystem is a net-negative trade. If ever
 wanted, peer-shares is its own follow-on spec with its own convergence.
 
+**Why "dashboard-PIN" is the superior trust class (round-5).** Every "operator-authenticated,
+never bearer" gate here (first-establishment, recovery-key rotation, quarantine approval)
+rests on the dashboard PIN being a factor a bearer-token holder does NOT possess: the PIN is
+operator-held, is not derived from the bearer token, and the PIN-entry path authenticates the
+operator independently of the token. (A bearer→RCE holder who could serve altered dashboard
+assets is the OQ2 follow-up surface — out of this spec's closure scope, stated in §4.4.)
+
 **The recovery pubkey is now the root of trust and gets the SAME rigor as the signing key
 (round-3: adversarial #1/#2/#4, security #3, lessons F2).**
 
@@ -374,9 +410,13 @@ wanted, peer-shares is its own follow-on spec with its own convergence.
   propagated before relied upon. Two hard rules close the partition exploit (round-4
   adversarial N2): (i) a continuity signature verified against a BELOW-MAX (superseded)
   `recoveryEpoch` is REFUSED, so a peer lagging at a rotated-away recovery key cannot honor a
-  signature against the old key; (ii) when ZERO disagreeing live peers are reachable (a
-  partition), a recovery-pubkey the peer cannot cross-check FAILS TO QUARANTINE — never
-  accepted vacuously.
+  signature against the old key; (ii) a REPLICATED (non-anchor) recovery pubkey the peer
+  cannot cross-check against any disagreeing live peer FAILS TO QUARANTINE — never accepted
+  vacuously. Crucially, a recovery pubkey a peer established FIRST-HAND at pair time (its own
+  trust anchor — see the Multi-machine posture note) is AUTHORITATIVE for continuity
+  verification WITHOUT cross-peer corroboration: on a 2-machine mesh peer A holds B's recovery
+  anchor directly and needs no third peer, so legitimate double-fault auto-recovery is NOT
+  broken there. Rule (ii)'s quarantine scopes to replicated non-anchor pubkeys only.
 - **Recovery-key use is bound + replay-safe.** Every recovery-key use (continuity signature,
   and any recovery-key rotation) is over a single-use nonce covering
   `(machineId ‖ keyEpoch ‖ new-signing-fp ‖ new-recovery-fp ‖ recoveryEpoch)`.
@@ -390,10 +430,16 @@ wanted, peer-shares is its own follow-on spec with its own convergence.
 - Loss of BOTH the escrow AND the live copy falls back to §4.1's corroboration-or-PIN path
   (strictly no worse than pre-escrow) AND raises URGENT "recovery escrow missing" so a forced
   downgrade (an attacker deleting the sealed blob) is loud, never silent.
-- **At-rest honesty:** on a keychain-backed machine the recovery private key exists sealed on
-  disk, decryptable only via the OS keychain master key (which survives `.instar/machine/**`
-  loss and is not bearer-derivable — `SecretStore.ts:297`, `*.key` read-blocked at
-  `fileRoutes.ts:26`).
+- **At-rest honesty + blob survival (round-5).** The survival guarantee covers the MASTER KEY
+  (keychain, above) AND the sealed CIPHERTEXT: the recovery-key blob is stored OUTSIDE the
+  incident-A blast radius — in the OS keychain item itself, or under a sibling path the Studio
+  defect provably does not touch — NEVER under `.instar/machine/**` (else a keychain-backed
+  machine still loses the escrow in the double-fault: the keychain yields the master key but no
+  ciphertext remains). The FD3 graduation rehearsal DELETES `.instar/machine/**` and proves
+  recovery end-to-end, not merely "keychain unlockable." On a keychain-backed machine the
+  recovery private key is then decryptable only via the OS keychain master key (survives
+  `.instar/machine/**` loss, not bearer-derivable — `SecretStore.ts:297`, `*.key` read-blocked
+  at `fileRoutes.ts:26`).
 
 **Token-adversary-proof scope (honest, per §4.4).** The continuity signature is
 token-adversary-proof under "bearer WITHOUT code execution." A bearer→RCE path
@@ -562,7 +608,12 @@ never post (prevents N-notices / zero-notices).
       to peers), NOT on the machine's own self-reported keychain status or local mint (round-4
       N3/integration: a machine that minted locally but never propagated, or spoofed
       keychain:false, must still trip the alert). Keychain status is advisory context, not the
-      alert gate. So a stuck-transitional machine is an incident, not a silent weak path.
+      alert gate. A GENUINELY keychain-less machine (e.g. a headless Linux/WSL peer that can
+      never escrow) is not a perpetual incident: once the operator ACKNOWLEDGES it, it becomes
+      an accepted PIN-path state (the same accept-fallback discipline as a load-bearing-guard
+      gap — acknowledged, visible, suppressed), distinguishing a supported keychain-less config
+      from a stuck/spoofing one. So a stuck-transitional machine is an incident, an
+      acknowledged keychain-less one is an accepted risk, and neither is a silent weak path.
 11. **Liveness propagation:** `auth-rejected` is proof-of-life for every liveness consumer;
     it blocks stale-owner-release death evidence for that peer.
 12. **Migration & rollout parity:** `migrateConfig()` adds the THREE config blocks
