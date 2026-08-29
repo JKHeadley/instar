@@ -123,6 +123,16 @@ interface RopeKeyState {
   lastClosedProbeFailures: number;
   /** Previous tick's dead flag (the rope-recovered breadcrumb keys on dead→clear). */
   prevDead: boolean;
+  /**
+   * Last time a probe to this rope was refused at the AUTH layer
+   * (`auth-rejected:*` — signature-invalid / unknown-sender / wrong-recipient).
+   * An auth refusal is POSITIVE liveness evidence: the peer's server dialed,
+   * answered, verified, and said no. RopeHealthMonitor consumes this to keep a
+   * provably-alive peer from classifying as 'peer-offline — expected' (the
+   * 2026-08-29 two-day one-way-mesh signature-mismatch incident, where the
+   * stopped heartbeat that justified 'expected' was itself CAUSED by the fault).
+   */
+  lastAuthRejectAt: number;
 }
 
 /** One row of the /health `ropeHealth` surface (spec §3). */
@@ -177,7 +187,7 @@ export class RopeRecoveryProber {
       const target = targetByKey.get(k);
       if (!target) continue; // not currently dialable (evicted/undiscovered) — nothing to pin
 
-      const st = this.ropes.get(k) ?? { episode: null, lastClosedAt: 0, lastClosedProbeFailures: 0, prevDead: false };
+      const st = this.ropes.get(k) ?? { episode: null, lastClosedAt: 0, lastClosedProbeFailures: 0, prevDead: false, lastAuthRejectAt: 0 };
       this.ropes.set(k, st);
 
       // ── The rope-recovered breadcrumb keys on the DEAD FLAG clearing (R-r2-3). ──
@@ -312,6 +322,9 @@ export class RopeRecoveryProber {
       }
     } else {
       this.d.recordMetric?.('probe-failure');
+      if (typeof res.detail === 'string' && res.detail.startsWith('auth-rejected')) {
+        st.lastAuthRejectAt = this.now();
+      }
       ep.probeFailures += 1;
       ep.unreclaimedSuccesses = 0;
       if (this.cfg.dryRun) {
@@ -410,4 +423,19 @@ export class RopeRecoveryProber {
   episodeOpen(peer: string, kind: string): boolean {
     return !!this.ropes.get(this.key(peer, kind))?.episode;
   }
+
+  /**
+   * Freshest auth-layer refusal observed across this peer's ropes (epoch-ms),
+   * or null when none recorded. Read seam for RopeHealthMonitor's
+   * alive-but-rejecting classification; scheduling-state only, never persisted.
+   */
+  lastAuthRejectAtMs(peer: string): number | null {
+    let best = 0;
+    for (const [k, st] of this.ropes) {
+      if (!k.startsWith(`${peer} `)) continue;
+      if (st.lastAuthRejectAt > best) best = st.lastAuthRejectAt;
+    }
+    return best > 0 ? best : null;
+  }
+
 }

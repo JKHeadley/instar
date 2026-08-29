@@ -25473,6 +25473,11 @@ export async function startServer(options: StartOptions): Promise<void> {
                 return [];
               }
             },
+            // Alive-but-rejecting evidence: the recovery prober's freshest
+            // auth-layer refusal for this peer. A peer answering probes with a
+            // typed auth refusal is provably awake and must never classify as
+            // 'peer-offline — expected' (2026-08-29 signature-mismatch incident).
+            readAuthRejectAtMs: (id) => _ropeProber?.lastAuthRejectAtMs(id) ?? null,
             raiseAttention: (item) =>
               telegram?.createAttentionItem({
                 id: item.id,
