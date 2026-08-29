@@ -8,77 +8,78 @@ audience: decider
 
 ## The one-sentence version
 
-Twice this week a machine needed to tell the others something true about itself — "here's
-my new key", "here's the address that actually reaches me" — and had no way to prove it,
-because the proof was either lost or invisible from where it stands.
+Twice in one week a machine needed to tell the others something true about itself —
+"here's my new key", "here's the address that actually reaches me" — and had no way to
+prove it; this design lets the mesh accept the truth automatically when the evidence backs
+it, and asks you for one tap only when the evidence can't tell recovery from takeover.
 
 ## The two things that happened
 
 **The lost key.** The Studio's identity files went missing on the 27th. Its keys were
-regenerated. The other three machines still held the old key, so every message the Studio
-sent them was rejected as forged. Messages *to* the Studio kept working, so the mesh ran
-one-way for two days without anything stopping.
+regenerated. The other machines still held the old key, so every message the Studio sent
+was rejected as forged — nearly eleven thousand rejections per connection — and the mesh
+ran one-way for two days. Fixing it took a human writing files onto each machine by hand.
 
-Fixing it meant a human reaching into each machine's filesystem. There is no built-in way
-to do it, and there's a reason: the normal way a machine introduces itself requires a
-pairing code issued by the trusted machine — but here the machine needing to re-introduce
-itself is exactly the one nobody trusts any more.
+**The invisible address.** One machine runs its agent inside WSL, a Linux box nested
+inside Windows. The address everyone reaches it on belongs to the Windows side, which the
+agent literally cannot see. So it announces an address that works from nowhere, and can
+never announce the right one.
 
-**The invisible address.** One machine runs its agent inside WSL, a Linux environment
-nested inside Windows. The address everyone actually reaches it on belongs to the Windows
-side, outside that nested box. From where the agent sits, that address does not exist. So
-it announces the only address it can see — one that works from nowhere — and it can never
-announce the right one.
+## Why "just let it announce itself" was rejected
 
-Both are the same problem wearing different clothes: **state a fact about yourself that
-you cannot back up.**
+Your directive was the least human effort possible, and the first draft said: fully
+automatic — a machine announces its new key, proves it holds that key, done. Eight
+independent reviews (including two non-Anthropic models) all found the same hole: *anyone*
+who just created a key can prove they hold it. That proof filters out nobody. Combined
+with the shared machine password, a fully automatic accept would mean anyone who stole
+that password could become one of your machines — and the only trace would be one
+notification into a queue that provably buried the last critical alert for two days.
 
-## The tempting fix, and what it costs
+## The design that keeps it zero-touch anyway
 
-The machines already share a password-like token for talking to each other. That token is
-what I used by hand to repair the key. So the obvious move is to let a machine simply
-re-announce itself using that token.
+The trick is that a *real* recovery leaves evidence an impostor can't fake, and the mesh
+already holds it:
 
-Here's the catch, and it's the whole reason this is a decision rather than a fix.
+- The recovering machine has a **local rotation record** — a timestamped "my keys were
+  regenerated, here's why" note that survives in its replicated public metadata.
+- The other machines have **first-hand evidence** — they themselves have been refusing
+  that machine's messages (they can see their own "invalid signature" log).
+- The announcement **arrives from an address the peers already know** for that machine.
 
-Right now, if that token leaked, someone could read and change a lot — but they could
-**not** pretend to be one of your machines. Machine identity is protected by keys the
-token has no power over. Two separate locks.
+When all of that lines up — which is what an actual lost-key recovery looks like — the new
+key is accepted automatically. No tap, no approval. The incident from the 27th would have
+healed itself in minutes.
 
-Allowing re-announcement over the token merges those two locks into one. A leaked token
-would then be enough to impersonate a machine, or to redirect one machine's traffic to an
-address of the attacker's choosing.
+When it *doesn't* line up — the claim comes from an address nobody recognizes, or there's
+no rotation record, or two different claimants are fighting over the same machine — the
+claim is parked, nothing is stored, and you get one approve/deny button on your dashboard.
+That's the only moment a human is ever involved, and it's precisely the moment where
+"automatic" would mean "automatic for the attacker too."
 
-That may still be worth it. But it should be your call, made knowing that's the trade —
-not something I quietly implement because it was convenient.
+Every identity change also lands in a permanent ledger that keeps resurfacing until you
+acknowledge it — so even a change you didn't approve can't slip past unseen, no matter how
+noisy the notification queue is that day.
 
-## What I'd suggest
+## The address half
 
-**Two of the three pieces don't need that trade at all.**
+For the machine that can't see its own address, the answer needs no trust at all: the
+other machines record where its *authenticated* traffic actually comes from, confirm it
+over half an hour, dial it back to make sure it really answers as that machine, and only
+then use it — and never in place of an address that's already working. Fully automatic,
+because it's built on what the observers can verify themselves, not on what the boxed-in
+machine claims.
 
-First, a straightforward bug fix. When a machine is refusing another's messages, it
-currently gets filed as "that machine is probably asleep" — because the heartbeat stopped.
-But the heartbeat stopped *because of the refusal*. It's reading its own symptom as the
-innocent explanation. A machine that actively answers "no, I don't believe you" is
-demonstrably awake, and should be reported as a problem, loudly. This needs no new powers.
+## Safety rails, briefly
 
-Second, for the address problem, there's a nicer answer than letting a machine claim an
-address. The other machines already *know* the working address — they're connecting to it
-successfully every minute. Instead of trusting a claim, let them record what they
-observed. That's first-hand evidence rather than an assertion, and it adds no new risk.
+Announcements carry a strictly increasing generation number, so an old captured
+announcement can never be replayed and two rotations can't fight. One machine gets at most
+one automatic re-key a day, three per key generation — then it must go through you.
+Everything ships switched off for the fleet and in rehearsal mode on the dev machines
+first, and the file-editing hole that made all this possible gets closed in the very same
+change that opens the proper door.
 
-That leaves only the key case genuinely needing your decision. My suggestion there is a
-middle path: the machine can ask to re-announce itself, but it takes one tap from you on
-your dashboard, protected by your PIN. Your PIN is something the token doesn't grant, so a
-leaked token still can't impersonate anything on its own. The cost to you is one tap, and
-only when a key is actually lost — which has happened once in the mesh's lifetime.
+## What you need to decide
 
-## What you actually need to decide
-
-Just this: **is one PIN-protected tap an acceptable price for making a lost key
-self-repairable, given it means your PIN becomes the thing standing between a leaked token
-and a machine impersonation?**
-
-If you'd rather not, the fallback is honest and still much better than what happened: I
-detect the breakage within minutes and tell you loudly, and you or I repair it by hand.
-Nothing silently runs one-way for two days again either way.
+Nothing new — this is your least-human-effort directive, made survivable: zero taps for
+every legitimate case, one tap reserved for the case where the evidence itself says
+"this could be theft."
