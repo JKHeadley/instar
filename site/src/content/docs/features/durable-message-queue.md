@@ -83,6 +83,14 @@ missing or late message, read the durable surfaces in this order:
 
 ## Architecture (component map)
 
+For the final Codex-session injection boundary, `CodexComposerAdapter`,
+`CodexDeliveryObserver`, `InboundDeliveryStore`,
+`CodexLifecycleProductionComposition`, and `TrackedPhysicalEffectDispatcher`
+extend custody through terminal dispatch, matching-turn acceptance, response,
+restart, and ownership transfer. See [Codex Session Delivery
+Reliability](/features/codex-session-delivery-reliability/) for that ledger's
+states and activation gate.
+
 - **`PendingInboundStore`** — the SQLite custody store (`synchronous=FULL`,
   mode 0600): tri-state enqueue, atomic claims, injection receipts, tenure
   meta, cumulative pause accounting. Never exposes its DB handle.

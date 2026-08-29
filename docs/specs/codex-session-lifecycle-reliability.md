@@ -319,6 +319,28 @@ This spec distinguishes containment from root repair. Scoped refresh/replay is o
 
 ## Required testing and production wiring
 
+### Capability map
+
+The production implementation is split across explicit capability seams so
+diagnostics and future changes have one named owner:
+
+- `CodexComposerAdapter` reconstructs and classifies the complete visible
+  composer without treating disappearance as acceptance.
+- `CodexDeliveryObserver` correlates bounded rollout events with composer
+  observations and fails ambiguous evidence to `unknown`.
+- `InboundDeliveryStore` owns the FULL-durable delivery, attempt, cursor,
+  notice, breaker, and transfer records.
+- `PhysicalEffectLock` provides cross-process exclusion and monotonic epochs;
+  `TrackedPhysicalEffectDispatcher` journals every physical mutation around
+  that lock.
+- `RecoveryActuationAuthority` is the one-shot, delivery-scoped authority for
+  any future Stage-C action; Stage C remains dark in this release.
+- `StageBActivationGate` binds activation to exact signed release evidence,
+  while `StageBStartupReadiness` proves schema, FULL durability, lock-provider
+  conformance, old-callback death, and attempt ownership at restart.
+- `FrameworkProcessProvenance` proves a process belongs to the pinned Codex
+  host before the command watchdog may classify it as framework infrastructure.
+
 - Unit: store schema/CAS/TTL/HMAC/key failure, queued identical delivery serialization/backpressure bounds, delivery and recovery-episode tables, sequencing-lease CAS races, advancing shared transcript cursor/schema drift, composer adapter boundaries, cached process provenance/tree/PID reuse/live host canary, closed-enum supervisor/composite-authority vetoes/capability expiry, breaker/backoff/deadlines, FIFO supersession, dedupe and migration.
 - Integration: real config/API/recovery channel and server-owned store; dark/observe/dry-run/live boundaries; byte-equivalent single-owner legacy key ladder/timer drain; every crash boundary; forged channel input; scoped refresh/new-incarnation readiness; imported-pending-claim at every ownership claimant; domain-bound transfer encryption/rotation/source-loss matrix.
 - E2E: production `server.ts`, production-wired `TransferOrchestrator`, canonical session-refresh path, and non-null real store/sentinel/consumer/ownership/supervisor dependencies; pre-feature migration fixture; two-node transfer/import/epoch lifecycle including reconciler race; effective once-only replay and exactly one continuation.

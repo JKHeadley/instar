@@ -29,6 +29,14 @@ Polls all active sessions every 60 seconds. Detects:
 
 Coordinates automatic recovery for each case.
 
+For Codex sessions, `PhysicalEffectLock` prevents two processes from acting on
+the same terminal effect, `RecoveryActuationAuthority` scopes any future action
+to one delivery, and `StageBActivationGate` plus `StageBStartupReadiness` keep
+observation dark unless exact release evidence and local startup conformance
+both pass. `FrameworkProcessProvenance` also prevents a pinned Codex host from
+being mistaken for a wedged user command. Automatic Codex refresh/replay is
+still a separate dark stage; observation never silently grants actuation.
+
 ## Promise Tracking
 
 When the agent says "working on it" or "give me a minute," a timer starts. If no follow-up arrives within the expected window, the agent is nudged and the user is notified.
