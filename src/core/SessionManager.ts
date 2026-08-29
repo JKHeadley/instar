@@ -10,7 +10,7 @@ import { execFileSync, execFile } from 'node:child_process';
 import { isInstarSourceTree } from './SourceTreeGuard.js';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, type KeyObject } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -102,6 +102,18 @@ import { sanitizeSenderName, sanitizeTopicName } from '../utils/sanitize.js';
 import { getTelegramInboundDir } from '../messaging/shared/telegramInboundFiles.js';
 import { SessionBuildContextStore } from './SessionBuildContextStore.js';
 import { PendingInjectStore, sweepPendingInjects } from './PendingInjectStore.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
+import {
+  InboundDeliveryStore,
+  InboundDeliveryStoreUnavailableError,
+  loadOrCreateDeliveryHmacKey,
+  type EncryptedDeliveryTransfer,
+} from './InboundDeliveryStore.js';
+import type { StageBActivationStatus } from './StageBActivationGate.js';
+import { CodexDeliveryObserver, type ComposerObservation } from './CodexDeliveryObserver.js';
+import { observeCodexComposerFrame, type CodexComposerFrame } from './CodexComposerAdapter.js';
+import { createPhysicalEffectLock } from './PhysicalEffectLock.js';
+import { TrackedPhysicalEffectDispatcher } from './TrackedPhysicalEffectDispatcher.js';
 import { AgeKillBackoff } from './AgeKillBackoff.js';
 import { governor, consumeAdmissionToken } from '../monitoring/selfaction/governor.js';
 import type { DerivedTarget } from '../monitoring/selfaction/types.js';
@@ -463,7 +475,11 @@ export interface SessionManagerEvents {
    * immediate single-nudge is deliberately skipped for this case.
    */
   rateLimitedAtIdle: [sessionName: string];
+  inboundDeliveryNotice: [notice: import('./InboundDeliveryStore.js').InboundDeliveryNotice];
+  codexObserverSustainedFailure: [episode: { episodeId: string; nextAttemptAt: number }];
 }
+
+class StageBInactiveError extends Error {}
 
 /**
  * Tri-state outcome of a hot-path tmux call (tmux-event-loop-resilience §A).
@@ -483,6 +499,19 @@ type TmuxOutcome =
  *  off-path/test caller) keep today's behavior byte-for-byte: tmuxAsyncEnabled
  *  defaults false ⇒ the legacy sync hot path runs unchanged. */
 export interface SessionManagerOptions {
+  /** Resolved once at boot. Absence/inactive preserves the legacy injection path byte-for-byte. */
+  stageBActivation?: StageBActivationStatus;
+  localMachineId?: () => string;
+  ownerEpochForConversation?: (conversationId: string) => number;
+  /** Exact rollout resolver. Production derives it from the incarnation-bound
+   * session id; tests may supply an isolated captured rollout fixture. */
+  codexRolloutPathForSession?: (session: Session) => string | null;
+  /** Test seam proving the production writer's verified-open failure keeps
+   * Stage B typed-dark. Production always uses InboundDeliveryStore.open. */
+  openInboundDeliveryStoreForTesting?: (stateDir: string) => InboundDeliveryStore;
+  inboundDeliveryStoreOptions?: import('./InboundDeliveryStore.js').InboundDeliveryStoreOptions;
+  /** Independently dark recovery authority composition status. */
+  stageCRecoveryEnabled?: boolean;
   /** (A) — when true, monitorTick drives the bounded async tmux hot-path twins
    *  and isSessionAliveAsync returns tri-state. Resolved server-side via
    *  resolveDevAgentGate(monitoring.tmuxResilience.asyncHotPath.enabled). */
@@ -605,7 +634,9 @@ export class SessionManager extends EventEmitter {
    * output, which for a busy codex session happens while the draft is still
    * stranded. This map clears only when the marker actually leaves the prompt,
    * so it survives a long busy turn. */
-  private strandedDraftMarkers = new Map<string, { marker: string; framework: string; injectedAt: number }>();
+  private strandedDraftMarkers = new Map<string, {
+    marker: string; framework: string; injectedAt: number; deliveryId?: string; conversationId?: string;
+  }>();
 
   /** Throttle stale session cleanup to every 5 minutes */
   private lastCleanupAt = 0;
@@ -759,6 +790,15 @@ export class SessionManager extends EventEmitter {
   private worktreeManager: import('./WorktreeManager.js').WorktreeManager | null = null;
   private buildContextStore: SessionBuildContextStore | null = null;
   private pendingInjects!: PendingInjectStore;
+  private inboundDeliveries: InboundDeliveryStore | null = null;
+  private inboundDeliveryHmacKey: string | null = null;
+  private trackedPhysicalEffects: TrackedPhysicalEffectDispatcher | null = null;
+  private codexDeliveryObserver: CodexDeliveryObserver | null = null;
+  private stageBActivation: StageBActivationStatus;
+  private readonly localMachineId: () => string;
+  private readonly ownerEpochForConversation: (conversationId: string) => number;
+  private readonly codexRolloutPathForSession: (session: Session) => string | null;
+  private readonly stageCRecoveryEnabled: boolean;
   /**
    * Last pane tail the monitor saw for a session still in its STARTUP window.
    *
@@ -806,6 +846,20 @@ export class SessionManager extends EventEmitter {
     super();
     this.config = config;
     this.state = state;
+    this.stageBActivation = opts.stageBActivation ?? {
+      configured: null, pendingActivation: false, active: false,
+      reason: 'unconfigured-dark', artifactDigest: null,
+    };
+    this.localMachineId = opts.localMachineId ?? (() => 'local');
+    this.ownerEpochForConversation = opts.ownerEpochForConversation ?? (() => 0);
+    this.codexRolloutPathForSession = opts.codexRolloutPathForSession ?? ((session) => {
+      if (!session.claudeSessionId) return null;
+      return resolveFrameworkTranscriptPath({
+        framework: 'codex-cli', sessionId: session.claudeSessionId,
+        projectDir: session.cwd ?? this.config.projectDir,
+      });
+    });
+    this.stageCRecoveryEnabled = opts.stageCRecoveryEnabled === true;
     // (A)/(C) tmux-event-loop-resilience wiring — resolved server-side and threaded
     // in. Absent (every 2-arg/test caller) ⇒ the legacy sync hot path runs unchanged.
     this.tmuxAsyncEnabled = opts.tmuxAsyncEnabled === true;
@@ -831,8 +885,110 @@ export class SessionManager extends EventEmitter {
     const stateBase = typeof (state as { baseDir?: unknown } | undefined)?.baseDir === 'string'
       ? (state as { baseDir: string }).baseDir
       : path.join(config.projectDir, '.instar');
-    this.pendingInjects = new PendingInjectStore(path.join(stateBase, 'state'));
     this.vaultStateDir = stateBase;
+    this.pendingInjects = new PendingInjectStore(path.join(stateBase, 'state'));
+    const projectCompatibility = (ledger: InboundDeliveryStore) => {
+      const rows = ledger.compatibilityTombstones();
+      for (const row of rows) this.pendingInjects.projectTombstone(row);
+      const floorPath = path.join(stateBase, 'state', 'codex-lifecycle-downgrade-floor.json');
+      if (rows.length > 0) fs.writeFileSync(floorPath, JSON.stringify({ schemaVersion: 1, liveEvidence: rows.length, projectedAt: Date.now() }));
+      else { try { SafeFsExecutor.safeUnlinkSync(floorPath, { operation: 'SessionManager.clearLifecycleDowngradeFloor' }); } catch { /* absent */ } }
+    };
+    // The projector is deliberately independent of Stage-B actuation. Turning
+    // the feature dark must not make a legacy injector blind to live evidence.
+    if (!this.stageBActivation.active && fs.existsSync(path.join(stateBase, 'state', 'inbound-delivery.sqlite'))) {
+      try {
+        const compatibilityLedger = InboundDeliveryStore.open(stateBase);
+        projectCompatibility(compatibilityLedger);
+        compatibilityLedger.close();
+      } catch (err) {
+        console.error(`[SessionManager] Downgrade compatibility projection failed; rollback remains fenced: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    try {
+      if (!this.stageBActivation.active) throw new StageBInactiveError();
+    this.inboundDeliveries = opts.openInboundDeliveryStoreForTesting
+      ? opts.openInboundDeliveryStoreForTesting(stateBase)
+      : InboundDeliveryStore.open(stateBase, opts.inboundDeliveryStoreOptions);
+    // Downgrade projector: old pending-inject readers see non-actionable empty
+    // tombstones instead of losing delivery IDs or replaying an uncertain body.
+    projectCompatibility(this.inboundDeliveries);
+      this.inboundDeliveryHmacKey = loadOrCreateDeliveryHmacKey(stateBase);
+      this.trackedPhysicalEffects = new TrackedPhysicalEffectDispatcher(
+        createPhysicalEffectLock(stateBase), this.inboundDeliveries,
+      );
+      this.codexDeliveryObserver = new CodexDeliveryObserver({
+        store: this.inboundDeliveries,
+        hmacKey: this.inboundDeliveryHmacKey,
+        resolveRolloutPath: (delivery) => {
+          const session = this.state.listSessions().find((candidate) => candidate.tmuxSession === delivery.incarnation);
+          return session ? this.codexRolloutPathForSession(session) : null;
+        },
+        resolveRolloutId: (delivery) => this.state.listSessions()
+          .find((candidate) => candidate.tmuxSession === delivery.incarnation)?.claudeSessionId ?? null,
+        bindImportedSuccessor: (delivery) => {
+          if (delivery.ownerMachineId !== this.localMachineId()) return false;
+          const topicId = Number(delivery.conversationId);
+          const expectedIncarnation = Number.isFinite(topicId) ? this.getSessionNameForTopic(topicId) : null;
+          if (!expectedIncarnation) return false;
+          const successorCandidates = this.state.listSessions({ status: 'running' }).filter((candidate) =>
+            candidate.tmuxSession === expectedIncarnation
+              && candidate.claudeSessionId === delivery.rolloutId,
+          );
+          if (successorCandidates.length !== 1) return false;
+          const successor = successorCandidates[0];
+          if (!successor?.claudeSessionId) return false;
+          const rolloutPath = this.codexRolloutPathForSession(successor);
+          if (!rolloutPath) return false;
+          let baselineOffset: number;
+          try { baselineOffset = fs.statSync(rolloutPath).size; } catch { // @silent-fallback-ok: successor is not ready until its pinned rollout exists
+            return false;
+          }
+          return this.inboundDeliveries!.bindImportedRolloutSuccessor({
+            conversationId: delivery.conversationId, deliveryId: delivery.deliveryId,
+            targetMachineId: delivery.ownerMachineId, ownerEpoch: delivery.ownerEpoch,
+            incarnation: successor.tmuxSession, rolloutPath, rolloutId: successor.claudeSessionId, baselineOffset,
+          });
+        },
+        onSustainedFailure: (episode) => this.emit('codexObserverSustainedFailure', episode),
+        capturePane: (delivery) => {
+          const session = this.state.listSessions({ status: 'running' })
+            .find((candidate) => candidate.tmuxSession === delivery.incarnation);
+          return session ? this.captureCodexComposerFrame(delivery.incarnation) : null;
+        },
+        capturePaneAsync: async (delivery) => {
+          const session = this.state.listSessions({ status: 'running' })
+            .find((candidate) => candidate.tmuxSession === delivery.incarnation);
+          return session ? this.captureCodexComposerFrameAsync(delivery.incarnation) : null;
+        },
+      });
+      const interrupted = this.inboundDeliveries.reconcileInterruptedEffects();
+      if (interrupted.deliveries > 0 || interrupted.attempts > 0) {
+        console.warn(
+          `[SessionManager] Reconciled ambiguous tmux effects: ${interrupted.deliveries} deliveries, ${interrupted.attempts} key attempts; blind replay is disabled`,
+        );
+      }
+    } catch (err) { // @silent-fallback-ok: inactive is expected control flow; initialization faults are logged and fail closed below
+      if (err instanceof StageBInactiveError) {
+        this.inboundDeliveries = null;
+        this.inboundDeliveryHmacKey = null;
+        this.trackedPhysicalEffects = null;
+        this.codexDeliveryObserver = null;
+      } else {
+      // Keep the server reachable, but fail CLOSED before every pane mutation.
+      // The caller's existing failed-message/PendingInject path retains input.
+      console.error(`[SessionManager] Inbound delivery journal unavailable; tmux injection disabled: ${err instanceof Error ? err.message : String(err)}`);
+      this.inboundDeliveries = null;
+      this.inboundDeliveryHmacKey = null;
+      this.trackedPhysicalEffects = null;
+      this.codexDeliveryObserver = null;
+      if (err instanceof InboundDeliveryStoreUnavailableError) {
+        this.stageBActivation = { ...this.stageBActivation, active: false, reason: err.reason };
+      } else {
+        this.stageBActivation = { ...this.stageBActivation, active: false, reason: 'startup-schema-failed' };
+      }
+      }
+    }
     // Age-gate kill back-off: default 10 min between re-requests for a kept session
     // (config.ageKillBackoffMinutes; 0 disables → legacy every-tick behavior).
     const backoffMin = typeof config.ageKillBackoffMinutes === 'number' ? config.ageKillBackoffMinutes : 10;
@@ -2011,6 +2167,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
   }
 
+  private getSessionNameForTopic(topicId: number): string | null {
+    if (!this.registryPath || !Number.isSafeInteger(topicId)) return null;
+    try {
+      const registry = JSON.parse(fs.readFileSync(this.registryPath, 'utf8')) as {
+        topicToSession?: Record<string, unknown>;
+      };
+      const sessionName = registry.topicToSession?.[String(topicId)];
+      return typeof sessionName === 'string' && sessionName.length > 0 ? sessionName : null;
+    } catch { // @silent-fallback-ok: missing/malformed registry cannot authorize successor binding
+      return null;
+    }
+  }
+
   /**
    * Start polling for completed sessions. Emits 'sessionComplete' when
    * a running session's tmux process disappears.
@@ -2583,6 +2752,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const stillRunning = this.state.listSessions({ status: 'running' });
       this._cachedRunningSessions = stillRunning;
       this._cachedRunningCount = stillRunning.length;
+      // Stage-B observation shares the monitor's single-flight cadence. The
+      // observer has its own bounded row/byte budgets and never queues an
+      // overlapping sweep.
+      if (this.codexDeliveryObserver) {
+        void this.codexDeliveryObserver.sweep().then(() => {
+          this.dispatchPreparedInboundDeliveries();
+          for (const notice of this.inboundDeliveries?.pendingNotices(20) ?? []) {
+            this.emit('inboundDeliveryNotice', notice);
+          }
+        }).catch((err) => { // @silent-fallback-ok: logged async observer failure leaves all durable rows queued/fail-closed
+          console.error(`[SessionManager] Codex delivery observation sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
     } finally {
       this.monitoringInProgress = false;
     }
@@ -4033,7 +4215,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         total += parseProcTimeToSeconds(p.time);
       }
       return total;
-    } catch {
+    } catch { /* @silent-fallback-ok: an unreadable process sample contributes no CPU evidence */
       return 0;
     }
   }
@@ -4102,7 +4284,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const pane = this.captureOutput(tmuxSession, 30);
       if (this.paneShowsActiveWork(pane)) return true;
       return this.hasActiveProcesses(tmuxSession);
-    } catch {
+    } catch { /* @silent-fallback-ok: probe failure cannot positively claim active work */
       return false;
     }
   }
@@ -4250,6 +4432,65 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ));
     } catch {
       // @silent-fallback-ok — capture output, null handled by caller
+      return null;
+    }
+  }
+
+  /** Complete visible Codex viewport plus race-checked tmux cursor geometry. */
+  captureCodexComposerFrame(tmuxSession: string): CodexComposerFrame | null {
+    const target = `=${tmuxSession}:`;
+    const format = '#{cursor_x}|#{cursor_y}|#{pane_width}|#{pane_height}|#{alternate_on}|#{pane_in_mode}';
+    try {
+      const before = withSyncOp(() => execFileSync(this.config.tmuxPath,
+        ['display-message', '-p', '-t', target, format], { encoding: 'utf8', timeout: 750 })).trim();
+      const ansiViewport = withSyncOp(() => execFileSync(this.config.tmuxPath,
+        ['capture-pane', '-p', '-e', '-t', target], { encoding: 'utf8', timeout: 750 }));
+      const joinedViewport = withSyncOp(() => execFileSync(this.config.tmuxPath,
+        ['capture-pane', '-p', '-J', '-t', target], { encoding: 'utf8', timeout: 750 }));
+      const after = withSyncOp(() => execFileSync(this.config.tmuxPath,
+        ['display-message', '-p', '-t', target, format], { encoding: 'utf8', timeout: 750 })).trim();
+      const fields = before.split('|').map(Number);
+      if (fields.length !== 6 || fields.some((field) => !Number.isSafeInteger(field))) return null;
+      const [cursorX, cursorY, width, height, alternateOn, paneInMode] = fields;
+      return {
+        ansiViewport, joinedViewport, cursorX, cursorY, width, height,
+        alternateOn: alternateOn === 1, paneInMode: paneInMode === 1,
+        stableMetadata: before === after,
+      };
+    } catch { // @silent-fallback-ok: incomplete composer evidence fails closed
+      return null;
+    }
+  }
+
+  /** Async observer capture: concurrency is owned by CodexDeliveryObserver and
+   * this entire four-sample frame has one 750ms wall-clock deadline. */
+  async captureCodexComposerFrameAsync(tmuxSession: string): Promise<CodexComposerFrame | null> {
+    const target = `=${tmuxSession}:`;
+    const format = '#{cursor_x}|#{cursor_y}|#{pane_width}|#{pane_height}|#{alternate_on}|#{pane_in_mode}';
+    const deadline = Date.now() + 750;
+    const run = (args: string[]): Promise<string> => new Promise((resolve, reject) => {
+      const timeout = Math.max(1, deadline - Date.now());
+      execFile(this.config.tmuxPath, args, { encoding: 'utf8', timeout }, (err, stdout) => {
+        if (err || Date.now() > deadline) reject(err ?? new Error('composer capture deadline exceeded'));
+        else resolve(stdout);
+      });
+    });
+    try {
+      const before = (await run(['display-message', '-p', '-t', target, format])).trim();
+      const [ansiViewport, joinedViewport] = await Promise.all([
+        run(['capture-pane', '-p', '-e', '-t', target]),
+        run(['capture-pane', '-p', '-J', '-t', target]),
+      ]);
+      const after = (await run(['display-message', '-p', '-t', target, format])).trim();
+      const fields = before.split('|').map(Number);
+      if (fields.length !== 6 || fields.some((field) => !Number.isSafeInteger(field))) return null;
+      const [cursorX, cursorY, width, height, alternateOn, paneInMode] = fields;
+      return {
+        ansiViewport, joinedViewport, cursorX, cursorY, width, height,
+        alternateOn: alternateOn === 1, paneInMode: paneInMode === 1,
+        stableMetadata: before === after,
+      };
+    } catch { // @silent-fallback-ok: timeout/race is typed unknown evidence
       return null;
     }
   }
@@ -4579,30 +4820,96 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Send input to a running tmux session.
    */
   sendInput(tmuxSession: string, input: string): boolean {
-    try {
-      // Note: use `=session:` (trailing colon) for pane-level tmux commands
-      // Send text literally, then Enter separately. `--` terminates option
-      // parsing so input can never be interpreted as a send-keys flag
-      // (FABLE-MODEL-ESCALATION-SPEC §5.3 hardening; safe for all callers).
-      // Chunked: `send-keys -l` carries its payload in ONE argv element, so a
-      // large input fails with `command too long` (src/core/tmuxLiteralSend.ts).
-      for (const chunk of chunkLiteralForTmux(input)) {
-        withSyncOp(() => execFileSync(
-          this.config.tmuxPath,
-          buildLiteralSendArgs(`=${tmuxSession}:`, chunk),
-          { encoding: 'utf-8', timeout: 5000 }
-        ));
-      }
-      withSyncOp(() => execFileSync(
-        this.config.tmuxPath,
-        ['send-keys', '-t', `=${tmuxSession}:`, 'Enter'],
-        { encoding: 'utf-8', timeout: 5000 }
-      ));
-      return true;
-    } catch {
-      // @silent-fallback-ok — send-keys boolean return
-      return false;
-    }
+    // One production injection funnel. Historically this method duplicated a
+    // raw `tmux send-keys` implementation and silently bypassed the Stage-B
+    // journal/lock used by injectMessage(). Every in-process caller now reaches
+    // the same rawInject authority; InputGuard remains the responsibility of
+    // the external injectMessage boundary.
+    return this.rawInject(tmuxSession, input);
+  }
+
+  /** Privacy-safe lifecycle counts for authenticated diagnostics. */
+  inboundDeliveryStatus(): (ReturnType<InboundDeliveryStore['status']> & {
+    observer: ReturnType<CodexDeliveryObserver['status']> | null;
+    activation: StageBActivationStatus;
+  })
+    | { unavailable: true; activation: StageBActivationStatus } {
+    return this.inboundDeliveries
+      ? {
+          ...this.inboundDeliveries.status(),
+          observer: this.codexDeliveryObserver?.status() ?? null,
+          activation: this.stageBActivation,
+        }
+      : { unavailable: true, activation: this.stageBActivation };
+  }
+
+  /** Test-only trigger for the exact production observer composition. */
+  async sweepInboundDeliveryObserverForTesting(): Promise<void> {
+    await this.codexDeliveryObserver?.sweep();
+    this.dispatchPreparedInboundDeliveries();
+  }
+
+  scopedRecoveryStatus(): { enabled: boolean; mode: 'dark' | 'durable-authority' } {
+    return this.stageCRecoveryEnabled
+      ? { enabled: true, mode: 'durable-authority' }
+      : { enabled: false, mode: 'dark' };
+  }
+
+  markInboundDeliveryNoticeDelivered(notice: import('./InboundDeliveryStore.js').InboundDeliveryNotice): boolean {
+    return this.inboundDeliveries?.markNoticeDelivered(notice) ?? false;
+  }
+
+  markCodexObserverNoticeDelivered(episodeId: string): boolean {
+    return this.inboundDeliveries?.markObserverNoticeDelivered(episodeId) ?? false;
+  }
+
+  /** Ownership-authority projection: source fences live delivery rows at transferring(e+1). */
+  transferInboundDeliveryOwnership(conversationId: string, source: string, sourceEpoch: number,
+    target: string, transferEpoch: number): number {
+    if (!this.stageBActivation.active || !this.inboundDeliveries) return 0;
+    return this.inboundDeliveries.transferLiveRows(conversationId, source, sourceEpoch, target, transferEpoch);
+  }
+
+  /** Ownership-authority projection: target claims verified imported rows at active(e+2). */
+  claimTransferredInboundDeliveries(conversationId: string, target: string,
+    transferEpoch: number, activeEpoch: number): number {
+    if (!this.stageBActivation.active || !this.inboundDeliveries) return 0;
+    return this.inboundDeliveries.claimTransferredRows(conversationId, target, transferEpoch, activeEpoch);
+  }
+
+  /** Build a recipient-encrypted transfer and atomically fence the source rows. */
+  exportInboundDeliveryTransfer(input: {
+    conversationId: string; sourceMachineId: string; sourceEpoch: number;
+    targetMachineId: string; transferEpoch: number; activeEpoch: number;
+    targetEncryptionPublicKey: string;
+  }): EncryptedDeliveryTransfer | null {
+    if (!this.stageBActivation.active || !this.inboundDeliveries || !this.inboundDeliveryHmacKey) return null;
+    return this.inboundDeliveries.exportLiveRows({
+      ...input,
+      localHmacKey: this.inboundDeliveryHmacKey,
+    });
+  }
+
+  /** Import a signed-peer carrier after mesh authentication and recipient decryption. */
+  importInboundDeliveryTransfer(input: {
+    transfer: EncryptedDeliveryTransfer; ownEncryptionPrivateKey: KeyObject;
+    authenticatedSourceMachineId: string; expectedTargetMachineId: string;
+    expectedConversationId: string; expectedTransferEpoch: number;
+  }): { imported: number; duplicate: number; activeEpoch: number } | null {
+    if (!this.stageBActivation.active || !this.inboundDeliveries || !this.inboundDeliveryHmacKey) return null;
+    return this.inboundDeliveries.importLiveRows({
+      ...input,
+      localHmacKey: this.inboundDeliveryHmacKey,
+    });
+  }
+
+  restoreInboundDeliveryAfterAbortedTransfer(
+    conversationId: string, sourceMachineId: string, transferEpoch: number, activeEpoch: number,
+  ): number {
+    if (!this.stageBActivation.active || !this.inboundDeliveries) return 0;
+    return this.inboundDeliveries.restoreAbortedTransfer(
+      conversationId, sourceMachineId, transferEpoch, activeEpoch,
+    );
   }
 
   /**
@@ -5722,6 +6029,69 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return result;
   }
 
+  private dispatchPreparedInboundDeliveries(): void {
+    if (!this.inboundDeliveries || !this.inboundDeliveryHmacKey || !this.trackedPhysicalEffects) return;
+    for (let delivery of this.inboundDeliveries.dispatchablePrepared(4)) {
+      const session = this.state.listSessions({ status: 'running' })
+        .find((candidate) => candidate.tmuxSession === delivery.incarnation);
+      if (!session || delivery.framework !== 'codex-cli' || !session.claudeSessionId) continue;
+      const envelope = this.inboundDeliveries.openReplayEnvelope(
+        delivery.conversationId, delivery.deliveryId, this.inboundDeliveryHmacKey,
+      );
+      if (envelope === null) {
+        this.inboundDeliveries.transition(delivery.conversationId, delivery.deliveryId, 'prepared', 'dispatch-failed');
+        continue;
+      }
+      if (delivery.rolloutPath === null) {
+        const rolloutPath = this.codexRolloutPathForSession(session);
+        let baseline = -1;
+        try { if (rolloutPath) baseline = fs.statSync(rolloutPath).size; } catch { baseline = -1; }
+        if (!rolloutPath || baseline < 0 || !this.inboundDeliveries.bindRolloutBaseline(
+          delivery.conversationId, delivery.deliveryId, rolloutPath, session.claudeSessionId, baseline,
+        )) continue;
+        delivery = this.inboundDeliveries.get(delivery.conversationId, delivery.deliveryId) ?? delivery;
+      }
+      const result = this.trackedPhysicalEffects.dispatchSync({
+        scope: delivery.incarnation,
+        conversationId: delivery.conversationId,
+        deliveryId: delivery.deliveryId,
+        deadlineMs: Date.now() + 15_000,
+        reconcile: () => {
+          this.inboundDeliveries!.reconcileInterruptedEffects();
+          return !this.inboundDeliveries!.hasUnreconciledEffects(delivery.conversationId);
+        },
+        fence: () => this.inboundDeliveries!.ownsLiveDelivery(
+          delivery.conversationId, delivery.deliveryId, delivery.ownerMachineId, delivery.ownerEpoch,
+        ) && this.localMachineId() === delivery.ownerMachineId
+          && this.ownerEpochForConversation(delivery.conversationId) === delivery.ownerEpoch,
+        effect: () => this.performTmuxInjectionEffect(delivery.incarnation, envelope, delivery.framework),
+      });
+      if (!result.ok) {
+        console.error(`[SessionManager] Prepared FIFO dispatch refused for ${delivery.incarnation}: ${result.reason}`);
+      }
+    }
+    this.refreshLifecycleCompatibilityProjection();
+  }
+
+  private refreshLifecycleCompatibilityProjection(): void {
+    if (!this.inboundDeliveries) return;
+    const rows = this.inboundDeliveries.compatibilityTombstones();
+    for (const row of rows) this.pendingInjects.projectTombstone(row);
+    const floorPath = path.join(this.vaultStateDir, 'state', 'codex-lifecycle-downgrade-floor.json');
+    try {
+      if (rows.length > 0) {
+        fs.mkdirSync(path.dirname(floorPath), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(floorPath, JSON.stringify({ schemaVersion: 1, liveEvidence: rows.length, projectedAt: Date.now() }), { mode: 0o600 });
+      } else {
+        SafeFsExecutor.safeUnlinkSync(floorPath, { operation: 'SessionManager.refreshLifecycleCompatibilityProjection' });
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        console.error(`[SessionManager] Lifecycle downgrade-floor refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
   /**
    * Spawn a scoped triage session with restricted tool access.
    * Unlike interactive sessions, triage sessions use --allowedTools + --permission-mode dontAsk
@@ -6364,7 +6734,6 @@ rm()  { "${shimRunner}" rm  "$@"; }
       this.idleKillBackoff?.reset(match.id); // new input arriving → re-evaluate fresh, not a zombie
     }
 
-    const exactTarget = `=${tmuxSession}:`;
     // Framework-specific submit semantics. Claude Code's readline buffers
     // the bracketed paste and accepts a single Enter ~500ms later to
     // submit. Codex's TUI takes longer to commit a paste into its
@@ -6375,102 +6744,130 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // submits if the first was eaten; if both land, the second is a
     // harmless no-op against an empty buffer).
     const framework = this.getSessionFramework(tmuxSession);
-    const postPasteDelaySec = framework === 'codex-cli' ? '1.5' : '0.5';
-    const enterPresses = framework === 'codex-cli' ? 2 : 1;
-    const maxAttempts = 2;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const conversationId = String(this.getTopicBinding(tmuxSession)?.topicId ?? tmuxSession);
+    let delivery: ReturnType<InboundDeliveryStore['prepare']> | null = null;
+    if (this.stageBActivation.active) {
+      if (!this.inboundDeliveries || !this.inboundDeliveryHmacKey) return false;
       try {
-        // §B: the injection send-keys + /bin/sleep stay SYNCHRONOUS — their
-        // synchronous timing IS the correctness mechanism (D1) and so are EXCLUDED
-        // from §A async conversion — but every blocking call funnels through
-        // withSyncOp so a sleep/wake drift across this sequence reads as an
-        // event-loop BLOCK, not sleep.
-        if (text.includes('\n')) {
-          // Multi-line: use bracketed paste mode.
-          // The terminal (and Claude Code's readline) treats everything between
-          // \e[200~ and \e[201~ as a single paste — newlines are literal, not Enter.
-          // This completely avoids load-buffer/paste-buffer and their TCC prompts.
-          withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[200~'], {
-            encoding: 'utf-8', timeout: 5000,
-          }));
-          // Chunked — see src/core/tmuxLiteralSend.ts. Safe inside the
-          // bracketed-paste region: everything between the markers is ONE
-          // paste no matter how many writes deliver it.
-          for (const chunk of chunkLiteralForTmux(text)) {
-            withSyncOp(() => execFileSync(this.config.tmuxPath, buildLiteralSendArgs(exactTarget, chunk), {
-              encoding: 'utf-8', timeout: 10000,
-            }));
-          }
-          withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[201~'], {
-            encoding: 'utf-8', timeout: 5000,
-          }));
-          withSyncOp(() => execFileSync('/bin/sleep', [postPasteDelaySec], { timeout: 4000 }));
-          for (let i = 0; i < enterPresses; i++) {
-            withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
-              encoding: 'utf-8', timeout: 5000,
-            }));
-            if (i < enterPresses - 1) {
-              try { withSyncOp(() => execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 })); } catch { /* ignore */ }
-            }
-          }
-        } else {
-          // Single-line: simple send-keys
-          // Chunked — see src/core/tmuxLiteralSend.ts. Safe inside the
-          // bracketed-paste region: everything between the markers is ONE
-          // paste no matter how many writes deliver it.
-          for (const chunk of chunkLiteralForTmux(text)) {
-            withSyncOp(() => execFileSync(this.config.tmuxPath, buildLiteralSendArgs(exactTarget, chunk), {
-              encoding: 'utf-8', timeout: 10000,
-            }));
-          }
-          for (let i = 0; i < enterPresses; i++) {
-            withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], {
-              encoding: 'utf-8', timeout: 5000,
-            }));
-            if (i < enterPresses - 1) {
-              try { withSyncOp(() => execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 })); } catch { /* ignore */ }
-            }
-          }
+        delivery = this.inboundDeliveries.prepare({
+        conversationId,
+        incarnation: tmuxSession,
+        framework: framework ?? 'unknown',
+        envelope: text,
+        hmacKey: this.inboundDeliveryHmacKey,
+        ownerMachineId: this.localMachineId(),
+        ownerEpoch: this.ownerEpochForConversation(conversationId),
+        });
+        if (this.inboundDeliveries.hasOtherActiveDispatch(conversationId, delivery.deliveryId)) {
+          // FIFO: custody is already durable, but only the oldest row may own
+          // an unconsumed physical dispatch. The monitor drains this prepared
+          // row after the predecessor reaches a terminal response.
+          this.refreshLifecycleCompatibilityProjection();
+          return true;
         }
+        if (framework === 'codex-cli') {
+          const transcriptPath = match ? this.codexRolloutPathForSession(match) : null;
+          let baseline = -1;
+          try { if (transcriptPath) baseline = fs.statSync(transcriptPath).size; } catch { // @silent-fallback-ok: missing baseline fails closed before pane mutation
+            baseline = -1;
+          }
+          const rolloutId = match?.claudeSessionId ?? null;
+          if (!transcriptPath || !rolloutId || baseline < 0
+            || !this.inboundDeliveries.bindRolloutBaseline(conversationId, delivery.deliveryId, transcriptPath, rolloutId, baseline)) {
+            this.inboundDeliveries.transition(conversationId, delivery.deliveryId, 'prepared', 'dispatch-failed');
+            this.refreshLifecycleCompatibilityProjection();
+            console.error(`[SessionManager] Refusing unverifiable Codex injection for ${tmuxSession}: rollout baseline unavailable`);
+            return false;
+          }
+          delivery = this.inboundDeliveries.get(conversationId, delivery.deliveryId);
+        }
+        this.refreshLifecycleCompatibilityProjection();
+      } catch (err) {
+        console.error(`[SessionManager] Refusing unjournaled tmux injection: ${err instanceof Error ? err.message : String(err)}`);
+        return false;
+      }
+    }
+    try {
+      if (delivery) {
+        const ownerMachineId = delivery.ownerMachineId;
+        const ownerEpoch = delivery.ownerEpoch;
+        const result = this.trackedPhysicalEffects!.dispatchSync({
+          scope: tmuxSession, conversationId, deliveryId: delivery.deliveryId,
+          deadlineMs: Date.now() + 15_000,
+          reconcile: () => {
+            this.inboundDeliveries!.reconcileInterruptedEffects();
+            return !this.inboundDeliveries!.hasUnreconciledEffects(conversationId);
+          },
+          fence: () => this.inboundDeliveries!.ownsLiveDelivery(
+            conversationId, delivery!.deliveryId, ownerMachineId, ownerEpoch,
+          ) && this.localMachineId() === ownerMachineId
+            && this.ownerEpochForConversation(conversationId) === ownerEpoch,
+          effect: () => this.performTmuxInjectionEffect(tmuxSession, text, framework),
+        });
+        if (!result.ok) {
+          this.refreshLifecycleCompatibilityProjection();
+          console.error(`[SessionManager] Tracked injection refused for ${tmuxSession}: ${result.reason}`);
+          return false;
+        }
+        this.refreshLifecycleCompatibilityProjection();
+      } else {
+        this.performTmuxInjectionEffect(tmuxSession, text, framework);
+      }
         // Track the just-injected message so the persistent StuckInputSentinel
         // can recover it if it strands at the prompt. This is the durable-across-
         // turn backstop for codex specifically: codex holds a busy-delivery as an
         // unsubmitted draft and does NOT auto-submit it when the turn ends, and a
         // long codex turn far outlasts verifyInjection's 6.5s in-process window.
-        if (framework === 'codex-cli') {
-          this.recordStrandedDraftMarker(tmuxSession, text, framework);
-        }
+      if (framework === 'codex-cli') {
+        this.recordStrandedDraftMarker(tmuxSession, text, framework, delivery?.deliveryId, conversationId);
+      }
         // Verify Enter actually submitted — on fresh Claude Code TUIs (v2.1.105+)
         // the Enter after bracketed-paste-end is occasionally eaten, leaving the
         // text sitting in the input box unsubmitted. verifyInjection captures the
         // pane after a short delay and sends one extra Enter if the marker text
         // is still visible at the ❯ (or codex `›`) prompt.
-        this.verifyInjection(tmuxSession, text);
-        return true;
-      } catch (err) {
+      this.verifyInjection(tmuxSession, text);
+      return true;
+    } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`[SessionManager] Failed to inject message into ${tmuxSession} (attempt ${attempt}/${maxAttempts}): ${errMsg}`);
-        if (attempt < maxAttempts) {
-          // Synchronous sleep between retry attempts. We use execFileSync('/bin/sleep')
-          // rather than an async delay because the entire injection path is synchronous:
-          // rawInject → injectMessage → injectTelegramMessage all use execFileSync for
-          // tmux send-keys. Converting to async would require changing the call chain
-          // through multiple callers. The 300ms pause is brief and only hits on failure
-          // (max once per injection), so the event loop impact is negligible in practice.
-          try { withSyncOp(() => execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 })); } catch { /* ignore */ }
-          continue;
-        }
+        console.error(`[SessionManager] Failed to inject message into ${tmuxSession}: ${errMsg}`);
+        // Once dispatch-started is durable, any thrown tmux error may have
+        // happened after a partial paste or submit. Preserve uncertainty and
+        // never blindly repeat the body inside this call.
         DegradationReporter.getInstance().report({
           feature: 'SessionManager.injectMessage',
           primary: 'Inject Telegram message into tmux session',
           fallback: 'Message delivery failed — caller notified for user-facing error relay',
-          reason: `Failed to inject message after ${maxAttempts} attempts: ${errMsg}`,
+          reason: `Failed to inject message: ${errMsg}`,
           impact: 'User message not delivered to session',
         });
-        return false;
+      return false;
+    }
+  }
+
+  /** The sole tmux mutation body; Stage B calls it only while holding the physical-effect lease. */
+  private performTmuxInjectionEffect(tmuxSession: string, text: string, framework: string | null): void {
+    const exactTarget = `=${tmuxSession}:`;
+    const postPasteDelaySec = framework === 'codex-cli' ? '1.5' : '0.5';
+    const enterPresses = framework === 'codex-cli' ? 2 : 1;
+    if (text.includes('\n')) {
+      withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[200~'], { encoding: 'utf-8', timeout: 5000 }));
+      for (const chunk of chunkLiteralForTmux(text)) {
+        withSyncOp(() => execFileSync(this.config.tmuxPath, buildLiteralSendArgs(exactTarget, chunk), { encoding: 'utf-8', timeout: 10000 }));
+      }
+      withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, '\x1b[201~'], { encoding: 'utf-8', timeout: 5000 }));
+      withSyncOp(() => execFileSync('/bin/sleep', [postPasteDelaySec], { timeout: 4000 }));
+    } else {
+      for (const chunk of chunkLiteralForTmux(text)) {
+        withSyncOp(() => execFileSync(this.config.tmuxPath, buildLiteralSendArgs(exactTarget, chunk), { encoding: 'utf-8', timeout: 10000 }));
       }
     }
-    return false;
+    for (let i = 0; i < enterPresses; i++) {
+      withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', exactTarget, 'Enter'], { encoding: 'utf-8', timeout: 5000 }));
+      if (i < enterPresses - 1) {
+        try { withSyncOp(() => execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 })); } catch { /* @silent-fallback-ok */ }
+      }
+    }
   }
 
   /**
@@ -6644,23 +7041,53 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * (a newer message supersedes an older stuck one). No-op when the marker is
    * too short to track reliably. See the strandedDraftMarkers field for why this
    * primarily matters for codex sessions. */
-  recordStrandedDraftMarker(tmuxSession: string, text: string, framework: string): void {
+  recordStrandedDraftMarker(tmuxSession: string, text: string, framework: string,
+    deliveryId?: string, conversationId = tmuxSession): void {
     const marker = SessionManager.extractInjectionMarker(text);
     if (!marker) return;
-    this.strandedDraftMarkers.set(tmuxSession, { marker, framework, injectedAt: Date.now() });
+    this.strandedDraftMarkers.set(tmuxSession, { marker, framework, injectedAt: Date.now(), deliveryId, conversationId });
   }
 
   /** Read the stranded-draft marker record for a session (or undefined). Used by
    *  StuckInputSentinel to do marker-based recovery for codex sessions. */
-  getStrandedDraftMarker(tmuxSession: string): { marker: string; framework: string; injectedAt: number } | undefined {
+  getStrandedDraftMarker(tmuxSession: string): { marker: string; framework: string; injectedAt: number; deliveryId?: string; conversationId?: string } | undefined {
     return this.strandedDraftMarkers.get(tmuxSession);
+  }
+
+  /** Durable facts used by the independently dark recovery actuation authority. */
+  strandedDraftRecoverySnapshot(tmuxSession: string): import('./InboundDeliveryStore.js').DeliveryRecoverySnapshot | null {
+    const marker = this.strandedDraftMarkers.get(tmuxSession);
+    if (!marker?.deliveryId || !marker.conversationId || !this.inboundDeliveries) return null;
+    return this.inboundDeliveries.recoverySnapshot(marker.conversationId, marker.deliveryId);
+  }
+
+  /** Full-envelope, HMAC-correlated composer evidence for Stage-B keypress
+   * authorization. Prefix/absence checks are never sufficient. */
+  trackedDraftComposerState(tmuxSession: string, _pane: string): ComposerObservation {
+    const marker = this.strandedDraftMarkers.get(tmuxSession);
+    if (!marker?.deliveryId || !marker.conversationId || !this.inboundDeliveries || !this.inboundDeliveryHmacKey) {
+      return 'unknown';
+    }
+    const row = this.inboundDeliveries.get(marker.conversationId, marker.deliveryId);
+    if (!row || row.transportState !== 'dispatched') return 'unknown';
+    const observed = observeCodexComposerFrame(
+      this.captureCodexComposerFrame(tmuxSession), row.envelopeHmac, this.inboundDeliveryHmacKey,
+    );
+    if (observed !== 'unknown') this.inboundDeliveries.recordComposerState(marker.conversationId, marker.deliveryId, observed);
+    return observed;
+  }
+
+  markStrandedDraftExhausted(tmuxSession: string): boolean {
+    const marker = this.strandedDraftMarkers.get(tmuxSession);
+    return !!marker?.deliveryId && !!marker.conversationId && !!this.inboundDeliveries
+      && this.inboundDeliveries.markKeypressExhausted(marker.conversationId, marker.deliveryId);
   }
 
   /** Clear the stranded-draft marker for a session — called once the marker is
    *  no longer stuck at the prompt (confirmed submitted) or the session is
    *  gone. */
   clearStrandedDraftMarker(tmuxSession: string): void {
-    this.strandedDraftMarkers.delete(tmuxSession);
+    this.strandedDraftMarkers?.delete(tmuxSession);
   }
 
   /** All tmux sessions with a stranded-draft marker. Used by the sentinel to GC
@@ -6676,25 +7103,58 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * race windows. Bounded; called from verifyInjection's polling loop and
    * from the persistent StuckInputSentinel after a server restart.
    */
-  fireStuckInputRecovery(tmuxSession: string, attempt: number): void {
+  fireStuckInputRecovery(tmuxSession: string, attempt: number):
+    { status: 'attempted' | 'effect-unknown' | 'refused'; reason?: string } {
     const target = `=${tmuxSession}:`;
     const tmuxPath = this.config.tmuxPath;
-    try {
-      // §B: the stuck-input recovery send-keys stay sync (escalating timing IS the
-      // mechanism) but funnel through withSyncOp for the marker.
-      if (attempt === 0 || attempt === 1) {
-        withSyncOp(() => execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 }));
-      } else if (attempt === 2) {
-        // Escalate: literal carriage-return — bypasses any Enter-specific consumer.
-        withSyncOp(() => execFileSync(tmuxPath, ['send-keys', '-t', target, 'C-m'], { encoding: 'utf-8', timeout: 5000 }));
-      } else {
-        // Final attempt: Enter, brief sleep, Enter — covers sub-second consume races.
-        withSyncOp(() => execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 }));
-        try { withSyncOp(() => execFileSync('/bin/sleep', ['0.15'], { timeout: 1000 })); } catch { /* @silent-fallback-ok — sleep is best-effort */ }
-        withSyncOp(() => execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 }));
+    // Legacy harnesses may instantiate this narrow recovery surface without
+    // running the full SessionManager constructor. Journaling is additive for
+    // those harnesses; production instances always own the map and store.
+    const markerEvidence = this.strandedDraftMarkers?.get(tmuxSession);
+    const deliveryId = markerEvidence?.deliveryId;
+    const conversationId = markerEvidence?.conversationId ?? tmuxSession;
+    if (this.stageBActivation.active) {
+      if (!deliveryId || !this.inboundDeliveries || !this.trackedPhysicalEffects) {
+        return { status: 'refused', reason: 'missing-durable-delivery-evidence' };
       }
+      const delivery = this.inboundDeliveries.get(conversationId, deliveryId);
+      if (!delivery) return { status: 'refused', reason: 'missing-durable-delivery-evidence' };
+      const result = this.trackedPhysicalEffects.keyAttemptSync({
+        scope: tmuxSession, conversationId, deliveryId, attemptIndex: attempt,
+        deadlineMs: Date.now() + 8_000,
+        reconcile: () => {
+          this.inboundDeliveries!.reconcileInterruptedEffects();
+          return !this.inboundDeliveries!.hasUnreconciledEffects(conversationId);
+        },
+        fence: () => this.inboundDeliveries!.ownsLiveDelivery(
+          conversationId, deliveryId, delivery.ownerMachineId, delivery.ownerEpoch,
+        ) && this.localMachineId() === delivery.ownerMachineId
+          && this.ownerEpochForConversation(conversationId) === delivery.ownerEpoch,
+        effect: () => this.performStuckInputKeyEffect(target, tmuxPath, attempt),
+      });
+      if (result.ok) return { status: 'attempted' };
+      return result.status === 'effect-unknown'
+        ? { status: 'effect-unknown', reason: result.reason }
+        : { status: 'refused', reason: result.reason };
+    }
+    try {
+      this.performStuckInputKeyEffect(target, tmuxPath, attempt);
+      return { status: 'attempted' };
     } catch (err) {
       console.error(`[SessionManager] fireStuckInputRecovery error for "${tmuxSession}" attempt ${attempt}: ${err instanceof Error ? err.message : err}`);
+      return { status: 'effect-unknown', reason: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  private performStuckInputKeyEffect(target: string, tmuxPath: string, attempt: number): void {
+    if (attempt === 0 || attempt === 1) {
+      withSyncOp(() => execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 }));
+    } else if (attempt === 2) {
+      withSyncOp(() => execFileSync(tmuxPath, ['send-keys', '-t', target, 'C-m'], { encoding: 'utf-8', timeout: 5000 }));
+    } else {
+      withSyncOp(() => execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 }));
+      try { withSyncOp(() => execFileSync('/bin/sleep', ['0.15'], { timeout: 1000 })); } catch { /* @silent-fallback-ok */ }
+      withSyncOp(() => execFileSync(tmuxPath, ['send-keys', '-t', target, 'Enter'], { encoding: 'utf-8', timeout: 5000 }));
     }
   }
 
@@ -6774,7 +7234,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         withSyncOp(() => execFileSync(this.config.tmuxPath, ['send-keys', '-t', `=${tmuxSession}:`, 'Enter'], {
           encoding: 'utf-8', timeout: 5000,
         }));
-      } catch {
+      } catch { // @silent-fallback-ok: legacy consent helper is best-effort and readiness remains false
         // Best-effort — if this fails, the session will be stuck but not crashed
       }
       return false; // Not ready yet — will be ready on next poll

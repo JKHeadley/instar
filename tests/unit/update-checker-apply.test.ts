@@ -277,6 +277,16 @@ describe('UpdateChecker.rollback()', () => {
     expect(typeof result.message).toBe('string');
     expect(result.message.length).toBeGreaterThan(0);
   }, 30000);
+
+  it('refuses rollback below the delivery compatibility floor while evidence is live', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'state', 'update-rollback.json'), JSON.stringify({
+      previousVersion: '0.1.11', updatedVersion: '0.1.12', updatedAt: new Date().toISOString(),
+    }));
+    fs.writeFileSync(path.join(tmpDir, 'state', 'codex-lifecycle-downgrade-floor.json'), JSON.stringify({ liveEvidence: 1 }));
+    const result = await checker.rollback();
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('compatibility-projector floor');
+  });
 });
 
 describe('UpdateChecker.check() with changeSummary', () => {

@@ -79,6 +79,11 @@ import type { SessionManager } from './SessionManager.js';
 import { CLAUDE_WORKING_INDICATORS } from './claudeActivityIndicators.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { SessionRecoveryChannel, type RecoveryTier } from './SessionRecoveryChannel.js';
+import {
+  RecoveryActuationAuthority,
+  type RecoveryAuthoritySnapshot,
+} from './RecoveryActuationAuthority.js';
+import type { DeliveryRecoverySnapshot } from './InboundDeliveryStore.js';
 
 export interface StuckInputSentinelOptions {
   /** Poll interval. Default 10s. */
@@ -106,6 +111,10 @@ export interface StuckInputSentinelOptions {
   /** How many ticks to wait for the lifeline to ack a tier-C request before
    *  giving up (bounded — no restart loop). Default 6. */
   escalationTimeoutTicks?: number;
+  /** Durable, single-use authority. Required whenever deeper recovery is live. */
+  recoveryAuthority?: RecoveryActuationAuthority;
+  /** Monotonic operator-stop signal (typically the durable stop flag mtime). */
+  operatorStopEpoch?: () => number;
 }
 
 /** In-memory record of what the sentinel has seen for a given session. */
@@ -136,6 +145,8 @@ interface SessionStuckRecord {
   recoveryAttemptId?: string;
   /** tickCounter value when the request was emitted (for the bounded wait). */
   recoveryRequestedTick?: number;
+  observedRecovery?: DeliveryRecoverySnapshot;
+  observedOperatorStopEpoch?: number;
 }
 
 /** Event row written to stuck-input-events.jsonl on each fire. */
@@ -147,7 +158,7 @@ export interface StuckInputEvent {
   action: 'Enter' | 'C-m' | 'Enter-sleep-Enter'
     | 'escalate-request' | 'escalate-recovered' | 'escalate-failed' | 'escalate-timeout'
     | 'ghost-text-skip' | 'ghost-check-inconclusive';
-  outcome: 'fired' | 'fire-error' | 'escalated' | 'recovered' | 'gave-up' | 'skipped';
+  outcome: 'fired' | 'effect-unknown' | 'refused' | 'fire-error' | 'escalated' | 'recovered' | 'gave-up' | 'skipped';
   /** Recovery tier for escalation events (absent for keypress events). */
   tier?: RecoveryTier;
   error?: string;
@@ -289,6 +300,8 @@ export class StuckInputSentinel {
   private readonly recoveryChannel: SessionRecoveryChannel | null;
   private readonly escalationEnabled: boolean;
   private readonly escalationTimeoutTicks: number;
+  private readonly recoveryAuthority: RecoveryActuationAuthority | null;
+  private readonly operatorStopEpoch: () => number;
 
   /** Per-session sticky state. Keyed by tmuxSession. */
   private readonly records: Map<string, SessionStuckRecord> = new Map();
@@ -310,6 +323,8 @@ export class StuckInputSentinel {
     this.recoveryChannel = opts.recoveryChannel ?? null;
     this.escalationEnabled = opts.escalationEnabled ?? false;
     this.escalationTimeoutTicks = opts.escalationTimeoutTicks ?? 6;
+    this.recoveryAuthority = opts.recoveryAuthority ?? null;
+    this.operatorStopEpoch = opts.operatorStopEpoch ?? (() => 0);
   }
 
   start(): void {
@@ -412,7 +427,10 @@ export class StuckInputSentinel {
 
     let stuckText: string | null;
     if (codexMarker) {
-      stuckText = this.sessionManager.isMarkerStuckAtPrompt(pane, codexMarker) ? codexMarker : null;
+      const composer = this.sessionManager.trackedDraftComposerState?.(tmuxSession, pane)
+        ?? (this.sessionManager.isMarkerStuckAtPrompt(pane, codexMarker) ? 'present' : 'cleared');
+      if (composer === 'unknown') return;
+      stuckText = composer === 'present' ? codexMarker : null;
     } else {
       stuckText = this.extractPromptText(pane);
     }
@@ -437,6 +455,8 @@ export class StuckInputSentinel {
         attempts: 0,
         exhausted: false,
         recoveryPhase: 'none',
+        observedRecovery: this.sessionManager.strandedDraftRecoverySnapshot?.(tmuxSession) ?? undefined,
+        observedOperatorStopEpoch: this.operatorStopEpoch(),
       });
       return;
     }
@@ -447,6 +467,7 @@ export class StuckInputSentinel {
     if (existing.exhausted) return;
     if (existing.consecutiveTicks < this.minTicksBeforeFire) return;
     if (existing.attempts >= this.maxAttempts) {
+      this.sessionManager.markStrandedDraftExhausted?.(tmuxSession);
       // Keypress ladder (tier A) exhausted. Either escalate to deeper-tier
       // recovery (tier C: cross-process server restart + replay request) when
       // enabled, or fall back to the legacy "mark exhausted, stop" behavior.
@@ -488,15 +509,27 @@ export class StuckInputSentinel {
     // Fire one recovery action and record it.
     const attempt = existing.attempts;
     const action = StuckInputSentinel.actionForAttempt(attempt);
-    let outcome: StuckInputEvent['outcome'] = 'fired';
+    let outcome: StuckInputEvent['outcome'] = 'refused';
     let errMsg: string | undefined;
     try {
-      this.sessionManager.fireStuckInputRecovery(tmuxSession, attempt);
+      const result = this.sessionManager.fireStuckInputRecovery(tmuxSession, attempt);
+      if (result?.status === 'attempted') {
+        outcome = 'fired';
+        existing.attempts += 1;
+      } else if (result?.status === 'effect-unknown') {
+        // Once the effect boundary was crossed, the rung is permanently
+        // consumed even though its outcome cannot be proven.
+        outcome = 'effect-unknown';
+        existing.attempts += 1;
+        errMsg = result.reason;
+      } else {
+        outcome = 'refused';
+        errMsg = result?.reason ?? 'recovery primitive returned no durable outcome';
+      }
     } catch (err) {
       outcome = 'fire-error';
       errMsg = err instanceof Error ? err.message : String(err);
     }
-    existing.attempts += 1;
 
     this.recordEvent({
       ts: new Date(now).toISOString(),
@@ -508,7 +541,7 @@ export class StuckInputSentinel {
       error: errMsg,
     });
 
-    if (!this.degradationReportedOnce) {
+    if ((outcome === 'fired' || outcome === 'effect-unknown') && !this.degradationReportedOnce) {
       this.degradationReportedOnce = true;
       DegradationReporter.getInstance().report({
         feature: 'StuckInputSentinel.recover',
@@ -675,7 +708,7 @@ export class StuckInputSentinel {
     record: SessionStuckRecord, tmuxSession: string, stuckText: string, now: number,
   ): void {
     const channel = this.recoveryChannel;
-    if (!this.escalationEnabled || !channel) {
+    if (!this.escalationEnabled || !channel || !this.recoveryAuthority) {
       record.exhausted = true; // legacy behavior
       return;
     }
@@ -684,18 +717,54 @@ export class StuckInputSentinel {
     const promptText = stuckText.slice(0, 200);
 
     if (record.recoveryPhase === 'none') {
+      const observed = record.observedRecovery;
+      const current = this.sessionManager.strandedDraftRecoverySnapshot?.(tmuxSession);
+      if (!observed || !current) {
+        record.exhausted = true;
+        this.recordEvent({ ts: isoNow, session: tmuxSession, promptText, attempt: record.attempts, action: 'escalate-failed', outcome: 'refused', tier: 'server-restart-replay', error: 'recovery-evidence-unavailable' });
+        return;
+      }
+      const authoritySnapshot: RecoveryAuthoritySnapshot = {
+        operatorStopEpoch: this.operatorStopEpoch(),
+        observedOperatorStopEpoch: record.observedOperatorStopEpoch ?? 0,
+        ownerEpoch: current.ownerEpoch,
+        observedOwnerEpoch: observed.ownerEpoch,
+        latestOrdinal: current.latestOrdinal,
+        deliveryOrdinal: observed.deliveryOrdinal,
+        sessionActive: false,
+        incarnation: current.incarnation,
+        observedIncarnation: observed.incarnation,
+        deliveryExhausted: current.deliveryExhausted,
+        breakerOpen: current.breakerOpen,
+      };
+      const authorized = this.recoveryAuthority.authorize({
+        ...authoritySnapshot,
+        conversationId: current.conversationId,
+        deliveryId: current.deliveryId,
+        now,
+      });
+      if (!authorized.ok) {
+        record.exhausted = true;
+        this.recordEvent({ ts: isoNow, session: tmuxSession, promptText, attempt: record.attempts, action: 'escalate-failed', outcome: 'refused', tier: 'server-restart-replay', error: authorized.reason });
+        return;
+      }
       // First escalation — request tier C from the lifeline.
       const attemptId = `${tmuxSession}#${record.firstSeenAt}`;
       const tier: RecoveryTier = 'server-restart-replay';
       try {
-        channel.requestRecovery({
+        const published = this.recoveryAuthority.publish(authorized.capability.id, () => channel.requestRecovery({
           sessionId: tmuxSession,
           tier,
           reason: `keypress ladder exhausted (${this.maxAttempts} attempts); prompt still stuck`,
           observedAt: isoNow,
           attemptId,
           requestedBy: 'StuckInputSentinel',
-        });
+        }), now);
+        if (!published.ok || !published.requested) {
+          record.exhausted = true;
+          this.recordEvent({ ts: isoNow, session: tmuxSession, promptText, attempt: record.attempts, action: 'escalate-failed', outcome: 'refused', tier, error: published.ok ? 'recovery-request-refused' : published.reason });
+          return;
+        }
         record.recoveryPhase = 'requested';
         record.recoveryAttemptId = attemptId;
         record.recoveryRequestedTick = this.tickCounter;

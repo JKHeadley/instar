@@ -52,6 +52,8 @@ function buildManager(paneFn: () => string, tmuxAlive = true) {
   mgr.idlePromptSince = new Map();
   mgr.captureOutput = vi.fn(paneFn);
   mgr.tmuxSessionExists = vi.fn(() => tmuxAlive);
+  mgr.stageBActivation = { active: false };
+  mgr.strandedDraftMarkers = new Map();
   return mgr;
 }
 

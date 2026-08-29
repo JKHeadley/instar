@@ -148,6 +148,21 @@ describe('sweepPendingInjects (boot recovery decisions)', () => {
     expect(store.list().records).toHaveLength(1); // survives for the next boot's retry
   });
 
+  it('keeps projected delivery tombstones for 24h and never replays them', async () => {
+    store.projectTombstone({ conversationId: 'telegram:2271', deliveryId: 'delivery-1', createdAt: NOW - 60_000 });
+    const redeliver = vi.fn(async () => {});
+    await sweepPendingInjects(store, {
+      sessionAlive: () => true, redeliver, reportLoss: vi.fn(), now: () => NOW,
+    });
+    expect(redeliver).not.toHaveBeenCalled();
+    expect(store.list().records[0]).toMatchObject({ deliveryId: 'delivery-1', tombstone: true, doNotReplay: true });
+    const expired = await sweepPendingInjects(store, {
+      sessionAlive: () => true, redeliver, reportLoss: vi.fn(), now: () => NOW + 25 * 60 * 60 * 1000,
+    });
+    expect(expired.expired).toHaveLength(1);
+    expect(store.list().records).toHaveLength(0);
+  });
+
   it('mixed population: each record gets its own verdict', async () => {
     rec('alive-fresh', 1);
     rec('dead-fresh', 1);

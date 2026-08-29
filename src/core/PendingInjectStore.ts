@@ -37,6 +37,10 @@ export interface PendingInjectRecord {
   telegramTopicId?: number;
   /** ISO timestamp the record was written (spawn time). */
   createdAt: string;
+  /** Compatibility projector evidence. New binaries never replay these. */
+  deliveryId?: string;
+  tombstone?: boolean;
+  doNotReplay?: boolean;
 }
 
 export class PendingInjectStore {
@@ -62,6 +66,9 @@ export class PendingInjectStore {
         initialMessage: entry.initialMessage,
         ...(entry.telegramTopicId !== undefined ? { telegramTopicId: entry.telegramTopicId } : {}),
         createdAt: entry.createdAt ?? new Date().toISOString(),
+        ...(entry.deliveryId ? { deliveryId: entry.deliveryId } : {}),
+        ...(entry.tombstone ? { tombstone: true } : {}),
+        ...(entry.doNotReplay ? { doNotReplay: true } : {}),
       };
       fs.writeFileSync(this.fileFor(entry.tmuxSession), JSON.stringify(full, null, 2));
     } catch (err) {
@@ -70,6 +77,17 @@ export class PendingInjectStore {
       // means this one inject isn't restart-recoverable (the pre-fix behavior).
       console.warn(`[PendingInjectStore] record failed for "${entry.tmuxSession}" (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  projectTombstone(entry: { conversationId: string; deliveryId: string; createdAt: number }): void {
+    this.record({
+      tmuxSession: `__delivery_tombstone__-${entry.deliveryId}`,
+      initialMessage: '',
+      createdAt: new Date(entry.createdAt).toISOString(),
+      deliveryId: entry.deliveryId,
+      tombstone: true,
+      doNotReplay: true,
+    });
   }
 
   /** Remove the record after a verified inject. Never throws. */
@@ -161,6 +179,13 @@ export async function sweepPendingInjects(
 
   for (const record of records) {
     const age = now() - Date.parse(record.createdAt);
+    if (record.tombstone || record.doNotReplay) {
+      if (!Number.isFinite(age) || age > 24 * 60 * 60 * 1000) {
+        store.clear(record.tmuxSession);
+        result.expired.push(record.tmuxSession);
+      }
+      continue;
+    }
     if (!Number.isFinite(age) || age > maxAgeMs) {
       deps.reportLoss(record, `record expired (age ${Math.round(age / 60000)}m > ${Math.round(maxAgeMs / 60000)}m)`);
       store.clear(record.tmuxSession);

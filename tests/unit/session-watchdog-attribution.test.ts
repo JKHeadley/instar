@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { classifyProtectedWait } from '../../src/monitoring/SessionWatchdog.js';
+import {
+  classifyFrameworkInfrastructureProcess,
+  classifyProtectedWait,
+} from '../../src/monitoring/SessionWatchdog.js';
 
 describe('SessionWatchdog interruption attribution', () => {
   it('protects safe-merge and GitHub watch commands from stuck intervention', () => {
@@ -23,5 +26,23 @@ describe('SessionWatchdog interruption attribution', () => {
 
   it('returns long-lived waiters to the contextual judge after the bounded floor', () => {
     expect(classifyProtectedWait('node scripts/safe-merge.mjs 1981', '', 2 * 60 * 60 * 1_000 + 1)).toEqual({ protected: false });
+  });
+
+  it('preserves an exact suspected Codex host without claiming confirmed provenance', () => {
+    expect(classifyFrameworkInfrastructureProcess(
+      '/opt/instar/bin/codex-code-mode-host --stdio',
+      'codex-cli',
+    )).toEqual({ protected: true, confirmed: false, reason: 'ownership-unknown' });
+    expect(classifyFrameworkInfrastructureProcess(
+      '/opt/instar/bin/codex-code-mode-host --stdio',
+      'claude-code',
+    )).toEqual({ protected: false, confirmed: false });
+  });
+
+  it('does not grant host immunity when user argv merely mentions the host name', () => {
+    expect(classifyFrameworkInfrastructureProcess(
+      '/bin/sh -c echo codex-code-mode-host',
+      'codex-cli',
+    )).toEqual({ protected: false, confirmed: false });
   });
 });

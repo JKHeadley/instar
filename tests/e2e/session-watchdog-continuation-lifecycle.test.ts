@@ -4,7 +4,7 @@ import { SessionWatchdog } from '../../src/monitoring/SessionWatchdog.js';
 describe('SessionWatchdog non-operator interruption lifecycle', () => {
   afterEach(() => vi.useRealTimers());
 
-  it('attributes its Ctrl+C and submits one continuation prompt', async () => {
+  it('attributes its Ctrl+C without creating an independent continuation writer', async () => {
     vi.useFakeTimers();
     const sm = {
       captureOutput: vi.fn(() => 'hung without progress'),
@@ -28,7 +28,7 @@ describe('SessionWatchdog non-operator interruption lifecycle', () => {
     await vi.advanceTimersByTimeAsync(1_500);
 
     expect(sm.sendKey).toHaveBeenCalledOnce();
-    expect(sm.sendInput).toHaveBeenCalledOnce();
+    expect(sm.sendInput).not.toHaveBeenCalled();
     expect(interventions).toEqual([expect.objectContaining({
       principal: 'session-watchdog',
       reason: 'stuck-command-judge',

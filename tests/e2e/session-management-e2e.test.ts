@@ -420,7 +420,7 @@ describeMaybe('Session Management E2E', () => {
 
       // When the user's interactive session spawns (no explicit configHome)
       const tmuxSession = await sm.spawnInteractiveSession(undefined, `${TMUX_PREFIX}pin-b1`);
-      await new Promise(r => setTimeout(r, 1500));
+      await waitFor(() => sm.isSessionAlive(tmuxSession), 10_000);
       expect(sm.isSessionAlive(tmuxSession)).toBe(true);
 
       // Then the persisted record is tagged with the pool account
@@ -449,7 +449,10 @@ describeMaybe('Session Management E2E', () => {
       const tmuxSession = await sm.spawnInteractiveSession(undefined, `${TMUX_PREFIX}detect-prompt`);
 
       // When we wait for readiness
-      await new Promise(r => setTimeout(r, 3000));
+      await waitFor(() => {
+        const out = sm.captureOutput(tmuxSession, 20) ?? '';
+        return out.includes('❯') || out.includes('bypass permissions');
+      }, 10_000);
 
       // Then the prompt should be visible in capture output
       const output = sm.captureOutput(tmuxSession, 20);
@@ -467,7 +470,10 @@ describeMaybe('Session Management E2E', () => {
       const tmuxSession = await sm.spawnInteractiveSession(undefined, `${TMUX_PREFIX}detect-bypass`);
 
       // When we wait for the TUI to render
-      await new Promise(r => setTimeout(r, 2000));
+      await waitFor(
+        () => (sm.captureOutput(tmuxSession, 20) ?? '').includes('bypass permissions'),
+        10_000,
+      );
 
       // Then "bypass permissions" should be detectable
       const output = sm.captureOutput(tmuxSession, 20);
@@ -481,7 +487,10 @@ describeMaybe('Session Management E2E', () => {
       managers.push(sm);
 
       const tmuxSession = await sm.spawnInteractiveSession(undefined, `${TMUX_PREFIX}detect-effort`);
-      await new Promise(r => setTimeout(r, 2000));
+      await waitFor(
+        () => (sm.captureOutput(tmuxSession, 20) ?? '').includes('/effort'),
+        10_000,
+      );
 
       // Then the effort indicator should be detectable
       const output = sm.captureOutput(tmuxSession, 20);
@@ -508,7 +517,7 @@ describeMaybe('Session Management E2E', () => {
 
       const output = sm.captureOutput(tmuxSession, 30);
       expect(output).toContain('Delayed hello');
-    });
+    }, 25_000);
   });
 
   // ── Feature: Session Lifecycle (kill, reap, monitor) ──────────────
@@ -734,7 +743,13 @@ describeMaybe('Session Management E2E', () => {
       managers.push(sm);
 
       const tmuxSession = await sm.spawnInteractiveSession(undefined, `${TMUX_PREFIX}routing`);
-      await new Promise(r => setTimeout(r, 3000));
+      // A tmux session can exist before its interactive child has reached the
+      // prompt, especially when the full E2E suite is under load. Gate the
+      // routing assertion on the provider-ready signal rather than wall time.
+      await waitFor(
+        () => (sm.captureOutput(tmuxSession, 30) ?? '').includes('bypass permissions on'),
+        10_000,
+      );
 
       // When the session is alive
       expect(sm.isSessionAlive(tmuxSession)).toBe(true);
@@ -853,7 +868,12 @@ describeMaybe('Session Management E2E', () => {
 
       const homeName = `${TMUX_PREFIX}home-ctx`;
       const homeTmux = await homeSm.spawnInteractiveSession(undefined, homeName);
-      await waitFor(() => homeSm.isSessionAlive(homeTmux), 10_000);
+      // As above, session existence is weaker than prompt readiness. The
+      // maintenance tick must observe the mock after it has changed cwd.
+      await waitFor(
+        () => (homeSm.captureOutput(homeTmux, 30) ?? '').includes('bypass permissions on'),
+        10_000,
+      );
       const homeSession = project.state.listSessions({ status: 'running' }).find(s => s.tmuxSession === homeTmux)!;
       homeSession.startedAt = new Date(Date.now() - 20_000).toISOString();
       project.state.saveSession(homeSession);

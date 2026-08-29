@@ -46,8 +46,7 @@ import {
 // import { installAutoStart } from '../commands/setup.js';
 import { MessageQueue, type QueuedMessage } from './MessageQueue.js';
 import { ServerSupervisor } from './ServerSupervisor.js';
-import { SessionRecoveryChannel } from '../core/SessionRecoveryChannel.js';
-import { SessionRecoveryConsumer } from '../core/SessionRecoveryConsumer.js';
+import { createProductionSessionRecoveryConsumer, stageCActivationLeaseIsLive } from '../core/CodexLifecycleProductionComposition.js';
 import { retryWithBackoff } from './retryWithBackoff.js';
 import { notifyMessageDropped } from './droppedMessages.js';
 import {
@@ -543,13 +542,15 @@ export class TelegramLifeline {
     // docs/specs/CODEX-SESSION-WEDGE-SELF-RECOVERY.md
     const codexWedgeCfg = this.projectConfig.monitoring?.codexWedgeRecovery;
     if (codexWedgeCfg?.enabled) {
-      const recoveryChannel = new SessionRecoveryChannel(this.projectConfig.stateDir);
-      const consumer = new SessionRecoveryConsumer({
-        channel: recoveryChannel,
+      const consumer = createProductionSessionRecoveryConsumer({
+        stateDir: this.projectConfig.stateDir,
+        actuationEnabled: () => this.projectConfig.codexSessionLifecycle?.stageCRecoveryEnabled === true
+          && this.projectConfig.monitoring?.codexWedgeRecovery?.enabled === true
+          && stageCActivationLeaseIsLive(this.projectConfig.stateDir),
         restart: (reason: string) => this.supervisor.performGracefulRestart(reason),
         replay: () => { this.replayQueue(); },
         dryRun: codexWedgeCfg.dryRun ?? true,
-        cooldownMs: codexWedgeCfg.restartCooldownMs ?? 600_000,
+        restartCooldownMs: codexWedgeCfg.restartCooldownMs ?? 600_000,
       });
       this.sessionRecoveryInterval = setInterval(() => {
         consumer.tick().catch(() => { /* best-effort; never crash the lifeline */ });

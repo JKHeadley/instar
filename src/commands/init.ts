@@ -69,6 +69,7 @@ import { renderNonClaudeIdentityShadows } from '../core/IdentityRenderer.js';
 import { installCodexHooks } from '../core/installCodexHooks.js';
 import { armCodexHooks, makeTmuxTrustDriver } from '../core/codexHookArm.js';
 import { ensureSlackReplyRelay, isSlackConfigured } from '../core/SlackReplyRelayInstaller.js';
+import { verifyBundledStageBReleaseEvidence } from '../core/StageBActivationGate.js';
 
 /**
  * Find a free port in the default range (4040-4099) by checking if anything
@@ -654,7 +655,10 @@ async function initExistingProject(options: InitOptions): Promise<void> {
   ensureStateDir(stateDir);
   console.log(pc.green('  Created:') + ' .instar/');
 
-  // Write config
+  // Write config. A reviewed package carrying valid Echo-signed Stage-B
+  // evidence enables the observer on the first restart; pre-release builds
+  // without that evidence remain dark.
+  const stageBReleaseCleared = verifyBundledStageBReleaseEvidence(getInstarVersion()) === null;
   const config: Partial<InstarConfig> = {
     projectName,
     port,
@@ -683,6 +687,12 @@ async function initExistingProject(options: InitOptions): Promise<void> {
       quotaTracking: false,
       memoryMonitoring: true,
       healthCheckIntervalMs: 30000,
+    },
+    codexSessionLifecycle: {
+      ledgerObserverEnabled: stageBReleaseCleared,
+      candidateCanaryEnabled: false,
+      stageBPendingActivation: stageBReleaseCleared,
+      stageCRecoveryEnabled: false,
     },
     authToken: randomUUID(),
     relationships: {

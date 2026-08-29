@@ -72,6 +72,9 @@ const LONG_LIVED_STORES = [
   // Assisted relogin episodes, audit events, and notification outbox are
   // process-lifetime durable state and participate in close-on-exit cleanup.
   'src/core/SubscriptionReloginStore.ts',
+  // Codex lifecycle delivery/effect evidence are process-lifetime stores.
+  'src/core/InboundDeliveryStore.ts',
+  'src/core/RecoveryActuationAuthority.ts',
 ];
 
 /**

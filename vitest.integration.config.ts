@@ -19,5 +19,14 @@ export default defineConfig(withTestRunnerBound('integration', {
     // strip ambient live-agent routing/auth variables before each file.
     setupFiles: ['./tests/vitest-setup.ts'],
     fileParallelism: false,
+    // Keep the full integration lane in one worker process. With multiple
+    // reusable workers, Node can recycle a just-closed ephemeral localhost
+    // port while another worker still owns a pooled HTTP connection for that
+    // origin. The next otherwise-hermetic route test can then receive the
+    // previous fixture server's 401. The suite is already file-serial, so one
+    // worker removes that cross-fixture socket identity race without reducing
+    // file-level parallelism (there is none in this lane).
+    minWorkers: 1,
+    maxWorkers: 1,
   },
 }));

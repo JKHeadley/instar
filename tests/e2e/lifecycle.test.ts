@@ -189,8 +189,13 @@ describeMaybe('E2E: Instar lifecycle', () => {
       const sessions = execSync(`${tmuxPath} list-sessions -F "#{session_name}" 2>/dev/null || true`, {
         encoding: 'utf-8',
       }).trim();
+      const ownedPrefix = `${path.basename(projectDir)}-`;
       for (const session of sessions.split('\n').filter(Boolean)) {
-        if (session.includes('e2e-') || session.includes('job-e2e-')) {
+        // This suite runs concurrently with other real-tmux E2E files. Scope
+        // teardown to this fixture's project prefix; matching generic "e2e-"
+        // kills unrelated live sessions and makes their readiness assertions
+        // fail nondeterministically under the full repository gate.
+        if (session.startsWith(ownedPrefix)) {
           try { execSync(`${tmuxPath} kill-session -t '=${session}'`); } catch {}
         }
       }
