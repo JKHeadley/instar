@@ -169,6 +169,7 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
   }
 
   async close(): Promise<void> {
+    const child = this.child;
     if (this.socket?.readyState === WebSocket.OPEN) {
       try { await this.send('Browser.close'); } catch { /* @silent-fallback-ok — process may already be gone; local socket/process teardown continues below */ }
     }
@@ -178,8 +179,34 @@ export class ChromeCdpReloginBrowser implements ReloginBrowserPort {
       clearTimeout(entry.timer); entry.reject(new Error('relogin-browser-closed'));
     }
     this.pending.clear();
-    if (this.child && this.child.exitCode === null) this.child.kill('SIGTERM');
+    if (child && child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGTERM');
+      if (!await this.waitForChildExit(child, 5_000)) {
+        child.kill('SIGKILL');
+        await this.waitForChildExit(child, 2_000);
+      }
+    }
     this.child = null;
+  }
+
+  private async waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+    if (child.exitCode !== null || child.signalCode !== null) return true;
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (exited: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        child.off('exit', onExit);
+        resolve(exited);
+      };
+      const onExit = () => finish(true);
+      child.once('exit', onExit);
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      // Close the check-then-listen gap: the process may have exited between
+      // the fast-path check above and listener registration.
+      if (child.exitCode !== null || child.signalCode !== null) finish(true);
+    });
   }
 
   private async fill(selector: string, value: string): Promise<void> {

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-29T03:00:43.133Z",
+  "slug": "chrome-cdp-profile-cleanup-race",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 29,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ChromeCdpReloginBrowser.ts"
+    ],
+    "addedLines": 28,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
