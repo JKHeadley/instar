@@ -3,6 +3,15 @@ title: Machine self-assertion — how a machine states a fact about itself it ca
 slug: machine-self-assertion
 status: draft
 eli16-overview: docs/specs/machine-self-assertion.eli16.md
+review-convergence: "2026-08-29T23:36:51.197Z"
+review-iterations: 5
+review-completed-at: "2026-08-29T23:36:51.197Z"
+review-report: "docs/specs/reports/machine-self-assertion-convergence.md"
+cross-model-review: "codex-cli:gpt-5.5"
+single-run-completable: true
+frontloaded-decisions: 12
+cheap-to-change-tags: 0
+contested-then-cleared: 3
 ---
 
 # Machine self-assertion
@@ -659,6 +668,32 @@ never post (prevents N-notices / zero-notices).
 > the bearer→RCE hardening (OQ2) remains a tracked follow-up. The immutable carrier text
 > (written pre-review) predates all of this — this annotation, not the carrier, reflects the
 > standing state.
+
+## Maturation plan
+
+- **test-agent-live:** live from the first build. The §4.0 funnel invariants (keyEpoch /
+  recoveryEpoch monotonicity, tombstone, first-establishment PIN gate), the §4.1 acceptance
+  composite, the challenge binding, and the observed-endpoint promotion floor are all
+  unit-testable without a second machine, including the negative rehearsals (uncorroborated →
+  quarantine, replayed/superseded → refuse).
+- **dev-agent-live:** ships behind the three flags (FD3) in dryRun on a development agent —
+  every accept path logs a would-accept/would-quarantine verdict (claimant AND peer side)
+  while the legacy corroboration path stays authoritative. The keychain-backed vault-escrow
+  and the recovery-key mint are exercised live on the dev pair; the recovery blob's survival
+  is proven by the FD3 rehearsal that DELETES `.instar/machine/**` and recovers end-to-end.
+- **fleet:** with a release, after: (a) ≥14 days dryRun on the dev pair with zero false
+  would-accept verdicts, (b) the negative rehearsals pass from the ledger, (c) one live-pair
+  rotation accepted, (d) the machine-coherence version gate confirms the accept route is
+  fleet-wide before re-announce enables (FD4/§4.4 sequencing), and (e) the F1 never-editable/
+  never-sync closure ships in the same PR as the accept route.
+- **graduation criterion:** a real key rotation on one machine is auto-accepted by its peers
+  in minutes with zero operator action (the incident-A replay); an injected uncorroborated /
+  replayed / cross-peer-conflicting claim quarantines to the PIN; and no active-paired
+  keychain-backed machine's recovery pubkey remains unestablished at its peers past horizon H.
+- **dark-window:** the whole feature ships dark on the fleet and dryRun-first on dev; the
+  window ends per-flag when its graduation criterion above is met and inspected. The
+  bearer→RCE hardening (OQ2) and Shamir peer-shares are explicitly OUT of this window — their
+  own follow-on specs.
 
 ## Reference (internal codes used above, for outside readers)
 
