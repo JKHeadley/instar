@@ -266,36 +266,72 @@ compared-flags set). Post-F1 the boundary is RESTORED with respect to DIRECT ide
 writes (scoped per §4.0's honest note): an uncorroborated bearer claimant reaches only the
 PIN quarantine.
 
-### 4.5 Escrowed recovery key (the cryptographic close — OPERATOR-GATED, see Open questions)
+### 4.5 Escrowed recovery key (the cryptographic close — ADOPTED, operator-approved 2026-08-29 topic 62395)
 
-The only mechanism that makes even the total-loss + address-change case zero-touch AND
-secure against a token-holder: at pair time each machine mints a SECOND ("recovery")
-keypair; peers store its PUBLIC half (replicated), and the PRIVATE half is escrowed OUTSIDE
-`.instar/machine/**` — in a location the bearer token / files API cannot read (the operator's
-vault, or a peer-held sealed copy). On rotation the machine signs the new signing key with
-the RECOVERY key; peers verify the continuity signature against the stored recovery pubkey →
-cryptographic legitimacy, because only the real machine holds the recovery private key. This
-becomes §4.1's condition 5 when present (superseding the 5a heuristic), giving a fully
-automatic, token-adversary-proof accept. It covers incident A and the double-fault case IFF
-the recovery private key survived the loss that took the signing key — which is an operator
-choice about WHERE to escrow it. Adopting escrow is the Open question below.
+The mechanism that makes even the total-loss + address-change case zero-touch AND secure
+against a token-holder. At pair time each machine mints a SECOND ("recovery") keypair. Its
+PUBLIC half is stored by peers (replicated as identity metadata, applied only through the
+§4.0 funnel). Its PRIVATE half is escrowed OUTSIDE `.instar/machine/**`, in a location the
+bearer token / files API cannot read.
+
+On rotation the machine signs the SIX-field binding of §4.1 with BOTH the new signing key
+(proof-of-possession) AND the RECOVERY key (continuity signature). Peers verify the
+continuity signature against the stored recovery public key → cryptographic legitimacy,
+because only the real machine holds the recovery private key. A valid continuity signature
+BECOMES §4.1's condition 5 (superseding the 5a source-address heuristic and, with it,
+condition 4's issued-refusal requirement — a continuity signature is strictly stronger
+first-hand evidence than either), giving a fully automatic, token-adversary-proof accept in
+every case where the recovery key survived — including the double-fault case 5a cannot cover.
+
+**Escrow location (operator-selectable at pair time; default the strongest available):**
+
+1. **Operator vault (default when a vault backend is configured).** The recovery private
+   key is sealed into the operator's SecretStore (AES-256-GCM, master key NOT derivable
+   from the bearer token). Survives total loss of `.instar/machine/**`. The one setup cost
+   Justin approved.
+2. **Peer-sealed shares (fallback / additional copy).** The recovery private key is split
+   (Shamir k-of-n over the pool) and each share sealed to a PEER machine's encryption key,
+   so recovery needs a quorum of peers to co-sign a recovery-key-use authorization — no
+   single compromised peer can wield it, and it survives as long as k peers survive.
+
+**The recovery key's own lifecycle (review-critical — it is now the root of trust):**
+
+- **Compromise / rotation of the recovery key itself** is an operator-only action (it
+  cannot be self-service, or a token-holder who somehow obtained it could entrench). It
+  goes through the §4.0 funnel with its own epoch, and rotating it re-seals fresh escrow.
+- **Recovery key never signs ordinary traffic** — it is used ONLY to authorize a signing-key
+  rotation, minimizing its exposure (it is offline/sealed except during a rotation event).
+- **Loss of the recovery key** (both the escrow AND the live copy gone) is the ONLY residual
+  case that falls back to §4.1's corroboration-or-PIN path — strictly no worse than the
+  pre-escrow design, and now genuinely rare (it requires losing two independently-escrowed
+  secrets at once).
+- **At-rest honesty:** the vault-escrow option means the recovery private key exists sealed
+  on this machine's disk (encrypted); the peer-shares option means k peers each hold a
+  sealed share. Neither is readable by the bearer token, but both are stated plainly so the
+  operator knows where the root-of-trust material physically lives.
 
 ## 5. Decision (operator directive 2026-08-29 + round-1/2 revision)
 
 - **Zero-touch for the single-fault legitimate case (incident A):** local rotation record +
   the peer's own issued 401s + the re-announce arriving from the incumbent-verified
   authenticated address + cross-peer agreement → automatic, minutes. This is the common case.
-- **Operator tap ONLY where evidence cannot distinguish recovery from takeover:** a
-  tunnel-only mesh with no verified direct address, the key-loss-AND-address-change double
-  fault, a cross-peer fingerprint conflict, or any uncorroborated/racing claim → PIN
-  quarantine. Under an ACTIVE token-holding adversary, §4.1's conflict rule means a
-  legitimate rotation can be FORCED to the tap by a racing claim — this fails SAFE (to a
-  human) and is correct; §5 states it plainly rather than claiming minutes unconditionally.
+- **Operator tap ONLY where evidence cannot distinguish recovery from takeover, AND the
+  escrowed recovery key is unavailable:** with escrow (§4.5) the continuity signature makes
+  the key-loss-AND-address-change double fault fully automatic, so the tap is reserved for
+  the genuinely-rare case where the recovery key ITSELF is also lost, or a cross-peer
+  fingerprint conflict, or (transitionally) a machine not yet carrying an escrowed recovery
+  key whose 5a address evidence is unsatisfiable. Under an ACTIVE token-holding adversary,
+  §4.1's conflict rule means a legitimate rotation can be FORCED to the tap by a racing
+  claim — this fails SAFE (to a human) and is correct; a valid continuity signature
+  short-circuits the conflict (cryptographic identity beats a racing bare claim).
 - **Observed endpoints:** fully automatic (§4.2).
-- **Escrow (§4.5):** would move the double-fault case from tap to automatic; adopting it is
-  the Open question.
-- Option 3 (continuity-chained PLANNED rotation) is subsumed by §4.5's continuity signature
-  when escrow is adopted; otherwise out of scope, inheriting §4.0's tombstone rule.
+- **Escrow (§4.5): ADOPTED** (operator-approved 2026-08-29). The escrowed recovery key's
+  continuity signature is the PRIMARY condition-5 evidence; it moves the double-fault case
+  (key loss + address change) from tap to fully automatic, and is token-adversary-proof. The
+  5a source-address heuristic remains as the fallback for the transitional window before
+  every machine has an escrowed recovery key, and the PIN quarantine remains for the now-rare
+  case where the recovery key itself is also lost.
+- Option 3 (continuity-chained PLANNED rotation) is SUBSUMED by §4.5's continuity signature.
 
 ### 5b. History (non-normative)
 
@@ -338,6 +374,7 @@ never post (prevents N-notices / zero-notices).
 | Cross-peer fingerprint agreement | invariant | Read-time equality check over replicated promoted identity (§4.1(6)); disagreement → quarantine, never a pick. |
 | Observed-endpoint promotion | invariant | Declared floor (§4.2): ≥3 obs/≥30 min local + dial-back + not-shared-egress + rotation quarantine. Pre-commitment: any adaptive/scored element added later makes this a judgment-candidate requiring floor+arbiter. |
 | One-notice raiser election | invariant | Claimant posts on first acceptance; episode-scoped dedupe on machineId+keyEpoch. |
+| Continuity-signature verification (§4.5) | invariant | Deterministic Ed25519 verify of the rotation binding against the stored recovery public key; a valid signature is condition-5 evidence superseding the 5a heuristic. Recovery-key rotation is an operator action through the §4.0 funnel. |
 | Quarantine approve/deny | invariant | Deterministic routing to the operator's single-use, content-hash-bound dashboard-PIN decision; the operator is the arbiter (Know Your Principal). The machine-side routing is deterministic; the human decision sits above the classified machine surface. |
 
 ## Frontloaded Decisions
@@ -379,8 +416,12 @@ never post (prevents N-notices / zero-notices).
    set ships in the SAME PR as the accept route; git-sync applies identity changes only
    through the §4.0 funnel; fleet sequencing is machine-coherence-gated; the bearer→RCE
    surface (`.claude/settings.json`, `.git/`, `.instar/hooks/`) is a tracked follow-up.
-10. **Escrow (§4.5):** designed but OPERATOR-GATED (Open questions) — its continuity
-    signature supersedes condition 5 when present; Option 3 continuity chaining folds into it.
+10. **Escrow (§4.5) — ADOPTED:** recovery keypair minted at pair time; public half
+    replicated (funnel-applied), private half escrowed to the operator vault (default) or
+    Shamir k-of-n peer-sealed shares; continuity signature is the primary condition-5
+    evidence; recovery-key rotation is operator-only through the §4.0 funnel; recovery key
+    signs ONLY rotations, never ordinary traffic. A transitional machine without an escrowed
+    recovery key uses the 5a fallback until it has one.
 11. **Liveness propagation:** `auth-rejected` is proof-of-life for every liveness consumer;
     it blocks stale-owner-release death evidence for that peer.
 12. **Migration & rollout parity:** `migrateConfig()` adds the two config blocks
@@ -394,21 +435,19 @@ never post (prevents N-notices / zero-notices).
 
 ## Open questions
 
-**OQ1 — Adopt the escrowed recovery key (§4.5)?** This is the one genuine operator
-decision. Adopting it makes even the total-loss + address-change case zero-touch and
-cryptographically secure against a token-holder, at the cost of the operator managing where
-the recovery private key is escrowed (their vault, or a peer-sealed copy) so it survives a
-loss that takes the signing key. Declining it means that specific rare double-fault case
-degrades to the PIN tap (still safe, still visible, just not zero-touch). Everything else in
-this spec is independent of OQ1. — pending operator input.
+*(none)*
 
-**OQ2 — bearer→RCE surface** (`.claude/settings.json` hook commands, `.git/hooks/**`,
-`.instar/hooks/**`): close in this spec's PR set, or track as separate pre-existing-debt
-hardening? §4.4's boundary claim is scoped to direct identity writes until resolved. —
-pending operator/maintainer decision.
+> **Resolved operator decisions (were OQ1/OQ2, now settled — recorded for the reader):**
+> Escrowed recovery key — ADOPTED (operator-approved 2026-08-29, topic 62395: "Approved"
+> against the Option-A recommendation); folded in as §4.5's normative primary mechanism,
+> default escrow location the operator vault, resolved into §4.5 / §5 / FD10.
+> bearer→RCE surface (`.claude/settings.json` hook commands, `.git/hooks/**`,
+> `.instar/hooks/**`) — tracked as SEPARATE pre-existing-debt hardening (it predates and is
+> independent of this spec, which neither creates nor widens it); §4.4's boundary claim
+> stays scoped to "restored with respect to DIRECT identity writes" and cites it as the
+> named follow-up rather than blocking on it.
 
-<!-- tracked: CMT-211 -->
-
+> <!-- tracked: CMT-211 -->
 > **CMT-211** — Carry the machine-self-assertion decision to closure: (1) the operator's
 > accept-or-decline on the PIN-gated key re-announce path, taken with the token/identity
 > boundary-collapse cost stated (spec section 2); (2) classify a rope failing auth-rejected
