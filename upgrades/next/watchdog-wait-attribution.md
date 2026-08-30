@@ -16,9 +16,10 @@ user message when the session is still alive. The attempt is intentionally not d
 
 ## What to Tell Your User
 
-An `aborted by user` line following a watchdog Ctrl+C is framework transport
-wording, not evidence that the operator interrupted the task. The watchdog's
-audit record now preserves the actual principal.
+When a watchdog interrupts a stuck command, the framework prints a line saying
+the task was aborted by the user. That is transport wording, not evidence that
+you interrupted anything. The watchdog's audit record now preserves the actual
+principal.
 
 ## Evidence
 
