@@ -23,7 +23,7 @@ import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import type { MeshEndpoint } from './types.js';
-import { isRfc1918, isTailscaleCgnat } from './PeerEndpointResolver.js';
+import { hostOf, isPublicHttps, isRfc1918, isTailscaleCgnat } from './PeerEndpointResolver.js';
 
 export interface MeshTunnelConfig {
   enabled?: boolean;
@@ -83,7 +83,7 @@ export function advertiseSelfMeshUrl(
     recorder.updateMachineUrl(selfMachineId, url);
     log?.(`  Mesh: advertised self URL → ${url}`);
     return true;
-  } catch {
+  } catch { // @silent-fallback-ok: registration can race boot; false schedules the existing later lifecycle retry
     // Self entry not present yet — caller may retry on a later lifecycle event.
     return false;
   }
@@ -251,6 +251,7 @@ export function computeSelfMeshEndpoints(inputs: {
   cloudflareUrl: string | null;
   lanIp: string | null;
   tailscaleIp: string | null;
+  advertisedAddress?: string;
   port: number;
   tailscaleEnabled?: boolean;
 }): MeshEndpoint[] {
@@ -264,7 +265,33 @@ export function computeSelfMeshEndpoints(inputs: {
   if (inputs.cloudflareUrl) {
     out.push({ kind: 'cloudflare', url: inputs.cloudflareUrl });
   }
+  const override = resolveStaticAdvertisedEndpoint(inputs.advertisedAddress, inputs.port);
+  if (override && !(override.kind === 'tailscale' && inputs.tailscaleEnabled === false)) {
+    // The explicit operator value wins for its transport class while the
+    // other independently-discovered ropes remain available for failover.
+    const sameKind = out.findIndex((row) => row.kind === override.kind);
+    if (sameKind >= 0) out.splice(sameKind, 1, override);
+    else out.unshift(override);
+  }
   return out;
+}
+
+/** Resolve the spec's one-line manual escape hatch. A bare address inherits
+ * the local server port; a full URL is accepted only when it satisfies the
+ * same per-kind host rules used at ingest and dial time. */
+export function resolveStaticAdvertisedEndpoint(value: string | undefined, port: number): MeshEndpoint | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  let url = raw;
+  if (!/^https?:\/\//i.test(raw)) {
+    url = `http://${raw}${/:\d+$/.test(raw) ? '' : `:${port}`}`;
+  }
+  const host = hostOf(url);
+  if (!host) return null;
+  if (isTailscaleCgnat(host)) return { kind: 'tailscale', url: url.replace(/\/+$/, '') };
+  if (isRfc1918(host)) return { kind: 'lan', url: url.replace(/\/+$/, '') };
+  if (isPublicHttps(url)) return { kind: 'cloudflare', url: url.replace(/\/+$/, '') };
+  return null;
 }
 
 /**

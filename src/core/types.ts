@@ -1999,6 +1999,18 @@ export interface MachineIdentity {
   createdAt: string;
   /** What this machine can do */
   capabilities: MachineCapability[];
+  /** Monotonic signing-key generation. Legacy identities read as epoch 0. */
+  keyEpoch?: number;
+  /** Base64-encoded Ed25519 recovery public key. Absent means PIN/corroboration fallback. */
+  recoveryPublicKey?: string;
+  /** Monotonic recovery-key generation, independent from keyEpoch. */
+  recoveryEpoch?: number;
+  /** Whether this peer established the recovery key directly or learned a replicated copy. */
+  recoveryAnchorProvenance?: 'first-hand' | 'replicated';
+  /** ISO timestamp of a local signing-key rotation, when known. */
+  keysRotatedAt?: string;
+  /** Bounded machine-generated reason for the local signing-key rotation. */
+  keysRotatedReason?: string;
 }
 
 export type MachineCapability = 'telegram' | 'jobs' | 'tunnel' | 'sessions';
@@ -2023,6 +2035,10 @@ export interface MeshEndpoint {
   kind: 'tailscale' | 'lan' | 'cloudflare';
   /** http://100.x:PORT | http://192.168.x:PORT | https://<tunnel-host> */
   url: string;
+  /** Locally-observed endpoints are never accepted from peer advertisements. */
+  origin?: 'advertised' | 'observed';
+  /** Promotion time for a locally corroborated endpoint. */
+  observedAt?: string;
 }
 
 export interface MachineRegistryEntry {
@@ -2554,6 +2570,29 @@ export interface MultiMachineConfig {
     requiredForReadiness?: boolean;
     port?: number;
   };
+  /** Cryptographically-bound signing-key recovery. Dev-gated and dry-run first. */
+  identityReannounce?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    /** Agent-wide recovery-route credential, minted once and conveyed only by
+     * the code-authenticated pairing response. Distinct from each machine's
+     * ordinary local API token. */
+    sharedBearerToken?: string;
+  };
+  /** Local-first direct endpoint observation. Dev-gated and dry-run first. */
+  observedEndpoints?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    /** Optional operator-known stable address for a machine whose network
+     * namespace cannot see its externally reachable Tailscale/LAN address. */
+    advertisedAddress?: string;
+    corroborationObservations?: number;
+    corroborationWindowMinutes?: number;
+    ttlDays?: number;
+    rotationQuarantineHours?: number;
+  };
+  /** Keychain-only recovery private-key escrow. Dev-gated and dry-run first. */
+  recoveryKeyEscrow?: { enabled?: boolean; dryRun?: boolean };
   /**
    * Coordination mode (Gap 1 — Active/Active support).
    * - 'primary-standby': One awake, others standby with failover (default)

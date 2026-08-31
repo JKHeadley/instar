@@ -1101,6 +1101,13 @@
     .machine-nick:focus { border-color: var(--accent); outline: none; background: rgba(255,255,255,0.03); }
     .machine-badge { font-size: 12px; font-weight: 600; color: var(--accent); border: 1px solid var(--accent-dim); border-radius: 999px; padding: 2px 9px; }
     .machine-meta { font-size: 15px; color: var(--text-dim); line-height: 1.55; margin-top: 6px; }
+    .identity-recovery-grid { display: grid; gap: 10px; }
+    .identity-recovery-row { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 14px; }
+    .identity-recovery-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    @media (max-width: 640px) {
+      .identity-recovery-row { display: grid; grid-template-columns: 1fr; }
+      .identity-recovery-actions button { flex: 1 1 auto; min-height: 42px; }
+    }
     /* Status color tokens — calm, never alarming. The dot is a scan-aid:
        glance the collapsed list, see which problems are still being worked
        on (amber), cause known (blue), or worked out (green). */
@@ -3909,6 +3916,11 @@
            headline + tiles + drill-down here. Rebuilt from the old insider "guards" line.
            Nickname editing (issue #1429) lives one drill down, commits on Enter/blur. -->
       <div id="machinesGlance" class="glance-root"></div>
+      <section aria-labelledby="identityRecoveryTitle" style="border:1px solid var(--border);border-radius:10px;padding:16px">
+        <h3 id="identityRecoveryTitle" style="margin:0 0 8px">Machine identity recovery</h3>
+        <p style="margin:0 0 10px;color:var(--text-dim)">Recovery-key availability, signing-key changes awaiting acknowledgement, and quarantined identity claims. Approve only a change you recognize.</p>
+        <div id="identityRecoveryStatus" class="identity-recovery-grid" aria-live="polite">Loading identity status…</div>
+      </section>
       <section aria-labelledby="mutualSshTitle" style="border:1px solid var(--border);border-radius:10px;padding:16px">
         <h3 id="mutualSshTitle" style="margin:0 0 8px">Machine-to-machine SSH</h3>
         <p style="margin:0 0 10px;color:var(--text-dim)">Restricted Instar subsystem connectivity. This does not enable Remote Login or change personal SSH files.</p>
@@ -5684,6 +5696,7 @@
       if (stamp) stamp.textContent = new Date().toLocaleTimeString();
       await loadMutualSshStatus();
       await loadThroughputFloor();
+      await loadIdentityRecoveryStatus();
 
       if (!pool.enabled) {
         glanceRoot.textContent = '';
@@ -5704,6 +5717,117 @@
         onRename: (id, nickname, input, prev) => saveMachineNickname(id, nickname, input, prev),
       });
       glance.renderGlance(document, glanceRoot, spec);
+    }
+
+    async function identityRecoveryAction(url, body) {
+      return apiFetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Instar-Operator-Session': operatorSessionToken,
+        },
+        body: JSON.stringify(body || {}),
+      });
+    }
+
+    async function loadIdentityRecoveryStatus() {
+      const root = document.getElementById('identityRecoveryStatus');
+      if (!root) return;
+      root.textContent = '';
+      let status;
+      try { status = await apiFetch('/identity-recovery'); }
+      catch { root.textContent = 'Identity recovery is not enabled on this agent.'; return; }
+
+      const summary = document.createElement('div');
+      summary.className = 'identity-recovery-row';
+      const escrow = document.createElement('span');
+      escrow.textContent = status.recoveryPrivateKeyAvailable
+        ? 'Recovery key: available in this machine’s keychain'
+        : 'Recovery key: unavailable';
+      const anchor = document.createElement('span');
+      anchor.textContent = status.hasRecoveryPublicKey ? 'Recovery root: established' : 'Recovery root: not established';
+      summary.append(escrow, anchor);
+      if (status.recoveryPrivateKeyAvailable && !status.hasRecoveryPublicKey) {
+        const pairingRequired = document.createElement('span');
+        pairingRequired.textContent = 'Run machine pairing to establish this first root at peers.';
+        summary.appendChild(pairingRequired);
+      }
+      if (status.recoveryPrivateKeyAvailable && status.hasRecoveryPublicKey) {
+        const rotate = document.createElement('button');
+        rotate.type = 'button';
+        rotate.textContent = 'Rotate recovery root';
+        rotate.addEventListener('click', async () => {
+          try {
+            const result = await identityRecoveryAction('/identity-recovery/rotate');
+            rotate.textContent = 'Rotated to epoch ' + String(result.recoveryEpoch);
+            await loadIdentityRecoveryStatus();
+          } catch (e) { rotate.textContent = (e && e.message) ? e.message : 'Action failed'; }
+        });
+        summary.appendChild(rotate);
+      }
+      root.appendChild(summary);
+
+      if (status.recoveryEstablishment) {
+        const propagation = document.createElement('div');
+        propagation.className = 'identity-recovery-row';
+        const jobs = status.recoveryEstablishment.version === 2
+          ? Object.values(status.recoveryEstablishment.jobs || {}) : [status.recoveryEstablishment];
+        const latest = jobs.sort((a, b) => String(b.updatedAt || b.at || '').localeCompare(String(a.updatedAt || a.at || '')))[0];
+        if (latest && latest.peers) {
+          propagation.textContent = 'Recovery-root peer status: ' + Object.entries(latest.peers)
+            .map(([peer, state]) => String(peer) + ': ' + String(state && state.status ? state.status : state)).join(', ');
+          root.appendChild(propagation);
+        }
+      }
+
+      const rotations = Array.isArray(status.unacknowledgedRotations) ? status.unacknowledgedRotations : [];
+      for (const row of rotations) {
+        const el = document.createElement('div');
+        el.className = 'identity-recovery-row';
+        const text = document.createElement('span');
+        text.textContent = 'Signing key changed on ' + String(row.machineId) + ' (epoch ' + String(row.keyEpoch) + ')';
+        const actions = document.createElement('span'); actions.className = 'identity-recovery-actions';
+        const ack = document.createElement('button'); ack.type = 'button'; ack.textContent = 'Acknowledge';
+        ack.addEventListener('click', async () => {
+          try { await identityRecoveryAction('/identity-recovery/rotations/' + encodeURIComponent(row.machineId) + '/' + encodeURIComponent(row.keyEpoch) + '/ack'); await loadIdentityRecoveryStatus(); }
+          catch (e) { ack.textContent = (e && e.message) ? e.message : 'Action failed'; }
+        });
+        actions.appendChild(ack); el.append(text, actions); root.appendChild(el);
+      }
+
+      const pending = Array.isArray(status.quarantines && status.quarantines.pending) ? status.quarantines.pending : [];
+      for (const claim of pending) {
+        const el = document.createElement('div'); el.className = 'identity-recovery-row';
+        const text = document.createElement('span');
+        const currentFingerprint = String(claim.currentSigningFingerprint || 'unknown');
+        const proposedFingerprint = String(claim.newSigningFingerprint || 'unknown');
+        const claimHash = String(claim.claimHash || '');
+        text.textContent = 'Quarantined identity claim for ' + String(claim.machineId)
+          + ' — epoch ' + String(claim.keyEpoch)
+          + '; current key ' + currentFingerprint
+          + '; proposed key ' + proposedFingerprint
+          + '; claim ' + claimHash.slice(0, 16)
+          + '; reasons: ' + (Array.isArray(claim.reasons) ? claim.reasons.join(', ') : 'review required');
+        const actions = document.createElement('span'); actions.className = 'identity-recovery-actions';
+        for (const decision of ['approve', 'deny']) {
+          const button = document.createElement('button'); button.type = 'button'; button.textContent = decision === 'approve' ? 'Approve' : 'Deny';
+          button.addEventListener('click', async () => {
+            try {
+              const base = '/identity-recovery/quarantines/' + encodeURIComponent(claim.id);
+              const proof = await identityRecoveryAction(base + '/approval-token', { claimHash: claim.claimHash });
+              await identityRecoveryAction(base + '/' + decision, { claimHash: claim.claimHash, approvalToken: proof.approvalToken });
+              await loadIdentityRecoveryStatus();
+            }
+            catch (e) { button.textContent = (e && e.message) ? e.message : 'Action failed'; }
+          });
+          actions.appendChild(button);
+        }
+        el.append(text, actions); root.appendChild(el);
+      }
+
+      if (rotations.length === 0 && pending.length === 0) {
+        const calm = document.createElement('div'); calm.className = 'glance-empty'; calm.textContent = 'No identity changes need review.'; root.appendChild(calm);
+      }
     }
 
     async function loadMutualSshStatus() {

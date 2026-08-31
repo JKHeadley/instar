@@ -1,4 +1,11 @@
 // Global vitest setup. Runs once before any test file loads.
+
+import supertest from 'supertest';
+import { installSupertestConnectRetry } from './setup/supertest-connect-retry.js';
+
+installSupertestConnectRetry((supertest as unknown as {
+  Test: { prototype: Parameters<typeof installSupertestConnectRetry>[0] };
+}).Test.prototype);
 //
 // Strip git environment overrides inherited from the parent process FIRST.
 // When git invokes a hook (e.g. .husky/pre-push runs `npm run test:smoke`),

@@ -29,6 +29,44 @@ import { SelfKnowledgeTree } from '../knowledge/SelfKnowledgeTree.js';
 import { CoverageAuditor } from '../knowledge/CoverageAuditor.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
 import type { MachineRole } from '../core/types.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
+
+export async function establishPairingRecoveryRoot(
+  config: ReturnType<typeof loadConfig>,
+  mgr: MachineIdentityManager,
+): Promise<void> {
+  if (!resolveDevAgentGate(config.multiMachine?.recoveryKeyEscrow?.enabled, config)) return;
+  // Dry-run is byte-identical for identity + escrow stores. Even ensure() may
+  // mint and persist a keypair, so it must not be called merely to predict.
+  if (config.multiMachine?.recoveryKeyEscrow?.dryRun !== false) return;
+  const recoveryMod = await import('../core/MachineRecoveryKey.js');
+  const secrets = new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey });
+  const recovery = new recoveryMod.MachineRecoveryKey(secrets);
+  const current = mgr.loadIdentity();
+  const material = recovery.ensure(current.machineId, current.recoveryEpoch ?? 0, current.recoveryPublicKey);
+  if (!material) return; // no OS-keychain backing: escrow is unavailable by design
+  recovery.rememberIdentity(mgr.establishLocalRecoveryKey(material));
+}
+
+async function prepareFreshRevokedPairingIdentity(
+  config: ReturnType<typeof loadConfig>,
+  mgr: MachineIdentityManager,
+): Promise<void> {
+  if (!resolveDevAgentGate(config.multiMachine?.recoveryKeyEscrow?.enabled, config)) {
+    throw new Error('Fresh same-principal re-pair requires recovery-key escrow to be enabled');
+  }
+  if (config.multiMachine?.recoveryKeyEscrow?.dryRun !== false) {
+    throw new Error('Fresh same-principal re-pair is unavailable while recovery-key escrow is in dry-run');
+  }
+  const recoveryMod = await import('../core/MachineRecoveryKey.js');
+  const secrets = new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey });
+  const recovery = new recoveryMod.MachineRecoveryKey(secrets);
+  const current = mgr.loadIdentity();
+  if (!current.recoveryPublicKey) throw new Error('Fresh same-principal re-pair requires an established recovery root');
+  const material = recovery.rotate(current.machineId, current.recoveryEpoch ?? 0, current.recoveryPublicKey);
+  if (!material) throw new Error('Fresh same-principal re-pair requires an OS-keychain-backed secret store');
+  recovery.rememberIdentity(mgr.prepareFreshPairingIdentity(material));
+}
 
 /**
  * Claim the fenced lease for THIS machine and propagate it to the substrate.
@@ -265,6 +303,8 @@ export async function startPairing(options: PairOptions): Promise<void> {
     process.exit(1);
   }
 
+  await establishPairingRecoveryRoot(config, mgr);
+
   const { generatePairingCode, createPairingSession } = await import('../core/PairingProtocol.js');
   const { migrateSecrets } = await import('../core/SecretMigrator.js');
   const { PairingSessionStore } = await import('../core/PairingSessionStore.js');
@@ -461,30 +501,42 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
     const identity = await mgr.generateIdentity({ name: options.name, role: 'standby' });
     console.log(pc.green(`  Identity created: ${identity.name} (${identity.machineId.slice(0, 12)}...)`));
   }
+  await establishPairingRecoveryRoot(config, mgr);
 
   // Step 4: Contact the awake machine's pairing endpoint (if URL is a tunnel)
   const isTunnelUrl = repoUrl.startsWith('http://') || repoUrl.startsWith('https://');
   if (isTunnelUrl) {
     console.log(`  Contacting ${redactUrl(repoUrl)}...`);
     try {
-      const identity = mgr.loadIdentity();
+      let identity = mgr.loadIdentity();
       // Advertise our own reachable URL (if we already have one — a named tunnel
       // is known at config time; a quick tunnel is only known after our server
       // starts, so this may be null and the awake machine learns it later via the
       // heartbeat URL field instead).
       const { resolveAdvertisedMeshUrl } = await import('../core/MeshUrlAdvertiser.js');
       const advertisedUrl = resolveAdvertisedMeshUrl(config.tunnel);
-      const resp = await fetch(`${repoUrl}/api/pair`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pairingCode: options.code,
-          machineIdentity: identity,
-          ephemeralPublicKey: identity.encryptionPublicKey,
-          ...(advertisedUrl ? { advertisedUrl } : {}),
-        }),
-        signal: AbortSignal.timeout(10_000),
-      });
+      const sendPairingRequest = () => fetch(`${repoUrl}/api/pair`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pairingCode: options.code,
+            machineIdentity: identity,
+            ephemeralPublicKey: identity.encryptionPublicKey,
+            ...(advertisedUrl ? { advertisedUrl } : {}),
+          }),
+          signal: AbortSignal.timeout(10_000),
+        });
+      let resp = await sendPairingRequest();
+
+      if (resp.status === 409) {
+        const refusal = await resp.clone().json().catch(() => ({})) as { error?: string };
+        if (refusal.error === 'fresh-pairing-identity-required') {
+          await prepareFreshRevokedPairingIdentity(config, mgr);
+          identity = mgr.loadIdentity();
+          console.log(pc.yellow('  Revoked prior identity detected — generated fresh signing, encryption, and recovery keys for this pairing code.'));
+          resp = await sendPairingRequest();
+        }
+      }
 
       if (!resp.ok) {
         const body = await resp.json().catch(() => ({}));
@@ -495,8 +547,22 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
       const result = await resp.json() as {
         machineIdentity?: any;
         agentIdentityEnvelope?: any;
+        identityRecoveryBearerToken?: string;
         status?: string;
       };
+
+      // The ordinary authToken is intentionally machine-local. Recovery routes
+      // use a distinct agent-wide bearer conveyed only inside this
+      // code-authenticated pairing response, so peers with different local API
+      // tokens can still perform the recovery protocol.
+      if (/^[a-f0-9]{64}$/i.test(result.identityRecoveryBearerToken ?? '')) {
+        const joinedConfig = JSON.parse(fs.readFileSync(configFilePath, 'utf8')) as Record<string, any>;
+        joinedConfig.multiMachine ??= {};
+        joinedConfig.multiMachine.identityReannounce ??= {};
+        joinedConfig.multiMachine.identityReannounce.sharedBearerToken = result.identityRecoveryBearerToken;
+        fs.writeFileSync(configFilePath, `${JSON.stringify(joinedConfig, null, 2)}\n`, { mode: 0o600 });
+        config = loadConfig(projectDir);
+      }
 
       // ── Install the AGENT identity carried by the pairing response ──────────────────
       // Spec: docs/specs/agent-identity-continuity-on-expansion.md §1.
@@ -638,6 +704,14 @@ export async function leaveMesh(options: LeaveOptions): Promise<void> {
   if (entry) {
     mgr.revokeMachine(identity.machineId, identity.machineId, 'Self-removal via `instar leave`');
   }
+
+  // De-pair destroys the escrowed recovery private key too. Keeping it would
+  // turn a deliberately removed machine into a future bearer of continuity.
+  try {
+    const recoveryMod = await import('../core/MachineRecoveryKey.js');
+    const secrets = new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey });
+    new recoveryMod.MachineRecoveryKey(secrets).destroy(identity.machineId);
+  } catch { /* local identity removal still proceeds; revocation is already sticky */ }
 
   // Remove local identity and keys
   mgr.removeLocalIdentity();

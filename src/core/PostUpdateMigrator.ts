@@ -43,6 +43,7 @@ import { jobsMigrate } from '../commands/jobMigrate.js';
 import { snapshotUserNamespace, verifyMigrationInvariants } from '../scheduler/MigrationInvariants.js';
 import { appendMigrationEvent, normalizePerEntryAction, type MigrationEvent } from '../scheduler/MigrationLedger.js';
 import { randomUUID } from 'node:crypto';
+import { SecretStore } from './SecretStore.js';
 import {
   ELIGIBILITY_SCHEMA_SQL,
   ELIGIBILITY_SCHEMA_SQL_SHA256,
@@ -596,6 +597,7 @@ export interface MigratorConfig {
   port: number;
   hasTelegram: boolean;
   projectName: string;
+  identityMigrationSecretStore?: Pick<SecretStore, 'isKeychainBacked' | 'get' | 'set'>;
 }
 
 /**
@@ -1452,6 +1454,7 @@ export class PostUpdateMigrator {
     this.migrateSecretExternalizationSurvivability(result);
     this.migrateSettings(result);
     this.migrateConfig(result);
+    this.migrateMachineIdentityEpochs(result);
     this.migrateLegacyMaxSessions(result);
     this.migrateRetireDeadMentorConfig(result);
     this.migrateRetireMentorOutbox(result);
@@ -10081,6 +10084,12 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       result.upgraded.push('CLAUDE.md: added Sender-Rejection Notices section');
     }
 
+    if (!content.includes('### Machine Identity Recovery')) {
+      content += `\n### Machine Identity Recovery (signing keys can heal without becoming a new machine)\n\nIf one of my machines loses its local signing/encryption files, it can prove continuity with a separate recovery key held only in that machine's OS keychain. Peers require a one-use challenge, exact next key epoch, new-key possession, recovery continuity when available, bounded repeated signed-auth refusals, corroboration, and the self-action governor. Ambiguous claims quarantine for the operator; revocation stays sticky and always wins. Accepted signing changes remain visibly unacknowledged until the operator reviews them. Machine-auth alone cannot establish or rotate a recovery root: first establishment is pairing-code-only, while later operator fanout is signed by the already-pinned recovery root. Private/CGNAT address shape is telemetry, never identity evidence without verified Tailscale node provenance. The Machines dashboard has the mobile review card.\n- Registry First: \`GET /identity-recovery\` shows recovery availability, quarantines, and unacknowledged rotations; \`GET /identity-changes\` is the attributable ledger (\`?scope=pool\` when available). Never infer a key change from generic transport failure.\n- **When to use** (PROACTIVE): "why is this paired machine suddenly unauthorized?" / "did this machine rotate its identity?" / "why is an identity claim quarantined?" → read both endpoints, name the exact evidence/reason, and offer the PIN-gated approve/deny/ack action. Do not re-pair or clear revocation as an automatic workaround.\n- Ships dev-gated, dry-run first under \`multiMachine.identityReannounce\`, \`multiMachine.observedEndpoints\`, and \`multiMachine.recoveryKeyEscrow\`. Protected trust-anchor files never auto-sync through the ordinary file/state merge path. Spec: \`docs/specs/machine-self-assertion.md\`.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Machine Identity Recovery awareness');
+    }
+
     if (patched) {
       try {
         fs.writeFileSync(claudeMdPath, content);
@@ -10132,6 +10141,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // sections preserve narrative ordering in the shadow.
     const markers = [
       '### Mesh Rope Health (recovery probe + partition alerts)',
+      '### Machine Identity Recovery',
       // Duplicate-session stand-down: the VOICE half is framework-agnostic by
       // construction (the 409 lives on the server's send funnel, so a
       // Codex/Gemini copy's sends hit exactly the same refusal), and the
@@ -11190,6 +11200,154 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       } catch (err) {
         result.errors.push(`settings.json write: ${err instanceof Error ? err.message : String(err)}`);
       }
+    }
+  }
+
+  /** Backfill legacy identity epochs before the recovery runtime can read them.
+   * Existing monotonic/tombstone state always wins; corrupt authority is never
+   * overwritten with a fabricated epoch-zero file. */
+  private migrateMachineIdentityEpochs(result: MigrationResult): void {
+    const epochPath = path.join(this.config.stateDir, 'state', 'identity-epochs.json');
+    const attestationPath = path.join(this.config.stateDir, 'state', 'machine-identity-migration-attestation.json');
+    const localIdentityPath = path.join(this.config.stateDir, 'machine', 'identity.json');
+    let protectedEra = false;
+    let localMachineIdForAttestation = '';
+    let protectedEraSecretStore: Pick<SecretStore, 'isKeychainBacked' | 'get' | 'set'> | null = null;
+    let protectedEraSecret = '';
+    const attestationExists = fs.existsSync(attestationPath);
+    try {
+      const localIdentity = JSON.parse(fs.readFileSync(localIdentityPath, 'utf8')) as { machineId?: unknown };
+      protectedEraSecretStore = this.config.identityMigrationSecretStore
+        ?? new SecretStore({ stateDir: this.config.stateDir });
+      if (typeof localIdentity.machineId === 'string') {
+        localMachineIdForAttestation = localIdentity.machineId;
+        if (attestationExists) {
+          if (!protectedEraSecretStore.isKeychainBacked) throw new Error('authenticated marker requires keychain-backed secret storage');
+          const storedSecret = protectedEraSecretStore.get('machineIdentityMigration.protectedEraHmac');
+          protectedEraSecret = typeof storedSecret === 'string' ? storedSecret : '';
+          const marker = JSON.parse(fs.readFileSync(attestationPath, 'utf8')) as { version?: unknown; machineId?: unknown; mac?: unknown };
+          const message = `instar-machine-identity-protected-era-v1|${localIdentity.machineId}`;
+          const expectedMac = /^[a-f0-9]{64}$/.test(protectedEraSecret)
+            ? crypto.createHmac('sha256', protectedEraSecret).update(message).digest('hex') : '';
+          protectedEra = marker.version === 1 && marker.machineId === localIdentity.machineId
+            && typeof marker.mac === 'string' && /^[a-f0-9]{64}$/.test(marker.mac)
+            && expectedMac.length === marker.mac.length
+            && crypto.timingSafeEqual(Buffer.from(marker.mac), Buffer.from(expectedMac));
+          if (!protectedEra) throw new Error('authenticated protected-era marker could not be verified');
+        } else if (protectedEraSecretStore.isKeychainBacked) {
+          const storedSecret = protectedEraSecretStore.get('machineIdentityMigration.protectedEraHmac');
+          // A secret without its file marker is an interrupted/ambiguous prior
+          // protected-era establishment, not a safe legacy-first-run signal.
+          if (storedSecret !== undefined) throw new Error('protected-era secret exists without its authenticated marker');
+        }
+      }
+    } catch (err) {
+      if (attestationExists || fs.existsSync(localIdentityPath)) {
+        result.errors.push(`machine identity recovery: protected-era attestation unavailable; left trust anchors unchanged (${err instanceof Error ? err.message : String(err)})`);
+        return;
+      }
+      // A genuinely pre-identity install has no trust anchors to preserve.
+    }
+    type EpochEntry = { keyEpoch: number; recoveryEpoch: number; signingTombstones: unknown[]; recoveryTombstones: unknown[]; revokedAt?: string };
+    let epochFile: { version: 1; machines: Record<string, EpochEntry> } = { version: 1, machines: {} };
+    if (fs.existsSync(epochPath)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(epochPath, 'utf8')) as typeof epochFile;
+        if (parsed?.version !== 1 || !parsed.machines || typeof parsed.machines !== 'object') throw new Error('malformed');
+        epochFile = parsed;
+      } catch {
+        result.errors.push('machine identity epochs: existing authority file is corrupt; refused to overwrite');
+        return;
+      }
+    }
+
+    const candidates: string[] = [];
+    const local = localIdentityPath;
+    if (fs.existsSync(local)) candidates.push(local);
+    const peersDir = path.join(this.config.stateDir, 'machines');
+    if (fs.existsSync(peersDir)) {
+      for (const entry of fs.readdirSync(peersDir, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          const candidate = path.join(peersDir, entry.name, 'identity.json');
+          if (fs.existsSync(candidate)) candidates.push(candidate);
+        }
+      }
+    }
+    if (candidates.length === 0) return;
+
+    let patched = false;
+    for (const file of candidates) {
+      let identity: Record<string, unknown>;
+      try { identity = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>; }
+      catch { result.errors.push(`machine identity epochs: unreadable ${path.relative(this.config.stateDir, file)}`); continue; }
+      const machineId = typeof identity.machineId === 'string' ? identity.machineId : '';
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(machineId)) {
+        result.errors.push(`machine identity epochs: invalid machine id in ${path.relative(this.config.stateDir, file)}`);
+        continue;
+      }
+      const prior = epochFile.machines[machineId];
+      // Before this feature, identity.json was reachable through the bearer
+      // file API. A recovery key found only in that file is therefore a claim,
+      // not an independently established anchor. Never turn it into authority
+      // during migration; only an already-existing epoch authority row can
+      // preserve a root installed by a prior version of this feature.
+      const hasRecoveryKey = typeof identity.recoveryPublicKey === 'string';
+      const independentlyEstablishedRecovery = hasRecoveryKey
+        && protectedEra
+        && Number(prior?.recoveryEpoch ?? 0) >= 1
+        && Number(identity.recoveryEpoch ?? 0) === Number(prior?.recoveryEpoch ?? 0)
+        && (identity.recoveryAnchorProvenance === 'first-hand' || identity.recoveryAnchorProvenance === 'replicated');
+      let identityPatched = false;
+      if (hasRecoveryKey && !independentlyEstablishedRecovery) {
+        delete identity.recoveryPublicKey;
+        delete identity.recoveryAnchorProvenance;
+        identity.recoveryEpoch = 0;
+        identityPatched = true;
+        result.upgraded.push(`machine identity recovery: quarantined unproven legacy root for ${machineId}; fresh pairing required`);
+      }
+      const legacyKeyEpoch = Number.isSafeInteger(identity.keyEpoch) && Number(identity.keyEpoch) >= 0 ? Number(identity.keyEpoch) : 0;
+      const legacyRecoveryEpoch = Number.isSafeInteger(identity.recoveryEpoch) && Number(identity.recoveryEpoch) >= 0
+        ? Number(identity.recoveryEpoch)
+        : 0;
+      if (!Number.isSafeInteger(identity.keyEpoch)) { identity.keyEpoch = legacyKeyEpoch; identityPatched = true; }
+      if (!Number.isSafeInteger(identity.recoveryEpoch)) { identity.recoveryEpoch = legacyRecoveryEpoch; identityPatched = true; }
+      if (identityPatched) {
+        SafeFsExecutor.atomicWriteFileSync(file, `${JSON.stringify(identity, null, 2)}\n`, {
+          operation: 'PostUpdateMigrator.machineIdentityEpochBackfill', mode: 0o600,
+        });
+        patched = true;
+      }
+      const next: EpochEntry = prior
+        ? {
+            ...prior,
+            keyEpoch: Math.max(prior.keyEpoch ?? 0, legacyKeyEpoch),
+            recoveryEpoch: Math.max(prior.recoveryEpoch ?? 0, legacyRecoveryEpoch),
+            signingTombstones: Array.isArray(prior.signingTombstones) ? prior.signingTombstones : [],
+            recoveryTombstones: Array.isArray(prior.recoveryTombstones) ? prior.recoveryTombstones : [],
+          }
+        : { keyEpoch: legacyKeyEpoch, recoveryEpoch: legacyRecoveryEpoch, signingTombstones: [], recoveryTombstones: [] };
+      if (JSON.stringify(prior) !== JSON.stringify(next)) {
+        epochFile.machines[machineId] = next;
+        patched = true;
+      }
+    }
+    if (patched || !fs.existsSync(epochPath)) {
+      SafeFsExecutor.atomicWriteFileSync(epochPath, `${JSON.stringify(epochFile, null, 2)}\n`, {
+        operation: 'PostUpdateMigrator.machineIdentityEpochAuthority', mode: 0o600,
+      });
+      result.upgraded.push('machine identities: backfilled key/recovery epochs and authority store');
+    }
+    if (!protectedEra && localMachineIdForAttestation && protectedEraSecretStore?.isKeychainBacked) {
+      protectedEraSecret ||= crypto.randomBytes(32).toString('hex');
+      protectedEraSecretStore.set('machineIdentityMigration.protectedEraHmac', protectedEraSecret);
+      const message = `instar-machine-identity-protected-era-v1|${localMachineIdForAttestation}`;
+      const mac = crypto.createHmac('sha256', protectedEraSecret).update(message).digest('hex');
+      SafeFsExecutor.atomicWriteFileSync(attestationPath, `${JSON.stringify({
+        version: 1, machineId: localMachineIdForAttestation, mac,
+      }, null, 2)}\n`, {
+        operation: 'PostUpdateMigrator.machineIdentityProtectedEraAttestation', mode: 0o600,
+      });
+      result.upgraded.push('machine identities: recorded keychain-backed protected-era attestation');
     }
   }
 

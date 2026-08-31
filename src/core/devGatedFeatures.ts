@@ -44,6 +44,24 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'identityReannounce',
+    configPath: 'multiMachine.identityReannounce.enabled',
+    description: 'Challenge-bound machine signing-key recovery with recovery-key continuity and exact epochs.',
+    justification: 'Ships dryRun:true; peer evaluation and quarantine are exercised but no trust anchor changes until deliberately promoted. Deterministic fail-closed authority, bounded attempts, no LLM or spend.',
+  },
+  {
+    name: 'observedEndpoints',
+    configPath: 'multiMachine.observedEndpoints.enabled',
+    description: 'Local-first direct source-address corroboration for VM/WSL peers that cannot self-advertise their host route.',
+    justification: 'Ships dryRun:true; requires full mesh signature verification, 3 observations over 30 minutes, no forwarded headers/shared egress, rotation quarantine, and signed dial-back before promotion.',
+  },
+  {
+    name: 'recoveryKeyEscrow',
+    configPath: 'multiMachine.recoveryKeyEscrow.enabled',
+    description: 'Keychain-only escrow for the per-machine recovery signing key.',
+    justification: 'Ships dryRun:true and never mints on a file-key-backed store. The private key stays sealed outside .instar/machine and signs only domain-separated rotations.',
+  },
+  {
     name: 'undatedActionResurfacer',
     configPath: 'evolutionActions.undatedResurfacer.enabled',
     description: 'Bounded resurfacing for pending high/critical evolution actions that have no due date.',

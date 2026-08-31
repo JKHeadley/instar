@@ -28,6 +28,14 @@ import type { MessageRouter } from '../messaging/MessageRouter.js';
 import { PairingSessionStore } from '../core/PairingSessionStore.js';
 import { validatePairingCode } from '../core/PairingProtocol.js';
 import type { PairingSession } from '../core/PairingProtocol.js';
+import type { IdentityReannounceService, ReannounceEvaluationContext } from '../core/IdentityReannounce.js';
+import { encryptForSync } from '../core/SecretStore.js';
+import { IdentityStore, IdentityStoreRefusal } from '../core/IdentityStore.js';
+import { identityRecoveryBearerResponseMessage } from '../core/IdentityRecoveryBearer.js';
+import { identityProjectionBatchMessage } from '../core/IdentityProjectionEnvelope.js';
+import { identityPropagationReceiptMessage, type IdentityPropagationReceiptUnsigned } from '../core/IdentityPropagationReceipt.js';
+import { recoveryRootDelegationHash, signingAckDelegationHash } from '../core/MachineOperatorDelegation.js';
+export { identityRecoveryBearerResponseMessage } from '../core/IdentityRecoveryBearer.js';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -129,6 +137,18 @@ export interface MachineRouteContext {
    * ropes. Absent / returns undefined ⇒ the field is omitted (un-upgraded behavior).
    */
   getSelfMeshEndpoints?: () => import('../core/types.js').MeshEndpoint[] | undefined;
+  /** Bearer-authenticated recovery protocol. Mounted before the ordinary bearer
+   * middleware because the rest of this router uses machine authentication. */
+  identityReannounce?: IdentityReannounceService;
+  /** Agent-wide recovery-route bearer established by the pairing transcript.
+   * Ordinary per-machine API auth tokens are deliberately not accepted here. */
+  getIdentityRecoveryBearerToken?: () => string | undefined;
+  establishPeerRecoveryRoot?: (identity: import('../core/types.js').MachineIdentity, fromMachineId: string, operatorDelegation: unknown) => 'rotated' | 'already-current' | 'would-rotate';
+  acknowledgePeerIdentityRotation?: (machineId: string, keyEpoch: number, fromMachineId: string, operatorDelegation: unknown) => boolean | 'acknowledged' | 'already-acknowledged' | 'would-acknowledge' | 'unknown';
+  resolveIdentityReannounceContext?: (
+    proposed: import('../core/types.js').MachineIdentity,
+    req: import('express').Request,
+  ) => ReannounceEvaluationContext | Promise<ReannounceEvaluationContext>;
 }
 
 // ── Route Factory ──────────────────────────────────────────────────
@@ -141,6 +161,134 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   // Code-authenticated pool join: the active pairing session (written by
   // `instar pair`) is the shared secret that authorizes a non-interactive join.
   const pairingStore = new PairingSessionStore(ctx.identityManager.baseDir);
+
+  const hasBearer = (req: import('express').Request): boolean => {
+    const expected = ctx.getIdentityRecoveryBearerToken?.();
+    const header = req.headers.authorization;
+    if (!expected || typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
+    const supplied = header.slice(7);
+    const left = Buffer.from(supplied);
+    const right = Buffer.from(expected);
+    return left.length === right.length && crypto.timingSafeEqual(left, right);
+  };
+
+  // These are recovery-only bearer routes. They do not enroll machines and the
+  // body cannot supply any acceptance context: corroboration is resolved from
+  // this peer's own durable evidence and live pool view.
+  router.post('/api/identity/reannounce/challenge', (req, res) => {
+    if (!hasBearer(req)) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (!ctx.identityReannounce) {
+      res.status(503).json({ error: 'Identity re-announce is not enabled' });
+      return;
+    }
+    const proposed = req.body?.machineIdentity;
+    if (!proposed || typeof proposed.machineId !== 'string' || typeof proposed.signingPublicKey !== 'string'
+      || typeof proposed.encryptionPublicKey !== 'string') {
+      res.status(400).json({ error: 'Malformed machineIdentity' });
+      return;
+    }
+    try {
+      const sourceKey = req.socket.remoteAddress || 'unknown';
+      const challenge = ctx.identityReannounce.issueChallenge(proposed, sourceKey);
+      ctx.securityLog.append({ event: 'identity_reannounce_challenge_issued', machineId: proposed.machineId, ip: sourceKey });
+      res.json(challenge);
+    } catch (err) {
+      const code = err instanceof Error && 'code' in err ? String((err as { code: unknown }).code) : 'challenge-refused';
+      res.status(code === 'challenge-rate-limited' ? 429 : 403).json({ error: code });
+    }
+  });
+
+  router.get('/api/identity/projection/by-machine/:machineId', (req, res) => {
+    if (!hasBearer(req)) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (!ctx.identityReannounce) {
+      res.status(503).json({ error: 'Identity re-announce is not enabled' });
+      return;
+    }
+    try {
+      const nonce = typeof req.query.nonce === 'string' ? req.query.nonce : '';
+      if (!/^[a-f0-9]{64}$/i.test(nonce)) {
+        res.status(400).json({ error: 'projection-nonce-required' });
+        return;
+      }
+      const projection = ctx.identityReannounce.identityProjection(req.params.machineId);
+      if (!projection) {
+        res.status(404).json({ error: 'identity-not-found' });
+        return;
+      }
+      const responderMachineId = ctx.localMachineId;
+      const signature = sign(
+        `instar-identity-projection-v1|${nonce}|${responderMachineId}|${JSON.stringify(projection)}`,
+        ctx.localSigningKeyPem,
+      );
+      res.json({ projection, responderMachineId, nonce, signature });
+    } catch (err) {
+      const code = err instanceof Error && 'code' in err ? String((err as { code: unknown }).code) : 'projection-refused';
+      res.status(400).json({ error: code });
+    }
+  });
+
+  router.get('/api/identity/projections', (req, res) => {
+    if (!hasBearer(req)) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (!ctx.identityReannounce) {
+      res.status(503).json({ error: 'Identity re-announce is not enabled' });
+      return;
+    }
+    const nonce = typeof req.query.nonce === 'string' ? req.query.nonce : '';
+    if (!/^[a-f0-9]{64}$/i.test(nonce)) {
+      res.status(400).json({ error: 'projection-nonce-required' });
+      return;
+    }
+    const projections = ctx.identityReannounce.identityProjections();
+    const responderMachineId = ctx.localMachineId;
+    const signature = sign(
+      identityProjectionBatchMessage(nonce, responderMachineId, projections),
+      ctx.localSigningKeyPem,
+    );
+    res.json({ projections, responderMachineId, nonce, signature });
+  });
+
+  router.post('/api/identity/reannounce/claim', async (req, res) => {
+    if (!hasBearer(req)) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (!ctx.identityReannounce) {
+      res.status(503).json({ error: 'Identity re-announce is not enabled' });
+      return;
+    }
+    const claim = req.body?.claim ?? req.body;
+    if (!claim || typeof claim.challengeId !== 'string' || typeof claim.possessionSignature !== 'string') {
+      res.status(400).json({ error: 'Malformed identity claim' });
+      return;
+    }
+    const proposed = ctx.identityReannounce.challengeProposed(claim.challengeId);
+    if (!proposed) {
+      res.status(403).json({ outcome: 'refused', reason: 'challenge-unknown' });
+      return;
+    }
+    const failClosed: ReannounceEvaluationContext = {
+      sourceVerifiedUnderIncumbent: false,
+      recoveryAgreement: 'unverifiable',
+      signingAgreement: 'divergent',
+      governorAllowed: false,
+      unackedAcceptedRotation: true,
+    };
+    const evidence = ctx.resolveIdentityReannounceContext
+      ? await Promise.resolve(ctx.resolveIdentityReannounceContext(proposed, req)).catch(() => failClosed)
+      : failClosed;
+    const result = ctx.identityReannounce.evaluate(claim, evidence);
+    const status = result.outcome === 'refused' ? 403 : result.outcome.includes('quarantine') ? 202 : 200;
+    res.status(status).json(result);
+  });
 
   // ── POST /api/lease — Receive a peer's fenced lease over the wire (spec §6) ──
   // The low-latency authoritative copy. Auth-verified; the lease holder must
@@ -321,6 +469,7 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     // Validate the joiner's identity shape before we'd ever persist it.
     if (
       typeof machineIdentity.machineId !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,64}$/.test(machineIdentity.machineId) ||
       typeof machineIdentity.signingPublicKey !== 'string' ||
       typeof machineIdentity.encryptionPublicKey !== 'string'
     ) {
@@ -365,8 +514,45 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     // Code valid → register the joiner as standby, persist its public keys (so
     // MeshRpc can verify its signatures), record its advertised URL if it sent
     // one, and burn the code (single-use).
-    ctx.identityManager.registerMachine(machineIdentity, 'standby');
-    ctx.identityManager.storeRemoteIdentity(machineIdentity);
+    const priorRegistry = ctx.identityManager.loadRegistry().machines?.[machineIdentity.machineId];
+    const repairingRevokedPrincipal = Boolean(priorRegistry?.status === 'revoked' || priorRegistry?.revokedAt);
+    let acceptedMachineIdentity = machineIdentity;
+    if (repairingRevokedPrincipal) {
+      if (!ctx.stateDir) {
+        res.status(503).json({ error: 'identity-authority-unavailable' });
+        return;
+      }
+      const authority = new IdentityStore({ stateDir: ctx.stateDir }).getEpoch(machineIdentity.machineId);
+      // Epochs are receiver-derived. Claimant values are never authority, even
+      // though a conforming fresh-pair client will normally propose the same
+      // exact increments.
+      acceptedMachineIdentity = {
+        ...machineIdentity,
+        keyEpoch: authority.keyEpoch + 1,
+        recoveryEpoch: authority.recoveryEpoch + 1,
+      };
+    }
+    try {
+      ctx.identityManager.storeRemoteIdentity(acceptedMachineIdentity, {
+        actor: 'pairing-trust',
+        path: 'pair',
+        acceptedBy: ctx.localMachineId,
+        clearRevocation: true,
+      });
+    } catch (err) {
+      if (repairingRevokedPrincipal && err instanceof IdentityStoreRefusal
+        && ['signing-key-tombstoned', 'recovery-key-tombstoned', 'key-epoch-not-next', 'recovery-epoch-not-next',
+          'key-epoch-without-rotation', 'recovery-epoch-without-rotation'].includes(err.code)) {
+        res.status(409).json({ error: 'fresh-pairing-identity-required' });
+        return;
+      }
+      res.status(409).json({ error: err instanceof IdentityStoreRefusal ? err.code : 'pairing-identity-refused' });
+      return;
+    }
+    // IdentityStore clears a sticky revocation only after the replacement
+    // identity is durable. Register second so a legitimate fresh pair updates
+    // role/metadata instead of hitting registerMachine's revocation guard.
+    ctx.identityManager.registerMachine(acceptedMachineIdentity, 'standby');
     if (typeof advertisedUrl === 'string' && /^https?:\/\/\S+$/.test(advertisedUrl)) {
       try {
         ctx.identityManager.updateMachineUrl(machineIdentity.machineId, advertisedUrl.trim().replace(/\/+$/, ''));
@@ -430,9 +616,145 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     res.json({
       status: 'paired',
       machineIdentity: localIdentity,
+      ...(ctx.getIdentityRecoveryBearerToken?.() ? { identityRecoveryBearerToken: ctx.getIdentityRecoveryBearerToken!() } : {}),
       ...(agentIdentityEnvelope ? { agentIdentityEnvelope } : {}),
       message: 'Paired.',
     });
+  });
+
+  // Existing pools created before the recovery channel can converge without a
+  // human re-pair. The caller is authenticated by its incumbent machine key;
+  // the token is encrypted to that machine's registered X25519 public key, so
+  // an HTTP LAN observer cannot learn it.
+  router.post('/api/identity/recovery-channel/pull', authMiddleware, (req, res) => {
+    const auth = (req as any).machineAuth as MachineAuthContext;
+    const requestNonce = req.body?.requestNonce;
+    if (typeof requestNonce !== 'string' || !/^[a-f0-9]{64}$/i.test(requestNonce)) {
+      res.status(400).json({ error: 'request-nonce-required' });
+      return;
+    }
+    const token = ctx.getIdentityRecoveryBearerToken?.();
+    if (!token) {
+      res.status(503).json({ error: 'recovery-channel-not-established' });
+      return;
+    }
+    const recipient = ctx.identityManager.loadRemoteIdentity(auth.machineId);
+    if (!recipient?.encryptionPublicKey) {
+      res.status(403).json({ error: 'recipient-encryption-key-unavailable' });
+      return;
+    }
+    const encrypted = encryptForSync({ identityRecoveryBearerToken: token }, recipient.encryptionPublicKey);
+    const encryptedWire = JSON.stringify(encrypted);
+    const responderMachineId = ctx.localMachineId;
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const signature = sign(identityRecoveryBearerResponseMessage({
+      responderMachineId,
+      recipientMachineId: auth.machineId,
+      requestNonce,
+      tokenHash,
+      encrypted: encryptedWire,
+    }), ctx.localSigningKeyPem);
+    res.json({
+      encrypted: encryptedWire,
+      responderMachineId,
+      recipientMachineId: auth.machineId,
+      requestNonce,
+      tokenHash,
+      signature,
+    });
+  });
+
+  // A dashboard-PIN action on the subject machine is delegated over that
+  // machine's incumbent signed channel. The receiver still applies the root
+  // through IdentityStore's pairing-trust-only first-establishment invariant.
+  router.post('/api/identity/recovery-root/establish', authMiddleware, (req, res) => {
+    const auth = (req as any).machineAuth as MachineAuthContext;
+    const machineIdentity = req.body?.machineIdentity as import('../core/types.js').MachineIdentity | undefined;
+    if (!machineIdentity || machineIdentity.machineId !== auth.machineId) {
+      res.status(403).json({ error: 'recovery-root-subject-mismatch' });
+      return;
+    }
+    if (!req.body?.operatorDelegation) {
+      res.status(403).json({ error: 'operator-delegation-required' });
+      return;
+    }
+    const requestNonce = req.body?.requestNonce;
+    if (typeof requestNonce !== 'string' || !/^[a-f0-9]{64}$/i.test(requestNonce)) {
+      res.status(400).json({ error: 'request-nonce-required' });
+      return;
+    }
+    if (!ctx.establishPeerRecoveryRoot) {
+      res.status(503).json({ error: 'recovery-root-establishment-unavailable' });
+      return;
+    }
+    try {
+      const outcome = ctx.establishPeerRecoveryRoot(machineIdentity, auth.machineId, req.body.operatorDelegation);
+      const unsigned: IdentityPropagationReceiptUnsigned = {
+        version: 1,
+        action: 'recovery-root',
+        responderMachineId: ctx.localMachineId,
+        requesterMachineId: auth.machineId,
+        requestNonce,
+        subjectMachineId: machineIdentity.machineId,
+        epoch: machineIdentity.recoveryEpoch ?? 0,
+        contentHash: recoveryRootDelegationHash(machineIdentity),
+        status: outcome,
+      };
+      res.json({ ...unsigned, signature: sign(identityPropagationReceiptMessage(unsigned), ctx.localSigningKeyPem) });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '';
+      const forbidden = message.startsWith('operator-delegation-') || message === 'recovery-root-first-establishment-requires-pairing';
+      res.status(forbidden ? 403 : 409).json({ error: err instanceof IdentityStoreRefusal ? err.code : message || 'recovery-root-establishment-refused' });
+    }
+  });
+
+  router.post('/api/identity/reannounce/ack', authMiddleware, (req, res) => {
+    const auth = (req as any).machineAuth as MachineAuthContext;
+    const machineId = req.body?.machineId;
+    const keyEpoch = Number(req.body?.keyEpoch);
+    if (typeof machineId !== 'string' || !Number.isSafeInteger(keyEpoch)) {
+      res.status(400).json({ error: 'machineId-and-keyEpoch-required' });
+      return;
+    }
+    if (!req.body?.operatorDelegation) {
+      res.status(403).json({ error: 'operator-delegation-required' });
+      return;
+    }
+    const requestNonce = req.body?.requestNonce;
+    if (typeof requestNonce !== 'string' || !/^[a-f0-9]{64}$/i.test(requestNonce)) {
+      res.status(400).json({ error: 'request-nonce-required' });
+      return;
+    }
+    if (!ctx.acknowledgePeerIdentityRotation) {
+      res.status(503).json({ error: 'identity-rotation-ack-unavailable' });
+      return;
+    }
+    try {
+      const outcome = ctx.acknowledgePeerIdentityRotation(machineId, keyEpoch, auth.machineId, req.body.operatorDelegation);
+      const status = outcome === true || outcome === 'acknowledged'
+        ? 'acknowledged'
+        : outcome === 'already-acknowledged' ? 'already-acknowledged'
+          : outcome === 'would-acknowledge' ? 'would-acknowledge' : 'unknown';
+      if (status === 'unknown') {
+        res.status(409).json({ error: 'identity-acknowledgement-refused' });
+        return;
+      }
+      const unsigned: IdentityPropagationReceiptUnsigned = {
+        version: 1,
+        action: 'signing-ack',
+        responderMachineId: ctx.localMachineId,
+        requesterMachineId: auth.machineId,
+        requestNonce,
+        subjectMachineId: machineId,
+        epoch: keyEpoch,
+        contentHash: signingAckDelegationHash(machineId, keyEpoch),
+        status,
+      };
+      res.json({ ...unsigned, signature: sign(identityPropagationReceiptMessage(unsigned), ctx.localSigningKeyPem) });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'operator-delegation-invalid';
+      res.status(message.startsWith('operator-delegation-') ? 403 : 409).json({ error: message });
+    }
   });
 
   // ── POST /api/handoff/begin — Outgoing machine opens a planned handoff (§8 G3d) ──

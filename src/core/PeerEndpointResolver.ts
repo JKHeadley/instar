@@ -3,7 +3,7 @@
  *
  * Pure, I/O-free, injectable (clock + health map). Resolves a peer's advertised
  * endpoint set into an ORDERED, VALIDATED, CAPPED candidate list for the hedged
- * failover transport (Layer 2), and tracks per-(peer,kind) health so the order
+ * failover transport (Layer 2), and tracks per-(peer,kind,url) health so the order
  * is latency+liveness-aware and a dead rope is deprioritized-but-probed.
  *
  * It NEVER does network I/O — the transport calls `resolve()` to get the order,
@@ -114,7 +114,9 @@ export class PeerEndpointResolver {
   private readonly now: () => number;
   private readonly ownCidrs: () => string[];
   private readonly log: (m: string) => void;
-  /** key = `${peerMachineId}\u0000${kind}` */
+  /** key = `${peerMachineId}\u0000${kind}\u0000${url}`. URL is load-bearing:
+   * an observed endpoint must be able to outrank a dead advertised endpoint of
+   * the same transport kind without borrowing its failure record. */
   private readonly health = new Map<string, HealthRecord>();
 
   constructor(deps: PeerEndpointResolverDeps) {
@@ -124,8 +126,8 @@ export class PeerEndpointResolver {
     this.log = deps.logger ?? (() => {});
   }
 
-  private key(peer: string, kind: MeshEndpoint['kind']): string {
-    return `${peer}${KEY_SEP}${kind}`;
+  private key(peer: string, kind: MeshEndpoint['kind'], url = ''): string {
+    return `${peer}${KEY_SEP}${kind}${KEY_SEP}${url}`;
   }
 
   private priorityOf(kind: MeshEndpoint['kind']): number {
@@ -213,25 +215,37 @@ export class PeerEndpointResolver {
 
     // 3) Touch/seed health for surviving endpoints (lastAdvertisedAt for eviction).
     for (const e of validated) {
-      const k = this.key(peerMachineId, e.kind);
+      const k = this.key(peerMachineId, e.kind, e.url);
       const h = this.health.get(k);
       if (h) {
         h.lastAdvertisedAt = nowMs;
         h.url = e.url;
       } else {
-        this.health.set(k, this.freshHealth(e.url, nowMs));
+        // Backward-compatible unit/API calls can feed health before resolve()
+        // and therefore have no URL. Adopt that generic row into the first
+        // concrete endpoint instead of discarding its evidence.
+        const genericKey = this.key(peerMachineId, e.kind);
+        const generic = this.health.get(genericKey);
+        if (generic) {
+          this.health.delete(genericKey);
+          generic.url = e.url;
+          generic.lastAdvertisedAt = nowMs;
+          this.health.set(k, generic);
+        } else {
+          this.health.set(k, this.freshHealth(e.url, nowMs));
+        }
       }
     }
     this.evictStale(peerMachineId, nowMs);
 
-    // 4) Cap to MAX_ENDPOINTS by priority (Decision 4) BEFORE ordering.
-    const byPriority = [...validated].sort((a, b) => this.priorityOf(a.kind) - this.priorityOf(b.kind));
-    const capped = byPriority.slice(0, MAX_ENDPOINTS);
-
+    // 4) Order the COMPLETE validated set before applying the cap. Evidence is
+    // load-bearing here: priority-first capping can discard a locally observed,
+    // corroborated same-kind endpoint merely because four dead advertised URLs
+    // appeared first.
     // 5) Order: last-known-good first, then priority; a deprioritized (dead, not
     //    due-for-probe) rope sinks to the back (Decision 5).
-    const resolved: ResolvedEndpoint[] = capped.map((e) => {
-      const h = this.health.get(this.key(peerMachineId, e.kind));
+    const resolved: ResolvedEndpoint[] = validated.map((e) => {
+      const h = this.health.get(this.key(peerMachineId, e.kind, e.url));
       const dead = !!h && h.consecutiveFailures >= this.cfg.unhealthyAfterFailures;
       const dueForAttempt = !dead || this.isProbeDue(h!, nowMs);
       return {
@@ -245,13 +259,29 @@ export class PeerEndpointResolver {
     resolved.sort((a, b) => {
       // due-for-attempt before dead-not-due
       if (a.dueForAttempt !== b.dueForAttempt) return a.dueForAttempt ? -1 : 1;
-      // last-known-good first
+      const healthTier = (ep: ResolvedEndpoint): number => {
+        const h = this.health.get(this.key(peerMachineId, ep.kind, ep.url));
+        const advertisedAlive = ep.origin !== 'observed'
+          && !!h && h.lastOkAt > 0 && h.lastOkAt >= h.lastFailAt
+          && h.consecutiveFailures < this.cfg.unhealthyAfterFailures;
+        if (advertisedAlive) return 0;
+        if (ep.origin === 'observed') return 1;
+        return 2;
+      };
+      // Normative machine-self-assertion precedence:
+      // advertised-alive > observed-corroborated > advertised-dead/unknown.
+      const aTier = healthTier(a);
+      const bTier = healthTier(b);
+      if (aTier !== bTier) return aTier - bTier;
+      // last-known-good first within the same evidence tier.
       if (a.lastKnownGood !== b.lastKnownGood) return a.lastKnownGood ? -1 : 1;
       // then by priority
       return a.priority - b.priority;
     });
 
-    return resolved;
+    // Decision 4's bound applies only after authority/evidence and health have
+    // selected the best candidates.
+    return resolved.slice(0, MAX_ENDPOINTS);
   }
 
   /**
@@ -259,10 +289,23 @@ export class PeerEndpointResolver {
    * the health-based ordering: EWMA latency/failure, consecutive-failure count,
    * last-known-good with recovery hysteresis + latency demotion.
    */
-  recordResult(peerMachineId: string, kind: MeshEndpoint['kind'], ok: boolean, latencyMs: number): void {
-    const k = this.key(peerMachineId, kind);
+  recordResult(peerMachineId: string, kind: MeshEndpoint['kind'], ok: boolean, latencyMs: number, url?: string): void {
+    let k = url
+      ? this.key(peerMachineId, kind, url)
+      : this.latestKey(peerMachineId, kind) ?? this.key(peerMachineId, kind);
     const nowMs = this.now();
-    const h = this.health.get(k) ?? this.freshHealth('', nowMs);
+    let h = this.health.get(k);
+    if (!h && url) {
+      const genericKey = this.key(peerMachineId, kind);
+      const generic = this.health.get(genericKey);
+      if (generic) {
+        this.health.delete(genericKey);
+        generic.url = url;
+        k = this.key(peerMachineId, kind, url);
+        h = generic;
+      }
+    }
+    h ??= this.freshHealth(url ?? '', nowMs);
     h.ewmaFailRate = EWMA_ALPHA * (ok ? 0 : 1) + (1 - EWMA_ALPHA) * h.ewmaFailRate;
     if (ok) {
       h.lastOkAt = nowMs;
@@ -290,8 +333,9 @@ export class PeerEndpointResolver {
   }
 
   /** Test/inspection helper — current health snapshot for a (peer,kind). */
-  healthOf(peerMachineId: string, kind: MeshEndpoint['kind']): Readonly<HealthRecord> | undefined {
-    return this.health.get(this.key(peerMachineId, kind));
+  healthOf(peerMachineId: string, kind: MeshEndpoint['kind'], url?: string): Readonly<HealthRecord> | undefined {
+    const key = url ? this.key(peerMachineId, kind, url) : this.latestKey(peerMachineId, kind);
+    return key ? this.health.get(key) : undefined;
   }
 
   /**
@@ -303,26 +347,29 @@ export class PeerEndpointResolver {
    * RopeHealthMonitor (classification). URLs deliberately excluded.
    */
   snapshot(): RopeHealthSnapshotRow[] {
-    const rows: RopeHealthSnapshotRow[] = [];
+    const grouped = new Map<string, { peer: string; kind: MeshEndpoint['kind']; records: HealthRecord[] }>();
     for (const [key, h] of this.health) {
-      // The health-map key joins peer + kind with a separator character (see
-      // `key()`); split on its LAST occurrence so a peer id containing the
-      // separator can never mis-parse the kind.
-      const sep = key.lastIndexOf(KEY_SEP);
-      if (sep <= 0) continue;
-      const peer = key.slice(0, sep);
-      const kind = key.slice(sep + 1) as MeshEndpoint['kind'];
+      const parsed = this.parseKey(key);
+      if (!parsed) continue;
+      const groupKey = `${parsed.peer}${KEY_SEP}${parsed.kind}`;
+      const group = grouped.get(groupKey) ?? { peer: parsed.peer, kind: parsed.kind, records: [] };
+      group.records.push(h);
+      grouped.set(groupKey, group);
+    }
+    const rows: RopeHealthSnapshotRow[] = [];
+    for (const { peer, kind, records } of grouped.values()) {
+      const dead = records.every((h) => h.consecutiveFailures >= this.cfg.unhealthyAfterFailures);
       rows.push({
         peer,
         kind,
-        dead: h.consecutiveFailures >= this.cfg.unhealthyAfterFailures,
-        consecutiveFailures: h.consecutiveFailures,
-        recoveryStreak: h.recoveryStreak,
-        lastKnownGood: h.lastKnownGood,
-        lastOkAt: h.lastOkAt,
-        lastFailAt: h.lastFailAt,
-        ewmaFailRate: h.ewmaFailRate,
-        ewmaLatencyMs: h.ewmaLatencyMs,
+        dead,
+        consecutiveFailures: Math.min(...records.map((h) => h.consecutiveFailures)),
+        recoveryStreak: Math.max(...records.map((h) => h.recoveryStreak)),
+        lastKnownGood: records.some((h) => h.lastKnownGood),
+        lastOkAt: Math.max(...records.map((h) => h.lastOkAt)),
+        lastFailAt: Math.max(...records.map((h) => h.lastFailAt)),
+        ewmaFailRate: Math.min(...records.map((h) => h.ewmaFailRate)),
+        ewmaLatencyMs: Math.min(...records.map((h) => h.ewmaLatencyMs)),
       });
     }
     return rows;
@@ -349,15 +396,31 @@ export class PeerEndpointResolver {
     return nowMs - h.lastFailAt >= backoff;
   }
 
-  /** Evict per-(peer,kind) health for endpoints no longer advertised past the TTL (Decision 4). */
+  /** Evict per-(peer,kind,url) health for endpoints no longer advertised past the TTL (Decision 4). */
   private evictStale(peerMachineId: string, nowMs: number): void {
-    for (const kind of ['tailscale', 'lan', 'cloudflare'] as const) {
-      const k = this.key(peerMachineId, kind);
-      const h = this.health.get(k);
-      if (h && nowMs - h.lastAdvertisedAt > this.cfg.endpointEvictionMs) {
-        this.health.delete(k);
-      }
+    for (const [key, h] of this.health) {
+      const parsed = this.parseKey(key);
+      if (parsed?.peer === peerMachineId && nowMs - h.lastAdvertisedAt > this.cfg.endpointEvictionMs) this.health.delete(key);
     }
+  }
+
+  private parseKey(key: string): { peer: string; kind: MeshEndpoint['kind']; url: string } | null {
+    const first = key.indexOf(KEY_SEP);
+    const second = key.indexOf(KEY_SEP, first + 1);
+    if (first <= 0 || second <= first) return null;
+    const kind = key.slice(first + 1, second) as MeshEndpoint['kind'];
+    if (kind !== 'tailscale' && kind !== 'lan' && kind !== 'cloudflare') return null;
+    return { peer: key.slice(0, first), kind, url: key.slice(second + 1) };
+  }
+
+  private latestKey(peer: string, kind: MeshEndpoint['kind']): string | undefined {
+    let best: { key: string; at: number } | undefined;
+    for (const [key, h] of this.health) {
+      const parsed = this.parseKey(key);
+      if (parsed?.peer !== peer || parsed.kind !== kind) continue;
+      if (!best || h.lastAdvertisedAt >= best.at) best = { key, at: h.lastAdvertisedAt };
+    }
+    return best?.key;
   }
 
   /** LAN-subnet gate: does `host` share a subnet with one of our own interfaces? */

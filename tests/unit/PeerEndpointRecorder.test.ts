@@ -206,4 +206,12 @@ describe('PeerEndpointRecorder.record — invariant 2b (omitted-but-proven reten
     expect(rec.record('peer', [LAN])).toBe(true);
     expect(store.peer.map((e) => e.kind)).toEqual(['lan']);
   });
+
+  it('retains a locally observed endpoint when the peer advertises the same kind', () => {
+    const observed: MeshEndpoint = { kind: 'tailscale', url: 'http://100.64.0.44:4042', origin: 'observed' };
+    const moved: MeshEndpoint = { kind: 'tailscale', url: 'http://100.64.0.77:4042' };
+    const { rec, store } = mkRecorder({ known: { peer: [TS, observed] } });
+    expect(rec.record('peer', [moved])).toBe(true);
+    expect(store.peer).toEqual([moved, observed]);
+  });
 });

@@ -127,12 +127,11 @@ function isUsableManager(command: string): boolean {
 /**
  * Resolve the package manager that runs `lint`.
  *
- * This repo's manager is pnpm, but preflight also runs where pnpm is absent:
- * CI installs with `npm ci` and never installs pnpm (.github/workflows/ci.yml).
- * A hardcoded `pnpm` produced `lint failed to start: spawn pnpm ENOENT` there,
- * which the summary then reported as a lint FAILURE — an environment gap
- * rendered as a verdict about the code. The neighbouring discoverability step
- * already avoided this by spawning `npx`.
+ * The repository carries both lockfiles. Prefer npm when both managers are
+ * present because CI installs with `npm ci`, and pnpm's dependency-layout
+ * verification may otherwise try to replace an npm/symlinked node_modules
+ * tree before it runs the read-only lint command. A pnpm-only checkout still
+ * uses pnpm.
  *
  * Returns null when neither manager is usable. The caller reports that as an
  * explicit skipped check and fails the run — it is never counted as a pass,
@@ -141,8 +140,8 @@ function isUsableManager(command: string): boolean {
 export function resolveLintCommand(
   probe: (command: string) => boolean = isUsableManager,
 ): LintCommand | null {
-  if (probe('pnpm')) return { command: 'pnpm', args: ['lint'] };
   if (probe('npm')) return { command: 'npm', args: ['run', 'lint'] };
+  if (probe('pnpm')) return { command: 'pnpm', args: ['lint'] };
   return null;
 }
 

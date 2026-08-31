@@ -1,6 +1,7 @@
 ---
 title: How does a machine prove something about itself that it can't see?
 slug: machine-self-assertion
+parent-principle: "Know Your Principal — An Unverified Identity Is a Guess"
 audience: decider
 ---
 
@@ -37,24 +38,22 @@ notification into a queue that provably buried the last critical alert for two d
 
 ## The design that keeps it zero-touch anyway
 
-The trick is that a *real* recovery leaves evidence an impostor can't fake, and the mesh
-already holds it:
+The later security review found an important correction: rotation notes, signature
+refusals, and familiar addresses are useful evidence, but someone holding the shared
+machine password can manufacture all three. They cannot safely authorize a new identity.
 
-- The recovering machine has a **local rotation record** — a timestamped "my keys were
-  regenerated, here's why" note that survives in its replicated public metadata.
-- The other machines have **first-hand evidence** — they themselves have been refusing
-  that machine's messages (they can see their own "invalid signature" log).
-- The announcement **arrives from an address the peers already know** for that machine.
-
-When all of that lines up — which is what an actual lost-key recovery looks like — the new
-key is accepted automatically. No tap, no approval. The incident from the 27th would have
+Instead, pairing creates a separate **recovery root** whose private half is kept in the
+operating system keychain, outside the folder whose loss caused the incident. If the normal
+signing key disappears, the machine signs the exact replacement identity and generation
+with that recovery root. Peers already pin its public half, so they can verify continuity
+without the old signing key and without a human tap. The incident from the 27th would have
 healed itself in minutes.
 
-When it *doesn't* line up — the claim comes from an address nobody recognizes, or there's
-no rotation record, or two different claimants are fighting over the same machine — the
-claim is parked, nothing is stored, and you get one approve/deny button on your dashboard.
-That's the only moment a human is ever involved, and it's precisely the moment where
-"automatic" would mean "automatic for the attacker too."
+The recovery root cannot be installed or replaced by the shared machine password. Initial
+setup uses the one-time pairing ceremony; later replacement requires a grant signed by the
+already trusted root. If the proof is absent, stale, conflicting, or comes from a machine
+without genuine keychain escrow, the claim is parked and the dashboard presents one
+approve/deny action bound to that exact claim. Ambiguity never becomes automatic trust.
 
 Every identity change also lands in a permanent ledger that keeps resurfacing until you
 acknowledge it — so even a change you didn't approve can't slip past unseen, no matter how
@@ -62,21 +61,23 @@ noisy the notification queue is that day.
 
 ## The address half
 
-For the machine that can't see its own address, the answer needs no trust at all: the
-other machines record where its *authenticated* traffic actually comes from, confirm it
-over half an hour, dial it back to make sure it really answers as that machine, and only
-then use it — and never in place of an address that's already working. Fully automatic,
-because it's built on what the observers can verify themselves, not on what the boxed-in
-machine claims.
+For the machine that can't see its own address, peers now record where authenticated
+traffic actually arrived from and keep any route that is demonstrably working. The new
+observation is deliberately telemetry in this release, not identity authority: a private
+address shape and a successful dial-back do not cryptographically prove which Tailscale
+node owns it. That avoids silently turning shared-egress evidence into a redirect. The WSL
+machine remains reachable because proven routes are retained, while future promotion has
+a clean evidence stream to bind to a machine-to-node proof.
 
 ## Safety rails, briefly
 
-Announcements carry a strictly increasing generation number, so an old captured
-announcement can never be replayed and two rotations can't fight. One machine gets at most
-one automatic re-key a day, three per key generation — then it must go through you.
-Everything ships switched off for the fleet and in rehearsal mode on the dev machines
-first, and the file-editing hole that made all this possible gets closed in the very same
-change that opens the proper door.
+Announcements carry a strictly increasing generation number, one-use challenge, exact
+recipient, expiry, and replacement-key proof, so an old capture cannot be replayed or sent
+to another peer. Attempts are persisted before network I/O and widen from one minute to
+six hours, with a 72-hour terminal horizon and a one-per-peer/day governor floor.
+Everything ships switched off for the fleet and in rehearsal mode on development machines
+first, and the file-editing hole that made all this possible is closed in the same change
+that opens the proper door.
 
 ## What you need to decide
 

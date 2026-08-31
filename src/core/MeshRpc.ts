@@ -516,6 +516,9 @@ export interface MeshRpcDispatcherDeps {
   handlers: Partial<Record<MeshCommand['type'], MeshCommandHandler>>;
   /** Audit sink for rejections (SecurityLog). Optional. */
   onReject?: (env: MeshEnvelope, reason: string) => void;
+  /** Fires after sender-signature/freshness verification but before RBAC. Used
+   * for first-hand liveness/evidence only; it grants no command authority. */
+  onVerified?: (env: MeshEnvelope) => void;
   logger?: (msg: string) => void;
 }
 
@@ -562,11 +565,18 @@ export class MeshRpcDispatcher {
   }
 
   async dispatch(env: MeshEnvelope): Promise<DispatchResult> {
-    const accept = acceptEnvelope(env, this.d.verify, this.d.rbac);
-    if (!accept.ok) {
-      this.d.onReject?.(env, accept.reason);
-      this.d.logger?.(`[mesh-rpc] rejected ${env.command?.type} from ${env.sender}: ${accept.reason}`);
-      return { ok: false, reason: accept.reason, status: statusForReason(accept.reason) };
+    const verified = verifyEnvelope(env, this.d.verify);
+    if (!verified.ok) {
+      this.d.onReject?.(env, verified.reason);
+      this.d.logger?.(`[mesh-rpc] rejected ${env.command?.type} from ${env.sender}: ${verified.reason}`);
+      return { ok: false, reason: verified.reason, status: statusForReason(verified.reason) };
+    }
+    this.d.onVerified?.(env);
+    const authorized = checkCommandRBAC(env.command, env.sender, this.d.rbac);
+    if (!authorized.ok) {
+      this.d.onReject?.(env, authorized.reason);
+      this.d.logger?.(`[mesh-rpc] rejected ${env.command?.type} from ${env.sender}: ${authorized.reason}`);
+      return { ok: false, reason: authorized.reason, status: statusForReason(authorized.reason) };
     }
     // Accepted — burn the nonce so an immediate replay is caught.
     this.d.recordNonce(env.sender, env.nonce);

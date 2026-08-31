@@ -1,7 +1,11 @@
 ---
 title: Machine self-assertion — how a machine states a fact about itself it cannot prove locally
 slug: machine-self-assertion
-status: draft
+parent-principle: "Know Your Principal — An Unverified Identity Is a Guess"
+status: approved
+approved: true
+approved-at: "2026-08-30T16:18:00Z"
+approved-by: operator
 eli16-overview: docs/specs/machine-self-assertion.eli16.md
 review-convergence: "2026-08-29T23:36:51.197Z"
 review-iterations: 5
@@ -115,15 +119,15 @@ including replication-apply:
 - **Recovery-pubkey FIRST-establishment invariant (round-4 — Structure > Willpower):** a
   recovery-pubkey write from ABSENT/epoch-0 to a value (the retro-mint / initial-pair
   ingestion) is NOT merely a monotonic 0→1 write the funnel waves through — it REQUIRES
-  dashboard-PIN operator authentication and is REFUSED from any bearer-authenticated or
+  pairing-code authentication and is REFUSED from any bearer-authenticated, dashboard-PIN, or
   replication-apply writer. Without this the transitional-window `has-recovery-key:false`
   state is a poison point: whoever first lands a 0→1 recovery-pubkey write becomes the
   machine's root of trust. This is an enumerated funnel invariant with the same teeth as
   monotonicity, not a prose expectation on callers. The legitimate establishment/propagation
   channel is the operator-authenticated PAIRING-TRUST exchange (one operator action that
   propagates the new pubkey to peers) — NOT git-replication (which the invariant refuses).
-  Authenticator class: the operator-minted pairing CODE for initial-pair ingestion; a
-  dashboard-PIN for standalone establishment / retro-mint on an already-paired machine.
+  Authenticator class: the operator-minted pairing CODE only. There is no standalone
+  dashboard-PIN retro-mint; an existing peer without the anchor must re-pair.
 - **Tombstone:** the superseded key's fingerprint is recorded; any future write (including
   a continuity-chained or replicated one) rooted at or below a tombstoned epoch is refused.
 - **Sticky revocation:** a revoked machine cannot be written back to active except by an
@@ -155,7 +159,8 @@ bearer token can still write is not corroboration.
 hook commands, `.git/hooks/**`, or `.instar/hooks/**` still reaches code execution and thus
 private-key theft. Closing those is pre-existing debt beyond this spec; §4.4's
 boundary-restoration claim is therefore scoped to "restored with respect to DIRECT identity
-writes," and the bearer→RCE surface is a tracked follow-up (Open questions).
+writes," and the bearer→RCE surface remains owned by CMT-211 (Open questions).
+<!-- tracked: CMT-211 -->
 
 ### 4.1 Key rotation re-announce (incident A)
 
@@ -168,7 +173,8 @@ detect sustained auth-rejected (typed 401, ≥K/≥M, local rotation record)  �
        has-recovery-key(machineId)?  (non-tombstoned recovery pubkey on record)
          YES → continuity signature REQUIRED (5-primary). valid + recovery-pubkey
                cross-peer-consistent (or first-hand anchor) + keyEpoch==stored+1
-               + not-revoked  → ACCEPT.  missing/invalid/superseded → QUARANTINE (PIN).
+               + not-revoked  → ACCEPT without waiting for the ordinary refusal floor.
+               missing/invalid/superseded → QUARANTINE (PIN).
          NO  → 5a fallback: re-announce from an incumbent-verified authenticated
                address?  yes → ACCEPT.  no (double fault / tunnel-only) → QUARANTINE (PIN).
   → any cross-peer equal-epoch DIVERGENCE (signing bare-claim, or any recovery-pubkey)
@@ -331,7 +337,7 @@ EXISTING capacity-heartbeat / shared poll-cache payload (round-2 scalability F6 
 fan-out); the ledger pool read is the named `GET /identity-changes?scope=pool`,
 dark-peer-tolerant.
 
-### 4.4 F1 — closing the files-API identity hole (sequenced, not deferred)
+### 4.4 F1 — closing the files-API identity hole (sequenced in this change)
 
 Interim never-editable/never-sync additions (§4.0's full set) ship in the SAME PR as the
 accept route — closing the file hole alone would recreate incident A with no repair path.
@@ -344,6 +350,18 @@ writes (scoped per §4.0's honest note): an uncorroborated bearer claimant reach
 PIN quarantine.
 
 ### 4.5 Escrowed recovery key (the cryptographic close — ADOPTED, operator-approved 2026-08-29 topic 62395)
+
+**Implementation security correction (2026-08-30).** A dashboard PIN is
+machine-local, so encrypting one machine's PIN assertion to another machine
+would not make it recipient-verifiable; it would merely relabel ordinary machine
+authority. Cross-machine recovery-root rotations and acknowledgement fanout
+therefore carry a scoped, expiring, replay-fenced grant signed by the issuer's
+already-pinned recovery root. First recovery-root establishment has no prior
+independent root and remains pairing-code-only. Existing peers without that
+anchor must re-pair; they are never silently retrofitted through machine auth.
+Likewise, `100.64/10` address shape is not Tailscale node provenance. Condition
+5a stays fail-closed until the listener can bind a paired machine to a verified
+tailnet node identity; the recovery continuity proof remains the automatic path.
 
 The mechanism that makes even the total-loss + address-change case zero-touch AND secure
 against a token-holder. At pair time each machine mints a SECOND ("recovery") keypair. Its
@@ -382,15 +400,16 @@ adversarial #3 / security #2). They degenerate on a small mesh (a 2-machine pool
 k=1, so one peer holds the whole key), do NOT raise the bar against THIS spec's shared-token
 adversary (the token reaches RCE on every peer to steal shares), and their only use case —
 the no-keychain machine — is already covered by the PIN fallback above. Replacing a rare
-one-time tap with a permanent quorum-crypto subsystem is a net-negative trade. If ever
-wanted, peer-shares is its own follow-on spec with its own convergence.
+one-time tap with a permanent quorum-crypto subsystem is a net-negative trade. Peer shares
+are therefore not part of the adopted system.
 
 **Why "dashboard-PIN" is the superior trust class (round-5).** Every "operator-authenticated,
 never bearer" gate here (first-establishment, recovery-key rotation, quarantine approval)
 rests on the dashboard PIN being a factor a bearer-token holder does NOT possess: the PIN is
 operator-held, is not derived from the bearer token, and the PIN-entry path authenticates the
 operator independently of the token. (A bearer→RCE holder who could serve altered dashboard
-assets is the OQ2 follow-up surface — out of this spec's closure scope, stated in §4.4.)
+assets is the OQ2 surface owned by CMT-211 — out of this spec's closure scope, stated in §4.4.)
+<!-- tracked: CMT-211 -->
 
 **The recovery pubkey is now the root of trust and gets the SAME rigor as the signing key
 (round-3: adversarial #1/#2/#4, security #3, lessons F2).**
@@ -429,6 +448,10 @@ assets is the OQ2 follow-up surface — out of this spec's closure scope, stated
 - **Recovery-key use is bound + replay-safe.** Every recovery-key use (continuity signature,
   and any recovery-key rotation) is over a single-use nonce covering
   `(machineId ‖ keyEpoch ‖ new-signing-fp ‖ new-recovery-fp ‖ recoveryEpoch)`.
+  Local operator grants and recovery-root preparation additionally require the live escrow
+  pair to match the recovery public key pinned in the current local identity before ANY
+  identity, acknowledgement, or propagation-journal mutation; retained-prior-root retry is
+  an explicit separate path.
 
 **The recovery key's own lifecycle:**
 
@@ -453,8 +476,9 @@ assets is the OQ2 follow-up surface — out of this spec's closure scope, stated
 **Token-adversary-proof scope (honest, per §4.4).** The continuity signature is
 token-adversary-proof under "bearer WITHOUT code execution." A bearer→RCE path
 (`.claude/settings.json` hooks, `.git/hooks/**`, `.instar/hooks/**` — pre-existing debt,
-tracked follow-up) reaches private-key theft on any machine and is out of this spec's closure
+owned by CMT-211) reaches private-key theft on any machine and is out of this spec's closure
 scope; §4.4's boundary claim and this one are both scoped to direct writes.
+<!-- tracked: CMT-211 -->
 
 **Alternatives considered (round-4 external):**
 - *Tailscale `whois` as corroboration* — the tailnet node key survives `.instar/machine/**`
@@ -490,7 +514,7 @@ defense.
 - **Observed endpoints:** fully automatic (§4.2).
 - **Escrow (§4.5): ADOPTED** (operator-approved 2026-08-29), scoped to KEYCHAIN-BACKED
   vault-escrow only (round-3: a file-backed vault does not survive incident A; Shamir
-  peer-shares dropped to a follow-on spec). On a keychain-backed machine the continuity
+  peer-shares rejected as a net-negative trade). On a keychain-backed machine the continuity
   signature is the PRIMARY, MANDATORY condition-5 evidence and makes the double-fault case
   fully automatic + token-adversary-proof; 5a is used ONLY for a machineId with no recovery
   pubkey on record. A machine without a keychain-backed vault carries no recovery key, is
@@ -586,7 +610,8 @@ never post (prevents N-notices / zero-notices).
    the "every file read by a condition" rule must be mechanically checked, not a denylist that
    silently drifts as conditions are added); git-sync applies identity changes only
    through the §4.0 funnel; fleet sequencing is machine-coherence-gated; the bearer→RCE
-   surface (`.claude/settings.json`, `.git/`, `.instar/hooks/`) is a tracked follow-up.
+   surface (`.claude/settings.json`, `.git/`, `.instar/hooks/`) is owned by CMT-211.
+   <!-- tracked: CMT-211 -->
 10. **Escrow (§4.5) — ADOPTED, keychain-vault only.** Flag
     `multiMachine.recoveryKeyEscrow = {enabled, dryRun}` (dark-on-fleet, dryRun-on-dev; in
     the FD3 ladder + FD12 `migrateConfig`). Recovery keypair minted at pair time on a
@@ -597,7 +622,7 @@ never post (prevents N-notices / zero-notices).
     record; recovery-key rotation is dashboard-PIN-gated through the funnel; the recovery key
     signs ONLY rotations. A machine WITHOUT a keychain-backed vault mints no recovery key,
     surfaces `has-recovery-key:false`, and uses 5a/PIN — never silent. Shamir peer-shares
-    are OUT OF SCOPE (own follow-on spec).
+    are not part of the adopted design and would require a new converged decision if reconsidered.
     - **Retro-mint (this FD10; migration mechanics in FD12):** existing already-paired
       machines have no recovery keypair; on first post-upgrade boot (idempotent — skipped once
       a recovery pubkey exists) a keychain-backed machine mints + escrows one and establishes
@@ -623,20 +648,29 @@ never post (prevents N-notices / zero-notices).
       gap — acknowledged, visible, suppressed), distinguishing a supported keychain-less config
       from a stuck/spoofing one. So a stuck-transitional machine is an incident, an
       acknowledged keychain-less one is an accepted risk, and neither is a silent weak path.
+    - **Durable rotation fanout:** a committed recovery-root rotation keeps its authenticated
+      recipient set immutable and retries to convergence. If a recipient is subsequently
+      explicitly revoked in the authenticated registry, its pending delivery becomes terminal
+      `not-required`; mere absence, darkness, or URL failure never has that effect. This lets the
+      old root retire and the next rotation proceed without making revocation a permanent wedge.
 11. **Liveness propagation:** `auth-rejected` is proof-of-life for every liveness consumer;
     it blocks stale-owner-release death evidence for that peer.
 12. **Migration & rollout parity:** `migrateConfig()` adds the THREE config blocks
     (identityReannounce, observedEndpoints, recoveryKeyEscrow — existence-checked); the
     stored identity schema gains a `recoveryPublicKey` field and `.instar/state/identity-epochs.json`
     gains a `recoveryEpoch`/tombstone per machineId (backfilled absent-reads-as-0, no recovery
-    pubkey ⇒ `has-recovery-key:false`); the retro-mint path (FD10) mints recovery keypairs for
-    existing keychain-backed machines on first post-upgrade boot; `migrateClaudeMd()` adds the operator-facing "why did I get a
+    pubkey ⇒ `has-recovery-key:false`); live escrow may pre-mint a local keypair for
+    an existing keychain-backed machine, but that key is non-authoritative until the
+    next pairing-code ceremony establishes its public root; `migrateClaudeMd()` adds the operator-facing "why did I get a
     key-rotation notice / what is a quarantined identity claim" section; the
     never-editable/never-sync additions ride `refreshHooksAndSettings`; keyEpoch genesis =
     absent-reads-as-0, migration backfills `keyEpoch: 0` into every existing stored identity
     and epoch-store row (round-2 integration F2); `/api/pair` on an existing machineId writes
     `stored+1` (never claimant-supplied) and MAY clear revocation (operator action), through
-    the §4.0 funnel (round-2 integration F3).
+    the §4.0 funnel (round-2 integration F3). A keychain-HMAC protected-era marker distinguishes
+    post-feature anchors from bearer-preseedable legacy files; if that marker or its keychain
+    secret is present but temporarily unreadable or unverifiable, migration aborts byte-identically
+    and reports the failure rather than destructively downgrading established roots.
 
 ## Open questions
 
@@ -650,7 +684,7 @@ never post (prevents N-notices / zero-notices).
 > `.instar/hooks/**`) — tracked as SEPARATE pre-existing-debt hardening (it predates and is
 > independent of this spec, which neither creates nor widens it); §4.4's boundary claim
 > stays scoped to "restored with respect to DIRECT identity writes" and cites it as the
-> named follow-up rather than blocking on it.
+> named CMT-211 work item rather than blocking on it.
 
 > <!-- tracked: CMT-211 -->
 > **CMT-211** — Carry the machine-self-assertion decision to closure: (1) the operator's
@@ -665,22 +699,33 @@ never post (prevents N-notices / zero-notices).
 >
 > Status against this spec: (2) shipped (PR #1995), (3) shipped (PR #1994). (1) and (4) are
 > designed in §4–§5. OQ1 (escrow) is RESOLVED — adopted, operator-approved 2026-08-29; only
-> the bearer→RCE hardening (OQ2) remains a tracked follow-up. The immutable carrier text
+> the bearer→RCE hardening (OQ2) remains owned by CMT-211. The immutable carrier text
 > (written pre-review) predates all of this — this annotation, not the carrier, reflects the
 > standing state.
 
 ## Maturation plan
 
 - **test-agent-live:** live from the first build. The §4.0 funnel invariants (keyEpoch /
-  recoveryEpoch monotonicity, tombstone, first-establishment PIN gate), the §4.1 acceptance
+  recoveryEpoch monotonicity, tombstone, first-establishment pairing-code gate), the §4.1 acceptance
   composite, the challenge binding, and the observed-endpoint promotion floor are all
   unit-testable without a second machine, including the negative rehearsals (uncorroborated →
   quarantine, replayed/superseded → refuse).
 - **dev-agent-live:** ships behind the three flags (FD3) in dryRun on a development agent —
   every accept path logs a would-accept/would-quarantine verdict (claimant AND peer side)
-  while the legacy corroboration path stays authoritative. The keychain-backed vault-escrow
-  and the recovery-key mint are exercised live on the dev pair; the recovery blob's survival
-  is proven by the FD3 rehearsal that DELETES `.instar/machine/**` and recovers end-to-end.
+  while the legacy corroboration path stays authoritative. Dry-run never mints or mutates
+  escrow. A later deliberate live rehearsal exercises keychain escrow only after the
+  fleet-coherence activation gate proves every active registered peer through a fresh authenticated
+  presence pull, with the accept route and exact flags. The recurring presence cadence re-evaluates
+  the gate, self-heals an initially held boot, and refreshes the peer-bound recovery proof before its
+  24-hour horizon; peer-set changes replace rather than widen the prior proof. Keychain-authenticated
+  LOCAL identity/PEM restoration happens before that fleet gate so an offline machine with an expired
+  proof can boot the coordinator and obtain the authenticated pull; REMOTE mutation remains held until
+  the proof refreshes. Boot derives both public keys from the private PEMs and requires exact identity
+  matches, so malformed or substituted key files recover from escrow or fail closed. Because peers still
+  pin the pre-loss signing key, an automatic total-key recovery first uses the already-persisted recovery
+  bearer solely to carry a continuity-REQUIRED claim signed by the pinned recovery root; it cannot fall
+  back to address/refusal evidence. Once peers accept the exact next epoch, the new ordinary machine key
+  authenticates the presence pull and releases activation.
 - **fleet:** with a release, after: (a) ≥14 days dryRun on the dev pair with zero false
   would-accept verdicts, (b) the negative rehearsals pass from the ledger, (c) one live-pair
   rotation accepted, (d) the machine-coherence version gate confirms the accept route is
@@ -693,7 +738,7 @@ never post (prevents N-notices / zero-notices).
 - **dark-window:** the whole feature ships dark on the fleet and dryRun-first on dev; the
   window ends per-flag when its graduation criterion above is met and inspected. The
   bearer→RCE hardening (OQ2) and Shamir peer-shares are explicitly OUT of this window — their
-  own follow-on specs.
+  own separately converged proposals would be required if reconsidered.
 
 ## Reference (internal codes used above, for outside readers)
 

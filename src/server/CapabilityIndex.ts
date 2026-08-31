@@ -257,6 +257,21 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'machineIdentityRecovery',
+    prefixes: ['/identity-recovery', '/identity-changes'],
+    description: 'Machine identity continuity after local key loss: keychain-escrowed recovery roots, bounded challenge/claim re-announcement, corroboration and quarantine, sticky revocation, non-authoritative endpoint telemetry, and an attributable identity-change ledger. First root establishment is pairing-code-only; later operator fanout requires a pinned recovery-root grant. Registry First: read GET /identity-recovery and GET /identity-changes before explaining a peer authentication failure or signing-key change.',
+    build: ({ ctx }) => ({
+      configured: !!ctx.identityStore && !!ctx.identityReannounce,
+      endpoints: [
+        'GET /identity-recovery',
+        'GET /identity-changes',
+        'POST /identity-recovery/quarantines/:id/approve',
+        'POST /identity-recovery/quarantines/:id/deny',
+        'POST /identity-recovery/rotations/:machineId/:epoch/ack',
+      ],
+    }),
+  },
+  {
     key: 'singleMachineFailoverGap',
     // The route lives under the already-claimed '/pool' top-level prefix (owned
     // by the multiMachinePool entry), so this dedicated awareness entry claims

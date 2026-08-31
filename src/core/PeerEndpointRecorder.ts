@@ -76,6 +76,8 @@ export class PeerEndpointRecorder {
     if (!this.d.meshTransportEnabled()) return false;
     if (!peerMachineId) return false;
     if (raw === undefined || raw === null) return false; // absence → no-op
+    // Validation reconstructs {kind,url}, deliberately stripping any peer-supplied
+    // `origin`; absence means advertised for backward-compatible registries.
     const validated = validateMeshEndpoints(raw);
     if (validated.length === 0) return false; // empty/fully-invalid → no-op, never a wipe
     try {
@@ -90,6 +92,48 @@ export class PeerEndpointRecorder {
       // (MACHINE_NOT_FOUND) or a registry race means the peer keeps its prior endpoint set and
       // the next lease RPC retries — strictly no worse than today's cloudflare-only behavior.
       this.log(`skip record for ${peerMachineId}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  /** Persist one locally-corroborated endpoint after the observation tracker has
+   * completed its floor and signed dial-back. Peer-supplied `origin` is stripped
+   * by record(); only this method can mint `origin: observed`. */
+  promoteObservedEndpoint(peerMachineId: string, endpoint: MeshEndpoint): boolean {
+    if (!this.d.meshTransportEnabled() || !peerMachineId) return false;
+    const validated = validateMeshEndpoints([{ kind: endpoint.kind, url: endpoint.url }]);
+    if (validated.length !== 1) return false;
+    try {
+      const current = this.d.getPeerEndpoints(peerMachineId) ?? [];
+      const observed: MeshEndpoint = {
+        ...validated[0],
+        origin: 'observed',
+        observedAt: endpoint.observedAt ?? new Date().toISOString(),
+      };
+      const next = [...current.filter((row) => !(row.kind === observed.kind && row.origin === 'observed')), observed];
+      if (meshEndpointsEqual(current, next)) return false;
+      this.d.updateMachineEndpoints(peerMachineId, next);
+      this.log(`promoted observed ${observed.kind} endpoint for ${peerMachineId}`);
+      return true;
+    } catch (err) { // @silent-fallback-ok: promotion is evidence-only and the logged false result leaves existing routes untouched
+      this.log(`skip observed promotion for ${peerMachineId}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  /** Retract an exact locally-observed endpoint when later evidence proves the
+   * source is shared egress. Advertised endpoints are never touched here. */
+  removeObservedEndpoint(peerMachineId: string, endpoint: Pick<MeshEndpoint, 'kind' | 'url'>): boolean {
+    if (!this.d.meshTransportEnabled() || !peerMachineId) return false;
+    try {
+      const current = this.d.getPeerEndpoints(peerMachineId) ?? [];
+      const next = current.filter((row) => !(row.origin === 'observed' && row.kind === endpoint.kind && row.url === endpoint.url));
+      if (next.length === current.length) return false;
+      this.d.updateMachineEndpoints(peerMachineId, next);
+      this.log(`retracted shared-egress observed ${endpoint.kind} endpoint for ${peerMachineId}`);
+      return true;
+    } catch (err) {
+      this.log(`skip observed retraction for ${peerMachineId}: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
@@ -112,11 +156,19 @@ export class PeerEndpointRecorder {
     advertised: MeshEndpoint[],
   ): MeshEndpoint[] {
     const alive = this.d.isEndpointAlive;
-    if (!alive || !current || current.length === 0) return advertised;
+    if (!current || current.length === 0) return advertised;
     const advertisedKinds = new Set(advertised.map((e) => e.kind));
     const retained: MeshEndpoint[] = [];
     for (const ep of current) {
+      if (ep.origin === 'observed') {
+        // Observed and advertised endpoints of the same kind intentionally
+        // coexist: URL-specific health decides advertised-alive vs observed
+        // vs advertised-dead at dial time.
+        retained.push(ep);
+        continue;
+      }
       if (advertisedKinds.has(ep.kind)) continue;
+      if (!alive) continue;
       let verdict: boolean | undefined;
       try {
         verdict = alive(peerMachineId, ep.kind);

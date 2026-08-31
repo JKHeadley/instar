@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import crypto from 'node:crypto';
 import { generateEncryptionKeyPair } from '../../src/core/MachineIdentity.js';
-import { SecretProvisioner, SecretShareHandler, buildSecretShareCommand, secretKeyPaths, type SecretSharePeer, type SecretShareCommand } from '../../src/core/SecretSync.js';
+import { SecretProvisioner, SecretShareHandler, buildSecretShareCommand, filterSecretsForSync, secretKeyPaths, type SecretSharePeer, type SecretShareCommand } from '../../src/core/SecretSync.js';
 
 /** A machine's X25519 identity for the test: base64 public key + private KeyObject. */
 function machineKeys() {
@@ -101,6 +101,50 @@ describe('SecretSync — provisioner + handler round-trip', () => {
     expect(results.find((r) => r.machineId === 'm_bad')).toMatchObject({ ok: false, reason: 'network down' });
     expect(results.find((r) => r.machineId === 'm_good')).toMatchObject({ ok: true });
   });
+
+  it('never exports the machine recovery escrow namespace', async () => {
+    const recipient = machineKeys();
+    let sent: SecretShareCommand | undefined;
+    const source = {
+      telegram: { token: 'allowed' },
+      machineIdentityRecovery: {
+        studio: { privateKeyPem: 'LOCAL-RECOVERY-PRIVATE-KEY', publicKey: 'also-local' },
+      },
+      'machineIdentityRecovery.mini.privateKeyPem': 'FLAT-LOCAL-RECOVERY-PRIVATE-KEY',
+    };
+    const provisioner = new SecretProvisioner({
+      secretsToSync: () => source,
+      listPeers: () => [{ machineId: 'm_peer', encryptionPublicKey: recipient.encryptionPublicKey }],
+      send: async (_machineId, command) => { sent = command; return { ok: true }; },
+    });
+
+    await provisioner.provisionAll();
+    const stored: Record<string, unknown> = {};
+    new SecretShareHandler({
+      ownEncryptionPrivateKey: () => recipient.privateKey,
+      store: { set: (key, value) => { stored[key] = value; } },
+    }).handle(sent!, 'm_sender');
+
+    expect(stored).toEqual({ telegram: { token: 'allowed' } });
+    expect(JSON.stringify(sent)).not.toContain('LOCAL-RECOVERY-PRIVATE-KEY');
+    expect(source.machineIdentityRecovery.studio.privateKeyPem).toBe('LOCAL-RECOVERY-PRIVATE-KEY');
+  });
+
+  it('rejects inbound payloads that contain a machine recovery escrow namespace', () => {
+    const recipient = machineKeys();
+    const cmd = buildSecretShareCommand(
+      { 'machineIdentityRecovery.studio.privateKeyPem': 'stolen-key' },
+      { machineId: 'm_recipient', encryptionPublicKey: recipient.encryptionPublicKey },
+    );
+    const writes: string[] = [];
+    const handler = new SecretShareHandler({
+      ownEncryptionPrivateKey: () => recipient.privateKey,
+      store: { set: (key) => { writes.push(key); } },
+    });
+
+    expect(() => handler.handle(cmd, 'm_sender')).toThrow(/machine-local secret namespace/);
+    expect(writes).toEqual([]);
+  });
 });
 
 describe('SecretSync — secretKeyPaths (names-only, for /secrets/sync-status)', () => {
@@ -122,5 +166,18 @@ describe('SecretSync — secretKeyPaths (names-only, for /secrets/sync-status)',
 
   it('treats an array value as a leaf (not a sub-tree to flatten)', () => {
     expect(secretKeyPaths({ scopes: ['a', 'b'] })).toEqual(['scopes']);
+  });
+});
+
+describe('SecretSync — local-only filtering', () => {
+  it('filters flat and nested reserved namespaces without mutating the source', () => {
+    const source = {
+      ok: 'yes',
+      nested: { ok: 'yes', machineIdentityRecovery: { privateKeyPem: 'no' } },
+      machineIdentityRecovery: { studio: { privateKeyPem: 'no' } },
+      'machineIdentityRecovery.mini.privateKeyPem': 'no',
+    };
+    expect(filterSecretsForSync(source)).toEqual({ ok: 'yes', nested: { ok: 'yes' } });
+    expect(source.machineIdentityRecovery.studio.privateKeyPem).toBe('no');
   });
 });

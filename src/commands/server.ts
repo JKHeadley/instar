@@ -222,6 +222,7 @@ import { LiveConfig } from '../config/LiveConfig.js';
 import { CoherenceMonitor } from '../monitoring/CoherenceMonitor.js';
 import { ProcessIntegrity } from '../core/ProcessIntegrity.js';
 import { buildCoherenceAdvert } from '../core/machineCoherenceAdvert.js';
+import { IdentityRecoveryBearerAuthority } from '../core/IdentityRecoveryBearer.js';
 import { StaleProcessGuard } from '../core/StaleProcessGuard.js';
 import { cleanupGlobalInstalls } from '../core/GlobalInstallCleanup.js';
 import { ForegroundRestartWatcher } from '../core/ForegroundRestartWatcher.js';
@@ -298,7 +299,7 @@ function ownIpv4Cidrs(): string[] {
 async function advertiseSelfMeshEndpointsNow(
   identityManager: MachineIdentityManager,
   machineId: string,
-  cfg: { multiMachine?: { enabled?: boolean; meshTransport?: { enabled?: boolean; tailscaleEnabled?: boolean } }; tunnel?: unknown; port?: number },
+  cfg: { multiMachine?: { enabled?: boolean; meshTransport?: { enabled?: boolean; tailscaleEnabled?: boolean }; observedEndpoints?: { advertisedAddress?: string } }; tunnel?: unknown; port?: number },
   cloudflareUrl: string | null,
 ): Promise<void> {
   try {
@@ -314,6 +315,7 @@ async function advertiseSelfMeshEndpointsNow(
       cloudflareUrl,
       lanIp,
       tailscaleIp,
+      advertisedAddress: cfg.multiMachine?.observedEndpoints?.advertisedAddress,
       port: cfg.port ?? 4042,
       tailscaleEnabled,
     });
@@ -4357,6 +4359,21 @@ export async function startServer(options: StartOptions): Promise<void> {
     const state = new StateManager(config.stateDir);
     _notifyState = state; // Wire state into notify() gateway
 
+    // Machine identity recovery must run BEFORE MultiMachineCoordinator reads
+    // identity.json. In live mode a keychain-backed escrow can rebuild lost
+    // private keys (or the whole machine directory) while preserving machineId,
+    // exact epoch progression, and the pre-established recovery root. Dry-run
+    // is byte-identical; multi-machine live recovery also requires a fresh
+    // proof written by the pool-coherence activation gate.
+    const bootRecovery = await import('../core/MachineIdentityBootRecovery.js');
+    const bootRecoveryOutcome = await bootRecovery.enforceMachineIdentityBootRecovery({
+      config,
+      log: (message) => console.log(pc.yellow(`  ${message}`)),
+    });
+    if (bootRecoveryOutcome === 'coherence-held') {
+      console.warn('  [identity-recovery] boot mutation held: no fresh pool-coherence activation proof');
+    }
+
     // Multi-machine coordinator — determines role (awake/standby) before other components start.
     // If standby, StateManager becomes read-only and processing is gated.
     const coordinator = new MultiMachineCoordinator(state, {
@@ -5205,6 +5222,23 @@ export async function startServer(options: StartOptions): Promise<void> {
     // prober rides the coordinator's lease-pull tick.
     let _ropeSnapshotSource: (() => import('../core/PeerEndpointResolver.js').RopeHealthSnapshotRow[]) | null = null;
     let _ropeProber: import('../core/RopeRecoveryProber.js').RopeRecoveryProber | null = null;
+    let identityStore: import('../core/IdentityStore.js').IdentityStore | undefined;
+    let identityReannounce: import('../core/IdentityReannounce.js').IdentityReannounceService | undefined;
+    let machineRecoveryKey: import('../core/MachineRecoveryKey.js').MachineRecoveryKey | undefined;
+    let issuedRefusals: import('../core/IdentityReannounce.js').IssuedRefusalStore | undefined;
+    let observedEndpointTracker: import('../core/ObservedEndpointTracker.js').ObservedEndpointTracker | undefined;
+    let identityReannounceGovernor: import('../monitoring/selfaction/governor.js').SelfActionHandle | undefined;
+    let identityReannounceClaimant: import('../core/IdentityReannounceClaimant.js').IdentityReannounceClaimant | undefined;
+    let identityRecoveryBearerToken: string | undefined;
+    let identityRecoveryBearerConfirmedByRoot = false;
+    const identityRecoveryBearerAuthority = new IdentityRecoveryBearerAuthority();
+    let reannounceEnabled = false;
+    let escrowEnabled = false;
+    let observedEnabled = false;
+    let identityMutationCoherenceAllowed = true;
+    let startIdentityReannounceRuntime: (() => Promise<void>) | undefined;
+    let bindIdentityRecoveryRuntime: (() => void) | undefined;
+    let onIdentityActivationAllowed: (() => Promise<void>) | undefined;
     let liveTailBuffer: LiveTailBuffer | undefined;
     let liveTailSendTransport: HttpLiveTailTransport | undefined;
     let handoffWireTransport: HandoffWireTransport | undefined;
@@ -5837,6 +5871,13 @@ export async function startServer(options: StartOptions): Promise<void> {
                     // a recorder fault must not break the probe path.
                   }
                 },
+                onAuthRejected: (target) => {
+                  identityReannounceClaimant?.recordAuthRejected(target.machineId);
+                  void identityReannounceClaimant?.tick().catch((err) => {
+                    console.log(pc.dim(`  [identity-reannounce] claimant tick failed: ${err instanceof Error ? err.message : String(err)}`));
+                  });
+                },
+                onTypedSuccess: (target) => identityReannounceClaimant?.recordSuccess(target.machineId),
                 logger: (m) => console.log(pc.dim(`  ${m}`)),
                 observeAttentionCondition: (identity) => attentionConditionStore.observe(identity),
                 clearAttentionCondition: (identity) => { attentionConditionStore.clear(identity); },
@@ -20583,12 +20624,12 @@ export async function startServer(options: StartOptions): Promise<void> {
         markRejectedDurable: ledgerForNotice
           // @silent-fallback-ok: a dedupe-ledger fault returns true (treat as
           // first-transition → SEND the notice) — fails toward TELLING the user.
-          ? (messageId: string) => { try { return ledgerForNotice.markRejected(messageId, 0, { platform: 'mesh' }); } catch { return true; } }
+          ? (messageId: string) => { try { return ledgerForNotice.markRejected(messageId, 0, { platform: 'mesh' }); } catch { return true; /* @silent-fallback-ok: dedupe fault fails toward one visible user notice */ } }
           : undefined,
         resolvesLocally: (uid: number) => {
           // @silent-fallback-ok: divergence-probe read helper; a resolve fault →
           // false (no divergence signal this tick), advisory only.
-          try { return new UserManager(config.stateDir).resolveFromTelegramUserId(uid) !== null; } catch { return false; }
+          try { return new UserManager(config.stateDir).resolveFromTelegramUserId(uid) !== null; } catch { return false; /* @silent-fallback-ok: advisory divergence probe yields no signal on an unreadable identity map */ }
         },
       });
     }
@@ -20826,7 +20867,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               poolSelfId,
               poolMod.captureHardware(ProcessIntegrity.getInstance()?.runningVersion),
             );
-          } catch { /* best-effort hardware self-attest */ }
+          } catch { /* @silent-fallback-ok — best-effort hardware self-attest; registry presence and auth remain unchanged */ }
           // Quota-aware placement (2026-06-05): self-report whether a NEW
           // session on THIS machine could work right now. Blocked = a provider
           // block is in effect (blockedUntil in the future) or the 5-hour
@@ -20985,7 +21026,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                         topK: _inboundQueue.topKSessionDepths(10),
                       },
                     };
-                  } catch { return {}; }
+                  } catch { return {}; /* @silent-fallback-ok — heartbeat survives without optional queue telemetry; queue custody is independently durable */ }
                 })(),
               });
               const hbApi = machineHeartbeat?.api;
@@ -21068,7 +21109,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (typeof coherenceTimer.unref === 'function') coherenceTimer.unref();
         }
       }
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok: pool registry wiring is optional; the logged error leaves the server in explicit single-machine mode
       console.log(pc.dim(`  [pool] registry not wired: ${err instanceof Error ? err.message : String(err)}`));
     }
 
@@ -21131,6 +21172,340 @@ export async function startServer(options: StartOptions): Promise<void> {
       const meshSelfId = machineHeartbeat?.config?.machineId
         ?? (meshIdMgr?.hasIdentity() ? meshIdMgr.loadIdentity().machineId : null);
       if (meshIdMgr && meshSelfId) {
+        const identityStoreMod = await import('../core/IdentityStore.js');
+        const reannounceMod = await import('../core/IdentityReannounce.js');
+        const recoveryMod = await import('../core/MachineRecoveryKey.js');
+        const observedMod = await import('../core/ObservedEndpointTracker.js');
+        identityStore = new identityStoreMod.IdentityStore({ stateDir: config.stateDir });
+        issuedRefusals = new reannounceMod.IssuedRefusalStore({ stateDir: config.stateDir });
+        reannounceEnabled = resolveDevAgentGate(config.multiMachine?.identityReannounce?.enabled, config);
+        escrowEnabled = resolveDevAgentGate(config.multiMachine?.recoveryKeyEscrow?.enabled, config);
+        observedEnabled = resolveDevAgentGate(config.multiMachine?.observedEndpoints?.enabled, config);
+        const mode = (enabled: boolean, dryRun: boolean | undefined) => !enabled ? 'off' as const : dryRun === false ? 'live' as const : 'dry-run' as const;
+        const activationGateMod = await import('../core/MachineIdentityActivationGate.js');
+        const localIdentityModes = {
+          'identityReannounce.enabled': mode(reannounceEnabled, config.multiMachine?.identityReannounce?.dryRun),
+          'observedEndpoints.enabled': mode(observedEnabled, config.multiMachine?.observedEndpoints?.dryRun),
+          'recoveryKeyEscrow.enabled': mode(escrowEnabled, config.multiMachine?.recoveryKeyEscrow?.dryRun),
+        };
+        const liveIdentityMutationRequested = Object.values(localIdentityModes).includes('live');
+        const activationPeerIds = () => Object.entries(meshIdMgr.loadRegistry().machines ?? {})
+          .filter(([machineId, entry]) => machineId !== meshSelfId && entry.status === 'active' && !entry.revokedAt)
+          .map(([machineId]) => machineId).sort();
+        // Live trust mutation starts held. It is released only after the signed
+        // mesh presence pull below has supplied fresh coherence adverts for the
+        // complete active peer set.
+        identityMutationCoherenceAllowed = !liveIdentityMutationRequested;
+        if (liveIdentityMutationRequested) {
+          console.warn('[identity-recovery] live activation pending authenticated peer coherence pull');
+        }
+
+        // Per-machine auth tokens are intentionally distinct. Existing pools
+        // elect one deterministic incumbent to mint the recovery-channel token;
+        // every other machine pulls it over incumbent machine-auth, encrypted
+        // to its registered X25519 key. This avoids independently minting
+        // divergent "shared" tokens during a rolling update.
+        const tryEstablishIdentityRecoveryBearer = async (): Promise<boolean> => {
+          const configuredToken = config.multiMachine?.identityReannounce?.sharedBearerToken;
+          const registry = meshIdMgr.loadRegistry();
+          const activeIds = Object.entries(registry.machines ?? {})
+            .filter(([, entry]) => entry.status === 'active' && !entry.revokedAt)
+            .map(([id]) => id)
+            .sort();
+          // The recovery-channel root must not move with the awake lease/role;
+          // those views are deliberately transient and can be skewed during a
+          // partition. The lexical active-machine root is stable across role
+          // changes and converges with the registry's existing union merge.
+          const channelRoot = activeIds[0] ?? meshSelfId;
+          const priorAuthority = identityRecoveryBearerAuthority.snapshot();
+          identityRecoveryBearerAuthority.selectRoot(channelRoot);
+          if (priorAuthority.rootMachineId !== channelRoot) {
+            // A token is authoritative only for the root that authenticated it.
+            // Never let a live-config edit or root election silently replace the
+            // last verified value while a fresh signed pull is still failing.
+            identityRecoveryBearerToken = undefined;
+            identityRecoveryBearerConfirmedByRoot = false;
+          }
+          if (channelRoot === meshSelfId) {
+            identityRecoveryBearerToken = /^[a-f0-9]{64}$/i.test(configuredToken ?? '')
+              ? configuredToken
+              : undefined;
+            if (!/^[a-f0-9]{64}$/i.test(identityRecoveryBearerToken ?? '')) {
+              identityRecoveryBearerToken = randomBytes(32).toString('hex');
+            }
+            identityRecoveryBearerAuthority.confirm(channelRoot, identityRecoveryBearerToken!);
+            identityRecoveryBearerConfirmedByRoot = identityRecoveryBearerAuthority.snapshot().confirmed;
+          } else {
+            const machineAuthMod = await import('../server/machineAuth.js');
+            const entry = registry.machines?.[channelRoot];
+            if (entry?.status === 'active' && !entry.revokedAt) {
+              const url = entry.lastKnownUrl ?? entry.endpoints?.[0]?.url;
+              if (url && isPeerUrlAllowedForCredentials(url, (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist).ok) try {
+                const requestNonce = randomBytes(32).toString('hex');
+                const body = { requestNonce };
+                const headers = machineAuthMod.signRequest(meshSelfId, meshIdMgr.loadSigningKey(), body);
+                const response = await fetch(`${url.replace(/\/+$/, '')}/api/identity/recovery-channel/pull`, {
+                  method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+                  body: JSON.stringify(body), signal: AbortSignal.timeout(5000),
+                });
+                if (!response.ok) return false;
+                const wire = await response.json() as {
+                  encrypted?: string; responderMachineId?: string; recipientMachineId?: string;
+                  requestNonce?: string; tokenHash?: string; signature?: string;
+                };
+                const rootPublicKey = meshIdMgr.getSigningPublicKeyPem(channelRoot);
+                if (!rootPublicKey) return false;
+                const bearerMod = await import('../core/IdentityRecoveryBearer.js');
+                const candidate = bearerMod.acceptIdentityRecoveryBearerResponse({
+                  wire,
+                  expectedResponderMachineId: channelRoot,
+                  expectedRecipientMachineId: meshSelfId,
+                  expectedRequestNonce: requestNonce,
+                  responderSigningPublicKeyPem: rootPublicKey,
+                  recipientEncryptionPrivateKey: createPrivateKey(meshIdMgr.loadEncryptionKey()),
+                });
+                if (!candidate) return false;
+                if (!identityRecoveryBearerAuthority.confirm(channelRoot, candidate)) return false;
+                const authority = identityRecoveryBearerAuthority.snapshot();
+                identityRecoveryBearerToken = authority.token;
+                identityRecoveryBearerConfirmedByRoot = authority.confirmed;
+              } catch { /* @silent-fallback-ok — upgraded canonical peer may not be up yet; remain dark, never mint a competing token */ }
+            }
+          }
+          if (identityRecoveryBearerToken && identityRecoveryBearerToken !== configuredToken) {
+            liveConfig.set('multiMachine.identityReannounce.sharedBearerToken', identityRecoveryBearerToken);
+            const multiMachineConfig = (config.multiMachine ??= {} as NonNullable<typeof config.multiMachine>);
+            multiMachineConfig.identityReannounce ??= {};
+            multiMachineConfig.identityReannounce.sharedBearerToken = identityRecoveryBearerToken;
+          }
+          return identityRecoveryBearerConfirmedByRoot;
+        };
+        // Flag absence is today's behavior: no shared credential is minted,
+        // fetched, or persisted until the dev/fleet gate resolves on.
+        if (reannounceEnabled && config.multiMachine?.identityReannounce?.dryRun === false
+          && identityMutationCoherenceAllowed) await tryEstablishIdentityRecoveryBearer();
+
+        let recoveryEscrowInitialized = false;
+        const initializeMachineRecoveryEscrow = async (): Promise<void> => {
+          if (recoveryEscrowInitialized || !escrowEnabled
+            || config.multiMachine?.recoveryKeyEscrow?.dryRun !== false) return;
+          if (!machineRecoveryKey) {
+            const secretStoreMod = await import('../core/SecretStore.js');
+            const recoverySecretStore = new secretStoreMod.SecretStore({
+              stateDir: config.stateDir,
+              forceFileKey: config.secrets?.forceFileKey,
+            });
+            machineRecoveryKey = new recoveryMod.MachineRecoveryKey(recoverySecretStore);
+          }
+          // Reading the already-established, keychain-bound root is allowed
+          // while activation is held. Mint/ensure remains behind coherence.
+          if (!identityMutationCoherenceAllowed) return;
+          recoveryEscrowInitialized = true;
+          const own = meshIdMgr.loadIdentity();
+          // Retro-mint is local escrow only. Establishing the public recovery
+          // root at already-paired peers remains an explicit operator/PIN step;
+          // the bearer recovery path can never become the first root writer.
+          const escrow = machineRecoveryKey.ensure(meshSelfId, own.recoveryEpoch ?? 0, own.recoveryPublicKey);
+          if (own.recoveryPublicKey && !escrow) {
+            try {
+              _meshAttentionRaise?.({
+                id: `identity-recovery-escrow-unavailable:${meshSelfId}:${own.recoveryEpoch ?? 0}`,
+                title: 'Machine recovery key unavailable',
+                body: 'This machine has an established recovery root, but its keychain private/public pair is missing or mismatched. Automatic identity recovery is suspended until the escrow is repaired.',
+                priority: 'high',
+                sourceContext: 'identity-recovery-escrow',
+              });
+            } catch { /* @silent-fallback-ok — the cryptographic path remains suspended even if notice delivery is unavailable */ }
+          }
+        };
+        await initializeMachineRecoveryEscrow();
+
+        if (observedEnabled && peerEndpointRecorder) {
+          const machineAuthMod = await import('../server/machineAuth.js');
+          observedEndpointTracker = new observedMod.ObservedEndpointTracker({
+            config: () => ({
+              enabled: resolveDevAgentGate(config.multiMachine?.observedEndpoints?.enabled, config),
+              dryRun: config.multiMachine?.observedEndpoints?.dryRun !== false || !identityMutationCoherenceAllowed,
+              corroborationObservations: config.multiMachine?.observedEndpoints?.corroborationObservations ?? 3,
+              corroborationWindowMinutes: config.multiMachine?.observedEndpoints?.corroborationWindowMinutes ?? 30,
+              ttlDays: config.multiMachine?.observedEndpoints?.ttlDays ?? 7,
+              rotationQuarantineHours: config.multiMachine?.observedEndpoints?.rotationQuarantineHours ?? 1,
+            }),
+            recorder: peerEndpointRecorder,
+            serverPort: config.port,
+            dialBack: async (machineId, endpoint) => {
+              const reqNonce = machineAuthMod.newReqNonce();
+              const body = { reqNonce };
+              const headers = machineAuthMod.signRequest(meshSelfId, meshIdMgr.loadSigningKey(), body);
+              const response = await fetch(`${endpoint.url.replace(/\/+$/, '')}/api/lease/pull`, {
+                method: 'POST',
+                headers: { ...headers, 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+                signal: AbortSignal.timeout(10_000),
+              });
+              if (!response.ok) return false;
+              const data = await response.json() as { ack?: import('../server/machineAuth.js').LeaseAck; sig?: string };
+              const peerKey = meshIdMgr.getSigningPublicKeyPem(machineId);
+              return Boolean(peerKey && machineAuthMod.verifyLeaseAckIdentity(data.ack, data.sig, machineId, reqNonce, peerKey));
+            },
+            logger: (message) => console.log(pc.dim(`  ${message}`)),
+          });
+        }
+
+        startIdentityReannounceRuntime = async () => {
+          const own = meshIdMgr.loadIdentity();
+          const claimantMod = await import('../core/IdentityReannounceClaimant.js');
+          // A persisted bearer is loaded before root re-confirmation ONLY as a
+          // carrier for an automatic-recovery claim whose escrow matches the
+          // identity's pinned root. The helper returns null for every ordinary
+          // mutation path, so configured bearer possession alone never starts it.
+          const continuityBootstrapBearer = claimantMod.resolveContinuityBootstrapBearer({
+            identityMutationCoherenceAllowed,
+            recoveryEscrowDryRun: config.multiMachine?.recoveryKeyEscrow?.dryRun,
+            identity: own,
+            escrowMatchesPinnedRoot: !!own.recoveryPublicKey
+              && (machineRecoveryKey?.has(meshSelfId, own.recoveryPublicKey) ?? false),
+            configuredBearerToken: config.multiMachine?.identityReannounce?.sharedBearerToken,
+          });
+          const continuityBootstrap = continuityBootstrapBearer !== null;
+          if (continuityBootstrapBearer) identityRecoveryBearerToken = continuityBootstrapBearer;
+          if (!reannounceEnabled || !identityStore || !issuedRefusals || !identityRecoveryBearerToken
+            || (!identityRecoveryBearerConfirmedByRoot && !continuityBootstrap) || identityReannounce) return;
+          /* @self-action-controller: identity-reannounce */
+          identityReannounceGovernor = _selfActionGovernor?.for('identity-reannounce');
+          identityReannounce = new reannounceMod.IdentityReannounceService({
+            stateDir: config.stateDir,
+            identityStore,
+            issuedRefusals,
+            challengerMachineId: meshSelfId,
+            dryRun: () => config.multiMachine?.identityReannounce?.dryRun !== false || !identityMutationCoherenceAllowed,
+            onAccepted: (accepted) => observedEndpointTracker?.noteRotation(accepted.machineId),
+            onConflict: (event) => {
+              try {
+                _meshAttentionRaise?.({
+                  id: `identity-conflict:${event.machineId}:${Math.floor(Date.now() / 600_000)}`,
+                  title: 'Conflicting machine identity claims',
+                  body: `${event.claims.length} different signing-key claims for the same machine are quarantined. Review them in the Machines dashboard.`,
+                  priority: 'high',
+                  sourceContext: 'identity-reannounce',
+                });
+              } catch { /* @silent-fallback-ok — quarantine remains durable even if notice delivery is unavailable */ }
+            },
+          });
+
+          const governorMod = await import('../monitoring/selfaction/governor.js');
+          identityReannounceClaimant = new claimantMod.IdentityReannounceClaimant({
+            stateDir: config.stateDir,
+            identity: () => meshIdMgr.loadIdentity(),
+            signingPrivateKey: () => meshIdMgr.loadSigningKey(),
+            recoveryContinuitySignature: (binding) => machineRecoveryKey?.signContinuity(meshSelfId, binding) ?? null,
+            peers: () => {
+              const registry = meshIdMgr.loadRegistry();
+              return Object.entries(registry.machines ?? {}).flatMap(([machineId, entry]) => {
+                if (machineId === meshSelfId || entry.revokedAt) return [];
+                const url = entry.lastKnownUrl ?? entry.endpoints?.[0]?.url;
+                return typeof url === 'string' ? [{ machineId, url }] : [];
+              });
+            },
+            requestChallenge: async (peer, machineIdentity) => {
+              const response = await fetch(`${peer.url.replace(/\/+$/, '')}/api/identity/reannounce/challenge`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${identityRecoveryBearerToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ machineIdentity }),
+                signal: AbortSignal.timeout(10_000),
+              });
+              if (!response.ok) throw Object.assign(new Error(`challenge-http-${response.status}`), { status: response.status });
+              return await response.json() as import('../core/IdentityReannounceClaimant.js').PeerChallenge;
+            },
+            submitClaim: async (peer, claim) => {
+              const response = await fetch(`${peer.url.replace(/\/+$/, '')}/api/identity/reannounce/claim`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${identityRecoveryBearerToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ claim }),
+                signal: AbortSignal.timeout(10_000),
+              });
+              const body = await response.json().catch(() => ({})) as import('../core/IdentityReannounceClaimant.js').PeerClaimOutcome; // @silent-fallback-ok: malformed peer output becomes a typed HTTP refusal below
+              if (response.status === 404 || response.status === 501) {
+                throw Object.assign(new Error(`claim-http-${response.status}`), { status: response.status });
+              }
+              if (!body?.outcome) throw Object.assign(new Error(`claim-http-${response.status}`), { status: response.status });
+              return body;
+            },
+            admit: async (peerMachineId) => {
+              if (!identityReannounceGovernor) return false;
+              const target = { key: peerMachineId, classId: 'machine-identity', keyIsVolatile: false };
+              const admission = await identityReannounceGovernor.admit(target, { lane: 'job' });
+              return admission.outcome === 'allow'
+                && governorMod.consumeAdmissionToken(admission.token, 'identity-reannounce', { targetKey: peerMachineId }).proceed;
+            },
+            notify: (event) => {
+              const outcomes = Object.entries(event.peers).map(([peer, row]) => `${peer}: ${row.status}`).join(', ');
+              const title = event.kind === 'horizon-exhausted'
+                ? 'Machine identity recovery needs attention'
+                : 'Machine identity recovery update';
+              try {
+                _meshAttentionRaise?.({
+                  id: `identity-reannounce:${meshSelfId}:${event.keyEpoch}`,
+                  title,
+                  body: `Signing-key epoch ${event.keyEpoch}: ${outcomes}`,
+                  priority: 'high',
+                  sourceContext: 'identity-reannounce',
+                });
+              } catch { /* @silent-fallback-ok — notice is best-effort; the durable episode remains authoritative */ }
+            },
+          });
+          // A refusal callback opens/advances an episode immediately, but the
+          // claimant's persisted backoff slots must also wake without requiring
+          // another refusal to arrive. Otherwise route-absent/refused peers can
+          // remain parked forever after their first attempt. The timer is only a
+          // wake-up source: tick() is single-flight and the durable episode owns
+          // all attempt timing/budget decisions.
+          const identityReannounceRetryTimer = setInterval(() => {
+            void identityReannounceClaimant?.tick().catch((err) => { // @silent-fallback-ok: scheduled retry failure is logged and the durable episode retries later
+              console.warn(`[identity-reannounce] scheduled retry failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }, 30_000);
+          if (typeof identityReannounceRetryTimer.unref === 'function') identityReannounceRetryTimer.unref();
+          if (continuityBootstrap) {
+            identityReannounceClaimant.openContinuityRecovery();
+          }
+          // Network recovery is deliberately detached from server boot. The
+          // claimant owns a durable episode and a bounded parallel fanout, so
+          // startup can begin serving peers while reconciliation progresses.
+          void identityReannounceClaimant.tick().catch((err) => { // @silent-fallback-ok: boot is non-blocking; failure is logged and the interval retries
+            console.warn(`[identity-reannounce] boot reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
+          });
+          bindIdentityRecoveryRuntime?.();
+        };
+        await startIdentityReannounceRuntime();
+        if (reannounceEnabled) {
+          // Rolling upgrades are intentionally stagger-tolerant. A non-root
+          // machine that boots before the elected root keeps retrying the
+          // authenticated, encrypted pull and activates the runtime in-place;
+          // it never mints a competing token and needs no process restart.
+          const bearerMod = await import('../core/IdentityRecoveryBearer.js');
+          const recoveryBearerCadence = new bearerMod.IdentityRecoveryBearerCadence({
+            confirmed: () => identityRecoveryBearerConfirmedByRoot,
+            reconcile: async () => {
+              if (config.multiMachine?.identityReannounce?.dryRun !== false || !identityMutationCoherenceAllowed) return false;
+              return tryEstablishIdentityRecoveryBearer();
+            },
+          });
+          const recoveryBearerRetryTimer = setInterval(() => {
+            void (async () => {
+              // Until first establishment retry every 30s. Once converged,
+              // re-check the elected root only every 15 minutes so a root that
+              // lost config can heal token divergence without creating a
+              // perpetual high-rate RPC/config-rewrite loop.
+              if (!(await recoveryBearerCadence.tick())) return;
+              await startIdentityReannounceRuntime?.();
+              bindIdentityRecoveryRuntime?.();
+            })().catch((err) => { // @silent-fallback-ok: recovery-channel failure is logged; cadence retries without minting authority
+              console.warn(`[identity-reannounce] recovery-channel retry failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }, 30_000);
+          if (typeof recoveryBearerRetryTimer.unref === 'function') recoveryBearerRetryTimer.unref();
+        }
         const meshClockToleranceMs = config.multiMachine?.sessionPool?.meshRpcClockToleranceMs ?? 30000;
         // Pool Dashboard Streaming (§2.3): the shared single-use ticket store —
         // the `pool-stream-ticket` verb mints into it; the WS /pool-stream
@@ -21223,7 +21598,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   }),
                 resolveIssuerPublicKeyPem: (iss) => meshIdMgr.getSigningPublicKeyPem(iss),
                 verify: (canonical, signature, pem) => {
-                  try { return idMod.verify(canonical, signature, pem); } catch { return false; }
+                  try { return idMod.verify(canonical, signature, pem); } catch { return false; /* @silent-fallback-ok: malformed peer signature fails verification closed */ }
                 },
                 fetchFromHolder: async (holder, viewId, method, assertion) => {
                   const res = await ws44Client.send(
@@ -22383,6 +22758,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               for (const [k, v] of seenMeshNonces) if (t - v > meshPruneMs) seenMeshNonces.delete(k);
             }
           },
+          onReject: (env, reason) => {
+            if (reason === 'signature-invalid') issuedRefusals?.recordSignatureInvalid(env.sender);
+          },
+          onVerified: (env) => issuedRefusals?.recordSuccess(env.sender),
           handlers: {
             'ssh-bootstrap-advert': (cmd, sender) => {
               if (!mutualSshRuntime) return { ok: false, reason: 'mutual-ssh-disabled' };
@@ -24504,7 +24883,38 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
             },
           });
-          void peerPresencePuller.pullOnce();
+          let identityActivationInFlight: Promise<void> | null = null;
+          const reconcileIdentityActivation = (): Promise<void> => {
+            if (identityActivationInFlight) return identityActivationInFlight;
+            identityActivationInFlight = (async () => {
+              if (!liveIdentityMutationRequested) {
+                await peerPresencePuller.pullOnce();
+                return;
+              }
+              const activation = await activationGateMod.activateMachineIdentityAfterAuthenticatedPull({
+                pullAuthenticatedPresence: () => peerPresencePuller.pullOnce(),
+                selfMachineId: meshSelfId,
+                capacities: () => machinePoolRegistry?.getCapacities() ?? [],
+                localModes: localIdentityModes,
+                requiredPeerMachineIds: activationPeerIds(),
+                stateDir: config.stateDir,
+              });
+              identityMutationCoherenceAllowed = activation.allowed;
+              if (!activation.allowed) {
+                console.warn(`[identity-recovery] live activation held by pool coherence gate: ${activation.reasons.join(', ')}`);
+                return;
+              }
+              await initializeMachineRecoveryEscrow();
+              if (reannounceEnabled && config.multiMachine?.identityReannounce?.dryRun === false) {
+                await tryEstablishIdentityRecoveryBearer();
+                await startIdentityReannounceRuntime?.();
+                bindIdentityRecoveryRuntime?.();
+              }
+              await onIdentityActivationAllowed?.();
+            })().finally(() => { identityActivationInFlight = null; });
+            return identityActivationInFlight;
+          };
+          await reconcileIdentityActivation();
 
           // ── Machine-Coherence Guard (machine-coherence-guard §3.3/§3.4/§6/§7,
           // roadmap 4.1 F4/P0-1) — PURE SIGNAL, rides THIS 30s peerPresenceTick ──
@@ -24708,7 +25118,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           };
 
           const peerPresenceTick = (): void => {
-            void peerPresencePuller.pullOnce();
+            void reconcileIdentityActivation().catch((err) => {
+              console.warn(`[identity-recovery] periodic activation reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
             // mesh-coherence-live-state-honesty (Fix (b)): the periodic, signal-only live-vs-config
             // mesh coherence recheck. Dev-gated dark (resolveDevAgentGate on the nested ?.enabled).
             if (resolveDevAgentGate(config.monitoring?.meshCoherenceLiveCheck?.enabled, config)) {
@@ -25776,6 +26188,545 @@ export async function startServer(options: StartOptions): Promise<void> {
     });
 
     const server = new AgentServer({ config, singleInstanceLock, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, getLastRelayEvent: threadlineGetLastRelayEvent, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const readIdentityProjectionPeerRows = async () => {
+      const peers = _resolvePeerUrls?.() ?? [];
+      const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+      return await Promise.all(peers.map(async (peer) => {
+        if (!isPeerUrlAllowedForCredentials(peer.url, extra).ok) {
+          return { machineId: peer.machineId, status: 'url-rejected' };
+        }
+        try {
+          const projectionNonce = randomBytes(32).toString('hex');
+          const fetchPeer = async () => {
+            const response = await fetch(`${peer.url.replace(/\/+$/, '')}/api/identity/projections?nonce=${projectionNonce}`, {
+              headers: { Authorization: `Bearer ${identityRecoveryBearerToken ?? ''}` },
+              signal: AbortSignal.timeout(5000),
+            });
+            if (!response.ok) throw Object.assign(new Error(`http-${response.status}`), { status: response.status });
+            return await response.json() as {
+              projections?: unknown[]; responderMachineId?: string; nonce?: string; signature?: string;
+            };
+          };
+          // A fresh nonce is part of the signed response. Reusing the ordinary
+          // pool response cache would turn an old signed view into a replayable
+          // security signal, so this monitor intentionally fetches directly.
+          const body = await fetchPeer();
+          const peerPublicKey = coordinator.managers.identityManager.getSigningPublicKeyPem(peer.machineId);
+          const projectionEnvelopeMod = await import('../core/IdentityProjectionEnvelope.js');
+          const projections = peerPublicKey ? projectionEnvelopeMod.acceptIdentityProjectionBatch({
+            wire: body, expectedResponderMachineId: peer.machineId, expectedNonce: projectionNonce,
+            responderSigningPublicKeyPem: peerPublicKey,
+          }) : null;
+          if (!projections) {
+            return { machineId: peer.machineId, status: 'signature-invalid' };
+          }
+          return { machineId: peer.machineId, status: 'ok', projections };
+        } catch (err) {
+          const status = (err as { status?: unknown })?.status;
+          return { machineId: peer.machineId, status: typeof status === 'number' ? `http-${status}` : err instanceof Error ? err.name : 'unreachable' };
+        }
+      }));
+    };
+    const activeIdentityPeerIds = (): string[] => {
+      try {
+        return Object.entries(coordinator.managers.identityManager.loadRegistry().machines ?? {})
+          .filter(([machineId, entry]) => machineId !== (_meshSelfId ?? '')
+            && entry.status === 'active' && !entry.revokedAt)
+          .map(([machineId]) => machineId)
+          .sort();
+      } catch { return []; }
+    };
+    const revokedIdentityPeerIds = (): string[] => {
+      try {
+        return Object.entries(coordinator.managers.identityManager.loadRegistry().machines ?? {})
+          .filter(([machineId, entry]) => machineId !== (_meshSelfId ?? '')
+            && (entry.status === 'revoked' || !!entry.revokedAt))
+          .map(([machineId]) => machineId)
+          .sort();
+      } catch { return []; }
+    };
+    const operatorGrantMod = await import('../core/MachineOperatorDelegation.js');
+    const operatorGrantReplay = new operatorGrantMod.MachineOperatorDelegationReplayStore(config.stateDir);
+    const mintOperatorGrants = (
+      action: import('../core/MachineOperatorDelegation.js').MachineOperatorAction,
+      subjectMachineId: string,
+      epoch: number,
+      contentHash: string,
+      peerIds: string[],
+      retainedPriorRoot = false,
+    ): Record<string, import('../core/MachineOperatorDelegation.js').MachineOperatorDelegation> => {
+      if (!machineRecoveryKey || !_meshSelfId) throw new Error('operator recovery-signing root unavailable');
+      if (!retainedPriorRoot) {
+        const issuer = coordinator.managers.identityManager.loadIdentity();
+        if (!issuer.recoveryPublicKey || !machineRecoveryKey.has(_meshSelfId, issuer.recoveryPublicKey)) {
+          throw new Error('operator recovery-signing root does not match the pinned local identity');
+        }
+      }
+      const issuedAt = Date.now();
+      const grants: Record<string, import('../core/MachineOperatorDelegation.js').MachineOperatorDelegation> = {};
+      for (const recipientMachineId of peerIds) {
+        const unsigned = {
+          version: 1 as const, action, issuerMachineId: _meshSelfId, recipientMachineId,
+          subjectMachineId, epoch, contentHash, nonce: randomBytes(32).toString('hex'),
+          // Durable fanout retries for 72h. The grant remains recipient/action/
+          // content-bound and nonce-replay-fenced, but must outlive that retry
+          // horizon plus clock skew.
+          issuedAt, expiresAt: issuedAt + 7 * 24 * 60 * 60_000,
+        };
+        const signature = retainedPriorRoot
+          ? machineRecoveryKey.signRetainedOperatorGrant(_meshSelfId, unsigned)
+          : machineRecoveryKey.signOperatorGrant(
+              _meshSelfId,
+              coordinator.managers.identityManager.loadIdentity().recoveryPublicKey!,
+              unsigned,
+            );
+        if (!signature) throw new Error('operator recovery-signing root unavailable');
+        grants[recipientMachineId] = { ...unsigned, signature };
+      }
+      return grants;
+    };
+    const verifyOperatorGrant = (input: {
+      grant: unknown; action: import('../core/MachineOperatorDelegation.js').MachineOperatorAction;
+      issuerMachineId: string; subjectMachineId: string; epoch: number; contentHash: string;
+      dryRun: boolean;
+    }): void => {
+      const issuer = identityStore?.loadIdentity(input.issuerMachineId, 'remote');
+      const result = operatorGrantMod.acceptMachineOperatorDelegation({
+        grant: input.grant,
+        expected: {
+          action: input.action, issuerMachineId: input.issuerMachineId,
+          recipientMachineId: _meshSelfId ?? '', subjectMachineId: input.subjectMachineId,
+          epoch: input.epoch, contentHash: input.contentHash,
+        },
+        issuerRecoveryPublicKey: issuer?.recoveryPublicKey,
+        replayStore: input.dryRun ? undefined : operatorGrantReplay,
+      });
+      if (!result.ok) throw new Error(result.reason);
+    };
+    const ackPropagationMod = await import('../core/IdentityAckPropagation.js');
+    const identityAckPropagation = identityStore && reannounceEnabled
+      && config.multiMachine?.identityReannounce?.dryRun === false ? new ackPropagationMod.IdentityAckPropagationQueue({
+      stateDir: config.stateDir,
+      validateDelegation: (peerMachineId, machineId, keyEpoch, delegation) => {
+        const self = coordinator.managers.identityManager.loadIdentity();
+        return delegation.action === 'acknowledge-signing-rotation'
+          && delegation.issuerMachineId === self.machineId
+          && delegation.recipientMachineId === peerMachineId
+          && delegation.subjectMachineId === machineId
+          && delegation.epoch === keyEpoch
+          && delegation.contentHash === operatorGrantMod.signingAckDelegationHash(machineId, keyEpoch)
+          && !!self.recoveryPublicKey
+          && operatorGrantMod.verifyMachineOperatorDelegation(delegation, self.recoveryPublicKey);
+      },
+      sendPeer: async (peerMachineId, machineId, keyEpoch, operatorDelegation) => {
+        if (!identityMutationCoherenceAllowed) return 'pending';
+        const peer = (_resolvePeerUrls?.() ?? []).find((row) => row.machineId === peerMachineId);
+        if (!peer) return 'pending';
+        const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+        if (!isPeerUrlAllowedForCredentials(peer.url, extra).ok) return 'pending';
+        try {
+          const manager = coordinator.managers.identityManager;
+          const self = manager.loadIdentity();
+          const responderKey = manager.getSigningPublicKeyPem(peerMachineId);
+          if (!responderKey) return 'pending';
+          const transport = await import('../core/IdentityPropagationTransport.js');
+          return transport.sendIdentityAckPropagation({
+            peerUrl: peer.url, peerMachineId, selfMachineId: self.machineId,
+            selfSigningPrivateKeyPem: manager.loadSigningKey(), peerSigningPublicKeyPem: responderKey,
+            machineId, keyEpoch, operatorDelegation,
+          });
+        } catch { return 'pending'; }
+      },
+      notify: (event) => {
+        _meshAttentionRaise?.({ ...event, sourceContext: 'identity-ack-propagation' });
+      },
+    }) : null;
+    if (identityAckPropagation) {
+      const identityAckTimer = setInterval(() => {
+        if (!identityMutationCoherenceAllowed) return;
+        void identityAckPropagation.tick().catch((err) => {
+          console.warn(`[identity-ack] scheduled propagation failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }, 30_000);
+      if (typeof identityAckTimer.unref === 'function') identityAckTimer.unref();
+      if (identityMutationCoherenceAllowed) {
+        void identityAckPropagation.tick().catch((err) => {
+          console.warn(`[identity-ack] boot reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+    }
+    const rootPropagationMod = await import('../core/IdentityRecoveryRootPropagation.js');
+    const identityRootPropagation = identityStore && escrowEnabled
+      && config.multiMachine?.recoveryKeyEscrow?.dryRun === false
+      ? new rootPropagationMod.IdentityRecoveryRootPropagationQueue({
+        stateDir: config.stateDir,
+        validateDelegation: (peerMachineId, machineIdentity, delegation) => delegation.action === 'rotate-recovery-root'
+          && delegation.issuerMachineId === machineIdentity.machineId
+          && delegation.recipientMachineId === peerMachineId
+          && delegation.subjectMachineId === machineIdentity.machineId
+          && delegation.epoch === machineIdentity.recoveryEpoch
+          && delegation.contentHash === operatorGrantMod.recoveryRootDelegationHash(machineIdentity)
+          && (machineRecoveryKey?.validateRetainedOperatorDelegation(machineIdentity.machineId, delegation) ?? false),
+        sendPeer: async (peerMachineId, machineIdentity, operatorDelegation) => {
+          if (!identityMutationCoherenceAllowed) return 'pending';
+          const peer = (_resolvePeerUrls?.() ?? []).find((row) => row.machineId === peerMachineId);
+          if (!peer) return 'pending';
+          const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+          if (!isPeerUrlAllowedForCredentials(peer.url, extra).ok) return 'pending';
+          try {
+            const manager = coordinator.managers.identityManager;
+            const self = manager.loadIdentity();
+            const responderKey = manager.getSigningPublicKeyPem(peerMachineId);
+            if (!responderKey) return 'pending';
+            const transport = await import('../core/IdentityPropagationTransport.js');
+            return transport.sendIdentityRecoveryRootPropagation({
+              peerUrl: peer.url, peerMachineId, selfMachineId: self.machineId,
+              selfSigningPrivateKeyPem: manager.loadSigningKey(), peerSigningPublicKeyPem: responderKey,
+              machineIdentity, operatorDelegation,
+            });
+          } catch { return 'pending'; }
+        },
+        notify: (event) => _meshAttentionRaise?.({ ...event, sourceContext: 'identity-recovery-root-propagation' }),
+      }) : null;
+    const tickIdentityRootPropagation = async () => {
+      if (!identityRootPropagation) return [];
+      identityRootPropagation.reconcileRevokedPeers(revokedIdentityPeerIds());
+      const jobs = await identityRootPropagation.tick();
+      for (const job of jobs) {
+        if (job.completedAt) {
+          // Delete the old-root-authenticated file row first. If the process
+          // dies before key retirement, the retained keychain intent rebuilds
+          // it and signed already-current receipts finish idempotently.
+          if (identityRootPropagation.retireCompleted(job.id)) {
+            machineRecoveryKey?.finalizeRotationPropagation(
+              job.machineIdentity.machineId,
+              job.machineIdentity.recoveryEpoch ?? 0,
+            );
+          }
+        }
+      }
+      return jobs;
+    };
+    if (identityRootPropagation) {
+      const reconcileIdentityRootPropagation = async (): Promise<void> => {
+        const manager = coordinator.managers.identityManager;
+        const current = manager.loadIdentity();
+        if (machineRecoveryKey?.reconcileRotationCommit(current)) {
+          machineRecoveryKey.rememberIdentity(current);
+        }
+        const redundantIntent = machineRecoveryKey?.loadRotationPropagationIntent(current.machineId);
+        if (redundantIntent) {
+          identityRootPropagation.recoverPrepared(
+            redundantIntent.machineIdentity,
+            redundantIntent.operatorDelegations,
+          );
+        }
+        identityRootPropagation.reconcile(
+          current,
+          machineRecoveryKey?.reconcileRotationCommit(current) ?? false,
+        );
+        await tickIdentityRootPropagation();
+      };
+      const identityRootTimer = setInterval(() => {
+        if (!identityMutationCoherenceAllowed) return;
+        void tickIdentityRootPropagation().catch((err) => {
+          console.warn(`[identity-recovery-root] scheduled propagation failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }, 30_000);
+      if (typeof identityRootTimer.unref === 'function') identityRootTimer.unref();
+      if (identityMutationCoherenceAllowed) {
+        void reconcileIdentityRootPropagation().catch((err) => {
+          console.warn(`[identity-recovery-root] boot propagation failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+      onIdentityActivationAllowed = async () => {
+        await identityAckPropagation?.tick();
+        await reconcileIdentityRootPropagation();
+      };
+    } else {
+      onIdentityActivationAllowed = async () => { await identityAckPropagation?.tick(); };
+    }
+    bindIdentityRecoveryRuntime = () => server.setIdentityRecoveryRuntime({
+      identityStore: reannounceEnabled || escrowEnabled ? identityStore : undefined,
+      identityReannounce: reannounceEnabled ? identityReannounce : undefined,
+      identityRecoveryPrivateKeyAvailable: (machineId) => machineRecoveryKey?.has(machineId) ?? false,
+      identityRecoveryEstablish: escrowEnabled ? async () => {
+        const manager = coordinator.managers.identityManager;
+        const current = manager.loadIdentity();
+        const peers = activeIdentityPeerIds();
+        if (config.multiMachine?.recoveryKeyEscrow?.dryRun !== false || !identityMutationCoherenceAllowed) {
+          return { identity: current, peers: Object.fromEntries(peers.map((peer) => [peer, 'would-require-pairing'])) };
+        }
+        if (!current.recoveryPublicKey) {
+          throw new Error('recovery-root-first-establishment-requires-pairing');
+        }
+        return { identity: current, peers: Object.fromEntries(peers.map((peer) => [peer, 'already-current'])) };
+      } : undefined,
+      identityRecoveryRotate: escrowEnabled ? async () => {
+        const manager = coordinator.managers.identityManager;
+        const current = manager.loadIdentity();
+        const peerIds = activeIdentityPeerIds();
+        if (config.multiMachine?.recoveryKeyEscrow?.dryRun !== false || !identityMutationCoherenceAllowed) {
+          return { identity: current, peers: Object.fromEntries(peerIds.map((peer) => [peer, 'would-rotate'])) };
+        }
+        if (!current.recoveryPublicKey || !machineRecoveryKey) throw new Error('Established OS-keychain recovery root is unavailable');
+        if (!identityRootPropagation) throw new Error('Recovery-root propagation queue is unavailable');
+        ackPropagationMod.assertIdentityAckPropagationSettled(identityAckPropagation);
+        // Retire any prior journal whose sole remaining recipients were
+        // explicitly revoked before deciding whether another rotation may start.
+        await tickIdentityRootPropagation();
+        const currentJobId = `${current.machineId}:${current.recoveryEpoch ?? 0}`;
+        const unfinished = identityRootPropagation.status().filter((job) => !job.completedAt);
+        const currentJob = unfinished.find((job) => job.id === currentJobId);
+        if (currentJob) {
+          // Finish/retry the SAME authority transition before considering a new
+          // epoch. This also handles an immediate retry after the local commit
+          // succeeded but the outbox commit threw in the same process.
+          identityRootPropagation.reconcile(
+            current,
+            !!current.recoveryPublicKey && machineRecoveryKey.has(current.machineId, current.recoveryPublicKey),
+          );
+          const reconciled = identityRootPropagation.status().find((job) => job.id === currentJobId);
+          if (!reconciled) {
+            throw new Error('Recovery-root propagation transaction did not match the committed local authority');
+          }
+          if (reconciled?.failedAt) {
+            const pendingPeers = Object.entries(reconciled.peers)
+              .filter(([, row]) => row.status === 'pending').map(([peer]) => peer);
+            const delegations = mintOperatorGrants(
+              'rotate-recovery-root', current.machineId, current.recoveryEpoch ?? 0,
+              operatorGrantMod.recoveryRootDelegationHash(current), pendingPeers, true,
+            );
+            identityRootPropagation.reauthorize(currentJobId, delegations);
+          }
+          const ticked = await tickIdentityRootPropagation();
+          const job = ticked.find((row) => row.id === currentJobId)
+            ?? identityRootPropagation.status().find((row) => row.id === currentJobId)!;
+          return {
+            identity: current,
+            peers: Object.fromEntries(Object.entries(job.peers).map(([peer, row]) => [peer, row.status])),
+          };
+        }
+        if (unfinished.length > 0) {
+          throw new Error('A prior recovery-root propagation must converge or be repaired before another rotation');
+        }
+        const transactionMod = await import('../core/IdentityRecoveryRootRotationTransaction.js');
+        const { rotated } = await transactionMod.executeRecoveryRootRotationTransaction({
+          current, peerIds, recoveryKey: machineRecoveryKey, propagation: identityRootPropagation,
+          rotateLocalRecoveryKey: (material) => manager.rotateLocalRecoveryKey(material),
+          mintDelegations: (proposed, recipients) => mintOperatorGrants(
+            'rotate-recovery-root', current.machineId, proposed.recoveryEpoch ?? 0,
+            operatorGrantMod.recoveryRootDelegationHash(proposed), recipients,
+          ),
+        });
+        const ticked = await tickIdentityRootPropagation();
+        const job = ticked.find((row) => row.id === `${rotated.machineId}:${rotated.recoveryEpoch}`)
+          ?? identityRootPropagation.status().find((row) => row.id === `${rotated.machineId}:${rotated.recoveryEpoch}`)!;
+        const peers = Object.fromEntries(Object.entries(job.peers).map(([peer, row]) => [peer, row.status]));
+        return { identity: rotated, peers };
+      } : undefined,
+      establishPeerRecoveryRoot: escrowEnabled ? (proposed, fromMachineId, operatorDelegation) => {
+        if (!identityStore) throw new Error('identity authority unavailable');
+        const current = identityStore.loadIdentity(proposed.machineId, 'remote');
+        if (current && current.recoveryPublicKey === proposed.recoveryPublicKey
+          && (current.recoveryEpoch ?? 0) === (proposed.recoveryEpoch ?? 0)) return 'already-current';
+        if (!current?.recoveryPublicKey) throw new Error('recovery-root-first-establishment-requires-pairing');
+        const dryRun = config.multiMachine?.recoveryKeyEscrow?.dryRun !== false || !identityMutationCoherenceAllowed;
+        verifyOperatorGrant({
+          grant: operatorDelegation, action: 'rotate-recovery-root', issuerMachineId: fromMachineId,
+          subjectMachineId: proposed.machineId, epoch: proposed.recoveryEpoch ?? 0,
+          contentHash: operatorGrantMod.recoveryRootDelegationHash(proposed), dryRun,
+        });
+        if (dryRun) return 'would-rotate';
+        identityStore.apply({
+          identity: proposed,
+          scope: 'remote',
+          actor: 'operator',
+          path: 'recovery-rotation',
+          acceptedBy: fromMachineId,
+          corroboration: ['dashboard-pin', 'pinned-recovery-root-grant'],
+        });
+        return 'rotated';
+      } : undefined,
+      identityRotationAcknowledge: reannounceEnabled ? async (machineId, keyEpoch) => {
+        if (!identityStore) throw new Error('identity authority unavailable');
+        const peerIds = activeIdentityPeerIds();
+        if (config.multiMachine?.identityReannounce?.dryRun !== false || !identityMutationCoherenceAllowed) {
+          return { ok: true, local: false, peers: Object.fromEntries(peerIds.map((peer) => [peer, 'would-acknowledge'])) };
+        }
+        const failedPropagation = identityAckPropagation?.status()
+          .find((job) => job.machineId === machineId && job.keyEpoch === keyEpoch)?.failedAt;
+        if (!identityAckPropagation
+          || (identityStore.acknowledgementStatus(machineId, keyEpoch) !== 'pending' && !failedPropagation)) {
+          return { ok: false, local: false, peers: {} };
+        }
+        const delegations = mintOperatorGrants(
+          'acknowledge-signing-rotation', machineId, keyEpoch,
+          operatorGrantMod.signingAckDelegationHash(machineId, keyEpoch), peerIds,
+        );
+        const localAcknowledged = identityStore.acknowledge(machineId, keyEpoch)
+          || identityStore.acknowledgementStatus(machineId, keyEpoch) === 'acknowledged';
+        if (!localAcknowledged) return { ok: false, local: false, peers: {} };
+        identityAckPropagation.enqueue(machineId, keyEpoch, delegations);
+        const ticked = await identityAckPropagation.tick();
+        const job = ticked.find((row) => row.machineId === machineId && row.keyEpoch === keyEpoch)
+          ?? identityAckPropagation.status().find((row) => row.machineId === machineId && row.keyEpoch === keyEpoch)!;
+        const peers = Object.fromEntries(Object.entries(job.peers).map(([peer, row]) => [peer, row.status]));
+        return { ok: job.local !== 'pending', local: job.local !== 'pending', peers };
+      } : undefined,
+      acknowledgePeerIdentityRotation: reannounceEnabled ? (machineId, keyEpoch, fromMachineId, operatorDelegation) => {
+        if (!identityStore) return 'unknown';
+        const dryRun = config.multiMachine?.identityReannounce?.dryRun !== false || !identityMutationCoherenceAllowed;
+        verifyOperatorGrant({
+          grant: operatorDelegation, action: 'acknowledge-signing-rotation', issuerMachineId: fromMachineId,
+          subjectMachineId: machineId, epoch: keyEpoch,
+          contentHash: operatorGrantMod.signingAckDelegationHash(machineId, keyEpoch), dryRun,
+        });
+        if (dryRun) return 'would-acknowledge';
+        if (identityStore.acknowledge(machineId, keyEpoch)) return 'acknowledged';
+        return identityStore.acknowledgementStatus(machineId, keyEpoch) === 'acknowledged'
+          ? 'already-acknowledged' : 'unknown';
+      } : undefined,
+      identityReannounceClaimantStatus: () => identityReannounceClaimant?.status() ?? null,
+      identityChangesPoolReader: readIdentityProjectionPeerRows,
+      observedEndpointTracker: observedEnabled ? observedEndpointTracker : undefined,
+      onMachineAuthSignatureInvalid: reannounceEnabled ? (machineId) => issuedRefusals?.recordSignatureInvalid(machineId) : undefined,
+      onMachineAuthVerified: reannounceEnabled || observedEnabled ? (machineId, req) => {
+        issuedRefusals?.recordSuccess(machineId);
+        if (!observedEndpointTracker || !identityStore) return;
+        const remoteAddress = (req.socket.remoteAddress ?? '').replace(/^::ffff:/, '');
+        void observedEndpointTracker.observe({
+          machineId,
+          remoteAddress,
+          keyEpoch: identityStore.getEpoch(machineId).keyEpoch,
+          direct: false,
+        }).catch(() => { /* endpoint observation never changes auth outcome */ });
+      } : undefined,
+      resolveIdentityReannounceContext: reannounceEnabled ? async (proposed, req) => {
+        const machineId = proposed.machineId;
+        const stored = identityStore?.loadIdentity(machineId, 'remote');
+        const epoch = identityStore?.getEpoch(machineId).keyEpoch ?? 0;
+        // Address class alone cannot bind a Tailscale node to machineId. The
+        // weaker 5a path remains fail-closed until verified node provenance is
+        // available; recovery-key continuity remains the zero-touch path.
+        const sourceVerifiedUnderIncumbent = false;
+        let governorAllowed = false;
+        if (identityReannounceGovernor) {
+          const target = { key: machineId, classId: 'machine-identity', keyIsVolatile: false };
+          const admission = await identityReannounceGovernor.admit(target, { lane: 'job' });
+          if (admission.outcome === 'allow') {
+            const governorMod = await import('../monitoring/selfaction/governor.js');
+            governorAllowed = governorMod.consumeAdmissionToken(
+              admission.token,
+              'identity-reannounce',
+              { targetKey: machineId },
+            ).proceed;
+          }
+        }
+        const localProjection = identityStore?.projection(machineId);
+        if (!localProjection || !identityRecoveryBearerToken) {
+          return {
+            sourceVerifiedUnderIncumbent,
+            recoveryAgreement: 'unverifiable' as const,
+            signingAgreement: 'divergent' as const,
+            governorAllowed,
+            unackedAcceptedRotation: true,
+          };
+        }
+        const projections: import('../core/IdentityStore.js').IdentityProjection[] = [];
+        const peers = _resolvePeerUrls?.() ?? [];
+        const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+        await Promise.all(peers.map(async (peer) => {
+          if (!isPeerUrlAllowedForCredentials(peer.url, extra).ok) return;
+          try {
+            const projectionNonce = randomBytes(32).toString('hex');
+            const response = await fetch(`${peer.url.replace(/\/+$/, '')}/api/identity/projection/by-machine/${encodeURIComponent(machineId)}?nonce=${projectionNonce}`, {
+              headers: { Authorization: `Bearer ${identityRecoveryBearerToken}` }, signal: AbortSignal.timeout(3000),
+            });
+            if (!response.ok) return;
+            const body = await response.json() as {
+              projection?: import('../core/IdentityStore.js').IdentityProjection;
+              responderMachineId?: string;
+              nonce?: string;
+              signature?: string;
+            };
+            const peerPublicKey = coordinator.managers.identityManager.getSigningPublicKeyPem(peer.machineId);
+            const projectionMessage = body.projection
+              ? `instar-identity-projection-v1|${projectionNonce}|${peer.machineId}|${JSON.stringify(body.projection)}`
+              : '';
+            if (body.projection?.machineId === machineId
+              && body.responderMachineId === peer.machineId
+              && body.nonce === projectionNonce
+              && typeof body.signature === 'string'
+              && peerPublicKey
+              && verifyEd25519(projectionMessage, body.signature, peerPublicKey)) {
+              projections.push(body.projection);
+            }
+          } catch { /* a dark peer contributes no agreement, never fabricated consistency */ }
+        }));
+        const reannounceMod = await import('../core/IdentityReannounce.js');
+        const agreement = reannounceMod.evaluateIdentityPoolAgreement({
+          target: reannounceMod.projectProposedIdentity(proposed),
+          localCurrent: localProjection,
+          peers: projections,
+        });
+        return {
+          sourceVerifiedUnderIncumbent,
+          ...agreement,
+          governorAllowed,
+          unackedAcceptedRotation: identityStore?.hasUnacknowledged(machineId) ?? true,
+        };
+      } : undefined,
+    });
+    bindIdentityRecoveryRuntime();
+    if (resolveDevAgentGate(config.multiMachine?.identityReannounce?.enabled, config) && identityStore) {
+      const divergenceMod = await import('../core/IdentityDivergenceMonitor.js');
+      const identityDivergenceMonitor = new divergenceMod.IdentityDivergenceMonitor({
+        stateDir: config.stateDir,
+        readViews: async () => {
+          const views: import('../core/IdentityDivergenceMonitor.js').IdentityProjectionView[] = [{
+            sourceMachineId: _meshSelfId ?? 'local',
+            projections: identityStore!.listProjections(),
+          }];
+          for (const row of await readIdentityProjectionPeerRows()) {
+            if (row.status !== 'ok' || !Array.isArray(row.projections)) continue;
+            const projections = row.projections.filter((candidate): candidate is import('../core/IdentityStore.js').IdentityProjection => {
+              if (!candidate || typeof candidate !== 'object') return false;
+              const value = candidate as Partial<import('../core/IdentityStore.js').IdentityProjection>;
+              return typeof value.machineId === 'string'
+                && Number.isSafeInteger(value.keyEpoch) && (value.keyEpoch ?? -1) >= 0
+                && typeof value.signingFingerprint === 'string'
+                && Number.isSafeInteger(value.recoveryEpoch) && (value.recoveryEpoch ?? -1) >= 0
+                && (value.recoveryFingerprint === undefined || typeof value.recoveryFingerprint === 'string');
+            });
+            views.push({ sourceMachineId: row.machineId, projections });
+          }
+          return views;
+        },
+        raise: (event) => {
+          if (config.multiMachine?.identityReannounce?.dryRun !== false || !identityMutationCoherenceAllowed) {
+            console.warn(`[identity-divergence] dry-run would raise ${event.id}`);
+            return;
+          }
+          _meshAttentionRaise?.({
+            id: event.id,
+            title: `URGENT: machine ${event.kind} identity divergence`,
+            body: `${event.sources.length} live machines hold different ${event.kind} fingerprints for ${event.machineId} at epoch ${event.epoch}. Automatic recovery remains fail-closed until the copies converge or the operator reviews them.`,
+            priority: 'critical',
+            sourceContext: 'identity-divergence',
+          });
+        },
+      });
+      const identityDivergenceTimer = setInterval(() => {
+        void identityDivergenceMonitor.tick().catch((err) => {
+          console.warn(`[identity-divergence] scheduled check failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }, 120_000);
+      if (typeof identityDivergenceTimer.unref === 'function') identityDivergenceTimer.unref();
+      void identityDivergenceMonitor.tick().catch((err) => {
+        console.warn(`[identity-divergence] boot check failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
     server.setSubscriptionLoginLedger(subscriptionLoginLedger);
     server.setSubscriptionRelogin(subscriptionReloginRuntime ? {
       store: subscriptionReloginRuntime.store,

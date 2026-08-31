@@ -13,6 +13,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
+import { IDENTITY_AUTO_ACCEPT_PROTECTED_PATHS, isRemoteIdentityAuthorityPath } from './IdentityStore.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -175,6 +176,10 @@ const DEFAULT_GENERATED_PATTERNS = [
 ];
 
 const DEFAULT_SECRET_PATTERNS = [
+  // machine-self-assertion FD9: every file read by the identity auto-accept
+  // composite is excluded from git-sync by the same manifest that fences the
+  // files API. New evidence inputs must join this list or the static test fails.
+  ...IDENTITY_AUTO_ACCEPT_PROTECTED_PATHS,
   '.env', '.env.*',
   '*.pem', '*.key', '*.p12', '*.pfx',
   '*credentials*', '*secret*',
@@ -264,7 +269,7 @@ export class FileClassifier {
     // Check in priority order (most specific → most general)
 
     // 1. Secrets — never sync
-    if (this.isSecret(relPath, basename)) {
+    if (isRemoteIdentityAuthorityPath(relPath) || this.isSecret(relPath, basename)) {
       return {
         fileClass: 'secret',
         strategy: 'never-sync',

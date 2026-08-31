@@ -93,7 +93,7 @@ import { createRoutes } from './routes.js';
 import { getSelfActionGovernor } from '../monitoring/selfaction/governor.js';
 import { createFileRoutes } from './fileRoutes.js';
 import { mountWhatsAppWebhooks } from '../messaging/backends/WhatsAppWebhookRoutes.js';
-import { createMachineRoutes } from './machineRoutes.js';
+import { createMachineRoutes, type MachineRouteContext } from './machineRoutes.js';
 import { createWorktreeRoutes, createOidcWorktreeRoutes } from './worktreeRoutes.js';
 import { registerRemediationProposalsRoutes } from './routes/remediation-proposals.js';
 import { registerProvenanceRoutes } from './routes/provenance.js';
@@ -339,7 +339,17 @@ export class AgentServer {
       | null;
     autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
     windowLifecycleTick?: (() => void) | null;
+    identityStore?: import('../core/IdentityStore.js').IdentityStore | null;
+    identityReannounce?: import('../core/IdentityReannounce.js').IdentityReannounceService | null;
+    identityRecoveryPrivateKeyAvailable?: (machineId: string) => boolean;
+    identityRecoveryEstablish?: import('./routes.js').RouteContext['identityRecoveryEstablish'];
+    identityRecoveryRotate?: import('./routes.js').RouteContext['identityRecoveryRotate'];
+    identityRotationAcknowledge?: import('./routes.js').RouteContext['identityRotationAcknowledge'];
+    identityChangesPoolReader?: () => Promise<unknown[]>;
+    identityReannounceClaimantStatus?: () => unknown;
+    observedEndpointTracker?: import('../core/ObservedEndpointTracker.js').ObservedEndpointTracker | null;
   } | null = null;
+  private machineRouteContext: MachineRouteContext | null = null;
   private deliverySentinel: DeliveryFailureSentinel | null = null;
   private deliveryStore: PendingRelayStore | null = null;
   private subscriptionLoginLedger: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null = null;
@@ -560,6 +570,50 @@ export class AgentServer {
     this.routeContext.subscriptionRelogin = runtime;
   }
 
+  /** Late-bind the identity-recovery runtime. Route closures retain these
+   * mutable context objects, so binding before start activates both the
+   * pre-bearer machine router and the ordinary authenticated read/operator routes. */
+  setIdentityRecoveryRuntime(runtime: {
+    identityStore?: import('../core/IdentityStore.js').IdentityStore;
+    identityReannounce?: import('../core/IdentityReannounce.js').IdentityReannounceService;
+    identityRecoveryPrivateKeyAvailable?: (machineId: string) => boolean;
+    identityRecoveryEstablish?: import('./routes.js').RouteContext['identityRecoveryEstablish'];
+    identityRecoveryRotate?: import('./routes.js').RouteContext['identityRecoveryRotate'];
+    establishPeerRecoveryRoot?: MachineRouteContext['establishPeerRecoveryRoot'];
+    identityRotationAcknowledge?: import('./routes.js').RouteContext['identityRotationAcknowledge'];
+    acknowledgePeerIdentityRotation?: MachineRouteContext['acknowledgePeerIdentityRotation'];
+    identityChangesPoolReader?: () => Promise<unknown[]>;
+    identityReannounceClaimantStatus?: () => unknown;
+    observedEndpointTracker?: import('../core/ObservedEndpointTracker.js').ObservedEndpointTracker;
+    resolveIdentityReannounceContext?: MachineRouteContext['resolveIdentityReannounceContext'];
+    onMachineAuthSignatureInvalid?: (machineId: string) => void;
+    onMachineAuthVerified?: (machineId: string, req: import('express').Request) => void;
+  }): void {
+    // Unlike dependency graphs that allocate listeners, these are mutable route
+    // closures. Late binding is required when a staggered rolling upgrade
+    // establishes the encrypted recovery channel after this server has begun
+    // listening; no route is re-registered and no second writer is created.
+    if (this.routeContext) {
+      this.routeContext.identityStore = runtime.identityStore ?? null;
+      this.routeContext.identityReannounce = runtime.identityReannounce ?? null;
+      this.routeContext.identityRecoveryPrivateKeyAvailable = runtime.identityRecoveryPrivateKeyAvailable;
+      this.routeContext.identityRecoveryEstablish = runtime.identityRecoveryEstablish;
+      this.routeContext.identityRecoveryRotate = runtime.identityRecoveryRotate;
+      this.routeContext.identityRotationAcknowledge = runtime.identityRotationAcknowledge;
+      this.routeContext.identityChangesPoolReader = runtime.identityChangesPoolReader;
+      this.routeContext.identityReannounceClaimantStatus = runtime.identityReannounceClaimantStatus;
+      this.routeContext.observedEndpointTracker = runtime.observedEndpointTracker ?? null;
+    }
+    if (this.machineRouteContext) {
+      this.machineRouteContext.identityReannounce = runtime.identityReannounce;
+      this.machineRouteContext.establishPeerRecoveryRoot = runtime.establishPeerRecoveryRoot;
+      this.machineRouteContext.acknowledgePeerIdentityRotation = runtime.acknowledgePeerIdentityRotation;
+      this.machineRouteContext.resolveIdentityReannounceContext = runtime.resolveIdentityReannounceContext;
+      this.machineRouteContext.authDeps.onSignatureInvalid = runtime.onMachineAuthSignatureInvalid;
+      this.machineRouteContext.authDeps.onVerified = runtime.onMachineAuthVerified;
+    }
+  }
+
   constructor(options: {
     config: InstarConfig;
     sessionManager: SessionManager;
@@ -680,6 +734,15 @@ export class AgentServer {
     sessionPoolPromotionActivation?: import('../core/sessionPoolPromotionActivation.js').SessionPoolPromotionActivation | null;
     /** MeshRpc dispatcher (§L0) — receive side behind POST /mesh/rpc. */
     meshRpcDispatcher?: import('../core/MeshRpc.js').MeshRpcDispatcher;
+    identityStore?: import('../core/IdentityStore.js').IdentityStore;
+    identityReannounce?: import('../core/IdentityReannounce.js').IdentityReannounceService;
+    identityRecoveryPrivateKeyAvailable?: (machineId: string) => boolean;
+    identityChangesPoolReader?: () => Promise<unknown[]>;
+    observedEndpointTracker?: import('../core/ObservedEndpointTracker.js').ObservedEndpointTracker;
+    resolveIdentityReannounceContext?: (
+      proposed: import('../core/types.js').MachineIdentity,
+      req: import('express').Request,
+    ) => import('../core/IdentityReannounce.js').ReannounceEvaluationContext | Promise<import('../core/IdentityReannounce.js').ReannounceEvaluationContext>;
     /** Signed cross-machine carrier into the recipient's existing A2A inbox. */
     deliverA2aToMachine?: AgentServer['deliverA2aToMachine'];
     /** Working-set pull coordinator (WORKING-SET-HANDOFF §3.3) — behind
@@ -1140,7 +1203,7 @@ export class AgentServer {
     // their own machineAuth scheme (Ed25519 signatures, not bearer tokens).
     if (options.coordinator?.enabled) {
       const coord = options.coordinator;
-      const machineRoutes = createMachineRoutes({
+      const machineRouteContext: MachineRouteContext = {
         identityManager: coord.managers.identityManager,
         heartbeatManager: coord.managers.heartbeatManager,
         securityLog: coord.managers.securityLog,
@@ -1178,7 +1241,14 @@ export class AgentServer {
         onReplyMarker: options.onReplyMarker,
         peerEndpointRecorder: options.peerEndpointRecorder,
         getSelfMeshEndpoints: options.getSelfMeshEndpoints,
-      });
+        identityReannounce: options.identityReannounce,
+        getIdentityRecoveryBearerToken: () => resolveDevAgentGate(options.config.multiMachine?.identityReannounce?.enabled, options.config)
+          ? options.config.multiMachine?.identityReannounce?.sharedBearerToken
+          : undefined,
+        resolveIdentityReannounceContext: options.resolveIdentityReannounceContext,
+      };
+      this.machineRouteContext = machineRouteContext;
+      const machineRoutes = createMachineRoutes(machineRouteContext);
       this.app.use(machineRoutes);
     }
 
@@ -4089,6 +4159,11 @@ export class AgentServer {
       getSessionPoolFailoverRunner: options.getSessionPoolFailoverRunner ?? null,
       sessionPoolPromotionActivation: options.sessionPoolPromotionActivation ?? null,
       meshRpcDispatcher: options.meshRpcDispatcher ?? null,
+      identityStore: options.identityStore ?? null,
+      identityReannounce: options.identityReannounce ?? null,
+      identityRecoveryPrivateKeyAvailable: options.identityRecoveryPrivateKeyAvailable,
+      identityChangesPoolReader: options.identityChangesPoolReader,
+      observedEndpointTracker: options.observedEndpointTracker ?? null,
       workingSetPullCoordinator: options.workingSetPullCoordinator ?? null,
       workingSetArtifactManager: options.workingSetArtifactManager ?? null,
       orchestratorPoller: options.orchestratorPoller ?? null,
