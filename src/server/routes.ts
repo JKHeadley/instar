@@ -850,6 +850,17 @@ export interface RouteContext {
   config: InstarConfig;
   /** Verifies a short-lived proof minted only after a successful dashboard PIN unlock. */
   verifyDashboardOperatorSession?: (token: string | undefined) => boolean;
+  /** Machine identity recovery authority/read surfaces. Absent keeps routes
+   * honest (503) on single-machine or feature-dark installs. */
+  identityStore?: import('../core/IdentityStore.js').IdentityStore | null;
+  identityReannounce?: import('../core/IdentityReannounce.js').IdentityReannounceService | null;
+  identityRecoveryPrivateKeyAvailable?: (machineId: string) => boolean;
+  identityRecoveryEstablish?: () => Promise<{ identity: import('../core/types.js').MachineIdentity; peers: Record<string, string> }>;
+  identityRecoveryRotate?: () => Promise<{ identity: import('../core/types.js').MachineIdentity; peers: Record<string, string> }>;
+  identityRotationAcknowledge?: (machineId: string, keyEpoch: number) => Promise<{ ok: boolean; local: boolean; peers: Record<string, string> }>;
+  identityChangesPoolReader?: () => Promise<unknown[]>;
+  identityReannounceClaimantStatus?: () => unknown;
+  observedEndpointTracker?: import('../core/ObservedEndpointTracker.js').ObservedEndpointTracker | null;
   /** Live-config READ handle (mtime-staleness re-reader). Routes that must
    *  honor config flips WITHOUT a restart (outbound-advisory rollback
    *  contract — spec outbound-jargon-filepath-gap §5) read through this.
@@ -20400,6 +20411,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     try {
       const r = await ctx.meshRpcDispatcher.dispatch(env as import('../core/MeshRpc.js').MeshEnvelope);
+      // A CGNAT source address is not a Tailscale node identity. Keep recording
+      // it as non-authoritative telemetry only until the listener can bind a
+      // verified tailnet node credential to the asserted machineId.
+      if ((r.ok || r.reason === 'no-handler') && ctx.observedEndpointTracker && ctx.identityStore) {
+        const sender = (env as import('../core/MeshRpc.js').MeshEnvelope).sender;
+        const keyEpoch = ctx.identityStore.getEpoch(sender).keyEpoch;
+        const remoteAddress = (req.socket.remoteAddress ?? '').replace(/^::ffff:/, '');
+        void ctx.observedEndpointTracker.observe({
+          machineId: sender,
+          remoteAddress,
+          keyEpoch,
+          direct: false,
+        }).catch(() => { /* observation is advisory; command result remains authoritative */ });
+      }
       if (r.ok) {
         res.json({ ok: true, result: r.result });
       } else {
@@ -20408,6 +20433,183 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  // Machine identity recovery — Registry First read + operator decisions.
+  router.get('/identity-recovery', (_req, res) => {
+    if (!ctx.identityStore || !ctx.identityReannounce) {
+      res.status(503).json({ error: 'machine identity recovery is not enabled' });
+      return;
+    }
+    const self = ctx.coordinator?.identity ?? null;
+    const quarantineStatus = ctx.identityReannounce.status();
+    let recoveryEstablishment: unknown = null;
+    try {
+      recoveryEstablishment = JSON.parse(fs.readFileSync(path.join(ctx.config.stateDir, 'state', 'identity-recovery-establishment.json'), 'utf8'));
+    } catch { /* legacy/unestablished machines report null */ }
+    let acknowledgementPropagation: unknown = null;
+    try {
+      acknowledgementPropagation = JSON.parse(fs.readFileSync(path.join(ctx.config.stateDir, 'state', 'identity-rotation-ack-propagation.json'), 'utf8'));
+    } catch { /* no acknowledgement has been propagated yet */ }
+    const enrichClaim = (claim: import('../core/IdentityReannounce.js').QuarantinedIdentityClaim) => ({
+      ...claim,
+      currentSigningFingerprint: ctx.identityStore!.projection(claim.machineId)?.signingFingerprint ?? null,
+    });
+    res.json({
+      enabled: true,
+      machineId: self?.machineId ?? null,
+      hasRecoveryPublicKey: Boolean(self?.recoveryPublicKey),
+      recoveryPrivateKeyAvailable: self ? Boolean(ctx.identityRecoveryPrivateKeyAvailable?.(self.machineId)) : false,
+      recoveryEstablishment,
+      acknowledgementPropagation,
+      quarantines: {
+        pending: quarantineStatus.pending.map(enrichClaim),
+        recent: quarantineStatus.recent.map(enrichClaim),
+      },
+      unacknowledgedRotations: ctx.identityStore.listUnacknowledged(),
+      claimant: ctx.identityReannounceClaimantStatus?.() ?? null,
+    });
+  });
+
+  router.get('/identity-changes', async (req, res) => {
+    if (!ctx.identityStore) {
+      res.status(503).json({ error: 'machine identity recovery is not enabled' });
+      return;
+    }
+    const local = ctx.identityStore.readChanges();
+    const projections = ctx.identityStore.listProjections();
+    if (req.query.scope !== 'pool') {
+      res.json({ scope: 'machine', projections, changes: local });
+      return;
+    }
+    let peers: unknown[] = [];
+    try { peers = await (ctx.identityChangesPoolReader?.() ?? Promise.resolve([])); } catch { /* dark peers are tolerated */ }
+    res.json({ scope: 'pool', projections, local, peers });
+  });
+
+  const operatorProof = (req: import('express').Request): boolean =>
+    Boolean(ctx.verifyDashboardOperatorSession?.(req.headers['x-instar-operator-session'] as string | undefined));
+
+  const identityApprovalTokens = new Map<string, { quarantineId: string; claimHash: string; expiresAt: number }>();
+  router.post('/identity-recovery/establish', async (req, res) => {
+    if (!operatorProof(req)) {
+      res.status(403).json({ error: 'Recent dashboard PIN unlock required' });
+      return;
+    }
+    if (!ctx.identityRecoveryEstablish) {
+      res.status(503).json({ error: 'recovery-root-establishment-unavailable' });
+      return;
+    }
+    try {
+      const result = await ctx.identityRecoveryEstablish();
+      res.json({ ok: true, machineId: result.identity.machineId, recoveryEpoch: result.identity.recoveryEpoch, peers: result.peers });
+    } catch (err) {
+      res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post('/identity-recovery/rotate', async (req, res) => {
+    if (!operatorProof(req)) {
+      res.status(403).json({ error: 'Recent dashboard PIN unlock required' });
+      return;
+    }
+    if (!ctx.identityRecoveryRotate) {
+      res.status(503).json({ error: 'recovery-root-rotation-unavailable' });
+      return;
+    }
+    try {
+      const result = await ctx.identityRecoveryRotate();
+      res.json({ ok: true, machineId: result.identity.machineId, recoveryEpoch: result.identity.recoveryEpoch, peers: result.peers });
+    } catch (err) {
+      res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post('/identity-recovery/quarantines/:id/approval-token', (req, res) => {
+    if (!operatorProof(req)) {
+      res.status(403).json({ error: 'Recent dashboard PIN unlock required' });
+      return;
+    }
+    const claimHash = req.body?.claimHash;
+    const pending = ctx.identityReannounce?.status().pending.find((row) => row.id === req.params.id);
+    if (typeof claimHash !== 'string' || !pending || pending.claimHash !== claimHash) {
+      res.status(409).json({ error: 'claim-hash-mismatch' });
+      return;
+    }
+    const approvalToken = randomUUID();
+    identityApprovalTokens.set(approvalToken, {
+      quarantineId: pending.id,
+      claimHash,
+      expiresAt: Date.now() + 2 * 60_000,
+    });
+    res.json({ approvalToken, expiresAt: new Date(Date.now() + 2 * 60_000).toISOString() });
+  });
+
+  router.post('/identity-recovery/quarantines/:id/approve', (req, res) => {
+    if (!operatorProof(req)) {
+      res.status(403).json({ error: 'Recent dashboard PIN unlock required' });
+      return;
+    }
+    if (!ctx.identityReannounce) {
+      res.status(503).json({ error: 'machine identity recovery is not enabled' });
+      return;
+    }
+    const claimHash = req.body?.claimHash;
+    const approvalToken = req.body?.approvalToken;
+    const proof = typeof approvalToken === 'string' ? identityApprovalTokens.get(approvalToken) : undefined;
+    if (typeof claimHash !== 'string' || !proof || proof.quarantineId !== req.params.id
+      || proof.claimHash !== claimHash || proof.expiresAt < Date.now()) {
+      res.status(403).json({ error: 'Fresh claim-bound approval token required' });
+      return;
+    }
+    identityApprovalTokens.delete(approvalToken);
+    const result = ctx.identityReannounce.approve(req.params.id, claimHash);
+    res.status(result.outcome === 'accepted' ? 200 : result.outcome === 'would-accept' ? 202 : 409).json(result);
+  });
+
+  router.post('/identity-recovery/quarantines/:id/deny', (req, res) => {
+    if (!operatorProof(req)) {
+      res.status(403).json({ error: 'Recent dashboard PIN unlock required' });
+      return;
+    }
+    if (!ctx.identityReannounce) {
+      res.status(503).json({ error: 'machine identity recovery is not enabled' });
+      return;
+    }
+    const claimHash = req.body?.claimHash;
+    const approvalToken = req.body?.approvalToken;
+    const proof = typeof approvalToken === 'string' ? identityApprovalTokens.get(approvalToken) : undefined;
+    if (typeof claimHash !== 'string' || !proof || proof.quarantineId !== req.params.id
+      || proof.claimHash !== claimHash || proof.expiresAt < Date.now()) {
+      res.status(403).json({ error: 'Fresh claim-bound approval token required' });
+      return;
+    }
+    identityApprovalTokens.delete(approvalToken);
+    const denied = ctx.identityReannounce.deny(req.params.id, claimHash);
+    res.status(denied ? 200 : 409).json({ ok: denied });
+  });
+
+  router.post('/identity-recovery/rotations/:machineId/:epoch/ack', async (req, res) => {
+    if (!operatorProof(req)) {
+      res.status(403).json({ error: 'Recent dashboard PIN unlock required' });
+      return;
+    }
+    if (!ctx.identityStore) {
+      res.status(503).json({ error: 'machine identity recovery is not enabled' });
+      return;
+    }
+    const epoch = Number(req.params.epoch);
+    if (!Number.isSafeInteger(epoch)) {
+      res.status(400).json({ error: 'invalid-key-epoch' });
+      return;
+    }
+    if (ctx.identityRotationAcknowledge) {
+      const result = await ctx.identityRotationAcknowledge(req.params.machineId, epoch);
+      res.status(result.ok ? 200 : 409).json(result);
+      return;
+    }
+    const acknowledged = ctx.identityStore.acknowledge(req.params.machineId, epoch);
+    res.status(acknowledged ? 200 : 409).json({ ok: acknowledged });
   });
 
   // POST /projects/:id/drift-check — run the drift checker for a given

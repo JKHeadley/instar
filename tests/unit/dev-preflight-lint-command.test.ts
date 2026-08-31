@@ -22,10 +22,10 @@ describe('resolveLintCommand', () => {
     });
   });
 
-  it('prefers pnpm over npm when both are usable', () => {
+  it('prefers npm when both are usable so an npm-installed tree is not rewritten by pnpm', () => {
     expect(resolveLintCommand(() => true)).toEqual({
-      command: 'pnpm',
-      args: ['lint'],
+      command: 'npm',
+      args: ['run', 'lint'],
     });
   });
 

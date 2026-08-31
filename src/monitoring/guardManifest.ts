@@ -66,6 +66,22 @@ export interface GuardManifestEntry {
 
 export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
   {
+    key: 'multiMachine.identityReannounce.identityDivergenceMonitor',
+    kind: 'config',
+    configPath: 'multiMachine.identityReannounce.enabled',
+    defaultEnabled: false,
+    dryRunConfigPath: 'multiMachine.identityReannounce.dryRun',
+    expectedTickMs: 120_000,
+    process: 'server',
+    expectRuntime: false,
+    component: 'IdentityDivergenceMonitor',
+    description: 'Equal-epoch signing/recovery divergence monitor: compares authenticated live projections, deduplicates durable episodes, and raises a critical attention item while automatic identity recovery remains fail-closed.',
+    loadBearing: true,
+    criticalPath: 'machine identity authenticity and recovery continuity across the pool',
+    soakWindowDays: 30,
+    declaredLoadBearingAt: '2026-08-30',
+  },
+  {
     key: 'multiMachine.peerExecution.enabled',
     kind: 'config',
     configPath: 'multiMachine.peerExecution.enabled',

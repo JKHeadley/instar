@@ -1109,6 +1109,18 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // Track H). This is the migration-parity path: every existing agent gets the dark
   // defaults on update. The `stage` field is StageAdvancer-write-only at runtime.
   multiMachine: {
+    // Machine identity recovery (machine-self-assertion). All three `enabled`
+    // fields are deliberately omitted: live on the development agent, dark on
+    // fleet. Dry-run prevents trust/routing mutation during the soak.
+    identityReannounce: { dryRun: true },
+    observedEndpoints: {
+      dryRun: true,
+      corroborationObservations: 3,
+      corroborationWindowMinutes: 30,
+      ttlDays: 7,
+      rotationQuarantineHours: 1,
+    },
+    recoveryKeyEscrow: { dryRun: true },
     // Mutual SSH-subsystem bootstrap + continuous directional proof.
     // `enabled` is deliberately OMITTED: DEV_GATED_FEATURES makes this live on
     // the development agent and dark on fleet. dryRun FIRST creates keys and

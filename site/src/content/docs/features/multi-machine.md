@@ -31,6 +31,19 @@ Agent state synchronized via git with commit signing. Secrets encrypted with AES
 
 Distributed heartbeat coordination with split-brain detection. If the primary machine goes offline, the standby takes over.
 
+## Lost-key identity recovery
+
+Pairing can establish a keychain-backed recovery root so a machine that loses its normal
+signing files can prove continuity without a blind re-pair. The recovery subsystem is split
+into explicit authorities and transports: `MachineRecoveryKey`, `IdentityStore`,
+`MachineOperatorDelegation`, `IdentityRecoveryRootRotationTransaction`,
+`MachineIdentityActivationGate`, `MachineIdentityBootRecovery`, `IdentityReannounce`,
+`IdentityReannounceClaimant`, `IdentityRecoveryBearer`, `IdentityProjectionEnvelope`,
+`IdentityDivergenceMonitor`, `IdentityRecoveryRootPropagation`,
+`IdentityPropagationTransport`, `IdentityPropagationReceipt`, `IdentityAckPropagation`,
+and `ObservedEndpointTracker`. See [Machine Identity Recovery](/architecture/machine-identity-recovery/)
+for the trust boundaries, bounded retry behavior, and operator review path.
+
 ## Write Authority
 
 Primary-machine-writes-only enforcement prevents conflicts. Secondary machines queue changes until they can sync.

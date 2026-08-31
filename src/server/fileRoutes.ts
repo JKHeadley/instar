@@ -12,6 +12,7 @@
 import { Router, type Request, type Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { IDENTITY_AUTO_ACCEPT_PROTECTED_PATHS, isRemoteIdentityAuthorityPath } from '../core/IdentityStore.js';
 import type { InstarConfig, FileViewerConfig } from '../core/types.js';
 
 // ── Defaults ─────────────────────────────────────────────────────────
@@ -95,6 +96,13 @@ function isBinaryFile(filePath: string, buffer?: Buffer): boolean {
  * graded-review job replays into bench batteries).
  */
 export const NEVER_SERVED_PREFIXES = [
+  // machine-self-assertion FD9: this manifest is the single mechanical list of
+  // identity/evidence inputs whose bearer readability or writability would
+  // collapse the auto-accept boundary. isNeverEditable delegates to this list.
+  ...IDENTITY_AUTO_ACCEPT_PROTECTED_PATHS,
+  // Registry may converge only through the purpose-built registry merge path;
+  // generic bearer file reads/writes remain forbidden.
+  '.instar/machines/registry.json',
   // Judgment-call provenance rows: full decision context, machine-local only
   // (0700/0600, gitignored, backup-excluded). The HTTP read surface for this
   // data is GET /judgment-provenance (redacted rows only) — never the files.
@@ -135,7 +143,7 @@ export function isNeverServed(relativePath: string): boolean {
   // Case-folded for the same reason as isNeverEditable (round-14 security): on
   // a case-insensitive filesystem a capitalised request reaches the same file.
   const normalized = path.normalize(relativePath).toLowerCase();
-  return NEVER_SERVED_PREFIXES.some(prefix => {
+  return isRemoteIdentityAuthorityPath(normalized) || NEVER_SERVED_PREFIXES.some(prefix => {
     const p = prefix.toLowerCase();
     return normalized.startsWith(p) || normalized === p.replace(/\/$/, '');
   });

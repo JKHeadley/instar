@@ -152,6 +152,20 @@ export const GOVERNOR_DEFAULT_POLICIES: readonly ControllerPolicy[] = [
     ...COMMON,
   },
   {
+    // Machine identity re-announce — one attempt per destination per 24h;
+    // the durable episode store separately caps one keyEpoch at three attempts.
+    controllerId: 'identity-reannounce',
+    actionVerb: 'retry-identity-reannounce',
+    direction: 'neutral',
+    resource: 'pool-shared',
+    failDirection: 'closed-queue',
+    perTargetCountCeiling: 1,
+    totalCountCeiling: 64,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 64, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
     // Sparse liveness line — a DECLARED eternal sentinel (rate-floored, never
     // count-bounded; FD7). Registry rateFloorMs: 3,600,000.
     controllerId: 'liveness-heartbeat',

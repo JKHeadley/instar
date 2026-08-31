@@ -37,6 +37,7 @@ function baseConfig(stateDir: string): InstarConfig {
     monitoring: { quotaTracking: false, memoryMonitoring: false, healthCheckIntervalMs: 30000 },
     relationships: { relationshipsDir: stateDir + '/relationships', maxRecentInteractions: 20 },
     feedback: { enabled: false, webhookUrl: '', feedbackFile: stateDir + '/feedback.json' },
+    authToken: 'build-heartbeat-test-token',
   };
 }
 
@@ -105,45 +106,50 @@ describe('POST /build/heartbeat', () => {
     topicId: 12345,
   };
 
+  const postHeartbeat = (app: ReturnType<AgentServer['getApp']>) =>
+    request(app)
+      .post('/build/heartbeat')
+      .set('Authorization', 'Bearer build-heartbeat-test-token');
+
   describe('validation', () => {
     it('rejects missing runId with 400', async () => {
       const { app } = buildServer({ telegram: makeFakeTelegram() });
-      const res = await request(app).post('/build/heartbeat').send({ ...validBody, runId: undefined });
+      const res = await postHeartbeat(app).send({ ...validBody, runId: undefined });
       expect(res.status).toBe(400);
       expect(res.body.error).toContain('runId');
     });
 
     it('rejects runId failing the safe-char regex', async () => {
       const { app } = buildServer({ telegram: makeFakeTelegram() });
-      const res = await request(app).post('/build/heartbeat').send({ ...validBody, runId: 'has spaces' });
+      const res = await postHeartbeat(app).send({ ...validBody, runId: 'has spaces' });
       expect(res.status).toBe(400);
       expect(res.body.error).toContain('runId');
     });
 
     it('rejects an unknown phase', async () => {
       const { app } = buildServer({ telegram: makeFakeTelegram() });
-      const res = await request(app).post('/build/heartbeat').send({ ...validBody, phase: 'frobnicating' });
+      const res = await postHeartbeat(app).send({ ...validBody, phase: 'frobnicating' });
       expect(res.status).toBe(400);
       expect(res.body.error).toContain('phase');
     });
 
     it('rejects an unknown tool (not on allowlist)', async () => {
       const { app } = buildServer({ telegram: makeFakeTelegram() });
-      const res = await request(app).post('/build/heartbeat').send({ ...validBody, tool: 'rm -rf /' });
+      const res = await postHeartbeat(app).send({ ...validBody, tool: 'rm -rf /' });
       expect(res.status).toBe(400);
       expect(res.body.error).toContain('tool');
     });
 
     it('rejects an unknown status', async () => {
       const { app } = buildServer({ telegram: makeFakeTelegram() });
-      const res = await request(app).post('/build/heartbeat').send({ ...validBody, status: 'panicking' });
+      const res = await postHeartbeat(app).send({ ...validBody, status: 'panicking' });
       expect(res.status).toBe(400);
       expect(res.body.error).toContain('status');
     });
 
     it('rejects when both topicId and channelId are present', async () => {
       const { app } = buildServer({ telegram: makeFakeTelegram(), slack: makeFakeSlack() });
-      const res = await request(app).post('/build/heartbeat').send({ ...validBody, channelId: 'C123' });
+      const res = await postHeartbeat(app).send({ ...validBody, channelId: 'C123' });
       expect(res.status).toBe(400);
       expect(res.body.error).toMatch(/exactly one/i);
     });
@@ -151,7 +157,7 @@ describe('POST /build/heartbeat', () => {
     it('rejects when neither topicId nor channelId is present', async () => {
       const { app } = buildServer({ telegram: makeFakeTelegram() });
       const { topicId: _omit, ...noTarget } = validBody;
-      const res = await request(app).post('/build/heartbeat').send(noTarget);
+      const res = await postHeartbeat(app).send(noTarget);
       expect(res.status).toBe(400);
       expect(res.body.error).toMatch(/exactly one/i);
     });
@@ -162,7 +168,7 @@ describe('POST /build/heartbeat', () => {
       const fakeTelegram = makeFakeTelegram();
       const { app, proxyCoordinator } = buildServer({ telegram: fakeTelegram });
 
-      const res = await request(app).post('/build/heartbeat').send(validBody);
+      const res = await postHeartbeat(app).send(validBody);
       expect(res.status).toBe(200);
       expect(res.body.ok).toBe(true);
 
@@ -176,7 +182,7 @@ describe('POST /build/heartbeat', () => {
 
     it('returns 503 when telegram is not configured', async () => {
       const { app, proxyCoordinator } = buildServer({ telegram: null });
-      const res = await request(app).post('/build/heartbeat').send(validBody);
+      const res = await postHeartbeat(app).send(validBody);
       expect(res.status).toBe(503);
       expect(proxyCoordinator.hasRecentBuildHeartbeat(12345)).toBe(false);
     });
@@ -190,7 +196,7 @@ describe('POST /build/heartbeat', () => {
       const slackBody = { ...validBody, channelId: 'C12345' } as any;
       delete slackBody.topicId;
 
-      const res = await request(app).post('/build/heartbeat').send(slackBody);
+      const res = await postHeartbeat(app).send(slackBody);
       expect(res.status).toBe(200);
       expect(fakeSlack.sent.length).toBe(1);
       expect(fakeSlack.sent[0].channelId).toBe('C12345');
@@ -207,7 +213,7 @@ describe('POST /build/heartbeat', () => {
       const { app } = buildServer({ slack: null });
       const slackBody = { ...validBody, channelId: 'C12345' } as any;
       delete slackBody.topicId;
-      const res = await request(app).post('/build/heartbeat').send(slackBody);
+      const res = await postHeartbeat(app).send(slackBody);
       expect(res.status).toBe(503);
     });
   });

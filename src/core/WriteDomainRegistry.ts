@@ -300,6 +300,19 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     note: 'repair authority is bound to a physical config home, browser profile, tmux pane, and host browser seat; durable rows live only under the machine-local state exclusion and never replicate',
   };
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/subscription-relogin/', domain: 'machine-local', story: subscriptionReloginStory });
+  const identityRecoveryStory: ConvergenceStory = {
+    logical: 'pool-scope-read-merge',
+    onSharedGitSyncedPath: true,
+    fileLevel: 'git-sync-excluded',
+    note: 'identity recovery mutates this machine\'s protected projection/quarantine/rotation journals under the git-sync-excluded .instar state jail; signed propagation receipts and the pool read surface expose peer convergence without granting a second local writer',
+  };
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/identity-recovery/',
+    domain: 'machine-local',
+    story: identityRecoveryStory,
+  });
   const windowLifecycleStory: ConvergenceStory = {
     logical: 'per-machine-path',
     onSharedGitSyncedPath: false,

@@ -1224,7 +1224,43 @@ function makeWindowLifecycleIssueEscalation(f: PressureFixture, sink: ActionSink
   };
 }
 
+/** Machine identity recovery claimant under permanent peer rejection. The
+ * durable per-keyEpoch episode caps at three and survives restart; the runtime
+ * governor further paces each peer to one attempt per 24 hours. */
+const identityReannounce: SelfActionController = {
+  id: 'identity-reannounce',
+  actionVerb: 'retry-identity-reannounce',
+  models: 'src/commands/server.ts (IdentityReannounceService claimant trigger + durable three-attempt episode cap)',
+  modelsPath: 'src/commands/server.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 100,
+  tickMs: 60 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeIdentityReannouncePressureLoop(f, sink),
+  },
+  makeUnderPressure: (f, sink) => makeIdentityReannouncePressureLoop(f, sink),
+};
+
+function makeIdentityReannouncePressureLoop(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const countKey = 'identity-reannounce:epoch:attempts';
+  const lastKey = 'identity-reannounce:last-at';
+  return {
+    tick() {
+      sink.considered += 1;
+      const attempts = (f.durableState.get(countKey) as number | undefined) ?? 0;
+      const lastAt = (f.durableState.get(lastKey) as number | undefined) ?? Number.NEGATIVE_INFINITY;
+      if (attempts >= 3 || f.clock.nowMs() - lastAt < 24 * 60 * 60_000) return;
+      sink.emit({ verb: 'retry-identity-reannounce', target: 'destination-peer' });
+      f.durableState.set(countKey, attempts + 1);
+      f.durableState.set(lastKey, f.clock.nowMs());
+    },
+  };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  identityReannounce,
   windowLifecycleIssueEscalation,
   subscriptionReloginRedrive,
   standDownMaintenance,

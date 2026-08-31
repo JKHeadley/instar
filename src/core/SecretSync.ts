@@ -25,6 +25,39 @@
 import crypto from 'node:crypto';
 import { encryptForSync, decryptFromSync, type Secrets, type EncryptedSecretPayload } from './SecretStore.js';
 
+/**
+ * Vault namespaces whose contents are deliberately machine-local.  In
+ * particular, recovery private keys are an escrow root: copying one through
+ * the ordinary peer secret-sync channel would collapse recovery continuity to
+ * the same credential/channel it is meant to survive.
+ */
+export const LOCAL_ONLY_SECRET_PREFIXES = ['machineIdentityRecovery'] as const;
+
+function isLocalOnlySecretPath(keyPath: string): boolean {
+  return LOCAL_ONLY_SECRET_PREFIXES.some((prefix) => (
+    keyPath === prefix
+    || keyPath.startsWith(`${prefix}.`)
+    || keyPath.endsWith(`.${prefix}`)
+    || keyPath.includes(`.${prefix}.`)
+  ));
+}
+
+/** Return a deep, non-mutating copy with every machine-local namespace removed. */
+export function filterSecretsForSync(secrets: Secrets, prefix = ''): Secrets {
+  const filtered: Secrets = {};
+  for (const [key, value] of Object.entries(secrets)) {
+    const keyPath = prefix ? `${prefix}.${key}` : key;
+    if (isLocalOnlySecretPath(keyPath)) continue;
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const child = filterSecretsForSync(value as Secrets, keyPath);
+      if (Object.keys(child).length > 0) filtered[key] = child;
+    } else {
+      filtered[key] = value;
+    }
+  }
+  return filtered;
+}
+
 /** The `secret-share` mesh command payload (mirrors the MeshCommand variant). */
 export interface SecretShareCommand {
   type: 'secret-share';
@@ -107,7 +140,7 @@ export class SecretProvisioner {
 
   /** Push the current secret set to every online peer. */
   async provisionAll(): Promise<{ machineId: string; ok: boolean; reason?: string }[]> {
-    const secrets = this.deps.secretsToSync();
+    const secrets = filterSecretsForSync(this.deps.secretsToSync());
     const peers = this.deps.listPeers();
     if (Object.keys(secrets).length === 0 || peers.length === 0) return [];
     const out: { machineId: string; ok: boolean; reason?: string }[] = [];
@@ -152,6 +185,10 @@ export class SecretShareHandler {
     }
     const payload = JSON.parse(command.encrypted) as EncryptedSecretPayload;
     const secrets = decryptFromSync(payload, this.deps.ownEncryptionPrivateKey());
+    const forbidden = secretKeyPaths(secrets).find(isLocalOnlySecretPath);
+    if (forbidden) {
+      throw new Error(`SecretShareHandler refuses machine-local secret namespace: ${forbidden}`);
+    }
     const stored: string[] = [];
     for (const [keyPath, value] of Object.entries(secrets)) {
       this.deps.store.set(keyPath, value);

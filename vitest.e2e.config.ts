@@ -6,7 +6,9 @@ export default defineConfig(withTestRunnerBound('e2e', {
   test: {
     include: ['tests/e2e/**/*.test.ts'],
     environment: 'node',
-    testTimeout: 60000, // E2E tests may involve real sessions + cron waits
+    // Includes the bounded Supertest connect-retry window used under aggregate
+    // macOS loopback pressure. Individual long waits still declare their own cap.
+    testTimeout: 120000,
     // Asset-only: production registry resolution needs its gitignored generated
     // data on a fresh checkout, but this config deliberately does NOT compile
     // dist — a build here would cost every e2e run a full tsc.

@@ -119,9 +119,12 @@ describe('rateLimiter behavioral', () => {
   });
 
   it('resets after window expires', async () => {
-    // Use a very short window (50ms)
+    // Keep the window comfortably above the suite-wide 50ms Supertest start
+    // interval so transport backpressure cannot change the middleware state
+    // this test is exercising.
+    const windowMs = 250;
     const app = express();
-    app.use(rateLimiter(50, 1));
+    app.use(rateLimiter(windowMs, 1));
     app.get('/test', (_req, res) => res.json({ ok: true }));
 
     const res1 = await request(app).get('/test');
@@ -132,7 +135,7 @@ describe('rateLimiter behavioral', () => {
     expect(res2.status).toBe(429);
 
     // Wait for window to expire
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve => setTimeout(resolve, windowMs + 100));
 
     // Third request after window should succeed
     const res3 = await request(app).get('/test');

@@ -6,7 +6,9 @@ export default defineConfig(withTestRunnerBound('integration', {
   test: {
     include: ['tests/integration/**/*.test.ts'],
     environment: 'node',
-    testTimeout: 60000, // Integration tests may spawn real sessions
+    // Includes the bounded Supertest connect-retry window used under aggregate
+    // macOS loopback pressure. Individual long waits still declare their own cap.
+    testTimeout: 120000,
     // fix instar#1069: build dist before the run so the dist-backed cartographer
     // worker test resolves the real compiled worker (idempotent; skips if current).
     // The test-runner semaphore globalSetup is PREPENDED by withTestRunnerBound

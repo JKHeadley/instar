@@ -25,7 +25,14 @@ export default defineConfig(withTestRunnerBound('unit', {
     globalSetup: ['tests/setup/build-dist.globalSetup.ts', 'tests/setup/nativeModuleHealth.globalSetup.ts'],
     setupFiles: ['./tests/vitest-setup.ts'],
     environment: 'node',
-    testTimeout: 10000,
+    // This aggregate config runs unit + integration + E2E files. Match the
+    // dedicated integration/E2E baseline, plus one bounded reconnect window for
+    // the much larger aggregate run. Its 50k tests can briefly pressure macOS's
+    // loopback port range even though files are sequential; the shared Supertest
+    // helper retries only connect-phase ETIMEDOUT and this ceiling lets that
+    // bounded retry window finish. Tests with genuinely longer waits still
+    // declare their own explicit timeout.
+    testTimeout: 120000,
     // Run test files sequentially to prevent port collisions, file lock
     // contention, and resource races across files that spawn HTTP servers,
     // SQLite DBs, real npm operations, etc. Individual tests within each

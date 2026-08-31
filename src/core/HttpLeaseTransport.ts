@@ -223,7 +223,7 @@ export class HttpLeaseTransport implements LeaseTransport {
         const httpOk = !!res && (res as Response).ok;
         const data = httpOk ? ((await (res as Response).json().catch(() => null)) as MeshAckResponse | null) : null;
         const outcome = this.interpretResponse(peer, path, reqNonce, sentEpoch, data, httpOk);
-        this.d.resolver!.recordResult(peer.machineId, ep.kind, outcome.confirmed, this.now() - started);
+        this.d.resolver!.recordResult(peer.machineId, ep.kind, outcome.confirmed, this.now() - started, ep.url);
         if (outcome.confirmed) this.logSuccess(`${path} ${peer.machineId}/${ep.kind}`);
         else this.logFailure(`${path} ${peer.machineId}/${ep.kind}`, 'unconfirmed');
         return outcome;
@@ -238,7 +238,7 @@ export class HttpLeaseTransport implements LeaseTransport {
         // MERGED signal, not the hedge controller's) still records failure.
         const abortedByWinner = signal.aborted && isAbortShapedError(err);
         if (!abortedByWinner) {
-          this.d.resolver!.recordResult(peer.machineId, ep.kind, false, this.now() - started);
+          this.d.resolver!.recordResult(peer.machineId, ep.kind, false, this.now() - started, ep.url);
           this.logFailure(`${path} ${peer.machineId}/${ep.kind}`, err instanceof Error ? err.message : String(err));
         }
         return { confirmed: false, lease: null as LeaseRecord | null };

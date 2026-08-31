@@ -146,6 +146,26 @@ describe('computeSelfMeshEndpoints', () => {
     });
     expect(out.map((e) => e.kind)).toEqual(['lan']);
   });
+
+  it('lets an operator-known advertisedAddress replace auto-detection for that kind', () => {
+    const out = computeSelfMeshEndpoints({
+      cloudflareUrl: 'https://x.dev',
+      lanIp: '192.168.1.4',
+      tailscaleIp: null,
+      advertisedAddress: '100.101.95.10',
+      port: 4042,
+    });
+    expect(out).toContainEqual({ kind: 'tailscale', url: 'http://100.101.95.10:4042' });
+    expect(out).toContainEqual({ kind: 'lan', url: 'http://192.168.1.4:4042' });
+  });
+
+  it('rejects an invalid/public-http advertisedAddress override', () => {
+    const out = computeSelfMeshEndpoints({
+      cloudflareUrl: null, lanIp: null, tailscaleIp: null,
+      advertisedAddress: 'http://8.8.8.8:4042', port: 4042,
+    });
+    expect(out).toEqual([]);
+  });
 });
 
 describe('advertiseSelfMeshEndpoints', () => {
