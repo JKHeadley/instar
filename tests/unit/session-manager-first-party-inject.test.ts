@@ -174,7 +174,11 @@ describe('F7 wiring — every session-bootstrap injection lane carries the first
     // Dead-dep trap guard: dropping the opts argument at any bootstrap lane
     // silently reverts that lane to "instar distrusts its own bootstrap".
     const src = fs.readFileSync(path.join(process.cwd(), 'src/core/SessionManager.ts'), 'utf-8');
-    const tagged = src.match(/this\.injectMessage\(tmuxSession, initialMessage, \{ firstParty: \{ source: 'session-bootstrap' \} \}\)/g) ?? [];
+    // Keep this source-level wiring guard formatting-insensitive: bootstrap
+    // options now also carry a durable conversationId, so the callsites are
+    // intentionally multiline rather than the former one-line literal.
+    const bootstrapCalls = src.match(/this\.injectMessage\(\s*tmuxSession,\s*initialMessage,\s*\{[\s\S]*?\n\s*\}\);/g) ?? [];
+    const tagged = bootstrapCalls.filter(call => /firstParty:\s*\{\s*source:\s*'session-bootstrap'\s*\}/.test(call));
     expect(tagged.length).toBe(3); // existing-session reuse + ready path + still-alive fallback
     // And no bootstrap lane regressed to the untagged call.
     expect(/this\.injectMessage\(tmuxSession, initialMessage\)(?!,)/.test(src)).toBe(false);
