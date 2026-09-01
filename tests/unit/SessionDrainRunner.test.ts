@@ -90,6 +90,33 @@ describe('SessionDrainRunner — WS1.2 owner-side bounded drain', () => {
     expect(h.casCalls.at(-1)).toEqual({ type: 'claim', machineId: 'm_mini' });
   });
 
+  it('requires encrypted ledger custody before closing or claiming and restores custody on refusal', async () => {
+    let rec = activeRec();
+    const transferDeliveryLedger = vi.fn(async () => ({ ok: false, reason: 'target-storage-full' }));
+    const restoreDeliveryLedger = vi.fn();
+    const h = harness({
+      deps: {
+        readOwnership: () => rec,
+        cas: (action) => {
+          h.casCalls.push(action);
+          if (action.type === 'transfer') rec = activeRec({ status: 'transferring', transferTo: action.to, ownershipEpoch: 5 });
+          if (action.type === 'abort-transfer') rec = activeRec({ ownershipEpoch: 6 });
+          return { ok: true };
+        },
+        transferDeliveryLedger,
+        restoreDeliveryLedger,
+      },
+    });
+    const out = await h.runner.run({ sessionKey: '13481', target: 'm_mini', senderObservedEpoch: 4 });
+    expect(out.status).toBe('refused-ledger-transfer');
+    expect(transferDeliveryLedger).toHaveBeenCalledWith({
+      sessionKey: '13481', target: 'm_mini', sourceEpoch: 4, transferEpoch: 5, activeEpoch: 6,
+    });
+    expect(h.terminate).not.toHaveBeenCalled();
+    expect(h.casCalls.map(a => a.type)).toEqual(['transfer', 'abort-transfer']);
+    expect(restoreDeliveryLedger).toHaveBeenCalledWith({ sessionKey: '13481', transferEpoch: 5, activeEpoch: 6 });
+  });
+
   it('emergency stop mid-drain: abort-transfer CAS, session NOT closed, topic stays here', async () => {
     const h = harness({ quietAfterPolls: Infinity, emergencyAfterPolls: 2 });
     const out = await h.runner.run({ sessionKey: '13481', target: 'm_mini', senderObservedEpoch: 4 });

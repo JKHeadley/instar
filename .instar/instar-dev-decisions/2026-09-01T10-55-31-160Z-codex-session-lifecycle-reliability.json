@@ -1,0 +1,27 @@
+{
+  "ts": "2026-09-01T10:55:31.160Z",
+  "slug": "codex-session-lifecycle-reliability",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 86,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/StageBActivationGate.ts",
+      "src/data/codexStageBReleaseEvidence.ts"
+    ],
+    "addedLines": 68,
+    "deletedLines": 18
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

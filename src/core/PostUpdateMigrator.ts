@@ -75,6 +75,7 @@ import {
 } from '../users/testIdentityMarkers.js';
 import { readRegistryHighWater, setRegistryHighWater } from './registryHighWater.js';
 import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
+import { migrateStageBReleaseConfig, verifyBundledStageBReleaseEvidence } from './StageBActivationGate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -9968,7 +9969,13 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
     }
     if (!content.includes('Command-watchdog attribution:')) {
       content += `\n- **Command-watchdog attribution:** \`SessionWatchdog\` never interrupts known bounded external waiters (including safe-merge and GitHub watch commands). If it successfully interrupts a genuinely stuck command, its audit entry names \`principal: session-watchdog\` and \`operatorInitiated: false\`; Codex's generic "aborted by user" text is transport wording, not proof the operator acted. The watchdog makes one process-local, liveness-gated continuation attempt so the task usually resumes without another user message; delivery is not durable across server restart.\n`;
+      patched = true;
       result.upgraded.push('CLAUDE.md: added command-watchdog attribution awareness');
+    }
+    if (!content.includes('Crash-safe inbound delivery:')) {
+      content += `\n- **Crash-safe inbound delivery:** Normal tmux injection and Codex stranded-draft key attempts use FULL-durable armed/started/terminal phases. A crash-open mutation becomes \`effect-unknown\` and is never blindly repeated. Diagnose privacy-safe counts at \`GET /sessions/inbound-delivery-status\`; no message body is exposed. Command-watchdog continuation is owned by the canonical continuation/recovery funnel, never an independent watchdog prompt.\n`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added crash-safe inbound delivery awareness');
     }
     // Existing agents may already carry older guidance that promised summaries.
     // Append an authoritative correction rather than rewriting operator-authored
@@ -11371,6 +11378,28 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     }
 
     let patched = false;
+
+    // Codex lifecycle reliability rollout. Stage B becomes pending only when
+    // this installed package carries valid Echo-signed release evidence.
+    // Explicit false is operator authority and is never overwritten. Stage C
+    // remains independently dark. Additive and idempotent.
+    const lifecycle = (config.codexSessionLifecycle as Record<string, unknown> | undefined) ?? {};
+    const installedPackageVersion = (() => {
+      try {
+        return String(JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', '..', 'package.json'), 'utf8')).version ?? '');
+      } catch { return ''; }
+    })();
+    const stageBReleaseCleared = installedPackageVersion.length > 0
+      && verifyBundledStageBReleaseEvidence(installedPackageVersion) === null;
+    const reconciledLifecycle = migrateStageBReleaseConfig(lifecycle, stageBReleaseCleared);
+    const lifecyclePatched = JSON.stringify(reconciledLifecycle) !== JSON.stringify(lifecycle);
+    if (lifecyclePatched || !config.codexSessionLifecycle) {
+      config.codexSessionLifecycle = reconciledLifecycle;
+      patched = true;
+      result.upgraded.push(stageBReleaseCleared
+        ? 'config.json: activated Echo-signed Codex Stage-B delivery observer at next restart'
+        : 'config.json: seeded dark Codex session lifecycle rollout gates');
+    }
 
     // Auto-generate dashboardPin if missing — the dashboard should always be
     // accessible via PIN, not bearer token. Users don't need to know about tokens.

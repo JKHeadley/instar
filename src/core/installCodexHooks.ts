@@ -143,7 +143,7 @@ export function buildInstarCodexHookGroups(
       { matcher: '', hooks: [sh('session-start.sh')] },
     ],
     UserPromptSubmit: [
-      { matcher: '', hooks: [sh('telegram-topic-context.sh')] },
+      { matcher: '', hooks: [sh('telegram-topic-context.sh'), node('hook-event-reporter.js')] },
     ],
   };
 }

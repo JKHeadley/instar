@@ -17,6 +17,7 @@ import * as path from 'node:path';
 import { StuckInputSentinel } from '../../src/core/StuckInputSentinel.js';
 import { SessionRecoveryChannel } from '../../src/core/SessionRecoveryChannel.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { RecoveryActuationAuthority } from '../../src/core/RecoveryActuationAuthority.js';
 
 const SESS = 'echo-codey-mentor';
 const MARKER = 'INJ_MARKER_7f3a';
@@ -25,17 +26,22 @@ const MARKER = 'INJ_MARKER_7f3a';
 const CODEX_STUCK_PANE = ['── codey ──', `› ${MARKER}`, 'Session paused.'].join('\n');
 
 function buildStubManager() {
-  const liveMarkers = new Map<string, { marker: string; framework: string; injectedAt: number }>([
-    [SESS, { marker: MARKER, framework: 'codex-cli', injectedAt: 0 }],
+  const liveMarkers = new Map<string, { marker: string; framework: string; injectedAt: number; deliveryId: string; conversationId: string }>([
+    [SESS, { marker: MARKER, framework: 'codex-cli', injectedAt: 0, deliveryId: 'd1', conversationId: 'c1' }],
   ]);
   return {
     listRunningSessions: vi.fn(() => [{ tmuxSession: SESS }]),
     tmuxSessionExists: vi.fn((n: string) => n === SESS),
     captureOutput: vi.fn(() => CODEX_STUCK_PANE),
-    fireStuckInputRecovery: vi.fn(),
+    fireStuckInputRecovery: vi.fn().mockReturnValue({ status: 'attempted' }),
     getStrandedDraftMarker: vi.fn((n: string) => liveMarkers.get(n)),
     clearStrandedDraftMarker: vi.fn((n: string) => { liveMarkers.delete(n); }),
     strandedDraftMarkerSessions: vi.fn(() => [...liveMarkers.keys()]),
+    strandedDraftRecoverySnapshot: vi.fn(() => ({
+      conversationId: 'c1', deliveryId: 'd1', ownerEpoch: 7,
+      latestOrdinal: 1, deliveryOrdinal: 1, incarnation: SESS,
+      deliveryExhausted: true, breakerOpen: false,
+    })),
     isMarkerStuckAtPrompt: vi.fn((pane: string, marker: string) =>
       pane.split('\n').some(l => (l.includes('❯') || l.includes('›')) && l.includes(marker)),
     ),
@@ -61,6 +67,8 @@ describe('StuckInputSentinel — deeper-tier escalation (codex wedge self-recove
     return new StuckInputSentinel(manager as any, {
       stateDir, noPersist: true, minTicksBeforeFire: 2, maxAttempts: 4,
       recoveryChannel: channel, escalationEnabled, escalationTimeoutTicks,
+      recoveryAuthority: escalationEnabled ? new RecoveryActuationAuthority() : undefined,
+      operatorStopEpoch: () => 1,
     });
   }
 

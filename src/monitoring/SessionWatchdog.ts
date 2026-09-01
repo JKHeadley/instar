@@ -63,6 +63,7 @@ import type { InstarConfig, IntelligenceProvider } from '../core/types.js';
 import { createRequire } from 'node:module';
 import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
 import { DP_WATCHDOG_STUCK_JUDGE } from '../data/provenanceCoverage.js';
+import { FrameworkProcessProvenanceVerifier } from './FrameworkProcessProvenance.js';
 
 export const WATCHDOG_STUCK_JUDGE_PROMPT_ID = 'watchdog-stuck-judge-v1';
 
@@ -105,6 +106,7 @@ export enum EscalationLevel {
 
 interface ChildProcessInfo {
   pid: number;
+  parentPid: number;
   command: string;
   elapsedMs: number;
 }
@@ -130,7 +132,7 @@ export interface InterventionEvent {
   reason: 'stuck-command-judge';
   operatorInitiated: false;
   /** Outcome tracking — filled in after a delay */
-  outcome?: 'recovered' | 'died' | 'unknown';
+  outcome?: 'session-alive' | 'recovered' | 'died' | 'unknown';
   /** Time in ms between intervention and outcome determination */
   outcomeDelayMs?: number;
 }
@@ -138,6 +140,32 @@ export interface InterventionEvent {
 export interface ProtectedWaitEvidence {
   protected: boolean;
   reason?: 'safe-merge-wait' | 'github-run-watch' | 'bounded-wait-output';
+}
+
+export interface FrameworkInfrastructureEvidence {
+  protected: boolean;
+  /** `ownership-unknown` is intentionally protective: uncertain framework
+   * provenance is never authority to interrupt a process. */
+  reason?: 'codex-code-mode-host' | 'ownership-unknown';
+  confirmed: boolean;
+}
+
+/**
+ * Cheap host-name detector only. A basename is never sufficient evidence of
+ * framework ownership. Until the spawn-time executable snapshot and runtime
+ * vnode/start-time probes agree, the only safe classification is
+ * `ownership-unknown`: preserve and audit, never claim confirmed ownership.
+ */
+export function classifyFrameworkInfrastructureProcess(
+  command: string,
+  framework: string | undefined,
+): FrameworkInfrastructureEvidence {
+  if (framework !== 'codex-cli') return { protected: false, confirmed: false };
+  const executable = command.trim().split(/\s+/, 1)[0] ?? '';
+  const basename = path.basename(executable);
+  return basename === 'codex-code-mode-host'
+    ? { protected: true, confirmed: false, reason: 'ownership-unknown' }
+    : { protected: false, confirmed: false };
 }
 
 /**
@@ -288,6 +316,10 @@ export class SessionWatchdog extends EventEmitter {
    *  interrupt) rather than fail-open. 0 disables the ceiling (pure fail-closed). */
   private hardCeilingMs: number;
   private logPath: string;
+  private readonly frameworkProvenance: FrameworkProcessProvenanceVerifier;
+  private readonly observedIncarnations = new Set<string>();
+  private provenanceCanaryInterval: ReturnType<typeof setInterval> | null = null;
+  private readonly onProvenanceCanaryAlert?: (message: string) => void;
 
   /** Intelligence provider — gates escalation entry with LLM command analysis */
   intelligence: IntelligenceProvider | null = null;
@@ -300,8 +332,6 @@ export class SessionWatchdog extends EventEmitter {
 
   /** Pending outcome checks — maps sessionName to intervention event */
   private pendingOutcomeChecks = new Map<string, InterventionEvent>();
-  /** Exactly-once continuation prompts keyed by the intervention timestamp. */
-  private continuationPrompts = new Set<number>();
 
   /** Cooldowns for compaction-idle detection — prevents repeated emissions */
   private compactionIdleCooldowns = new Map<string, number>(); // sessionName → timestamp
@@ -321,7 +351,9 @@ export class SessionWatchdog extends EventEmitter {
   /** How long a throttled pane must be byte-identical before recovery (configurable for tests/tuning). */
   private readonly rateLimitSettleMs: number;
 
-  constructor(config: InstarConfig, sessionManager: SessionManager, state: StateManager) {
+  constructor(config: InstarConfig, sessionManager: SessionManager, state: StateManager, options: {
+    onProvenanceCanaryAlert?: (message: string) => void;
+  } = {}) {
     super();
     this.config = config;
     this.sessionManager = sessionManager;
@@ -329,6 +361,7 @@ export class SessionWatchdog extends EventEmitter {
     this.inspectionAuthorityPath = path.join(config.stateDir, 'window-lifecycle', 'watchdog-inspection-authority.json');
     try { const persisted = JSON.parse(fs.readFileSync(this.inspectionAuthorityPath, 'utf8')) as { key: string; epoch: string; pollRevision: number; decisions?: Record<string, string> }; this.inspectionAuthorityKey = Buffer.from(persisted.key, 'base64'); this.inspectionAuthorityEpoch = persisted.epoch; this.pollRevision = persisted.pollRevision; for (const [name, at] of Object.entries(persisted.decisions ?? {})) this.lastStallDecisionAt.set(name, at); if (this.inspectionAuthorityKey.length !== 32 || !this.inspectionAuthorityEpoch || !Number.isSafeInteger(this.pollRevision)) throw new Error('invalid-watchdog-authority'); }
     catch { /* @silent-fallback-ok — first boot creates durable inspection authority */ this.inspectionAuthorityKey = crypto.randomBytes(32); this.inspectionAuthorityEpoch = crypto.randomUUID(); this.persistInspectionAuthority(); }
+    this.onProvenanceCanaryAlert = options.onProvenanceCanaryAlert;
 
     const wdConfig = config.monitoring.watchdog;
     this.stuckThresholdMs = (wdConfig?.stuckCommandSec ?? 180) * 1000;
@@ -339,6 +372,9 @@ export class SessionWatchdog extends EventEmitter {
 
     // Persistent log path
     this.logPath = path.join(config.stateDir, 'watchdog-interventions.jsonl');
+    this.frameworkProvenance = new FrameworkProcessProvenanceVerifier(config.stateDir, {
+      launcherPath: config.sessions?.frameworkBinaryPaths?.['codex-cli'],
+    });
   }
 
   private persistInspectionAuthority(): void { fs.mkdirSync(path.dirname(this.inspectionAuthorityPath), { recursive: true, mode: 0o700 }); const decisions = Object.fromEntries(this.lastStallDecisionAt); fs.writeFileSync(this.inspectionAuthorityPath, `${JSON.stringify({ key: this.inspectionAuthorityKey.toString('base64'), epoch: this.inspectionAuthorityEpoch, pollRevision: this.pollRevision, decisions })}\n`, { mode: 0o600 }); }
@@ -348,12 +384,27 @@ export class SessionWatchdog extends EventEmitter {
     console.log(`[Watchdog] Starting (poll: ${this.pollIntervalMs / 1000}s, threshold: ${this.stuckThresholdMs / 1000}s)`);
     this.interval = setInterval(() => this.poll(), this.pollIntervalMs);
     setTimeout(() => this.poll(), 5000);
+    const runProvenanceCanary = () => {
+      const canary = this.frameworkProvenance.runCanary();
+      if (canary.alert) {
+        const message = 'Codex executable provenance canary failed three consecutive times; framework candidates remain protected as ownership-unknown.';
+        console.error(`[Watchdog] HIGH: ${message}`);
+        this.onProvenanceCanaryAlert?.(message);
+      }
+    };
+    runProvenanceCanary();
+    this.provenanceCanaryInterval = setInterval(runProvenanceCanary, 24 * 60 * 60 * 1000);
+    this.provenanceCanaryInterval.unref?.();
   }
 
   stop(): void {
     if (this.interval) {
       clearInterval(this.interval);
       this.interval = null;
+    }
+    if (this.provenanceCanaryInterval) {
+      clearInterval(this.provenanceCanaryInterval);
+      this.provenanceCanaryInterval = null;
     }
   }
 
@@ -422,6 +473,12 @@ export class SessionWatchdog extends EventEmitter {
 
     try {
       const sessions = this.sessionManager.listRunningSessions();
+      const currentIncarnations = new Set(sessions.map((s) => `${s.tmuxSession}:${s.startedAt}`));
+      for (const incarnation of this.observedIncarnations) {
+        if (!currentIncarnations.has(incarnation)) this.frameworkProvenance.endIncarnation(incarnation);
+      }
+      this.observedIncarnations.clear();
+      for (const incarnation of currentIncarnations) this.observedIncarnations.add(incarnation);
       for (const session of sessions) {
         try {
           await this.checkSession(session.tmuxSession);
@@ -458,10 +515,34 @@ export class SessionWatchdog extends EventEmitter {
       return;
     }
 
+    // Some embedders and older test doubles expose only the watchdog's narrow
+    // SessionManager surface. Attribution is additive, so absence must degrade
+    // to the conservative (unclassified) path instead of breaking triage.
+    const sessionRecord = this.sessionManager.listRunningSessions?.()
+      .find((session) => session.tmuxSession === tmuxSession);
+    const framework = sessionRecord?.framework;
     const children = await this.getChildProcesses(claudePid);
-    const stuckChild = children.find(c => {
-      if (this.isExcluded(c.command)) return false;
-      if (this.temporaryExclusions.has(c.pid)) return false;
+    let stuckChild: ChildProcessInfo | undefined;
+    for (const c of children) {
+      const infrastructure = classifyFrameworkInfrastructureProcess(c.command, framework);
+      if (infrastructure.protected) {
+        const verdict = await this.frameworkProvenance.classify({
+          pid: c.pid,
+          parentPid: c.parentPid,
+          frameworkRootPid: claudePid,
+          sessionIncarnation: `${tmuxSession}:${sessionRecord?.startedAt ?? 'legacy'}`,
+          sessionStartedAt: Date.parse(sessionRecord?.startedAt ?? '') || 0,
+        });
+        if (!verdict.confirmed) {
+          this.persistAudit({
+            type: 'framework-process-provenance', sessionName: tmuxSession, pid: c.pid,
+            outcome: 'ownership-unknown', detail: verdict.detail ?? 'unconfirmed', timestamp: Date.now(),
+          });
+        }
+        continue;
+      }
+      if (this.isExcluded(c.command)) continue;
+      if (this.temporaryExclusions.has(c.pid)) continue;
       // Stdin consumers (tail, grep, sort...) get a much longer grace
       // period. They're typically part of a pipeline where the producer
       // is the real work, and the 3-minute default threshold is too
@@ -469,8 +550,8 @@ export class SessionWatchdog extends EventEmitter {
       const threshold = this.isStdinConsumerCommand(c.command)
         ? Math.max(this.stuckThresholdMs, 600_000) // at least 10 minutes
         : this.stuckThresholdMs;
-      return c.elapsedMs > threshold;
-    });
+      if (c.elapsedMs > threshold) { stuckChild = c; break; }
+    }
 
     if (stuckChild) {
       // Pipeline guard: if the stuck child is a pure stdin consumer (tail,
@@ -542,8 +623,7 @@ export class SessionWatchdog extends EventEmitter {
         this.escalationState.delete(tmuxSession);
         return;
       }
-      const intervention = this.recordIntervention(tmuxSession, EscalationLevel.CtrlC, 'Sent Ctrl+C', stuckChild);
-      this.scheduleSupervisorContinuation(intervention);
+      this.recordIntervention(tmuxSession, EscalationLevel.CtrlC, 'Sent Ctrl+C', stuckChild);
     } else if (existing) {
       this.escalationState.delete(tmuxSession);
     }
@@ -957,26 +1037,41 @@ export class SessionWatchdog extends EventEmitter {
 
   private async getChildProcesses(pid: number): Promise<ChildProcessInfo[]> {
     try {
-      const childPidsStr = (await shellExecAsync(`pgrep -P ${pid} 2>/dev/null`)).trim();
-      if (!childPidsStr) return [];
-
-      const childPids = childPidsStr.split('\n').filter(Boolean).join(',');
-      if (!childPids) return [];
-
-      const output = (await shellExecAsync(`ps -o pid=,etime=,command= -p ${childPids} 2>/dev/null`)).trim();
+      // One process-table snapshot, then bounded in-memory traversal. Direct-
+      // child-only enumeration let a protected framework host hide real user
+      // commands below it; recursive pgrep would add an unbounded subprocess
+      // hot path. This keeps both correctness and poll cost bounded.
+      const output = (await shellExecAsync('ps -axo pid=,ppid=,etime=,command= 2>/dev/null')).trim();
       if (!output) return [];
-
-      const results: ChildProcessInfo[] = [];
+      const rows = new Map<number, { parentPid: number; info: ChildProcessInfo }>();
       for (const line of output.split('\n')) {
-        const match = line.trim().match(/^(\d+)\s+([\d:.-]+)\s+(.+)$/);
+        const match = line.trim().match(/^(\d+)\s+(\d+)\s+([\d:.-]+)\s+(.+)$/);
         if (!match) continue;
         const childPid = parseInt(match[1], 10);
-        if (isNaN(childPid)) continue;
-        results.push({
-          pid: childPid,
-          command: match[3],
-          elapsedMs: this.parseElapsed(match[2]),
+        const parentPid = parseInt(match[2], 10);
+        if (isNaN(childPid) || isNaN(parentPid)) continue;
+        rows.set(childPid, {
+          parentPid,
+          info: {
+            pid: childPid,
+            parentPid,
+            command: match[4],
+            elapsedMs: this.parseElapsed(match[3]),
+          },
         });
+      }
+
+      const results: ChildProcessInfo[] = [];
+      const queue = [pid];
+      const visited = new Set<number>([pid]);
+      while (queue.length > 0 && results.length < 256) {
+        const parent = queue.shift()!;
+        for (const [childPid, row] of rows) {
+          if (row.parentPid !== parent || visited.has(childPid)) continue;
+          visited.add(childPid);
+          results.push(row.info);
+          queue.push(childPid);
+        }
       }
       return results;
     } catch {
@@ -1177,27 +1272,6 @@ export class SessionWatchdog extends EventEmitter {
   }
 
   /**
-   * Codex renders any terminal Ctrl+C as "aborted by user", even when Instar
-   * sent it. Re-enter the now-idle turn with explicit attribution so safe work
-   * does not remain abandoned until the operator checks in.
-   */
-  private scheduleSupervisorContinuation(event: InterventionEvent): void {
-    if (this.continuationPrompts.has(event.timestamp)) return;
-    this.continuationPrompts.add(event.timestamp);
-    setTimeout(() => {
-      try {
-        if (!this.sessionManager.isSessionAlive(event.sessionName)) return;
-        this.sessionManager.sendInput(
-          event.sessionName,
-          '[system] The SessionWatchdog—not the operator—interrupted the previous command after its stuck-command judge fired. Verify any partial side effects from the durable source of truth, then continue the same task.',
-        );
-      } finally {
-        this.continuationPrompts.delete(event.timestamp);
-      }
-    }, 1_500);
-  }
-
-  /**
    * Check session health 60s after an intervention.
    * Did the session recover (still producing output) or die?
    */
@@ -1209,7 +1283,10 @@ export class SessionWatchdog extends EventEmitter {
     const sessions = this.sessionManager.listRunningSessions();
     const stillRunning = sessions.some(s => s.tmuxSession === sessionName);
 
-    event.outcome = stillRunning ? 'recovered' : 'died';
+    // A living tmux session proves only survival. It does not prove that the
+    // interrupted turn resumed or made progress; claiming recovery here hid
+    // the exact Codex abandonment incident this audit is meant to expose.
+    event.outcome = stillRunning ? 'session-alive' : 'died';
     event.outcomeDelayMs = Date.now() - event.timestamp;
 
     // Persist the outcome update
@@ -1223,6 +1300,10 @@ export class SessionWatchdog extends EventEmitter {
    * 30-day retention, auto-rotated.
    */
   private persistEvent(event: InterventionEvent): void {
+    this.persistAudit({ ...event });
+  }
+
+  private persistAudit(event: Record<string, unknown>): void {
     try {
       const dir = path.dirname(this.logPath);
       if (!fs.existsSync(dir)) {

@@ -30,6 +30,14 @@ export type MeshCommand =
   | { type: 'claim'; session: string; epoch: number; failover?: boolean }
   | { type: 'release'; session: string; epoch: number; failover?: boolean }
   | { type: 'transfer'; session: string; target: MachineId }
+  | {
+      /** Recipient-encrypted live delivery-ledger custody carried source→target during drain. */
+      type: 'inbound-delivery-transfer';
+      session: string;
+      sourceEpoch: number;
+      transferEpoch: number;
+      transfer: import('./InboundDeliveryStore.js').EncryptedDeliveryTransfer;
+    }
   | { type: 'deliverMessage'; session: string; messageId: string; payload: unknown; ownershipEpoch: number }
   | {
       /** Signed cross-machine carrier into the existing A2A inbox accept boundary. */
@@ -376,6 +384,12 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // lease-holder — may order an owner to drain; a peer (even the transfer
       // TARGET) may not.
       return isRouter ? { ok: true, reason: 'ok' } : { ok: false, reason: 'drain-unauthorized' };
+    case 'inbound-delivery-transfer':
+      // Only the live owner may hand off ledger custody. The handler additionally
+      // checks the transfer epoch and recipient-bound encrypted snapshot.
+      return deps.ownerOf(command.session) === sender
+        ? { ok: true, reason: 'ok' }
+        : { ok: false, reason: 'release-unauthorized' };
     case 'handback-offer':
       // U4.4 (R-r2-2): only the CURRENT lease holder may offer the lease back —
       // verified against the live lease view, default-deny, its OWN refusal

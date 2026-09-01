@@ -1,6 +1,6 @@
 /**
  * Tests for Telegram injection reliability improvements (PR #32):
- * - rawInject retry logic (≤2 attempts before giving up)
+ * - rawInject crash-safe effect journaling (no blind retry after mutation starts)
  * - Failed message persistence to stateDir (not world-readable /tmp)
  * - cleanupStaleSessions hard cap prunes oldest completed sessions first
  */
@@ -11,27 +11,42 @@ import path from 'node:path';
 
 const SESSION_MANAGER_SRC = path.join(process.cwd(), 'src/core/SessionManager.ts');
 const ROUTES_SRC = path.join(process.cwd(), 'src/server/routes.ts');
+const DISPATCHER_SRC = path.join(process.cwd(), 'src/core/TrackedPhysicalEffectDispatcher.ts');
 
-describe('SessionManager — rawInject retry logic', () => {
-  it('retries at most once (maxAttempts = 2)', () => {
+describe('SessionManager — rawInject effect safety', () => {
+  it('persists armed and started phases before the physical send', () => {
     const source = fs.readFileSync(SESSION_MANAGER_SRC, 'utf-8');
     const methodStart = source.indexOf('private rawInject(');
     const methodEnd = source.indexOf('\n  /**', methodStart + 1);
     const method = source.slice(methodStart, methodEnd > -1 ? methodEnd : undefined);
 
-    expect(method).toContain('maxAttempts = 2');
-    expect(method).toContain('attempt <= maxAttempts');
+    const dispatcher = fs.readFileSync(DISPATCHER_SRC, 'utf-8');
+    expect(method).toContain('trackedPhysicalEffects!.dispatchSync');
+    expect(dispatcher).toContain("'prepared', 'dispatch-armed'");
+    expect(dispatcher).toContain("'dispatch-armed', 'dispatch-started'");
+    expect(method).toContain('effect: () => this.performTmuxInjectionEffect');
   });
 
-  it('pauses between retry attempts', () => {
+  it('does not blindly retry after an ambiguous physical mutation', () => {
     const source = fs.readFileSync(SESSION_MANAGER_SRC, 'utf-8');
     const methodStart = source.indexOf('private rawInject(');
     const methodEnd = source.indexOf('\n  /**', methodStart + 1);
     const method = source.slice(methodStart, methodEnd > -1 ? methodEnd : undefined);
 
-    // Should sleep between attempts, not immediately retry
-    expect(method).toContain('sleep');
-    expect(method).toContain('attempt < maxAttempts');
+    const dispatcher = fs.readFileSync(DISPATCHER_SRC, 'utf-8');
+    expect(dispatcher).toContain("'dispatch-started', 'effect-unknown'");
+    expect(method).not.toContain('maxAttempts');
+  });
+
+  it('journals only sessions with the Codex acceptance observer', () => {
+    const source = fs.readFileSync(SESSION_MANAGER_SRC, 'utf-8');
+    const methodStart = source.indexOf('private rawInject(');
+    const methodEnd = source.indexOf('\n  /**', methodStart + 1);
+    const method = source.slice(methodStart, methodEnd > -1 ? methodEnd : undefined);
+
+    expect(method).toContain("this.stageBActivation.active && framework === 'codex-cli'");
+    expect(method).toContain('Refusing unverifiable Codex injection');
+    expect(method).not.toContain("framework: framework ?? 'unknown'");
   });
 
   it('returns false and reports degradation after all attempts fail', () => {

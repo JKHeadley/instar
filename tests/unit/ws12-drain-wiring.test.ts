@@ -26,8 +26,9 @@ describe('WS1.2 drain wiring (server boot + transfer route)', () => {
   it('the mesh drain handler is registered beside deliverMessage with the disabled fallback', () => {
     const idx = server.indexOf('deliverMessage: deliverMessageHandler');
     expect(idx).toBeGreaterThan(-1);
-    const block = server.slice(idx, idx + 1800);
-    expect(block).toContain('drain: async (cmd)');
+    const drainIdx = server.indexOf('drain: async (cmd)', idx);
+    expect(drainIdx).toBeGreaterThan(idx);
+    const block = server.slice(drainIdx, drainIdx + 1400);
     expect(block).toContain("'drain disabled'");
     expect(block).toContain('senderObservedEpoch: c.ownershipEpoch');
   });

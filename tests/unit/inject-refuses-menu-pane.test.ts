@@ -117,9 +117,10 @@ describe('handleReadyAndInject: the timeout branch refuses a MENU pane', () => {
   it('does NOT type into codex\'s update menu after the readiness timeout', async () => {
     paneContent = CODEX_UPDATE_MENU;
     // Short primary timeout; the extended wait still runs, hence the test timeout.
-    await (manager as unknown as {
+    await expect((manager as unknown as {
       handleReadyAndInject: (t: string, n: string | undefined, m: string, ms: number, o?: unknown) => Promise<void>;
-    }).handleReadyAndInject(TMUX, undefined, 'the user first message', 100, {});
+    }).handleReadyAndInject(TMUX, undefined, 'the user first message', 100, {}))
+      .rejects.toThrow('Initial message injection refused for menu-bound session');
 
     // The property that keeps the session alive: nothing was typed. Any
     // send-keys here would land on `1. Update now`, which exits codex.

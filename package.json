@@ -58,7 +58,7 @@
     "check:pre-push-gate": "node scripts/pre-push-gate.js",
     "check:release": "node scripts/analyze-release.js",
     "check:contract-evidence": "node scripts/check-contract-evidence.js",
-    "prepublishOnly": "npm run build && npm run check:upgrade-guide && npm run check:contract-evidence",
+    "prepublishOnly": "npm run build && node scripts/verify-codex-stage-b-release-evidence.mjs && npm run check:upgrade-guide && npm run check:contract-evidence",
     "postinstall": "node scripts/fix-better-sqlite3.cjs",
     "prepare": "husky",
     "lint:standards-registry-path": "node scripts/lint-no-direct-standards-registry-path.mjs",

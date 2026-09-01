@@ -77,6 +77,10 @@ import {
   type TopicProfileOrchestratorDeps,
 } from '../core/TopicProfileOrchestrator.js';
 import { CodexResumeMap, type CodexSpawnFence } from '../core/CodexResumeMap.js';
+import { resolveStageBProductionActivation } from '../core/StageBActivationGate.js';
+import { createInboundDeliveryTransferHandler, createInboundDeliveryTransferStep, writeStageCActivationLease } from '../core/CodexLifecycleProductionComposition.js';
+import { applyStageBStartupReadiness } from '../core/StageBStartupReadiness.js';
+import { inboundDeliveryStoreOptionsFromQueue } from '../core/InboundDeliveryStore.js';
 import { paneIdleWithEmptyInput } from '../core/ModelSwapService.js';
 import { escalatedModelIds, normalizeTierEscalationConfig, type TierEscalationConfig } from '../core/ModelTierEscalation.js';
 import { activeAutonomousJobs, autonomousRunRemainingForTopic, listAutonomousJobs, readAutonomousRunMarkers, stopAutonomousTopic } from '../core/AutonomousSessions.js';
@@ -137,7 +141,8 @@ import { sendConsolidatedWithSelfHeal } from '../monitoring/sentinelConsolidated
 import { AccountSwitcher } from '../monitoring/AccountSwitcher.js';
 import { QuotaNotifier } from '../monitoring/QuotaNotifier.js';
 import { QuotaManager } from '../monitoring/QuotaManager.js';
-import { classifySessionDeath, detectContextExhaustion } from '../monitoring/QuotaExhaustionDetector.js';
+import { classifySessionDeath } from '../monitoring/QuotaExhaustionDetector.js';
+import { createContextCompactionAttempt } from '../monitoring/ContextCompactionControl.js';
 import { SessionWatchdog } from '../monitoring/SessionWatchdog.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { resolveGuardConfigSnapshot, readGuardPostureBootSnapshot } from '../monitoring/guardPosture.js';
@@ -571,6 +576,14 @@ let _spawningTopicsRegistryRef: SpawningTopicsRegistry | null = null;
 // Module-level reference for session resume mapping.
 // Set once in startServer() and used by spawnSessionForTopic/respawnSessionForTopic.
 let _topicResumeMap: import('../core/TopicResumeMap.js').TopicResumeMap | null = null;
+
+/** Narrow, testable ownership of the stale-generation recovery side effect. */
+export function clearGenerationlessCodexResumeBinding(
+  resumeMap: Pick<import('../core/TopicResumeMap.js').TopicResumeMap, 'remove'> | null,
+  topicId: number,
+): void {
+  resumeMap?.remove(topicId);
+}
 // Context-wall recovery latch. These late-bound seams let every Telegram/Slack
 // spawn chokepoint fail fresh while SessionRecovery owns a durable latch.
 let _contextExhaustionFreshRequired: ((topicId: number) => boolean) | null = null;
@@ -697,6 +710,10 @@ let _sendDrain:
   | ((ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<
       { ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean; claimLanded?: boolean }
     >)
+  | null = null;
+let _sendInboundDeliveryTransfer:
+  | ((target: string, sessionKey: string, sourceEpoch: number, transferEpoch: number,
+      transfer: import('../core/InboundDeliveryStore.js').EncryptedDeliveryTransfer) => Promise<{ ok: boolean; reason?: string }>)
   | null = null;
 let _listPoolMachines: (() => Array<{ machineId: string; nickname?: string; lastKnownUrl?: string | null }>) | null = null;
 /** WS5.2 R4a — operator/issuer leg: deliver an R4a-signed account-follow-me mandate to a REMOTE
@@ -2824,7 +2841,8 @@ export function wireTelegramRouting(
 
     if (targetSession) {
       // Session is mapped — check if it's alive, inject or respawn
-      if (sessionManager.isSessionAlive(targetSession)) {
+      const generationlessCodex = sessionManager.requiresCodexGenerationRespawn(targetSession);
+      if (sessionManager.isSessionAlive(targetSession) && !generationlessCodex) {
         // Use toInjection() — types guarantee sender identity is included in the tag
         const injection = toInjection(pipeline, targetSession);
         console.log(`[telegram→session] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
@@ -2851,10 +2869,17 @@ export function wireTelegramRouting(
         // Track for stall detection
         telegram.trackMessageInjection(topicId, targetSession, text);
       } else {
+        if (generationlessCodex) {
+          console.warn(`[telegram→session] Codex session "${targetSession}" never established a rollout generation — replacing stale incarnation for topic ${topicId}`);
+          // A prior topic UUID could resume the same poisoned generationless
+          // history. This recovery is intentionally fresh; the bootstrap carries
+          // bounded topic history plus the current durably-held inbound.
+          clearGenerationlessCodexResumeBinding(_topicResumeMap, topicId);
+        }
         // Session died — classify death cause before deciding how to respawn
         let isQuotaDeath = false;
         let isContextExhausted = false;
-        try {
+        if (!generationlessCodex) try {
           const output = sessionManager.captureOutput(targetSession, 100);
           if (output) {
             const quotaState = quotaTracker?.getState() ?? null;
@@ -6107,6 +6132,24 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
       return boundTerminateAuthority(id, reason, opts);
     };
+    const stageBMachineId = coordinator.identity?.machineId ?? os.hostname();
+    const stageBPublicKey = coordinator.managers.identityManager.getSigningPublicKeyPem(stageBMachineId) ?? '';
+    const stageBConfig = config.codexSessionLifecycle;
+    const stageBActivation = applyStageBStartupReadiness(resolveStageBProductionActivation({
+      stateDir: config.stateDir,
+      config: stageBConfig,
+      packageVersion: startupVersion,
+      gitCommit: process.env.INSTAR_GIT_COMMIT ?? `package:${startupVersion}`,
+      echoMachineId: stageBMachineId,
+      echoPublicKeyPem: stageBPublicKey,
+      developmentAgent: config.developmentAgent === true,
+    }), config.stateDir);
+    const stageCRecoveryEnabled = stageBActivation.active
+      && config.codexSessionLifecycle?.stageCRecoveryEnabled === true
+      && config.monitoring?.codexWedgeRecovery?.enabled === true;
+    writeStageCActivationLease(config.stateDir, stageCRecoveryEnabled);
+    let stageBOwnerEpochForConversation = (_conversationId: string): number => 0;
+    console.log(pc.dim(`  Codex session lifecycle Stage B: ${stageBActivation.reason}`));
     const sessionManager = new SessionManager(sessionManagerConfig, state, {
       bindTerminateAuthority: (authority) => { boundTerminateAuthority = authority; },
       tmuxAsyncEnabled: _tmuxAsyncEnabled,
@@ -6140,6 +6183,13 @@ export async function startServer(options: StartOptions): Promise<void> {
       // further down the boot, after SessionManager exists); identity-less
       // installs resolve null → the literal 'local' inside the store.
       buildContextMachineId: () => _meshSelfId,
+      stageBActivation,
+      inboundDeliveryStoreOptions: inboundDeliveryStoreOptionsFromQueue(
+        config.multiMachine?.sessionPool?.inboundQueue,
+      ),
+      localMachineId: () => coordinator.identity?.machineId ?? os.hostname(),
+      ownerEpochForConversation: (conversationId) => stageBOwnerEpochForConversation(conversationId),
+      stageCRecoveryEnabled,
     });
     // Wire the SAME TTL-cached SDK-credit reader PR1's routing policy uses, so
     // the reroute 'auto' decision and the intelligence-funnel routing share one
@@ -8949,7 +8999,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               } else {
                 // Session is ready — inject via SessionManager (handles idle timer reset + bracketed paste)
                 try {
-                  sessionManager.injectMessage(existingSession, bootstrapMessage);
+                  sessionManager.injectMessage(existingSession, bootstrapMessage, {
+                    conversationId: conversationId === null ? undefined : String(conversationId),
+                  });
                   // Track for stall detection
                   slackAdapter!.trackMessageInjection(channelId, existingSession, message.content);
                   // Delivery confirmation via reaction only (no text message — the ✅ reaction is sufficient)
@@ -10870,11 +10922,19 @@ export async function startServer(options: StartOptions): Promise<void> {
     // lifeline-process consumer (SessionRecoveryConsumer). See
     // docs/specs/CODEX-SESSION-WEDGE-SELF-RECOVERY.md.
     const codexWedgeCfg = config.monitoring?.codexWedgeRecovery;
+    const recoveryActuationAuthority = stageCRecoveryEnabled
+      ? (await import('../core/RecoveryActuationAuthority.js')).RecoveryActuationAuthority.open(config.stateDir)
+      : undefined;
     const stuckInputSentinel = new StuckInputSentinel(sessionManager, {
       stateDir: config.stateDir,
       recoveryChannel: new SessionRecoveryChannel(config.stateDir),
-      escalationEnabled: codexWedgeCfg?.enabled ?? false,
+      escalationEnabled: stageCRecoveryEnabled,
       escalationTimeoutTicks: codexWedgeCfg?.escalationTimeoutTicks,
+      recoveryAuthority: recoveryActuationAuthority,
+      operatorStopEpoch: () => {
+        try { return Math.floor(fs.statSync(path.join(config.projectDir, '.instar', 'autonomous-emergency-stop')).mtimeMs); }
+        catch { return 0; }
+      },
     });
     stuckInputSentinel.start();
 
@@ -10998,6 +11058,32 @@ export async function startServer(options: StartOptions): Promise<void> {
             console.error(`[resumeFailed] Failed to clear resume UUID for topic ${info.telegramTopicId}:`, err);
           }
         }
+      });
+
+      const inboundNoticeInFlight = new Set<string>();
+      sessionManager.on('inboundDeliveryNotice', (notice: import('../core/InboundDeliveryStore.js').InboundDeliveryNotice) => {
+        const topicId = Number(notice.conversationId);
+        const key = `${notice.conversationId}\0${notice.deliveryId}\0${notice.kind}`;
+        if (!telegram || !Number.isSafeInteger(topicId) || inboundNoticeInFlight.has(key)) return;
+        inboundNoticeInFlight.add(key);
+        void telegram.sendToTopic(topicId,
+          'An older message remained stuck while a newer message took over. I permanently retired the older draft so it cannot replay out of order.')
+          .then(() => { sessionManager.markInboundDeliveryNoticeDelivered(notice); })
+          .catch((err) => { console.error(`[codex-lifecycle] Supersession notice delivery failed: ${err instanceof Error ? err.message : String(err)}`); })
+          .finally(() => { inboundNoticeInFlight.delete(key); });
+      });
+      const observerNoticeInFlight = new Set<string>();
+      sessionManager.on('codexObserverSustainedFailure', (episode) => {
+        const topicId = _notifyState?.get<number>('agent-attention-topic') ?? 0;
+        if (!topicId || observerNoticeInFlight.has(episode.episodeId)) return;
+        observerNoticeInFlight.add(episode.episodeId);
+        void notificationBatcher.enqueue({
+          tier: 'IMMEDIATE', category: 'codex-lifecycle', timestamp: new Date(), topicId,
+          message: `Codex delivery verification has entered sustained-failure episode ${episode.episodeId}. `
+            + `It is failing closed, has run bounded self-healing, and will retry after ${new Date(episode.nextAttemptAt).toISOString()}.`,
+        }).then(() => { sessionManager.markCodexObserverNoticeDelivered(episode.episodeId); })
+          .catch((err) => { console.error(`[codex-lifecycle] Observer notice enqueue failed: ${err instanceof Error ? err.message : String(err)}`); })
+          .finally(() => { observerNoticeInFlight.delete(episode.episodeId); });
       });
 
       sessionManager.on('injectionDropped', (info: { topicId: number; sessionName: string; text: string; injectedAt: number }) => {
@@ -11277,7 +11363,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Session Watchdog — auto-remediation for stuck commands
     let watchdog: SessionWatchdog | undefined;
     if (config.monitoring.watchdog?.enabled) {
-      watchdog = new SessionWatchdog(config, sessionManager, state);
+      watchdog = new SessionWatchdog(config, sessionManager, state, {
+        onProvenanceCanaryAlert: (message) => notify('IMMEDIATE', 'codex-provenance-canary', message),
+      });
       watchdog.intelligence = sharedIntelligence ?? null;
       guardRegistry.register('monitoring.watchdog.enabled', () => watchdog!.guardStatus());
 
@@ -11706,8 +11794,17 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
               }
               try {
+                const recoveryConversationId = conversationRegistry.mintForInbound(slackChId).id;
+                if (recoveryConversationId === null) {
+                  console.error(`[slack→recovery] Fresh spawn refused for ${slackChId}: durable conversation identity unavailable`);
+                  return;
+                }
                 // Spawn with the RAW channel (+ thread_ts) but register on the routing key.
-                const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, undefined, { slackChannelId: slackApiChannel, slackThreadTs: slackReplyThread });
+                const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, undefined, {
+                  slackChannelId: slackApiChannel,
+                  slackThreadTs: slackReplyThread,
+                  bootstrapConversationIds: [recoveryConversationId],
+                });
                 if (newSessionName) {
                   _slackAdapter.registerChannelSession(slackChId, newSessionName);
                   console.log(`[slack→recovery] Fresh session "${newSessionName}" spawned for ${slackReplyThread ? `thread ${slackChId}` : `channel ${slackApiChannel}`} (context exhaustion recovery)`);
@@ -11734,27 +11831,19 @@ export async function startServer(options: StartOptions): Promise<void> {
           // limit reached · /compact or /clear to continue" and verify the wall
           // clears. Preserves the conversation. Only reached for a genuinely
           // idle session (the recovery gates on !hasActiveProcesses).
-          attemptCompaction: async (name) => {
-            // Press the button the wall asks for.
-            const injected = sessionManager.injectMessage(name, '/compact');
-            if (!injected) return { cleared: false, reason: 'inject-failed' };
-            // Poll for the wall to clear (compaction takes a few seconds).
-            const deadline = Date.now() + 30_000;
-            while (Date.now() < deadline) {
-              await new Promise((r) => setTimeout(r, 3_000));
-              const out = sessionManager.captureOutput(name, 40) || '';
-              const tail = out.split('\n').map((l) => l.trim()).filter(Boolean).slice(-12).join('\n');
-              // Compaction itself failed (too long to even compact) → give up the rung.
-              if (/error during compaction|compaction failed/i.test(tail)) {
-                return { cleared: false, reason: 'compaction-error' };
+          attemptCompaction: createContextCompactionAttempt(sessionManager, {
+            resolveConversationId: (sessionName, topicId) => {
+              if (topicId > 0) return String(topicId);
+              const routingKey = _slackAdapter?.getChannelForSession(sessionName);
+              if (!routingKey) return null;
+              try {
+                const durableId = conversationRegistry.mintForInbound(routingKey).id;
+                return durableId === null ? null : String(durableId);
+              } catch {
+                return null;
               }
-              // Wall gone from the live state → compaction cleared it.
-              if (!detectContextExhaustion(out).matched) {
-                return { cleared: true };
-              }
-            }
-            return { cleared: false, reason: 'timeout' };
-          },
+            },
+          }),
           // ── Part D: double-dispatch recovery gate (ownership-follows-live-work) ──
           // Injected primitives so checkAndRecover consults per-topic ownership
           // before re-running locally. All read the late-bound registry/pool deps
@@ -21707,6 +21796,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         _writeAdmissionOwnershipStore = ownershipStore;
         const ownReg = sessionOwnershipRegistry;
+        stageBOwnerEpochForConversation = (conversationId: string): number => {
+          try { return ownReg.read(conversationId)?.ownershipEpoch ?? 0; }
+          catch { return 0; /* @silent-fallback-ok — action-time owner fence rejects stale/nonzero claims */ }
+        };
 
         // C4.1 (bounded-attention-notification-surface): ONLY the machine that
         // owns a topic sends batched notifications into it. With exactly one
@@ -22668,6 +22761,21 @@ export async function startServer(options: StartOptions): Promise<void> {
                 .sendToTopic(topicNum, `This conversation moved machines mid-task (${detail}). Work resumes on the new machine — the final turn before the move may be partial.`)
                 .catch(() => { /* @silent-fallback-ok — ONE best-effort notice; the audit row is the durable record */ });
             },
+            transferDeliveryLedger: createInboundDeliveryTransferStep({
+              selfMachineId: meshSelfId,
+              activationActive: () => sessionManager.inboundDeliveryStatus().activation.active,
+              targetEncryptionPublicKey: (target) => meshIdMgr.loadRemoteIdentity(target)?.encryptionPublicKey,
+              exportTransfer: (input) => sessionManager.exportInboundDeliveryTransfer(input),
+              sendTransfer: (target, sessionKey, sourceEpoch, transferEpoch, transfer) =>
+                _sendInboundDeliveryTransfer
+                  ? _sendInboundDeliveryTransfer(target, sessionKey, sourceEpoch, transferEpoch, transfer)
+                  : Promise.resolve({ ok: false, reason: 'mesh-transfer-client-unavailable' }),
+            }),
+            restoreDeliveryLedger: ({ sessionKey, transferEpoch, activeEpoch }) => {
+              sessionManager.restoreInboundDeliveryAfterAbortedTransfer(
+                sessionKey, meshSelfId, transferEpoch, activeEpoch,
+              );
+            },
             audit: (event) => {
               try { console.log(pc.dim(`  [ws12-drain] ${JSON.stringify(event)}`)); } catch { /* @silent-fallback-ok — observability only */ }
             },
@@ -22980,6 +23088,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             transfer: ownAction,
             release: ownAction,
             deliverMessage: deliverMessageHandler,
+            'inbound-delivery-transfer': createInboundDeliveryTransferHandler({
+              selfMachineId: meshSelfId,
+              readOwnership: (session) => ownReg.read(session),
+              ownEncryptionPrivateKey: () => createPrivateKey(meshIdMgr.loadEncryptionKey()),
+              importTransfer: (input) => sessionManager.importInboundDeliveryTransfer(input),
+            }) as (cmd: import('../core/MeshRpc.js').MeshCommand, sender: string) => unknown,
             // WS1.2 owner-side drain (MULTI-MACHINE-SEAMLESSNESS-SPEC): the
             // router orders THIS machine — the topic's current owner — to
             // finish the live turn (bounded), close the local session, and
@@ -23245,6 +23359,25 @@ export async function startServer(options: StartOptions): Promise<void> {
               // @silent-fallback-ok — a failed delivery RPC returns ok:false to the route, which
               // surfaces a retry-able 502 (the mandate is safe locally); never a stuck/half delivery.
               return { ok: false, status: 0, reason: err instanceof Error ? err.message : String(err) };
+            }
+          };
+          _sendInboundDeliveryTransfer = async (target, sessionKey, sourceEpoch, transferEpoch, transfer) => {
+            const url = peerUrl(target);
+            if (!url) return { ok: false, reason: 'no-peer-url' };
+            try {
+              const response = await meshClient.send(
+                { machineId: target, url },
+                { type: 'inbound-delivery-transfer', session: sessionKey, sourceEpoch, transferEpoch, transfer },
+                transferEpoch,
+                { timeoutMs: 15_000 },
+              );
+              if (!response.ok) return { ok: false, reason: response.reason ?? `status-${response.status}` };
+              const result = (response.result ?? {}) as { accepted?: boolean; reason?: string };
+              return result.accepted === true
+                ? { ok: true }
+                : { ok: false, reason: result.reason ?? 'target-refused-ledger' };
+            } catch (err) {
+              return { ok: false, reason: err instanceof Error ? err.message : String(err) };
             }
           };
           // WS1.2 sender leg: signed drain order to a remote owner. Bounded by

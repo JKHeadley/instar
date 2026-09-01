@@ -28,6 +28,22 @@ describe('PendingInjectStore', () => {
     store = new PendingInjectStore(tmp);
   });
 
+  it('proves bootstrap custody only for the exact session and full message', () => {
+    store.record({ tmuxSession: 'codex-bootstrap', initialMessage: 'exact full envelope', telegramTopicId: 59199, freshPreRolloutBootstrap: true });
+    expect(store.matches('codex-bootstrap', 'exact full envelope')).toBe(true);
+    expect(store.matches('codex-bootstrap', 'exact full envelop')).toBe(false);
+    expect(store.matches('other-session', 'exact full envelope')).toBe(false);
+    store.projectTombstone({ conversationId: '59199', deliveryId: 'd1', createdAt: Date.now() });
+    expect(store.matches('__delivery_tombstone__-d1', '')).toBe(false);
+  });
+
+  it('fails closed for legacy and resumed records without positive fresh-bootstrap authorization', () => {
+    store.record({ tmuxSession: 'legacy', initialMessage: 'same old envelope' });
+    expect(store.matches('legacy', 'same old envelope')).toBe(false);
+    store.record({ tmuxSession: 'resumed', initialMessage: 'same old envelope', freshPreRolloutBootstrap: false });
+    expect(store.matches('resumed', 'same old envelope')).toBe(false);
+  });
+
   afterEach(() => {
     SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/pending-inject-store.test.ts:afterEach' });
   });
@@ -146,6 +162,21 @@ describe('sweepPendingInjects (boot recovery decisions)', () => {
     });
     expect(result.failed).toEqual(['flaky']);
     expect(store.list().records).toHaveLength(1); // survives for the next boot's retry
+  });
+
+  it('keeps projected delivery tombstones for 24h and never replays them', async () => {
+    store.projectTombstone({ conversationId: 'telegram:2271', deliveryId: 'delivery-1', createdAt: NOW - 60_000 });
+    const redeliver = vi.fn(async () => {});
+    await sweepPendingInjects(store, {
+      sessionAlive: () => true, redeliver, reportLoss: vi.fn(), now: () => NOW,
+    });
+    expect(redeliver).not.toHaveBeenCalled();
+    expect(store.list().records[0]).toMatchObject({ deliveryId: 'delivery-1', tombstone: true, doNotReplay: true });
+    const expired = await sweepPendingInjects(store, {
+      sessionAlive: () => true, redeliver, reportLoss: vi.fn(), now: () => NOW + 25 * 60 * 60 * 1000,
+    });
+    expect(expired.expired).toHaveLength(1);
+    expect(store.list().records).toHaveLength(0);
   });
 
   it('mixed population: each record gets its own verdict', async () => {

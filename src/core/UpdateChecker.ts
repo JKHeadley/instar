@@ -392,6 +392,15 @@ export class UpdateChecker {
     }
 
     const currentVersion = this.getInstalledVersion();
+    const lifecycleFloor = path.join(this.stateDir, 'state', 'codex-lifecycle-downgrade-floor.json');
+    if (fs.existsSync(lifecycleFloor)) {
+      return {
+        success: false,
+        previousVersion: currentVersion,
+        restoredVersion: currentVersion,
+        message: 'Rollback refused: live Codex delivery evidence requires the compatibility-projector floor. Drain the 24-hour tombstone window or ship a forward hotfix.',
+      };
+    }
 
     // Install rollback version to shadow directory
     const shadowDir = path.join(this.stateDir, 'shadow-install');

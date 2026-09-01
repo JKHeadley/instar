@@ -3415,6 +3415,16 @@ export interface InstarConfig {
    * (Introduced 2026-06-02 — Justin's ask, topic 13481.)
    */
   developmentAgent?: boolean;
+  /** Crash-safe inbound observer rollout. Absence is dark; explicit false is preserved by migration. */
+  codexSessionLifecycle?: {
+    ledgerObserverEnabled?: boolean;
+    /** Explicit pre-release dogfood only; ignored unless developmentAgent=true. */
+    candidateCanaryEnabled?: boolean;
+    /** Set only after a build-bound signed RC passes; activation occurs on restart. */
+    stageBPendingActivation?: boolean;
+    /** Independently dark Stage C: exhausted-delivery server refresh/replay. */
+    stageCRecoveryEnabled?: boolean;
+  };
   /** Unified work-intake registry rollout; omitted resolves live only on dev agents. */
   workQueue?: { enabled?: boolean };
   /** Capability registry read surface; omitted resolves via the dev-agent gate. */

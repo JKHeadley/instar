@@ -35,8 +35,16 @@ export interface PendingInjectRecord {
   initialMessage: string;
   /** Telegram topic the message belongs to, when known. */
   telegramTopicId?: number;
+  /** Canonical durable delivery-ledger identity, including non-Telegram channels. */
+  conversationId?: number;
   /** ISO timestamp the record was written (spawn time). */
   createdAt: string;
+  /** Compatibility projector evidence. New binaries never replay these. */
+  deliveryId?: string;
+  tombstone?: boolean;
+  doNotReplay?: boolean;
+  /** Positive authorization for the one pre-rollout bootstrap dispatch. */
+  freshPreRolloutBootstrap?: boolean;
 }
 
 export class PendingInjectStore {
@@ -61,7 +69,12 @@ export class PendingInjectStore {
         tmuxSession: entry.tmuxSession,
         initialMessage: entry.initialMessage,
         ...(entry.telegramTopicId !== undefined ? { telegramTopicId: entry.telegramTopicId } : {}),
+        ...(entry.conversationId !== undefined ? { conversationId: entry.conversationId } : {}),
         createdAt: entry.createdAt ?? new Date().toISOString(),
+        ...(entry.deliveryId ? { deliveryId: entry.deliveryId } : {}),
+        ...(entry.tombstone ? { tombstone: true } : {}),
+        ...(entry.doNotReplay ? { doNotReplay: true } : {}),
+        ...(entry.freshPreRolloutBootstrap ? { freshPreRolloutBootstrap: true } : {}),
       };
       fs.writeFileSync(this.fileFor(entry.tmuxSession), JSON.stringify(full, null, 2));
     } catch (err) {
@@ -69,6 +82,29 @@ export class PendingInjectStore {
       // is protecting — warn with context and continue; a missed record only
       // means this one inject isn't restart-recoverable (the pre-fix behavior).
       console.warn(`[PendingInjectStore] record failed for "${entry.tmuxSession}" (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  projectTombstone(entry: { conversationId: string; deliveryId: string; createdAt: number }): void {
+    this.record({
+      tmuxSession: `__delivery_tombstone__-${entry.deliveryId}`,
+      initialMessage: '',
+      createdAt: new Date(entry.createdAt).toISOString(),
+      deliveryId: entry.deliveryId,
+      tombstone: true,
+      doNotReplay: true,
+    });
+  }
+
+  /** Exact bootstrap-custody proof for the pre-rollout Codex path. */
+  matches(tmuxSession: string, initialMessage: string): boolean {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.fileFor(tmuxSession), 'utf8')) as Partial<PendingInjectRecord>;
+      return parsed.tmuxSession === tmuxSession && parsed.initialMessage === initialMessage
+        && parsed.freshPreRolloutBootstrap === true
+        && parsed.tombstone !== true && parsed.doNotReplay !== true;
+    } catch {
+      return false;
     }
   }
 
@@ -161,6 +197,13 @@ export async function sweepPendingInjects(
 
   for (const record of records) {
     const age = now() - Date.parse(record.createdAt);
+    if (record.tombstone || record.doNotReplay) {
+      if (!Number.isFinite(age) || age > 24 * 60 * 60 * 1000) {
+        store.clear(record.tmuxSession);
+        result.expired.push(record.tmuxSession);
+      }
+      continue;
+    }
     if (!Number.isFinite(age) || age > maxAgeMs) {
       deps.reportLoss(record, `record expired (age ${Math.round(age / 60000)}m > ${Math.round(maxAgeMs / 60000)}m)`);
       store.clear(record.tmuxSession);

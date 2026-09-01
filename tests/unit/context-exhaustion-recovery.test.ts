@@ -702,7 +702,7 @@ describe('SessionRecovery — /compact escalation before fresh respawn', () => {
     expect(result.recovered).toBe(true);
     expect(result.message).toContain('/compact');
     expect(result.message).toMatch(/conversation preserved/i);
-    expect(attemptCompaction).toHaveBeenCalledWith('stuck-session');
+    expect(attemptCompaction).toHaveBeenCalledWith('stuck-session', 1);
     // The whole point: no destructive action when /compact worked.
     expect(deps.killSession).not.toHaveBeenCalled();
     expect(respawnSessionFresh).not.toHaveBeenCalled();
@@ -799,14 +799,12 @@ describe('SessionRecovery /compact escalation — server.ts wiring', () => {
     expect(serverSrc).toContain('attemptCompaction:');
   });
 
-  it('the wired callback presses /compact and verifies via detectContextExhaustion', () => {
-    const block = serverSrc.slice(serverSrc.indexOf('attemptCompaction:'));
-    const head = block.slice(0, 1600);
-    expect(head).toContain("injectMessage(name, '/compact')");
-    expect(head).toContain('detectContextExhaustion');
+  it('the wired callback delegates to the behavioral context-control composition', () => {
+    expect(serverSrc).toContain('attemptCompaction: createContextCompactionAttempt(sessionManager, {');
+    expect(serverSrc).toContain('conversationRegistry.mintForInbound(routingKey).id');
   });
 
-  it('detectContextExhaustion is imported in server.ts', () => {
-    expect(serverSrc).toMatch(/import\s*\{[^}]*detectContextExhaustion[^}]*\}\s*from\s*'\.\.\/monitoring\/QuotaExhaustionDetector\.js'/);
+  it('the behavioral context-control composition is imported in server.ts', () => {
+    expect(serverSrc).toMatch(/import\s*\{[^}]*createContextCompactionAttempt[^}]*\}\s*from\s*'\.\.\/monitoring\/ContextCompactionControl\.js'/);
   });
 });

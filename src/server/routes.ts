@@ -8489,6 +8489,17 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  router.get('/sessions/inbound-delivery-status', (_req, res) => {
+    const status = ctx.sessionManager.inboundDeliveryStatus();
+    res.json({
+      enabled: !('unavailable' in status),
+      durability: 'sqlite-full',
+      blindReplay: false,
+      scopedRefreshRecovery: ctx.sessionManager.scopedRecoveryStatus(),
+      ...status,
+    });
+  });
+
   // SessionReaper observability (SESSION-REAPER-SPEC §3.9). Answers
   // "why did/didn't it reap X?" from a pull surface — pressure tier, active
   // threshold, and every running session's verdict + the gate that kept it.

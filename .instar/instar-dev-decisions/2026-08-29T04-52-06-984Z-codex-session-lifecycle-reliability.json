@@ -1,0 +1,22 @@
+{
+  "ts": "2026-08-29T04:52:06.984Z",
+  "slug": "codex-session-lifecycle-reliability",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 38,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/SessionManager.ts"
+    ],
+    "addedLines": 21,
+    "deletedLines": 17
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

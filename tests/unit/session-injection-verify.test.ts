@@ -48,15 +48,14 @@ describe('SessionManager — submission verification', () => {
   it('resends Enter via bounded retries — no infinite loop', () => {
     const fnStart = source.search(/private\s+(verifyInjection|verifySubmission|ensureSubmitted)\s*\(/);
     const fnBlock = source.slice(fnStart, fnStart + 5000);
-    // Must recover via send-keys Enter (somewhere — could be inline or via fireStuckInputRecovery)
-    // Pull in the recovery helper too so we cover both inline and extracted layouts.
+    // Must recover through the bounded recovery helper. The physical tmux call
+    // now lives behind the tracked-effect dispatcher, so this contract should
+    // assert delegation rather than require a raw side effect in the verifier.
     // Locate the DEFINITION (not the first call site) so unrelated helper methods
     // inserted between verifyInjection and the definition can't push it out of view.
     const recoveryHelperStart = source.search(/(?:private\s+|public\s+)?fireStuckInputRecovery\s*\(\s*tmuxSession\s*:/);
-    const recoveryBlock = recoveryHelperStart > -1
-      ? source.slice(recoveryHelperStart, recoveryHelperStart + 2000)
-      : '';
-    expect(fnBlock + recoveryBlock).toMatch(/send-keys[\s\S]*?Enter|send-keys[\s\S]*?C-m/);
+    expect(recoveryHelperStart).toBeGreaterThanOrEqual(0);
+    expect(fnBlock).toMatch(/fireStuckInputRecovery\s*\(/);
     // No unbounded loop
     expect(fnBlock).not.toMatch(/while\s*\(\s*true\s*\)/);
     // Must reference a bounded schedule or attempt counter
@@ -78,17 +77,23 @@ describe('SessionManager — submission verification', () => {
   });
 
   it('escalates recovery method across attempts (Enter → C-m → Enter+sleep+Enter)', () => {
-    // The recovery helper should use at least 2 distinct tmux key names so a
-    // single eaten-Enter pattern can't defeat every attempt.
+    // The recovery effect should use at least 2 distinct tmux key names so a
+    // single eaten-Enter pattern can't defeat every attempt. The public helper
+    // owns fencing/journaling and delegates the mutation to this private effect.
     // Visibility relaxed (private → public) so the persistent StuckInputSentinel can reuse this helper.
     // Match the DEFINITION (not call sites like this.fireStuckInputRecovery(...)).
     const recoveryStart = source.search(/(?:private\s+|public\s+)?fireStuckInputRecovery\s*\(\s*tmuxSession\s*:/);
     if (recoveryStart < 0) {
       throw new Error('Expected fireStuckInputRecovery helper');
     }
-    const recoveryBlock = source.slice(recoveryStart, recoveryStart + 2000);
-    expect(recoveryBlock).toContain('Enter');
-    expect(recoveryBlock).toContain('C-m');
+    const recoveryBlock = source.slice(recoveryStart, recoveryStart + 3000);
+    expect(recoveryBlock).toMatch(/trackedPhysicalEffects\.keyAttemptSync/);
+    expect(recoveryBlock).toMatch(/performStuckInputKeyEffect\s*\(/);
+    const effectStart = source.search(/private\s+performStuckInputKeyEffect\s*\(/);
+    expect(effectStart).toBeGreaterThanOrEqual(0);
+    const effectBlock = source.slice(effectStart, effectStart + 1800);
+    expect(effectBlock).toContain('Enter');
+    expect(effectBlock).toContain('C-m');
   });
 
   it('stops polling as soon as the marker has cleared the prompt', () => {
