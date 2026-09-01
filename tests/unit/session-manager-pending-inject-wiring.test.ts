@@ -98,8 +98,8 @@ describe('SessionManager pending-inject wiring (finding 8d300555)', () => {
     const readyGate = new Promise<boolean>((r) => { resolveReady = r; });
     vi.spyOn(manager as unknown as { waitForClaudeReadyWithRetry(s: string, t: number): Promise<boolean> }, 'waitForClaudeReadyWithRetry')
       .mockImplementation(() => readyGate);
-    const injectSpy = vi.spyOn(manager as unknown as { injectMessage(s: string, m: string): void }, 'injectMessage')
-      .mockImplementation(() => undefined);
+    const injectSpy = vi.spyOn(manager as unknown as { injectMessage(s: string, m: string): boolean }, 'injectMessage')
+      .mockReturnValue(true);
 
     const tmux = await manager.spawnInteractiveSession('[telegram:2271] How is this looking?', 'wiring-test', { telegramTopicId: 2271 });
 
@@ -119,13 +119,26 @@ describe('SessionManager pending-inject wiring (finding 8d300555)', () => {
     }, { timeout: 5000 });
   });
 
+  it('retains bootstrap custody when the injection authority refuses', async () => {
+    vi.spyOn(manager as unknown as { waitForClaudeReadyWithRetry(s: string, t: number): Promise<boolean> }, 'waitForClaudeReadyWithRetry')
+      .mockResolvedValue(true);
+    vi.spyOn(manager as unknown as { injectMessage(s: string, m: string): boolean }, 'injectMessage')
+      .mockReturnValue(false);
+    await expect(manager.spawnInteractiveSession('must remain queued', 'refused-bootstrap', {
+      telegramTopicId: 2271, awaitInitialInjection: true,
+    })).rejects.toThrow('Initial message injection refused');
+    expect(pendingFiles()).toHaveLength(1);
+    const record = JSON.parse(fs.readFileSync(path.join(pendingDir(), pendingFiles()[0]), 'utf8'));
+    expect(record.initialMessage).toBe('must remain queued');
+  });
+
   it('framework handoff waits for bootstrap injection before returning the new session', async () => {
     let resolveReady!: (v: boolean) => void;
     const readyGate = new Promise<boolean>((r) => { resolveReady = r; });
     vi.spyOn(manager as unknown as { waitForClaudeReadyWithRetry(s: string, t: number): Promise<boolean> }, 'waitForClaudeReadyWithRetry')
       .mockImplementation(() => readyGate);
-    const injectSpy = vi.spyOn(manager as unknown as { injectMessage(s: string, m: string): void }, 'injectMessage')
-      .mockImplementation(() => undefined);
+    const injectSpy = vi.spyOn(manager as unknown as { injectMessage(s: string, m: string): boolean }, 'injectMessage')
+      .mockReturnValue(true);
 
     let returned = false;
     const spawning = manager.spawnInteractiveSession('CONTINUATION — prior turn', 'handoff-test', {
@@ -156,8 +169,8 @@ describe('SessionManager pending-inject wiring (finding 8d300555)', () => {
 
     vi.spyOn(manager as unknown as { waitForClaudeReadyWithRetry(s: string, t: number): Promise<boolean> }, 'waitForClaudeReadyWithRetry')
       .mockResolvedValue(true);
-    const injectSpy = vi.spyOn(manager as unknown as { injectMessage(s: string, m: string): void }, 'injectMessage')
-      .mockImplementation(() => undefined);
+    const injectSpy = vi.spyOn(manager as unknown as { injectMessage(s: string, m: string): boolean }, 'injectMessage')
+      .mockReturnValue(true);
 
     const result = await manager.recoverPendingInjects();
 
@@ -169,11 +182,28 @@ describe('SessionManager pending-inject wiring (finding 8d300555)', () => {
     expect(pendingFiles()).toHaveLength(0);
   });
 
+  it('recoverPendingInjects retains custody and reports failure when injection is refused', async () => {
+    const tmux = `${path.basename(tmpDir)}-refused-recovery`;
+    mockTmuxSessions.add(tmux);
+    (manager as unknown as { pendingInjects: { record(e: { tmuxSession: string; initialMessage: string }): void } })
+      .pendingInjects.record({ tmuxSession: tmux, initialMessage: 'still owed' });
+    vi.spyOn(manager as unknown as { waitForClaudeReadyWithRetry(s: string, t: number): Promise<boolean> }, 'waitForClaudeReadyWithRetry')
+      .mockResolvedValue(true);
+    vi.spyOn(manager as unknown as { injectMessage(s: string, m: string): boolean }, 'injectMessage')
+      .mockReturnValue(false);
+
+    const result = await manager.recoverPendingInjects();
+
+    expect(result.failed).toEqual([tmux]);
+    expect(result.redelivered).toEqual([]);
+    expect(pendingFiles()).toHaveLength(1);
+  });
+
   it('recoverPendingInjects expires a dead-session record without ever calling inject', async () => {
     (manager as unknown as { pendingInjects: { record(e: { tmuxSession: string; initialMessage: string }): void } })
       .pendingInjects.record({ tmuxSession: 'gone-with-the-restart', initialMessage: 'lost message' });
-    const injectSpy = vi.spyOn(manager as unknown as { injectMessage(s: string, m: string): void }, 'injectMessage')
-      .mockImplementation(() => undefined);
+    const injectSpy = vi.spyOn(manager as unknown as { injectMessage(s: string, m: string): boolean }, 'injectMessage')
+      .mockReturnValue(true);
 
     const result = await manager.recoverPendingInjects();
 

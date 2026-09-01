@@ -108,6 +108,37 @@ describe('CodexDeliveryObserver', () => {
     });
   });
 
+  it('binds a fresh pre-rollout bootstrap from offset zero once its generation appears', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-bootstrap-observer-'));
+    dirs.push(dir);
+    const rollout = path.join(dir, 'rollout.jsonl');
+    const envelope = 'fresh bootstrap envelope';
+    fs.writeFileSync(rollout,
+      JSON.stringify({ type: 'session_meta', payload: { id: 'fresh-thread' } }) + '\n'
+      + event('event_msg', { type: 'task_started', turn_id: 'fresh-turn' })
+      + currentMessage('user', envelope)
+      + currentMessage('assistant', 'ok')
+      + complete('fresh-turn'));
+    const store = InboundDeliveryStore.openMemory({ now: () => 1_000 });
+    const row = store.prepare({
+      conversationId: 'fresh', deliveryId: 'bootstrap', incarnation: 'fresh-incarnation',
+      framework: 'codex-cli', envelope, hmacKey: KEY,
+    });
+    store.transition('fresh', row.deliveryId, 'prepared', 'dispatch-armed');
+    store.transition('fresh', row.deliveryId, 'dispatch-armed', 'dispatch-started');
+    store.transition('fresh', row.deliveryId, 'dispatch-started', 'dispatched');
+    await new CodexDeliveryObserver({
+      store, hmacKey: KEY, resolveRolloutPath: () => rollout, resolveRolloutId: () => 'fresh-thread',
+      bindLocalBootstrap: (delivery) => store.bindBootstrapRollout(
+        delivery.conversationId, delivery.deliveryId, rollout, 'fresh-thread',
+      ),
+      capturePane: () => null, now: () => 1_000,
+    }).sweep();
+    expect(store.get('fresh', 'bootstrap')).toMatchObject({
+      baselineOffset: 0, transcriptState: 'responded', turnId: 'fresh-turn',
+    });
+  });
+
   it('still fails closed when legacy response-item metadata conflicts with the active turn', async () => {
     const f = fixture();
     fs.appendFileSync(f.rollout,

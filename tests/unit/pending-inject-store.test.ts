@@ -28,6 +28,22 @@ describe('PendingInjectStore', () => {
     store = new PendingInjectStore(tmp);
   });
 
+  it('proves bootstrap custody only for the exact session and full message', () => {
+    store.record({ tmuxSession: 'codex-bootstrap', initialMessage: 'exact full envelope', telegramTopicId: 59199, freshPreRolloutBootstrap: true });
+    expect(store.matches('codex-bootstrap', 'exact full envelope')).toBe(true);
+    expect(store.matches('codex-bootstrap', 'exact full envelop')).toBe(false);
+    expect(store.matches('other-session', 'exact full envelope')).toBe(false);
+    store.projectTombstone({ conversationId: '59199', deliveryId: 'd1', createdAt: Date.now() });
+    expect(store.matches('__delivery_tombstone__-d1', '')).toBe(false);
+  });
+
+  it('fails closed for legacy and resumed records without positive fresh-bootstrap authorization', () => {
+    store.record({ tmuxSession: 'legacy', initialMessage: 'same old envelope' });
+    expect(store.matches('legacy', 'same old envelope')).toBe(false);
+    store.record({ tmuxSession: 'resumed', initialMessage: 'same old envelope', freshPreRolloutBootstrap: false });
+    expect(store.matches('resumed', 'same old envelope')).toBe(false);
+  });
+
   afterEach(() => {
     SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/pending-inject-store.test.ts:afterEach' });
   });

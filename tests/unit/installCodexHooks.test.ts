@@ -47,6 +47,33 @@ describe('installCodexHooks', () => {
     }
   });
 
+  it('reports UserPromptSubmit so a fresh Codex rollout can bind its bootstrap delivery', () => {
+    installCodexHooks(projectDir);
+    const commands = read().hooks.UserPromptSubmit.flatMap((group: any) =>
+      group.hooks.map((hook: any) => hook.command));
+    expect(commands.some((command: string) => command.includes('telegram-topic-context.sh'))).toBe(true);
+    expect(commands.some((command: string) => command.includes('hook-event-reporter.js'))).toBe(true);
+  });
+
+  it('migrates an existing instar-owned UserPromptSubmit group and preserves user hooks', () => {
+    const codexDir = path.join(projectDir, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(path.join(codexDir, 'hooks.json'), JSON.stringify({
+      hooks: {
+        UserPromptSubmit: [
+          { matcher: '', hooks: [{ type: 'command', command: `bash ${projectDir}/.instar/hooks/instar/telegram-topic-context.sh` }] },
+          { matcher: '^custom$', hooks: [{ type: 'command', command: 'echo user-prompt-hook' }] },
+        ],
+      },
+    }));
+
+    installCodexHooks(projectDir);
+    const groups = read().hooks.UserPromptSubmit;
+    const commands = groups.flatMap((group: any) => group.hooks.map((hook: any) => hook.command));
+    expect(commands.filter((command: string) => command.includes('hook-event-reporter.js'))).toHaveLength(1);
+    expect(commands).toContain('echo user-prompt-hook');
+  });
+
   it('uses absolute script paths under .instar/hooks/instar/ (cwd-independent)', () => {
     installCodexHooks(projectDir);
     const cfg = read();

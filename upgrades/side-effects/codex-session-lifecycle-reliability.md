@@ -32,6 +32,21 @@ occurs inside the bounded selection authority. A regression fixture puts four
 older Claude rows ahead of a Codex row and proves the Codex row remains selected;
 legacy evidence stays preserved without participating in an observer it cannot use.
 
+A later candidate-wide observation found the fresh-session boundary: Codex does
+not create its rollout until the first prompt, so the bootstrap had no generation
+ID or byte baseline. Stage B correctly refused the ordinary path, but the older
+readiness owner ignored the false return and cleared `PendingInjectStore`, turning
+“queued” into a lost message. The startup owner now clears custody only after a
+true injection result. Exact full-envelope pending custody is the sole authority
+for a pre-rollout bootstrap only when its durable record carries the positive
+`freshPreRolloutBootstrap` flag written by a genuinely fresh Codex spawn; resumed,
+recovered, legacy, and unflagged records fail closed. The effect remains
+journaled/locked, Codex's installed `.codex/hooks.json` `UserPromptSubmit` group
+includes the event reporter that publishes the generation, and the observer may
+bind only that local already-dispatched null-rollout/-1-offset row from offset zero.
+Normal, imported, nonlocal, or pre-bound rows cannot use the exception. A refused
+normal or boot-recovery injection retains custody and propagates failure.
+
 The refreshed v1.3.1218 live candidate invalidated its first delivery window when Codex 0.149 produced a correct response but the observer marked it unknown. Live rollout bytes showed that current Codex retains the generation-bound `task_started`/`task_complete` envelope while omitting the older redundant `internal_chat_message_metadata_passthrough.turn_id` field on each message and adding `thread_settings_applied`/`item_completed`, `world_state`, inter-agent metadata/messages, and tool-search records. The adapter now uses the active task envelope when per-message metadata is absent, rejects a present malformed or conflicting metadata field, ignores only enumerated non-authoritative records and `developer`/`system` context roles, and rejects unknown roles/events. A captured-shape semantic test covers the complete current sequence.
 
 ## 2. Under-block
@@ -120,6 +135,16 @@ configured live-row ceiling, `SessionManager` evaluated a single running-session
 map and ownership predicates before its four-effect cap, and unit/production E2E
 regressions covered both row 106 and actual dead/stale-owner skipping. The
 action-time ownership fence remains unchanged for races.
+
+The fresh-session canary then exposed a custody loss before Codex had created its
+first rollout. Mencius withheld clearance until the exception required a durable
+positive fresh-spawn flag, the Codex-native `UserPromptSubmit` group installed the
+generation reporter, every false injection retained custody, boot recovery
+propagated refusal as failure, and resume-to-fresh fallback awaited the replacement
+injection. After the stale menu test was updated to preserve its zero-keypress
+assertion under the typed-refusal contract, the focused five-file matrix passed
+59/59 and Mencius concurred with no remaining code, security, custody,
+migration-parity, or test blocker.
 
 ## Evidence pointers
 

@@ -34,6 +34,7 @@ export interface CodexDeliveryObserverOptions {
   capturePane: (delivery: DeliveryEvidence) => CodexComposerFrame | string | null;
   capturePaneAsync?: (delivery: DeliveryEvidence) => Promise<CodexComposerFrame | string | null>;
   bindImportedSuccessor?: (delivery: DeliveryEvidence) => boolean;
+  bindLocalBootstrap?: (delivery: DeliveryEvidence) => boolean;
   onSustainedFailure?: (episode: { episodeId: string; nextAttemptAt: number }) => void;
   /** Test seam for deterministic operational-failure/backoff coverage. */
   scanRolloutWorkForTesting?: typeof scanSharedRollout;
@@ -106,6 +107,8 @@ export class CodexDeliveryObserver {
       for (const row of this.opts.store.observableDeliveries(this.maxRows)) {
         if (row.rolloutPath === null && row.transferState === 'imported') {
           this.opts.bindImportedSuccessor?.(row);
+        } else if (row.rolloutPath === null && row.transferState === 'local') {
+          this.opts.bindLocalBootstrap?.(row);
         }
       }
       let backlogBytes = 0;

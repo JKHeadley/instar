@@ -41,6 +41,8 @@ export interface PendingInjectRecord {
   deliveryId?: string;
   tombstone?: boolean;
   doNotReplay?: boolean;
+  /** Positive authorization for the one pre-rollout bootstrap dispatch. */
+  freshPreRolloutBootstrap?: boolean;
 }
 
 export class PendingInjectStore {
@@ -69,6 +71,7 @@ export class PendingInjectStore {
         ...(entry.deliveryId ? { deliveryId: entry.deliveryId } : {}),
         ...(entry.tombstone ? { tombstone: true } : {}),
         ...(entry.doNotReplay ? { doNotReplay: true } : {}),
+        ...(entry.freshPreRolloutBootstrap ? { freshPreRolloutBootstrap: true } : {}),
       };
       fs.writeFileSync(this.fileFor(entry.tmuxSession), JSON.stringify(full, null, 2));
     } catch (err) {
@@ -88,6 +91,18 @@ export class PendingInjectStore {
       tombstone: true,
       doNotReplay: true,
     });
+  }
+
+  /** Exact bootstrap-custody proof for the pre-rollout Codex path. */
+  matches(tmuxSession: string, initialMessage: string): boolean {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.fileFor(tmuxSession), 'utf8')) as Partial<PendingInjectRecord>;
+      return parsed.tmuxSession === tmuxSession && parsed.initialMessage === initialMessage
+        && parsed.freshPreRolloutBootstrap === true
+        && parsed.tombstone !== true && parsed.doNotReplay !== true;
+    } catch {
+      return false;
+    }
   }
 
   /** Remove the record after a verified inject. Never throws. */

@@ -40,6 +40,7 @@ describeMaybe('Codex session lifecycle reliability — production AgentServer pa
   let server: AgentServer;
   let tmuxSession = '';
   let rolloutPath = '';
+  let bootstrapRolloutPath = '';
 
   beforeAll(async () => {
     projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-lifecycle-e2e-'));
@@ -91,7 +92,9 @@ describeMaybe('Codex session lifecycle reliability — production AgentServer pa
       stageCRecoveryEnabled: false,
       localMachineId: () => 'studio',
       ownerEpochForConversation: () => 7,
-      codexRolloutPathForSession: () => rolloutPath,
+      codexRolloutPathForSession: (session) => session.claudeSessionId === 'bootstrap-thread'
+        ? bootstrapRolloutPath
+        : (session.claudeSessionId ? rolloutPath : null),
     });
     server = new AgentServer({ config, sessionManager: manager, state });
     tmuxSession = await manager.spawnInteractiveSession(undefined, 'codex-lifecycle-live', {
@@ -137,6 +140,47 @@ describeMaybe('Codex session lifecycle reliability — production AgentServer pa
       .map((name) => JSON.parse(fs.readFileSync(path.join(stateDir, 'state', 'pending-injects', name), 'utf8')))
       .find((row) => row.tombstone === true);
     expect(projected).toMatchObject({ doNotReplay: true, deliveryId: expect.any(String), initialMessage: '' });
+  });
+
+  it('tracks the first fresh Codex bootstrap before a rollout exists and binds it from offset zero', async () => {
+    const bootstrapText = 'fresh-bootstrap-e2e';
+    const managerWithReadySeam = manager as unknown as {
+      waitForClaudeReadyWithRetry(session: string, timeout: number): Promise<boolean>;
+    };
+    const originalReady = managerWithReadySeam.waitForClaudeReadyWithRetry.bind(manager);
+    managerWithReadySeam.waitForClaudeReadyWithRetry = async () => true;
+    let bootstrapTmux = '';
+    try {
+      bootstrapTmux = await manager.spawnInteractiveSession(bootstrapText, 'fresh-bootstrap-live', {
+        framework: 'codex-cli', telegramTopicId: 959198, awaitInitialInjection: true,
+      });
+      await waitFor(() => manager.captureOutput(bootstrapTmux, 30)?.includes(bootstrapText) ?? false, 8_000);
+      const store = InboundDeliveryStore.open(stateDir);
+      const row = store.dispatchablePrepared(Number.MAX_SAFE_INTEGER)
+        .find((candidate) => candidate.incarnation === bootstrapTmux)
+        ?? store.observableDeliveries(100).find((candidate) => candidate.incarnation === bootstrapTmux);
+      expect(row).toMatchObject({ rolloutPath: null, baselineOffset: -1, transportState: 'dispatched' });
+      bootstrapRolloutPath = path.join(projectDir, 'fresh-bootstrap-rollout.jsonl');
+      fs.writeFileSync(bootstrapRolloutPath, [
+        { type: 'session_meta', payload: { id: 'bootstrap-thread' } },
+        { type: 'event_msg', payload: { type: 'task_started', turn_id: 'bootstrap-turn' } },
+        { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: bootstrapText }] } },
+        { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'ok' }] } },
+        { type: 'event_msg', payload: { type: 'task_complete', turn_id: 'bootstrap-turn' } },
+      ].map((event) => JSON.stringify(event)).join('\n') + '\n');
+      const session = state.listSessions().find((candidate) => candidate.tmuxSession === bootstrapTmux)!;
+      state.saveSession({ ...session, claudeSessionId: 'bootstrap-thread' });
+      await manager.sweepInboundDeliveryObserverForTesting();
+      expect(store.get(row!.conversationId, row!.deliveryId)).toMatchObject({
+        baselineOffset: 0, transcriptState: 'responded', turnId: 'bootstrap-turn',
+      });
+      store.close();
+    } finally {
+      managerWithReadySeam.waitForClaudeReadyWithRetry = originalReady;
+      if (bootstrapTmux) {
+        try { execFileSync(tmuxPath!, ['kill-session', '-t', `=${bootstrapTmux}`], { timeout: 5_000 }); } catch { /* already gone */ }
+      }
+    }
   });
 
   it('reconciles a crash-open production ledger row to permanent uncertainty on manager restart', () => {

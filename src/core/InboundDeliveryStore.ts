@@ -565,6 +565,27 @@ export class InboundDeliveryStore {
     return tx.immediate();
   }
 
+  /** Bind a fresh Codex incarnation whose first tracked bootstrap created the
+   * rollout itself. Offset zero is safe only for a local, already-dispatched
+   * row that was explicitly recorded without any pre-existing rollout. */
+  bindBootstrapRollout(conversationId: string, deliveryId: string, rolloutPath: string, rolloutId: string): boolean {
+    if (!path.isAbsolute(rolloutPath) || !rolloutId) return false;
+    const now = this.options.now();
+    const tx = this.db.transaction(() => {
+      const changed = this.db.prepare(`UPDATE inbound_delivery
+        SET rollout_path = ?, rollout_id = ?, baseline_offset = 0, observed_offset = 0, updated_at = ?
+        WHERE conversation_id = ? AND delivery_id = ? AND framework = 'codex-cli'
+          AND transfer_state = 'local' AND transport_state = 'dispatched'
+          AND rollout_path IS NULL AND rollout_id IS NULL AND baseline_offset = -1 AND observed_offset = -1`)
+        .run(rolloutPath, rolloutId, now, conversationId, deliveryId).changes === 1;
+      if (changed) this.db.prepare(`INSERT OR IGNORE INTO inbound_rollout_cursor
+        (rollout_id, rollout_path, observed_offset, active_turn_id, event_sequence, updated_at)
+        VALUES (?, ?, 0, NULL, 0, ?)`).run(rolloutId, rolloutPath, now);
+      return changed;
+    });
+    return tx.immediate();
+  }
+
   bindImportedRolloutPath(conversationId: string, deliveryId: string, rolloutPath: string): boolean {
     if (!path.isAbsolute(rolloutPath)) return false;
     return this.db.prepare(`UPDATE inbound_delivery SET rollout_path = ?, updated_at = ?

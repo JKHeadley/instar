@@ -950,6 +950,17 @@ export class SessionManager extends EventEmitter {
             incarnation: successor.tmuxSession, rolloutPath, rolloutId: successor.claudeSessionId, baselineOffset,
           });
         },
+        bindLocalBootstrap: (delivery) => {
+          if (delivery.ownerMachineId !== this.localMachineId() || delivery.baselineOffset !== -1) return false;
+          const session = this.state.listSessions({ status: 'running' })
+            .find((candidate) => candidate.tmuxSession === delivery.incarnation);
+          if (!session?.claudeSessionId) return false;
+          const rolloutPath = this.codexRolloutPathForSession(session);
+          if (!rolloutPath) return false;
+          return this.inboundDeliveries!.bindBootstrapRollout(
+            delivery.conversationId, delivery.deliveryId, rolloutPath, session.claudeSessionId,
+          );
+        },
         onSustainedFailure: (episode) => this.emit('codexObserverSustainedFailure', episode),
         capturePane: (delivery) => {
           const session = this.state.listSessions({ status: 'running' })
@@ -5810,6 +5821,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
         tmuxSession,
         initialMessage: effectiveInitialMessage,
         telegramTopicId: options?.telegramTopicId,
+        // Only a genuinely fresh Codex spawn may use the narrow offset-zero
+        // bootstrap lane. Resume/recovery records and records written by old
+        // binaries remain fail-closed even if session state is incomplete.
+        freshPreRolloutBootstrap: framework === 'codex-cli' && !options?.resumeSessionId,
       });
       const injection = this.handleReadyAndInject(tmuxSession, name, effectiveInitialMessage, readyTimeout, options);
       if (options?.awaitInitialInjection) {
@@ -5853,7 +5868,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // through ready-and-inject — cold spawns, moved-topic respawns, and the
       // pending-inject boot recovery — so the InputGuard never flags instar's
       // own boot template as a suspected prompt injection (audit F7).
-      this.injectMessage(tmuxSession, initialMessage, { firstParty: { source: 'session-bootstrap' } });
+      const injected = this.injectMessage(tmuxSession, initialMessage, { firstParty: { source: 'session-bootstrap' } });
+      if (!injected) {
+        console.error(`[SessionManager] Initial message injection refused for "${tmuxSession}"; pending inject retained.`);
+        throw new Error(`Initial message injection refused for "${tmuxSession}"`);
+      }
       this.pendingInjects.clear(tmuxSession);
       console.log(`[SessionManager] Injected initial message into "${tmuxSession}" (${initialMessage.length} chars${stabilizationMs ? ', after stabilization delay' : ''})`);
       return;
@@ -5907,12 +5926,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
           telegramTopicId: options.telegramTopicId,
           slackChannelId: options.slackChannelId,
           slackThreadTs: options.slackThreadTs,
+          awaitInitialInjection: true,
         });
-        // HONEST LOG (finding 8d300555): the recursive spawn returns BEFORE its
-        // own readiness wait + inject complete — "succeeded" here only means
-        // "launched". The pending-inject record (re-written by the recursive
-        // call) is what guarantees delivery survives a restart in that window.
-        console.log(`[SessionManager] Fresh-spawn fallback launched for "${tmuxSession}" (inject pending — durable record held until verified).`);
+        console.log(`[SessionManager] Fresh-spawn fallback injected for "${tmuxSession}" (durable custody cleared only after verified acceptance).`);
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`[SessionManager] Fresh-spawn fallback FAILED for "${tmuxSession}": ${errMsg}`);
@@ -5923,6 +5939,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           reason: `Why: ${errMsg}`,
           impact: 'User message not delivered; bridge will respawn on next message',
         });
+        throw err;
       }
       return;
     }
@@ -5965,12 +5982,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
           reason: 'Why: typing at a menu selects an option rather than sending text — it can answer a permission/update question on the operator\'s behalf, and on some menus the focused option terminates the process.',
           impact: 'The initial message is retained as a durable pending inject (re-delivered at the next server boot while unexpired, reported as a loss otherwise); the bridge also respawns on the next inbound message. The parked menu itself is reported by PermissionPromptAutoResolver Layer 3.',
         });
-        return;
+        throw new Error(`Initial message injection refused for menu-bound session "${tmuxSession}"`);
       }
       console.error(`[SessionManager] Session not ready in "${tmuxSession}" — message NOT injected. Session may need manual intervention.`);
       console.log(`[SessionManager] Session "${tmuxSession}" still alive — attempting injection anyway`);
       // Same instar-composed bootstrap as the ready path above — first-party (F7).
-      this.injectMessage(tmuxSession, initialMessage, { firstParty: { source: 'session-bootstrap' } });
+      const injected = this.injectMessage(tmuxSession, initialMessage, { firstParty: { source: 'session-bootstrap' } });
+      if (!injected) {
+        console.error(`[SessionManager] Initial message injection refused for "${tmuxSession}" after readiness timeout; pending inject retained.`);
+        throw new Error(`Initial message injection refused for "${tmuxSession}" after readiness timeout`);
+      }
       this.pendingInjects.clear(tmuxSession);
       return;
     }
@@ -6789,8 +6810,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
           baseline = -1;
         }
         const rolloutId = match?.claudeSessionId ?? null;
-        if (!transcriptPath || !rolloutId || baseline < 0
-          || !this.inboundDeliveries.bindRolloutBaseline(conversationId, delivery.deliveryId, transcriptPath, rolloutId, baseline)) {
+        const preRolloutBootstrap = !transcriptPath && !rolloutId
+          && this.pendingInjects.matches(tmuxSession, text);
+        if (!preRolloutBootstrap && (!transcriptPath || !rolloutId || baseline < 0
+          || !this.inboundDeliveries.bindRolloutBaseline(conversationId, delivery.deliveryId, transcriptPath, rolloutId, baseline))) {
           this.inboundDeliveries.transition(conversationId, delivery.deliveryId, 'prepared', 'dispatch-failed');
           this.refreshLifecycleCompatibilityProjection();
           console.error(`[SessionManager] Refusing unverifiable Codex injection for ${tmuxSession}: rollout baseline unavailable`);
