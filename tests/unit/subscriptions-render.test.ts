@@ -367,6 +367,59 @@ describe('renderAccountMatrix', () => {
     expect(t.querySelector('.sub-matrix-active')).toBeNull();
   });
 
+  it('keeps every durable autonomous-repair state on the repair surface and suppresses competing manual sign-in', () => {
+    const pool = {
+      enabled: true,
+      accounts: [{ id: 'a1', email: 'a1@x.com', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop' }],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    };
+    for (const state of ['suggested', 'approved', 'cli-starting', 'artifact-ready', 'browser-driving',
+      'cli-finishing', 'identity-verifying', 'auth-verifying', 'waiting-operator-only']) {
+      const t = el();
+      renderAccountMatrix(doc, t, pool, { enabled: true, logins: [] }, {}, [
+        { id: 'repair-1', accountId: 'a1', machineId: 'm1', state },
+      ]);
+      const cell = t.querySelector('[data-cell-key="a1::m1"]');
+      expect(cell!.querySelector('[data-matrix-setup]'), state).toBeNull();
+      const action = state === 'suggested' ? 'approve' : 'cancel';
+      expect(cell!.querySelector(`[data-matrix-relogin][data-repair-action="${action}"]`), state).toBeTruthy();
+      if (state !== 'suggested') expect(cell!.textContent, state).toMatch(/Repairing sign-in|needs your help/);
+    }
+  });
+
+  it('offers retry after a safe failure and restores manual fallback after a refusal', () => {
+    const pool = {
+      enabled: true,
+      accounts: [{ id: 'a1', email: 'a1@x.com', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop' }],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    };
+    const failed = el();
+    renderAccountMatrix(doc, failed, pool, { enabled: true, logins: [] }, {}, [
+      { id: 'repair-1', accountId: 'a1', machineId: 'm1', state: 'failed' },
+    ]);
+    expect(failed.querySelector('[data-repair-action="retry"]')!.textContent).toBe('Try repair again');
+    expect(failed.querySelector('[data-matrix-setup]')).toBeNull();
+
+    const refused = el();
+    renderAccountMatrix(doc, refused, pool, { enabled: true, logins: [] }, {}, [
+      { id: 'repair-1', accountId: 'a1', machineId: 'm1', state: 'refused' },
+    ]);
+    expect(refused.querySelector('[data-matrix-relogin]')).toBeNull();
+    expect(refused.querySelector('[data-matrix-setup]')!.textContent).toBe('Sign in');
+  });
+
+  it('suppresses manual sign-in when the machine repair status is unavailable', () => {
+    const t = el();
+    renderAccountMatrix(doc, t, {
+      enabled: true,
+      accounts: [{ id: 'a1', email: 'a1@x.com', status: 'needs-reauth', machineId: 'm1', machineNickname: 'Laptop' }],
+      pool: { selfMachineId: 'm1', failed: [] }, scope: 'pool',
+    }, { enabled: true, logins: [] }, {}, [], [{ machineId: 'm1', error: 'timeout' }]);
+    const cell = t.querySelector('[data-cell-key="a1::m1"]');
+    expect(cell!.textContent).toContain('Repair status is unavailable');
+    expect(cell!.querySelector('[data-matrix-setup]')).toBeNull();
+  });
+
   it('renders a "Set up" button for a genuinely-empty (reachable) cell', () => {
     // Two reachable machines m1, m1b; account a1 is active only on m1 → a1 × m1b is empty.
     const t = el();

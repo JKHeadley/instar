@@ -7195,6 +7195,22 @@ Rule: I do not state that work landed inside another agent's state unless I have
       }
     }
 
+    // Fleet one-click assisted re-login awareness for existing agents that
+    // already received the original local-controller bullet.
+    if (
+      content.includes('Assisted sign-in repair (one approval, then autonomous)') &&
+      !content.includes('One-click repair across all machines')
+    ) {
+      const repairEnd = 'inspect the redacted audit: `GET /subscription-relogin/EPISODE/events`.';
+      const fleetRepairBullet =
+        '\n- **One-click repair across all machines** — the Subscriptions grid reads `GET /subscription-relogin?scope=pool` and puts the action on the exact account×machine cell. After one dashboard unlock, `POST /subscription-relogin/repair-cell` delivers a signed, action-bound mandate to that machine; **Repair sign-in**, **Try repair again**, and **Cancel repair** map to durable approve/retry/cancel states. A dark assisted-repair feature leaves the manual sign-in path available; an unreachable peer is shown honestly and suppresses competing actions until truth returns.';
+      if (content.includes(repairEnd)) {
+        content = content.replace(repairEnd, repairEnd + fleetRepairBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added fleet one-click sign-in repair awareness');
+      }
+    }
+
     // Pre-limit (proactive) swap awareness. Existing agents that ALREADY carry the
     // Subscription Pool section won't get the new bullet from the section-install
     // guard above (it skips agents that already have the section). Patch it in

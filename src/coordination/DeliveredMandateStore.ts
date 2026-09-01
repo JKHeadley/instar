@@ -45,6 +45,8 @@ export interface DeliveredMandateRecord {
   operatorPublicKeyPem: string;
   /** When the target accepted+persisted it (ISO). */
   deliveredAt: string;
+  /** Durable one-way tombstone. A consumed authorization cannot be revived by redelivery. */
+  consumedAt?: string;
 }
 
 export interface DeliveredMandateStoreDeps {
@@ -85,6 +87,8 @@ export class DeliveredMandateStore {
    */
   put(portable: PortableMandate, deliveredBy: string, operatorPublicKeyPem: string): DeliveredMandateRecord {
     const id = portable.mandate.id;
+    const existing = this.readAll().find((r) => r.id === id);
+    if (existing?.consumedAt) return existing;
     const record: DeliveredMandateRecord = {
       id, portable, deliveredBy, operatorPublicKeyPem, deliveredAt: this.nowIso(),
     };
@@ -95,11 +99,22 @@ export class DeliveredMandateStore {
   }
 
   get(id: string): DeliveredMandateRecord | undefined {
-    return this.readAll().find((r) => r.id === id);
+    return this.readAll().find((r) => r.id === id && !r.consumedAt);
   }
 
   list(): DeliveredMandateRecord[] {
-    return this.readAll();
+    return this.readAll().filter((r) => !r.consumedAt);
+  }
+
+  /** Durably consume one authorization at the target server's synchronous single-writer boundary. */
+  consume(id: string): DeliveredMandateRecord | undefined {
+    const all = this.readAll();
+    const idx = all.findIndex((r) => r.id === id && !r.consumedAt);
+    if (idx < 0) return undefined;
+    const consumed = { ...all[idx], consumedAt: this.nowIso() };
+    all[idx] = consumed;
+    this.writeAll(all);
+    return consumed;
   }
 
   /** Remove a delivered mandate (e.g. on revocation). Idempotent. */

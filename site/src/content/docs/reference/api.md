@@ -1040,9 +1040,11 @@ Cross-machine account setup from the dashboard's Subscriptions-tab grid. Dark be
 | POST | `/subscription-pool/follow-me/enroll/:id/cancel` | Target-local: cancel a mis-tapped in-flight cell — abandon the pending login + tear down its login pane (raw `tmux kill-session`). Idempotent on a terminal record (200 `alreadyTerminal`); unknown/malformed id → 404; stands aside (409) while a code is mid-submit. Bearer-only. |
 | POST | `/subscription-pool/follow-me/cancel` | Fronting relay for cancel — dispatches to self/peer by `machineId` (offline peer → 502). The route the dashboard Cancel button calls. Body: `machineId`, `id`. |
 | POST | `/subscription-pool/follow-me/enroll/:id/complete` | Mark a follow-me login completed once the freshly-minted account passes the S7 email-gate. |
-| GET | `/subscription-relogin` | List bounded assisted re-login episodes and their current state. Returns disabled state while the dev-gated feature is dark. |
+| GET | `/subscription-relogin` | List bounded assisted re-login episodes and their current state. Add `?scope=pool` to merge machine-tagged episodes from reachable peers with typed peer failures. Returns disabled state while the dev-gated feature is dark. |
 | GET | `/subscription-relogin/:episodeId/events` | Read the bounded, redacted event history for one repair episode. |
+| POST | `/subscription-relogin/repair-cell` | Central-dashboard one-click repair. Recent operator-session proof authorizes one exact `accountId` + `machineId` + `episodeId`; Instar issues and delivers a signed re-mint mandate, then starts the target-local autonomous repair. |
 | POST | `/subscription-relogin/:episodeId/approve` | Approve the exact immutable repair plan shown in the dashboard. Approval cannot broaden identity, origin, or requested scope. |
+| POST | `/subscription-relogin/:episodeId/approve-with-mandate` | Target-local point-of-use route for a signed exact-bounds repair mandate. Intended for the fronting repair-cell orchestrator, not direct dashboard use. |
 | POST | `/subscription-relogin/:episodeId/cancel` | Cancel an active repair episode. Cancellation is durable and checked again before every side effect. |
 | POST | `/subscription-relogin/:episodeId/retry` | Retry an eligible failed episode within its durable attempt, reissue, and wall-clock budgets. Uncertain non-idempotent outcomes remain operator-only. |
 

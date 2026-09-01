@@ -83,6 +83,19 @@ describe('DeliveredMandateStore', () => {
     expect(store.list()).toEqual([]);
     expect(store.get('any')).toBeUndefined();
   });
+
+  it('durably consumes once and redelivery cannot revive the same authorization', () => {
+    const op = crypto.generateKeyPairSync('ed25519');
+    const store = freshStore();
+    const portable = packageMandateForDelivery(mandate(), OP_FP, op.privateKey);
+    store.put(portable, OP_FP, pemOf(op.publicKey));
+    expect(store.consume('MND-deliver-1')?.consumedAt).toBeTruthy();
+    expect(store.get('MND-deliver-1')).toBeUndefined();
+    expect(store.consume('MND-deliver-1')).toBeUndefined();
+    store.put(portable, OP_FP, pemOf(op.publicKey));
+    expect(store.get('MND-deliver-1')).toBeUndefined();
+    expect(store.list()).toEqual([]);
+  });
 });
 
 describe('acceptMandateDelivery (WS5.2 R4a target-side gate)', () => {
@@ -113,6 +126,46 @@ describe('acceptMandateDelivery (WS5.2 R4a target-side gate)', () => {
     const r = acceptMandateDelivery(deps(store, { enabled: () => false, operatorMachinePublicKey: () => pemOf(op.publicKey) }), OP_FP, portable);
     expect(r.accepted).toBe(false);
     if (!r.accepted) expect(r.reason).toBe('feature-disabled');
+    expect(store.list()).toHaveLength(0);
+  });
+
+  it('REFUSES an expired delivered mandate before it can be persisted', () => {
+    const op = crypto.generateKeyPairSync('ed25519');
+    const store = freshStore();
+    const portable = packageMandateForDelivery(mandate({ expiresAt: '2000-01-01T00:00:00Z' }), OP_FP, op.privateKey);
+    const r = acceptMandateDelivery(deps(store, { operatorMachinePublicKey: () => pemOf(op.publicKey) }), OP_FP, portable);
+    expect(r).toEqual({ accepted: false, reason: 'mandate-expired' });
+    expect(store.list()).toEqual([]);
+  });
+
+  it('accepts an exact episode-bound re-login mandate under the assisted-relogin gate alone', () => {
+    const op = crypto.generateKeyPairSync('ed25519');
+    const store = freshStore();
+    const m = mandate({ authorities: [{ action: 'account-follow-me', bounds: {
+      accountId: 'acct-1', targetMachineId: THIS_MACHINE, mechanism: 're-mint',
+      episodeId: 'repair-1', inputDigest: `sha256:${'a'.repeat(64)}`, repairAction: 'approve',
+    } }] });
+    const portable = packageMandateForDelivery(m, OP_FP, op.privateKey);
+    const r = acceptMandateDelivery(deps(store, {
+      enabled: () => false, reloginEnabled: () => true,
+      operatorMachinePublicKey: () => pemOf(op.publicKey),
+    }), OP_FP, portable);
+    expect(r.accepted).toBe(true);
+    expect(store.get('MND-deliver-1')).toBeDefined();
+  });
+
+  it('does not let a partially episode-bound mandate bypass the generic feature gate', () => {
+    const op = crypto.generateKeyPairSync('ed25519');
+    const store = freshStore();
+    const m = mandate({ authorities: [{ action: 'account-follow-me', bounds: {
+      accountId: 'acct-1', targetMachineId: THIS_MACHINE, mechanism: 're-mint', episodeId: 'repair-1',
+    } }] });
+    const portable = packageMandateForDelivery(m, OP_FP, op.privateKey);
+    const r = acceptMandateDelivery(deps(store, {
+      enabled: () => false, reloginEnabled: () => true,
+      operatorMachinePublicKey: () => pemOf(op.publicKey),
+    }), OP_FP, portable);
+    expect(r).toEqual({ accepted: false, reason: 'feature-disabled' });
     expect(store.list()).toHaveLength(0);
   });
 
