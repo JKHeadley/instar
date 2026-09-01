@@ -27,6 +27,38 @@ describe('InboundDeliveryStore', () => {
       .toThrow(InboundDeliveryBackpressureError);
   });
 
+  it('does not let preserved non-Codex prepared rows starve the bounded Codex dispatcher', () => {
+    const store = InboundDeliveryStore.openMemory();
+    for (let index = 0; index < 4; index++) {
+      store.prepare({
+        conversationId: `legacy-${index}`, deliveryId: `legacy-${index}`, incarnation: `claude-${index}`,
+        framework: 'claude-code', envelope: `legacy ${index}`, hmacKey: 'k',
+      });
+    }
+    const codex = store.prepare({
+      conversationId: 'codex', deliveryId: 'codex-next', incarnation: 'codex-session',
+      framework: 'codex-cli', envelope: 'queued codex delivery', hmacKey: 'k',
+    });
+    expect(store.dispatchablePrepared(4).map((row) => row.deliveryId)).toEqual([codex.deliveryId]);
+  });
+
+  it('can scan the full configured live-row ceiling beyond one hundred candidates', () => {
+    const store = InboundDeliveryStore.openMemory({ maxLiveRows: 110, maxLiveRowsPerConversation: 1 });
+    for (let index = 0; index < 105; index++) {
+      store.prepare({
+        conversationId: `dead-codex-${index}`, deliveryId: `dead-codex-${index}`,
+        incarnation: `dead-codex-${index}`, framework: 'codex-cli', envelope: `dead ${index}`, hmacKey: 'k',
+      });
+    }
+    const live = store.prepare({
+      conversationId: 'live-codex', deliveryId: 'live-codex', incarnation: 'live-codex',
+      framework: 'codex-cli', envelope: 'live', hmacKey: 'k',
+    });
+    const candidates = store.dispatchablePrepared(Number.MAX_SAFE_INTEGER);
+    expect(candidates).toHaveLength(106);
+    expect(candidates.at(-1)?.deliveryId).toBe(live.deliveryId);
+  });
+
   it('keeps bodies private and enforces monotonic dispatch phases', () => {
     const store = InboundDeliveryStore.openMemory();
     const row = store.prepare({

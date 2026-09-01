@@ -24,6 +24,14 @@ If SQLite is unavailable, a legitimate inbound message is refused instead of bei
 
 The first live candidate exposed an additional scope boundary: non-Codex and legacy unknown-framework job injections were entering the Stage-B ledger even though only Codex has a generation-bound acceptance observer. Those rows could never advance and would age into false unknowns. The canonical `rawInject` boundary now journals only a positively identified `codex-cli` session; known non-Codex and unknown frameworks retain their established injection path until they gain an equivalent observer. Semantic tests exercise both bypass sides through public `sendInput`, while the production E2E proves the Codex side still journals and advances.
 
+The first repaired active-turn case exposed a migration interaction with rows
+preserved from that earlier candidate: four older non-Codex `prepared` rows could
+fill the dispatcher's bounded SQL result before `SessionManager` filtered by
+framework, starving a later valid Codex FIFO row. Framework qualification now
+occurs inside the bounded selection authority. A regression fixture puts four
+older Claude rows ahead of a Codex row and proves the Codex row remains selected;
+legacy evidence stays preserved without participating in an observer it cannot use.
+
 The refreshed v1.3.1218 live candidate invalidated its first delivery window when Codex 0.149 produced a correct response but the observer marked it unknown. Live rollout bytes showed that current Codex retains the generation-bound `task_started`/`task_complete` envelope while omitting the older redundant `internal_chat_message_metadata_passthrough.turn_id` field on each message and adding `thread_settings_applied`/`item_completed`, `world_state`, inter-agent metadata/messages, and tool-search records. The adapter now uses the active task envelope when per-message metadata is absent, rejects a present malformed or conflicting metadata field, ignores only enumerated non-authoritative records and `developer`/`system` context roles, and rejects unknown roles/events. A captured-shape semantic test covers the complete current sequence.
 
 ## 2. Under-block
@@ -77,7 +85,7 @@ Recovery actuation can be darkened immediately, but a raw binary rollback is fen
 
 ## Conclusion
 
-The independent reviews found material spec-to-code gaps and correctly blocked the first release candidates. The revisions close them with package-bound signed activation evidence, rollout identity/offset/turn correlation, live-row transfer preservation, crash-safe effect fencing, exact-cap scanner handling, framework scoping, and current Codex 0.149 rollout compatibility. Each live mismatch invalidated its evidence window instead of being rationalized away. Focused unit, integration, production E2E, and build gates pass for the current-shape repair. Publication remains mechanically conditional on a fresh repository gate and a new signed two-hour/fifty-delivery Stage-B release-candidate window required by the driving specification.
+The independent reviews found material spec-to-code gaps and correctly blocked the first release candidates. The revisions close them with package-bound signed activation evidence, rollout identity/offset/turn correlation, live-row transfer preservation, crash-safe effect fencing, exact-cap scanner handling, framework scoping, and current Codex 0.149 rollout compatibility. Each live mismatch invalidated its evidence window instead of being rationalized away. Focused unit, integration, production E2E, and build gates pass for the current-shape and bounded-selection repairs. Publication remains mechanically conditional on a fresh repository gate and a new signed two-hour/fifty-delivery Stage-B release-candidate window required by the driving specification.
 
 ## Second-pass review (if required)
 
@@ -103,6 +111,15 @@ the observed non-authoritative world/inter-agent/tool-search shapes, system and
 malformed cases were tested, and the authoritative spec named the task envelope
 as generation authority. Mencius found no remaining parser, test, or spec blocker;
 the signed live canary remains the separate release gate.
+
+The subsequent active-turn canary made Mencius withhold clearance again: moving
+only the framework predicate before `LIMIT 4` left the same starvation class for
+dead-incarnation and stale-owner Codex rows, including configurations above 100
+live rows. Final concurrence followed only after the store exposed the entire
+configured live-row ceiling, `SessionManager` evaluated a single running-session
+map and ownership predicates before its four-effect cap, and unit/production E2E
+regressions covered both row 106 and actual dead/stale-owner skipping. The
+action-time ownership fence remains unchanged for races.
 
 ## Evidence pointers
 

@@ -163,6 +163,20 @@ describeMaybe('Codex session lifecycle reliability — production AgentServer pa
   });
 
   it('retains later inbound as durable prepared FIFO and dispatches it only after its predecessor responds', async () => {
+    const store = InboundDeliveryStore.open(stateDir);
+    const key = loadOrCreateDeliveryHmacKey(stateDir);
+    for (let index = 0; index < 4; index++) {
+      store.prepare({
+        conversationId: `dead-${index}`, deliveryId: `dead-${index}`, incarnation: `dead-codex-${index}`,
+        framework: 'codex-cli', envelope: `dead ${index}`, hmacKey: key,
+        ownerMachineId: 'studio', ownerEpoch: 7,
+      });
+      store.prepare({
+        conversationId: `stale-${index}`, deliveryId: `stale-${index}`, incarnation: tmuxSession,
+        framework: 'codex-cli', envelope: `stale ${index}`, hmacKey: key,
+        ownerMachineId: 'former-owner', ownerEpoch: 6,
+      });
+    }
     const first = 'fifo-first-e2e';
     const second = 'fifo-second-e2e';
     expect(manager.sendInput(tmuxSession, first)).toBe(true);

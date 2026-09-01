@@ -526,14 +526,16 @@ export class InboundDeliveryStore {
   }
 
   dispatchablePrepared(limit = 4): DeliveryEvidence[] {
+    const safeLimit = Math.max(1, Math.min(this.options.maxLiveRows, Math.floor(limit)));
     const rows = this.db.prepare(`SELECT d.conversation_id, d.delivery_id FROM inbound_delivery d
       WHERE d.transport_state = 'prepared' AND d.eligibility_state = 'open'
+        AND d.framework = 'codex-cli'
         AND NOT EXISTS (SELECT 1 FROM inbound_delivery active
           WHERE active.conversation_id = d.conversation_id AND active.delivery_id != d.delivery_id
             AND active.transport_state IN ('dispatch-armed','dispatch-started','dispatched')
             AND active.eligibility_state = 'open' AND active.transcript_state != 'responded')
       ORDER BY d.created_at ASC, d.ordinal ASC LIMIT ?`)
-      .all(Math.max(1, Math.min(100, Math.floor(limit)))) as Array<{ conversation_id: string; delivery_id: string }>;
+      .all(safeLimit) as Array<{ conversation_id: string; delivery_id: string }>;
     return rows.map((row) => this.get(row.conversation_id, row.delivery_id)).filter((row): row is DeliveryEvidence => row !== null);
   }
 

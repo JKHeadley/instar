@@ -6031,10 +6031,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   private dispatchPreparedInboundDeliveries(): void {
     if (!this.inboundDeliveries || !this.inboundDeliveryHmacKey || !this.trackedPhysicalEffects) return;
-    for (let delivery of this.inboundDeliveries.dispatchablePrepared(4)) {
-      const session = this.state.listSessions({ status: 'running' })
-        .find((candidate) => candidate.tmuxSession === delivery.incarnation);
+    // Selection is bounded by the store's live-row ceiling, while physical
+    // effects remain capped at four per tick. Applying LIMIT 4 before the
+    // runtime incarnation/ownership predicates lets durable rows for dead or
+    // stale owners permanently starve a later eligible delivery.
+    let eligibleEffects = 0;
+    const runningByTmux = new Map(this.state.listSessions({ status: 'running' })
+      .map((session) => [session.tmuxSession, session]));
+    for (let delivery of this.inboundDeliveries.dispatchablePrepared(Number.MAX_SAFE_INTEGER)) {
+      if (eligibleEffects >= 4) break;
+      const session = runningByTmux.get(delivery.incarnation);
       if (!session || delivery.framework !== 'codex-cli' || !session.claudeSessionId) continue;
+      if (!this.inboundDeliveries.ownsLiveDelivery(
+        delivery.conversationId, delivery.deliveryId, delivery.ownerMachineId, delivery.ownerEpoch,
+      ) || this.localMachineId() !== delivery.ownerMachineId
+        || this.ownerEpochForConversation(delivery.conversationId) !== delivery.ownerEpoch) continue;
       const envelope = this.inboundDeliveries.openReplayEnvelope(
         delivery.conversationId, delivery.deliveryId, this.inboundDeliveryHmacKey,
       );
@@ -6051,6 +6062,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         )) continue;
         delivery = this.inboundDeliveries.get(delivery.conversationId, delivery.deliveryId) ?? delivery;
       }
+      eligibleEffects += 1;
       const result = this.trackedPhysicalEffects.dispatchSync({
         scope: delivery.incarnation,
         conversationId: delivery.conversationId,
