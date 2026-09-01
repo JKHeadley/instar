@@ -9,6 +9,9 @@ describe('EchoWindowLedgerStore integration', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-ledger-')); const store = new EchoWindowLedgerStore(home);
     const ledger = createLedger({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w28', compiled: { hashes: { tenets: 'a' }, byteLengths: {}, operativeLines: [], obligations: [] } });
     store.save(ledger); expect(store.load('echo', 'echo-window-lifecycle')?.windowId).toBe('w28');
+    const backup = store.backupExisting('pre-compile', '2026-08-28T16:30:00.000Z');
+    expect(backup).toMatch(/ledger\.2026-08-28T16-30-00-000Z\.pre-compile\.[a-f0-9]{16}\.json$/);
+    expect(JSON.parse(fs.readFileSync(backup!, 'utf8')).lifecycleRunId).toBe(ledger.lifecycleRunId);
     const payload = { agentId: 'echo' as const, scope: 'echo-window-lifecycle' as const, windowId: 'w28', reason: 'dry-run failed', nonce: 'rollback-1', createdAt: '2026-08-28T16:00:00Z' }; const digest = rollbackDigest(payload); const request = { ...payload, digest, approvalCoordinates: { topicId: 36966, messageId: 9 } };
     const approval = { authority: 'verified-operator-approval' as const, agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w28', obligationId: 'rollback', sourceHashes: ['a'], producer: 'telegram:7812716706', timestamp: '2026-08-28T17:00:00Z', nonce: 'approval-1', canonicalPayloadHash: 'a'.repeat(64), verifierPassed: true, verifiedPayload: `approve rollback ${digest}`, nativeCoordinates: { topicId: 36966, messageId: 9 } };
     const rolled = store.rollback('echo', 'echo-window-lifecycle', request, approval, { requery: record => record === approval ? approval : null }, '2026-08-28T17:00:00Z');
