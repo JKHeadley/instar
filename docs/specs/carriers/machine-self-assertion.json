@@ -3,7 +3,7 @@
   "slug": "machine-self-assertion",
   "carriers": {
     "CMT-211": {
-      "status": "pending",
+      "status": "complete",
       "owner": "agent",
       "blockedOn": "none",
       "excerpt": "Carry the machine-self-assertion decision to closure: (1) the operator's accept-or-decline on the PIN-gated key re-announce path, taken with the token/identity boundary-collapse cost stated (spec section 2); (2) classify a rope failing auth-rejected as a PROVABLY-ALIVE peer rather than 'offline - expected', since the heartbeat that grades it stopped because of the very fault; (3) scope the Tailscale key-expiry warning to nodes that actually back a mesh peer endpoint, so a dead unrelated tailnet node stops warning forever; (4) the externally-observed-endpoint path that lets peers record the address they OBSERVED, which is what a NAT'd or VM-hosted agent cannot assert about itself."
