@@ -89,7 +89,7 @@ describe('Window lifecycle production wiring', () => {
       Object.assign(commitment, {
         status: completionRequired ? 'delivered' : 'pending', resolvedAt: completionRequired ? obligation.deadline.dueAt : undefined,
         deliveryMessageId: completionRequired ? `delivery-${commitment.id}` : undefined,
-        lastHeartbeatAt: clock, nextUpdateDueAt: obligation.deadline.dueAt, checkInAt: obligation.eligibleAt,
+        lastHeartbeatAt: clock, nextUpdateDueAt: obligation.deadline.dueAt,
       });
     }
   }
@@ -158,13 +158,19 @@ describe('Window lifecycle production wiring', () => {
     const created = await auth(request(app).post('/window-lifecycle/compile')).send({ ...body, windowId: 'w28' });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     expect(created.body.compiledObligationIds.length).toBeGreaterThan(40);
+    const backupDir = path.join(project.stateDir, 'window-lifecycle', 'backups');
+    const preview = await auth(request(app).post('/window-lifecycle/compile')).send({ ...body, windowId: 'synthetic-w28', preview: true });
+    expect(preview.status, JSON.stringify(preview.body)).toBe(200);
+    expect(preview.body).toMatchObject({ preview: true, ledger: { windowId: 'synthetic-w28' } });
+    expect((await auth(request(app).get('/window-lifecycle')).expect(200)).body.ledger.windowId).toBe('w28');
+    expect(fs.existsSync(backupDir)).toBe(false);
     const dryRunSend = await auth(request(app).post('/telegram/reply/36966')).send({ text: 'Dry-run must observe without blocking this unresolved ledger.' }); expect(dryRunSend.status, JSON.stringify(dryRunSend.body)).toBe(200); expect(fs.readFileSync(path.join(project.stateDir, 'window-lifecycle', 'shadow-would-block.jsonl'), 'utf8')).toContain('telegram-send');
     await auth(request(app).post('/window-lifecycle/enforcement/graduate')).send(body).expect(409);
     await auth(request(app).post('/telegram/reply/36966')).send({ text: 'script-style relay attempt remains non-blocking during shadow.' }).expect(200);
     syncCommitments(created.body.obligations);
     const native = await auth(request(app).post('/window-lifecycle/native-admission')).send({ ...body, windowId: 'w28', package: validAdmissionPackage(), nonce: 'production-native-0001' });
     expect(native.status, JSON.stringify(native.body)).toBe(200);
-    const skippedId = 'start.cadence-commitment'; const skippedIndex = commitments.findIndex(item => item.externalKey === skippedId); const [skippedCommitment] = commitments.splice(skippedIndex, 1); const skipped = await auth(request(app).post('/window-lifecycle/evaluate')).send(body); expect(skipped.status).toBe(409); expect(skipped.body.issues.some((issue: string) => issue === `${skippedId}:predicate-unsatisfied`)).toBe(true); expect(skipped.body.issues.some((issue: string) => issue.startsWith(`${skippedId}:executor-`))).toBe(true); commitments.push(skippedCommitment); const reset = await auth(request(app).post('/window-lifecycle/compile')).send({ ...body, windowId: 'w28' }); syncCommitments(reset.body.obligations); await auth(request(app).post('/telegram/reply/36966')).send({ text: 'Real-run adjudicated shadow refusal.' }).expect(200); await auth(request(app).post('/window-lifecycle/native-admission')).send({ ...body, windowId: 'w28', package: validAdmissionPackage(), nonce: 'production-native-0002' }).expect(200);
+    const skippedId = 'start.cadence-commitment'; const skippedIndex = commitments.findIndex(item => item.externalKey === skippedId); const [skippedCommitment] = commitments.splice(skippedIndex, 1); const skipped = await auth(request(app).post('/window-lifecycle/evaluate')).send(body); expect(skipped.status).toBe(409); expect(skipped.body.issues.some((issue: string) => issue === `${skippedId}:predicate-unsatisfied`)).toBe(true); expect(skipped.body.issues.some((issue: string) => issue.startsWith(`${skippedId}:executor-`))).toBe(true); commitments.push(skippedCommitment); const reset = await auth(request(app).post('/window-lifecycle/compile')).send({ ...body, windowId: 'w28' }); expect(reset.body.compileBackupPath).toMatch(/ledger\..*\.pre-compile\.[a-f0-9]{16}\.json$/); expect(fs.existsSync(reset.body.compileBackupPath)).toBe(true); syncCommitments(reset.body.obligations); await auth(request(app).post('/telegram/reply/36966')).send({ text: 'Real-run adjudicated shadow refusal.' }).expect(200); await auth(request(app).post('/window-lifecycle/native-admission')).send({ ...body, windowId: 'w28', package: validAdmissionPackage(), nonce: 'production-native-0002' }).expect(200);
     await satisfyEligible(['pre-start', 'start']);
     const admitted = await auth(request(app).post('/window-lifecycle/evaluate')).send(body);
     expect(admitted.status, JSON.stringify({ issues: admitted.body.issues, unresolvedStart: admitted.body.obligations?.filter((o: any) => ['pre-start', 'start'].includes(o.phase) && o.status !== 'satisfied').map((o: any) => ({ id: o.id, statement: o.statement, authority: o.evidencePolicy.requiredAuthority, evidence: o.evidence })) })).toBe(200);

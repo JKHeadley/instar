@@ -2364,12 +2364,13 @@ export function createRoutes(ctx: RouteContext): Router {
       let driverPresent = false; let driverMatches = false;
       if (driverPath) { try { const driver = JSON.parse(fs.readFileSync(driverPath, 'utf8')) as { topic?: unknown; windowId?: unknown; status?: unknown }; driverPresent = true; driverMatches = String(driver.topic) === String(commitment.topicId) && driver.windowId === duty.windowId && driver.status !== 'stopped'; } catch { /* @silent-fallback-ok — unreadable authority fails closed as not live */ } }
       const completionMature = commitment.status === 'delivered' && !!commitment.resolvedAt && Date.parse(commitment.resolvedAt) <= Date.parse(windowNow());
+      const triggerAt = [commitment.checkInAt, commitment.nextUpdateDueAt].find(value => typeof value === 'string' && Number.isFinite(Date.parse(value)));
       return [{ executorId: commitment.id, owner: commitment.boundBy ?? 'server:commitment-tracker', kind: 'commitment-beacon', registryCoordinates: `obligation:${commitment.externalKey}`,
         enabled: commitment.beaconEnabled === true, dryRun: false, running: !!session, heartbeatAt: commitment.lastHeartbeatAt,
         nextAttemptAt: commitment.nextUpdateDueAt, deliversOutput: true, sinkReachable: ctx.telegram !== null,
         suppressionActive: commitment.beaconSuppressed === true || commitment.beaconPaused === true,
         needsClientDriver: true, driverPresent, driverMatches,
-        triggerEnabled: commitment.status === 'pending' && !!commitment.checkInAt, durableTriggerState: !!commitment.checkInAt, eligibilityAt: commitment.checkInAt,
+        triggerEnabled: commitment.status === 'pending' && !!triggerAt, durableTriggerState: !!triggerAt, eligibilityAt: triggerAt,
         assignedAt: commitment.createdAt, completedAt: completionMature ? commitment.resolvedAt : undefined, completionDigest: completionMature ? createHash('sha256').update(`${commitment.id}:${commitment.resolvedAt}:${commitment.deliveryMessageId ?? ''}`).digest('hex') : undefined, deliveryMessageId: commitment.deliveryMessageId, deliveryTopicId: commitment.topicId }];
     });
   });
@@ -2527,7 +2528,13 @@ export function createRoutes(ctx: RouteContext): Router {
     const windowId = typeof req.body.windowId === 'string' && /^[a-z0-9-]{1,40}$/i.test(req.body.windowId) ? req.body.windowId : null;
     if (!windowId) return res.status(400).json({ error: 'valid windowId required' });
     const charterPath = path.join(ctx.config.stateDir, windowId, `WINDOW-${windowId.replace(/^w/i, '')}-CHARTER.md`);
-    try { const compiled = compileWindowSources({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId, tenetsPath: path.join(ctx.config.projectDir, '.instar', 'TENETS.md'), charterPath, now: windowNow() }); const ledger = createLedger({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId, compiled }); windowStore.save(ledger); initializeShadowCensus(ledger.lifecycleRunId); return res.status(201).json(ledger); }
+    try {
+      const compiled = compileWindowSources({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId, tenetsPath: path.join(ctx.config.projectDir, '.instar', 'TENETS.md'), charterPath, now: windowNow() });
+      const ledger = createLedger({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId, compiled });
+      if (req.body.preview === true || req.body.dryRun === true) return res.status(200).json({ preview: true, ledger });
+      const backupPath = windowStore.backupExisting('pre-compile', windowNow());
+      windowStore.save(ledger); initializeShadowCensus(ledger.lifecycleRunId); return res.status(201).json({ ...ledger, compileBackupPath: backupPath });
+    }
     catch (error) { /* @silent-fallback-ok — compilation refusal is returned explicitly as HTTP 409 */ return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); }
   });
   router.post('/window-lifecycle/evidence', (req, res) => {

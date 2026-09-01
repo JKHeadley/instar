@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import {
   compileWindowSources, verifyCompilationCoverage, classifyExecutor, evaluateExecutor, evaluateObligations,
   evaluateClosure, createLedger, waiverDigest, validateWaiver, evaluateFromAuthorities, ProductionMessageEvidenceAuthority,
-  REQUIRED_WINDOW_DUTIES, minimumWindowDutyFixture, materializeCadenceInstances, transitionLedger,
+  REQUIRED_WINDOW_DUTIES, RECURRING_DUTY_DEFAULT_GRACE_MS, minimumWindowDutyFixture, materializeCadenceInstances, transitionLedger,
   predicateSatisfied, sourceFreshnessIssues, evaluateLifecycleGuard, applyWaiver,
   runWindowLifecyclePostLiveCheck, deriveFailureRemediation,
   type Obligation, type EvidenceRecord, type Waiver,
@@ -54,6 +54,22 @@ describe('WindowLifecycleObligationLedger compiler', () => {
     fs.writeFileSync(tenets, '# Tenets\nTenet 9 must be followed.\n'); fs.writeFileSync(charter, minimumWindowDutyFixture());
     const compiled = compileWindowSources({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w28', tenetsPath: tenets, charterPath: charter, now: NOW });
     for (const duty of REQUIRED_WINDOW_DUTIES) { const found = compiled.obligations.find(o => o.id === duty.id); expect(found, duty.id).toBeDefined(); expect(found?.sourceSpans[0].hash).toHaveLength(64); expect(found?.responsibleRole).toBeTruthy(); expect(found?.failureAction).toBeTruthy(); }
+  });
+  it('compiles W31-approved canonical charter language without compiler-shaped annex vocabulary', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'window-w31-canonical-')); const tenets = path.join(dir, 'TENETS.md'); const charter = path.join(dir, 'WINDOW-31-CHARTER.md');
+    fs.writeFileSync(tenets, `# The Tenets\n${minimumWindowDutyFixture().replace('The tenets are compiled and tenets in force; ', '')}`);
+    fs.writeFileSync(charter, `# WINDOW 31 CHARTER\nApproved by Justin.\nWindow opens 2026-08-31; ceiling 2026-09-01 20:25 PDT.\nCanonical plan 3a08766f-5738-474f-8857-b713f753a7e2.\n1. REPAIR THE ENGINE, THEN MAKE THE NUMBER MOVE: fix ACT-353, ACT-354, ACT-355, and the compiler source contract so the approved charter compiles AS APPROVED. Then recompile W31's duties from THIS approved charter directly. EXIT TEST: the ENGINE must refuse the close for one omitted duty.\n2. NATIVE RE-GROUND EVIDENCE: the observer re-read, both assessments, and the visible reconciliation become receipt-backed lifecycle evidence the engine consumes.\n3. CLOSE RITUAL AS AN EXECUTABLE RECEIPT-GATED SEQUENCE: a runner refuses skips and resumes from the first unreceipted step.\nStanding debt carried with owners.\nThe run must appear in the LIVE run listing before the opening is declared complete.\n`);
+    const compiled = compileWindowSources({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w31', tenetsPath: tenets, charterPath: charter, now: NOW });
+    expect(REQUIRED_WINDOW_DUTIES.every(duty => compiled.obligations.some(o => o.id === duty.id))).toBe(true);
+  });
+  it('gives recurring duties a default grace window while keeping one-shot duties strict', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'window-recurring-grace-')); const tenets = path.join(dir, 'TENETS.md'); const charter = path.join(dir, 'charter.md');
+    fs.writeFileSync(tenets, '# Tenets\nEcho must act.\n'); fs.writeFileSync(charter, minimumWindowDutyFixture());
+    const compiled = compileWindowSources({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w28', tenetsPath: tenets, charterPath: charter, now: NOW });
+    const recurring = compiled.obligations.filter(o => o.predicate.recurring);
+    expect(recurring.length).toBeGreaterThan(0);
+    expect(recurring.every(o => o.deadline.graceMs === RECURRING_DUTY_DEFAULT_GRACE_MS)).toBe(true);
+    expect(compiled.obligations.find(o => o.id === 'start.compilation-proof')?.deadline.graceMs).toBe(0);
   });
 
   it('derives source challenges and changes them when authoritative facts mutate', () => {
@@ -199,6 +215,10 @@ describe('admission, closure and waivers', () => {
   it('retains every skipped 30-minute interval as a distinct failed census item', () => {
     const recurring = obligation({ id: 'cadence.stall-check.30m', phase: 'cadence', predicate: { recurring: true }, deadline: { dueAt: NOW, graceMs: 0 } }); const ledger = createLedger({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w28', compiled: { hashes: {}, byteLengths: {}, operativeLines: [], obligations: [recurring] } });
     const next = materializeCadenceInstances(ledger, '2026-08-28T17:30:00.000Z'); expect(next.obligations.filter(o => o.id.includes('@'))).toHaveLength(4); expect(evaluateClosure(next).issues.some(i => i.includes('cadence.stall-check.30m@'))).toBe(true);
+  });
+  it('preserves the recurring grace on materialized cadence instances', () => {
+    const recurring = obligation({ id: 'cadence.stall-check.30m', phase: 'cadence', predicate: { recurring: true }, deadline: { dueAt: NOW, graceMs: RECURRING_DUTY_DEFAULT_GRACE_MS } }); const ledger = createLedger({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w28', compiled: { hashes: {}, byteLengths: {}, operativeLines: [], obligations: [recurring] } });
+    const next = materializeCadenceInstances(ledger, '2026-08-28T16:30:00.000Z'); expect(next.obligations.filter(o => o.id.includes('@')).every(o => o.deadline.graceMs === RECURRING_DUTY_DEFAULT_GRACE_MS)).toBe(true);
   });
 
   it('refuses active and terminal transition bypasses', () => {
