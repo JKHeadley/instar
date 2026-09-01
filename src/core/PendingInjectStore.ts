@@ -35,6 +35,8 @@ export interface PendingInjectRecord {
   initialMessage: string;
   /** Telegram topic the message belongs to, when known. */
   telegramTopicId?: number;
+  /** Canonical durable delivery-ledger identity, including non-Telegram channels. */
+  conversationId?: number;
   /** ISO timestamp the record was written (spawn time). */
   createdAt: string;
   /** Compatibility projector evidence. New binaries never replay these. */
@@ -67,6 +69,7 @@ export class PendingInjectStore {
         tmuxSession: entry.tmuxSession,
         initialMessage: entry.initialMessage,
         ...(entry.telegramTopicId !== undefined ? { telegramTopicId: entry.telegramTopicId } : {}),
+        ...(entry.conversationId !== undefined ? { conversationId: entry.conversationId } : {}),
         createdAt: entry.createdAt ?? new Date().toISOString(),
         ...(entry.deliveryId ? { deliveryId: entry.deliveryId } : {}),
         ...(entry.tombstone ? { tombstone: true } : {}),

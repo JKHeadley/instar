@@ -58,6 +58,13 @@ export interface TrackedKeyAttemptEffect extends TrackedEffectCommon {
 }
 
 /**
+ * A trusted control-plane mutation (for example Codex `/compact`) that must
+ * serialize with delivery effects but is not itself an inbound delivery and
+ * therefore has no delivery-state transitions to journal.
+ */
+export interface SerializedControlEffect extends Omit<TrackedEffectCommon, 'conversationId' | 'deliveryId'> {}
+
+/**
  * The only composition permitted to execute a journaled physical effect.
  *
  * A lease is acquired before arming and remains held until a terminal durable
@@ -160,6 +167,20 @@ export class TrackedPhysicalEffectDispatcher {
         this.store.transitionAttempt(input.conversationId, input.deliveryId, input.attemptIndex, 'attempt-started', 'effect-unknown');
         return unknown('terminal-write-failed', lease.epoch);
       }
+      return { ok: true, status: 'completed', leaseEpoch: lease.epoch };
+    });
+  }
+
+  controlSync(input: SerializedControlEffect): TrackedEffectResult {
+    return this.withLeaseSync({
+      ...input,
+      // withLeaseSync only uses these fields for the shared shape; a control
+      // effect deliberately never calls the delivery store.
+      conversationId: '',
+      deliveryId: '',
+    }, (lease) => {
+      try { lease.assertHeld(); input.effect(lease); lease.assertHeld(); }
+      catch (err) { return unknown('effect-threw', lease.epoch, err); }
       return { ok: true, status: 'completed', leaseEpoch: lease.epoch };
     });
   }

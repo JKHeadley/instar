@@ -131,7 +131,7 @@ export interface SessionRecoveryDeps {
    * which case recovery falls through to the fresh respawn. Undefined ⇒ the
    * rung is skipped (pre-escalation behavior: straight to fresh respawn).
    */
-  attemptCompaction?: (sessionName: string) => Promise<{ cleared: boolean; reason?: string }>;
+  attemptCompaction?: (sessionName: string, topicId: number) => Promise<{ cleared: boolean; reason?: string }>;
   /**
    * Get recent messages for a topic (used by context-exhaustion recovery to
    * capture any in-flight agent reply that lands between detection and respawn,
@@ -681,7 +681,7 @@ export class SessionRecovery extends EventEmitter {
     // destructive fresh respawn — never worse than the prior behavior.
     if (this.deps.attemptCompaction) {
       try {
-        const compaction = await this.deps.attemptCompaction(sessionName);
+        const compaction = await this.deps.attemptCompaction(sessionName, topicId);
         if (compaction.cleared) {
           this.emit('recovery:context_compacted', { topicId, sessionName, attemptNumber });
           return {

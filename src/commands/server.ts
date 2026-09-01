@@ -141,7 +141,8 @@ import { sendConsolidatedWithSelfHeal } from '../monitoring/sentinelConsolidated
 import { AccountSwitcher } from '../monitoring/AccountSwitcher.js';
 import { QuotaNotifier } from '../monitoring/QuotaNotifier.js';
 import { QuotaManager } from '../monitoring/QuotaManager.js';
-import { classifySessionDeath, detectContextExhaustion } from '../monitoring/QuotaExhaustionDetector.js';
+import { classifySessionDeath } from '../monitoring/QuotaExhaustionDetector.js';
+import { createContextCompactionAttempt } from '../monitoring/ContextCompactionControl.js';
 import { SessionWatchdog } from '../monitoring/SessionWatchdog.js';
 import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { resolveGuardConfigSnapshot, readGuardPostureBootSnapshot } from '../monitoring/guardPosture.js';
@@ -8998,7 +8999,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               } else {
                 // Session is ready — inject via SessionManager (handles idle timer reset + bracketed paste)
                 try {
-                  sessionManager.injectMessage(existingSession, bootstrapMessage);
+                  sessionManager.injectMessage(existingSession, bootstrapMessage, {
+                    conversationId: conversationId === null ? undefined : String(conversationId),
+                  });
                   // Track for stall detection
                   slackAdapter!.trackMessageInjection(channelId, existingSession, message.content);
                   // Delivery confirmation via reaction only (no text message — the ✅ reaction is sufficient)
@@ -11791,8 +11794,17 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
               }
               try {
+                const recoveryConversationId = conversationRegistry.mintForInbound(slackChId).id;
+                if (recoveryConversationId === null) {
+                  console.error(`[slack→recovery] Fresh spawn refused for ${slackChId}: durable conversation identity unavailable`);
+                  return;
+                }
                 // Spawn with the RAW channel (+ thread_ts) but register on the routing key.
-                const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, undefined, { slackChannelId: slackApiChannel, slackThreadTs: slackReplyThread });
+                const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, undefined, {
+                  slackChannelId: slackApiChannel,
+                  slackThreadTs: slackReplyThread,
+                  bootstrapConversationIds: [recoveryConversationId],
+                });
                 if (newSessionName) {
                   _slackAdapter.registerChannelSession(slackChId, newSessionName);
                   console.log(`[slack→recovery] Fresh session "${newSessionName}" spawned for ${slackReplyThread ? `thread ${slackChId}` : `channel ${slackApiChannel}`} (context exhaustion recovery)`);
@@ -11819,27 +11831,19 @@ export async function startServer(options: StartOptions): Promise<void> {
           // limit reached · /compact or /clear to continue" and verify the wall
           // clears. Preserves the conversation. Only reached for a genuinely
           // idle session (the recovery gates on !hasActiveProcesses).
-          attemptCompaction: async (name) => {
-            // Press the button the wall asks for.
-            const injected = sessionManager.injectMessage(name, '/compact');
-            if (!injected) return { cleared: false, reason: 'inject-failed' };
-            // Poll for the wall to clear (compaction takes a few seconds).
-            const deadline = Date.now() + 30_000;
-            while (Date.now() < deadline) {
-              await new Promise((r) => setTimeout(r, 3_000));
-              const out = sessionManager.captureOutput(name, 40) || '';
-              const tail = out.split('\n').map((l) => l.trim()).filter(Boolean).slice(-12).join('\n');
-              // Compaction itself failed (too long to even compact) → give up the rung.
-              if (/error during compaction|compaction failed/i.test(tail)) {
-                return { cleared: false, reason: 'compaction-error' };
+          attemptCompaction: createContextCompactionAttempt(sessionManager, {
+            resolveConversationId: (sessionName, topicId) => {
+              if (topicId > 0) return String(topicId);
+              const routingKey = _slackAdapter?.getChannelForSession(sessionName);
+              if (!routingKey) return null;
+              try {
+                const durableId = conversationRegistry.mintForInbound(routingKey).id;
+                return durableId === null ? null : String(durableId);
+              } catch {
+                return null;
               }
-              // Wall gone from the live state → compaction cleared it.
-              if (!detectContextExhaustion(out).matched) {
-                return { cleared: true };
-              }
-            }
-            return { cleared: false, reason: 'timeout' };
-          },
+            },
+          }),
           // ── Part D: double-dispatch recovery gate (ownership-follows-live-work) ──
           // Injected primitives so checkAndRecover consults per-topic ownership
           // before re-running locally. All read the late-bound registry/pool deps

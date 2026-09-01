@@ -167,6 +167,33 @@ removes the resume binding, replaces the pane fresh, and proves both bounded
 history and the current inbound reach the bootstrap. The refreshed three-file
 matrix passed 23/23; no code, custody, migration, or test blocker remained.
 
+The following candidate-wide window exposed a control-plane/data-plane mix-up
+on the operator session itself. Context-wall recovery injected `/compact`
+through the ordinary topic-message funnel; InputGuard then added its own warning.
+Both physical sends were correctly serialized, but both were incorrectly minted
+as inbound deliveries even though Codex renders neither as a normal user turn,
+so the observer terminalized both as false `unknown`. The window was discarded.
+The correction introduces a closed in-process `/compact` control path: it bypasses
+content-origin InputGuard, creates no delivery row, and still executes under the
+same `PhysicalEffectLock` after interrupted-effect reconciliation. Unit coverage
+proves the dispatcher acquires the lock without changing logical-row count and
+the SessionManager wiring uses that control path.
+
+Mencius withheld concurrence through three additional passes until the control
+path and every delivery path shared the same authority. The final implementation
+resolves Telegram directly and Slack through session → routing key → durable
+`ConversationRegistry` ID; normal live injection, immediate bootstrap, pending-
+inject boot recovery, resume-failure fresh spawn, and context-recovery fresh spawn
+all preserve that key. The `/compact` action-time fence also checks pre-fix Slack
+rows keyed by tmux name during upgrade. A genuine bound `InputGuard` test proves
+the ordinary suspicious-message warning fires while the closed control path
+bypasses it, and real-store tests prove liveness, owner-epoch, canonical active-
+dispatch, and legacy active-dispatch refusal. Mencius's final verdict was
+**CONCUR**, with no remaining code, security, custody, migration, or test blocker;
+the independent focused review set passed 51/51, while the final local correction
+matrix passed 81/81 before the two custody regressions were added and those tests
+passed 15/15 with a green TypeScript build.
+
 ## Evidence pointers
 
 - `docs/specs/reports/codex-session-lifecycle-reliability-convergence.md`

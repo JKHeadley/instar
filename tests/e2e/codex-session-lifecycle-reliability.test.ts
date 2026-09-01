@@ -142,6 +142,19 @@ describeMaybe('Codex session lifecycle reliability — production AgentServer pa
     expect(projected).toMatchObject({ doNotReplay: true, deliveryId: expect.any(String), initialMessage: '' });
   });
 
+  it('runs the internal /compact control primitive under Stage B without minting a delivery row', async () => {
+    const before = manager.inboundDeliveryStatus();
+    expect('unavailable' in before).toBe(false);
+    const logicalRowsBefore = 'unavailable' in before ? -1 : before.logicalRows;
+
+    expect(manager.injectInternalControlCommand(tmuxSession, '59199', '/compact')).toBe(true);
+    await waitFor(() => manager.captureOutput(tmuxSession, 30)?.includes('RECEIVED:/compact') ?? false, 8_000);
+
+    const after = manager.inboundDeliveryStatus();
+    expect('unavailable' in after).toBe(false);
+    if (!('unavailable' in after)) expect(after.logicalRows).toBe(logicalRowsBefore);
+  });
+
   it('tracks the first fresh Codex bootstrap before a rollout exists and binds it from offset zero', async () => {
     const bootstrapText = 'fresh-bootstrap-e2e';
     const managerWithReadySeam = manager as unknown as {

@@ -5511,7 +5511,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // instar-composed bootstrap content (F7) — mark it first-party so the
       // InputGuard doesn't flag instar's own boot template as an injection.
       if (initialMessage) {
-        this.injectMessage(tmuxSession, initialMessage, { firstParty: { source: 'session-bootstrap' } });
+        this.injectMessage(tmuxSession, initialMessage, {
+          firstParty: { source: 'session-bootstrap' },
+          conversationId: options?.bootstrapConversationIds?.[0] !== undefined
+            ? String(options.bootstrapConversationIds[0])
+            : undefined,
+        });
       }
       return tmuxSession;
     }
@@ -5837,6 +5842,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         tmuxSession,
         initialMessage: effectiveInitialMessage,
         telegramTopicId: options?.telegramTopicId,
+        conversationId: options?.bootstrapConversationIds?.[0] ?? options?.telegramTopicId,
         // Only a genuinely fresh Codex spawn may use the narrow offset-zero
         // bootstrap lane. Resume/recovery records and records written by old
         // binaries remain fail-closed even if session state is incomplete.
@@ -5872,7 +5878,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     originalName: string | undefined,
     initialMessage: string,
     readyTimeout: number,
-    options?: { telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string },
+    options?: { telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; bootstrapConversationIds?: number[] },
   ): Promise<void> {
     const ready = await this.waitForClaudeReadyWithRetry(tmuxSession, readyTimeout);
     if (ready) {
@@ -5884,7 +5890,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // through ready-and-inject — cold spawns, moved-topic respawns, and the
       // pending-inject boot recovery — so the InputGuard never flags instar's
       // own boot template as a suspected prompt injection (audit F7).
-      const injected = this.injectMessage(tmuxSession, initialMessage, { firstParty: { source: 'session-bootstrap' } });
+      const injected = this.injectMessage(tmuxSession, initialMessage, {
+        firstParty: { source: 'session-bootstrap' },
+        conversationId: options?.bootstrapConversationIds?.[0] !== undefined
+          ? String(options.bootstrapConversationIds[0])
+          : (options?.telegramTopicId !== undefined ? String(options.telegramTopicId) : undefined),
+      });
       if (!injected) {
         console.error(`[SessionManager] Initial message injection refused for "${tmuxSession}"; pending inject retained.`);
         throw new Error(`Initial message injection refused for "${tmuxSession}"`);
@@ -5942,6 +5953,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           telegramTopicId: options.telegramTopicId,
           slackChannelId: options.slackChannelId,
           slackThreadTs: options.slackThreadTs,
+          bootstrapConversationIds: options.bootstrapConversationIds,
           awaitInitialInjection: true,
         });
         console.log(`[SessionManager] Fresh-spawn fallback injected for "${tmuxSession}" (durable custody cleared only after verified acceptance).`);
@@ -6003,7 +6015,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       console.error(`[SessionManager] Session not ready in "${tmuxSession}" — message NOT injected. Session may need manual intervention.`);
       console.log(`[SessionManager] Session "${tmuxSession}" still alive — attempting injection anyway`);
       // Same instar-composed bootstrap as the ready path above — first-party (F7).
-      const injected = this.injectMessage(tmuxSession, initialMessage, { firstParty: { source: 'session-bootstrap' } });
+      const injected = this.injectMessage(tmuxSession, initialMessage, {
+        firstParty: { source: 'session-bootstrap' },
+        conversationId: options?.bootstrapConversationIds?.[0] !== undefined
+          ? String(options.bootstrapConversationIds[0])
+          : (options?.telegramTopicId !== undefined ? String(options.telegramTopicId) : undefined),
+      });
       if (!injected) {
         console.error(`[SessionManager] Initial message injection refused for "${tmuxSession}" after readiness timeout; pending inject retained.`);
         throw new Error(`Initial message injection refused for "${tmuxSession}" after readiness timeout`);
@@ -6047,6 +6064,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // path clears the record on success.
         await this.handleReadyAndInject(record.tmuxSession, undefined, record.initialMessage, 90_000, {
           telegramTopicId: record.telegramTopicId,
+          bootstrapConversationIds: record.conversationId !== undefined ? [record.conversationId] : undefined,
         });
       },
       reportLoss: (record, reason) => {
@@ -6604,6 +6622,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
        *  (e.g. 'session-bootstrap'). See the method doc — content can never
        *  mint this flag; only instar's own injector code can. */
       firstParty?: { source: string };
+      /** Canonical durable delivery-ledger conversation key. */
+      conversationId?: string;
     },
   ): boolean {
     // ── First-party provenance (F7): instar-authored content, verified by
@@ -6621,7 +6641,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           });
         } catch { /* logging must never block a bootstrap injection */ }
       }
-      return this.rawInject(tmuxSession, text);
+      return this.rawInject(tmuxSession, text, opts.conversationId);
     }
 
     // ── Input Guard: Layer 1 + 1.5 (deterministic, synchronous) ──
@@ -6673,11 +6693,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
             }
             if (action === 'warn') {
               // Inject the message, then inject warning afterward
-              const result = this.rawInject(tmuxSession, text);
+              const result = this.rawInject(tmuxSession, text, opts?.conversationId);
               // Small delay so warning arrives after message
               setTimeout(() => {
                 const warning = this.inputGuard!.buildWarning(binding, `Matched injection pattern: ${pattern}`);
-                this.rawInject(tmuxSession, warning);
+                this.rawInject(tmuxSession, warning, opts?.conversationId);
               }, 500);
               return result;
             }
@@ -6686,7 +6706,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
           // Layer 2: Async LLM topic coherence review (non-blocking)
           // Inject immediately, review in background
-          const injected = this.rawInject(tmuxSession, text);
+          const injected = this.rawInject(tmuxSession, text, opts?.conversationId);
           this.inputGuard.reviewTopicCoherence(text, binding).then(result => {
             if (result.verdict === 'suspicious') {
               const action = this.inputGuard!['config'].action ?? 'warn';
@@ -6702,7 +6722,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
               if (action === 'warn') {
                 const warning = this.inputGuard!.buildWarning(binding, result.reason);
-                this.rawInject(tmuxSession, warning);
+                this.rawInject(tmuxSession, warning, opts?.conversationId);
               }
               // block mode doesn't apply after async review — message already injected
               // log mode: already logged above
@@ -6718,7 +6738,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
 
     // ── Normal injection (verified provenance or no InputGuard) ──
-    return this.rawInject(tmuxSession, text);
+    return this.rawInject(tmuxSession, text, opts?.conversationId);
   }
 
   /**
@@ -6755,10 +6775,51 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * Inject a trusted TUI control command without misclassifying it as an
+   * inbound delivery. Control commands do not produce the normal user-message
+   * transcript shape, so placing them in InboundDeliveryStore guarantees a
+   * false `unknown`. They still serialize through the same physical-effect
+   * lock as deliveries, preserving the one-writer pane invariant.
+   *
+   * This is intentionally closed to the sole measured command used by context
+   * exhaustion recovery. It is in-process only and bypasses InputGuard because
+   * the command is authored by Instar, not by a user/topic.
+   */
+  injectInternalControlCommand(tmuxSession: string, conversationId: string, command: '/compact'): boolean {
+    if (command !== '/compact' || !conversationId || !this.isSessionAlive(tmuxSession)) return false;
+    const framework = this.getSessionFramework(tmuxSession);
+    if (this.stageBActivation.active && framework === 'codex-cli') {
+      if (!this.trackedPhysicalEffects || !this.inboundDeliveries) return false;
+      const ownerEpoch = this.ownerEpochForConversation(conversationId);
+      const result = this.trackedPhysicalEffects.controlSync({
+        scope: tmuxSession,
+        deadlineMs: Date.now() + 15_000,
+        reconcile: () => {
+          this.inboundDeliveries!.reconcileInterruptedEffects();
+          return !this.inboundDeliveries!.hasUnreconciledEffects(conversationId);
+        },
+        fence: () => this.isSessionAlive(tmuxSession)
+          && this.ownerEpochForConversation(conversationId) === ownerEpoch
+          && !this.inboundDeliveries!.hasOtherActiveDispatch(conversationId, '')
+          && (conversationId === tmuxSession
+            || !this.inboundDeliveries!.hasOtherActiveDispatch(tmuxSession, '')),
+        effect: () => this.performTmuxInjectionEffect(tmuxSession, command, framework),
+      });
+      if (!result.ok) {
+        console.error(`[SessionManager] Control injection refused for ${tmuxSession}: ${result.reason}`);
+        return false;
+      }
+      return true;
+    }
+    this.performTmuxInjectionEffect(tmuxSession, command, framework);
+    return true;
+  }
+
+  /**
    * Raw tmux send-keys injection. No validation — just sends text to the session.
    * Used by injectMessage after provenance checks pass.
    */
-  private rawInject(tmuxSession: string, text: string): boolean {
+  private rawInject(tmuxSession: string, text: string, authoritativeConversationId?: string): boolean {
     // Strip any EMBEDDED bracketed-paste markers from the prompt content before
     // we wrap it in our own \x1b[200~…\x1b[201~ (june15-headless-spawn-reroute,
     // PR2 finding S2). A job/A2A prompt containing a literal \x1b[201~ would
@@ -6793,7 +6854,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // submits if the first was eaten; if both land, the second is a
     // harmless no-op against an empty buffer).
     const framework = this.getSessionFramework(tmuxSession);
-    const conversationId = String(this.getTopicBinding(tmuxSession)?.topicId ?? tmuxSession);
+    const conversationId = authoritativeConversationId
+      ?? String(this.getTopicBinding(tmuxSession)?.topicId ?? tmuxSession);
     let delivery: ReturnType<InboundDeliveryStore['prepare']> | null = null;
     // Stage B's acceptance authority is the Codex rollout adapter. Other
     // frameworks have no matching transcript observer, so journaling them here

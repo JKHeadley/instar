@@ -36,6 +36,31 @@ describe('TrackedPhysicalEffectDispatcher', () => {
     expect(calls).toBe(1);
     expect(h.store.get('c', h.delivery.deliveryId)?.transportState).toBe('dispatched');
   });
+
+  it('serializes a control-plane effect without minting or transitioning a delivery', () => {
+    const h = harness();
+    const before = h.store.status().logicalRows;
+    const effect = vi.fn();
+    const result = new TrackedPhysicalEffectDispatcher(h.lock, h.store).controlSync({
+      scope: 'c', deadlineMs: Date.now() + 2_000, fence: () => true, effect,
+    });
+    expect(result).toEqual({ ok: true, status: 'completed', leaseEpoch: 9 });
+    expect(effect).toHaveBeenCalledOnce();
+    expect(h.store.status().logicalRows).toBe(before);
+    expect(h.store.get('c', h.delivery.deliveryId)?.transportState).toBe('prepared');
+    expect(h.provider.acquireSync).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a control-plane effect when the action-time fence changes', () => {
+    const h = harness();
+    const effect = vi.fn();
+    const result = new TrackedPhysicalEffectDispatcher(h.lock, h.store).controlSync({
+      scope: 'c', deadlineMs: Date.now() + 2_000, fence: () => false, effect,
+    });
+    expect(result).toEqual({ ok: false, status: 'refused', reason: 'reconciliation-required' });
+    expect(effect).not.toHaveBeenCalled();
+    expect(h.store.get('c', h.delivery.deliveryId)?.transportState).toBe('prepared');
+  });
   it('holds the lease across durable arm, start, effect, and terminalization', async () => {
     const h = harness();
     const effect = vi.fn((lease: PhysicalEffectLease) => lease.assertHeld());
