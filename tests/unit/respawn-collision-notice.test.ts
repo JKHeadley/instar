@@ -5,7 +5,7 @@ import {
   RESPAWN_COLLISION_NOTICE,
   sendRespawnCollisionNotice,
 } from '../../src/messaging/ColdStartFallbackReply.js';
-import { wireTelegramRouting } from '../../src/commands/server.js';
+import { clearGenerationlessCodexResumeBinding, wireTelegramRouting } from '../../src/commands/server.js';
 import type { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import type { SessionManager } from '../../src/core/SessionManager.js';
 import type { Message } from '../../src/core/types.js';
@@ -53,6 +53,7 @@ describe('respawn collision custody notice', () => {
     };
     const sessionManager = {
       isSessionAlive: () => false,
+      requiresCodexGenerationRespawn: () => false,
       captureOutput: () => '',
       clearSessionFrameworkCache: vi.fn(),
       spawnInteractiveSession,
@@ -79,6 +80,60 @@ describe('respawn collision custody notice', () => {
 
     // Let the detached respawn settle after the collision assertions.
     releaseSpawn('replacement-session');
+  });
+
+  it('fresh-respawns a stale generationless Codex pane with history and the current inbound', async () => {
+    const spawnInteractiveSession = vi.fn(async () => 'replacement-session');
+    const clearSessionFrameworkCache = vi.fn();
+    const injectTelegramMessage = vi.fn();
+    const rawAdapter = {
+      onTopicMessage: null as null | ((message: Message) => Promise<void>),
+      isAuthorizedSender: () => true,
+      handleCommand: async () => false,
+      getTopicName: () => 'generationless-topic',
+      getSessionForTopic: () => 'stale-generationless-pane',
+      getTopicHistory: () => [{
+        messageId: 1, topicId: 458, text: 'Earlier bounded history', fromUser: true,
+        timestamp: '2026-09-01T05:59:00.000Z', senderName: 'Justin', forwarded: false,
+      }],
+      getLifelineTopicId: () => null,
+      resolveTopicName: async () => 'generationless-topic',
+      registerTopicSession: vi.fn(),
+      sendToTopic: vi.fn(async () => ({ ok: true })),
+      isPolling: false,
+    };
+    const sessionManager = {
+      isSessionAlive: () => true,
+      requiresCodexGenerationRespawn: () => true,
+      captureOutput: vi.fn(() => { throw new Error('generationless recovery must not classify pane death'); }),
+      clearSessionFrameworkCache,
+      spawnInteractiveSession,
+      injectTelegramMessage,
+    } as unknown as SessionManager;
+    wireTelegramRouting(rawAdapter as unknown as TelegramAdapter, sessionManager);
+
+    await rawAdapter.onTopicMessage!({
+      id: 'tg-3', userId: '7812716706', content: 'Current inbound survives recovery',
+      channel: { type: 'telegram', identifier: '458' }, receivedAt: '2026-09-01T06:00:00.000Z',
+      metadata: { messageThreadId: 458, telegramUserId: 7812716706, firstName: 'Justin' },
+    } as Message);
+    await vi.waitFor(() => expect(spawnInteractiveSession).toHaveBeenCalledTimes(1));
+
+    const [prompt, name, options] = spawnInteractiveSession.mock.calls[0];
+    expect(name).toBe('generationless-topic');
+    expect(options.resumeSessionId).toBeUndefined();
+    const pointer = String(prompt).match(/\[IMPORTANT: Read (.+?) —/);
+    const bootstrap = pointer ? fs.readFileSync(pointer[1], 'utf8') : String(prompt);
+    expect(bootstrap).toContain('Earlier bounded history');
+    expect(bootstrap).toContain('Current inbound survives recovery');
+    expect(clearSessionFrameworkCache).toHaveBeenCalledWith('stale-generationless-pane');
+    expect(injectTelegramMessage).not.toHaveBeenCalled();
+  });
+
+  it('removes the resume binding before generationless recovery', () => {
+    const remove = vi.fn();
+    clearGenerationlessCodexResumeBinding({ remove } as never, 458);
+    expect(remove).toHaveBeenCalledWith(458);
   });
 
   it('is wired into both dead-session respawn collision guards', () => {

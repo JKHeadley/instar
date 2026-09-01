@@ -174,6 +174,11 @@ describeMaybe('Codex session lifecycle reliability — production AgentServer pa
       expect(store.get(row!.conversationId, row!.deliveryId)).toMatchObject({
         baselineOffset: 0, transcriptState: 'responded', turnId: 'bootstrap-turn',
       });
+      const rowsBeforeRefusal = store.status().logicalRows;
+      const rebound = state.listSessions().find((candidate) => candidate.tmuxSession === bootstrapTmux)!;
+      state.saveSession({ ...rebound, claudeSessionId: undefined });
+      expect(manager.sendInput(bootstrapTmux, 'must remain with owning ingress')).toBe(false);
+      expect(store.status().logicalRows).toBe(rowsBeforeRefusal);
       store.close();
     } finally {
       managerWithReadySeam.waitForClaudeReadyWithRetry = originalReady;

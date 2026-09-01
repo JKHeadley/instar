@@ -3763,6 +3763,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * A Codex pane can remain alive even though its first prompt never established
+   * a rollout generation. Once the startup grace has elapsed, conversational
+   * ingress must replace that incarnation rather than retrying unverifiable
+   * injections forever. This is deliberately separate from isSessionAlive():
+   * process liveness remains truthful for watchdog/reaper callers.
+   */
+  requiresCodexGenerationRespawn(tmuxSession: string, now = Date.now(), graceMs = 120_000): boolean {
+    if (!this.stageBActivation.active) return false;
+    const session = this.state.listSessions({ status: 'running' })
+      .find((candidate) => candidate.tmuxSession === tmuxSession);
+    if (!session || session.framework !== 'codex-cli' || session.claudeSessionId) return false;
+    const startedAt = Date.parse(session.startedAt);
+    return Number.isFinite(startedAt) && now - startedAt >= graceMs;
+  }
+
+  /**
    * Check if a session is still running by checking tmux AND verifying
    * that the Claude process is running inside (not a zombie tmux pane).
    */
@@ -6788,6 +6804,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (this.stageBActivation.active && framework === 'codex-cli') {
       if (!this.inboundDeliveries || !this.inboundDeliveryHmacKey) return false;
       try {
+        const transcriptPath = match ? this.codexRolloutPathForSession(match) : null;
+        let baseline = -1;
+        try { if (transcriptPath) baseline = fs.statSync(transcriptPath).size; } catch { // @silent-fallback-ok: missing baseline fails closed before pane mutation
+          baseline = -1;
+        }
+        const rolloutId = match?.claudeSessionId ?? null;
+        const preRolloutBootstrap = !transcriptPath && !rolloutId
+          && this.pendingInjects.matches(tmuxSession, text);
+        // A stale/generationless incarnation must not manufacture a terminal
+        // dispatch-failed delivery merely because it cannot yet authorize a
+        // physical effect. The owning ingress sees `false`, retains its source
+        // custody, and (for conversational routes) respawns the stale session.
+        if (!preRolloutBootstrap && (!transcriptPath || !rolloutId || baseline < 0)) {
+          console.error(`[SessionManager] Refusing unverifiable Codex injection for ${tmuxSession}: rollout baseline unavailable`);
+          return false;
+        }
         delivery = this.inboundDeliveries.prepare({
         conversationId,
         incarnation: tmuxSession,
@@ -6804,16 +6836,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
           this.refreshLifecycleCompatibilityProjection();
           return true;
         }
-        const transcriptPath = match ? this.codexRolloutPathForSession(match) : null;
-        let baseline = -1;
-        try { if (transcriptPath) baseline = fs.statSync(transcriptPath).size; } catch { // @silent-fallback-ok: missing baseline fails closed before pane mutation
-          baseline = -1;
-        }
-        const rolloutId = match?.claudeSessionId ?? null;
-        const preRolloutBootstrap = !transcriptPath && !rolloutId
-          && this.pendingInjects.matches(tmuxSession, text);
-        if (!preRolloutBootstrap && (!transcriptPath || !rolloutId || baseline < 0
-          || !this.inboundDeliveries.bindRolloutBaseline(conversationId, delivery.deliveryId, transcriptPath, rolloutId, baseline))) {
+        if (!preRolloutBootstrap && !this.inboundDeliveries.bindRolloutBaseline(
+          conversationId, delivery.deliveryId, transcriptPath!, rolloutId!, baseline,
+        )) {
           this.inboundDeliveries.transition(conversationId, delivery.deliveryId, 'prepared', 'dispatch-failed');
           this.refreshLifecycleCompatibilityProjection();
           console.error(`[SessionManager] Refusing unverifiable Codex injection for ${tmuxSession}: rollout baseline unavailable`);

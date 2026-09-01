@@ -132,6 +132,32 @@ describe('SessionManager pending-inject wiring (finding 8d300555)', () => {
     expect(record.initialMessage).toBe('must remain queued');
   });
 
+  it('marks only stale generationless Codex incarnations for a fresh respawn', () => {
+    const activeManager = new SessionManager({
+      tmuxPath: '/usr/bin/tmux', claudePath: '/usr/local/bin/claude', projectDir: tmpDir,
+      maxSessions: 3, protectedSessions: [], completionPatterns: [], framework: 'codex-cli',
+    }, state, {
+      stageBActivation: { configured: true, pendingActivation: false, active: true, artifactDigest: null, reason: 'candidate-canary' },
+    });
+    const now = Date.parse('2026-09-01T06:00:00.000Z');
+    state.saveSession({
+      id: 'stale-id', name: 'stale', tmuxSession: 'stale-codex', status: 'running',
+      startedAt: new Date(now - 121_000).toISOString(), framework: 'codex-cli',
+      model: 'gpt-5.6-sol', maxDurationMinutes: 60, cwd: tmpDir,
+    });
+    state.saveSession({
+      id: 'young-id', name: 'young', tmuxSession: 'young-codex', status: 'running',
+      startedAt: new Date(now - 30_000).toISOString(), framework: 'codex-cli',
+      model: 'gpt-5.6-sol', maxDurationMinutes: 60, cwd: tmpDir,
+    });
+
+    expect(activeManager.requiresCodexGenerationRespawn('stale-codex', now)).toBe(true);
+    expect(activeManager.requiresCodexGenerationRespawn('young-codex', now)).toBe(false);
+    state.saveSession({ ...state.listSessions().find((s) => s.tmuxSession === 'stale-codex')!, claudeSessionId: 'generation-bound' });
+    expect(activeManager.requiresCodexGenerationRespawn('stale-codex', now)).toBe(false);
+    expect(manager.requiresCodexGenerationRespawn('young-codex', now)).toBe(false);
+  });
+
   it('framework handoff waits for bootstrap injection before returning the new session', async () => {
     let resolveReady!: (v: boolean) => void;
     const readyGate = new Promise<boolean>((r) => { resolveReady = r; });

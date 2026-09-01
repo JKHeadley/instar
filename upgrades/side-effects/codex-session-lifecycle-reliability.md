@@ -146,6 +146,27 @@ assertion under the typed-refusal contract, the focused five-file matrix passed
 59/59 and Mencius concurred with no remaining code, security, custody,
 migration-parity, or test blocker.
 
+The next candidate-wide window exposed the upgrade-in-place version of that
+boundary: a pane created by the rejected candidate remained alive without ever
+establishing a rollout, so later Telegram retries repeatedly failed and each
+attempt manufactured a terminal `dispatch-failed` row. The corrected preflight
+now refuses before ledger preparation. Separately, after a two-minute startup
+grace, Telegram ingress classifies a generationless Codex pane as stale, clears
+any unusable resume UUID, and fresh-respawns with bounded topic history plus the
+still-custodied inbound. Process liveness remains truthful for watchdog callers;
+only conversational routing applies this recovery classification. Unit coverage
+tests both sides of the grace/generation boundary, and production E2E proves a
+refused stale-generation input creates no delivery row.
+
+Mencius initially withheld concurrence because one existing routing double had
+not adopted the new classifier and the first no-row assertion used an observer
+view that excluded `dispatch-failed` rows. Final concurrence followed after the
+E2E asserted the store's full logical-row count and a behavioral Telegram test
+drove the real routing branch: it bypasses injection/death classification,
+removes the resume binding, replaces the pane fresh, and proves both bounded
+history and the current inbound reach the bootstrap. The refreshed three-file
+matrix passed 23/23; no code, custody, migration, or test blocker remained.
+
 ## Evidence pointers
 
 - `docs/specs/reports/codex-session-lifecycle-reliability-convergence.md`

@@ -575,6 +575,14 @@ let _spawningTopicsRegistryRef: SpawningTopicsRegistry | null = null;
 // Module-level reference for session resume mapping.
 // Set once in startServer() and used by spawnSessionForTopic/respawnSessionForTopic.
 let _topicResumeMap: import('../core/TopicResumeMap.js').TopicResumeMap | null = null;
+
+/** Narrow, testable ownership of the stale-generation recovery side effect. */
+export function clearGenerationlessCodexResumeBinding(
+  resumeMap: Pick<import('../core/TopicResumeMap.js').TopicResumeMap, 'remove'> | null,
+  topicId: number,
+): void {
+  resumeMap?.remove(topicId);
+}
 // Context-wall recovery latch. These late-bound seams let every Telegram/Slack
 // spawn chokepoint fail fresh while SessionRecovery owns a durable latch.
 let _contextExhaustionFreshRequired: ((topicId: number) => boolean) | null = null;
@@ -2832,7 +2840,8 @@ export function wireTelegramRouting(
 
     if (targetSession) {
       // Session is mapped — check if it's alive, inject or respawn
-      if (sessionManager.isSessionAlive(targetSession)) {
+      const generationlessCodex = sessionManager.requiresCodexGenerationRespawn(targetSession);
+      if (sessionManager.isSessionAlive(targetSession) && !generationlessCodex) {
         // Use toInjection() — types guarantee sender identity is included in the tag
         const injection = toInjection(pipeline, targetSession);
         console.log(`[telegram→session] Injecting into ${targetSession}: "${text.slice(0, 80)}"`);
@@ -2859,10 +2868,17 @@ export function wireTelegramRouting(
         // Track for stall detection
         telegram.trackMessageInjection(topicId, targetSession, text);
       } else {
+        if (generationlessCodex) {
+          console.warn(`[telegram→session] Codex session "${targetSession}" never established a rollout generation — replacing stale incarnation for topic ${topicId}`);
+          // A prior topic UUID could resume the same poisoned generationless
+          // history. This recovery is intentionally fresh; the bootstrap carries
+          // bounded topic history plus the current durably-held inbound.
+          clearGenerationlessCodexResumeBinding(_topicResumeMap, topicId);
+        }
         // Session died — classify death cause before deciding how to respawn
         let isQuotaDeath = false;
         let isContextExhausted = false;
-        try {
+        if (!generationlessCodex) try {
           const output = sessionManager.captureOutput(targetSession, 100);
           if (output) {
             const quotaState = quotaTracker?.getState() ?? null;
