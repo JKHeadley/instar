@@ -100,7 +100,7 @@ Recovery actuation can be darkened immediately, but a raw binary rollback is fen
 
 ## Conclusion
 
-The independent reviews found material spec-to-code gaps and correctly blocked the first release candidates. The revisions close them with package-bound signed activation evidence, rollout identity/offset/turn correlation, live-row transfer preservation, crash-safe effect fencing, exact-cap scanner handling, framework scoping, and current Codex 0.149 rollout compatibility. Each live mismatch invalidated its evidence window instead of being rationalized away. Focused unit, integration, production E2E, and build gates pass for the current-shape and bounded-selection repairs. Publication remains mechanically conditional on a fresh repository gate and a new signed two-hour/fifty-delivery Stage-B release-candidate window required by the driving specification.
+The independent reviews found material spec-to-code gaps and correctly blocked the first release candidates. The revisions close them with package-bound signed activation evidence, rollout identity/offset/turn correlation, live-row transfer preservation, crash-safe effect fencing, exact-cap scanner handling, framework scoping, and current Codex 0.149 rollout compatibility. Each live mismatch invalidated its evidence window instead of being rationalized away. The final exact-candidate canary then completed 50 dedicated deliveries over 133 minutes with every forbidden counter at zero and all required case classes represented. Echo signed the package-bound release artifact, Mencius independently concurred with the evidence, and the publication hook now mechanically refuses a missing, malformed, wrongly versioned, or invalidly signed artifact. Focused unit, integration, production E2E, build, and signed-artifact verification gates pass for the release delta.
 
 ## Second-pass review (if required)
 
@@ -204,6 +204,8 @@ passed 15/15 with a green TypeScript build.
 - `tests/unit/FrameworkProcessProvenance.test.ts`
 - `tests/unit/SessionDrainRunner.test.ts`
 - `tests/e2e/codex-session-lifecycle-reliability.test.ts`
+- `.instar/state/codex-stage-b-rc.json` (Echo-local signed candidate evidence; operational state, not shipped source)
+- `src/data/codexStageBReleaseEvidence.ts` (Echo-signed package `1.3.1219` release evidence)
 - Live rejected RC row `09a75bd5-5905-4ea3-b1d2-1ff66b227a66` and its exact Codex 0.149 rollout sequence (candidate-local, message content excluded from the signed artifact).
 
 ## Class-Closure Declaration (display-only mirror)

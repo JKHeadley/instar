@@ -46,6 +46,8 @@ export interface StageBConfigSurface {
   candidateCanaryEnabled?: boolean;
   /** Written by migration after artifact verification; consumed at restart. */
   stageBPendingActivation?: boolean;
+  /** Autonomous recovery remains an independently graduated dark stage. */
+  stageCRecoveryEnabled?: boolean;
 }
 
 export interface StageBActivationBindings {
@@ -234,6 +236,26 @@ export function migrateStageBConfig(
   if (current.ledgerObserverEnabled === false) return { ...current, stageBPendingActivation: false };
   if (!artifact || gate.verifyArtifact(artifact) !== null) return current;
   return { ...current, ledgerObserverEnabled: true, stageBPendingActivation: true };
+}
+
+/** Release-time config reconciliation. The candidate switch is operational,
+ * not operator policy, so verified package evidence retires it. The pending
+ * bit is likewise an internal restart fence and must reflect the installed
+ * package's evidence instead of preserving a stale candidate-era false. */
+export function migrateStageBReleaseConfig(
+  config: StageBConfigSurface | undefined,
+  releaseEvidenceValid: boolean,
+): StageBConfigSurface {
+  const current = { ...(config ?? {}) };
+  if (current.ledgerObserverEnabled === undefined) {
+    current.ledgerObserverEnabled = releaseEvidenceValid;
+  }
+  if (current.candidateCanaryEnabled === undefined || releaseEvidenceValid) {
+    current.candidateCanaryEnabled = false;
+  }
+  current.stageBPendingActivation = releaseEvidenceValid && current.ledgerObserverEnabled === true;
+  if (current.stageCRecoveryEnabled === undefined) current.stageCRecoveryEnabled = false;
+  return current;
 }
 
 function digestArtifact(artifact: StageBRcArtifact): string {

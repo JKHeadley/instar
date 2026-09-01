@@ -75,7 +75,7 @@ import {
 } from '../users/testIdentityMarkers.js';
 import { readRegistryHighWater, setRegistryHighWater } from './registryHighWater.js';
 import { ITERATIVE_CONVERGING_AUDIT_SKILL_CONTENT } from '../data/builtinSkillContent.js';
-import { verifyBundledStageBReleaseEvidence } from './StageBActivationGate.js';
+import { migrateStageBReleaseConfig, verifyBundledStageBReleaseEvidence } from './StageBActivationGate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -11384,7 +11384,6 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // Explicit false is operator authority and is never overwritten. Stage C
     // remains independently dark. Additive and idempotent.
     const lifecycle = (config.codexSessionLifecycle as Record<string, unknown> | undefined) ?? {};
-    let lifecyclePatched = false;
     const installedPackageVersion = (() => {
       try {
         return String(JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', '..', 'package.json'), 'utf8')).version ?? '');
@@ -11392,19 +11391,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     })();
     const stageBReleaseCleared = installedPackageVersion.length > 0
       && verifyBundledStageBReleaseEvidence(installedPackageVersion) === null;
-    if (!('ledgerObserverEnabled' in lifecycle)) {
-      lifecycle.ledgerObserverEnabled = stageBReleaseCleared;
-      lifecyclePatched = true;
-    }
-    if (!('stageBPendingActivation' in lifecycle)) {
-      lifecycle.stageBPendingActivation = stageBReleaseCleared && lifecycle.ledgerObserverEnabled === true;
-      lifecyclePatched = true;
-    }
-    for (const key of ['candidateCanaryEnabled', 'stageCRecoveryEnabled']) {
-      if (!(key in lifecycle)) { lifecycle[key] = false; lifecyclePatched = true; }
-    }
+    const reconciledLifecycle = migrateStageBReleaseConfig(lifecycle, stageBReleaseCleared);
+    const lifecyclePatched = JSON.stringify(reconciledLifecycle) !== JSON.stringify(lifecycle);
     if (lifecyclePatched || !config.codexSessionLifecycle) {
-      config.codexSessionLifecycle = lifecycle;
+      config.codexSessionLifecycle = reconciledLifecycle;
       patched = true;
       result.upgraded.push(stageBReleaseCleared
         ? 'config.json: activated Echo-signed Codex Stage-B delivery observer at next restart'

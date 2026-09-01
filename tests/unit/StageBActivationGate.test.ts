@@ -5,7 +5,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
-  canonicalStageBRcArtifact, migrateStageBConfig, resolveStageBProductionActivation,
+  canonicalStageBRcArtifact, migrateStageBConfig, migrateStageBReleaseConfig, resolveStageBProductionActivation,
   stageBConfigSha256, StageBActivationGate,
   type StageBRcArtifact, type StageBRcArtifactUnsigned,
 } from '../../src/core/StageBActivationGate.js';
@@ -108,6 +108,46 @@ describe('StageBActivationGate', () => {
     expect(migrateStageBConfig({ ledgerObserverEnabled: false, stageBPendingActivation: true }, signed(), gate))
       .toEqual({ ledgerObserverEnabled: false, stageBPendingActivation: false });
     expect(migrateStageBConfig(undefined, signed({ deliveryCount: 49 }), gate)).toEqual({});
+  });
+
+  it('retires candidate mode and arms the restart fence after valid release evidence', () => {
+    expect(migrateStageBReleaseConfig({
+      ledgerObserverEnabled: true,
+      candidateCanaryEnabled: true,
+      stageBPendingActivation: false,
+      stageCRecoveryEnabled: false,
+    }, true)).toEqual({
+      ledgerObserverEnabled: true,
+      candidateCanaryEnabled: false,
+      stageBPendingActivation: true,
+      stageCRecoveryEnabled: false,
+    });
+  });
+
+  it('preserves an explicit observer false and keeps both later stages dark', () => {
+    expect(migrateStageBReleaseConfig({
+      ledgerObserverEnabled: false,
+      candidateCanaryEnabled: true,
+      stageBPendingActivation: true,
+    }, true)).toEqual({
+      ledgerObserverEnabled: false,
+      candidateCanaryEnabled: false,
+      stageBPendingActivation: false,
+      stageCRecoveryEnabled: false,
+    });
+  });
+
+  it('does not retire an active development canary without valid release evidence', () => {
+    expect(migrateStageBReleaseConfig({
+      ledgerObserverEnabled: true,
+      candidateCanaryEnabled: true,
+      stageBPendingActivation: false,
+    }, false)).toEqual({
+      ledgerObserverEnabled: true,
+      candidateCanaryEnabled: true,
+      stageBPendingActivation: false,
+      stageCRecoveryEnabled: false,
+    });
   });
 
   it('activates fleet machines from package-pinned Echo evidence, not their own identity key', () => {
