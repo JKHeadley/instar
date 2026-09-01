@@ -51,6 +51,13 @@ function complete(turnId: string): string {
   return event('event_msg', { type: 'task_complete', turn_id: turnId });
 }
 
+function currentMessage(role: 'user' | 'assistant' | 'developer' | 'system', text: string): string {
+  return event('response_item', {
+    type: 'message', role,
+    content: [{ type: role === 'assistant' ? 'output_text' : 'input_text', text }],
+  });
+}
+
 describe('CodexDeliveryObserver', () => {
   it('requires the exact post-baseline envelope and same task turn, then records responded', async () => {
     const f = fixture();
@@ -64,6 +71,72 @@ describe('CodexDeliveryObserver', () => {
       transportState: 'consumed', composerState: 'cleared', transcriptState: 'responded', turnId: 't1',
     });
     expect(f.store.status().deliveriesByState.responded).toBe(1);
+  });
+
+  it('accepts the live Codex 0.149 task envelope without repeated response-item turn metadata', async () => {
+    const f = fixture('live 0.149 envelope');
+    fs.appendFileSync(f.rollout,
+      event('event_msg', { type: 'thread_settings_applied' })
+      + event('event_msg', { type: 'task_started', turn_id: 'live-turn' })
+      + event('world_state', { state: {}, full: true })
+      + event('inter_agent_communication_metadata', { trigger_turn: 'live-turn' })
+      + currentMessage('user', f.envelope)
+      + event('event_msg', { type: 'item_completed', turn_id: 'live-turn' })
+      + currentMessage('developer', 'hook context')
+      + currentMessage('system', 'runtime context')
+      + event('response_item', {
+        type: 'agent_message', id: 'agent-message-1', author: 'helper', recipient: 'root', content: 'status',
+        internal_chat_message_metadata_passthrough: { turn_id: 'live-turn' },
+      })
+      + event('response_item', {
+        type: 'tool_search_call', id: 'tool-search-1', call_id: 'call-1', status: 'completed',
+        arguments: {}, execution: {},
+      })
+      + event('response_item', {
+        type: 'tool_search_output', id: 'tool-search-output-1', call_id: 'call-1', status: 'completed',
+        tools: [], execution: {},
+      })
+      + event('event_msg', { type: 'item_completed', turn_id: 'live-turn' })
+      + currentMessage('assistant', 'ok')
+      + complete('live-turn'));
+    await new CodexDeliveryObserver({
+      store: f.store, hmacKey: KEY, resolveRolloutPath: () => f.rollout,
+      resolveRolloutId: () => 'thread-1', capturePane: () => null, now: () => 1_000,
+    }).sweep();
+    expect(f.store.get('59199', 'd1')).toMatchObject({
+      transportState: 'consumed', transcriptState: 'responded', turnId: 'live-turn',
+    });
+  });
+
+  it('still fails closed when legacy response-item metadata conflicts with the active turn', async () => {
+    const f = fixture();
+    fs.appendFileSync(f.rollout,
+      event('event_msg', { type: 'task_started', turn_id: 'active' }) + user('forged', f.envelope));
+    await new CodexDeliveryObserver({
+      store: f.store, hmacKey: KEY, resolveRolloutPath: () => f.rollout,
+      resolveRolloutId: () => 'thread-1', capturePane: () => null, now: () => 1_000,
+    }).sweep();
+    expect(f.store.get('59199', 'd1')).toMatchObject({ transcriptState: 'unknown', eligibilityState: 'unknown' });
+  });
+
+  it.each([
+    null,
+    'not-an-object',
+    {},
+    { turn_id: 42 },
+  ])('fails closed when present response-item metadata is malformed: %j', async (metadata) => {
+    const f = fixture();
+    fs.appendFileSync(f.rollout,
+      event('event_msg', { type: 'task_started', turn_id: 'active' })
+      + event('response_item', {
+        type: 'message', role: 'user', content: [{ type: 'input_text', text: f.envelope }],
+        internal_chat_message_metadata_passthrough: metadata,
+      }));
+    await new CodexDeliveryObserver({
+      store: f.store, hmacKey: KEY, resolveRolloutPath: () => f.rollout,
+      resolveRolloutId: () => 'thread-1', capturePane: () => null, now: () => 1_000,
+    }).sweep();
+    expect(f.store.get('59199', 'd1')).toMatchObject({ transcriptState: 'unknown', eligibilityState: 'unknown' });
   });
 
   it('normalizes exactly one transport-added final newline symmetrically', async () => {

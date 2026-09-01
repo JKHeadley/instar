@@ -330,6 +330,7 @@ export function scanSharedRollout(work: RolloutWork, hmacKey: string, maxBytes =
     try { event = JSON.parse(line) as Record<string, unknown>; } catch { // @silent-fallback-ok: malformed complete JSONL is typed terminal uncertainty
       return { kind: 'unknown', bytesRead: bytes };
     }
+    if (KNOWN_TOP_LEVEL.has(String(event.type))) continue;
     const payload = event.payload as Record<string, unknown> | undefined;
     if (!payload || typeof payload.type !== 'string') return { kind: 'unknown', bytesRead: bytes };
     if (event.type === 'event_msg') {
@@ -352,15 +353,21 @@ export function scanSharedRollout(work: RolloutWork, hmacKey: string, maxBytes =
         if (!KNOWN_RESPONSE_ITEMS.has(payload.type)) return { kind: 'unknown', bytesRead: bytes };
         continue;
       }
-      const metadata = payload.internal_chat_message_metadata_passthrough as Record<string, unknown> | undefined;
-      const turnId = typeof metadata?.turn_id === 'string' ? metadata.turn_id : null;
-      if (!turnId || activeTurn !== turnId) return { kind: 'unknown', bytesRead: bytes };
+      const metadataResult = responseItemTurnMetadata(payload);
+      if (!activeTurn || metadataResult.kind === 'malformed'
+        || (metadataResult.kind === 'present' && metadataResult.turnId !== activeTurn)) {
+        return { kind: 'unknown', bytesRead: bytes };
+      }
+      // Codex 0.149 stopped repeating turn_id on each response_item. The
+      // generation-bound task_started/task_complete envelope remains the
+      // authority; when legacy metadata is present it must still agree.
+      const turnId = activeTurn;
       if (payload.role === 'user') {
         const text = extractInputText(payload.content);
         if (text === null) return { kind: 'unknown', bytesRead: bytes };
         events.push({ kind: 'user-message', turnId, envelopeHmac: hmacEnvelope(text, hmacKey), through });
       } else if (payload.role === 'assistant') events.push({ kind: 'assistant-message', turnId, through });
-      else return { kind: 'unknown', bytesRead: bytes };
+      else if (payload.role !== 'developer' && payload.role !== 'system') return { kind: 'unknown', bytesRead: bytes };
       continue;
     }
     if (!KNOWN_TOP_LEVEL.has(String(event.type))) return { kind: 'unknown', bytesRead: bytes };
@@ -371,12 +378,31 @@ export function scanSharedRollout(work: RolloutWork, hmacKey: string, maxBytes =
 const KNOWN_EVENT_MESSAGES = new Set([
   'agent_message', 'agent_reasoning', 'token_count', 'turn_aborted', 'stream_error',
   'context_compacted', 'mcp_startup_update', 'mcp_startup_complete',
+  'thread_settings_applied', 'item_completed',
 ]);
 const KNOWN_RESPONSE_ITEMS = new Set([
   'reasoning', 'function_call', 'function_call_output', 'custom_tool_call',
   'custom_tool_call_output', 'web_search_call', 'computer_tool_call', 'computer_tool_call_output',
+  'agent_message', 'tool_search_call', 'tool_search_output',
 ]);
-const KNOWN_TOP_LEVEL = new Set(['session_meta', 'turn_context', 'compacted']);
+const KNOWN_TOP_LEVEL = new Set([
+  'session_meta', 'turn_context', 'compacted', 'world_state', 'inter_agent_communication_metadata',
+]);
+
+function responseItemTurnMetadata(payload: Record<string, unknown>):
+  | { kind: 'absent' }
+  | { kind: 'present'; turnId: string }
+  | { kind: 'malformed' } {
+  if (!Object.prototype.hasOwnProperty.call(payload, 'internal_chat_message_metadata_passthrough')) {
+    return { kind: 'absent' };
+  }
+  const metadata = payload.internal_chat_message_metadata_passthrough;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return { kind: 'malformed' };
+  const turnId = (metadata as Record<string, unknown>).turn_id;
+  return typeof turnId === 'string' && turnId.length > 0
+    ? { kind: 'present', turnId }
+    : { kind: 'malformed' };
+}
 
 export function scanRollout(row: DeliveryEvidence, rolloutPath: string, hmacKey: string, maxBytes = 256 * 1024): RolloutScan {
   if (!row.rolloutId || !rolloutIdentityMatches(rolloutPath, row.rolloutId)) return { kind: 'unknown', bytesRead: 0 };
@@ -432,9 +458,12 @@ export function scanRollout(row: DeliveryEvidence, rolloutPath: string, hmacKey:
       continue;
     }
     if (event.type !== 'response_item' || payload.type !== 'message') continue;
-    const metadata = payload.internal_chat_message_metadata_passthrough as Record<string, unknown> | undefined;
-    const turnId = typeof metadata?.turn_id === 'string' ? metadata.turn_id : null;
-    if (!turnId) return { kind: 'unknown', bytesRead: bytes };
+    const metadataResult = responseItemTurnMetadata(payload);
+    if (!activeTurn || metadataResult.kind === 'malformed'
+      || (metadataResult.kind === 'present' && metadataResult.turnId !== activeTurn)) {
+      return { kind: 'unknown', bytesRead: bytes };
+    }
+    const turnId = activeTurn;
     if (payload.role === 'user' && !consumedTurn) {
       const text = extractInputText(payload.content);
       if (text === null) return { kind: 'unknown', bytesRead: bytes };
@@ -449,6 +478,10 @@ export function scanRollout(row: DeliveryEvidence, rolloutPath: string, hmacKey:
       if (!activeTurn || activeTurn !== turnId) return { kind: 'unknown', bytesRead: bytes };
       assistantSeen = true;
       continue;
+    }
+    if (payload.role !== 'user' && payload.role !== 'assistant'
+      && payload.role !== 'developer' && payload.role !== 'system') {
+      return { kind: 'unknown', bytesRead: bytes };
     }
   }
   return consumedTurn

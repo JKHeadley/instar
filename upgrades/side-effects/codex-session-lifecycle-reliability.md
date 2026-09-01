@@ -24,9 +24,13 @@ If SQLite is unavailable, a legitimate inbound message is refused instead of bei
 
 The first live candidate exposed an additional scope boundary: non-Codex and legacy unknown-framework job injections were entering the Stage-B ledger even though only Codex has a generation-bound acceptance observer. Those rows could never advance and would age into false unknowns. The canonical `rawInject` boundary now journals only a positively identified `codex-cli` session; known non-Codex and unknown frameworks retain their established injection path until they gain an equivalent observer. Semantic tests exercise both bypass sides through public `sendInput`, while the production E2E proves the Codex side still journals and advances.
 
+The refreshed v1.3.1218 live candidate invalidated its first delivery window when Codex 0.149 produced a correct response but the observer marked it unknown. Live rollout bytes showed that current Codex retains the generation-bound `task_started`/`task_complete` envelope while omitting the older redundant `internal_chat_message_metadata_passthrough.turn_id` field on each message and adding `thread_settings_applied`/`item_completed`, `world_state`, inter-agent metadata/messages, and tool-search records. The adapter now uses the active task envelope when per-message metadata is absent, rejects a present malformed or conflicting metadata field, ignores only enumerated non-authoritative records and `developer`/`system` context roles, and rejects unknown roles/events. A captured-shape semantic test covers the complete current sequence.
+
 ## 2. Under-block
 
 The journal cannot prove whether a process consumed bytes after a crash in the final side-effect window, so it reports `effect-unknown` and refuses blind replay. Consumption is instead established only from the pinned Codex rollout adapter's generation-bound user-turn evidence; composer clearing remains weaker evidence. A renamed, unmeasurable, or conflicting Codex framework executable is `ownership-unknown` and preserved; it is never falsely called confirmed.
+
+The rollout adapter remains version-shape sensitive by design. A future Codex event outside the enumerated vocabulary, a response message outside an active task envelope, or a conflicting legacy turn id still resolves unknown and blocks the release window rather than weakening correlation.
 
 ## 3. Level-of-abstraction fit
 
@@ -53,6 +57,7 @@ No new static heuristic is added at a competing-signals judgment point. Journal 
 - **Double-fire:** a delivery id has one durable state machine; ambiguous attempts are never body-replayed. Kernel flock plus durable phases serialize physical effects, and recovery capabilities are single-use across restart.
 - **Races:** SQLite FULL durability, transactions, kernel ownership, action-time owner/epoch fences, and transfer CAS preconditions serialize concurrent delivery updates. Watchdog descendant discovery is read-only and rechecked against incarnation-bound provenance.
 - **Feedback loops:** journal/status observations do not themselves trigger injection. The authority is dark by default and bounded when enabled.
+- **Rollout compatibility:** the current-shape fallback is subordinate to the existing active-turn state machine. It cannot create a turn, cannot override a conflicting explicit turn id, and cannot match a delivery without the exact post-baseline envelope HMAC.
 
 ## 6. External surfaces
 
@@ -72,7 +77,7 @@ Recovery actuation can be darkened immediately, but a raw binary rollback is fen
 
 ## Conclusion
 
-The independent reviews found material spec-to-code gaps and correctly blocked the first release candidate. The revision closes them with package-bound signed activation evidence, rollout identity/offset/turn correlation, live-row transfer preservation, crash-safe effect fencing, and exact-cap scanner handling. The first live candidate then correctly invalidated its own evidence window after exposing observerless non-Codex rows. Helmholtz independently cleared the scope-boundary repair after semantic public-`sendInput` coverage proved both known non-Codex and unknown frameworks leave the ledger unchanged, while the production E2E proves Codex still journals and advances (18/18 focused). **Code clearance is granted.** Publication remains mechanically conditional on a refreshed repository gate and a fresh signed two-hour/fifty-delivery Stage-B release-candidate window required by the driving specification.
+The independent reviews found material spec-to-code gaps and correctly blocked the first release candidates. The revisions close them with package-bound signed activation evidence, rollout identity/offset/turn correlation, live-row transfer preservation, crash-safe effect fencing, exact-cap scanner handling, framework scoping, and current Codex 0.149 rollout compatibility. Each live mismatch invalidated its evidence window instead of being rationalized away. Focused unit, integration, production E2E, and build gates pass for the current-shape repair. Publication remains mechanically conditional on a fresh repository gate and a new signed two-hour/fifty-delivery Stage-B release-candidate window required by the driving specification.
 
 ## Second-pass review (if required)
 
@@ -89,6 +94,16 @@ seams, and prove both paths inject without adding a delivery row. Together with
 the positive Codex production E2E, the refreshed focused gate passed 18/18 and
 Helmholtz granted clearance with no remaining blocker.
 
+After the first v1.3.1218 delivery exposed Codex 0.149 rollout drift, Mencius
+(`stage_b_parser_review`) independently withheld clearance for malformed-present
+metadata, omitted current record types, incomplete fixtures, and the resulting
+spec mismatch. The final re-review concurred after both scanners distinguished
+true metadata absence from malformed presence, the allowlist and fixture covered
+the observed non-authoritative world/inter-agent/tool-search shapes, system and
+malformed cases were tested, and the authoritative spec named the task envelope
+as generation authority. Mencius found no remaining parser, test, or spec blocker;
+the signed live canary remains the separate release gate.
+
 ## Evidence pointers
 
 - `docs/specs/reports/codex-session-lifecycle-reliability-convergence.md`
@@ -99,6 +114,7 @@ Helmholtz granted clearance with no remaining blocker.
 - `tests/unit/FrameworkProcessProvenance.test.ts`
 - `tests/unit/SessionDrainRunner.test.ts`
 - `tests/e2e/codex-session-lifecycle-reliability.test.ts`
+- Live rejected RC row `09a75bd5-5905-4ea3-b1d2-1ff66b227a66` and its exact Codex 0.149 rollout sequence (candidate-local, message content excluded from the signed artifact).
 
 ## Class-Closure Declaration (display-only mirror)
 
