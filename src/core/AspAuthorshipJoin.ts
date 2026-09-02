@@ -31,9 +31,19 @@ export class AspAuthorshipJoin {
     private readonly classificationStartMs = ASP_CLASSIFICATION_START,
   ) {}
 
-  join<T extends AuthorshipMessage>(messages: readonly T[]): Array<T & { authorship: MessageAuthorship }> {
+  join<T extends AuthorshipMessage>(
+    messages: readonly T[],
+  ): Array<T & { authorship: MessageAuthorship; authorshipAgentId: string | null }> {
     const verdicts = this.readVerdicts();
-    return messages.map((message) => ({ ...message, authorship: this.resolve(message, verdicts) }));
+    return messages.map((message) => {
+      const authorship = this.resolve(message, verdicts);
+      // The agent id rides ONLY a verified verdict — a rejected or unresolved row
+      // must not name an agent it could not prove.
+      const authorshipAgentId = authorship === 'agent-verified'
+        ? verdicts.get(key(message.topicId, message.messageId))?.agentId ?? null
+        : null;
+      return { ...message, authorship, authorshipAgentId };
+    });
   }
 
   private resolve(message: AuthorshipMessage, verdicts: Map<string, AspClassificationRecord>): MessageAuthorship {

@@ -15,6 +15,7 @@
  */
 
 import { formatLocalTimestamp } from '../utils/localTime.js';
+import { historySenderLabel } from '../messaging/shared/signedInbound.js';
 
 /** One historical message, matching TelegramAdapter.getTopicHistory()'s shape. */
 export interface ForwardedHistoryMessage {
@@ -22,6 +23,9 @@ export interface ForwardedHistoryMessage {
   text?: string;
   senderName?: string;
   timestamp?: string | number;
+  /** Read-time ASP authorship from the previous machine's history read. */
+  authorship?: string;
+  authorshipAgentId?: string | null;
 }
 
 /**
@@ -41,7 +45,7 @@ export function formatForwardedTopicContext(
   if (topicName) lines.push(`Topic: ${topicName}`);
   lines.push('');
   for (const m of messages) {
-    const sender = m.fromUser ? (m.senderName || 'User') : 'Agent';
+    const sender = historySenderLabel(m);
     // Local time + tz label — unlabeled UTC here caused the 2026-06-05
     // "9:23pm" incoherency (see src/utils/localTime.ts).
     const ts = formatLocalTimestamp(m.timestamp);

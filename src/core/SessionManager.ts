@@ -6388,6 +6388,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
        * marker text cannot mint it.
        */
       reDelivered?: boolean;
+      /**
+       * Agent-signed provenance (ASP). Set ONLY from the inbound classifier's
+       * own verdict for this message (see messaging/shared/signedInbound.ts),
+       * never from content. Additive: it changes the tag's sender clause to
+       * name the signing agent and the account that carried the message.
+       */
+      signedByAgent?: string;
     },
   ): boolean {
     // Structural dedup at the delivery chokepoint: a given Telegram messageId
@@ -6455,7 +6462,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
     // Build tag using the shared builder — includes UID when available
     // Format: [telegram:42 "Agent Updates" from Justin (uid:12345)]
-    const topicTag = buildInjectionTag(topicId, safeTopic, safeName, telegramUserId, opts?.reDelivered);
+    const topicTag = buildInjectionTag(topicId, safeTopic, safeName, telegramUserId, opts?.reDelivered, opts?.signedByAgent);
     const taggedText = `${topicTag} ${transformed}`;
 
     if (taggedText.length <= FILE_THRESHOLD) {
@@ -6473,7 +6480,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // to ride here too — the observed 2026-08-20 re-deliveries were all long
     // messages, i.e. exactly this branch. buildInjectionTag(topicId) with a
     // falsy flag returns `[telegram:N]`, byte-identical to the previous literal.
-    const refTag = buildInjectionTag(topicId, undefined, undefined, undefined, opts?.reDelivered);
+    const refTag = buildInjectionTag(topicId, undefined, undefined, undefined, opts?.reDelivered, opts?.signedByAgent);
     const ref = `${refTag} [Long message saved to ${filepath} — read it to see the full message]`;
     return this.injectMessage(tmuxSession, ref) !== false;
   }

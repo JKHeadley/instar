@@ -324,6 +324,7 @@ import { HomeostasisMonitor } from '../monitoring/HomeostasisMonitor.js';
 import { readReaperAuditPage } from '../monitoring/SessionReaper.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
 import { coerceMessageProvenance, type MessageProvenance } from '../messaging/shared/MessageProvenance.js';
+import { historySenderLabel, resolveSignedByAgent } from '../messaging/shared/signedInbound.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
 import type { FeedbackManager } from '../core/FeedbackManager.js';
 import type { DispatchManager } from '../core/DispatchManager.js';
@@ -1253,6 +1254,8 @@ export interface RouteContext {
    *  The principal whose decisions the agent enacts, established only from the
    *  authenticated sender uid. Null when stateDir is unavailable. */
   topicOperatorStore: import('../users/TopicOperatorStore.js').TopicOperatorStore | null;
+  /** The inbound ASP classifier, once built — a getter because it is constructed after this context. */
+  getAspClassifier?: () => import('../core/AspInboundClassifier.js').AspInboundClassifier | null;
   /** Coordination Mandate enforcement (docs/specs/coordination-mandate.md §4).
    *  Deny-by-default gate + signed store + hash-chained audit. Null when stateDir
    *  is unavailable. Issuance/revocation are PIN-gated, never Bearer-only. */
@@ -22722,7 +22725,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               historyLines.push(`Topic: ${topicName}`);
               historyLines.push(``);
               for (const m of history) {
-                const sender = m.fromUser ? (m.senderName || 'User') : 'Agent';
+                const sender = historySenderLabel(m);
                 const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
                 const histText = (m.text || '').slice(0, 2000);
                 historyLines.push(`[${ts}] ${sender}: ${histText}`);
@@ -23330,7 +23333,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // "Caroline" bug). Placed AFTER the a2a-hook short-circuit so agent-to-agent bot
     // messages never bind. Fail-soft: no store / unauthorized / error -> no-op and
     // routing continues; setOperator is idempotent on the same uid.
-    if (ctx.topicOperatorStore && fromUserId !== undefined && fromUserId !== null
+    // Agent-signed inbound (ASP): a message an agent SIGNED and delivered through
+    // this human's account is not evidence the human is present, so it never
+    // binds them. The verdict is the classifier's own, cached when the message
+    // was logged above (single-use nonce — never re-verified), read by message id.
+    const lifelineSignedByAgent = resolveSignedByAgent(
+      ctx.getAspClassifier?.() ?? null,
+      typeof topicId === 'number' ? topicId : null,
+      typeof messageId === 'number' ? messageId : Number(messageId) || null,
+    );
+    if (lifelineSignedByAgent) {
+      console.log(`[telegram-forward] topic ${topicId} message ${messageId ?? '?'} is agent-signed by "${lifelineSignedByAgent}" — operator auto-bind skipped`);
+    }
+    if (ctx.topicOperatorStore && !lifelineSignedByAgent && fromUserId !== undefined && fromUserId !== null
         && typeof topicId === 'number') {
       try {
         if (ctx.telegram?.isAuthorizedSender?.(fromUserId)) {
@@ -23497,9 +23512,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               historyLines.push(`Topic: ${topicName}`);
               historyLines.push(``);
               for (const m of history) {
-                const sender = m.fromUser
-                  ? (m.senderName || 'User')
-                  : 'Agent';
+                const sender = historySenderLabel(m);
                 const ts = formatLocalTimestamp(m.timestamp); // local + tz label (see src/utils/localTime.ts)
                 const histText = (m.text || '').slice(0, 2000);
                 historyLines.push(`[${ts}] ${sender}: ${histText}`);

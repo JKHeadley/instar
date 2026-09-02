@@ -86,6 +86,26 @@ export interface AspClassifierCounters {
 
 const TAG_HINT = '⟦asp1 ';
 
+/**
+ * The part of a verdict the ROUTING path needs, kept in memory by message id.
+ *
+ * The nonce is single-use, so a message can be verified exactly ONCE — at log
+ * time, before routing. Anything downstream that needs to know "was this
+ * agent-signed?" must read that one verdict rather than verify again (a second
+ * verify would classify the genuine message as a replay). Bounded so a busy
+ * bot cannot grow it without limit; the durable ledger remains the authority.
+ */
+export interface AspRecentVerdict {
+  classification: AspVerdict['classification'];
+  agentId: string | null;
+}
+
+const RECENT_VERDICT_CAP = 1000;
+
+function recentKey(topicId: number | null | undefined, messageId: number): string {
+  return `${topicId ?? 'none'}:${messageId}`;
+}
+
 export class AspInboundClassifier {
   private readonly opts: AspInboundClassifierOptions;
   private readonly now: () => number;
@@ -93,6 +113,7 @@ export class AspInboundClassifier {
     seen: 0, human: 0, agentVerified: 0, rejected: 0, errors: 0, recorded: 0,
     skippedOutbound: 0,
   };
+  private readonly recent = new Map<string, AspRecentVerdict>();
 
   constructor(opts: AspInboundClassifierOptions) {
     this.opts = opts;
@@ -138,6 +159,8 @@ export class AspInboundClassifier {
       else if (verdict.classification === 'agent-verified') this.counters.agentVerified += 1;
       else this.counters.rejected += 1;
 
+      this.remember(entry, verdict);
+
       const tagged = entry.text.includes(TAG_HINT);
       const onlyTagged = this.opts.onlyRecordTagged ?? true;
       if (!onlyTagged || tagged) this.record(entry, verdict);
@@ -158,6 +181,32 @@ export class AspInboundClassifier {
     return (entry: AspInboundEntry) => {
       this.classify(entry);
     };
+  }
+
+  /**
+   * The verdict recorded for one inbound message, by (topic, message id) —
+   * for the routing path, which runs AFTER log-time classification and must
+   * not verify again. `null` when the message was never classified here
+   * (no id, evicted, or arrived before this process started).
+   */
+  verdictFor(topicId: number | null | undefined, messageId: number | null | undefined): AspRecentVerdict | null {
+    if (typeof messageId !== 'number' || !Number.isFinite(messageId)) return null;
+    return this.recent.get(recentKey(topicId, messageId)) ?? null;
+  }
+
+  private remember(entry: AspInboundEntry, verdict: AspVerdict): void {
+    if (typeof entry.messageId !== 'number' || !Number.isFinite(entry.messageId)) return;
+    const key = recentKey(entry.topicId, entry.messageId);
+    this.recent.delete(key);
+    this.recent.set(key, {
+      classification: verdict.classification,
+      agentId: 'agentId' in verdict ? verdict.agentId ?? null : null,
+    });
+    while (this.recent.size > RECENT_VERDICT_CAP) {
+      const oldest = this.recent.keys().next().value;
+      if (oldest === undefined) break;
+      this.recent.delete(oldest);
+    }
   }
 
   private record(entry: AspInboundEntry, verdict: AspVerdict): void {
