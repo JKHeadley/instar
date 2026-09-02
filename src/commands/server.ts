@@ -37,6 +37,8 @@ function localSlackRelayReadiness(stateDir: string): { ready: true } | { ready: 
   return slackReplyRelayReadiness(stateDir, template);
 }
 import { buildAspInboundClassifier } from '../core/AspInboundClassifier.js';
+import { setAspClassifierRef, getAspClassifierRef } from '../core/aspClassifierRef.js';
+import { resolveInboundTelegramMessageId, resolveSignedByAgent, operatorAutoBindPermitted } from '../messaging/shared/signedInbound.js';
 import { StandDownRegistry } from '../core/StandDownRegistry.js';
 import { BASELINE_PROCESS_PATTERNS } from '../core/baselineProcessPatterns.js';
 import { StandDownAudit } from '../core/StandDownAudit.js';
@@ -2388,6 +2390,24 @@ export function wireTelegramRouting(
       ? userManager.resolveFromTelegramUserId(telegramUserId)
       : null;
 
+    // Agent-signed inbound (ASP). A message an agent SIGNED and delivered through
+    // a human's account is labelled as agent traffic for the receiving session and
+    // NEVER binds that human as the topic's operator. The verdict is the
+    // classifier's own — computed once at log time (single-use nonce), read here
+    // by platform message id from in-process state, never from content.
+    const inboundMessageId = resolveInboundTelegramMessageId(msg);
+    const signedByAgent = resolveSignedByAgent(getAspClassifierRef(), topicId, inboundMessageId);
+    // This point OWNS the field: it is always (re)written from the classifier's
+    // verdict, so a value that arrived on the Message from anywhere else — a
+    // wire body, a replay, a queue row — can never survive to the injection.
+    {
+      const { signedByAgent: _ignored, ...rest } = msg.metadata ?? {};
+      msg.metadata = signedByAgent ? { ...rest, signedByAgent } : rest;
+    }
+    if (signedByAgent) {
+      console.log(`[telegram] topic ${topicId} message ${inboundMessageId ?? '?'} is agent-signed by "${signedByAgent}" — labelled for the session; operator auto-bind skipped`);
+    }
+
     // Topic-operator auto-bind (Know Your Principal #898, increment 2e — the
     // POLLING-path writer; the lifeline-forward path already binds in routes.ts
     // #909). This onTopicMessage seam is the convergence BOTH ingress paths
@@ -2400,7 +2420,7 @@ export function wireTelegramRouting(
     // no store / unauthorized / error → no-op and routing continues.
     try {
       const opStore = getTopicOperatorStore?.() ?? null;
-      if (opStore && telegramUserId && telegram.isAuthorizedSender(telegramUserId)) {
+      if (opStore && operatorAutoBindPermitted(signedByAgent) && telegramUserId && telegram.isAuthorizedSender(telegramUserId)) {
         // A lifeline-forwarded Message.id may contain a Date.now fallback used
         // only for internal routing. Establishment evidence must use the raw
         // Telegram id carried separately; absent stays absent and fails closed.
@@ -2835,7 +2855,10 @@ export function wireTelegramRouting(
           // `reinjectStuck` (the no-loss recovery re-injection) and read here so
           // the tag can say so out loud. Read from the first-party Message
           // metadata, never from `content` — content cannot forge it.
-          { reDelivered: msg.metadata?.replay === true },
+          {
+            reDelivered: msg.metadata?.replay === true,
+            signedByAgent: typeof msg.metadata?.signedByAgent === 'string' ? msg.metadata.signedByAgent : undefined,
+          },
         );
         if (injected === false) {
           console.error(`[telegram→session] Injection FAILED for topic ${topicId} into ${targetSession}; not sending delivery confirmation`);
@@ -15278,6 +15301,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             // entirely when this agent has no canonical identity.
             try {
               const aspClassifier = buildAspInboundClassifier(config.stateDir, config.projectName);
+              setAspClassifierRef(aspClassifier);
               if (aspClassifier) {
                 const beforeAspCb = telegram.onMessageLogged;
                 telegram.onMessageLogged = (entry) => {

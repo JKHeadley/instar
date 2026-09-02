@@ -267,6 +267,8 @@ interface LogEntry {
   provenance: MessageProvenance;
   /** Joined at read time from the ASP classification authority. */
   authorship?: MessageAuthorship;
+  /** The signing agent's id — present only when `authorship` is `agent-verified`. */
+  authorshipAgentId?: string | null;
 }
 
 /**

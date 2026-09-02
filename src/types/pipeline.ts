@@ -280,19 +280,26 @@ export function buildInjectionTag(
   senderName?: string,
   telegramUserId?: number,
   reDelivered?: boolean,
+  signedByAgent?: string,
 ): string {
   const uidSuffix = telegramUserId ? ` (uid:${telegramUserId})` : '';
   const reDeliverySuffix = reDelivered === true ? ` — ${RE_DELIVERY_MARKER}` : '';
+  const topicPart = topicName ? ` "${topicName}"` : '';
 
-  if (topicName && senderName) {
-    return `[telegram:${topicId} "${topicName}" from ${senderName}${uidSuffix}${reDeliverySuffix}]`;
-  } else if (topicName) {
-    return `[telegram:${topicId} "${topicName}"${reDeliverySuffix}]`;
+  // Agent-signed provenance (ASP). `signedByAgent` is an IN-PROCESS parameter
+  // carried from the classifier's own verdict — never parsed from content, so a
+  // body that merely claims a signature cannot mint this label. The human whose
+  // account carried the message is still named: the session must know the
+  // channel, and must NOT read the message as that human speaking.
+  const safeAgent = signedByAgent && /^[A-Za-z0-9_-]{1,64}$/.test(signedByAgent) ? signedByAgent : undefined;
+  let fromPart = '';
+  if (safeAgent) {
+    fromPart = ` from agent ${safeAgent} (signed)` + (senderName ? ` via ${senderName}'s account${uidSuffix}` : '');
   } else if (senderName) {
-    return `[telegram:${topicId} from ${senderName}${uidSuffix}${reDeliverySuffix}]`;
-  } else {
-    return `[telegram:${topicId}${reDeliverySuffix}]`;
+    fromPart = ` from ${senderName}${uidSuffix}`;
   }
+
+  return `[telegram:${topicId}${topicPart}${fromPart}${reDeliverySuffix}]`;
 }
 
 /**

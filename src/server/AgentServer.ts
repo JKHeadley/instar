@@ -9,6 +9,7 @@
  */
 
 import express, { type Express, type Request, type Response } from 'express';
+import { getAspClassifierRef } from '../core/aspClassifierRef.js';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -4046,6 +4047,7 @@ export class AgentServer {
       processFootprintMonitor: this.processFootprintMonitor,
       approvalLedger: this.approvalLedger,
       topicOperatorStore: this.topicOperatorStore,
+      getAspClassifier: getAspClassifierRef,
       coordination: this.coordination,
       deliveredMandateStore: this.deliveredMandateStore,
       // WS5.2 R4a — operator side: package an issued mandate with the asymmetric issuance signature
