@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { SHIPPED_CODEX_STAGE_B_RELEASE_EVIDENCE } from '../data/codexStageBReleaseEvidence.js';
+import { STAGE_B_CERTIFIED_SET } from '../data/stageBCertifiedSet.js';
 
 export const STAGE_B_REQUIRED_CASES = [
   'identical', 'multiline', 'active-turn', 'resize', 'outage', 'transfer',
@@ -175,18 +176,34 @@ export function resolveStageBProductionActivation(input: StageBProductionActivat
   // fleet machine verifies it against the Echo public key pinned in the
   // reviewed package; using the target machine's own key/id here would make
   // fleet activation impossible while looking correctly fail-closed.
-  const shipped = input.shippedEvidence === undefined
+  const usingBundled = input.shippedEvidence === undefined;
+  const shipped = usingBundled
     ? parseShippedStageBEvidence(SHIPPED_CODEX_STAGE_B_RELEASE_EVIDENCE)
     : input.shippedEvidence;
   if (!shipped) return localStatus;
-  return new StageBActivationGate({
-    packageVersion: input.packageVersion,
-    gitCommit: input.gitCommit,
+  // Code-binding spec: package evidence is verified against the artifact's own
+  // run provenance + the certified-set manifest digest, never the CURRENT
+  // version — the version binding rejected the shipped artifact on every
+  // release after the one it named, leaving Stage B silently dark fleet-wide.
+  const shippedGate = new StageBActivationGate({
+    packageVersion: shipped.artifact.packageVersion,
+    gitCommit: shipped.artifact.gitCommit,
     configSha256,
     echoMachineId: shipped.artifact.echoMachineId,
     echoPublicKeyPem: shipped.echoPublicKeyPem,
     developmentAgent: input.developmentAgent,
-  }).evaluate(input.config, shipped.artifact);
+  });
+  const status = shippedGate.evaluate(input.config, shipped.artifact);
+  // The certified-set manifest vouches for the PACKAGE-BUNDLED artifact; an
+  // explicitly injected override (the documented test/release-tool seam) keeps
+  // every shape/signature/threshold/config check but cannot match a manifest
+  // bound to different evidence, so the digest linkage applies only when the
+  // bundled constant is in use — which is every production caller.
+  if (usingBundled && status.active
+    && canonicalShippedArtifactDigest(shipped.artifact) !== STAGE_B_CERTIFIED_SET.artifactDigest) {
+    return { ...status, active: false, reason: 'artifact-binding-mismatch' };
+  }
+  return status;
 }
 
 /** The release candidate and fleet activation share this behavioral config
@@ -211,16 +228,61 @@ export function bundledStageBReleaseEvidence(): StageBShippedReleaseEvidence | n
   return parseShippedStageBEvidence(SHIPPED_CODEX_STAGE_B_RELEASE_EVIDENCE);
 }
 
-export function verifyBundledStageBReleaseEvidence(packageVersion: string): StageBInactiveReason | null {
-  const shipped = bundledStageBReleaseEvidence();
+/**
+ * Canonical digest of a signed artifact: the exact field-ordered bytes the
+ * Echo signature covers, plus the signature. Stable across property order and
+ * construction path, unlike JSON.stringify of the object.
+ */
+export function canonicalShippedArtifactDigest(artifact: StageBRcArtifact): string {
+  const { signature, ...unsigned } = artifact;
+  return crypto.createHash('sha256')
+    .update(canonicalStageBRcArtifact(unsigned) + '\n' + signature)
+    .digest('hex');
+}
+
+/**
+ * Package-shipped evidence verification (spec: stage-b-evidence-code-binding).
+ *
+ * Binds the evidence to the CODE the canary certified, not to a version
+ * number: `packageVersion`, `gitCommit`, and `echoMachineId` are read from the
+ * artifact itself as historical provenance of where the canary ran (the
+ * machine-id comparison was artifact-sourced in the version-bound design too),
+ * while `configSha256` REMAINS a real comparison against this build's expected
+ * behavioral config, and the NEW binding requires the artifact's canonical
+ * digest to equal the reviewed certified-set manifest's `artifactDigest`. The
+ * code side of that binding — "did the certified sources change since this
+ * evidence was approved?" — is enforced where sources exist: the publish gate
+ * runs scripts/stage-b-certified-fingerprint.mjs --check, and refuses to ship
+ * a package whose certified sources drifted from the manifest. An installed
+ * package therefore carries a manifest and evidence the publish gate already
+ * proved consistent; runtime re-verifies shape, signature, thresholds, config
+ * binding, and the digest linkage.
+ */
+export function verifyShippedStageBEvidence(
+  shipped: StageBShippedReleaseEvidence | null,
+): StageBInactiveReason | null {
   if (!shipped) return 'artifact-missing';
-  return new StageBActivationGate({
-    packageVersion,
-    gitCommit: `package:${packageVersion}`,
+  const reason = new StageBActivationGate({
+    packageVersion: shipped.artifact.packageVersion,
+    gitCommit: shipped.artifact.gitCommit,
     configSha256: stageBConfigSha256({ ledgerObserverEnabled: true }),
     echoMachineId: shipped.artifact.echoMachineId,
     echoPublicKeyPem: shipped.echoPublicKeyPem,
   }).verifyArtifact(shipped.artifact);
+  if (reason) return reason;
+  if (canonicalShippedArtifactDigest(shipped.artifact) !== STAGE_B_CERTIFIED_SET.artifactDigest) {
+    return 'artifact-binding-mismatch';
+  }
+  return null;
+}
+
+/**
+ * @param _packageVersion Unused since the code-binding spec: the version was a
+ * one-shot proxy for "the certified code changed" and froze publishing one
+ * release after it shipped. Kept for call-site compatibility.
+ */
+export function verifyBundledStageBReleaseEvidence(_packageVersion: string): StageBInactiveReason | null {
+  return verifyShippedStageBEvidence(bundledStageBReleaseEvidence());
 }
 
 /**

@@ -8,6 +8,7 @@
  * blocks npm publication.
  */
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -23,6 +24,14 @@ const failure = verifyBundledStageBReleaseEvidence(String(pkg.version));
 if (!evidence || failure) {
   console.error(`[codex-stage-b-release] BLOCKED: ${failure ?? 'artifact-missing'}`);
   console.error('Run and approve the bounded Echo Stage-B RC canary, then embed its signed evidence before publishing.');
+  process.exit(1);
+}
+
+// Code-binding spec: the certified Stage-B sources must match the manifest the
+// evidence is bound to. Drift blocks publishing until a fresh canary rebinds.
+const fp = spawnSync(process.execPath, [path.join(root, 'scripts', 'stage-b-certified-fingerprint.mjs'), '--check'], { stdio: 'inherit' });
+if (fp.status !== 0) {
+  console.error('[codex-stage-b-release] BLOCKED: certified-source drift (see above).');
   process.exit(1);
 }
 
