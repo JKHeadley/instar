@@ -708,7 +708,8 @@ export class InboundDeliveryStore {
   }
 
   markRolloutUnknown(rolloutId: string, rolloutPath: string): number {
-    return this.db.prepare(`UPDATE inbound_delivery SET transcript_state = 'unknown', eligibility_state = 'unknown',
+    return this.db.prepare(`UPDATE inbound_delivery SET transport_state = 'effect-unknown',
+        transcript_state = 'unknown', eligibility_state = 'unknown',
         composer_state = CASE WHEN composer_state = 'cleared' THEN composer_state ELSE 'unknown' END, updated_at = ?
       WHERE rollout_id = ? AND rollout_path = ? AND transport_state = 'dispatched'
         AND transcript_state IN ('unseen','consumed') AND eligibility_state = 'open'`)
@@ -858,7 +859,13 @@ export class InboundDeliveryStore {
   }
 
   markObservationUnknown(conversationId: string, deliveryId: string): boolean {
-    return this.db.prepare(`UPDATE inbound_delivery SET transcript_state = 'unknown', eligibility_state = 'unknown',
+    // The observation deadline is terminal for automatic handling. Keeping the
+    // transport state as `dispatched` made these typed-unknown, non-replayable
+    // rows count against the live admission ceiling forever. Preserve the
+    // uncertainty explicitly as `effect-unknown`, which is both terminal and
+    // retained by the normal evidence GC policy.
+    return this.db.prepare(`UPDATE inbound_delivery SET transport_state = 'effect-unknown',
+      transcript_state = 'unknown', eligibility_state = 'unknown',
       composer_state = CASE WHEN composer_state = 'cleared' THEN composer_state ELSE 'unknown' END, updated_at = ?
       WHERE conversation_id = ? AND delivery_id = ? AND transport_state = 'dispatched'
         AND transcript_state IN ('unseen','consumed') AND eligibility_state = 'open'`)
@@ -1148,6 +1155,7 @@ export class InboundDeliveryStore {
       `SELECT CASE
         WHEN transcript_state = 'responded' THEN 'responded'
         WHEN transcript_state = 'consumed' THEN 'turn-consumed'
+        WHEN transport_state = 'effect-unknown' THEN 'effect-unknown'
         WHEN eligibility_state = 'keypress-exhausted' THEN 'exhausted'
         WHEN eligibility_state != 'open' THEN eligibility_state
         WHEN composer_state = 'cleared' THEN 'composer-cleared'

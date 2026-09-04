@@ -257,6 +257,50 @@ describe('InboundDeliveryStore', () => {
     expect(bytes.status().liveRows).toBe(1);
   });
 
+  it('releases admission capacity when an expired observation becomes terminally unknown', () => {
+    const store = InboundDeliveryStore.openMemory({ maxLiveRows: 1 });
+    const row = store.prepare({
+      conversationId: 'c', deliveryId: 'uncertain', incarnation: 'i',
+      framework: 'codex-cli', envelope: 'first', hmacKey: 'k',
+    });
+    store.transition('c', row.deliveryId, 'prepared', 'dispatch-armed');
+    store.transition('c', row.deliveryId, 'dispatch-armed', 'dispatch-started');
+    store.transition('c', row.deliveryId, 'dispatch-started', 'dispatched');
+    expect(store.status().liveRows).toBe(1);
+
+    expect(store.markObservationUnknown('c', row.deliveryId)).toBe(true);
+
+    expect(store.get('c', row.deliveryId)).toMatchObject({
+      transportState: 'effect-unknown', transcriptState: 'unknown', eligibilityState: 'unknown',
+    });
+    expect(store.status()).toMatchObject({ liveRows: 0, uncertainEffects: 1 });
+    expect(() => store.prepare({
+      conversationId: 'next', deliveryId: 'next', incarnation: 'i',
+      framework: 'codex-cli', envelope: 'second', hmacKey: 'k',
+    })).not.toThrow();
+  });
+
+  it('atomically releases all live capacity when a shared rollout becomes unknown', () => {
+    const store = InboundDeliveryStore.openMemory({ maxLiveRows: 2, maxLiveRowsPerConversation: 2 });
+    for (const [conversationId, deliveryId] of [['one', 'd1'], ['two', 'd2']] as const) {
+      const row = store.prepare({
+        conversationId, deliveryId, incarnation: 'i', framework: 'codex-cli',
+        envelope: deliveryId, hmacKey: 'k',
+      });
+      store.transition(conversationId, deliveryId, 'prepared', 'dispatch-armed');
+      store.bindRolloutBaseline(conversationId, deliveryId, '/tmp/shared-rollout.jsonl', 'rollout', 0);
+      store.transition(conversationId, deliveryId, 'dispatch-armed', 'dispatch-started');
+      store.transition(conversationId, deliveryId, 'dispatch-started', 'dispatched');
+    }
+    expect(store.status().liveRows).toBe(2);
+
+    expect(store.markRolloutUnknown('rollout', '/tmp/shared-rollout.jsonl')).toBe(2);
+
+    expect(store.status()).toMatchObject({ liveRows: 0, uncertainEffects: 2 });
+    expect(store.get('one', 'd1')?.transportState).toBe('effect-unknown');
+    expect(store.get('two', 'd2')?.transportState).toBe('effect-unknown');
+  });
+
   it('retains at most the newest terminal rows and expires them by TTL in bounded batches', () => {
     let now = 1_000;
     const store = InboundDeliveryStore.openMemory({
