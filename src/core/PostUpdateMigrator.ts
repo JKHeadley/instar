@@ -10004,6 +10004,14 @@ Create worktrees for collaborator repos with \`instar worktree create <branch>\`
       patched = true;
       result.upgraded.push('CLAUDE.md: added command-watchdog attribution awareness');
     }
+    if (content.includes('Command-watchdog attribution:') && !content.includes('action-time PID/parent/argv identity check')) {
+      content = content.replace(
+        /- \*\*Command-watchdog attribution:\*\*[^\n]*/,
+        '- **Command-watchdog attribution:** `SessionWatchdog` never interrupts the Codex framework host, known bounded external waiters, or pinned long-lived test/compiler services such as Vitest\'s esbuild service. A selected descendant is signaled directly only after an action-time PID/parent/argv identity check; the watchdog never sends pane-wide Ctrl+C for a descendant helper. Its audit identifies `principal: session-watchdog` and `operatorInitiated: false`; generic "aborted by user" text is not proof the operator acted.',
+      );
+      patched = true;
+      result.upgraded.push('CLAUDE.md: hardened command-watchdog descendant attribution awareness');
+    }
     if (!content.includes('Crash-safe inbound delivery:')) {
       content += `\n- **Crash-safe inbound delivery:** Normal tmux injection and Codex stranded-draft key attempts use FULL-durable armed/started/terminal phases. A crash-open mutation becomes \`effect-unknown\` and is never blindly repeated. Diagnose privacy-safe counts at \`GET /sessions/inbound-delivery-status\`; no message body is exposed. Command-watchdog continuation is owned by the canonical continuation/recovery funnel, never an independent watchdog prompt.\n`;
       patched = true;

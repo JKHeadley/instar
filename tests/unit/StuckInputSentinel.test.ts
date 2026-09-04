@@ -174,6 +174,20 @@ describe('StuckInputSentinel — tick lifecycle', () => {
     // No fake timers — we drive ticks manually via .tick().
   });
 
+  it('does not synchronously probe idle Codex sessions without a tracked draft', () => {
+    const mgr = buildStubManager({ 'echo-codex': EMPTY_PROMPT_PANE });
+    mgr.listRunningSessions.mockReturnValue([
+      { tmuxSession: 'echo-codex', framework: 'codex-cli' },
+    ]);
+    const sentinel = buildSentinel(mgr);
+
+    sentinel.tick();
+
+    expect(mgr.tmuxSessionExists).not.toHaveBeenCalled();
+    expect(mgr.captureOutput).not.toHaveBeenCalled();
+    expect(mgr.fireStuckInputRecovery).not.toHaveBeenCalled();
+  });
+
   it('does NOT fire on the first observation of stuck text', () => {
     const mgr = buildStubManager({ 'echo-A': STUCK_PANE_IDLE });
     const sentinel = buildSentinel(mgr);

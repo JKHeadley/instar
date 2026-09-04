@@ -132,6 +132,18 @@ describe('SessionManager async hot-path helper twins (§A)', () => {
     expect(await helpers(manager).captureOutputAsync('s')).toBe('hello world\n');
   });
 
+  it('listRunningSessions is state-served and issues zero sync tmux calls in async-hot-path mode', () => {
+    state.saveSession({
+      id: 'state-served', name: 'state-served', tmuxSession: 'state-served',
+      status: 'running', startedAt: new Date().toISOString(),
+    } as Session);
+
+    const running = manager.listRunningSessions();
+
+    expect(running.map((session) => session.tmuxSession)).toContain('state-served');
+    expect(syncCalls).toEqual([]);
+  });
+
   it('captureOutputAsync returns NULL on an indeterminate (timed-out) capture', async () => {
     asyncHandlers = { 'capture-pane': () => ({ reject: timeoutErr() }) };
     expect(await helpers(manager).captureOutputAsync('s')).toBeNull();

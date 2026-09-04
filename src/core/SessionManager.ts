@@ -4987,6 +4987,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   listRunningSessions(): Session[] {
     const sessions = this.state.listSessions({ status: 'running' });
+    // In async-hot-path mode the monitor is the sole tmux liveness authority.
+    // Re-probing every row synchronously here defeats that architecture: every
+    // sentinel/status caller fans out has-session + display-message, and a
+    // shared tmux server with thousands of panes can keep Node's event loop
+    // blocked almost continuously. State may briefly retain a dead row until
+    // the next bounded monitor tick; that conservative lag is safer than
+    // declaring a live session dead from a slow probe and keeps /health and
+    // inbound custody responsive.
+    if (this.tmuxAsyncEnabled) {
+      this._cachedRunningCount = sessions.length;
+      this._cachedRunningSessions = sessions;
+      return sessions;
+    }
     const alive = sessions.filter(s => this.isSessionAlive(s.tmuxSession));
     // Update cache as a side effect
     this._cachedRunningCount = alive.length;

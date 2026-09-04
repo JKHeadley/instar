@@ -7,6 +7,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import type { QueueReason } from './queueDeliveryNotice.js';
 
 export interface QueuedMessage {
   id: string;
@@ -16,6 +17,8 @@ export interface QueuedMessage {
   fromUsername?: string;
   fromFirstName: string;
   timestamp: string;
+  /** Why the initial delivery was queued. Missing means a legacy queue entry. */
+  queueReason?: QueueReason;
   voiceFile?: string;
   photoPath?: string;
   documentPath?: string;

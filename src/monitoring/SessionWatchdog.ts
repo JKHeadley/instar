@@ -7,7 +7,7 @@
  *
  * Escalation pipeline:
  *   Level 0: Monitoring (default)
- *   Level 1: Ctrl+C via tmux send-keys
+ *   Level 1: targeted SIGINT to the selected descendant
  *   Level 2: SIGTERM the stuck child PID
  *   Level 3: SIGKILL the stuck child PID
  *   Level 4: Kill tmux session
@@ -115,7 +115,10 @@ interface EscalationState {
   level: EscalationLevel;
   levelEnteredAt: number;
   stuckChildPid: number;
+  stuckChildParentPid: number;
   stuckCommand: string;
+  sessionId?: string;
+  sessionStartedAt?: string;
   retryCount: number;
 }
 
@@ -125,6 +128,11 @@ export interface InterventionEvent {
   action: string;
   stuckCommand: string;
   stuckPid: number;
+  stuckParentPid?: number;
+  processRole: 'user-command';
+  effectScope: 'target-process' | 'session-via-reap-authority';
+  sessionId?: string;
+  sessionStartedAt?: string;
   timestamp: number;
   /** The actor that caused the interruption. Never infer a human principal from Ctrl+C. */
   principal: 'session-watchdog';
@@ -140,6 +148,28 @@ export interface InterventionEvent {
 export interface ProtectedWaitEvidence {
   protected: boolean;
   reason?: 'safe-merge-wait' | 'github-run-watch' | 'bounded-wait-output';
+}
+
+export interface LongLivedServiceEvidence {
+  protected: boolean;
+  reason?: 'esbuild-service';
+}
+
+/**
+ * Deterministic process-role floor for compiler/test helpers that are expected
+ * to remain quiet for the lifetime of their parent.  Match the complete argv
+ * contract, not a basename alone: a normal one-shot `esbuild` invocation must
+ * remain eligible for ordinary stuck-command assessment.
+ */
+export function classifyLongLivedServiceProcess(command: string): LongLivedServiceEvidence {
+  const argv = command.trim().split(/\s+/);
+  const executable = path.basename(argv[0] ?? '');
+  const isEsbuildService = executable === 'esbuild'
+    && argv.some((arg) => /^--service(?:=|$)/.test(arg))
+    && argv.includes('--ping');
+  return isEsbuildService
+    ? { protected: true, reason: 'esbuild-service' }
+    : { protected: false };
 }
 
 export interface FrameworkInfrastructureEvidence {
@@ -501,6 +531,14 @@ export class SessionWatchdog extends EventEmitter {
     const existing = this.escalationState.get(tmuxSession);
 
     if (existing && existing.level > EscalationLevel.Monitoring) {
+      const current = this.sessionManager.listRunningSessions?.()
+        .find((session) => session.tmuxSession === tmuxSession);
+      if ((existing.sessionId && current?.id !== existing.sessionId)
+        || (existing.sessionStartedAt && current?.startedAt !== existing.sessionStartedAt)) {
+        console.warn(`[Watchdog] "${tmuxSession}": session incarnation changed — discarding stale escalation`);
+        this.escalationState.delete(tmuxSession);
+        return;
+      }
       await this.handleEscalation(tmuxSession, existing);
       return;
     }
@@ -539,6 +577,15 @@ export class SessionWatchdog extends EventEmitter {
             outcome: 'ownership-unknown', detail: verdict.detail ?? 'unconfirmed', timestamp: Date.now(),
           });
         }
+        continue;
+      }
+      const service = classifyLongLivedServiceProcess(c.command);
+      if (service.protected) {
+        this.persistAudit({
+          type: 'long-lived-service-process', sessionName: tmuxSession, pid: c.pid,
+          parentPid: c.parentPid, processRole: service.reason,
+          effectScope: 'none', outcome: 'protected', detail: service.reason, timestamp: Date.now(),
+        });
         continue;
       }
       if (this.isExcluded(c.command)) continue;
@@ -607,23 +654,26 @@ export class SessionWatchdog extends EventEmitter {
         level: EscalationLevel.CtrlC,
         levelEnteredAt: Date.now(),
         stuckChildPid: stuckChild.pid,
+        stuckChildParentPid: stuckChild.parentPid,
         stuckCommand: stuckChild.command,
+        sessionId: sessionRecord?.id,
+        sessionStartedAt: sessionRecord?.startedAt,
         retryCount: existing?.retryCount ?? 0,
       };
       this.escalationState.set(tmuxSession, state);
 
       console.log(
         `[Watchdog] "${tmuxSession}": stuck command (${Math.round(stuckChild.elapsedMs / 1000)}s): ` +
-        `${stuckChild.command.slice(0, 80)} — sending Ctrl+C`
+        `${stuckChild.command.slice(0, 80)} — sending targeted SIGINT`
       );
 
-      const interrupted = this.sessionManager.sendKey(tmuxSession, 'C-c');
+      const interrupted = await this.signalIfIdentityMatches(stuckChild, 'SIGINT');
       if (!interrupted) {
-        console.warn(`[Watchdog] "${tmuxSession}": Ctrl+C delivery failed — refusing to inject continuation input`);
+        console.warn(`[Watchdog] "${tmuxSession}": target identity changed — refusing interruption`);
         this.escalationState.delete(tmuxSession);
         return;
       }
-      this.recordIntervention(tmuxSession, EscalationLevel.CtrlC, 'Sent Ctrl+C', stuckChild);
+      this.recordIntervention(tmuxSession, EscalationLevel.CtrlC, `SIGINT ${stuckChild.pid} (targeted)`, stuckChild, state);
     } else if (existing) {
       this.escalationState.delete(tmuxSession);
     }
@@ -788,13 +838,19 @@ export class SessionWatchdog extends EventEmitter {
       state.level = EscalationLevel.CtrlC;
       state.levelEnteredAt = now;
       state.retryCount++;
-      const interrupted = this.sessionManager.sendKey(tmuxSession, 'C-c');
+      const interrupted = await this.signalIfIdentityMatches({
+        pid: state.stuckChildPid,
+        parentPid: state.stuckChildParentPid,
+        command: state.stuckCommand,
+        elapsedMs: 0,
+      }, 'SIGINT');
       if (interrupted) {
-        this.recordIntervention(tmuxSession, EscalationLevel.CtrlC, `Retry ${state.retryCount}: Sent Ctrl+C`, {
-          pid: state.stuckChildPid, command: state.stuckCommand, elapsedMs: 0,
-        });
+          this.recordIntervention(tmuxSession, EscalationLevel.CtrlC, `Retry ${state.retryCount}: SIGINT ${state.stuckChildPid} (targeted)`, {
+          pid: state.stuckChildPid, parentPid: state.stuckChildParentPid, command: state.stuckCommand, elapsedMs: 0,
+        }, state);
       } else {
-        console.warn(`[Watchdog] "${tmuxSession}": retry Ctrl+C delivery failed — not recording a false intervention`);
+        console.warn(`[Watchdog] "${tmuxSession}": retry target identity changed — standing down`);
+        this.escalationState.delete(tmuxSession);
       }
       return;
     }
@@ -805,19 +861,25 @@ export class SessionWatchdog extends EventEmitter {
     state.level = nextLevel as EscalationLevel;
     state.levelEnteredAt = now;
 
-    const child = { pid: state.stuckChildPid, command: state.stuckCommand, elapsedMs: 0 };
+    const child = { pid: state.stuckChildPid, parentPid: state.stuckChildParentPid, command: state.stuckCommand, elapsedMs: 0 };
 
     switch (state.level) {
       case EscalationLevel.SigTerm:
         console.log(`[Watchdog] "${tmuxSession}": sending SIGTERM to ${state.stuckChildPid}`);
-        this.sendSignal(state.stuckChildPid, 'SIGTERM');
-        this.recordIntervention(tmuxSession, EscalationLevel.SigTerm, `SIGTERM ${state.stuckChildPid}`, child);
+        if (await this.signalIfIdentityMatches(child, 'SIGTERM')) {
+          this.recordIntervention(tmuxSession, EscalationLevel.SigTerm, `SIGTERM ${state.stuckChildPid}`, child, state);
+        } else {
+          this.escalationState.delete(tmuxSession);
+        }
         break;
 
       case EscalationLevel.SigKill:
         console.log(`[Watchdog] "${tmuxSession}": sending SIGKILL to ${state.stuckChildPid}`);
-        this.sendSignal(state.stuckChildPid, 'SIGKILL');
-        this.recordIntervention(tmuxSession, EscalationLevel.SigKill, `SIGKILL ${state.stuckChildPid}`, child);
+        if (await this.signalIfIdentityMatches(child, 'SIGKILL')) {
+          this.recordIntervention(tmuxSession, EscalationLevel.SigKill, `SIGKILL ${state.stuckChildPid}`, child, state);
+        } else {
+          this.escalationState.delete(tmuxSession);
+        }
         break;
 
       case EscalationLevel.KillSession: {
@@ -828,13 +890,24 @@ export class SessionWatchdog extends EventEmitter {
         // autonomous kill — so a session the guards would have kept survives a
         // buggy watchdog, gains exactly-once sessionComplete/sessionReaped
         // emission, and lands in the reap-log with its reason.
+        if (!await this.processIdentityMatches(child)) {
+          console.warn(`[Watchdog] "${tmuxSession}": target identity changed before session-level escalation — standing down`);
+          this.escalationState.delete(tmuxSession);
+          break;
+        }
         console.log(`[Watchdog] "${tmuxSession}": requesting session kill via ReapAuthority`);
         const sess = this.sessionManager
           .listRunningSessions()
           .find((s) => s.tmuxSession === tmuxSession);
         if (!sess) {
           // Session already gone — nothing to kill.
-          this.recordIntervention(tmuxSession, EscalationLevel.KillSession, 'session already gone', child);
+          this.recordIntervention(tmuxSession, EscalationLevel.KillSession, 'session already gone', child, state);
+          this.escalationState.delete(tmuxSession);
+          break;
+        }
+        if ((state.sessionId && sess.id !== state.sessionId)
+          || (state.sessionStartedAt && sess.startedAt !== state.sessionStartedAt)) {
+          console.warn(`[Watchdog] "${tmuxSession}": session incarnation changed before termination — standing down`);
           this.escalationState.delete(tmuxSession);
           break;
         }
@@ -843,14 +916,14 @@ export class SessionWatchdog extends EventEmitter {
           finalStatus: 'killed',
         });
         if (result.terminated) {
-          this.recordIntervention(tmuxSession, EscalationLevel.KillSession, 'terminated via ReapAuthority', child);
+          this.recordIntervention(tmuxSession, EscalationLevel.KillSession, 'terminated via ReapAuthority', child, state);
         } else {
           // The authority refused (protected / lease / a KEEP). Stand down — the
           // guards own this decision; the §P5 backstop will surface a
           // persistently-stale session for an operator decision rather than the
           // watchdog re-escalating against a guarded session every tick.
           console.log(`[Watchdog] "${tmuxSession}": kill refused — ${result.skipped} (standing down)`);
-          this.recordIntervention(tmuxSession, EscalationLevel.KillSession, `kept (${result.skipped})`, child);
+          this.recordIntervention(tmuxSession, EscalationLevel.KillSession, `kept (${result.skipped})`, child, state);
         }
         this.escalationState.delete(tmuxSession);
         break;
@@ -1225,6 +1298,29 @@ export class SessionWatchdog extends EventEmitter {
     }
   }
 
+  /** Action-time PID reuse/parent-edge/argv fence for every descendant signal. */
+  private async processIdentityMatches(child: ChildProcessInfo): Promise<boolean> {
+    const output = (await shellExecAsync(
+      `ps -p ${child.pid} -o ppid=,command= 2>/dev/null`,
+    )).trim();
+    const match = output.match(/^(\d+)\s+(.+)$/);
+    if (!match) return false;
+    const parentPid = Number(match[1]);
+    const command = match[2];
+    return parentPid === child.parentPid && command === child.command;
+  }
+
+  /** Action-time PID reuse/parent-edge/argv fence for every descendant signal. */
+  private async signalIfIdentityMatches(child: ChildProcessInfo, signal: NodeJS.Signals): Promise<boolean> {
+    if (!await this.processIdentityMatches(child)) return false;
+    try {
+      process.kill(child.pid, signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private isProcessAlive(pid: number): boolean {
     try {
       process.kill(pid, 0);
@@ -1240,7 +1336,8 @@ export class SessionWatchdog extends EventEmitter {
     sessionName: string,
     level: EscalationLevel,
     action: string,
-    child: { pid: number; command: string; elapsedMs: number },
+    child: { pid: number; parentPid?: number; command: string; elapsedMs: number },
+    state?: Pick<EscalationState, 'sessionId' | 'sessionStartedAt'>,
   ): InterventionEvent {
     const event: InterventionEvent = {
       sessionName,
@@ -1248,6 +1345,11 @@ export class SessionWatchdog extends EventEmitter {
       action,
       stuckCommand: child.command.slice(0, 200),
       stuckPid: child.pid,
+      stuckParentPid: child.parentPid,
+      processRole: 'user-command',
+      effectScope: level === EscalationLevel.KillSession ? 'session-via-reap-authority' : 'target-process',
+      sessionId: state?.sessionId,
+      sessionStartedAt: state?.sessionStartedAt,
       timestamp: Date.now(),
       principal: 'session-watchdog',
       reason: 'stuck-command-judge',

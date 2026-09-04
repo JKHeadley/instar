@@ -69,6 +69,7 @@ import { writeWakeRequestIfSlept } from './agentSleepWake.js';
 import { detectLaunchdSupervised } from './detectLaunchdSupervised.js';
 import { LifelineDriftPromoter, DRIFT_RESTART_PENDING_NOTICE_FILE } from './LifelineDriftPromoter.js';
 import { buildQueuedNotice } from './queuedNotice.js';
+import { buildQueueAcknowledgement, buildQueueDeliveryNotices } from './queueDeliveryNotice.js';
 import {
   LifelineHealthWatchdog,
   DEFAULT_WATCHDOG_THRESHOLDS,
@@ -1215,8 +1216,8 @@ export class TelegramLifeline {
         await this.sendToTopic(topicId, '✓ Delivered');
         return;
       }
-      // Server appears healthy but forward failed — queue and tell the user we
-      // are reconnecting (NOT that the server is restarting: it is confirmed up).
+      // Server appears healthy but forward failed. Preserve the message, but do
+      // not announce an outage: a slow ingress decision is not a dead server.
       this.queue.enqueue({
         id: `tg-${msg.message_id}`,
         topicId,
@@ -1225,11 +1226,11 @@ export class TelegramLifeline {
         fromUsername: msg.from.username,
         fromFirstName: msg.from.first_name,
         timestamp: new Date(msg.date * 1000).toISOString(),
+        queueReason: 'healthy-forward-failed',
       });
       if (this.shouldSendQueueAck(topicId)) {
-        await this.sendToTopic(topicId,
-          buildQueuedNotice('message', this.queue.length, /* serverHealthy */ true)
-        );
+        const notice = buildQueueAcknowledgement('healthy-forward-failed', 'message');
+        if (notice) await this.sendToTopic(topicId, notice);
       }
       return;
     }
@@ -1243,6 +1244,7 @@ export class TelegramLifeline {
       fromUsername: msg.from.username,
       fromFirstName: msg.from.first_name,
       timestamp: new Date(msg.date * 1000).toISOString(),
+      queueReason: 'server-unhealthy',
     });
 
     // Notify user that message is queued (rate-limited to prevent spam during restart loops)
@@ -1275,7 +1277,8 @@ export class TelegramLifeline {
       console.error(`[lifeline] Failed to download photo: ${err}`);
     }
 
-    if (this.supervisor.healthy) {
+    const serverWasHealthy = this.supervisor.healthy;
+    if (serverWasHealthy) {
       const forwarded = await this.forwardToServer(topicId, content, msg);
       if (forwarded) {
         await this.sendToTopic(topicId, '✓ Delivered');
@@ -1293,12 +1296,13 @@ export class TelegramLifeline {
       fromFirstName: msg.from.first_name,
       timestamp: new Date(msg.date * 1000).toISOString(),
       photoPath,
+      queueReason: serverWasHealthy ? 'healthy-forward-failed' : 'server-unhealthy',
     });
 
     if (this.shouldSendQueueAck(topicId)) {
-      await this.sendToTopic(topicId,
-        buildQueuedNotice('photo', this.queue.length, this.supervisor.healthy)
-      );
+      const reason = serverWasHealthy ? 'healthy-forward-failed' : 'server-unhealthy';
+      const delayedNotice = buildQueueAcknowledgement(reason, 'photo');
+      await this.sendToTopic(topicId, delayedNotice ?? buildQueuedNotice('photo', this.queue.length, false));
     }
   }
 
@@ -1380,7 +1384,8 @@ export class TelegramLifeline {
       console.error(`[lifeline] Failed to download document: ${err}`);
     }
 
-    if (this.supervisor.healthy) {
+    const serverWasHealthy = this.supervisor.healthy;
+    if (serverWasHealthy) {
       const forwarded = await this.forwardToServer(topicId, content, msg);
       if (forwarded) {
         await this.sendToTopic(topicId, '✓ Delivered');
@@ -1399,12 +1404,13 @@ export class TelegramLifeline {
       timestamp: new Date(msg.date * 1000).toISOString(),
       documentPath,
       documentName: doc.file_name,
+      queueReason: serverWasHealthy ? 'healthy-forward-failed' : 'server-unhealthy',
     });
 
     if (this.shouldSendQueueAck(topicId)) {
-      await this.sendToTopic(topicId,
-        buildQueuedNotice('file', this.queue.length, this.supervisor.healthy)
-      );
+      const reason = serverWasHealthy ? 'healthy-forward-failed' : 'server-unhealthy';
+      const delayedNotice = buildQueueAcknowledgement(reason, 'file');
+      await this.sendToTopic(topicId, delayedNotice ?? buildQueuedNotice('file', this.queue.length, false));
     }
   }
 
@@ -1950,7 +1956,7 @@ export class TelegramLifeline {
     let replayed = 0;
     let failed = 0;
     let dropped = 0;
-    const deliveredByTopic = new Map<number, number>();
+    const deliveredByTopic = new Map<number, { outage: number; delayedHandoff: number; legacyUnknown: number }>();
 
     for (const msg of messages) {
       // CRITICAL: never drop while a version-skew episode is in flight. A hard
@@ -1981,7 +1987,11 @@ export class TelegramLifeline {
       if (decision.action === 'delivered') {
         this.queue.markDelivered(msg.id); // remember id so a redelivery can't re-queue it
         replayed++;
-        deliveredByTopic.set(msg.topicId, (deliveredByTopic.get(msg.topicId) ?? 0) + 1);
+        const counts = deliveredByTopic.get(msg.topicId) ?? { outage: 0, delayedHandoff: 0, legacyUnknown: 0 };
+        if (msg.queueReason === 'server-unhealthy') counts.outage++;
+        else if (msg.queueReason === 'healthy-forward-failed') counts.delayedHandoff++;
+        else if (msg.queueReason === undefined) counts.legacyUnknown++;
+        deliveredByTopic.set(msg.topicId, counts);
       } else if (decision.action === 'drop') {
         dropped++;
         // Before the drop becomes silent: persist the record, report a
@@ -2037,14 +2047,12 @@ export class TelegramLifeline {
 
     // Notify the user that their queued messages were delivered.
     if (replayed > 0) {
-      for (const [topicId, count] of deliveredByTopic) {
-        try {
-          await this.sendToTopic(topicId,
-            count === 1
-              ? '✓ Server recovered — your queued message has been delivered.'
-              : `✓ Server recovered — ${count} queued messages delivered.`
-          );
-        } catch { /* best effort */ }
+      for (const [topicId, counts] of deliveredByTopic) {
+        for (const notice of buildQueueDeliveryNotices(counts)) {
+          try {
+            await this.sendToTopic(topicId, notice);
+          } catch { /* best effort */ }
+        }
       }
     }
   }

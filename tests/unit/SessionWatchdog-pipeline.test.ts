@@ -41,6 +41,7 @@ describe('SessionWatchdog pipeline guard', () => {
     sessionManager = createMockSessionManager();
     watchdog = new SessionWatchdog(createConfig(), sessionManager, {} as any);
     (watchdog as any).getClaudePid = vi.fn().mockReturnValue(1000);
+    (watchdog as any).signalIfIdentityMatches = vi.fn().mockResolvedValue(true);
   });
 
   afterEach(() => {
@@ -109,8 +110,11 @@ describe('SessionWatchdog pipeline guard', () => {
 
       await (watchdog as any).checkSession('test-session');
 
-      // Ctrl+C fires: past extended threshold, no pipeline, LLM confirms stuck
-      expect(sessionManager.sendKey).toHaveBeenCalledWith('test-session', 'C-c');
+      expect((watchdog as any).signalIfIdentityMatches).toHaveBeenCalledWith(
+        expect.objectContaining({ pid: 77777, command: 'tail -40' }),
+        'SIGINT',
+      );
+      expect(sessionManager.sendKey).not.toHaveBeenCalled();
     });
 
     it('LLM gate receives recent tmux output as context', async () => {
@@ -209,7 +213,10 @@ describe('SessionWatchdog pipeline guard', () => {
 
       await (watchdog as any).checkSession('test-session');
 
-      expect(sessionManager.sendKey).toHaveBeenCalledWith('test-session', 'C-c');
+      expect((watchdog as any).signalIfIdentityMatches).toHaveBeenCalledWith(
+        expect.objectContaining({ pid: 77777 }), 'SIGINT',
+      );
+      expect(sessionManager.sendKey).not.toHaveBeenCalled();
     });
 
     it('escalates a non-consumer at 3 min when the LLM positively confirms stuck', async () => {
@@ -221,7 +228,10 @@ describe('SessionWatchdog pipeline guard', () => {
 
       await (watchdog as any).checkSession('test-session');
 
-      expect(sessionManager.sendKey).toHaveBeenCalledWith('test-session', 'C-c');
+      expect((watchdog as any).signalIfIdentityMatches).toHaveBeenCalledWith(
+        expect.objectContaining({ pid: 77777 }), 'SIGINT',
+      );
+      expect(sessionManager.sendKey).not.toHaveBeenCalled();
     });
   });
 
@@ -251,7 +261,10 @@ describe('SessionWatchdog pipeline guard', () => {
 
       await (watchdog as any).checkSession('test-session');
 
-      expect(sessionManager.sendKey).toHaveBeenCalledWith('test-session', 'C-c');
+      expect((watchdog as any).signalIfIdentityMatches).toHaveBeenCalledWith(
+        expect.objectContaining({ pid: 77777 }), 'SIGINT',
+      );
+      expect(sessionManager.sendKey).not.toHaveBeenCalled();
     });
   });
 

@@ -366,7 +366,7 @@ export class StuckInputSentinel {
     for (const session of running) {
       const name = session.tmuxSession;
       seenSessions.add(name);
-      this.evaluateSession(name);
+      this.evaluateSession(name, session.framework);
     }
 
     // GC: drop records for sessions that are no longer running.
@@ -386,8 +386,21 @@ export class StuckInputSentinel {
   }
 
   /** Evaluate a single tmux session for stuck-input recovery. */
-  private evaluateSession(tmuxSession: string): void {
+  private evaluateSession(tmuxSession: string, framework?: string): void {
     const priorRecord = this.records.get(tmuxSession);
+    // Codex's empty composer contains model-generated placeholder text that is
+    // byte-indistinguishable from typed input once styling is stripped.  A
+    // durable stranded-draft marker is therefore the ONLY authority to inspect
+    // a Codex composer.  Besides preventing false Enter presses, this avoids a
+    // pair of synchronous tmux probes for every idle Codex session on every
+    // 10-second tick.  On hosts with thousands of global tmux sessions, each
+    // such command can take hundreds of milliseconds and starve `/health`.
+    const pendingBeforeCapture = this.sessionManager.getStrandedDraftMarker(tmuxSession);
+    if (framework === 'codex-cli' && !pendingBeforeCapture) {
+      this.finalizePendingRecovery(tmuxSession, priorRecord, 'no-tracked-draft');
+      this.records.delete(tmuxSession);
+      return;
+    }
     let pane: string | null;
     try {
       if (!this.sessionManager.tmuxSessionExists(tmuxSession)) {
@@ -422,7 +435,7 @@ export class StuckInputSentinel {
     // input once color is stripped, so the generic prompt-text reader would
     // false-fire on every idle codex session. The injected marker never equals
     // the placeholder. Everything else uses the generic `❯`-prompt reader.
-    const pending = this.sessionManager.getStrandedDraftMarker(tmuxSession);
+    const pending = pendingBeforeCapture ?? this.sessionManager.getStrandedDraftMarker(tmuxSession);
     const codexMarker = pending && pending.framework === 'codex-cli' ? pending.marker : null;
 
     let stuckText: string | null;
