@@ -84,7 +84,10 @@ describe('/subscription-pool routes (integration over HTTP)', () => {
     ledger.recordStatus({
       accountId: 'claude-acct-1',
       status: 'needs-reauth',
-      at: '2026-08-26T20:00:00.000Z',
+      // Relative, not a calendar date: a hard-coded date aged out of the
+      // route's default window at a UTC day boundary on 2026-09-03 and turned
+      // this test red repo-wide with no code change (time-bomb fixture).
+      at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
       causeClass: 'no-refresh-token',
     });
 

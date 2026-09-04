@@ -55,8 +55,12 @@ describe('UpdateChecker.applyUpdate()', () => {
       checkedAt: new Date().toISOString(),
     });
 
-    // Mock execAsync to fail (private method, we test through behavior)
-    // The npm update will fail because we're in a test environment
+    // Mock the exec seam so no real npm runs: a unit test must never reach the
+    // network. Before 2026-09-03 this relied on a REAL npm invocation failing
+    // fast; a slow registry made it hang to the 30s timeout on every CI shard
+    // and locally (ACT-361).
+    vi.spyOn(checker as never as { execAsync(cmd: string, args: string[], t: number): Promise<string> }, 'execAsync' as never)
+      .mockRejectedValue(new Error('npm install failed (mocked network seam)'));
     const result = await checker.applyUpdate();
 
     // Should return a structured result even on failure
@@ -77,6 +81,9 @@ describe('UpdateChecker.applyUpdate()', () => {
       checkedAt: new Date().toISOString(),
       changeSummary: 'Fixed security issues and improved performance',
     });
+    // Same mocked exec seam as above — never a real npm call (ACT-361).
+    vi.spyOn(checker as never as { execAsync(cmd: string, args: string[], t: number): Promise<string> }, 'execAsync' as never)
+      .mockRejectedValue(new Error('npm install failed (mocked network seam)'));
 
     const result = await checker.applyUpdate();
 
