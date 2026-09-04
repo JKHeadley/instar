@@ -165,7 +165,12 @@ describe('certified-set manifest partition', () => {
 });
 
 describe('fingerprint tool (live repo, read-only)', () => {
-  it('--check passes on the bound tree', () => {
+  // The tool reads canonicalShippedArtifactDigest from dist; CI unit shards run
+  // without a build, so this liveness check runs wherever dist exists (local
+  // dev, pre-push, publish — the enforcing gates all build first). The dist-free
+  // logic above (digest, partition, linkage) is covered unconditionally.
+  const distGate = path.resolve(__dirname, '../../dist/core/StageBActivationGate.js');
+  it.skipIf(!fs.existsSync(distGate))('--check passes on the bound tree', () => {
     const out = execFileSync(process.execPath, ['scripts/stage-b-certified-fingerprint.mjs', '--check'], {
       cwd: path.resolve(__dirname, '../..'), encoding: 'utf8',
     });
