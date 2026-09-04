@@ -1,0 +1,28 @@
+{
+  "ts": "2026-09-04T03:07:08.478Z",
+  "slug": "stage-b-evidence-code-binding",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "migration / fleet-rollout surface: scripts/verify-codex-stage-b-release-evidence.mjs touches release script (fleet publish path)"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 644,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      ".husky/pre-push",
+      "scripts/stage-b-certified-fingerprint.mjs",
+      "scripts/verify-codex-stage-b-release-evidence.mjs",
+      "src/core/StageBActivationGate.ts",
+      "src/data/stageBCertifiedSet.ts"
+    ],
+    "addedLines": 634,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
