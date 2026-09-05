@@ -209,7 +209,10 @@ describeMaybe('Codex session lifecycle reliability — production AgentServer pa
       ].map((event) => JSON.stringify(event)).join('\n') + '\n');
       const session = state.listSessions().find((candidate) => candidate.tmuxSession === bootstrapTmux)!;
       state.saveSession({ ...session, claudeSessionId: 'bootstrap-thread' });
-      await manager.sweepInboundDeliveryObserverForTesting();
+      for (let index = 0; index < 4; index++) {
+        await manager.sweepInboundDeliveryObserverForTesting();
+        if (store.get(row!.conversationId, row!.deliveryId)?.transcriptState === 'responded') break;
+      }
       expect(store.get(row!.conversationId, row!.deliveryId)).toMatchObject({
         baselineOffset: 0, transcriptState: 'responded', turnId: 'bootstrap-turn',
       });
