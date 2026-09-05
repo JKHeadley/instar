@@ -1,0 +1,24 @@
+{
+  "ts": "2026-09-05T23:53:15.229Z",
+  "slug": "ownership-applier-placement-paging",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 194,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/OwnershipApplier.ts",
+      "src/core/ownershipApplierWiring.ts"
+    ],
+    "addedLines": 167,
+    "deletedLines": 27
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

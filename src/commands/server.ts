@@ -22281,7 +22281,13 @@ export async function startServer(options: StartOptions): Promise<void> {
           const applierTimer = setInterval(() => {
             try {
               const r = ownershipApplier.tick();
-              if (r.materialized) console.log(pc.dim(`  [OwnershipApplier] materialized ${r.materialized}/${r.examined} topic(s) from replicated placements`));
+              if (r.materialized) console.log(pc.dim(`  [OwnershipApplier] materialized ${r.materialized}/${r.examined} topic(s) from replicated placements (${r.pagesScanned ?? 1} page(s))`));
+              // A DEGRADED scan is the shape of the bug this paging fixed: the applier
+              // silently seeing only part of the journal, so a topic is never materialized
+              // and its drain refuses `not-owner` forever. Never let that be quiet again —
+              // these two states are logged even on a tick that materialized nothing.
+              if (r.pageCeilingHit) console.log(pc.dim(`  [OwnershipApplier] page ceiling hit — the placement scan was INCOMPLETE this tick; some topics may not be materialized`));
+              if (r.pagingUnavailable) console.log(pc.dim(`  [OwnershipApplier] paging unavailable — read a SINGLE placement page; low-epoch topics may not be materialized`));
             } catch (err) {
               console.error('[OwnershipApplier] tick failed:', err instanceof Error ? err.message : String(err));
             }

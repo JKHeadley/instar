@@ -32,6 +32,8 @@ export interface OwnershipApplierWiringDeps {
    */
   getSelfMachineId: () => string | null | undefined;
   scanLimit?: number;
+  /** Max placement PAGES walked per tick (bounded cost). See OwnershipApplierDeps. */
+  maxScanPages?: number;
   /** Cross-machine convergence (Fix #3): known machine ids, to validate a replicated
    *  `transferring` entry's `transferTo` before materializing (else downgrade to active). */
   knownMachines?: () => Set<string>;
@@ -54,6 +56,7 @@ export function wireOwnershipApplier(deps: OwnershipApplierWiringDeps): Ownershi
     store: deps.durableOwnershipStore,
     selfMachineId: deps.getSelfMachineId, // getter — resolved per-tick, never captured stale
     scanLimit: deps.scanLimit,
+    maxScanPages: deps.maxScanPages,
     knownMachines: deps.knownMachines,
     maxEpochJump: deps.maxEpochJump,
     timestampSkewToleranceMs: deps.timestampSkewToleranceMs,
