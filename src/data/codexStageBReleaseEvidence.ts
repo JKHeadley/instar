@@ -7,10 +7,12 @@ export const SHIPPED_CODEX_STAGE_B_RELEASE_EVIDENCE: unknown = {
   "echoPublicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAVfPs10C+igEwHX1QKxkuGv57xUnfEmLygjW+9comCtg=\n-----END PUBLIC KEY-----\n",
   "artifact": {
     "schemaVersion": 1,
+    "packageVersion": "1.3.1220",
+    "gitCommit": "cfe468dc5ef3f31ac71c28aed6bdc28a26131f49",
     "configSha256": "018d8e91978755abfb021968781d805098d98f9f2c64d70b728d2c18b205d5e8",
     "echoMachineId": "m_03b30f5b32c6ef3eb0afd3ca7054e252",
-    "startedAt": 1788251493809,
-    "endedAt": 1788259530838,
+    "startedAt": 1788576017942,
+    "endedAt": 1788583231083,
     "deliveryCount": 50,
     "caseCounts": {
       "identical": 2,
@@ -28,17 +30,16 @@ export const SHIPPED_CODEX_STAGE_B_RELEASE_EVIDENCE: unknown = {
       "staleOwnerAction": 0
     },
     "rawEvidenceDigests": [
-      "ded4deaeb0c09f3911de5aa7086f4114d4e22b356605ff2669e655cde2e72891",
-      "cc3484e4f834bd1e496123602322aea8950d44e2172878bac550b0a24e3726c2",
-      "f11d401fcba94261f468b9c96a711b9955d59fd0d8b8c97494d8dd5bef96081a",
-      "7ed4a2576c2547d930b8efb83ea55f732c466d9e7c330c98a502edc5bb5e960a",
-      "d35c349bd787b7df74b467f1dd959ffd7cffa0075f1d38632d9dec23d2c3f4c4",
-      "74b92e819f106582fe6c3c96fe118a2d890d2ff7c625cd4404b9e68732322349",
-      "7dac92dbcd6b7f628f3f7ce22020283754c3fb527e39c3d600cb61f12474c491"
+      "8f451873786a8e7c48e64535d72d78d2e97cdae0f4287abcae3bc8b646195bb9",
+      "f2d07ef4046e49fed158732d90b5d0105f585ca2fa13732ac6d0e9a238b357c0",
+      "b7dda84ce9e43178c2fb84bdcd2e5c3ed30cf277067e7f415cdebbd8588f864e",
+      "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "263e662820f478f2a160a8cf5eb96086dc1442ee5fd18329b32c1ea2248fb569",
+      "f360834ee52fc22702d630d92ced062f2b8d9b83dd896ced22647de3234ae2ad",
+      "1b94aa70b163015ab1d4a10f0d170790ad73aa1fd241cb6a828191052b3628a1",
+      "9fcf5e1558ec0b700dabce0fcc93638683d9b211cb09cd15190bf984e9ef92c7"
     ],
     "reviewerDecision": "approved",
-    "packageVersion": "1.3.1219",
-    "gitCommit": "package:1.3.1219",
-    "signature": "Ga8TIYdLoFz3FYKM56NTCjgPlQtSMYJ8lrkKqn0nlrhzsf9zLiZ9DzEkLBMPrVuqWOUbhqnUmU0CuNt2CVFlAw=="
+    "signature": "9CmBo9oVesfP8Kpi94L/paiK+9vNQskTVoY16450HwnsA3AYDjXpiv+Nwkf0vm4ltnEXdeoDhUMOS80npoWwDw=="
   }
 };

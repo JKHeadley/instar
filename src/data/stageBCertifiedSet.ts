@@ -348,20 +348,20 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "LLM-provider plumbing reached through a dynamic import in a certified module; shared across every internal LLM feature and certified by its own suites — binding it would re-freeze releases on unrelated provider churn"
     }
   ],
-  "fingerprint": "6aafe889d2bf5e21aeb821348fdbc593e0ca34282de706d53a5eb44cd848ea4b",
-  "artifactDigest": "7499d16a6ab0b986757121c3d1b3f97f93f7204d341e0a07aaecb360863c75eb",
+  "fingerprint": "f1aacb47b41db1f9385f30b67cd53dfe1febac2ea1e555dbd61f5002ac55512f",
+  "artifactDigest": "a2db23a95530681953ffa3002ab14e349ebf53d19be2a54c1f4afacc3aead997",
   "fileHashes": {
     "src/core/CodexComposerAdapter.ts": "8d4753c45f317092f3d1e8d6e5a73a875dbf046cbac20066220fa036b4f0e065",
-    "src/core/CodexDeliveryObserver.ts": "7de40edfd2f64adfcef9e18bf6191acb4bdeb294886f0369895b948e1be345dd",
+    "src/core/CodexDeliveryObserver.ts": "0d70e29ef427af8ceda05a2434858639b48f120edc3490a439c90c26ab450fe3",
     "src/core/CodexLifecycleProductionComposition.ts": "a94897fbd317af61c5ea8d09da7484b2799b985ef44af2e2cc304f769fff62a4",
-    "src/core/InboundDeliveryStore.ts": "93009f9b2cc2c4ee2124c09e8fe3f8ac30edf17b033c13864ff61b0e14ea0e88",
+    "src/core/InboundDeliveryStore.ts": "9a20293ef6cf10938718e64cae357d51c14605b17631d13c0001cb4710c1c9b2",
     "src/core/SessionRecoveryChannel.ts": "d38b8ebc6d073008ae2d9f9109a254019813499d5d327a3ff00e4b2a72272b65",
     "src/core/SessionRecoveryConsumer.ts": "6a00ca4993d188f1c95eaa7d156795804f00f7e10e600ea12fa2e8cd40423268",
     "src/core/StageBStartupReadiness.ts": "92275608368d44abc98802f9a445acc6419fd57bddb8c2e4935f32961d401183"
   },
-  "boundAt": "2026-09-04",
-  "boundBy": "echo (operator-approved rebinding, topic 52075, 2026-09-03)",
-  "note": "Initial binding: certified sources verified byte-identical to the evidence commit (git diff 92a21075d..1b46533a7 over the certified set is empty), so the approved 2026-08-31 canary evidence remains the honest witness."
+  "boundAt": "2026-09-05",
+  "boundBy": "echo (fresh exact-candidate certification, topic 59199, 2026-09-04)",
+  "note": "Fresh binding after the first candidate correctly failed closed on three busy-session false-unknown outcomes. Candidate cfe468dc5 then passed 50/50 deliveries over 7,213,141 ms, the full required case matrix, 30/30 responsiveness samples, and zero forbidden outcomes; its signed evidence digest is bound here."
 } as const;
 
 export type StageBCertifiedSet = typeof STAGE_B_CERTIFIED_SET;

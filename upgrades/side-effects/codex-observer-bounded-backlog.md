@@ -65,7 +65,7 @@ Pure scanner code; revert is mechanically simple but would restore demonstrated 
 
 ## Conclusion
 
-The first canary correctly refused certification after exposing three false unknowns. The fix preserves every hard bound and uncertainty rule while distinguishing a safely resumable complete prefix from a truly boundary-free oversized record. Unit, integration, and production-wired E2E tests cover the non-aligned multi-budget case. A fresh exact-candidate two-hour/50-delivery canary remains required before release.
+The first canary correctly refused certification after exposing three false unknowns. The fix preserves every hard bound and uncertainty rule while distinguishing a safely resumable complete prefix from a truly boundary-free oversized record. Unit, integration, and production-wired E2E tests cover the non-aligned multi-budget case. The fresh exact candidate subsequently passed 50/50 deliveries over 7,213,141 ms, the complete case matrix, 30/30 responsiveness samples, and zero forbidden outcomes; its signed evidence is now bound to the certified sources.
 
 ## Second-pass review
 
@@ -77,6 +77,7 @@ Concur. Cursor advancement is restricted to complete newline boundaries, partial
 - `tests/integration/codex-observer-bounded-backlog.test.ts`
 - `tests/e2e/codex-session-lifecycle-reliability.test.ts`
 - First canary ledger: 50/50 dedicated rows responded; three candidate-window false unknowns on busy sessions identified at non-aligned >256 KiB backlogs.
+- Corrected canary ledger: 50/50 rows consumed/cleared/responded; zero false unknown, exhaustion, duplicate ownership, lost inbound, or stale-owner outcomes; signed artifact digest `a2db23a95530681953ffa3002ab14e349ebf53d19be2a54c1f4afacc3aead997`.
 
 ## Class-Closure Declaration
 

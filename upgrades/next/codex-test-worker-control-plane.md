@@ -64,4 +64,8 @@ The first exact-candidate two-hour/50-delivery canary correctly refused to sign
 after finding three false unknowns on unrelated busy sessions. Their transcript
 records proved the messages and responses existed beyond a non-aligned 256 KiB
 scan boundary. The corrected scanner has unit, integration, and production-wired
-E2E coverage for that exact multi-budget shape and must pass a fresh canary.
+E2E coverage for that exact multi-budget shape. The fresh corrected candidate
+then passed 50/50 deliveries over 7,213,141 ms, all required special cases,
+30/30 responsiveness samples, and zero false-unknown, exhaustion, duplicate
+ownership, lost-input, or stale-owner outcomes. Echo signed the resulting
+evidence and the certified source manifest binds its exact digest and bytes.
