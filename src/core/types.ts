@@ -4598,6 +4598,8 @@ export interface InstarConfig {
      */
     codexTaskContinuation?: {
       enabled?: boolean;
+      /** Separate dark gate for truthful pre-admission autonomous continuation. */
+      preparationCarrierEnabled?: boolean;
       maxDurationSeconds?: number;
       maxContinuations?: number;
       auditRetentionDays?: number;

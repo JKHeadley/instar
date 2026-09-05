@@ -94,8 +94,9 @@ describe('Capabilities Discoverability', () => {
       },
       scripts: [],
       secretDrop: {},
-    } as never) as { enabled: boolean };
+    } as never) as { enabled: boolean; endpoints: string[] };
     expect(result.enabled).toBe(true);
+    expect(result.endpoints).toContain('POST /autonomous/preparation/start — begin a bounded inactive preparation carrier');
   });
 
   it('keeps the window-lifecycle capability endpoint inventory exact', () => {

@@ -138,7 +138,7 @@ export const DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE =
 
 /**
  * Exact SHA-256 identities of every canonical autonomous stop-hook revision in
- * repository history through the predecessor of STATE_PARSE_LOUD. These are a
+ * repository history through the predecessor of PREPARATION_CARRIER. These are a
  * conservative migration escape hatch for agents that skipped several releases:
  * exact historical stock bytes may be replaced by the current bundle; any
  * customization changes the hash and is refused. Keep this list append-only.
@@ -165,6 +165,7 @@ export const AUTONOMOUS_STOP_HOOK_STOCK_SHA256 = [
   '972574c945ee1d43335970fab4512269d3e5e9f9afe92a13f94c99ebffba7391',
   'ee403db081bc96043556c767b697df47dec89e3e03fe3de359681fb1c1d9aff9',
   'fbb68b9d14465315653ebe597ec0f62d0846afbc3f59364a0fcc6657eeeddee1',
+  'c1c9d64dd248cf2cdcd1a6cd51be60230bb6a62c80a1dfa0838cdf62109e12eb',
 ] as const;
 
 /**
@@ -4584,6 +4585,47 @@ export class PostUpdateMigrator {
    * are recognized by exact SHA-256; all unknown layouts are refused.
    */
   private migrateAutonomousStopHookTopicKeyed(result: MigrationResult): void {
+    const upgradePreparationCarrier = (): void => {
+      const relPath = '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh';
+      const label = 'skills/autonomous/hooks/autonomous-stop-hook.sh (inactive autonomous records fall through to bounded preparation continuation)';
+      try {
+        const deployed = path.join(this.config.projectDir, ...relPath.split('/'));
+        if (!fs.existsSync(deployed)) return;
+        const current = fs.readFileSync(deployed, 'utf8');
+        if (current.includes('PREPARATION_CARRIER')) return;
+        const currentSha256 = crypto.createHash('sha256').update(current).digest('hex');
+        if (!(AUTONOMOUS_STOP_HOOK_STOCK_SHA256 as readonly string[]).includes(currentSha256)) {
+          result.skipped.push(`${relPath}: customized or unknown layout — left untouched (no exact stock hash for preparation-carrier upgrade)`);
+          return;
+        }
+        const bundled = path.join(__dirname, '..', '..', ...relPath.split('/'));
+        if (!fs.existsSync(bundled)) {
+          result.errors.push(`${relPath} migration: bundled hook is missing`);
+          return;
+        }
+        const next = fs.readFileSync(bundled, 'utf8');
+        if (!next.includes('PREPARATION_CARRIER')) {
+          result.errors.push(`${relPath} migration: bundled hook lacks PREPARATION_CARRIER`);
+          return;
+        }
+        const tempPath = `${deployed}.preparation-carrier.${process.pid}.${randomUUID()}.tmp`;
+        try {
+          fs.writeFileSync(tempPath, next, { mode: 0o755 });
+          fs.renameSync(tempPath, deployed);
+        } finally {
+          if (fs.existsSync(tempPath)) {
+            SafeFsExecutor.safeRmSync(tempPath, {
+              force: true,
+              operation: 'PostUpdateMigrator:migrateAutonomousStopHookTopicKeyed:preparation-temp-cleanup',
+            });
+          }
+        }
+        result.upgraded.push(label);
+      } catch (err) {
+        result.errors.push(`${relPath} migration: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+
     const upgradeAutonomousHookStateParse = (): void => {
       const relPath = '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh';
       const label = 'skills/autonomous/hooks/autonomous-stop-hook.sh (visible corrupt-state refusal instead of silent no-state exit)';
@@ -4785,6 +4827,10 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     // Older canonical stock bytes use the exact historical SHA-256 allowlist;
     // every unknown layout is refused rather than overwritten.
     upgradeAutonomousHookStateParse();
+    // Marker bumped `STATE_PARSE_LOUD` → `PREPARATION_CARRIER`: an inactive
+    // autonomous record no longer masks the bounded continuation authority.
+    // Exact-stock replacement only; customized hook bytes remain untouched.
+    upgradePreparationCarrier();
     // setup-autonomous.sh marker bumped `native-goal/set` → `IS_CODEX_AGENT`: the bundled
     // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal
     // wiring was gated on `claude --version >= 2.1.139`, which is empty for a codex agent, so
@@ -6134,6 +6180,12 @@ setTimeout(() => process.exit(0), 2000);
 
     let patched = false;
     const port = this.config.port;
+
+    if (!content.includes('Pre-admission continuation carrier')) {
+      content += '\n- **Pre-admission continuation carrier:** Keep an unadmitted autonomous record truthfully `active:false`. With `autonomousSessions.codexTaskContinuation.preparationCarrierEnabled` enabled, `POST /autonomous/preparation/start` creates a bounded `autonomous-preparation` ledger; recover it with `/:topic/recover`, promote only after independent admission already reports `active:true`, or terminalize on failure. It never consumes the active cap, and a native `/goal` never activates the run.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added pre-admission autonomous continuation carrier awareness');
+    }
 
     if (!content.includes('Registry First — capability registry:')) {
       content += '\n- **Registry First — capability registry:** when asking which machine can serve a capability, consult `GET /capability-registry`; it distinguishes unavailable, unobserved, stale, and available evidence.\n';

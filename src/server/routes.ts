@@ -395,6 +395,7 @@ import {
   stopAutonomousTopic,
   stopAllAutonomousJobs,
   suspendAutonomousTopicForMove,
+  setAutonomousPreparationState,
   DEFAULT_MAX_CONCURRENT_AUTONOMOUS,
 } from '../core/AutonomousSessions.js';
 import { AutonomousRunStore, hashPathSet, type AutonomousRunRecord } from '../core/AutonomousRunStore.js';
@@ -6734,7 +6735,12 @@ export function createRoutes(ctx: RouteContext): Router {
       : Number.NaN;
     res.json({
       enabled: store.enabled,
+      preparationCarrierEnabled: store.preparationCarrierEnabled,
       active: ledger?.active === true,
+      mode: ledger?.mode ?? 'ordinary',
+      preparationState: ledger?.preparationState ?? null,
+      autonomousRunActive: listAutonomousJobs(ctx.config.stateDir)
+        .some((job) => String(job.topic) === req.params.topic && job.active),
       topicId: req.params.topic,
       continuationCount: ledger?.continuationCount ?? 0,
       maxContinuations: ledger?.maxContinuations ?? null,
@@ -6743,6 +6749,98 @@ export function createRoutes(ctx: RouteContext): Router {
       taskCount: ledger ? parseContinuationTasks(ledger.body).length : 0,
       openTaskCount: ledger ? parseContinuationTasks(ledger.body).filter((t) => t.open).length : 0,
     });
+  });
+
+  // Truthful pre-admission carrier. It uses the bounded Codex continuation
+  // ledger while the autonomous record remains explicitly inactive. Promotion
+  // can only retire the carrier after another authority has made the run active.
+  router.post('/autonomous/preparation/start', (req, res) => {
+    const body = req.body as Record<string, unknown>;
+    const topicId = String(body.topicId ?? '');
+    if (refuseInadmissibleWrite(req, res, { topicId })) return;
+    if (!continuationStore().preparationCarrierEnabled) {
+      return res.status(503).json({ ok: false, error: 'preparation-carrier-disabled' });
+    }
+    const job = listAutonomousJobs(ctx.config.stateDir).find((candidate) => String(candidate.topic) === topicId);
+    if (!job) return res.status(404).json({ ok: false, error: 'autonomous-record-not-found' });
+    if (job.active) return res.status(409).json({ ok: false, error: 'autonomous-run-already-active' });
+    try {
+      const store = continuationStore();
+      if (store.read(topicId)?.active) {
+        return res.status(409).json({ ok: false, error: 'continuation-ledger-already-active' });
+      }
+      const ledger = store.start({
+        topicId,
+        sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
+        tasks: Array.isArray(body.tasks) ? body.tasks.map(String) : [],
+        durationSeconds: typeof body.durationSeconds === 'number' ? body.durationSeconds : undefined,
+        maxContinuations: typeof body.maxContinuations === 'number' ? body.maxContinuations : undefined,
+        mode: 'autonomous-preparation',
+      });
+      if (!setAutonomousPreparationState(ctx.config.stateDir, topicId, 'preparing')) {
+        store.terminalizePreparation(topicId);
+        return res.status(409).json({ ok: false, error: 'preparation-marker-write-failed' });
+      }
+      return res.status(201).json({ ok: true, topicId, generation: ledger.generationId, preparationState: 'preparing', autonomousRunActive: false });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'invalid-request';
+      return res.status(reason === 'continuation-disabled' ? 503 : 400).json({ ok: false, error: reason });
+    }
+  });
+
+  router.post('/autonomous/preparation/:topic/recover', (req, res) => {
+    const topicId = req.params.topic;
+    if (refuseInadmissibleWrite(req, res, { topicId })) return;
+    const job = listAutonomousJobs(ctx.config.stateDir).find((candidate) => String(candidate.topic) === topicId);
+    if (!job) return res.status(404).json({ ok: false, error: 'autonomous-record-not-found' });
+    if (job.active) return res.status(409).json({ ok: false, error: 'autonomous-run-already-active' });
+    try {
+      const store = continuationStore();
+      const ledger = store.markPreparationRecovering(topicId);
+      if (!setAutonomousPreparationState(ctx.config.stateDir, topicId, 'recovering')) {
+        // Cross-file atomicity cannot be literal. Fail toward STOP if the
+        // observational marker cannot follow the authoritative transition.
+        store.terminalizePreparation(topicId);
+        return res.status(409).json({ ok: false, error: 'preparation-marker-write-failed' });
+      }
+      return res.json({ ok: true, topicId, generation: ledger.generationId, preparationState: 'recovering', autonomousRunActive: false });
+    } catch (err) {
+      return res.status(409).json({ ok: false, error: err instanceof Error ? err.message : 'invalid-request' });
+    }
+  });
+
+  router.post('/autonomous/preparation/:topic/promote', (req, res) => {
+    const topicId = req.params.topic;
+    if (refuseInadmissibleWrite(req, res, { topicId })) return;
+    const runActive = listAutonomousJobs(ctx.config.stateDir)
+      .some((candidate) => String(candidate.topic) === topicId && candidate.active);
+    if (!runActive) return res.status(409).json({ ok: false, error: 'autonomous-run-not-active' });
+    try {
+      const ledger = continuationStore().promotePreparation(topicId);
+      if (!setAutonomousPreparationState(ctx.config.stateDir, topicId, 'promoted')) {
+        return res.status(409).json({ ok: false, error: 'preparation-marker-write-failed' });
+      }
+      return res.json({ ok: true, topicId, generation: ledger.generationId, preparationState: 'promoted', autonomousRunActive: true });
+    } catch (err) {
+      return res.status(409).json({ ok: false, error: err instanceof Error ? err.message : 'invalid-request' });
+    }
+  });
+
+  router.post('/autonomous/preparation/:topic/terminalize', (req, res) => {
+    const topicId = req.params.topic;
+    if (refuseInadmissibleWrite(req, res, { topicId })) return;
+    const job = listAutonomousJobs(ctx.config.stateDir).find((candidate) => String(candidate.topic) === topicId);
+    if (!job) return res.status(404).json({ ok: false, error: 'autonomous-record-not-found' });
+    if (job.active) return res.status(409).json({ ok: false, error: 'autonomous-run-active' });
+    try {
+      const ledger = continuationStore().terminalizePreparation(topicId);
+      if (!setAutonomousPreparationState(ctx.config.stateDir, topicId, 'terminal')) {
+        return res.status(409).json({ ok: false, error: 'preparation-marker-write-failed' });
+      }
+      return res.json({ ok: true, topicId, generation: ledger.generationId, preparationState: 'terminal', autonomousRunActive: false });
+    } catch (err) {
+      return res.status(409).json({ ok: false, error: err instanceof Error ? err.message : 'invalid-request' });
+    }
   });
 
   router.post('/continuation/:topic/renew', (req, res) => {
@@ -6806,8 +6904,13 @@ export function createRoutes(ctx: RouteContext): Router {
 
   router.post('/continuation/decide', (req, res) => {
     const body = req.body as Record<string, unknown>;
-    if (refuseInadmissibleWrite(req, res, { topicId: String(body.topicId ?? '') })) return;
-    const decision = continuationStore().decide(String(body.topicId ?? ''), String(body.sessionId ?? ''));
+    const topicId = String(body.topicId ?? '');
+    if (refuseInadmissibleWrite(req, res, { topicId })) return;
+    const store = continuationStore();
+    const decision = store.decide(topicId, String(body.sessionId ?? ''));
+    if (decision.decision === 'deactivate' && store.read(topicId)?.mode === 'autonomous-preparation') {
+      setAutonomousPreparationState(ctx.config.stateDir, topicId, 'terminal');
+    }
     res.json(decision);
   });
 

@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { JobPriority } from './types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 /** Default concurrent autonomous-job cap when config doesn't specify one. */
 export const DEFAULT_MAX_CONCURRENT_AUTONOMOUS = 5;
@@ -31,6 +32,8 @@ export interface AutonomousJobSummary {
   /** duration_seconds front-matter field; null when absent/unparseable (unbounded run). */
   durationSeconds: number | null;
   reportChannel: string | null;
+  /** Non-active admission carrier state. Never contributes to `active`. */
+  preparationState: 'preparing' | 'recovering' | 'promoted' | 'terminal' | null;
 }
 
 function autonomousDir(stateDir: string): string {
@@ -55,6 +58,10 @@ function summarize(file: string, topicFromName: string | null): AutonomousJobSum
   }
   const iterRaw = readField(content, 'iteration');
   const durRaw = readField(content, 'duration_seconds');
+  const preparationRaw = readField(content, 'preparation_state');
+  const preparationState = preparationRaw && ['preparing', 'recovering', 'promoted', 'terminal'].includes(preparationRaw)
+    ? preparationRaw as AutonomousJobSummary['preparationState']
+    : null;
   return {
     topic: readField(content, 'report_topic') || topicFromName,
     file,
@@ -65,7 +72,42 @@ function summarize(file: string, topicFromName: string | null): AutonomousJobSum
     startedAt: readField(content, 'started_at'),
     durationSeconds: durRaw && /^\d+$/.test(durRaw) ? parseInt(durRaw, 10) : null,
     reportChannel: readField(content, 'report_channel'),
+    preparationState,
   };
+}
+
+/**
+ * Persist a truthful non-active preparation marker on an existing autonomous
+ * record. Preparing/recovering is refused while `active:true`; promotion is a
+ * handoff marker and may only be written after another authority activated the
+ * run. The marker itself never changes `active`.
+ */
+export function setAutonomousPreparationState(
+  stateDir: string,
+  topic: string,
+  target: 'preparing' | 'recovering' | 'promoted' | 'terminal',
+): boolean {
+  const file = path.join(autonomousDir(stateDir), `${topic}.local.md`);
+  let content: string;
+  try { content = fs.readFileSync(file, 'utf8'); } catch { return false; }
+  const active = readField(content, 'active') === 'true';
+  if ((target === 'preparing' || target === 'recovering' || target === 'terminal') && active) return false;
+  if (target === 'promoted' && !active) return false;
+  const line = `preparation_state: "${target}"`;
+  const next = /^preparation_state:/m.test(content)
+    ? content.replace(/^preparation_state:.*$/m, line)
+    : content.replace(/^active:.*$/m, (match) => `${match}\n${line}`);
+  if (next === content) return readField(content, 'preparation_state') === target;
+  const tmp = `${file}.${process.pid}.preparation.tmp`;
+  try {
+    const fd = fs.openSync(tmp, 'w', 0o600);
+    try { fs.writeSync(fd, next, null, 'utf8'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    fs.renameSync(tmp, file);
+    return true;
+  } catch {
+    try { if (fs.existsSync(tmp)) SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'AutonomousSessions.setPreparationState.cleanup' }); } catch { /* best effort */ }
+    return false;
+  }
 }
 
 /** All autonomous jobs (per-topic files + a legacy single file if present). */

@@ -22,11 +22,11 @@ let server: Server;
 let baseUrl: string;
 const sentInputs: Array<{ tmux: string; input: string }> = [];
 
-function writeJob(stateDir: string, topic: string) {
+function writeJob(stateDir: string, topic: string, active = true) {
   fs.mkdirSync(path.join(stateDir, 'autonomous'), { recursive: true });
   fs.writeFileSync(
     path.join(stateDir, 'autonomous', `${topic}.local.md`),
-    `---\nactive: true\npaused: false\niteration: 1\nreport_topic: "${topic}"\ngoal: "g${topic}"\n---\n\ntask\n`,
+    `---\nactive: ${active}\npaused: false\niteration: 1\nreport_topic: "${topic}"\ngoal: "g${topic}"\n---\n\ntask\n`,
   );
 }
 
@@ -40,7 +40,12 @@ describe('Multi-session autonomy API (integration)', () => {
       agentName: 'test-agent',
       autonomousSessions: {
         maxConcurrent: 2,
-        codexTaskContinuation: { enabled: true, maxDurationSeconds: 3600, maxContinuations: 3 },
+        codexTaskContinuation: {
+          enabled: true,
+          preparationCarrierEnabled: true,
+          maxDurationSeconds: 3600,
+          maxContinuations: 3,
+        },
       },
     } as InstarConfig;
     const state = new StateManager(project.stateDir);
@@ -198,6 +203,75 @@ describe('Multi-session autonomy API (integration)', () => {
     fs.writeFileSync(ledgerPath, JSON.stringify(corruptTimestamp));
     const corruptStatus = await (await fetch(`${baseUrl}/continuation/458/status`)).json();
     expect(corruptStatus.expiresAt).toBeNull();
+  });
+
+  it('carries inactive autonomous preparation and promotes only after independent admission', async () => {
+    writeJob(project.stateDir, '36966', false);
+    const started = await fetch(`${baseUrl}/autonomous/preparation/start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topicId: '36966', sessionId: 'w32-session', tasks: ['repair admission', 'register W32'] }),
+    });
+    expect(started.status).toBe(201);
+    expect(await started.json()).toMatchObject({ preparationState: 'preparing', autonomousRunActive: false });
+
+    const sessions = await (await fetch(`${baseUrl}/autonomous/sessions`)).json();
+    expect(sessions.sessions.find((s: any) => s.topic === '36966'))
+      .toMatchObject({ active: false, preparationState: 'preparing' });
+    const canStart = await (await fetch(`${baseUrl}/autonomous/can-start`)).json();
+    expect(canStart.activeCount).toBe(0);
+
+    const recovered = await fetch(`${baseUrl}/autonomous/preparation/36966/recover`, { method: 'POST' });
+    expect(recovered.status).toBe(200);
+    expect(await recovered.json()).toMatchObject({ preparationState: 'recovering', autonomousRunActive: false });
+
+    const earlyPromotion = await fetch(`${baseUrl}/autonomous/preparation/36966/promote`, { method: 'POST' });
+    expect(earlyPromotion.status).toBe(409);
+    expect(await earlyPromotion.json()).toMatchObject({ error: 'autonomous-run-not-active' });
+
+    // Simulate the independent registration/admission authority. Promotion may
+    // observe active truth; it is forbidden from creating it.
+    writeJob(project.stateDir, '36966', true);
+    const promoted = await fetch(`${baseUrl}/autonomous/preparation/36966/promote`, { method: 'POST' });
+    expect(promoted.status).toBe(200);
+    expect(await promoted.json()).toMatchObject({ preparationState: 'promoted', autonomousRunActive: true });
+    const status = await (await fetch(`${baseUrl}/continuation/36966/status`)).json();
+    expect(status).toMatchObject({ active: false, mode: 'autonomous-preparation', preparationState: 'promoted', autonomousRunActive: true });
+  });
+
+  it('terminalizes a failed inactive preparation without activating it', async () => {
+    writeJob(project.stateDir, '36967', false);
+    const started = await fetch(`${baseUrl}/autonomous/preparation/start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topicId: '36967', tasks: ['attempt repair'] }),
+    });
+    expect(started.status).toBe(201);
+    const terminal = await fetch(`${baseUrl}/autonomous/preparation/36967/terminalize`, { method: 'POST' });
+    expect(terminal.status).toBe(200);
+    expect(await terminal.json()).toMatchObject({ preparationState: 'terminal', autonomousRunActive: false });
+    const sessions = await (await fetch(`${baseUrl}/autonomous/sessions`)).json();
+    expect(sessions.sessions.find((s: any) => s.topic === '36967'))
+      .toMatchObject({ active: false, preparationState: 'terminal' });
+  });
+
+  it('terminalizes the autonomous marker when a bounded decision exhausts the carrier', async () => {
+    writeJob(project.stateDir, '36968', false);
+    const started = await fetch(`${baseUrl}/autonomous/preparation/start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topicId: '36968', sessionId: 'w32-exhaust', tasks: ['one attempt'], maxContinuations: 1 }),
+    });
+    expect(started.status).toBe(201);
+    await fetch(`${baseUrl}/continuation/decide`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topicId: '36968', sessionId: 'w32-exhaust' }),
+    });
+    const exhausted = await fetch(`${baseUrl}/continuation/decide`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topicId: '36968', sessionId: 'w32-exhaust' }),
+    });
+    expect(await exhausted.json()).toMatchObject({ decision: 'deactivate', reason: 'continuation-ceiling' });
+    const sessions = await (await fetch(`${baseUrl}/autonomous/sessions`)).json();
+    expect(sessions.sessions.find((s: any) => s.topic === '36968'))
+      .toMatchObject({ active: false, preparationState: 'terminal' });
   });
 
   it('POST /autonomous/native-goal/set injects /goal <condition> and flips goal_mode', async () => {

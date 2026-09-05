@@ -1864,6 +1864,17 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // and an operator's explicit value is never overwritten. The hook reads
   // `enabled` + `judgeTimeoutMs` at the chokepoint (no restart needed to toggle).
   autonomousSessions: {
+    // Bounded Codex continuation and its autonomous preparation carrier both
+    // ship dark. applyDefaults backfills these leaves without overriding an
+    // operator's explicit rollout choice.
+    codexTaskContinuation: {
+      enabled: false,
+      preparationCarrierEnabled: false,
+      maxDurationSeconds: 14400,
+      maxContinuations: 40,
+      auditRetentionDays: 14,
+      auditMaxRows: 5000,
+    },
     completionDiscipline: {
       // Operator-mandated behavior ("the completion bar is the FULL feature"),
       // not a dark-launch experiment (Open-Q2 → on). The flag exists for instant

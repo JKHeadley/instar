@@ -117,6 +117,12 @@ function priorStateParseHook(): string {
   );
   return bundled
     .replace(
+      `# hook-capability: PREPARATION_CARRIER — a truthful inactive autonomous record in
+# preparing/recovering state falls through to the bounded continuation authority.
+`,
+      '',
+    )
+    .replace(
       `# hook-capability: STATE_PARSE_LOUD — a selected state file with missing/malformed
 # frontmatter is a visible hook failure, distinct from the clean no-state exit.
 `,
@@ -161,6 +167,11 @@ const HISTORICAL_STOCK_HOOKS = [
     label: 'topic-keyed v1.2.55-era stock hook',
     commit: 'c7f95344e7d7a43104cc2a37a0ab92bbd97eb78e',
     sha256: '972574c945ee1d43335970fab4512269d3e5e9f9afe92a13f94c99ebffba7391',
+  },
+  {
+    label: 'STATE_PARSE_LOUD predecessor stock hook',
+    commit: '38b8371c1d042c89282ead1e659fb4dbc66cee80',
+    sha256: 'c1c9d64dd248cf2cdcd1a6cd51be60230bb6a62c80a1dfa0838cdf62109e12eb',
   },
 ] as const;
 
@@ -260,6 +271,7 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
       const updated = fs.readFileSync(dst, 'utf8');
 
       expect(updated).toContain('STATE_PARSE_LOUD');
+      expect(updated).toContain('PREPARATION_CARRIER');
       expect(updated).toContain('state_parse_failure');
       expect(updated).toContain('MULTI-SESSION (per-topic state)');
       expect(() => execFileSync('bash', ['-n', dst])).not.toThrow();

@@ -57,6 +57,8 @@ for _arg in "$@"; do [[ "$_arg" == "--codex" ]] && IS_CODEX=1; done
 # pass|fail|configured:false observation to the existing decision-quality annotator.
 # hook-capability: STATE_PARSE_LOUD — a selected state file with missing/malformed
 # frontmatter is a visible hook failure, distinct from the clean no-state exit.
+# hook-capability: PREPARATION_CARRIER — a truthful inactive autonomous record in
+# preparing/recovering state falls through to the bounded continuation authority.
 # emit — human-facing approve/status text. In codex mode the Stop hook's STDOUT must be
 # ONLY valid decision-JSON (the `{"decision":"block",...}` case far below) or empty:
 # codex rejects ANY other stdout as "invalid stop hook JSON output" and reports the stop
@@ -121,6 +123,26 @@ RECOVERY_AUDIT=".instar/autonomous-recovery.jsonl"
 LEGACY_STATE=".instar/autonomous-state.local.md"
 MULTI_DIR=".instar/autonomous"
 LIVENESS_SECS="${INSTAR_AUTONOMOUS_LIVENESS_SECS:-120}"
+
+# The sole shell adapter for bounded task continuation. The TypeScript store and
+# authenticated decision route remain the mutation/decision authority.
+continuation_decision() {
+  [[ "$IS_CODEX" == "1" ]] || return 0
+  [[ "$CODEX_TASK_CONTINUATION_ENABLED" == "1" ]] || return 0
+  [[ -n "$MY_TOPIC" ]] || return 0
+  local port auth agent_id decision reason
+  port=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
+  auth=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
+  agent_id=$(python3 -c "import json;c=json.load(open('.instar/config.json'));print(c.get('projectName') or c.get('agentName') or 'local-stop-hook')" 2>/dev/null | tr -d '\r\n' || echo "local-stop-hook")
+  [[ -n "$agent_id" ]] || agent_id="local-stop-hook"
+  decision=$(jq -nc --arg topicId "$MY_TOPIC" --arg sessionId "$HOOK_SESSION" '{topicId:$topicId,sessionId:$sessionId}' \
+    | curl -sS -m 5 -H "Authorization: Bearer $auth" -H "X-Instar-AgentId: $agent_id" -H 'Content-Type: application/json' \
+      --data-binary @- "http://127.0.0.1:${port}/continuation/decide" 2>/dev/null || echo "")
+  if [[ "$(printf '%s' "$decision" | jq -r '.decision // ""' 2>/dev/null)" == "continue" ]]; then
+    reason=$(printf '%s' "$decision" | jq -r '.reasonText // "Continue the explicit open task list."' 2>/dev/null)
+    jq -nc --arg reason "$reason" '{decision:"block",reason:$reason}'
+  fi
+}
 
 # ── Inputs from the hook ──────────────────────────────────────────────
 HOOK_SESSION=$(printf '%s' "$HOOK_INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
@@ -201,24 +223,8 @@ else
   # No autonomous job for this session. Ordinary Codex interactive work may
   # still own an explicit bounded continuation ledger. The server is the sole
   # mutation/decision authority; empty/invalid state returns allow.
-  if [[ "$IS_CODEX" == "1" ]] && [[ "$CODEX_TASK_CONTINUATION_ENABLED" == "1" ]] && [[ -n "$MY_TOPIC" ]]; then
-    _PORT=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
-    _AUTH=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
-    _DECISION=$(jq -nc --arg topicId "$MY_TOPIC" --arg sessionId "$HOOK_SESSION" '{topicId:$topicId,sessionId:$sessionId}' \
-      | curl -sS -m 5 -H "Authorization: Bearer $_AUTH" -H 'Content-Type: application/json' \
-        --data-binary @- "http://127.0.0.1:${_PORT}/continuation/decide" 2>/dev/null || echo "")
-    if [[ "$(printf '%s' "$_DECISION" | jq -r '.decision // ""' 2>/dev/null)" == "continue" ]]; then
-      _REASON=$(printf '%s' "$_DECISION" | jq -r '.reasonText // "Continue the explicit open task list."' 2>/dev/null)
-      jq -nc --arg reason "$_REASON" '{decision:"block",reason:$reason}'
-    fi
-  fi
+  continuation_decision
   # No autonomous job or open continuation ledger — allow exit.
-  exit 0
-fi
-
-# An autonomous state owns this turn. Its own Codex gate remains authoritative;
-# enabling ordinary task continuation must never implicitly enable autonomous jobs.
-if [[ "$IS_CODEX" == "1" ]] && [[ "$CODEX_LOOP_ENABLED" != "1" ]]; then
   exit 0
 fi
 
@@ -274,6 +280,18 @@ if [[ "$ACTIVE" != "true" ]] && [[ "$ACTIVE" != "false" ]]; then
   state_parse_failure
 fi
 if [[ "$ACTIVE" != "true" ]]; then
+  # Inactive autonomous records are observational, never continuation
+  # authority. Always fall through to the bounded ledger: no ledger (or a
+  # disabled/error decision) allows the stop, while a truthful preparation
+  # carrier can continue even during the tiny cross-file marker write window.
+  continuation_decision
+  exit 0
+fi
+
+# Only an ACTIVE autonomous record is governed by the autonomous Codex-loop
+# gate. An inactive record is observational and has already fallen through to
+# the independently gated continuation authority above.
+if [[ "$IS_CODEX" == "1" ]] && [[ "$CODEX_LOOP_ENABLED" != "1" ]]; then
   exit 0
 fi
 
