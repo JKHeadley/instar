@@ -30,14 +30,15 @@ describe('Window lifecycle production wiring', () => {
   let nextMessageId = 80_000;
   let telegramProfileId: string | null = 'justin-telegram';
   let w32RunLivenessDryRun = true;
-  let w32RunLivenessState = {
-    windowId: 'w32', autonomousRunId: 'w32-e2e-run', status: 'preparing', lastEvaluatedAt: BASE,
+  let w32RunLivenessState: any = {
+    windowId: 'w32', autonomousRunId: 'w32-e2e-run', lifecycleRunId: 'pending-lifecycle', status: 'preparing', lastEvaluatedAt: BASE,
+    lastWorkReceipt: { receiptId: 'w32-work-1', sequence: 1, digest: 'a'.repeat(64), observedAt: BASE, artifact: 'w32-e2e.md', taskRef: 'task-1' },
     predicates: {
-      'executor-bound-running': { ok: true, observed: { executorId: 'w32-e2e-run', running: true } },
-      'heartbeat-fresh': { ok: true, observed: { heartbeatAt: BASE } },
-      'delivery-reachable': { ok: true, observed: { topicId: 36966, reachable: true } },
-      'durable-work-advanced': { ok: true, observed: { revision: 1 } },
-      'lifecycle-admitted-unexpired': { ok: false, observed: { lifecycleState: 'pre_start_gate' } },
+      'executor-bound-running': { ok: true, observed: 'w32-e2e-run:running' },
+      'heartbeat-fresh': { ok: true, observed: BASE },
+      'delivery-reachable': { ok: true, observed: 'reachable' },
+      'durable-work-advanced': { ok: true, observed: `w32-work-1:1:${BASE}` },
+      'lifecycle-admitted-unexpired': { ok: false, observed: 'pending-lifecycle:pre_start_gate:expiry-missing' },
     },
   };
   const history: any[] = [];
@@ -86,7 +87,10 @@ describe('Window lifecycle production wiring', () => {
       playwrightRegistry: () => ({ resolve: (service: string) => service === 'telegram' && telegramProfileId ? { profile: { id: telegramProfileId }, dirExists: true } : { profile: null } }) as any,
       watchdog: { isEnabled: () => true, inspectSessionsForStall: watchdogObservation, verifyStallInspection: (observation: any) => observation.authorityEpoch === 'w28-test-epoch' && observation.authorityProof === crypto.createHash('sha256').update(JSON.stringify({ observedAt: observation.observedAt, authorityEpoch: observation.authorityEpoch, rows: observation.sessions })).digest('hex') } as any,
       windowLifecycleNow: () => clock,
-      windowRunLivenessAuthority: { status: () => ({ enabled: true, dryRun: w32RunLivenessDryRun, config: {}, state: { ...w32RunLivenessState, lastEvaluatedAt: clock } }) },
+      windowRunLivenessAuthority: {
+        status: () => ({ enabled: true, dryRun: w32RunLivenessDryRun, config: { heartbeatMaxAgeMs: 90_000, workEvidenceMaxAgeMs: 30 * 60_000, recoveryCeilingMs: 15 * 60_000 }, state: { ...w32RunLivenessState } }),
+        tick: async () => w32RunLivenessState,
+      } as any,
     });
     await server.start();
   });
@@ -202,6 +206,7 @@ describe('Window lifecycle production wiring', () => {
     fs.writeFileSync(path.join(project.stateDir, 'autonomous', 'active-36966.json'), JSON.stringify({ topic: 36966, windowId: currentWindowId, status: 'running' }));
     const w32Created = await auth(request(app).post('/window-lifecycle/compile')).send({ ...body, windowId: 'w32' });
     expect(w32Created.status, JSON.stringify(w32Created.body)).toBe(201);
+    w32RunLivenessState.lifecycleRunId = w32Created.body.lifecycleRunId;
     expect(w32Created.body.compiledObligationIds).toHaveLength(93);
     expect(w32Created.body.obligations.filter((duty: any) => duty.id.includes('@'))).toHaveLength(0);
     syncCommitments(w32Created.body.obligations);
@@ -233,6 +238,20 @@ describe('Window lifecycle production wiring', () => {
     expect(w32DryRun.obligations.filter((duty: any) => /^w32\.start\./.test(duty.id)).every((duty: any) => !duty.evidence.some((row: any) => row.producer === 'server:window-run-liveness-authority'))).toBe(true);
 
     w32RunLivenessDryRun = false;
+    w32RunLivenessState.lifecycleRunId = 'wrong-lifecycle';
+    const mismatchedAdmission = await auth(request(app).post('/window-lifecycle/evaluate')).send(body);
+    expect(mismatchedAdmission.status, JSON.stringify(mismatchedAdmission.body)).toBe(409);
+    expect(mismatchedAdmission.body.issues).toContain('w32.start.executor-bound-running:run-liveness-authority-unsatisfied');
+    w32RunLivenessState.lifecycleRunId = w32Created.body.lifecycleRunId;
+    clock = new Date(Date.parse(BASE) + 60_001).toISOString();
+    const staleAdmission = await auth(request(app).post('/window-lifecycle/evaluate')).send(body);
+    expect(staleAdmission.status, JSON.stringify(staleAdmission.body)).toBe(409);
+    expect(staleAdmission.body.issues).toContain('w32.start.executor-bound-running:run-liveness-authority-unsatisfied');
+    clock = BASE;
+    w32RunLivenessState.lastEvaluatedAt = clock;
+    w32RunLivenessState.predicates['heartbeat-fresh'].observed = clock;
+    w32RunLivenessState.lastWorkReceipt.observedAt = clock;
+    w32RunLivenessState.predicates['durable-work-advanced'].observed = `w32-work-1:1:${clock}`;
     const w32BeforeAdmission = await satisfyEligible(['pre-start', 'start']);
     const sourceDuties = w32BeforeAdmission.obligations.filter((duty: any) => /^source\./.test(duty.id) && ['pre-start', 'start'].includes(duty.phase));
     expect(sourceDuties).toHaveLength(6);
@@ -251,6 +270,7 @@ describe('Window lifecycle production wiring', () => {
       expect(w32Activated.obligations.find((duty: any) => duty.id === dutyId)?.evidence.some((row: any) => row.producer === 'server:window-run-liveness-authority'), dutyId).toBe(true);
     }
 
+    clock = BASE;
     fs.writeFileSync(tenetsPath, syntheticTenets);
     currentWindowId = 'w28';
     commitments.splice(0);

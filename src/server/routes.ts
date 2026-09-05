@@ -864,9 +864,6 @@ export interface RouteContext {
   windowRunLivenessAuthority?: WindowRunLivenessAuthority | null;
   /** Deterministic clock seam for the Echo-only lifecycle production E2E. */
   windowLifecycleNow?: () => string;
-  /** Server-owned W32 run-liveness authority. Absent fails closed; callers can
-   * observe the snapshot but cannot assert any predicate through HTTP. */
-  windowRunLivenessAuthority?: { status(): { enabled: boolean; dryRun: boolean; config: unknown; state: { windowId: string; autonomousRunId: string; status: string; lastEvaluatedAt: string; predicates: Record<'executor-bound-running' | 'heartbeat-fresh' | 'delivery-reachable' | 'durable-work-advanced' | 'lifecycle-admitted-unexpired', { ok: boolean; observed: unknown }> } | null } } | null;
   /**
    * TEST-ONLY pre-resolved constitution for the conformance routes.
    *
@@ -2468,7 +2465,12 @@ export function createRoutes(ctx: RouteContext): Router {
   const runtimeCompletionProof = (obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation, real: RuntimeExecutorSnapshot) => { const base = { executorId: real.executorId, completedAt: real.completedAt, completionDigest: real.completionDigest }; if (!/^cadence\.stall-check\.30m@/.test(obligation.id)) return { runtimeCompletion: base }; const inspection = readStallInspection(obligation.id); if (!inspection || !ctx.watchdog?.isEnabled()) return null; const authorityValid = ctx.watchdog.verifyStallInspection({ observedAt: inspection.inspectedAt, authorityEpoch: inspection.watchdogAuthorityEpoch, pollRevision: inspection.watchdogPollRevision, authorityProof: inspection.watchdogAuthorityProof, sessions: inspection.sessionResults }); return authorityValid ? { runtimeCompletion: base, ...inspection } : null; };
   const proofPayload = (obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation, extra: Record<string, unknown> = {}) => JSON.stringify({ obligationId: obligation.id, verdict: 'pass', sourceHashes: obligation.sourceSpans.map(s => s.hash), ...obligation.predicate.expected, ...runtimeSemanticFacts(obligation), ...extra });
   const runLivenessPayload = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument, obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation): string | null => {
-    const snapshot = ctx.windowRunLivenessAuthority?.status(); const state = snapshot?.state; if (!snapshot?.enabled || snapshot.dryRun || !state || state.windowId !== ledger.windowId || !state.autonomousRunId || !Number.isFinite(Date.parse(state.lastEvaluatedAt)) || Date.parse(state.lastEvaluatedAt) > Date.parse(windowNow())) return null;
+    const snapshot = ctx.windowRunLivenessAuthority?.status();
+    const state = snapshot?.state;
+    const nowMs = Date.parse(windowNow());
+    const evaluatedMs = Date.parse(state?.lastEvaluatedAt ?? '');
+    const sampleMaxAgeMs = Math.min(60_000, snapshot?.config.heartbeatMaxAgeMs ?? 0);
+    if (!snapshot?.enabled || snapshot.dryRun || !state || state.windowId !== ledger.windowId || state.lifecycleRunId !== ledger.lifecycleRunId || !state.autonomousRunId || ['stalled', 'failed', 'closed'].includes(state.status) || !Number.isFinite(evaluatedMs) || evaluatedMs > nowMs || nowMs - evaluatedMs > sampleMaxAgeMs) return null;
     type LivenessPredicate = keyof typeof state.predicates;
     const predicateByDuty: Partial<Record<string, LivenessPredicate>> = {
       'w32.start.executor-bound-running': 'executor-bound-running',
@@ -2479,8 +2481,18 @@ export function createRoutes(ctx: RouteContext): Router {
       'w32.continuous.pre-start-gate-exit': 'lifecycle-admitted-unexpired',
     };
     const key = predicateByDuty[obligation.id];
-    const allGreen = Object.values(state.predicates).every(predicate => predicate.ok);
-    const green = obligation.id === 'w32.continuous.opening-complete' ? state.status === 'active' && allGreen : key ? state.predicates[key].ok : false;
+    const heartbeatMs = Date.parse(state.predicates['heartbeat-fresh'].observed);
+    const workMs = Date.parse(state.lastWorkReceipt?.observedAt ?? '');
+    const ceilingMs = Date.parse(ledger.windowCeilingAt ?? '');
+    const currentVerdicts: Record<LivenessPredicate, boolean> = {
+      'executor-bound-running': state.predicates['executor-bound-running'].ok,
+      'heartbeat-fresh': state.predicates['heartbeat-fresh'].ok && Number.isFinite(heartbeatMs) && heartbeatMs <= nowMs && nowMs - heartbeatMs <= snapshot.config.heartbeatMaxAgeMs,
+      'delivery-reachable': state.predicates['delivery-reachable'].ok,
+      'durable-work-advanced': state.predicates['durable-work-advanced'].ok && Number.isFinite(workMs) && workMs <= nowMs && nowMs - workMs <= snapshot.config.workEvidenceMaxAgeMs,
+      'lifecycle-admitted-unexpired': state.predicates['lifecycle-admitted-unexpired'].ok && ledger.admission?.admitted === true && !['idle', 'pre_start_gate', 'start_blocked', 'rolled_back', 'closed_clean', 'closed_with_operator_waiver'].includes(ledger.state) && Number.isFinite(ceilingMs) && nowMs < ceilingMs,
+    };
+    const allGreen = Object.values(currentVerdicts).every(Boolean);
+    const green = obligation.id === 'w32.continuous.opening-complete' ? state.status === 'active' && allGreen : key ? currentVerdicts[key] : false;
     return green ? proofPayload(obligation, { runLiveness: snapshot, authoritativePredicate: key ?? 'openingComplete' }) : null;
   };
   const deterministicPayload = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument, obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation): string | null => {

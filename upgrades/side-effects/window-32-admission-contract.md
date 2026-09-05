@@ -74,7 +74,7 @@ The review kept W31-only semantics out of W32, moved source artifacts away from 
 **Reviewer:** `/root/w32_admission/instar_dev_review`
 **Independent read of the artifact:** concern
 
-Concern raised: `runLivenessPayload` rejects future timestamps but accepts arbitrarily stale green snapshots, while the E2E uses a deterministic fresh timestamp. A stopped Lane A sampler could therefore leave a stale green snapshot available to admission. Per the parent lane's commit-candidate freeze, this is recorded as an unresolved merge/integration risk rather than changed in this slice; the composed implementation must either make `status()` freshness-aware or reject a snapshot older than Lane A's authoritative evaluation interval before live W32 admission.
+Concern raised during the admission-lane review: `runLivenessPayload` rejected future timestamps but accepted arbitrarily stale green snapshots. Composition resolved that risk before live use. Admission now rejects a snapshot older than the 60-second authority interval, rejects a mismatched lifecycle binding and terminal liveness states, and recomputes heartbeat age, durable-work age, lifecycle admission, and expiry from current authority data. The production E2E covers both mismatched-binding and stale-snapshot refusals before the fresh bound snapshot reaches `active_start`.
 
 ## Evidence pointers
 
