@@ -1,8 +1,8 @@
 # Side-Effects Review — Codex test-worker interruption and control-plane resilience
 
-**Version / slug:** `codex-test-worker-control-plane`  
-**Date:** `2026-09-04`  
-**Author:** `Codex`  
+**Version / slug:** `codex-test-worker-control-plane`
+**Date:** `2026-09-04`
+**Author:** `Codex`
 **Second-pass reviewer:** `Codex independent reviewer`
 
 ## Summary of the change
@@ -70,7 +70,7 @@ The first independent pass found missing session-incarnation fencing, incomplete
 
 ## Second-pass review (if required)
 
-**Reviewer:** Codex independent reviewer  
+**Reviewer:** Codex independent reviewer
 **Independent read of the artifact:** concur — the revised implementation closes the session-replacement race, records target/effect attribution, and proves against a live esbuild process tree that service descendants stay outside interruption authority.
 
 ## Evidence pointers

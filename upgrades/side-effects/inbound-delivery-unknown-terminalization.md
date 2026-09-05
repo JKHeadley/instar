@@ -1,8 +1,8 @@
 # Side-Effects Review — Inbound delivery unknown terminalization
 
-**Version / slug:** `inbound-delivery-unknown-terminalization`  
-**Date:** `2026-09-04`  
-**Author:** `Codex`  
+**Version / slug:** `inbound-delivery-unknown-terminalization`
+**Date:** `2026-09-04`
+**Author:** `Codex`
 **Second-pass reviewer:** `Codex independent reviewer`
 
 ## Summary of the change
@@ -68,7 +68,7 @@ The first independent pass found that shared-rollout uncertainty had the same st
 
 ## Second-pass review (if required)
 
-**Reviewer:** Codex independent reviewer  
+**Reviewer:** Codex independent reviewer
 **Independent read of the artifact:** concur — both single-delivery and shared-rollout uncertainty now terminalize atomically, preserve no-replay evidence, and release live capacity without adding judgment authority.
 
 ## Evidence pointers
