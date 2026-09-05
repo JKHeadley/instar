@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createLedger, EchoWindowLedgerStore, rollbackDigest, WINDOW_DRY_RUN_INVENTORY } from '../../src/core/WindowLifecycleObligationLedger.js';
+import { compileWindowSources, createLedger, EchoWindowLedgerStore, rollbackDigest, WINDOW_DRY_RUN_INVENTORY } from '../../src/core/WindowLifecycleObligationLedger.js';
 
 describe('EchoWindowLedgerStore integration', () => {
   it('persists atomically under Echo home and rollback preserves the ledger', () => {
@@ -28,5 +28,25 @@ describe('EchoWindowLedgerStore integration', () => {
     expect(() => store.load('codey', 'echo-window-lifecycle')).toThrow('echo-scope-required');
     expect(() => store.load('echo', 'other')).toThrow('echo-scope-required');
     expect(fs.existsSync(path.join(home, 'window-lifecycle'))).toBe(false);
+  });
+
+  it('persists a ledger compiled directly from the approved W32 charter fixture', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-ledger-w32-')); const store = new EchoWindowLedgerStore(home);
+    const tenets = path.resolve('tests/fixtures/window-32-tenets.md');
+    const charter = path.resolve('tests/fixtures/window-32-approved-charter.md');
+    const compiled = compileWindowSources({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w32', tenetsPath: tenets, charterPath: charter, now: '2026-09-05T07:49:00.000Z' });
+    store.save(createLedger({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w32', compiled }));
+    const persisted = store.load('echo', 'echo-window-lifecycle');
+    expect(persisted?.sourceHashes).toMatchObject({
+      [tenets]: '2c9ac586f74e1a1b68a7271aed0232bf1a1f3c4b56573b68a7bd65ec4298b104',
+      [charter]: 'a204c07d213bcc16965d6e0dcbe515626fbac41edf0edeede09afaf40d83dd88',
+    });
+    expect(persisted?.catalogProfile).toBe('w32-approved-a204c07d');
+    expect(persisted).toMatchObject({ windowStartedAt: '2026-09-05T07:49:00.000Z', windowCeilingAt: '2026-09-06T07:49:00.000Z' });
+    expect(persisted?.compiledObligationIds.some(id => id.includes('@'))).toBe(false);
+    expect(persisted?.compiledObligationIds).toContain('w32.start.executor-bound-running');
+    expect(persisted?.compiledObligationIds).not.toContain('postlive.verdict.pass-required');
+    const nativeDuty = persisted?.obligations.find(duty => duty.id === 'preground.native-structural-preflight');
+    expect(nativeDuty?.sourceSpans[0]).toMatchObject({ source: charter, lineStart: 72 });
   });
 });

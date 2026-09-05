@@ -15,6 +15,7 @@ const BASE = '2026-08-28T18:00:00.000Z';
 const MID = '2026-08-29T06:00:00.000Z';
 const CLOSE = '2026-08-29T18:00:00.000Z';
 const PLAN_ID = '01234567-89ab-4cde-8fab-0123456789ab';
+const W32_PLAN_ID = '3a08766f-5738-474f-8857-b713f753a7e2';
 const PLAN_VERSION = '2026-08-28T17:00:00.000Z';
 const IDENTITY = generateIdentityKeyPair();
 const PUBLIC_KEY = IDENTITY.publicKey;
@@ -28,6 +29,17 @@ describe('Window lifecycle production wiring', () => {
   let currentWindowId = 'w28';
   let nextMessageId = 80_000;
   let telegramProfileId: string | null = 'justin-telegram';
+  let w32RunLivenessDryRun = true;
+  let w32RunLivenessState = {
+    windowId: 'w32', autonomousRunId: 'w32-e2e-run', status: 'preparing', lastEvaluatedAt: BASE,
+    predicates: {
+      'executor-bound-running': { ok: true, observed: { executorId: 'w32-e2e-run', running: true } },
+      'heartbeat-fresh': { ok: true, observed: { heartbeatAt: BASE } },
+      'delivery-reachable': { ok: true, observed: { topicId: 36966, reachable: true } },
+      'durable-work-advanced': { ok: true, observed: { revision: 1 } },
+      'lifecycle-admitted-unexpired': { ok: false, observed: { lifecycleState: 'pre_start_gate' } },
+    },
+  };
   const history: any[] = [];
   const commitments: any[] = [];
   const workerRecords: any[] = [];
@@ -40,11 +52,16 @@ describe('Window lifecycle production wiring', () => {
     const admissionStore = writeAdmissionStore(project.stateDir);
     fs.appendFileSync(admissionStore, '\n');
     const source = `# Window duties\nCanonical plan ${PLAN_ID}\nNamed Lane A and Lane B.\nSignature fingerprint ${FINGERPRINT}\n${minimumWindowDutyFixture()}\n`;
-    fs.writeFileSync(path.join(project.dir, '.instar', 'TENETS.md'), source);
+    const tenetsSource = source
+      .replace('The native admission-gate structural preflight is required.\n', '')
+      .replace('The admission-gate and opening cannot complete without evidence.\n', '');
+    fs.writeFileSync(path.join(project.dir, '.instar', 'TENETS.md'), tenetsSource);
     fs.mkdirSync(path.join(project.stateDir, 'w28'), { recursive: true });
     fs.writeFileSync(path.join(project.stateDir, 'w28', 'WINDOW-28-CHARTER.md'), source);
     fs.mkdirSync(path.join(project.stateDir, 'synthetic-w28'), { recursive: true });
     fs.writeFileSync(path.join(project.stateDir, 'synthetic-w28', 'WINDOW-synthetic-w28-CHARTER.md'), source);
+    fs.mkdirSync(path.join(project.stateDir, 'w32'), { recursive: true });
+    fs.copyFileSync(path.resolve('tests/fixtures/window-32-approved-charter.md'), path.join(project.stateDir, 'w32', 'WINDOW-32-CHARTER.md'));
     fs.writeFileSync(path.join(project.stateDir, 'identity.json'), JSON.stringify({ publicKey: PUBLIC_KEY.toString('base64'), privateKey: IDENTITY.privateKey.toString('base64'), privateKeyEncryption: 'none' }));
     for (const [index, lane, machine] of [[1, 'A', 'studio'], [2, 'B', 'laptop']] as const) { const transcriptPath = path.join(project.stateDir, `codey-${index}.jsonl`); fs.writeFileSync(transcriptPath, JSON.stringify({ work: `implemented lane ${lane}` })); workerRecords.push({ agentId: `codey-${index}`, agentType: `worker-codey lane-${lane} machine-${machine}`, sessionId: `worker-session-${index}`, startedAt: BASE, stoppedAt: BASE, transcriptPath, lastMessage: `lane ${lane} landed` }); }
     const config: InstarConfig = {
@@ -60,7 +77,7 @@ describe('Window lifecycle production wiring', () => {
     fs.writeFileSync(path.join(project.stateDir, 'autonomous', 'active-36966.json'), JSON.stringify({ topic: 36966, windowId: 'w28', status: 'running' }));
         const telegram = { getTopicHistory: (topicId: number) => history.filter(row => row.topicId === topicId), sendToTopic: async (topicId: number, text: string) => { sentMessages.push({ topicId, text }); const messageId = nextMessageId++; history.push({ messageId, topicId, text, fromUser: false, timestamp: clock, sessionName: 'echo-session', authorship: 'agent-outbound', forwarded: false } as any); return { messageId }; } };
     const watchdogObservation = (observedAt: string) => { const rows = sessions.listRunningSessions().map((session: any) => ({ name: session.tmuxSession, outputObserved: true, escalationActive: false, decisionEvaluated: true, decisionEvaluatedAt: observedAt })); const authorityEpoch = 'w28-test-epoch'; const authorityProof = crypto.createHash('sha256').update(JSON.stringify({ observedAt, authorityEpoch, rows })).digest('hex'); return { observedAt, authorityEpoch, pollRevision: 1, authorityProof, sessions: rows }; };
-    const viewer = { get: (id: string) => id === PLAN_ID ? { id, createdAt: PLAN_VERSION, updatedAt: PLAN_VERSION, title: 'Window plan', markdown: `# Plan\nNode-ID: current-work\nCharter-ID: ${currentWindowId}\nLeaf-to-root: current-work > ${currentWindowId} > root` } : null };
+    const viewer = { get: (id: string) => [PLAN_ID, W32_PLAN_ID].includes(id) ? { id, createdAt: PLAN_VERSION, updatedAt: PLAN_VERSION, title: 'Window plan', markdown: `# Plan\nNode-ID: current-work\nCharter-ID: ${currentWindowId}\nLeaf-to-root: current-work > ${currentWindowId} > root` } : null };
     server = new AgentServer({
       config, sessionManager: sessions as any, state: project.state, telegram: telegram as any, viewer: viewer as any,
       commitmentTracker: { getAll: () => commitments, getActive: () => commitments.filter(c => c.status === 'pending') } as any,
@@ -69,6 +86,7 @@ describe('Window lifecycle production wiring', () => {
       playwrightRegistry: () => ({ resolve: (service: string) => service === 'telegram' && telegramProfileId ? { profile: { id: telegramProfileId }, dirExists: true } : { profile: null } }) as any,
       watchdog: { isEnabled: () => true, inspectSessionsForStall: watchdogObservation, verifyStallInspection: (observation: any) => observation.authorityEpoch === 'w28-test-epoch' && observation.authorityProof === crypto.createHash('sha256').update(JSON.stringify({ observedAt: observation.observedAt, authorityEpoch: observation.authorityEpoch, rows: observation.sessions })).digest('hex') } as any,
       windowLifecycleNow: () => clock,
+      windowRunLivenessAuthority: { status: () => ({ enabled: true, dryRun: w32RunLivenessDryRun, config: {}, state: { ...w32RunLivenessState, lastEvaluatedAt: clock } }) },
     });
     await server.start();
   });
@@ -79,6 +97,7 @@ describe('Window lifecycle production wiring', () => {
 
   function syncCommitments(obligations: any[]): void {
     for (const obligation of obligations) {
+      if (obligation.evidencePolicy.requiredAuthority === 'run-liveness-authority') continue;
       let commitment = commitments.find(item => item.externalKey === obligation.id);
       if (!commitment) {
         commitment = { id: `CMT-${commitments.length + 1}`, externalKey: obligation.id, beaconEnabled: true, createdAt: BASE, topicId: 36966, boundBy: `session:${obligation.responsibleRole}-session`, sessionEpoch: 'live-session', beaconSuppressed: false, beaconPaused: false };
@@ -131,7 +150,7 @@ describe('Window lifecycle production wiring', () => {
     ledger = (await auth(request(server.getApp()).get('/window-lifecycle')).expect(200)).body.ledger;
     syncCommitments(ledger.obligations);
     const manual = ledger.obligations.filter((obligation: any) => phases.includes(obligation.phase)
-      && !['runtime-registry-proof', 'deterministic-replay', 'native-local-store-presence'].includes(obligation.evidencePolicy.requiredAuthority)
+      && !['runtime-registry-proof', 'run-liveness-authority', 'deterministic-replay', 'native-local-store-presence'].includes(obligation.evidencePolicy.requiredAuthority)
       && obligation.status !== 'satisfied');
     for (const obligation of manual) await addManualEvidence(obligation);
     await auth(request(server.getApp()).post('/window-lifecycle/tick')).send(body);
@@ -146,6 +165,9 @@ describe('Window lifecycle production wiring', () => {
       syncCommitments(ledger.obligations);
       await auth(request(server.getApp()).post('/window-lifecycle/tick')).send(body);
       ledger = (await auth(request(server.getApp()).get('/window-lifecycle')).expect(200)).body.ledger;
+      syncCommitments(ledger.obligations);
+      await auth(request(server.getApp()).post('/window-lifecycle/tick')).send(body);
+      ledger = (await auth(request(server.getApp()).get('/window-lifecycle')).expect(200)).body.ledger;
       const dueReports = ledger.obligations.filter((obligation: any) => /^cadence\.report\.3h@/.test(obligation.id) && Date.parse(obligation.deadline.dueAt) <= Date.parse(clock) && !obligation.evidence.some((evidence: any) => evidence.verifierPassed));
       for (const report of dueReports) await addManualEvidence(report);
       await auth(request(server.getApp()).post('/window-lifecycle/tick')).send(body);
@@ -155,15 +177,94 @@ describe('Window lifecycle production wiring', () => {
   it('traverses real admission, mid/cadence, close, post-live, and closure through AgentServer', async () => {
     const app = server.getApp();
     await auth(request(app).post('/window-lifecycle/compile')).send({ agentId: 'codey', scope: 'echo-window-lifecycle', windowId: 'w28' }).expect(403);
+    const tenetsPath = path.join(project.dir, '.instar', 'TENETS.md');
+    const syntheticTenets = fs.readFileSync(tenetsPath);
+    fs.copyFileSync(path.resolve('tests/fixtures/window-32-tenets.md'), tenetsPath);
+    const w32Preview = await auth(request(app).post('/window-lifecycle/compile')).send({ ...body, windowId: 'w32', preview: true });
+    expect(w32Preview.status, JSON.stringify(w32Preview.body)).toBe(200);
+    expect(w32Preview.body.ledger.sourceHashes).toMatchObject({
+      [tenetsPath]: '2c9ac586f74e1a1b68a7271aed0232bf1a1f3c4b56573b68a7bd65ec4298b104',
+      [path.join(project.stateDir, 'w32', 'WINDOW-32-CHARTER.md')]: 'a204c07d213bcc16965d6e0dcbe515626fbac41edf0edeede09afaf40d83dd88',
+    });
+    expect(w32Preview.body.ledger.catalogProfile).toBe('w32-approved-a204c07d');
+    expect(w32Preview.body.ledger.compiledObligationIds).toContain('w32.start.executor-bound-running');
+    expect(w32Preview.body.ledger.compiledObligationIds).not.toContain('postlive.verdict.pass-required');
+    expect(w32Preview.body.ledger.obligations.find((duty: any) => duty.id === 'preground.native-structural-preflight').sourceSpans[0]).toMatchObject({
+      source: path.join(project.stateDir, 'w32', 'WINDOW-32-CHARTER.md'),
+      lineStart: 72,
+    });
+
+    // The exact approved W32 sources must traverse the real opening path, not
+    // merely compile in preview. The four start predicates come only from the
+    // server-owned liveness document; no RuntimeRegistry commitments exist for
+    // those duties.
+    currentWindowId = 'w32';
+    fs.writeFileSync(path.join(project.stateDir, 'autonomous', 'active-36966.json'), JSON.stringify({ topic: 36966, windowId: currentWindowId, status: 'running' }));
+    const w32Created = await auth(request(app).post('/window-lifecycle/compile')).send({ ...body, windowId: 'w32' });
+    expect(w32Created.status, JSON.stringify(w32Created.body)).toBe(201);
+    expect(w32Created.body.compiledObligationIds).toHaveLength(93);
+    expect(w32Created.body.obligations.filter((duty: any) => duty.id.includes('@'))).toHaveLength(0);
+    syncCommitments(w32Created.body.obligations);
+    const livenessDutyIds = w32Created.body.obligations.filter((duty: any) => duty.evidencePolicy.requiredAuthority === 'run-liveness-authority').map((duty: any) => duty.id);
+    expect(commitments.some(commitment => livenessDutyIds.includes(commitment.externalKey))).toBe(false);
+    await auth(request(app).post('/window-lifecycle/native-admission')).send({ ...body, windowId: 'w32', package: validAdmissionPackage(), nonce: 'w32-production-native-0001' }).expect(200);
+
+    const exactTenets = fs.readFileSync(tenetsPath, 'utf8');
+    const reaffirmationMarkers = ['## Goals 1–8', '## Tenet 5 — REFINEMENT', '## Tenet 9 (complete rewrite', '## Tenet 10 (captured', '## The 80/20 standard', '## Tenet 13 (proposed'];
+    const reaffirmationOffsets = reaffirmationMarkers.map(marker => exactTenets.indexOf(marker));
+    expect(reaffirmationOffsets.every(offset => offset > 0)).toBe(true);
+    const reaffirmationBodies = [exactTenets.slice(0, reaffirmationOffsets[0]), ...reaffirmationOffsets.slice(0, -1).map((offset, index) => exactTenets.slice(offset, reaffirmationOffsets[index + 1])), exactTenets.slice(reaffirmationOffsets.at(-1)!)].map(part => part.replace(/\n\n$/, '').replace(/\n$/, ''));
+    const logicalMessageIds = [68736, 68729, 68737, 68732, 68733, 68744, 68734];
+    const reaffirmationRows = reaffirmationBodies.map((part, index) => ({ messageId: logicalMessageIds[index], topicId: 36966, text: `[WINDOW 32 START TENET REAFFIRMATION — part ${index + 1}/7, verbatim, byte-validated]\n\n${part}`, fromUser: false, timestamp: new Date(Date.parse(BASE) - (7 - index) * 1_000).toISOString(), sessionName: 'echo-observer', provenance: 'agent', authorship: 'agent-outbound', forwarded: false }));
+    const deliveryOrderedRows = [...reaffirmationRows].sort((a, b) => a.messageId - b.messageId);
+    history.push(...deliveryOrderedRows);
+    fs.appendFileSync(path.join(project.stateDir, 'telegram-messages.jsonl'), `${deliveryOrderedRows.map(row => JSON.stringify(row)).join('\n')}\n`);
+    const reaffirmed = await auth(request(app).post('/window-lifecycle/evidence')).send({ ...body, obligationId: 'start.reaffirmation', topicId: 36966, messageIds: logicalMessageIds, authority: 'live-requeried-message' });
+    expect(reaffirmed.status, JSON.stringify(reaffirmed.body)).toBe(201);
+    expect(reaffirmed.body.nativeCoordinates.messageIds).toEqual(logicalMessageIds);
+    expect(reaffirmed.body.canonicalPayloadHash).toBe('2c9ac586f74e1a1b68a7271aed0232bf1a1f3c4b56573b68a7bd65ec4298b104');
+
+    const w32DryRun = await satisfyEligible(['pre-start', 'start']);
+    const dryRunAdmission = await auth(request(app).post('/window-lifecycle/evaluate')).send(body);
+    expect(dryRunAdmission.status, JSON.stringify(dryRunAdmission.body)).toBe(409);
+    expect(dryRunAdmission.body.issues.filter((issue: string) => /^w32\.start\..*:predicate-unsatisfied$/.test(issue))).toHaveLength(4);
+    expect(dryRunAdmission.body.issues.filter((issue: string) => /^w32\.start\..*:run-liveness-authority-unsatisfied$/.test(issue))).toHaveLength(4);
+    expect(dryRunAdmission.body.issues.some((issue: string) => /^w32\.start\..*:runtime-assignment-missing$/.test(issue))).toBe(false);
+    expect(w32DryRun.obligations.filter((duty: any) => /^w32\.start\./.test(duty.id)).every((duty: any) => !duty.evidence.some((row: any) => row.producer === 'server:window-run-liveness-authority'))).toBe(true);
+
+    w32RunLivenessDryRun = false;
+    const w32BeforeAdmission = await satisfyEligible(['pre-start', 'start']);
+    const sourceDuties = w32BeforeAdmission.obligations.filter((duty: any) => /^source\./.test(duty.id) && ['pre-start', 'start'].includes(duty.phase));
+    expect(sourceDuties).toHaveLength(6);
+    expect(sourceDuties.every((duty: any) => duty.status === 'satisfied' && duty.evidence.some((row: any) => row.producer === 'server:source-authority'))).toBe(true);
+    const w32StartDuties = w32BeforeAdmission.obligations.filter((duty: any) => /^w32\.start\./.test(duty.id));
+    expect(w32StartDuties.every((duty: any) => duty.evidence.some((row: any) => row.producer === 'server:window-run-liveness-authority')), JSON.stringify(w32StartDuties.map((duty: any) => ({ id: duty.id, authority: duty.evidencePolicy.requiredAuthority, status: duty.status, evidence: duty.evidence })))).toBe(true);
+    const w32Admitted = await auth(request(app).post('/window-lifecycle/evaluate')).send(body);
+    expect(w32Admitted.status, JSON.stringify({ issues: w32Admitted.body.issues, unresolvedStart: w32Admitted.body.obligations?.filter((duty: any) => ['pre-start', 'start'].includes(duty.phase) && duty.status !== 'satisfied').map((duty: any) => duty.id) })).toBe(200);
+    expect(w32Admitted.body.state).toBe('active_start');
+
+    w32RunLivenessState = { ...w32RunLivenessState, status: 'active', predicates: { ...w32RunLivenessState.predicates, 'lifecycle-admitted-unexpired': { ok: true, observed: { lifecycleState: 'active_start', unexpired: true } } } };
+    await auth(request(app).post('/window-lifecycle/tick')).send(body);
+    const w32Activated = (await auth(request(app).get('/window-lifecycle')).expect(200)).body.ledger;
+    expect(w32Activated.obligations.filter((duty: any) => /^w32\.start\./.test(duty.id)).every((duty: any) => duty.status === 'satisfied' && duty.evidence.some((row: any) => row.producer === 'server:window-run-liveness-authority'))).toBe(true);
+    for (const dutyId of ['w32.continuous.admitted-and-unexpired', 'w32.continuous.pre-start-gate-exit', 'w32.continuous.opening-complete']) {
+      expect(w32Activated.obligations.find((duty: any) => duty.id === dutyId)?.evidence.some((row: any) => row.producer === 'server:window-run-liveness-authority'), dutyId).toBe(true);
+    }
+
+    fs.writeFileSync(tenetsPath, syntheticTenets);
+    currentWindowId = 'w28';
+    commitments.splice(0);
+    fs.writeFileSync(path.join(project.stateDir, 'autonomous', 'active-36966.json'), JSON.stringify({ topic: 36966, windowId: currentWindowId, status: 'running' }));
     const created = await auth(request(app).post('/window-lifecycle/compile')).send({ ...body, windowId: 'w28' });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     expect(created.body.compiledObligationIds.length).toBeGreaterThan(40);
     const backupDir = path.join(project.stateDir, 'window-lifecycle', 'backups');
+    const backupsBeforePreview = fs.readdirSync(backupDir).length;
     const preview = await auth(request(app).post('/window-lifecycle/compile')).send({ ...body, windowId: 'synthetic-w28', preview: true });
     expect(preview.status, JSON.stringify(preview.body)).toBe(200);
     expect(preview.body).toMatchObject({ preview: true, ledger: { windowId: 'synthetic-w28' } });
     expect((await auth(request(app).get('/window-lifecycle')).expect(200)).body.ledger.windowId).toBe('w28');
-    expect(fs.existsSync(backupDir)).toBe(false);
+    expect(fs.readdirSync(backupDir)).toHaveLength(backupsBeforePreview);
     const dryRunSend = await auth(request(app).post('/telegram/reply/36966')).send({ text: 'Dry-run must observe without blocking this unresolved ledger.' }); expect(dryRunSend.status, JSON.stringify(dryRunSend.body)).toBe(200); expect(fs.readFileSync(path.join(project.stateDir, 'window-lifecycle', 'shadow-would-block.jsonl'), 'utf8')).toContain('telegram-send');
     await auth(request(app).post('/window-lifecycle/enforcement/graduate')).send(body).expect(409);
     await auth(request(app).post('/telegram/reply/36966')).send({ text: 'script-style relay attempt remains non-blocking during shadow.' }).expect(200);
