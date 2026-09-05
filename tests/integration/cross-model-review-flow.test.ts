@@ -12,7 +12,7 @@
  *
  * Three flows per the spec §Testing:
  *   1. codex present  → findings folded in, flag/banner read codex-cli:<model>,
- *      frontmatter gets `cross-model-review: "codex-cli:gpt-5.5"`.
+ *      frontmatter gets `cross-model-review: "codex-cli:gpt-5.6-sol"`.
  *   2. codex absent   → unavailable flag, round completes internal-only,
  *      report carries the UNAVAILABLE banner, spec is STILL taggable.
  *   3. degraded       → provider rejects; flag reads `degraded: <reason>`, does
@@ -152,18 +152,18 @@ describe('cross-model review flow — codex PRESENT', () => {
 
     expect(result.status).toBe('ok');
     expect(result.framework).toBe('codex-cli');
-    expect(result.model).toBe('gpt-5.5');
+    expect(result.model).toBe('gpt-5.6-sol');
     expect(result.findings).toHaveLength(1);
     expect(result.findings![0].verdict).toBe('MINOR ISSUES');
-    expect(result.flag).toBe('cross-model-review: codex-cli:gpt-5.5');
+    expect(result.flag).toBe('cross-model-review: codex-cli:gpt-5.6-sol');
 
     // Report banner.
-    expect(renderBanner(result)).toBe('## Cross-model review: codex-cli:gpt-5.5');
+    expect(renderBanner(result)).toBe('## Cross-model review: codex-cli:gpt-5.6-sol');
 
     // Frontmatter stamp.
     stampTag(result);
     const out = fs.readFileSync(specPath, 'utf-8');
-    expect(out).toMatch(/cross-model-review:\s*"codex-cli:gpt-5\.5"/);
+    expect(out).toMatch(/cross-model-review:\s*"codex-cli:gpt-5\.6-sol"/);
     expect(out).toMatch(/review-convergence:/);
   });
 });
@@ -360,7 +360,7 @@ describe('cross-model review flow — DEGRADED', () => {
 
     expect(result.status).toBe('degraded');
     expect(result.reason).toBe('timeout');
-    expect(result.flag).toBe('cross-model-review: codex-cli:gpt-5.5 (degraded: timeout)');
+    expect(result.flag).toBe('cross-model-review: codex-cli:gpt-5.6-sol (degraded: timeout)');
     // Crucially NOT unavailable — the framework IS present.
     expect(result.status).not.toBe('unavailable');
 
@@ -369,7 +369,7 @@ describe('cross-model review flow — DEGRADED', () => {
     // Degraded is still taggable (disclosure, not a gate).
     stampTag(result);
     const out = fs.readFileSync(specPath, 'utf-8');
-    expect(out).toMatch(/cross-model-review:\s*"codex-cli:gpt-5\.5 \(degraded: timeout\)"/);
+    expect(out).toMatch(/cross-model-review:\s*"codex-cli:gpt-5\.6-sol \(degraded: timeout\)"/);
     expect(out).toMatch(/review-convergence:/);
   });
 });

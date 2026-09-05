@@ -19,30 +19,23 @@
       },
       "topModels": [
         {
-          "id": "claude-opus-4-8",
+          "id": "claude-opus-5",
           "role": "capable-anthropic",
           "frontier": true,
           "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
+          "verifiedAt": "2026-08-18"
         },
         {
           "id": "claude-fable-5",
           "role": "ultra-anthropic",
           "frontier": true,
           "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
+          "verifiedAt": "2026-08-18"
         },
         {
-          "id": "claude-opus-5",
+          "id": "claude-opus-4-8",
           "role": "capable-anthropic",
-          "frontier": true,
-          "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
-        },
-        {
-          "id": "claude-sonnet-5",
-          "role": "capable-anthropic",
-          "frontier": true,
+          "frontier": false,
           "pricing": null,
           "verifiedAt": "carried-over-from-allowlist"
         }
@@ -61,37 +54,37 @@
       },
       "topModels": [
         {
-          "id": "claude-opus-4-8",
+          "id": "claude-opus-5",
           "role": "capable-anthropic",
           "frontier": true,
           "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
+          "verifiedAt": "2026-08-18"
         },
         {
-          "id": "claude-sonnet-4-6",
+          "id": "claude-sonnet-5",
           "role": "balanced-anthropic",
           "frontier": true,
           "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
+          "verifiedAt": "2026-08-18"
         },
         {
           "id": "claude-haiku-4-5",
           "role": "fast-anthropic",
           "frontier": true,
           "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
+          "verifiedAt": "2026-08-18"
         },
         {
-          "id": "claude-opus-5",
+          "id": "claude-opus-4-8",
           "role": "capable-anthropic",
-          "frontier": true,
+          "frontier": false,
           "pricing": null,
           "verifiedAt": "carried-over-from-allowlist"
         },
         {
-          "id": "claude-sonnet-5",
-          "role": "capable-anthropic",
-          "frontier": true,
+          "id": "claude-sonnet-4-6",
+          "role": "balanced-anthropic",
+          "frontier": false,
           "pricing": null,
           "verifiedAt": "carried-over-from-allowlist"
         }
@@ -110,22 +103,22 @@
       },
       "topModels": [
         {
-          "id": "gpt-5.5",
+          "id": "gpt-5.6-sol",
           "role": "capable-openai",
           "frontier": true,
-          "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
-        },
-        {
-          "id": "gpt-5.6-sol",
-          "role": "flagship-openai-recognized",
-          "frontier": false,
           "pricing": {
             "inPerMtok": 5,
             "outPerMtok": 30,
             "currency": "USD"
           },
-          "verifiedAt": "2026-07-09"
+          "verifiedAt": "2026-08-18"
+        },
+        {
+          "id": "gpt-5.5",
+          "role": "capable-openai",
+          "frontier": false,
+          "pricing": null,
+          "verifiedAt": "carried-over-from-allowlist"
         },
         {
           "id": "gpt-5.6-terra",
@@ -150,7 +143,7 @@
           "verifiedAt": "2026-07-09"
         }
       ],
-      "note": "codex CLI is NOT installed on this machine (which codex -> not found), yet componentFrameworks routes job/Usher/TopicIntentExtractor to it -> those fall back at runtime. Door-liveness gap flagged to operator. topModels seeded from the reviewed frontierAllowlist (spec D4 carry-over). The GPT-5.6 family (sol/terra/luna) went GA on the codex subscription + was live-verified 2026-07-09 (codex CLI >= 0.144.0 required); it is now RECOGNIZED/spawnable (added to the acceptance allowlists KNOWN_CODEX_MODEL_IDS + CODEX_MODELS_SUBSCRIPTION) but is deliberately NOT promoted to frontier=true / the capable pin here — the capable pin stays gpt-5.5 pending a benchmark-based promotion (a model earns the routing lane via benchmarks, not GA date). The -pro variants are excluded (plan-gated + pricier). Frontier/pin promotion of gpt-5.6-sol is a tracked follow-up."
+      "note": "Codex CLI v0.145.0 was reviewed from the vendor's model selector on this machine on 2026-08-18. The selector labels gpt-5.6-sol as the latest frontier agentic coding model and current default, so the capable pin now routes to gpt-5.6-sol and gpt-5.5 is retained as superseded history with frontier=false. gpt-5.6-terra and gpt-5.6-luna remain recognized non-frontier alternatives. The -pro variants remain excluded because the review did not establish them for this routing tier."
     },
     "gemini-cli": {
       "name": "Gemini CLI",
@@ -168,7 +161,7 @@
           "role": "capable-google",
           "frontier": true,
           "pricing": null,
-          "verifiedAt": "carried-over-from-allowlist"
+          "verifiedAt": "2026-08-18"
         }
       ],
       "note": "Homebrew gemini-cli formula DEPRECATED (upstream-unsupported, disabled 2026-12-18). CLI v0.25.2 still runs. capable tier now pinned to gemini-3.1-pro-preview (verified reachable 2026-07-03 via the gemini CLI / OpenRouter / paid Gemini key); gemini-2.5-pro remains a recognized/spawnable model + capacity fallback (NOT frontier). Migrate off the deprecated formula (npm @google/gemini-cli, or an OpenRouter/pi door). topModels seeded from the reviewed frontierAllowlist (spec D4 carry-over)."
@@ -230,7 +223,7 @@
       "note": "CLAUDE_REVIEWER_DEFAULT_MODEL — the Anthropic clean-door reviewer pin (REVIEWER-DOOR-REWIRING §1.3). Extraction matches a frontier CONSTANT (not a capable:'…' tier decl), so the non-vacuity test (tests/unit/model-registry-freshness-reviewer-pin.test.ts) rots this constant and asserts the strict lint fails — closing the vacuous-tooth risk."
     }
   ],
-  "$flaggedStaleNote": "Both prior flagged pins RESOLVED (operator-confirmed 2026-07-03): gemini capable swapped gemini-2.5-pro -> gemini-3.1-pro-preview (pin + topModels updated in the same change); codex capable stays gpt-5.5. UPDATE 2026-07-09: the GPT-5.6 family (sol/terra/luna) went GA on the codex subscription + was live-verified (codex CLI >= 0.144.0) — the earlier 'gpt-5.6-sol is preview-only/gov-gated/unreachable' statement is now superseded. gpt-5.6-sol/terra/luna are RECOGNIZED (in codex-cli.topModels + the acceptance allowlists) but deliberately NOT promoted to frontier / the capable pin yet — the capable pin stays gpt-5.5 pending a benchmark-based promotion. Nothing pending confirmation (a benchmark-driven promotion of gpt-5.6-sol is a tracked follow-up, not a pending flagged pin).",
+  "$flaggedStaleNote": "Prior flagged pins are resolved. Gemini capable moved from gemini-2.5-pro to gemini-3.1-pro-preview on 2026-07-03. The 2026-08-18 review promoted gpt-5.6-sol to the Codex capable frontier pin after the local Codex v0.145.0 vendor selector identified it as the latest frontier default; gpt-5.5 is retained as superseded history with frontier=false. Nothing is pending confirmation in flaggedStale.",
   "flaggedStale": [],
   "$frontierAllowlistNote": "The hand-maintained frontierAllowlist{} was SUPERSEDED by derivation (spec §1.4): the frontier set for each door is now the ids in doors[door].topModels[] carrying frontier:true. This removes a second hand-maintained list (the rot this registry fights). The lint keeps a backward-compat path: a door with a literal frontierAllowlist[door] and NO topModels behaves exactly as before; a door with BOTH emits a transition finding so the old hand-list can't silently linger.",
   "$candidateDoorwaysNote": "candidateDoorways[] = the doorways the scan should PROBE FOR (spec §1.2/§2.5), INCLUDING ones not yet present in doors{}. A candidate reachable but absent from doors is surfaced as a newly-configured-doorway. The prober only activates a candidate whose probe.kind it supports; a candidate with no door entry / unsupported kind is recorded, never silently treated as reachable. openrouter / gemini-direct-api below are candidate-only (no door entry yet) so the candidate-detection machinery has real inputs to exercise.",
@@ -243,5 +236,5 @@
     "openrouter",
     "gemini-direct-api"
   ],
-  "$lastReviewNote": "2026-08-18 review (Echo). Every existing capable/latest PIN was checked and remains a member of its door's frontier set — no pin was changed, so this review alters NO routing behavior. What the review did find: the Anthropic frontier has moved to the Claude 5 family, so claude-opus-5 and claude-sonnet-5 were ADDED as frontier on the claude-code and anthropic-headless doors. claude-opus-4-8 was deliberately LEFT frontier:true rather than demoted: demoting it would fail the drift check for the pins that currently reference it, and re-pointing those pins is a fleet-wide routing decision that belongs in its own change with its own side-effects review — not bundled into an unrelated feature PR. This note is the dated record that the question is open."
+  "$lastReviewNote": "2026-08-18 review applied as an operator-visible routing change. Claude Code v2.1.234's local vendor selector established claude-opus-5, claude-fable-5, claude-sonnet-5, and claude-haiku-4-5 as the current offered family; superseded claude-opus-4-8 and claude-sonnet-4-6 are retained with frontier=false. Codex v0.145.0's local vendor selector established gpt-5.6-sol as the latest frontier default, so the capable pin moved from gpt-5.5 to gpt-5.6-sol and gpt-5.5 is retained with frontier=false. Gemini remains gemini-3.1-pro-preview and was verified from vendor documentation rather than a successful local CLI probe. The source pins and runtime closed Claude allowlist were reconciled in the same proposal."
 }

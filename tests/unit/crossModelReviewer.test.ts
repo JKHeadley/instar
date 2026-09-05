@@ -86,8 +86,8 @@ describe('detectCodexReviewer', () => {
     });
     expect(r.available).toBe(true);
     expect(r.framework).toBe('codex-cli');
-    // capable tier → gpt-5.5 per models.ts (the concrete id stays owned there).
-    expect(r.model).toBe('gpt-5.5');
+    // capable tier → gpt-5.6-sol per models.ts (the concrete id stays owned there).
+    expect(r.model).toBe('gpt-5.6-sol');
   });
 
   it('returns codex-not-authed when auth.json is missing', () => {
@@ -315,11 +315,11 @@ describe('runCrossModelReview — the three outcome states', () => {
     });
     expect(r.status).toBe('ok');
     expect(r.framework).toBe('codex-cli');
-    expect(r.model).toBe('gpt-5.5');
+    expect(r.model).toBe('gpt-5.6-sol');
     expect(r.verdict).toBe('SERIOUS ISSUES');
     expect(r.findings).toHaveLength(1);
-    expect(r.findings![0].reviewer).toBe('cross-model:codex-cli:gpt-5.5');
-    expect(r.flag).toBe('cross-model-review: codex-cli:gpt-5.5');
+    expect(r.findings![0].reviewer).toBe('cross-model:codex-cli:gpt-5.6-sol');
+    expect(r.flag).toBe('cross-model-review: codex-cli:gpt-5.6-sol');
   });
 
   it('degraded: available but the provider throws → status degraded, does NOT collapse to unavailable', async () => {
@@ -331,7 +331,7 @@ describe('runCrossModelReview — the three outcome states', () => {
     });
     expect(r.status).toBe('degraded');
     expect(r.reason).toBe('timeout');
-    expect(r.flag).toBe('cross-model-review: codex-cli:gpt-5.5 (degraded: timeout)');
+    expect(r.flag).toBe('cross-model-review: codex-cli:gpt-5.6-sol (degraded: timeout)');
   });
 
   it('degraded: rate-limited provider error classifies as rate-limited', async () => {

@@ -105,7 +105,7 @@ const TIER_TO_MODEL: Record<ModelTier, string> = {
   // medium — cheapest reasoning model; everyday light work / worker subagents.
   balanced: 'gpt-5.4-mini',
   // heavy — frontier reasoning model; hard problems + the user's main chat.
-  capable: 'gpt-5.5',
+  capable: 'gpt-5.6-sol',
 };
 
 /**

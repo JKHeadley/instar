@@ -149,12 +149,12 @@ describe('§9 pin consult — de-escalation lands on the topic baseline', () => 
     const svc = service({
       session: makeSession({ model: 'claude-fable-5' }),
       injected,
-      confirmId: 'claude-opus-4-8',
+      confirmId: 'claude-opus-5',
       consult: () => null,
     });
     const result = await svc.swap('topic-chat', 'default');
     expect(result.status).toBe('swapped');
-    expect(result.model).toBe('claude-opus-4-8');
+    expect(result.model).toBe('claude-opus-5');
   });
 
   it('an off-enum consult id NEVER reaches send-keys (falls to the resolver)', async () => {
@@ -162,12 +162,12 @@ describe('§9 pin consult — de-escalation lands on the topic baseline', () => 
     const svc = service({
       session: makeSession({ model: 'claude-fable-5' }),
       injected,
-      confirmId: 'claude-opus-4-8',
+      confirmId: 'claude-opus-5',
       consult: () => ({ suppressEscalation: false, baselineModel: 'evil; rm -rf /' }),
     });
     const result = await svc.swap('topic-chat', 'default');
     expect(result.status).toBe('swapped');
-    expect(result.model).toBe('claude-opus-4-8'); // resolver default, not the bad id
+    expect(result.model).toBe('claude-opus-5'); // resolver default, not the bad id
     expect(injected.every(i => !i.includes('evil'))).toBe(true);
   });
 });

@@ -320,7 +320,7 @@ describe('ModelSwapService.swap', () => {
     expect(audit).toContain('flap-suppressed');
     // past the dwell window the down-swap proceeds
     t += cfg.costGuards.minTierDwellMs;
-    postInjectTail = CONFIRM_TAIL('claude-opus-4-8');
+    postInjectTail = CONFIRM_TAIL('claude-opus-5');
     injected.length = 0;
     const r2 = await svc.swap('topic-chat', 'default');
     expect(r2.status).toBe('swapped');
@@ -328,9 +328,9 @@ describe('ModelSwapService.swap', () => {
 
   it('a swap back to DEFAULT consumes no budget and no lease', async () => {
     session = makeSession({ model: 'claude-fable-5' });
-    postInjectTail = CONFIRM_TAIL('claude-opus-4-8');
+    postInjectTail = CONFIRM_TAIL('claude-opus-5');
     const r = await service().swap('topic-chat', 'default');
-    expect(r).toMatchObject({ status: 'swapped', model: 'claude-opus-4-8' });
+    expect(r).toMatchObject({ status: 'swapped', model: 'claude-opus-5' });
     expect(admitCalls).toHaveLength(0);
     expect(injectionRecords).toHaveLength(0);
   });
