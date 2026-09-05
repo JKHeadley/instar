@@ -77,6 +77,32 @@ import {
   normalizeTierEscalationConfig,
 } from '../core/ModelTierEscalation.js';
 
+/**
+ * Generic tiers accepted for EVERY framework; they resolve per-framework inside
+ * buildHeadlessLaunch.
+ */
+const GENERIC_TIERS = ['fast', 'balanced', 'capable'];
+
+/**
+ * The model ids `POST /sessions/spawn` accepts for a framework — the generic
+ * tiers plus that framework's canonical per-framework enum.
+ *
+ * EXPORTED so a test can observe THE ROUTE'S OWN accepted set rather than
+ * re-deriving it from the enum. codex used to have its own arm here reading a
+ * hand-typed duplicate of KNOWN_CODEX_MODEL_IDS, "kept in lockstep" by comment
+ * only. A test that read the enum could not see the route drift away from it:
+ * re-splitting the route to drop 6 of 9 codex ids left the suite green
+ * (second-pass review negative control, 2026-09-05). Reading this function is
+ * what lets a test prove the spawn route and the pin validator accept the same
+ * ids — assert against the enum instead and the guard is blind to its subject.
+ */
+export function spawnModelAllowlist(framework: string): readonly string[] {
+  return [
+    ...GENERIC_TIERS,
+    ...(KNOWN_MODEL_IDS[framework as EscalationFramework] ?? KNOWN_CLAUDE_MODEL_IDS),
+  ];
+}
+
 /** Validate a decision-quality join key carried back by an advisory client. */
 export function isPlausibleDecisionRef(ref: string): boolean {
   // Router ids are `d-<machineId8>-<uuid>` on a mesh member and `d-<uuid>`
@@ -10236,7 +10262,6 @@ export function createRoutes(ctx: RouteContext): Router {
     // Generic tiers ('fast'|'balanced'|'capable') are universally accepted
     // and resolve per-framework inside buildHeadlessLaunch. Framework-
     // specific names are accepted when they match the framework slot.
-    const GENERIC_TIERS = ['fast', 'balanced', 'capable'];
     // E2E-PAIRING: EXEMPT — extends an existing model allowlist on the
     // already-live spawn route. No new route, no route-aliveness change, no
     // 503 surface; route-create E2E coverage is unchanged by extending the
@@ -10245,10 +10270,6 @@ export function createRoutes(ctx: RouteContext): Router {
     // enum from ModelTierEscalation.ts — includes the concrete model ids
     // (claude-fable-5, claude-opus-4-8, …) AND the CLI tier aliases
     // (opus/sonnet/haiku), so instar can natively spawn Fable sessions.
-    // Mirror of KNOWN_CODEX_MODEL_IDS (ModelTierEscalation.ts) — keep in lockstep.
-    // GPT-5.6 family GA on the codex subscription 2026-07-09 (codex CLI >= 0.144.0);
-    // -pro variants deliberately excluded (plan-gated + pricier, future follow-up).
-    const CODEX_MODELS_SUBSCRIPTION = ['gpt-5.2', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'];
     if (model !== undefined) {
       if (typeof model !== 'string') {
         res.status(400).json({ error: '"model" must be a string' });
@@ -10262,9 +10283,15 @@ export function createRoutes(ctx: RouteContext): Router {
       // subscription-only list; every other framework now reads the canonical
       // per-framework map, which is an exhaustive Record over the union and so
       // cannot silently omit the next framework the way a chain does.
-      const allowed = requestedFramework === 'codex-cli'
-        ? [...GENERIC_TIERS, ...CODEX_MODELS_SUBSCRIPTION]
-        : [...GENERIC_TIERS, ...(KNOWN_MODEL_IDS[requestedFramework as EscalationFramework] ?? KNOWN_CLAUDE_MODEL_IDS)];
+      // codex no longer needs its own arm: KNOWN_MODEL_IDS['codex-cli'] IS
+      // KNOWN_CODEX_MODEL_IDS, so the general arm yields the identical list.
+      // The codex arm used to read a hand-maintained duplicate of that list,
+      // "kept in lockstep" by comment only — nothing enforced it, so a model
+      // added to one and not the other made a spawn-accepted / pin-refused
+      // split (found 2026-09-05 adding gpt-6-astra). Deleting the special case
+      // removes the drift class rather than documenting it; spawnModelAllowlist
+      // is exported so a test can observe THIS list, not a re-derivation of it.
+      const allowed = spawnModelAllowlist(requestedFramework);
       if (!allowed.includes(model)) {
         res.status(400).json({
           error: `"model" must be one of: ${allowed.join(', ')} (framework: ${requestedFramework})`,

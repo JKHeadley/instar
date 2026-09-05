@@ -1,0 +1,25 @@
+{
+  "ts": "2026-09-05T20:12:08.129Z",
+  "slug": "codex-gpt6-astra-allowlist",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 63,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/model-registry-freshness.manifest.json",
+      "src/core/ModelTierEscalation.ts",
+      "src/core/topicProfileValidation.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 49,
+    "deletedLines": 14
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
