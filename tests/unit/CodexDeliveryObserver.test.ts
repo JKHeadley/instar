@@ -309,7 +309,7 @@ describe('CodexDeliveryObserver', () => {
     await first;
     expect(captures).toBe(4);
     expect(maximum).toBe(4);
-    expect(store.status().deliveriesByState.unknown).toBe(20);
+    expect(store.status().deliveriesByState['effect-unknown']).toBe(20);
   });
 
   it('advances one durable rollout cursor and fans each event sequence to matching live deliveries', async () => {
