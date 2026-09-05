@@ -23,6 +23,13 @@ observation now enter an explicit terminal effect-unknown state. They remain
 auditable without occupying live-capacity slots forever, preventing an
 ambiguous historical backlog from blocking new Telegram messages.
 
+The release canary also found a second observer defect under real load: when a
+busy Codex transcript grew by more than one read budget, a read ending partway
+through the next JSONL record discarded the valid complete prefix as unknown.
+The observer now durably advances through the last complete record and re-reads
+the partial tail on its next bounded sweep. Truly oversized single records,
+malformed JSON, schema drift, and identity mismatches still fail closed.
+
 ## What to Tell Your User
 
 Long-running Codex test work is protected from false watchdog interruptions,
@@ -36,6 +43,8 @@ crowd new messages out of the live queue.
 - Process-targeted watchdog remediation with action-time identity checks.
 - Responsive cached session discovery on asynchronous control-plane paths.
 - An explicit terminal state for deliveries whose physical effect is unknown.
+- Multi-pass observation of valid busy-session transcript backlogs without
+  false unknown outcomes at non-aligned byte boundaries.
 - Clear queue-reason wording in Codex recovery notices.
 
 ## Evidence
@@ -50,3 +59,9 @@ survives unchanged while the lifecycle suite completes. A backed-up copy of the
 live inbound ledger contained 496 ambiguous rows consuming capacity; applying
 the new terminal transition reduced the live count to four while retaining the
 rows for audit, and normal inbound dispatch resumed.
+
+The first exact-candidate two-hour/50-delivery canary correctly refused to sign
+after finding three false unknowns on unrelated busy sessions. Their transcript
+records proved the messages and responses existed beyond a non-aligned 256 KiB
+scan boundary. The corrected scanner has unit, integration, and production-wired
+E2E coverage for that exact multi-budget shape and must pass a fresh canary.

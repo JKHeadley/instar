@@ -155,6 +155,32 @@ describeMaybe('Codex session lifecycle reliability — production AgentServer pa
     if (!('unavailable' in after)) expect(after.logicalRows).toBe(logicalRowsBefore);
   });
 
+  it('converges a production-wired response after more than one non-aligned observer byte budget', async () => {
+    const text = 'large-valid-backlog-e2e';
+    const before = manager.inboundDeliveryStatus();
+    if ('unavailable' in before) throw new Error('Stage B unexpectedly unavailable');
+    expect(manager.sendInput(tmuxSession, text)).toBe(true);
+    const padding = JSON.stringify({
+      type: 'turn_context', payload: { type: 'turn_context', padding: 'x'.repeat(700) },
+    }) + '\n';
+    // Default observer row budget is 256 KiB. End the first bounded read in
+    // the middle of an otherwise valid JSONL event, reproducing the live busy-
+    // session false-unknown condition rather than an exact-newline fixture.
+    fs.appendFileSync(rolloutPath, padding.repeat(400));
+    const turnId = 'large-backlog-turn';
+    fs.appendFileSync(rolloutPath, [
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: turnId } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } },
+      { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done' }] } },
+      { type: 'event_msg', payload: { type: 'task_complete', turn_id: turnId } },
+    ].map((row) => JSON.stringify(row)).join('\n') + '\n');
+    for (let index = 0; index < 4; index++) await manager.sweepInboundDeliveryObserverForTesting();
+    const after = manager.inboundDeliveryStatus();
+    if ('unavailable' in after) throw new Error('Stage B unexpectedly unavailable');
+    expect(after.deliveriesByState.responded).toBe((before.deliveriesByState.responded ?? 0) + 1);
+    expect(after.deliveriesByState['effect-unknown'] ?? 0).toBe(before.deliveriesByState['effect-unknown'] ?? 0);
+  });
+
   it('tracks the first fresh Codex bootstrap before a rollout exists and binds it from offset zero', async () => {
     const bootstrapText = 'fresh-bootstrap-e2e';
     const managerWithReadySeam = manager as unknown as {

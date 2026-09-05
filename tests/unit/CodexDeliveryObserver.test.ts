@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { CodexDeliveryObserver, observeCodexComposer, scanSharedRollout } from '../../src/core/CodexDeliveryObserver.js';
+import { CodexDeliveryObserver, observeCodexComposer, scanRollout, scanSharedRollout } from '../../src/core/CodexDeliveryObserver.js';
 import { InboundDeliveryStore } from '../../src/core/InboundDeliveryStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
@@ -380,16 +380,53 @@ describe('CodexDeliveryObserver', () => {
     expect(f.store.get('59199', 'd1')?.transcriptState).toBe('responded');
   });
 
-  it('fails closed when a byte cap lands mid-event even after an earlier complete event', () => {
+  it('advances the complete prefix when a byte cap lands mid-event', () => {
     const f = fixture();
     const cap = 4_096;
+    const prefix = event('turn_context', { type: 'turn_context' });
     fs.appendFileSync(f.rollout,
-      event('turn_context', { type: 'turn_context' })
+      prefix
       + `{"type":"turn_context","payload":{"type":"turn_context","padding":"${'x'.repeat(cap)}"}}\n`);
-    expect(scanSharedRollout(f.store.rolloutWork()[0], KEY, cap)).toMatchObject({ kind: 'unknown', bytesRead: cap });
+    expect(scanSharedRollout(f.store.rolloutWork()[0], KEY, cap)).toMatchObject({
+      kind: 'events', observedThrough: f.row.baselineOffset + Buffer.byteLength(prefix), bytesRead: cap,
+    });
   });
 
-  it('fails closed at exact cap equality with no newline or with an earlier complete prefix', () => {
+  it('advances the complete prefix in the compatibility scanner when a byte cap lands mid-event', () => {
+    const f = fixture();
+    const cap = 4_096;
+    const prefix = event('turn_context', { type: 'turn_context' });
+    fs.appendFileSync(f.rollout,
+      prefix
+      + `{"type":"turn_context","payload":{"type":"turn_context","padding":"${'x'.repeat(cap)}"}}\n`);
+    expect(scanRollout(f.row, f.rollout, KEY, cap)).toMatchObject({
+      kind: 'unseen', observedThrough: f.row.baselineOffset + Buffer.byteLength(prefix), bytesRead: cap,
+    });
+  });
+
+  it('converges a valid multi-budget rollout whose bounded reads end mid-event', async () => {
+    const f = fixture();
+    const cap = 1_024;
+    const paddingEvent = event('turn_context', {
+      type: 'turn_context', padding: 'x'.repeat(700),
+    });
+    fs.appendFileSync(f.rollout,
+      paddingEvent + paddingEvent + paddingEvent
+      + event('event_msg', { type: 'task_started', turn_id: 'after-backlog' })
+      + user('after-backlog', f.envelope) + assistant('after-backlog') + complete('after-backlog'));
+    const observer = new CodexDeliveryObserver({
+      store: f.store, hmacKey: KEY, resolveRolloutPath: () => f.rollout,
+      resolveRolloutId: () => 'thread-1', capturePane: () => null,
+      maxBytesPerRow: cap, maxAggregateBytesPerSweep: cap, now: () => 1_000,
+    });
+    for (let index = 0; index < 6 && f.store.get('59199', 'd1')?.transcriptState !== 'responded'; index++) {
+      await observer.sweep();
+      expect(f.store.get('59199', 'd1')?.eligibilityState).toBe('open');
+    }
+    expect(f.store.get('59199', 'd1')?.transcriptState).toBe('responded');
+  });
+
+  it('fails closed at exact cap equality only when there is no complete boundary', () => {
     const cap = 4_096;
     const noNewline = fixture();
     fs.appendFileSync(noNewline.rollout, 'x'.repeat(cap));
@@ -401,7 +438,9 @@ describe('CodexDeliveryObserver', () => {
     fs.appendFileSync(partialTail.rollout, prefix + 'x'.repeat(cap - Buffer.byteLength(prefix)));
     expect(fs.statSync(partialTail.rollout).size - partialTail.row.baselineOffset).toBe(cap);
     expect(scanSharedRollout(partialTail.store.rolloutWork()[0], KEY, cap))
-      .toMatchObject({ kind: 'unknown', bytesRead: cap });
+      .toMatchObject({
+        kind: 'events', observedThrough: partialTail.row.baselineOffset + Buffer.byteLength(prefix), bytesRead: cap,
+      });
   });
 
   it('persists capped failure backoff across restart, notifies once, and resets after recovery', async () => {
