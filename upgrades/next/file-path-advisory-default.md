@@ -1,0 +1,23 @@
+# File paths are suggestions, not walls
+
+<!-- bump: patch -->
+
+## What Changed
+
+The outbound tone gate previously treated any `B2_FILE_PATH` verdict as a hard stop unless the broader advisory-migration experiment was enabled. That made a contextual writing preference capable of blocking legitimate artifact links and exact paths. `B2_FILE_PATH` is now advisory on every install. The agent may revise the prose or explicitly override the nudge with a reason; credential exposure and autonomous self-stop rules remain hard blockers.
+
+Existing agents receive the revised behavior awareness through an idempotent CLAUDE.md migration, while fresh installs inherit it directly from the current template.
+
+## What to Tell Your User
+
+Exact file paths and artifact links are allowed when they are useful. The agent may still get a clarity suggestion, but that suggestion can no longer prevent delivery merely because it contains a path. Secret values remain blocked.
+
+## Summary of New Capabilities
+
+- File-path feedback is advisory by default across fresh and upgraded agents.
+- Agents can send a necessary path after recording why the nudge does not apply.
+- Credential-safety walls remain unchanged.
+
+## Evidence
+
+Focused unit and integration coverage verifies the runtime disposition with the broader migration both off and on, behavior when decision recording is unavailable, fresh-install awareness, replacement of legacy installed guidance, and migration idempotency.
