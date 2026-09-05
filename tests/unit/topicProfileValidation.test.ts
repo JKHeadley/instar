@@ -17,6 +17,7 @@ import {
   THINKING_MODES,
 } from '../../src/core/topicProfileValidation.js';
 import { KNOWN_MODEL_IDS } from '../../src/core/ModelTierEscalation.js';
+import { spawnModelAllowlist } from '../../src/server/routes.js';
 
 describe('validateModelId (§10.2 closed-enum clamp)', () => {
   it('accepts a known claude id', () => {
@@ -32,6 +33,44 @@ describe('validateModelId (§10.2 closed-enum clamp)', () => {
     expect(validateModelId('gpt-5.6-sol', 'codex-cli')).toBeNull();
     expect(validateModelId('gpt-5.6-terra', 'codex-cli')).toBeNull();
     expect(validateModelId('gpt-5.6-luna', 'codex-cli')).toBeNull();
+  });
+
+  it('accepts the GPT-6 family against codex-cli (allowlist mirror)', () => {
+    expect(validateModelId('gpt-6-astra', 'codex-cli')).toBeNull();
+  });
+
+  it('still fails closed on an unverified sibling gpt-6 id', () => {
+    // Only LIVE-VERIFIED ids are listed — a plausible-looking sibling that was
+    // never observed working must still be refused, so a typo cannot strand a
+    // topic on a model the CLI will reject at launch.
+    expect(validateModelId('gpt-6-nova', 'codex-cli')?.failure).toBe('off-enum');
+  });
+
+  it('the spawn ROUTE accepts every id the pin validator does, for every framework', () => {
+    // Reads spawnModelAllowlist — the spawn route's OWN accepted set — NOT the
+    // enum. An earlier version of this guard iterated KNOWN_MODEL_IDS and
+    // asserted validateModelId, which is tautological (the validator reads that
+    // same map) and blind to the route: a negative control that re-split the
+    // route to a literal dropping 6 of 9 codex ids left the whole suite green.
+    // Asserting through the route's exported list is what makes drift fail HERE.
+    // pi-cli is omitted: its enum is CLOSED-EMPTY by design, so both loops
+    // would be vacuous. grok-build is included precisely because ROUND-21's
+    // original bug was grok-build being enumerated against Claude ids — the
+    // framework with history is the one that most needs the guard.
+    for (const framework of ['codex-cli', 'claude-code', 'gemini-cli', 'grok-build'] as const) {
+      const generic = ['fast', 'balanced', 'capable'];
+      const routeIds = spawnModelAllowlist(framework).filter((m) => !generic.includes(m));
+      // The route must not accept an id the pin validator refuses — that split
+      // is exactly the spawn-accepted / pin-refused bug this closes.
+      for (const model of routeIds) {
+        expect(validateModelId(model, framework), `${framework} route id ${model}`).toBeNull();
+      }
+      // …and it must not silently DROP ids the validator accepts, which is the
+      // direction a re-introduced literal fails in.
+      for (const model of KNOWN_MODEL_IDS[framework]) {
+        expect(routeIds, `${framework} pinnable id ${model} missing from the spawn route`).toContain(model);
+      }
+    }
   });
 
   it('rejects a newline-bearing id (regex failure class)', () => {

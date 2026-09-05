@@ -93,8 +93,14 @@ describe('Route validation edge cases', () => {
       expect(res.status).not.toBe(400);
     });
 
-    it('accepts codex-cli GPT-5.6 family model values', async () => {
-      for (const model of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+    it('accepts codex-cli GPT-5.6 + GPT-6 family model values', async () => {
+      // Request count is deliberately unchanged (this file sits at the spawn
+      // rate-limit budget — adding a 4th request 429s and cascades into the
+      // tests after it), so this samples the HTTP path end-to-end. Per-id
+      // coverage for the FULL list is asserted against the route's own
+      // spawnModelAllowlist in topicProfileValidation.test.ts, which needs no
+      // HTTP request per id.
+      for (const model of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra']) {
         // Session name must be dot-free (SESSION_NAME_RE) — the model id has dots.
         const name = `test-codex-${model.replace(/\./g, '-')}`;
         const res = await request(app)

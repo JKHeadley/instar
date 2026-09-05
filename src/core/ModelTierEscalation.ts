@@ -177,7 +177,9 @@ export const DEFAULT_TIER_ESCALATION_CONFIG: TierEscalationConfig = {
  * claude-code: concrete ids the Claude CLI accepts via `--model`, plus the
  * CLI tier aliases it documents (haiku/sonnet/opus). Includes the ultra
  * model `claude-fable-5` — the first populated escalation target.
- * codex-cli: mirror of CODEX_MODELS_SUBSCRIPTION (routes.ts spawn allowlist).
+ * codex-cli: THE codex list. The spawn route reads it through
+ * spawnModelAllowlist() (routes.ts) rather than restating it — it used to
+ * carry a hand-typed duplicate, and nothing enforced the agreement.
  * gemini-cli: re-exported from the adapter's own closed list.
  * pi-cli: CLOSED-EMPTY by design — pi model ids are `provider/id` patterns
  * whose provider half is per-agent config; there is no universal closed
@@ -210,10 +212,16 @@ export const KNOWN_CODEX_MODEL_IDS = [
   // GPT-5.6 family — GA on the codex subscription 2026-07-09, live-verified on
   // codex CLI >= 0.144.0 (older CLIs 400 with "requires a newer version"). The
   // -pro variants are deliberately EXCLUDED (plan-gated + pricier — future
-  // follow-up). Keep in lockstep with CODEX_MODELS_SUBSCRIPTION (routes.ts).
+  // follow-up).
   'gpt-5.6-sol',
   'gpt-5.6-terra',
   'gpt-5.6-luna',
+  // GPT-6 family — live-verified 2026-09-05 on codex CLI 0.153.4; CLI 0.149.0
+  // 400s with "The 'gpt-6-astra' model requires a newer version of Codex."
+  // Only ids OBSERVED working are listed — sibling gpt-6 names are added when
+  // each is live-verified, never guessed. This is the SINGLE codex list:
+  // adding an id here reaches the spawn route and the pin validator both.
+  'gpt-6-astra',
 ] as const;
 
 export const KNOWN_MODEL_IDS: Record<EscalationFramework, readonly string[]> = {

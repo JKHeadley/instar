@@ -1,0 +1,49 @@
+# Codex `gpt-6-astra` Can Be Pinned, and the Codex Model List Stops Being Two Lists
+
+<!-- bump: patch -->
+
+## What Changed
+
+instar gates codex model ids against a closed list — an unknown id is refused so a
+typo can never launch a session that dies at startup. That list did not include
+`gpt-6-astra`, so pinning a topic to it was refused `off-enum` even on machines whose
+codex CLI runs the model perfectly well. Sessions launched with the model passed
+directly were unaffected, which made the gap read as "instar doesn't support this
+model" rather than "instar's list is stale."
+
+The id is added, verified working first: codex CLI 0.153.4 runs it; 0.149.0 returns
+`400 … requires a newer version of Codex`. Only observed-working ids are added — a
+plausible sibling name that was never run is still refused, and a test now asserts
+that refusal so the list cannot drift from "verified" to "seemed likely."
+
+The second half is the durable one. The `/sessions/spawn` route did not read the
+shared list; it carried its own hand-typed copy, "kept in lockstep" by comment with
+nothing enforcing it. Because `KNOWN_MODEL_IDS['codex-cli']` already IS
+`KNOWN_CODEX_MODEL_IDS`, the general arm every other framework uses yields an
+identical list — so the codex special case is deleted rather than kept in sync. A
+test asserts the two surfaces resolve to one list, and it was falsified by
+deliberately re-splitting them before being trusted.
+
+## What to Tell Your User
+
+You can now pin a conversation to codex's gpt-6-astra model the way you pin any
+other model — just say so in the topic. If your machine's codex tool is older than
+version 0.153.4 the model itself will refuse at launch, so update it there first.
+Nothing changes for any model that already worked.
+
+## Summary of New Capabilities
+
+- `gpt-6-astra` is a valid codex model id for topic-profile pins and session spawns.
+- Unverified sibling `gpt-6-*` names still fail closed, now with a test holding that.
+- The spawn route and the pin validator read one codex list instead of two, so a
+  future model can no longer be spawn-accepted while pin-refused.
+
+## Evidence
+
+Unit tests cover the new id against the pin validator and the spawn route, the
+fail-closed refusal of an unverified sibling id, and the single-list parity between
+`KNOWN_MODEL_IDS['codex-cli']` and `KNOWN_CODEX_MODEL_IDS`. Each was falsified before
+being trusted: removing the id fails both acceptance tests for the right reason, and
+pointing the map at a filtered copy fails the parity guard. Typecheck clean; full unit
+suite green. Live verification of the model against both codex CLI versions is
+recorded in the side-effects artifact.
