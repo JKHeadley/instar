@@ -273,6 +273,7 @@ import {
   REQUIRED_WINDOW_DUTIES,
   WINDOW_DRY_RUN_INVENTORY,
 } from '../core/WindowLifecycleObligationLedger.js';
+import type { WindowRunLivenessAuthority } from '../core/WindowRunLivenessAuthority.js';
 
 const execFile = promisify(execFileCb);
 
@@ -857,6 +858,8 @@ export interface RouteContext {
   /** Echo W28 lifecycle controller installed by createRoutes. AgentServer calls
    * this from its owned timer; tests may invoke it deterministically. */
   windowLifecycleTick?: (() => void) | null;
+  /** W32 authoritative five-predicate run-liveness state. Null means dark. */
+  windowRunLivenessAuthority?: WindowRunLivenessAuthority | null;
   /** Deterministic clock seam for the Echo-only lifecycle production E2E. */
   windowLifecycleNow?: () => string;
   /**
@@ -2599,6 +2602,61 @@ export function createRoutes(ctx: RouteContext): Router {
   router.post('/window-lifecycle/enforcement/record-shadow', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); if (loadEnforcementState().mode !== 'dry-run') return res.status(409).json({ error: 'shadow-recording-requires-dry-run' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); return produceGraduationReports(ledger) ? res.status(201).json({ recorded: true, reports: readGraduationReports() }) : res.status(409).json({ error: 'shadow-lifecycle-incomplete-or-criteria-failed', closure: evaluateClosure(ledger), postLive: runWindowLifecyclePostLiveCheck(ledger) }); });
   router.post('/window-lifecycle/enforcement/graduate', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const state = loadEnforcementState(); if (state.mode !== 'dry-run') return res.status(409).json({ error: 'graduation-requires-dry-run' }); const reports = readGraduationReports(); if (!reports) return res.status(409).json({ error: 'graduation-authority-evidence-missing-or-invalid' }); const next: WindowEnforcementState = { ...state, mode: 'enforced', graduatedAt: windowNow(), evidenceDigests: [reports.synthetic.signature, reports.real.signature] }; saveEnforcementState(next); return res.json(next); });
   router.post('/window-lifecycle/enforcement/off', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const reason = typeof req.body.reason === 'string' && req.body.reason.trim() ? req.body.reason.trim() : 'operator-disabled'; const next: WindowEnforcementState = { ...loadEnforcementState(), mode: 'off', fault: reason }; saveEnforcementState(next); return res.json(next); });
+
+  // The caller may bind immutable identities or request an evaluation; it can
+  // never submit predicate booleans. All five facts are re-read by the
+  // authority's server-owned production probe.
+  router.get('/window-run-liveness', (_req, res) => {
+    if (!ctx.windowRunLivenessAuthority) return res.status(503).json({ error: 'window run liveness is dark on this agent' });
+    return res.json(ctx.windowRunLivenessAuthority.status());
+  });
+  router.post('/window-run-liveness/register', (req, res) => {
+    if (!ctx.windowRunLivenessAuthority) return res.status(503).json({ error: 'window run liveness is dark on this agent' });
+    const body = req.body ?? {};
+    if (Object.keys(body).some(key => /predicate|running|heartbeat|reachable|work|admitted|expires/i.test(key))) return res.status(400).json({ error: 'predicate-facts-are-server-owned' });
+    try {
+      const state = ctx.windowRunLivenessAuthority.register({
+        windowId: body.windowId,
+        topicId: Number(body.topicId),
+        autonomousRunId: body.autonomousRunId,
+        lifecycleRunId: body.lifecycleRunId,
+        executorId: body.executorId,
+      });
+      return res.status(201).json(state);
+    } catch (error) {
+      return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+  router.post('/window-run-liveness/tick', async (_req, res) => {
+    if (!ctx.windowRunLivenessAuthority) return res.status(503).json({ error: 'window run liveness is dark on this agent' });
+    try {
+      const state = await ctx.windowRunLivenessAuthority.tick();
+      return state ? res.json(state) : res.status(404).json({ error: 'window run liveness is not registered' });
+    } catch (error) {
+      return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+  router.post('/window-run-liveness/work-advance', async (req, res) => {
+    if (!ctx.windowRunLivenessAuthority) return res.status(503).json({ error: 'window run liveness is dark on this agent' });
+    const body = req.body ?? {};
+    const forbidden = ['predicate', 'running', 'heartbeat', 'reachable', 'admitted', 'expiresAt', 'observedAt', 'sequence', 'digest', 'receiptId', 'taskRef'];
+    if (Object.keys(body).some(key => forbidden.some(word => key.toLowerCase().includes(word.toLowerCase())))) {
+      return res.status(400).json({ error: 'authority-facts-are-server-owned' });
+    }
+    try {
+      const receipt = await ctx.windowRunLivenessAuthority.recordWorkAdvance({
+        windowId: body.windowId,
+        topicId: Number(body.topicId),
+        autonomousRunId: body.autonomousRunId,
+        lifecycleRunId: body.lifecycleRunId,
+        executorId: body.executorId,
+        artifactRef: body.artifactRef,
+      });
+      return res.status(201).json({ receipt });
+    } catch (error) {
+      return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
   router.post('/window-lifecycle/remediation/:obligationId/resolve', (req, res) => {
     if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' });
     const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' });
@@ -6481,6 +6539,8 @@ export function createRoutes(ctx: RouteContext): Router {
       enabled: cfg.enabled ?? true,
       breakerK: Math.max(2, typeof cfg.breakerK === 'number' && Number.isFinite(cfg.breakerK) ? Math.floor(cfg.breakerK) : 3),
     };
+    const livenessStatus = ctx.windowRunLivenessAuthority?.status();
+    const initialStatus = ctx.config.projectName === 'echo' && livenessStatus?.enabled === true && livenessStatus.dryRun === false ? 'preparing' : 'active';
     const result = autonomousRunStore.register({
       topicId,
       condition,
@@ -6492,6 +6552,7 @@ export function createRoutes(ctx: RouteContext): Router {
       scopeAccretion: snapshot,
       baseRoots: deriveBaseRoots(workDir),
       maxDurationMs: ctx.config.autonomousSessions?.maxDurationMs ?? 172_800_000,
+      initialStatus,
     });
     if (!result.ok) {
       // One registration per active run (R43): refused + flagged.
@@ -6510,7 +6571,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     scopeAccretionMetric('fired', 'register');
-    res.json({ runId: result.runId, endAt: result.endAt, clamped: result.clamped });
+    res.json({ runId: result.runId, endAt: result.endAt, clamped: result.clamped, initialStatus, preparationRequired: initialStatus === 'preparing' });
   });
 
   // ── POST /autonomous/:topic/run-end (R44) — every exit surface reports here ──

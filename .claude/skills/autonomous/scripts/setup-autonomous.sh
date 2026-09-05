@@ -193,7 +193,7 @@ if [[ -n "$VERIFICATION_CWD" ]]; then
 $VERIFICATION_FIELDS"
 fi
 
-# ── SCOPE_ACCRETION — server-side run registration (spec: autonomous-scope-
+# ── W32_PREPARING_LIVENESS — server-side run registration (spec: autonomous-scope-
 # accretion-completion.md R30). The SERVER mints the runId, snapshots the
 # scopeAccretion config + the sweep base roots with their start-SHAs, and clamps
 # endAt — so mid-run edits to config/state-file change nothing the completion
@@ -202,6 +202,27 @@ fi
 # unreachable server leaves run_id empty (the gate degrades honestly server-side;
 # the run still starts — registration is a discipline layer, not a start gate).
 RUN_ID=""
+# Resolve enforcement from local config before contacting the server.
+# Registration is a response contract, not the source of the rollout decision:
+# an enforcing Echo run stays preparing if the server is temporarily unreachable,
+# while observe-only/dark/legacy installs retain byte-compatible active behavior.
+LIVENESS_INITIAL=$(python3 -c "import json
+try:
+ c=json.load(open('.instar/config.json'))
+ raw=((c.get('monitoring') or {}).get('windowRunLiveness') or {})
+ explicit=raw.get('enabled',None)
+ enabled=explicit if isinstance(explicit,bool) else bool(c.get('developmentAgent',False))
+ enforcing=c.get('projectName')=='echo' and enabled and raw.get('dryRun',True) is False
+ print('preparing' if enforcing else 'active')
+except Exception:
+ print('active')" 2>/dev/null || echo active)
+if [[ "$LIVENESS_INITIAL" == "active" ]]; then
+  RUN_ACTIVE="true"
+  RUN_STATUS="active"
+else
+  RUN_ACTIVE="false"
+  RUN_STATUS="preparing"
+fi
 if [[ -n "$REPORT_TOPIC" ]]; then
   REG_PORT=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('port',4040))" 2>/dev/null || echo 4040)
   REG_AUTH=$(python3 -c "import json;print(json.load(open('.instar/config.json')).get('authToken',''))" 2>/dev/null || echo "")
@@ -222,6 +243,13 @@ print(json.dumps([p.strip() for p in sys.stdin.read().split(',') if p.strip()]))
   RUN_ID=$(printf '%s' "$REG_RESP" | python3 -c "import sys,json
 try: print(json.load(sys.stdin).get('runId',''))
 except Exception: print('')" 2>/dev/null || echo "")
+  REG_INITIAL_STATUS=$(printf '%s' "$REG_RESP" | python3 -c "import sys,json
+try: print(json.load(sys.stdin).get('initialStatus',''))
+except Exception: print('')" 2>/dev/null || echo "")
+  if [[ "$REG_INITIAL_STATUS" == "preparing" ]]; then
+    RUN_ACTIVE="false"
+    RUN_STATUS="preparing"
+  fi
   if [[ -n "$RUN_ID" ]]; then
     echo "  Scope-accretion: run registered server-side (runId $RUN_ID)"
   else
@@ -235,7 +263,8 @@ fi
 
 cat > "$STATE_PATH" <<EOF
 ---
-active: true
+active: $RUN_ACTIVE
+status: $RUN_STATUS
 iteration: 1
 session_id: ${CLAUDE_CODE_SESSION_ID:-}
 goal: "$GOAL"

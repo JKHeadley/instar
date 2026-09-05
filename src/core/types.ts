@@ -5528,6 +5528,20 @@ export interface MonitoringConfig {
   /** Health check interval in ms */
   healthCheckIntervalMs: number;
   /**
+   * Authoritative autonomous-window liveness state. Omitted resolves through
+   * the development-agent gate (live on dev, dark on fleet); dryRun defaults
+   * true so the first rollout records at-risk/recovery verdicts without
+   * restarting an executor or notifying the operator.
+   */
+  windowRunLiveness?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    heartbeatMaxAgeMs?: number;
+    workEvidenceMaxAgeMs?: number;
+    /** Hard-clamped by the authority to no more than 15 minutes. */
+    recoveryCeilingMs?: number;
+  };
+  /**
    * Boot health beacon — a minimal /health responder bound from the very start
    * of the server boot so the supervisor sees liveness during the heavy
    * memory/session load (which runs before AgentServer binds its port). Closed
