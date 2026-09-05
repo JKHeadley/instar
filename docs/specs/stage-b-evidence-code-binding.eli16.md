@@ -16,6 +16,8 @@ Two days ago a safety gate shipped that blocks every release unless it carries s
 
 A small manifest, checked into the repository, that records exactly which source files the canary certified and a fingerprint of their exact contents, tied to the exact signed evidence. The publish gate now checks two things: the evidence is genuine and complete (same checks as before, minus the version comparison), and the certified files' fingerprint today matches the manifest. If anyone changes those files, the fingerprint changes, publishing blocks, and the message says exactly which files drifted and that a fresh canary is needed. If anything else in the system changes, releases flow.
 
+The current binding uses fresh repair evidence rather than inherited proof. Candidate `cfe468dc5` completed 50/50 live deliveries over 7,213,141 ms, exercised identical messages, multiline input, an active-turn queue, resize, a real server restart, and encrypted ownership transfer, and produced zero forbidden outcomes. Thirty timestamped health/status samples also succeeded. Echo signed that evidence with its machine identity, and the manifest records its exact digest and certified-source bytes.
+
 ## The safeguards
 
 **The canary requirement is not weakened.** Duration, delivery count, case matrix, zero failures, signed approval — all still required, unchanged. Only the "same version number" comparison is gone, replaced by "same certified code", which is stricter where it matters and looser only where the old rule was simply wrong.

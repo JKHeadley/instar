@@ -87,6 +87,7 @@ The review moved the design three times: the digest became canonical (order-stab
 - `tests/unit/stage-b-evidence-code-binding.test.ts` (19 tests)
 - `tests/unit/StageBActivationGate.test.ts`, `StageBStartupReadiness.test.ts`, `MentorStageBForensics.test.ts`, `codex-stage-b-publish-gate.test.ts` (all green)
 - Live: `node scripts/verify-codex-stage-b-release-evidence.mjs` passes on this tree; `verifyBundledStageBReleaseEvidence("9.9.9999")` returns null.
+- Fresh repair evidence: candidate `cfe468dc5` passed 50/50 deliveries over 7,213,141 ms, all required cases, 30/30 responsiveness samples, and zero forbidden outcomes; Echo signature verification and certified-set fingerprint check both pass for artifact digest `a2db23a95530681953ffa3002ab14e349ebf53d19be2a54c1f4afacc3aead997`.
 
 ## Class-Closure Declaration (display-only mirror)
 

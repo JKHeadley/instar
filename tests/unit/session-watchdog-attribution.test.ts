@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   classifyFrameworkInfrastructureProcess,
+  classifyLongLivedServiceProcess,
   classifyProtectedWait,
 } from '../../src/monitoring/SessionWatchdog.js';
 
@@ -44,5 +45,17 @@ describe('SessionWatchdog interruption attribution', () => {
       '/bin/sh -c echo codex-code-mode-host',
       'codex-cli',
     )).toEqual({ protected: false, confirmed: false });
+  });
+
+  it('protects the exact esbuild service contract used by Vitest', () => {
+    expect(classifyLongLivedServiceProcess(
+      '/repo/node_modules/@esbuild/darwin-arm64/bin/esbuild --service=0.21.5 --ping',
+    )).toEqual({ protected: true, reason: 'esbuild-service' });
+  });
+
+  it('does not broadly exempt one-shot esbuild or commands that merely mention service flags', () => {
+    expect(classifyLongLivedServiceProcess('/repo/bin/esbuild src.ts --outfile=dist.js')).toEqual({ protected: false });
+    expect(classifyLongLivedServiceProcess('/bin/sh -c echo esbuild --service=0.21.5 --ping')).toEqual({ protected: false });
+    expect(classifyLongLivedServiceProcess('/repo/bin/esbuild --service=0.21.5')).toEqual({ protected: false });
   });
 });

@@ -313,12 +313,13 @@ export function scanSharedRollout(work: RolloutWork, hmacKey: string, maxBytes =
   if (lastNl < 0) return stat.size - work.observedOffset >= maxBytes
     ? { kind: 'unknown', bytesRead: bytes }
     : { kind: 'events', events: [], observedThrough: work.observedOffset, bytesRead: bytes };
-  if (stat.size - work.observedOffset >= maxBytes && lastNl !== bytes - 1) {
-    return { kind: 'unknown', bytesRead: bytes };
-  }
   // A budget ending exactly on a newline is a complete, safely-advancable
-  // prefix. Only the absence of any complete boundary at the cap is terminal
-  // uncertainty; remaining complete events are handled on the next sweep.
+  // prefix, but exact alignment is not required. When a bounded read ends in
+  // the middle of the next JSONL record, advance only through `lastNl`; the
+  // partial tail is re-read from its beginning on the next sweep. Only a full
+  // budget with no newline is terminal uncertainty (one record itself exceeds
+  // the supported bound). This distinction matters on busy sessions whose
+  // otherwise-valid rollout grows by >maxBytes between sweeps.
   const events: RolloutEvent[] = [];
   let activeTurn = work.activeTurnId;
   let cursor = 0;
@@ -424,9 +425,9 @@ export function scanRollout(row: DeliveryEvidence, rolloutPath: string, hmacKey:
   } finally { fs.closeSync(fd); }
   const lastNl = buffer.lastIndexOf(0x0a);
   if (lastNl < 0) return stat.size - start >= maxBytes ? { kind: 'unknown', bytesRead: bytes } : { kind: 'unseen', observedThrough: start, activeTurnId: row.scanTurnId, bytesRead: bytes };
-  if (stat.size - start >= maxBytes && lastNl !== bytes - 1) return { kind: 'unknown', bytesRead: bytes };
   // A complete newline at the byte cap is not schema uncertainty. Advance the
-  // complete prefix and resume the remaining JSONL on the next bounded scan.
+  // complete prefix and resume the remaining JSONL on the next bounded scan;
+  // an incomplete tail after that newline remains unread, not malformed.
 
   let activeTurn: string | null = row.transcriptState === 'consumed' ? row.turnId : row.scanTurnId;
   let consumedTurn: string | null = row.turnId;

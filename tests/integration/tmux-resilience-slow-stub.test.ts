@@ -171,6 +171,17 @@ describe('tmux Event-Loop Resilience — slow-stub integration (GROUP G)', () =>
       expect(elapsed).toBeLessThan(3000);
     });
 
+    it('sentinel-style running-session enumeration is state-served and cannot starve health', async () => {
+      const t0 = Date.now();
+      const listed = sm.listRunningSessions();
+      const res = await request(app).get('/health');
+      const elapsed = Date.now() - t0;
+
+      expect(listed.some((session) => session.tmuxSession === 'route-sess')).toBe(true);
+      expect(res.status).toBe(200);
+      expect(elapsed).toBeLessThan(1000);
+    });
+
     it('GET /sessions answers fast (state-served listSessions, no tmux)', async () => {
       const t0 = Date.now();
       const res = await request(app).get('/sessions').set({ Authorization: `Bearer ${AUTH}` });
