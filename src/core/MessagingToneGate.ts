@@ -588,7 +588,11 @@ export type GateRuleDisposition = 'blocking' | 'advisory';
 
 export const RULE_DISPOSITIONS: Record<string, GateRuleDisposition> = {
   B1_CLI_COMMAND: 'blocking',
-  B2_FILE_PATH: 'blocking',
+  // Operator decision 2026-09-03 (topic 36966): file paths can be necessary
+  // and useful. This check may advise, but must never become an absolute wall
+  // merely because the fleet-wide advisory migration or its evidence recorder
+  // is unavailable.
+  B2_FILE_PATH: 'advisory',
   B3_CONFIG_KEY: 'blocking',
   B4_COPY_PASTE_CODE: 'blocking',
   B5_API_ENDPOINT: 'blocking',

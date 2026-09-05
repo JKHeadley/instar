@@ -124,6 +124,23 @@ describe('PostUpdateMigrator — migrateFrameworkShadowCapabilities (Gap 6 minim
     expect(fs.readFileSync(path.join(projectDir, 'GEMINI.md'), 'utf-8')).toContain('### Self-Discovery');
   });
 
+  it('mirrors the baseline file-path advisory instructions into framework shadows', () => {
+    const advisory = `**File-path feedback is always a NUDGE, never a wall; most other checks become nudges under the advisory migration.** B2_FILE_PATH is advisory on every agent.\n- Override with a reason when the exact path is useful.\n\n### Next capability\n`;
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), `# CLAUDE.md\n\n${advisory}`);
+    fs.writeFileSync(path.join(projectDir, 'AGENTS.md'), '# Echo\n');
+    fs.writeFileSync(path.join(projectDir, 'GEMINI.md'), '# Gemini\n');
+
+    const result = runShadowCaps(migrator(projectDir));
+
+    expect(result.errors).toEqual([]);
+    const agents = fs.readFileSync(path.join(projectDir, 'AGENTS.md'), 'utf-8');
+    const gemini = fs.readFileSync(path.join(projectDir, 'GEMINI.md'), 'utf-8');
+    expect(agents).toContain('**File-path feedback is always a NUDGE');
+    expect(agents).toContain('Override with a reason when the exact path is useful.');
+    expect(gemini).toContain('**File-path feedback is always a NUDGE');
+    expect(gemini).toContain('Override with a reason when the exact path is useful.');
+  });
+
   it('no-op when no shadow exists (Claude-only install)', () => {
     fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), CLAUDE_MD_FIXTURE);
 

@@ -57,6 +57,11 @@ describe('advisory migration — disposition resolution', () => {
     expect(resolveRuleDisposition('B21_USER_TASK_SUBSTITUTION', false)).toBe('advisory');
   });
 
+  it('B2 file-path feedback is advisory on every agent even when migration is off', () => {
+    expect(RULE_DISPOSITIONS.B2_FILE_PATH).toBe('advisory');
+    expect(resolveRuleDisposition('B2_FILE_PATH', false)).toBe('advisory');
+  });
+
   // ── The self-stop family stays a wall (review finding, 2026-07-25) ────────
   // The operator approved making REPRESENTATION checks advisory. B15–B19 are a
   // different harm class: the agent is the party the rule constrains, the
@@ -95,10 +100,10 @@ describe('advisory migration — the degraded deterministic floor', () => {
   // the walls the migration removed.
   const leaky = 'I fixed it in src/core/MessagingToneGate.ts on line 40.';
 
-  it('holds a caught artifact as a BLOCK when the migration is off', () => {
+  it('keeps a caught file path advisory when the broader migration is off', () => {
     const r = buildDegradedToneResult(leaky, 5, 'provider-error', false);
     expect(r.pass).toBe(false);
-    expect(r.advisory).toBeUndefined();
+    expect(r.advisory).toBe(true);
   });
 
   it('holds the SAME artifact as an overridable nudge when the migration is on', () => {

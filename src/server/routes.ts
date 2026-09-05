@@ -3506,6 +3506,7 @@ export function createRoutes(ctx: RouteContext): Router {
           };
         }
         if (result.advisory === true) {
+          const reactionRecordable = Boolean(result.decisionRef && decisionQualityRecordingLive());
           if (options.toneAdvisoryAck === result.rule) {
             // The override REASON is structurally required, not requested. The
             // whole point of the migration is the evidence: an override with no
@@ -3525,7 +3526,9 @@ export function createRoutes(ctx: RouteContext): Router {
                   howToProceed:
                     `The override needs a reason: re-send with metadata.toneAdvisoryAck = "${result.rule}" AND ` +
                     `metadata.toneAdvisoryAckReason = a short sentence on why the nudge is wrong here. ` +
-                    `It is recorded as the evidence that grades this check.`,
+                    (reactionRecordable
+                      ? `It is recorded as the evidence that grades this check.`
+                      : `The reason is still required for an explicit, accountable override; decision-quality recording is unavailable for this send.`),
                 },
               };
             }
@@ -3570,9 +3573,12 @@ export function createRoutes(ctx: RouteContext): Router {
                 `ADVISORY — the message was NOT sent, and the decision is yours. Either (a) revise and re-send, adding ` +
                 `metadata.toneAdvisoryComplied = "${result.rule}"` +
                 (result.decisionRef ? ` and metadata.toneAdvisoryDecisionRef = "${result.decisionRef}"` : '') +
-                ` so the check gets credit for a catch; or (b) re-send unchanged with metadata.toneAdvisoryAck = ` +
+                (reactionRecordable ? ` so the check gets credit for a catch` : '') +
+                `; or (b) re-send unchanged with metadata.toneAdvisoryAck = ` +
                 `"${result.rule}" plus metadata.toneAdvisoryAckReason explaining why the nudge is wrong here. ` +
-                `Both are recorded — they are how this check learns whether it is any good.`,
+                (reactionRecordable
+                  ? `Both are recorded — they are how this check learns whether it is any good.`
+                  : `Decision-quality recording is unavailable for this send, but the nudge remains overridable.`),
               latencyMs: result.latencyMs,
             },
           };

@@ -303,7 +303,7 @@ export const TONE_ADVISORY_FLAG_POSITION_CLAUDEMD_SECTION = `- **How to send the
   \`\`\`
   Use \`--tone-complied <RULE>\` instead of \`--tone-ack\`/\`--tone-reason\` when you agreed and revised. A flag in the wrong position is now REFUSED (it used to be sent to the user as literal text with its effect silently dropped, which is exactly how a correct check once got graded \`wrong\`). If such a token is genuinely part of your message, pipe the text on stdin — the check only inspects arguments.`;
 
-export const TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION = `**Most checks are NUDGES you may override — two things are walls.** Under the advisory migration (operator approval 2026-07-19; \`toneGate.advisoryMigration\`, dev-gated live / fleet-dark) a cited judgment rule returns \`422 tone-gate-advisory\` with \`notSent: true\` and a \`decisionRef\` — the message is handed back to YOU, not dropped. Two ways forward, and **both are recorded**:
+export const TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION = `**File-path feedback is always a NUDGE, never a wall; most other checks become nudges under the advisory migration.** B2_FILE_PATH is advisory on every agent (operator decision 2026-09-03): file paths are sometimes necessary and acceptable, so the check may suggest clearer wording but must accept an explicit override even when decision-quality recording is unavailable. For the other eligible judgment rules, \`toneGate.advisoryMigration\` remains dev-gated live / fleet-dark. A nudge returns \`422 tone-gate-advisory\` with \`notSent: true\` and a \`decisionRef\` when available — the message is handed back to YOU, not dropped. Two ways forward, and **both are recorded when the evidence seam is available**:
 - **You agree** → revise and re-send with \`metadata.toneAdvisoryComplied: "<RULE>"\` + \`metadata.toneAdvisoryDecisionRef: "<decisionRef>"\` → the check is graded \`right\`.
 - **You disagree** → re-send unchanged with \`metadata.toneAdvisoryAck: "<RULE>"\` **and** \`metadata.toneAdvisoryAckReason: "<why the nudge is wrong here>"\` → the check is graded \`wrong\`. **The reason is required** — a reasonless ack is refused (\`tone-gate-advisory-reason-required\`) and nothing sends. That reason IS the evidence that tunes this gate; without it every tone decision grades \`unknown\` forever.
 - **Wall 1 — a LIVE credential** in outbound text → \`422\` with \`blockedBy: credential-exposure-guard\`, \`overridable: false\`. Deterministic, runs before the LLM authority, holds during an outage, and **no metadata reaches it**. Remove the value, refer to the secret by NAME, and route it through Secret Drop if the recipient genuinely needs it.
@@ -6224,7 +6224,16 @@ setTimeout(() => process.exit(0), 2000);
     // know about `toneAdvisoryAckReason` / `toneAdvisoryComplied` will keep treating
     // a nudge as a wall and will never produce the override evidence the whole
     // migration exists to collect. Content-sniffed for idempotency.
-    if (!content.includes('Most checks are NUDGES you may override')) {
+    const legacyToneAdvisoryLead = '**Most checks are NUDGES you may override — two things are walls.** Under the advisory migration';
+    if (content.includes(legacyToneAdvisoryLead)) {
+      const sectionStart = content.indexOf(legacyToneAdvisoryLead);
+      const sectionEnd = content.indexOf('\n\n### ', sectionStart);
+      content = content.slice(0, sectionStart)
+        + TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION
+        + (sectionEnd >= 0 ? content.slice(sectionEnd) : '\n');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: made file-path feedback advisory on every agent');
+    } else if (!content.includes('File-path feedback is always a NUDGE')) {
       content += `\n${TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION}\n`;
       patched = true;
       result.upgraded.push('CLAUDE.md: added tone-gate advisory migration (nudge/override/credential-wall) section');
@@ -10187,7 +10196,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // `toneAdvisoryAck` + a reason exist — it would read the nudge as a wall
       // and either loop or silently drop the message, which is the pre-migration
       // failure reproduced on the frameworks that never learned the fix.
-      'Most checks are NUDGES you may override',
+      '**File-path feedback is always a NUDGE',
       // Owned-Identities Registry (correction-derived-hardening): framework-
       // agnostic — a Codex/Gemini agent provisions identities too, and its
       // self-unblock exhaustion consults the same server-side probe. It must

@@ -12,8 +12,8 @@
  *   4. A live credential is the one thing that still cannot be sent — and it is
  *      refused even WITH an ack, because the wall is deterministic and sits in
  *      front of the LLM authority entirely.
- *   5. With the migration off, the same B2 verdict is a hard block again — the
- *      rollback is a flag, not a revert.
+ *   5. B2 remains advisory even with the broader migration off; ordinary path
+ *      usefulness is never an absolute wall.
  *
  * Only the IntelligenceProvider is mocked; route, gate, disposition resolver,
  * credential guard and the 422 plumbing are all real.
@@ -303,27 +303,27 @@ describe('advisory migration through POST /telegram/reply', () => {
     expect(sent).toHaveLength(0);
   });
 
-  it('keeps the SAME verdict a hard block when the migration is off (rollback is a flag)', async () => {
+  it('keeps B2 advisory when the broader migration is off', async () => {
     const sent: Array<{ topicId: number; text: string }> = [];
     const gate = new MessagingToneGate(makeProvider(B2_VERDICT), { advisoryMigration: false });
     server = await listen(buildApp({ toneGate: gate, sent }));
 
     const res = await reply(203, PATH_MESSAGE);
     expect(res.status).toBe(422);
-    expect(res.body.error).toBe('tone-gate-blocked');
+    expect(res.body.error).toBe('tone-gate-advisory');
     expect(sent).toHaveLength(0);
 
-    // And the ack cannot reach it — an unmigrated rule is not acknowledgeable.
+    // The explicit override remains available because B2 is advisory by baseline.
     const acked = await reply(203, PATH_MESSAGE, {
       toneAdvisoryAck: 'B2_FILE_PATH',
       toneAdvisoryAckReason: 'the operator asked for the exact path',
       allowDuplicate: true,
     });
-    expect(acked.body.error).toBe('tone-gate-blocked');
-    expect(sent).toHaveLength(0);
+    expect(acked.status).toBe(200);
+    expect(sent).toHaveLength(1);
   });
 
-  it('DEMOTES the nudge back to a hard block when the reaction could not be recorded', async () => {
+  it('does NOT demote baseline-advisory B2 when reaction recording is unavailable', async () => {
     // The evidence-capturability invariant. The migration's justification IS
     // the recorded reaction; with no live recorder there is nothing to record,
     // so the gate must keep its authority rather than hand out a loosening for
@@ -337,10 +337,20 @@ describe('advisory migration through POST /telegram/reply', () => {
 
     const res = await reply(205, PATH_MESSAGE);
     expect(res.status).toBe(422);
-    expect(res.body.error).toBe('tone-gate-blocked');
-    // Named, never silent — the operator can see WHY a nudge came back a wall.
-    expect(res.body.advisoryUnavailable).toBeTruthy();
+    expect(res.body.error).toBe('tone-gate-advisory');
+    expect(res.body.decisionRef).toMatch(/^d-testmach-/);
+    expect(res.body.howToProceed).toContain('recording is unavailable');
+    expect(res.body.howToProceed).not.toContain('Both are recorded');
+    expect(res.body.howToProceed).not.toContain('gets credit');
     expect(sent).toHaveLength(0);
+
+    const overridden = await reply(205, PATH_MESSAGE, {
+      toneAdvisoryAck: 'B2_FILE_PATH',
+      toneAdvisoryAckReason: 'the exact path is the artifact the operator asked to open',
+      allowDuplicate: true,
+    });
+    expect(overridden.status).toBe(200);
+    expect(sent).toEqual([{ topicId: 205, text: PATH_MESSAGE }]);
   });
 
   it('credits compliance SERVER-SIDE when a revised send follows a nudge — no agent metadata', async () => {
