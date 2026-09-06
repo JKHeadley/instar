@@ -39,6 +39,40 @@ describe('validateModelId (§10.2 closed-enum clamp)', () => {
     expect(validateModelId('gpt-6-astra', 'codex-cli')).toBeNull();
   });
 
+  it('accepts the Claude 5 family against claude-code (live-verified)', () => {
+    // Verified against `claude --model <id> -p` on claude-code CLI 2.1.263
+    // (2026-09-06). These shipped absent purely because the enum lagged a
+    // generation — not as a policy exclusion.
+    expect(validateModelId('claude-fable-5-1', 'claude-code')).toBeNull();
+    expect(validateModelId('claude-opus-5', 'claude-code')).toBeNull();
+    expect(validateModelId('claude-sonnet-5', 'claude-code')).toBeNull();
+  });
+
+  it("accepts the 'fable' CLI tier alias alongside its three siblings", () => {
+    // opus/sonnet/haiku were present and fable was not — the same lag one
+    // layer down, which made the alias surface silently asymmetric.
+    for (const alias of ['fable', 'opus', 'sonnet', 'haiku']) {
+      expect(validateModelId(alias, 'claude-code'), `alias ${alias}`).toBeNull();
+    }
+  });
+
+  it('still fails closed on an unverified claude sibling id', () => {
+    // Same discipline as the gpt-6 sibling case below: only live-verified ids
+    // are listed, so a plausible-looking typo cannot strand a topic on a model
+    // the CLI will reject at launch.
+    expect(validateModelId('claude-fable-6', 'claude-code')?.failure).toBe('off-enum');
+    expect(validateModelId('claude-opus-6', 'claude-code')?.failure).toBe('off-enum');
+  });
+
+  it('the Claude 5 family stays inside the subscription billing lane', () => {
+    // §10.2 — membership in the enum proves an id is RECOGNIZED, not that it
+    // rides the subscription envelope. These launch via the subscription-authed
+    // CLI, so the claude-code deny-set stays empty and must not refuse them.
+    for (const id of ['claude-fable-5-1', 'claude-opus-5', 'claude-sonnet-5']) {
+      expect(billingLaneError(id, 'claude-code'), `billing lane ${id}`).toBeNull();
+    }
+  });
+
   it('still fails closed on an unverified sibling gpt-6 id', () => {
     // Only LIVE-VERIFIED ids are listed — a plausible-looking sibling that was
     // never observed working must still be refused, so a typo cannot strand a
@@ -112,6 +146,22 @@ describe('validateProfileFields — every field clamped (§10.2)', () => {
       'claude-code',
     );
     expect(result.ok).toBe(true);
+  });
+
+  it('accepts a Fable 5.1 pin arriving on a topic currently resolved to codex-cli', () => {
+    // The exact production refusal (topic 36966, 2026-09-06): the operator
+    // pinned framework+model together while the topic still resolved to
+    // codex-cli. The model must validate against the PATCH's framework, not
+    // the topic's current one, and 'claude-fable-5-1' must be known.
+    const result = validateProfileFields(
+      { framework: 'claude-code', model: 'claude-fable-5-1' },
+      'codex-cli',
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.patch.framework).toBe('claude-code');
+      expect(result.patch.model).toBe('claude-fable-5-1');
+    }
   });
 
   it('rejects an off-enum framework', () => {

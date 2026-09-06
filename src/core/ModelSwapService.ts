@@ -172,7 +172,16 @@ export function paneConfirmsModel(tail: string | null, modelId: string): boolean
     const version = m[2].split('-').filter(Boolean).slice(0, 2).join('.');
     alternatives.push(escapeRe(version ? `${family} ${version}` : family));
   }
-  const ack = new RegExp(`set model to[^\\n]*\\b(?:${alternatives.join('|')})\\b`, 'i');
+  // The trailing `(?![.\-]\d)` is load-bearing: a shorter version is a literal
+  // PREFIX of a longer one, and `\b` sits between the digit and the separator, so
+  // without it "Set model to Fable 5.1" CONFIRMS a swap to `claude-fable-5` — the
+  // pane says 5.1, the ledger records 5, and the session's recorded model + cost
+  // attribution are silently wrong. Dormant until a `-N` sibling existed; live the
+  // moment `claude-fable-5-1` became pinnable (2026-09-06). It rejects only a
+  // VERSION continuation (a separator followed by a digit), so a sentence-ending
+  // "Set model to Fable 5." still confirms — the false-negative direction is the
+  // safe one for this function, but a needless one is still a bug.
+  const ack = new RegExp(`set model to[^\\n]*\\b(?:${alternatives.join('|')})\\b(?![.\\-]\\d)`, 'i');
   return tail.split('\n').some(line => {
     if (line.includes('/model')) return false; // echo of our injected input
     return ack.test(line);
