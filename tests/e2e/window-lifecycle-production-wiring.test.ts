@@ -96,7 +96,7 @@ describe('Window lifecycle production wiring', () => {
   });
 
   afterAll(async () => { await server.stop(); project.cleanup(); });
-  const auth = (call: request.Test) => call.set('Authorization', `Bearer ${token}`);
+  const auth = (call: request.Test) => call.set('Authorization', `Bearer ${token}`).set('X-Instar-AgentId', 'echo');
   const body = { agentId: 'echo', scope: 'echo-window-lifecycle' };
 
   function syncCommitments(obligations: any[]): void {
@@ -212,7 +212,8 @@ describe('Window lifecycle production wiring', () => {
     syncCommitments(w32Created.body.obligations);
     const livenessDutyIds = w32Created.body.obligations.filter((duty: any) => duty.evidencePolicy.requiredAuthority === 'run-liveness-authority').map((duty: any) => duty.id);
     expect(commitments.some(commitment => livenessDutyIds.includes(commitment.externalKey))).toBe(false);
-    await auth(request(app).post('/window-lifecycle/native-admission')).send({ ...body, windowId: 'w32', package: validAdmissionPackage(), nonce: 'w32-production-native-0001' }).expect(200);
+    const w32NativeAdmission = await auth(request(app).post('/window-lifecycle/native-admission')).send({ ...body, windowId: 'w32', package: validAdmissionPackage(), nonce: 'w32-production-native-0001' });
+    expect(w32NativeAdmission.status, JSON.stringify(w32NativeAdmission.body)).toBe(200);
 
     const exactTenets = fs.readFileSync(tenetsPath, 'utf8');
     const reaffirmationMarkers = ['## Goals 1–8', '## Tenet 5 — REFINEMENT', '## Tenet 9 (complete rewrite', '## Tenet 10 (captured', '## The 80/20 standard', '## Tenet 13 (proposed'];

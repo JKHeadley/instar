@@ -6,6 +6,7 @@
  */
 
 import { Router } from 'express';
+import type { WindowRunCadenceExecutor } from '../core/WindowRunCadenceExecutor.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
 import { emergencyStopUserMessage } from '../messaging/shared/emergencyStopUserMessage.js';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
@@ -863,6 +864,8 @@ export interface RouteContext {
   windowLifecycleTick?: (() => void) | null;
   /** W32 authoritative five-predicate run-liveness state. Null means dark. */
   windowRunLivenessAuthority?: WindowRunLivenessAuthority | null;
+  /** Durable 30-minute receipt and 3-hour synthesis executor. Null means dark. */
+  windowRunCadenceExecutor?: WindowRunCadenceExecutor | null;
   /** Deterministic clock seam for the Echo-only lifecycle production E2E. */
   windowLifecycleNow?: () => string;
   /**
@@ -2519,6 +2522,12 @@ export function createRoutes(ctx: RouteContext): Router {
       zeroPostCeilingDuties: true,
     });
   };
+  const cadenceReportMatchesDuty = (reportDueAt: string, obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation): boolean => {
+    const reportDueMs = Date.parse(reportDueAt);
+    const dutyDueMs = Date.parse(obligation.deadline.dueAt);
+    return Number.isFinite(reportDueMs) && Number.isFinite(dutyDueMs)
+      && Math.abs(reportDueMs - dutyDueMs) <= obligation.deadline.graceMs;
+  };
   const runLivenessPayload = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument, obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation): string | null => {
     const snapshot = ctx.windowRunLivenessAuthority?.status();
     const state = snapshot?.state;
@@ -2553,6 +2562,64 @@ export function createRoutes(ctx: RouteContext): Router {
   const deterministicPayload = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument, obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation): string | null => {
     if (sourceFreshnessIssues(ledger).length) return null;
     if (obligation.id === 'w32.close.expiry-freeze') return w32ExpiryFreezeProof(ledger, obligation);
+    const liveness = ctx.windowRunLivenessAuthority?.status().state ?? null;
+    const cadenceStatus = ctx.windowRunCadenceExecutor?.status() ?? null;
+    const cadence = cadenceStatus?.state ?? null;
+    const livenessStatus = ctx.windowRunLivenessAuthority?.status() ?? null;
+    const exactW32Binding = livenessStatus?.enabled === true && livenessStatus.dryRun === false
+      && cadenceStatus?.enabled === true && cadenceStatus.dryRun === false
+      && !!liveness && !!cadence
+      && ledger.catalogProfile === 'w32-approved-a204c07d'
+      && ledger.windowId === liveness.windowId
+      && cadence.windowId === liveness.windowId
+      && cadence.autonomousRunId === liveness.autonomousRunId
+      && cadence.lifecycleRunId === ledger.lifecycleRunId;
+    const exactW32Cadence = exactW32Binding
+      && cadenceStatus!.config.receiptIntervalMs === 30 * 60_000
+      && cadenceStatus!.config.reportIntervalMs === 3 * 60 * 60_000;
+    const sampleRows = liveness?.audit?.entries?.filter(entry => entry.kind === 'sample' && entry.predicates) ?? [];
+    const falseActiveRows = sampleRows.filter(entry => entry.status === 'active' && Object.values(entry.predicates!).some(verdict => !verdict.ok));
+    const lossTransition = liveness?.transitions?.find(entry => entry.from === 'active' && entry.to === 'at-risk' && /predicate-missing:(?:[^,]*,)*(?:executor-bound-running|heartbeat-fresh)/.test(entry.reason));
+    const recovery = liveness?.recoveryAttempt;
+    if (obligation.id === 'w32.continuous.missing-predicate-at-risk' && exactW32Binding && lossTransition) return proofPayload(obligation, { transitionReceiptId: lossTransition.receiptId, at: lossTransition.at, reason: lossTransition.reason });
+    if (obligation.id === 'w32.continuous.bounded-recovery' && exactW32Binding && recovery?.number === 1 && Date.parse(recovery.requestedAt) <= Date.parse(recovery.deadlineAt)) return proofPayload(obligation, { attemptId: recovery.attemptId, number: recovery.number, requestedAt: recovery.requestedAt, deadlineAt: recovery.deadlineAt, outcome: recovery.outcome });
+    if (obligation.id === 'w32.continuous.registration-not-liveness' && exactW32Binding) {
+      const activation = liveness!.transitions.find(entry => entry.from === 'preparing' && entry.to === 'active' && entry.reason === 'all-five-predicates-green');
+      const registrationPrecedesActivation = !!activation && Date.parse(liveness!.registeredAt) <= Date.parse(activation.at);
+      const activationSample = activation ? sampleRows.find(entry => entry.at === activation.at && entry.status === 'active') : null;
+      if (registrationPrecedesActivation && activationSample && Object.values(activationSample.predicates!).every(verdict => verdict.ok)) return proofPayload(obligation, { registeredAt: liveness!.registeredAt, activationReceiptId: activation!.receiptId, activationAt: activation!.at, allPredicatesGreen: true });
+    }
+    if (obligation.id === 'w32.close.three-advancing-intervals' && exactW32Cadence) {
+      const firstThree = cadence!.intervals.slice(0, 3);
+      const consecutive = firstThree.length === 3 && firstThree.every(item => item.outcome === 'passed' && Number.isSafeInteger(item.workSequence))
+        && firstThree.every((item, index) => index === 0 || item.workSequence! > firstThree[index - 1].workSequence!
+          && Date.parse(item.dueAt) - Date.parse(firstThree[index - 1].dueAt) === 30 * 60_000);
+      if (consecutive) return proofPayload(obligation, { intervals: firstThree.map(item => ({ number: item.number, dueAt: item.dueAt, workReceiptId: item.workReceiptId, workSequence: item.workSequence })) });
+    }
+    if (obligation.id === 'w32.close.induced-executor-loss' && exactW32Binding && lossTransition && cadence!.intervals[0]?.outcome === 'passed' && Date.parse(lossTransition.at) >= Date.parse(cadence!.intervals[0].evaluatedAt)) return proofPayload(obligation, { firstInterval: cadence!.intervals[0], lossTransition });
+    if (obligation.id === 'w32.close.resume-once-or-fail-loudly' && exactW32Binding && recovery?.number === 1) {
+      const succeededExactly = recovery.outcome === 'succeeded' && recovery.requestedTaskRef && recovery.requestedTaskRef === recovery.resumedTaskRef
+        && liveness!.transitions.some(entry => entry.from === 'at-risk' && entry.to === 'active' && entry.recoveryAttemptId === recovery.attemptId);
+      const failedLoudly = ['failed', 'stalled'].includes(liveness!.status) && !!liveness!.notificationDeliveredAt
+        && !!recovery.completedAt && Date.parse(recovery.completedAt) <= Date.parse(recovery.deadlineAt);
+      if (succeededExactly || failedLoudly) return proofPayload(obligation, { attemptId: recovery.attemptId, attemptCount: 1, requestedTaskRef: recovery.requestedTaskRef, resumedTaskRef: recovery.resumedTaskRef, outcome: recovery.outcome, loudFailure: failedLoudly });
+    }
+    if (obligation.id === 'w32.close.all-reports-delivered' && exactW32Cadence) {
+      const due = cadence!.reports.filter(report => Date.parse(report.dueAt) <= Date.parse(windowNow()));
+      const expectedDueCount = Math.max(0, Math.floor((Date.parse(windowNow()) - Date.parse(cadence!.startedAt)) / cadenceStatus!.config.reportIntervalMs));
+      const lifecycleCoupled = due.every(report => {
+        const reportDuty = ledger.obligations.find(item => /^cadence\.report\.3h@/.test(item.id) && cadenceReportMatchesDuty(report.dueAt, item));
+        return reportDuty?.status === 'satisfied' && reportDuty.evidence.some(evidence => evidence.verifierPassed && evidence.authority === 'live-requeried-message'
+          && evidence.producer === 'server:window-run-cadence-executor' && evidence.nativeCoordinates?.topicId === cadence!.topicId && evidence.nativeCoordinates?.messageId === report.messageId);
+      });
+      if (due.length === expectedDueCount && lifecycleCoupled && due.every(report => report.status === 'delivered' && Number.isSafeInteger(report.messageId))) return proofPayload(obligation, { expectedDueCount, reports: due.map(report => ({ reportId: report.reportId, dueAt: report.dueAt, messageId: report.messageId, deliveredAt: report.deliveredAt })) });
+    }
+    if (obligation.id === 'w32.close.zero-false-active' && exactW32Binding && sampleRows.length > 0 && falseActiveRows.length === 0) return proofPayload(obligation, { sampleCount: sampleRows.length, falseActiveSamples: 0, auditHeadDigest: liveness!.audit.headDigest });
+    if (obligation.id === 'w32.close.no-separate-soak' && exactW32Binding && ledger.windowCeilingAt) return proofPayload(obligation, { separateSoakConfigured: false, charterCeilingAt: ledger.windowCeilingAt });
+    if (obligation.id === 'w32.close.immediate-on-pass' && exactW32Binding) {
+      const prerequisites = ['w32.close.three-advancing-intervals', 'w32.close.induced-executor-loss', 'w32.close.resume-once-or-fail-loudly', 'w32.close.all-reports-delivered', 'w32.close.zero-false-active', 'w32.close.independent-loss-verification', 'w32.close.no-separate-soak'];
+      if (prerequisites.every(id => ledger.obligations.find(item => item.id === id)?.status === 'satisfied') && Date.parse(windowNow()) < Date.parse(ledger.windowCeilingAt ?? '')) return proofPayload(obligation, { readyAt: windowNow(), beforeCeiling: true, separateSoakMs: 0, prerequisites });
+    }
     if (obligation.id === 'start.compilation-proof') return REQUIRED_WINDOW_DUTIES.every(d => ledger.compiledObligationIds.includes(d.id)) ? proofPayload(obligation, { compiledIds: ledger.compiledObligationIds }) : null;
     if (obligation.id === 'continuous.derive-counts') return proofPayload(obligation, { counts: [{ name: 'compiled', value: ledger.compiledObligationIds.length, items: ledger.compiledObligationIds }, { name: 'materialized', value: ledger.obligations.length, items: ledger.obligations.map(o => o.id) }] });
     if (obligation.id === 'close.plan-staleness-guard') { const planId = obligation.predicate.expected?.canonicalPlanId; const view = planId ? ctx.viewer?.get(planId) : null; const outcome = ledger.obligations.find(o => o.id === 'close.plan-outcome.semantic-diff')?.evidence.find(e => e.verifierPassed); if (!view || !outcome?.verifiedPayload) return null; let proof: Record<string, unknown>; try { proof = JSON.parse(outcome.verifiedPayload) as Record<string, unknown>; } catch { /* @silent-fallback-ok — malformed proof fails closed */ return null; } const version = view.updatedAt ?? view.createdAt; if (proof.canonicalPlanId !== planId || proof.planVersionAtOutcome !== version || Date.parse(outcome.timestamp) < Date.parse(version)) return null; return proofPayload(obligation, { planNodeId: proof.planNodeId, charterIncluded: proof.charterIncluded, canonicalPlanId: planId, planVersionAtOutcome: version }); }
@@ -2564,6 +2631,21 @@ export function createRoutes(ctx: RouteContext): Router {
   const evidenceAuthority = () => ({ requery: (record: import('../core/WindowLifecycleObligationLedger.js').EvidenceRecord) => {
     const ledger = windowStore.load(WINDOW_LEDGER_AGENT, WINDOW_LEDGER_SCOPE); const native = ledger?.nativeEvaluations.find(item => item.nonce === record.nonce);
     const obligation = ledger?.obligations.find(o => o.id === record.obligationId);
+    if (record.producer === 'server:window-run-cadence-executor' && obligation && /^cadence\.report\.3h@/.test(obligation.id)) {
+      const verified = messageEvidenceAuthority().requery(record);
+      const cadence = ctx.windowRunCadenceExecutor?.status(); const liveness = ctx.windowRunLivenessAuthority?.status();
+      const report = cadence?.state?.reports.find(item => cadenceReportMatchesDuty(item.dueAt, obligation) && item.messageId === record.nativeCoordinates?.messageId);
+      const row = record.nativeCoordinates?.topicId !== undefined && record.nativeCoordinates.messageId !== undefined
+        ? ctx.telegram?.getTopicHistory(record.nativeCoordinates.topicId, 1_000).find(item => item.messageId === record.nativeCoordinates!.messageId)
+        : null;
+      const bindingMatches = cadence?.enabled === true && cadence.dryRun === false && liveness?.enabled === true && liveness.dryRun === false
+        && cadence.state?.windowId === ledger?.windowId && cadence.state?.lifecycleRunId === ledger?.lifecycleRunId
+        && cadence.state?.autonomousRunId === liveness.state?.autonomousRunId && cadence.state?.topicId === 36966;
+      if (!verified || !bindingMatches || report?.status !== 'delivered' || !row || row.fromUser || row.forwarded !== false
+        || !['agent-outbound', 'agent-verified'].includes(row.authorship ?? '') || !row.text.includes(`W32 synthesis receipt: ${report.reportId}`)
+        || !isHighLevelSynthesis(row.text)) return null;
+      return { ...verified, verifierPassed: true, verifiedPayload: proofPayload(obligation, { deliveredTopicId: row.topicId, deliveryMessageId: row.messageId, reportId: report.reportId, dueAt: report.dueAt, reportBodyHash: createHash('sha256').update(row.text).digest('hex'), synthesisSectionsVerified: true }) };
+    }
     if (record.authority === 'runtime-registry-proof' && obligation) { const real = runtimeRegistry().resolve(obligation.executorBinding.executorId, obligation.id); if (!real) return null; const requiresCompletion = obligation.predicate.recurring === true || obligation.id.includes('@'); let payload: string; if (requiresCompletion) { if (!real.completedAt || !real.completionDigest || Date.parse(real.completedAt) > Date.parse(obligation.deadline.dueAt) + obligation.deadline.graceMs) return null; const completion = runtimeCompletionProof(obligation, real); if (!completion) return null; payload = proofPayload(obligation, completion); } else { const bound = bindRuntimeAuthority(obligation, runtimeRegistry()); if (evaluateExecutor(bound, windowNow()).issues.length) return null; payload = proofPayload(obligation, { runtimeSnapshot: { executorId: real.executorId, registryCoordinates: real.registryCoordinates, heartbeatAt: real.heartbeatAt, nextAttemptAt: real.nextAttemptAt, running: real.running, driverPresent: real.driverPresent, driverMatches: real.driverMatches } }); } if (createHash('sha256').update(payload).digest('hex') !== record.canonicalPayloadHash) return null; return { ...record, verifierPassed: true, verifiedPayload: payload }; }
     if (record.authority === 'run-liveness-authority' && obligation) { const payload = runLivenessPayload(ledger!, obligation); if (!payload || createHash('sha256').update(payload).digest('hex') !== record.canonicalPayloadHash) return null; return { ...record, verifierPassed: true, verifiedPayload: payload }; }
     if (record.authority === 'deterministic-replay' && obligation) { const payload = deterministicPayload(ledger!, obligation); if (!payload || createHash('sha256').update(payload).digest('hex') !== record.canonicalPayloadHash) return null; return { ...record, verifierPassed: true, verifiedPayload: payload }; }
@@ -2579,9 +2661,21 @@ export function createRoutes(ctx: RouteContext): Router {
       if (obligation.evidencePolicy.requiredAuthority === 'runtime-registry-proof') { const bound = bindRuntimeAuthority(obligation, runtimeRegistry()); const real = runtimeRegistry().resolve(bound.executorBinding.executorId, obligation.id); if (!real) continue; const requiresCompletion = obligation.predicate.recurring === true || obligation.id.includes('@'); if (requiresCompletion) { if (!real.completedAt || !real.completionDigest || Date.parse(real.completedAt) > Date.parse(obligation.deadline.dueAt) + obligation.deadline.graceMs) continue; if (/^cadence\.stall-check\.30m@/.test(obligation.id) && !ensureStallInspection(obligation)) continue; const completion = runtimeCompletionProof(obligation, real); if (!completion) continue; payload = proofPayload(obligation, completion); } else { if (evaluateExecutor(bound, windowNow()).issues.length) continue; payload = proofPayload(obligation, { runtimeSnapshot: { executorId: real.executorId, registryCoordinates: real.registryCoordinates, heartbeatAt: real.heartbeatAt, nextAttemptAt: real.nextAttemptAt, running: real.running, driverPresent: real.driverPresent, driverMatches: real.driverMatches } }); } obligation.executorBinding = bound.executorBinding; producer = `executor:${bound.executorBinding.executorId}`; }
       else if (obligation.evidencePolicy.requiredAuthority === 'run-liveness-authority') { payload = runLivenessPayload(ledger, obligation); producer = 'server:window-run-liveness-authority'; }
       else if (obligation.evidencePolicy.requiredAuthority === 'deterministic-replay') { payload = deterministicPayload(ledger, obligation); producer = 'server:window-deterministic-replay'; }
+      else if (obligation.evidencePolicy.requiredAuthority === 'live-requeried-message' && /^cadence\.report\.3h@/.test(obligation.id)) {
+        const cadence = ctx.windowRunCadenceExecutor?.status(); const liveness = ctx.windowRunLivenessAuthority?.status();
+        const report = cadence?.state?.reports.find(item => cadenceReportMatchesDuty(item.dueAt, obligation) && item.status === 'delivered' && Number.isSafeInteger(item.messageId));
+        const row = report?.messageId !== undefined ? ctx.telegram?.getTopicHistory(cadence!.state!.topicId, 1_000).find(item => item.messageId === report.messageId) : null;
+        const bound = cadence?.enabled === true && cadence.dryRun === false && liveness?.enabled === true && liveness.dryRun === false
+          && cadence.state?.windowId === ledger.windowId && cadence.state.lifecycleRunId === ledger.lifecycleRunId
+          && cadence.state.autonomousRunId === liveness.state?.autonomousRunId && cadence.state.topicId === 36966;
+        if (!bound || !report || !row || row.fromUser || row.forwarded !== false || !['agent-outbound', 'agent-verified'].includes(row.authorship ?? '')
+          || !row.text.includes(`W32 synthesis receipt: ${report.reportId}`) || !isHighLevelSynthesis(row.text)) continue;
+        payload = row.text; producer = 'server:window-run-cadence-executor';
+      }
       else if (obligation.evidencePolicy.requiredAuthority === 'content-bound-store-row' && (/^start\.(?:source-ingestion|window-expiry)/.test(obligation.id) || /^source\./.test(obligation.id)) && sourceFreshnessIssues(ledger).length === 0) { storePath = obligation.sourceSpans[0]?.source; payload = proofPayload(obligation, { charterExpiry: obligation.predicate.expected?.charterExpiry, sourceByteRange: obligation.sourceSpans.map(span => ({ source: span.source, byteStart: span.byteStart, byteEnd: span.byteEnd, hash: span.hash })) }); producer = 'server:source-authority'; }
-      if (!payload) continue; const digest = createHash('sha256').update(payload).digest('hex'); const nonce = `${obligation.evidencePolicy.requiredAuthority}:${digest}`; if (obligation.evidence.some(e => e.nonce === nonce) || ledger.usedNonces.includes(nonce)) continue; ledger.usedNonces.push(nonce);
-      obligation.evidence.push({ authority: obligation.evidencePolicy.requiredAuthority, agentId: 'echo', scope: 'echo-window-lifecycle', windowId: ledger.windowId, obligationId: obligation.id, sourceHashes: obligation.sourceSpans.map(s => s.hash), producer, timestamp: windowNow(), nonce, canonicalPayloadHash: digest, verifierPassed: true, verifiedPayload: payload, nativeCoordinates: storePath ? { storePath } : undefined });
+      if (!payload) continue; const digest = createHash('sha256').update(payload).digest('hex'); const nonce = `${obligation.evidencePolicy.requiredAuthority}:${digest}`; const w32CadenceDerived = producer === 'server:window-run-cadence-executor' || producer === 'server:window-deterministic-replay' && /^w32\./.test(obligation.id); if (obligation.evidence.some(e => e.nonce === nonce) || ledger.usedNonces.includes(nonce) && !w32CadenceDerived) continue; if (!ledger.usedNonces.includes(nonce)) ledger.usedNonces.push(nonce);
+      const cadenceMessageId = producer === 'server:window-run-cadence-executor' ? ctx.windowRunCadenceExecutor?.status().state?.reports.find(report => cadenceReportMatchesDuty(report.dueAt, obligation))?.messageId : undefined;
+      obligation.evidence.push({ authority: obligation.evidencePolicy.requiredAuthority, agentId: 'echo', scope: 'echo-window-lifecycle', windowId: ledger.windowId, obligationId: obligation.id, sourceHashes: obligation.sourceSpans.map(s => s.hash), producer, timestamp: windowNow(), nonce, canonicalPayloadHash: digest, verifierPassed: true, verifiedPayload: payload, nativeCoordinates: storePath ? { storePath } : cadenceMessageId !== undefined ? { topicId: 36966, messageId: cadenceMessageId } : undefined });
     }
   };
   type WindowEnforcementState = { mode: 'off' | 'dry-run' | 'enforced'; startedAt: string; expiresAt: string; fault?: string; graduatedAt?: string; evidenceDigests?: string[] };
@@ -2774,6 +2868,19 @@ export function createRoutes(ctx: RouteContext): Router {
   router.get('/window-run-liveness', (_req, res) => {
     if (!ctx.windowRunLivenessAuthority) return res.status(503).json({ error: 'window run liveness is dark on this agent' });
     return res.json(ctx.windowRunLivenessAuthority.status());
+  });
+  router.get('/window-run-liveness/cadence', (_req, res) => {
+    if (!ctx.windowRunCadenceExecutor) return res.status(503).json({ error: 'window run cadence executor is dark on this agent' });
+    return res.json(ctx.windowRunCadenceExecutor.status());
+  });
+  router.post('/window-run-liveness/cadence/tick', async (_req, res) => {
+    if (!ctx.windowRunCadenceExecutor) return res.status(503).json({ error: 'window run cadence executor is dark on this agent' });
+    try {
+      const state = await ctx.windowRunCadenceExecutor.tick();
+      return state ? res.json(state) : res.status(404).json({ error: 'window run cadence is not registered' });
+    } catch (error) {
+      return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
   router.post('/window-run-liveness/register', (req, res) => {
     if (!ctx.windowRunLivenessAuthority) return res.status(503).json({ error: 'window run liveness is dark on this agent' });

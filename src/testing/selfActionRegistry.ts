@@ -1208,6 +1208,39 @@ const windowLifecycleIssueEscalation: SelfActionController = {
   makeUnderPressure: (f, sink) => makeWindowLifecycleIssueEscalation(f, sink),
 };
 
+/** W32 synthesis retry under a permanently unavailable Telegram path. The
+ * durable per-report attempt count survives restart and trips at three; a
+ * stable report id/history requery prevents an ambiguous accepted send from
+ * creating a fourth action. */
+const windowRunCadenceReportRedrive: SelfActionController = {
+  id: 'window-run-cadence-report-redrive',
+  actionVerb: 'retry-cadence-report',
+  models: 'src/core/WindowRunCadenceExecutor.ts (durable report attemptCount + exponential backoff + max-three terminal brake)',
+  modelsPath: 'src/core/WindowRunCadenceExecutor.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 20,
+  tickMs: 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeWindowRunCadenceReportRedrive(f, sink),
+  },
+  makeUnderPressure: (f, sink) => makeWindowRunCadenceReportRedrive(f, sink),
+};
+
+function makeWindowRunCadenceReportRedrive(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const key = 'window-run-cadence:report-1:attempt-count';
+  return {
+    tick() {
+      sink.considered += 1;
+      const attempts = (f.durableState.get(key) as number | undefined) ?? 0;
+      if (attempts >= 3) return;
+      sink.emit({ verb: 'retry-cadence-report', target: 'report-1' });
+      f.durableState.set(key, attempts + 1);
+    },
+  };
+}
+
 function makeWindowLifecycleIssueEscalation(f: PressureFixture, sink: ActionSink): { tick(): void } {
   const DURABLE_KEY = 'window-lifecycle:surfaced-issues';
   const ISSUE = 'cadence.report.3h@window:predicate-unsatisfied';
@@ -1261,6 +1294,7 @@ function makeIdentityReannouncePressureLoop(f: PressureFixture, sink: ActionSink
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   identityReannounce,
+  windowRunCadenceReportRedrive,
   windowLifecycleIssueEscalation,
   subscriptionReloginRedrive,
   standDownMaintenance,

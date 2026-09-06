@@ -17,6 +17,7 @@ describe('window run liveness production wiring', () => {
   let sessions: MockSessionManager;
   let transcript: string;
   let artifact: string;
+  const checkpointInputs: string[] = [];
   let binding: { windowId: string; topicId: number; autonomousRunId: string; lifecycleRunId: string; executorId: string };
 
   beforeAll(async () => {
@@ -30,6 +31,7 @@ describe('window run liveness production wiring', () => {
     fs.writeFileSync(path.join(project.stateDir, 'autonomous', 'active-36966.json'), JSON.stringify({ topic: 36966, active: false, status: 'preparing' }));
 
     sessions = createMockSessionManager();
+    sessions.sendInput = (tmuxSession: string, input: string) => { checkpointInputs.push(`${tmuxSession}:${input}`); return sessions._aliveSet.has(tmuxSession); };
     sessions._sessions.push({ id: 'instar-session-1', name: 'echo', status: 'running', tmuxSession: 'echo-topic-36966', startedAt: new Date(nowMs).toISOString(), claudeSessionId: 'provider-session-1', framework: 'claude-code', cwd: project.dir } as any);
     sessions._aliveSet.add('echo-topic-36966');
 
@@ -54,7 +56,7 @@ describe('window run liveness production wiring', () => {
       requestTimeoutMs: 5000, version: '1.3.1223',
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 2, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
       scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [],
-      monitoring: { windowRunLiveness: { enabled: true, dryRun: false, heartbeatMaxAgeMs: 60_000, workEvidenceMaxAgeMs: 30 * 60_000, recoveryCeilingMs: 15 * 60_000 } }, updates: {},
+      monitoring: { windowRunLiveness: { enabled: true, dryRun: false, heartbeatMaxAgeMs: 60_000, workEvidenceMaxAgeMs: 30 * 60_000, recoveryCeilingMs: 15 * 60_000, cadenceExecutor: { enabled: true, dryRun: false } } }, updates: {},
     };
     const telegram = {
       getSessionForTopic: (topicId: number) => topicId === 36966 ? 'echo-topic-36966' : null,
@@ -70,7 +72,7 @@ describe('window run liveness production wiring', () => {
   });
 
   afterAll(async () => { await server.stop(); project.cleanup(); });
-  const auth = (call: request.Test) => call.set('Authorization', `Bearer ${token}`);
+  const auth = (call: request.Test) => call.set('Authorization', `Bearer ${token}`).set('X-Instar-AgentId', 'echo');
 
   it('is alive through AgentServer and requires independently sourced five-predicate evidence', async () => {
     await request(server.getApp()).get('/window-run-liveness').expect(401);
@@ -79,6 +81,8 @@ describe('window run liveness production wiring', () => {
     expect(new AutonomousRunStore(project.stateDir).getByPair('777', preparation.body.runId)?.status).toBe('preparing');
     await auth(request(server.getApp()).post('/window-run-liveness/register')).send({ ...binding, running: true }).expect(400);
     await auth(request(server.getApp()).post('/window-run-liveness/register')).send(binding).expect(201);
+    await auth(request(server.getApp()).post('/window-run-liveness/cadence/tick')).send({}).expect(404);
+    expect((await auth(request(server.getApp()).get('/window-run-liveness/cadence')).expect(200)).body.state).toBeNull();
 
     const minted = await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: 'artifact.txt' }).expect(201);
     expect(minted.body.receipt).toMatchObject({ sequence: 1, artifact: 'artifact.txt', taskRef: `autonomous:${binding.autonomousRunId}:1` });
@@ -92,6 +96,15 @@ describe('window run liveness production wiring', () => {
     fs.writeFileSync(markerPath, JSON.stringify({ topic: 36966, active: false, status: 'preparing' }));
     const active = await auth(request(server.getApp()).post('/window-run-liveness/tick')).send({}).expect(200);
     expect(active.body.status).toBe('active');
+    const cadence = await auth(request(server.getApp()).post('/window-run-liveness/cadence/tick')).send({}).expect(200);
+    expect(cadence.body).toMatchObject({ windowId: 'w32', autonomousRunId: binding.autonomousRunId, status: 'running' });
+    const cadenceStatus = await auth(request(server.getApp()).get('/window-run-liveness/cadence')).expect(200);
+    expect(cadenceStatus.body).toMatchObject({ enabled: true, dryRun: false, state: { lifecycleRunId: binding.lifecycleRunId } });
+    nowMs += 25 * 60_000;
+    await auth(request(server.getApp()).post('/window-run-liveness/cadence/tick')).send({}).expect(200);
+    expect(checkpointInputs).toHaveLength(1);
+    expect(checkpointInputs[0]).toContain(`server-bound task autonomous:${binding.autonomousRunId}:2`);
+    nowMs = baseMs;
     expect(active.body.predicates['heartbeat-fresh'].observed).toBe(new Date(baseMs).toISOString());
     expect(new AutonomousRunStore(project.stateDir).getByPair('36966', binding.autonomousRunId)?.status).toBe('active');
     expect(JSON.parse(fs.readFileSync(markerPath, 'utf8'))).toMatchObject({ active: true, status: 'running', runId: binding.autonomousRunId, sessionId: binding.executorId });
@@ -191,7 +204,7 @@ describe('window run liveness observe-only production boundary', () => {
       windowLifecycleNow: () => new Date(nowMs).toISOString(), windowRunLivenessTranscriptPath: () => transcript,
     });
     await server.start();
-    const auth = (call: request.Test) => call.set('Authorization', `Bearer ${token}`);
+    const auth = (call: request.Test) => call.set('Authorization', `Bearer ${token}`).set('X-Instar-AgentId', 'echo');
     try {
       const legacy = await auth(request(server.getApp()).post('/autonomous/register')).send({ topicId: 777, condition: 'shadow registration', workDir: project.dir, startedAt: new Date(nowMs).toISOString(), endAt: new Date(nowMs + 60_000).toISOString(), sessionId: 'other' }).expect(200);
       expect(legacy.body).toMatchObject({ initialStatus: 'active', preparationRequired: false });

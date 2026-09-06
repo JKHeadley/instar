@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { generateClaudeMd } from '../../src/scaffold/templates.js';
+import { applyDefaults, getMigrationDefaults } from '../../src/config/ConfigDefaults.js';
 
 type Result = { upgraded: string[]; skipped: string[]; errors: string[] };
 const dirs: string[] = [];
@@ -28,6 +29,8 @@ describe('Window run liveness agent awareness migration', () => {
     expect(first.upgraded).toContain('CLAUDE.md: added Authoritative Window Run Liveness section');
     expect(migrated).toContain('/window-run-liveness/work-advance');
     expect(migrated).toContain('callers never submit task refs, predicate booleans');
+    expect(migrated).toContain('W32 cadence executor:');
+    expect(migrated).toContain('/window-run-liveness/cadence/tick');
     const beforeSecond = migrated;
     expect(migrate(projectDir).upgraded).not.toContain('CLAUDE.md: added Authoritative Window Run Liveness section');
     expect(fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf8')).toBe(beforeSecond);
@@ -35,6 +38,27 @@ describe('Window run liveness agent awareness migration', () => {
     const fresh = generateClaudeMd('instar', 'Echo', 4042, true);
     expect(fresh).toContain('Authoritative Window Run Liveness');
     expect(fresh).toContain('http://localhost:4042/window-run-liveness');
+    expect(fresh).toContain('W32 cadence executor:');
+  });
+
+  it('backfills dark exact-cadence defaults without overwriting an operator override', () => {
+    const freshTarget = {} as Record<string, unknown>;
+    applyDefaults(freshTarget, getMigrationDefaults('managed-project'));
+    expect((freshTarget as any).monitoring.windowRunLiveness.cadenceExecutor).toEqual({
+      enabled: false, dryRun: true, receiptIntervalMs: 1_800_000, reportIntervalMs: 10_800_000,
+      checkpointLeadMs: 300_000, receiptGraceMs: 300_000, reportRetryMaxAttempts: 3, reportRetryBackoffMs: 60_000,
+    });
+
+    const target = { monitoring: { windowRunLiveness: { cadenceExecutor: { enabled: true, dryRun: false, receiptGraceMs: 60_000 } } } } as Record<string, unknown>;
+    applyDefaults(target, getMigrationDefaults('managed-project'));
+    expect((target as any).monitoring.windowRunLiveness.cadenceExecutor).toEqual({
+      enabled: true, dryRun: false, receiptGraceMs: 60_000,
+      receiptIntervalMs: 1_800_000, reportIntervalMs: 10_800_000, checkpointLeadMs: 300_000,
+      reportRetryMaxAttempts: 3, reportRetryBackoffMs: 60_000,
+    });
+    const before = JSON.stringify(target);
+    applyDefaults(target, getMigrationDefaults('managed-project'));
+    expect(JSON.stringify(target)).toBe(before);
   });
 
   it('ships a preparation-aware autonomous setup script gated on live enforcement', () => {

@@ -3,6 +3,7 @@ import path from 'node:path';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { WindowRunLivenessAuthority, WindowRunLivenessStore } from '../../src/core/WindowRunLivenessAuthority.js';
+import { WindowRunCadenceExecutor, WindowRunCadenceStore } from '../../src/core/WindowRunCadenceExecutor.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { createMockSessionManager, createTempProject, type TempProject } from '../helpers/setup.js';
@@ -33,12 +34,15 @@ describe('window run liveness HTTP integration', () => {
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 2, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
       scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], monitoring: {}, updates: {},
     };
-    server = new AgentServer({ config, sessionManager: createMockSessionManager() as never, state: project.state, windowRunLivenessAuthority: authority });
+    const cadence = new WindowRunCadenceExecutor(new WindowRunCadenceStore(project.stateDir), {
+      now: () => now, getLiveness: () => authority.status().state, resolveFirstUnreceiptedTask: () => 'task-1',
+    }, { enabled: true, dryRun: true });
+    server = new AgentServer({ config, sessionManager: createMockSessionManager() as never, state: project.state, windowRunLivenessAuthority: authority, windowRunCadenceExecutor: cadence });
     await server.start();
   });
 
   afterAll(async () => { await server.stop(); project.cleanup(); });
-  const auth = (call: request.Test) => call.set('Authorization', `Bearer ${token}`);
+  const auth = (call: request.Test) => call.set('Authorization', `Bearer ${token}`).set('X-Instar-AgentId', 'w32-integration');
   const binding = { windowId: 'w32', topicId: 36966, autonomousRunId: 'run-w32', lifecycleRunId: 'lifecycle-w32', executorId: 'echo-topic-36966' };
 
   it('keeps predicate facts out of both mutation boundaries', async () => {
@@ -58,5 +62,9 @@ describe('window run liveness HTTP integration', () => {
     const status = await auth(request(server.getApp()).get('/window-run-liveness')).expect(200);
     expect(status.body.state.lastWorkReceipt.receiptId).toBe(minted.body.receipt.receiptId);
     expect(fs.existsSync(path.join(project.stateDir, 'window-run-liveness', 'state.json'))).toBe(true);
+    await auth(request(server.getApp()).post('/window-run-liveness/cadence/tick')).send({}).expect(200);
+    const cadence = await auth(request(server.getApp()).get('/window-run-liveness/cadence')).expect(200);
+    expect(cadence.body).toMatchObject({ enabled: true, dryRun: true, config: { receiptIntervalMs: 1_800_000, reportIntervalMs: 10_800_000 }, state: { windowId: 'w32', autonomousRunId: 'run-w32' } });
+    expect(fs.existsSync(path.join(project.stateDir, 'window-run-cadence', 'state.json'))).toBe(true);
   });
 });

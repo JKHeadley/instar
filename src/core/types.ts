@@ -5540,6 +5540,19 @@ export interface MonitoringConfig {
     workEvidenceMaxAgeMs?: number;
     /** Hard-clamped by the authority to no more than 15 minutes. */
     recoveryCeilingMs?: number;
+    /** Durable W32 receipt/report executor. Explicitly enabled; dry-run first. */
+    cadenceExecutor?: {
+      enabled?: boolean;
+      dryRun?: boolean;
+      receiptIntervalMs?: number;
+      reportIntervalMs?: number;
+      checkpointLeadMs?: number;
+      receiptGraceMs?: number;
+      checkpointRetryMaxAttempts?: number;
+      checkpointRetryBackoffMs?: number;
+      reportRetryMaxAttempts?: number;
+      reportRetryBackoffMs?: number;
+    };
   };
   /**
    * Boot health beacon — a minimal /health responder bound from the very start

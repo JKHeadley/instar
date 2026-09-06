@@ -145,6 +145,7 @@ An autonomous window is active only while FIVE independently observed predicates
 - **Registry First:** GET http://localhost:${port}/window-run-liveness returns the durable state, predicate verdicts, recovery receipt, hash-chained sample/work audit, transitions, and frozen exit proof. A 503 means it is dark on this agent; never infer health from that.
 - **Durable work receipts:** POST /window-run-liveness/work-advance accepts only the immutable run binding plus a relative artifact path. The server selects the first open/unreceipted task from the run-bound autonomous checklist, resolves and hashes the artifact, rejects unchanged bytes, and mints task/sequence/time/digest; callers never submit task refs, predicate booleans, timestamps, sequences, or digests. Pane narration and spinner changes are not work evidence.
 - **Preparation composition:** before lifecycle admission, the state remains preparing and does not consume the sole recovery. The separate between-window preparation carrier owns that interval.
+- **W32 cadence executor:** when explicitly enabled, GET /window-run-liveness/cadence exposes durable, distinct 30-minute interval receipts and 3-hour synthesis delivery receipts. It prompts the bound executor near a due interval but only a server-minted work receipt can pass it; narration never counts. POST /window-run-liveness/cadence/tick is the authenticated deterministic tick surface. A recovered/rebound executor continues the same cadence record instead of resetting the clock.
 - Ships on Echo development agents with dryRun:true unless explicitly enabled/actuated via monitoring.windowRunLiveness. Proactive trigger: when asked whether a window run is actually alive, stalled, or recovered, read this registry instead of trusting an “active” label.
 `;
 }
@@ -6219,6 +6220,12 @@ setTimeout(() => process.exit(0), 2000);
       content += WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Authoritative Window Run Liveness section');
+    }
+
+    if (!content.includes('W32 cadence executor:')) {
+      content += '\n- **W32 cadence executor:** `GET /window-run-liveness/cadence` exposes durable 30-minute receipt intervals and 3-hour Telegram synthesis receipts. It consumes only server-minted advancing work receipts, continues across executor recovery/rebind, and never treats narration as progress. `POST /window-run-liveness/cadence/tick` is the authenticated deterministic tick. Enable explicitly with `monitoring.windowRunLiveness.cadenceExecutor.enabled`; ship dry-run first.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added W32 cadence executor awareness');
     }
 
     if (!content.includes('Registry First — capability registry:')) {
