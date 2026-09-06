@@ -1,0 +1,31 @@
+{
+  "ts": "2026-09-06T04:35:30.000Z",
+  "slug": "w32-pr-scope-closure",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "session lifecycle and continuation state are changed",
+    "agent-awareness template and migration surfaces are changed"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 144,
+  "scope": {
+    "basis": "pr-in-scope-retrospective-closure-after-ci",
+    "files": [
+      "src/core/AutonomousRunStore.ts",
+      "src/core/CodexTaskContinuationStore.ts",
+      "src/core/IdentityRenderer.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 133,
+    "deletedLines": 11
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "The initial per-commit audit records covered later W32 slices but omitted these four early paths. CI exposed the missing PR-wide union; this corrective record names only the reviewed omitted paths and preserves that provenance explicitly."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}
