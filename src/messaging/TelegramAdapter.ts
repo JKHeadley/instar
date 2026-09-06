@@ -1485,6 +1485,10 @@ export class TelegramAdapter implements MessagingAdapter {
       topicId,
       text,
       fromUser: false,
+      // This adapter created the outbound row itself. Preserve an explicit
+      // negative so provenance-sensitive authorities do not have to treat an
+      // omitted legacy field as proof that content was not forwarded.
+      forwarded: false,
       timestamp: new Date().toISOString(),
       sessionName: this.topicToSession.get(topicId) ?? null,
       provenance: options?.provenance ?? 'automation',

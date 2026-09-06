@@ -6,6 +6,7 @@ import { AutonomousRunStore } from '../../src/core/AutonomousRunStore.js';
 import { createLedger, EchoWindowLedgerStore } from '../../src/core/WindowLifecycleObligationLedger.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { AgentServer } from '../../src/server/AgentServer.js';
+import { generateIdentityKeyPair } from '../../src/threadline/ThreadlineCrypto.js';
 import { createMockSessionManager, createTempProject, type MockSessionManager, type TempProject } from '../helpers/setup.js';
 
 describe('window run liveness production wiring', () => {
@@ -18,6 +19,9 @@ describe('window run liveness production wiring', () => {
   let transcript: string;
   let artifact: string;
   const checkpointInputs: string[] = [];
+  const outboundRows: any[] = [];
+  let ownerMachineId = 'mini';
+  const ownershipKeys: string[] = [];
   let binding: { windowId: string; topicId: number; autonomousRunId: string; lifecycleRunId: string; executorId: string };
 
   beforeAll(async () => {
@@ -26,6 +30,8 @@ describe('window run liveness production wiring', () => {
     artifact = path.join(project.dir, 'artifact.txt');
     fs.writeFileSync(transcript, '{"type":"session-event"}\n');
     fs.writeFileSync(artifact, 'first durable result\n');
+    const identity = generateIdentityKeyPair();
+    fs.writeFileSync(path.join(project.stateDir, 'identity.json'), JSON.stringify({ publicKey: identity.publicKey.toString('base64'), privateKey: identity.privateKey.toString('base64') }));
     fs.utimesSync(transcript, new Date(nowMs), new Date(nowMs));
     fs.mkdirSync(path.join(project.stateDir, 'autonomous'), { recursive: true });
     fs.writeFileSync(path.join(project.stateDir, 'autonomous', 'active-36966.json'), JSON.stringify({ topic: 36966, active: false, status: 'preparing' }));
@@ -56,15 +62,27 @@ describe('window run liveness production wiring', () => {
       requestTimeoutMs: 5000, version: '1.3.1223',
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 2, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
       scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [],
-      monitoring: { windowRunLiveness: { enabled: true, dryRun: false, heartbeatMaxAgeMs: 60_000, workEvidenceMaxAgeMs: 30 * 60_000, recoveryCeilingMs: 15 * 60_000, cadenceExecutor: { enabled: true, dryRun: false } } }, updates: {},
+      monitoring: { windowRunLiveness: { enabled: true, dryRun: false, heartbeatMaxAgeMs: 60_000, workEvidenceMaxAgeMs: 30 * 60_000, recoveryCeilingMs: 15 * 60_000, cadenceExecutor: { enabled: true, dryRun: false, reportIntervalMs: 26 * 60_000 } } }, updates: {},
     };
     const telegram = {
       getSessionForTopic: (topicId: number) => topicId === 36966 ? 'echo-topic-36966' : null,
       getStatus: () => ({ started: true, fatalReason: null, lastError: null, consecutivePollErrors: 0 }),
-      sendToTopic: async () => ({ messageId: 1 }),
+      getTopicHistory: (topicId: number) => outboundRows.filter(row => row.topicId === topicId),
+      sendToTopic: async (topicId: number, text: string, options: any) => {
+        const row = { messageId: outboundRows.length + 1, topicId, text, fromUser: false, forwarded: false, provenance: options?.provenance ?? 'automation', authorship: 'agent-outbound', timestamp: new Date(nowMs).toISOString(), sessionName: binding?.executorId ?? null };
+        outboundRows.push(row);
+        return { messageId: row.messageId };
+      },
     };
     server = new AgentServer({
       config, sessionManager: sessions as never, state: project.state, telegram: telegram as never,
+      meshSelfId: 'mini',
+      sessionOwnershipRegistry: {
+        read: (sessionKey: string) => {
+          ownershipKeys.push(sessionKey);
+          return sessionKey === '36966' ? { sessionKey, ownerMachineId, ownershipEpoch: 1, status: 'active', nonce: 'owner', timestamp: nowMs, updatedAt: new Date(nowMs).toISOString() } : null;
+        },
+      } as never,
       windowLifecycleNow: () => new Date(nowMs).toISOString(), windowRunLivenessTranscriptPath: () => transcript,
       sessionRefresh: { refreshSession: async () => ({ ok: true, oldSessionName: 'echo-topic-36966', newSessionName: 'echo-topic-36966', topicId: 36966 }) } as never,
     });
@@ -96,6 +114,11 @@ describe('window run liveness production wiring', () => {
     fs.writeFileSync(markerPath, JSON.stringify({ topic: 36966, active: false, status: 'preparing' }));
     const active = await auth(request(server.getApp()).post('/window-run-liveness/tick')).send({}).expect(200);
     expect(active.body.status).toBe('active');
+    ownerMachineId = 'laptop';
+    await auth(request(server.getApp()).post('/window-run-liveness/cadence/tick')).send({}).expect(404);
+    expect(ownershipKeys.at(-1)).toBe('36966');
+    expect((await auth(request(server.getApp()).get('/window-run-liveness/cadence')).expect(200)).body.state).toBeNull();
+    ownerMachineId = 'mini';
     const cadence = await auth(request(server.getApp()).post('/window-run-liveness/cadence/tick')).send({}).expect(200);
     expect(cadence.body).toMatchObject({ windowId: 'w32', autonomousRunId: binding.autonomousRunId, status: 'running' });
     const cadenceStatus = await auth(request(server.getApp()).get('/window-run-liveness/cadence')).expect(200);
@@ -104,6 +127,11 @@ describe('window run liveness production wiring', () => {
     await auth(request(server.getApp()).post('/window-run-liveness/cadence/tick')).send({}).expect(200);
     expect(checkpointInputs).toHaveLength(1);
     expect(checkpointInputs[0]).toContain(`server-bound task autonomous:${binding.autonomousRunId}:2`);
+    nowMs = baseMs + 26 * 60_000;
+    const reportTick = await auth(request(server.getApp()).post('/window-run-liveness/cadence/tick')).send({}).expect(200);
+    expect(reportTick.body.reports).toMatchObject([{ status: 'delivered', messageId: 1, producerSignature: expect.any(String) }]);
+    expect(outboundRows[0]).toMatchObject({ forwarded: false, provenance: 'automation', authorship: 'agent-outbound' });
+    expect(outboundRows[0].text).toContain('W32 cadence producer signature:');
     nowMs = baseMs;
     expect(active.body.predicates['heartbeat-fresh'].observed).toBe(new Date(baseMs).toISOString());
     expect(new AutonomousRunStore(project.stateDir).getByPair('36966', binding.autonomousRunId)?.status).toBe('active');
@@ -159,6 +187,53 @@ describe('window run liveness production wiring', () => {
 });
 
 describe('window run liveness observe-only production boundary', () => {
+  it('fails before synthesis delivery when the configured identity keypair is mismatched', async () => {
+    const token = 'w32-keypair-mismatch';
+    const baseMs = Date.parse('2026-09-05T20:00:00.000Z');
+    const project = createTempProject();
+    const privateIdentity = generateIdentityKeyPair();
+    const publicIdentity = generateIdentityKeyPair();
+    fs.writeFileSync(path.join(project.stateDir, 'identity.json'), JSON.stringify({
+      privateKey: privateIdentity.privateKey.toString('base64'),
+      publicKey: publicIdentity.publicKey.toString('base64'),
+    }));
+    const sessions = createMockSessionManager();
+    const sent: string[] = [];
+    const liveness: any = {
+      version: 1, windowId: 'w32', topicId: 36966, autonomousRunId: 'run-w32', lifecycleRunId: 'lifecycle-w32', executorId: 'echo-topic-36966',
+      status: 'active', registeredAt: new Date(baseMs).toISOString(), activatedAt: new Date(baseMs).toISOString(),
+      predicates: {}, transitions: [], executorBindingReceipts: [], audit: { entries: [], headDigest: null },
+    };
+    const config: InstarConfig = {
+      projectName: 'echo', projectDir: project.dir, stateDir: project.stateDir, port: 0, authToken: token, developmentAgent: true,
+      requestTimeoutMs: 5000, version: '1.3.1223', sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], monitoring: { windowRunLiveness: { enabled: true, dryRun: false, cadenceExecutor: { enabled: true, dryRun: false, reportIntervalMs: 1 } } }, updates: {},
+    };
+    const server = new AgentServer({
+      config, sessionManager: sessions as never, state: project.state,
+      telegram: {
+        getTopicHistory: () => [],
+        sendToTopic: async (_topicId: number, text: string) => { sent.push(text); return { messageId: sent.length }; },
+        getStatus: () => ({ started: true, fatalReason: null, lastError: null, consecutivePollErrors: 0 }),
+      } as never,
+      windowLifecycleNow: () => new Date(baseMs + 1).toISOString(),
+      windowRunLivenessAuthority: { status: () => ({ enabled: true, dryRun: false, config: {}, state: liveness }), tick: async () => liveness } as never,
+    });
+    await server.start();
+    try {
+      const response = await request(server.getApp()).post('/window-run-liveness/cadence/tick')
+        .set('Authorization', `Bearer ${token}`).set('X-Instar-AgentId', 'echo').send({}).expect(200);
+      expect(response.body).toMatchObject({ status: 'failed', reports: [{ status: 'failed', attemptCount: 0 }], failure: { notified: true } });
+      expect(response.body.reports[0].error).toMatch(/^synthesis-producer-signature-error:/);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toContain('cadence failure receipt');
+      expect(sent[0]).not.toContain('W32 synthesis receipt:');
+    } finally {
+      await server.stop();
+      project.cleanup();
+    }
+  });
+
   it('computes shadow transitions while leaving every legacy active surface byte-identical', async () => {
     const token = 'w32-dryrun-e2e';
     const nowMs = Date.parse('2026-09-05T20:00:00.000Z');

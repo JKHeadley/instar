@@ -31,7 +31,8 @@ import { AutonomousRunStore } from '../core/AutonomousRunStore.js';
 import { parseContinuationTasks } from '../core/CodexTaskContinuationStore.js';
 import { EchoWindowLedgerStore } from '../core/WindowLifecycleObligationLedger.js';
 import { WindowRunLivenessAuthority, WindowRunLivenessStore } from '../core/WindowRunLivenessAuthority.js';
-import { WindowRunCadenceExecutor, WindowRunCadenceStore } from '../core/WindowRunCadenceExecutor.js';
+import { WindowRunCadenceExecutor, WindowRunCadenceStore, cadenceReportProducerPayload, signCadenceReportProducer } from '../core/WindowRunCadenceExecutor.js';
+import { verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
 import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
 import { ConversationRegistry } from '../core/ConversationRegistry.js';
 import { createConversationBindAuth } from '../core/conversationBindToken.js';
@@ -4112,16 +4113,44 @@ export class AgentServer {
         {
           now: () => options.windowLifecycleNow?.() ?? new Date().toISOString(),
           getLiveness: () => windowRunLivenessAuthority.status().state,
+          canAct: (state) => {
+            const registry = options.sessionOwnershipRegistry;
+            if (!registry) return options.coordinator?.enabled !== true;
+            if (!options.meshSelfId) return false;
+            const owner = registry.read(String(state.topicId));
+            return owner?.status === 'active' && owner.ownerMachineId === options.meshSelfId;
+          },
           resolveFirstUnreceiptedTask: resolveWindowFirstUnreceiptedTask,
           requestCheckpoint: async ({ state, dueAt, taskRef }) => {
             const prompt = `W32 cadence checkpoint is due at ${dueAt}. Continue exactly at server-bound task ${taskRef}; save substantive artifact progress, then submit it to POST /window-run-liveness/work-advance. Narration does not count as a receipt.`;
             const delivered = options.sessionManager.sendInput(state.executorId, prompt);
             return { delivered, receipt: createHash('sha256').update(JSON.stringify({ executorId: state.executorId, dueAt, taskRef, delivered })).digest('hex') };
           },
-          findDeliveredSynthesis: (topicId, reportId) => {
-            const marker = `W32 synthesis receipt: ${reportId}`;
-            const row = options.telegram?.getTopicHistory(topicId, 1_000).find(item => !item.fromUser && item.text.includes(marker));
-            return row?.messageId ?? null;
+          signSynthesis: ({ state, reportId, dueAt, bodyHash }) => {
+            const identity = JSON.parse(fs.readFileSync(path.join(options.config.stateDir, 'identity.json'), 'utf8')) as { privateKey?: unknown; publicKey?: unknown };
+            if (typeof identity.privateKey !== 'string' || typeof identity.publicKey !== 'string') throw new Error('window-run-cadence-signing-key-unavailable');
+            return signCadenceReportProducer(cadenceReportProducerPayload({
+              windowId: state.windowId, topicId: state.topicId, autonomousRunId: state.autonomousRunId,
+              lifecycleRunId: state.lifecycleRunId, reportId, dueAt, bodyHash,
+            }), Buffer.from(identity.privateKey, 'base64'), Buffer.from(identity.publicKey, 'base64'));
+          },
+          findDeliveredSynthesis: ({ topicId, report, expectedText }) => {
+            const state = windowRunLivenessAuthority.status().state;
+            if (!state || !report.bodyHash || !report.producerSignature) return null;
+            let publicKey: Buffer;
+            try {
+              const identity = JSON.parse(fs.readFileSync(path.join(options.config.stateDir, 'identity.json'), 'utf8')) as { publicKey?: unknown };
+              if (typeof identity.publicKey !== 'string') return null;
+              publicKey = Buffer.from(identity.publicKey, 'base64');
+            } catch { return null; }
+            if (publicKey.length !== 32 || !verifyEd25519(publicKey, cadenceReportProducerPayload({
+              windowId: state.windowId, topicId, autonomousRunId: state.autonomousRunId,
+              lifecycleRunId: state.lifecycleRunId, reportId: report.reportId, dueAt: report.dueAt, bodyHash: report.bodyHash,
+            }), Buffer.from(report.producerSignature, 'base64url'))) return null;
+            const row = options.telegram?.getTopicHistory(topicId, 1_000).find(item => item.messageId > 0
+              && !item.fromUser && item.forwarded === false && item.provenance === 'automation'
+              && item.authorship === 'agent-outbound' && item.text === expectedText);
+            return row ? { messageId: row.messageId } : null;
           },
           deliverSynthesis: async ({ state, text, reportId, dueAt }) => {
             if (!options.telegram) throw new Error('window-run-cadence-telegram-unavailable');
@@ -4132,6 +4161,13 @@ export class AgentServer {
             if (!options.telegram) throw new Error('window-run-cadence-telegram-unavailable');
             const result = await options.telegram.sendToTopic(state.topicId, message, { provenance: 'automation' });
             return { messageId: result.messageId };
+          },
+          findDeliveredFailureNotification: (topicId, notificationId) => {
+            const marker = `W32 cadence failure receipt: ${notificationId}`;
+            const row = options.telegram?.getTopicHistory(topicId, 1_000).find(item => !item.fromUser
+              && item.forwarded === false && item.provenance === 'automation'
+              && item.authorship === 'agent-outbound' && item.text.endsWith(marker));
+            return row?.messageId ?? null;
           },
         },
         { ...cadenceRaw, enabled: true },

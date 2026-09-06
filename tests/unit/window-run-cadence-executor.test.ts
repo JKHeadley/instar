@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { WindowRunCadenceExecutor, WindowRunCadenceStore } from '../../src/core/WindowRunCadenceExecutor.js';
+import { WindowRunCadenceExecutor, WindowRunCadenceStore, signCadenceReportProducer } from '../../src/core/WindowRunCadenceExecutor.js';
+import { generateIdentityKeyPair } from '../../src/threadline/ThreadlineCrypto.js';
 import { WindowRunLivenessAuthority, WindowRunLivenessStore, type WindowRunLivenessDocument, type WindowRunWorkReceipt } from '../../src/core/WindowRunLivenessAuthority.js';
 import { createTempProject, type TempProject } from '../helpers/setup.js';
 
@@ -26,6 +27,22 @@ function liveness(receipts: WindowRunWorkReceipt[] = []): WindowRunLivenessDocum
 describe('WindowRunCadenceExecutor', () => {
   let project: TempProject | undefined;
   afterEach(() => project?.cleanup());
+
+  it('hard-caps configured checkpoint/report retry ceilings at the reviewed 2/3 bounds', () => {
+    project = createTempProject();
+    const executor = new WindowRunCadenceExecutor(new WindowRunCadenceStore(project.stateDir), {
+      getLiveness: () => liveness(),
+      resolveFirstUnreceiptedTask: () => null,
+    }, { enabled: true, dryRun: false, checkpointRetryMaxAttempts: 5, reportRetryMaxAttempts: 5 });
+    expect(executor.status().config).toMatchObject({ checkpointRetryMaxAttempts: 2, reportRetryMaxAttempts: 3 });
+  });
+
+  it('refuses a mismatched Ed25519 producer keypair before report delivery', () => {
+    const signer = generateIdentityKeyPair();
+    const differentIdentity = generateIdentityKeyPair();
+    expect(() => signCadenceReportProducer(Buffer.from('bound-report'), signer.privateKey, differentIdentity.publicKey))
+      .toThrow('window-run-cadence-signing-keypair-mismatch');
+  });
 
   it('persists one cross-turn checkpoint request and preserves cadence across executor rebind', async () => {
     project = createTempProject();
@@ -87,7 +104,7 @@ describe('WindowRunCadenceExecutor', () => {
     const failures: string[] = [];
     const executor = new WindowRunCadenceExecutor(new WindowRunCadenceStore(project.stateDir), {
       now: () => new Date(nowMs).toISOString(), getLiveness: () => state, resolveFirstUnreceiptedTask: () => 'task-3',
-      notifyFailure: async (_state, message) => { failures.push(message); return true; },
+      notifyFailure: async (_state, message) => { failures.push(message); return { messageId: 90 }; },
     }, { enabled: true, dryRun: false });
     const passing = await executor.tick();
     expect(passing?.intervals.map(item => [item.outcome, item.workSequence])).toEqual([['passed', 1], ['passed', 2]]);
@@ -139,7 +156,8 @@ describe('WindowRunCadenceExecutor', () => {
     const store = new WindowRunCadenceStore(project.stateDir);
     const make = () => new WindowRunCadenceExecutor(store, {
       now: () => new Date(nowMs).toISOString(), getLiveness: () => state, resolveFirstUnreceiptedTask: () => null,
-      findDeliveredSynthesis: (_topic, reportId) => history.get(reportId) ?? null,
+      signSynthesis: () => 'producer-signature-1',
+      findDeliveredSynthesis: ({ report }) => history.has(report.reportId) ? { messageId: history.get(report.reportId)! } : null,
       deliverSynthesis: async ({ reportId, text }) => { delivered.push({ reportId, text }); history.set(reportId, 42); return { messageId: 42 }; },
     }, { enabled: true, dryRun: false });
     const first = await make().tick();
@@ -168,8 +186,9 @@ describe('WindowRunCadenceExecutor', () => {
     const make = () => new WindowRunCadenceExecutor(store, {
       now: () => new Date(nowMs).toISOString(), getLiveness: () => state, resolveFirstUnreceiptedTask: () => null,
       findDeliveredSynthesis: () => null,
+      signSynthesis: () => 'producer-signature-1',
       deliverSynthesis: async () => { attempts += 1; throw new Error('telegram-down'); },
-      notifyFailure: async (_state, message) => { failures.push(message); return true; },
+      notifyFailure: async (_state, message) => { failures.push(message); return { messageId: 91 }; },
     }, { enabled: true, dryRun: false, reportRetryMaxAttempts: 3, reportRetryBackoffMs: 60_000 });
 
     expect((await make().tick())?.reports[0]).toMatchObject({ status: 'failed', attemptCount: 1 });
@@ -187,6 +206,126 @@ describe('WindowRunCadenceExecutor', () => {
     await make().tick();
     expect(attempts).toBe(3);
     expect(failures).toHaveLength(1);
+  });
+
+  it('terminalizes a throwing report signer and notifies once instead of throwing every tick', async () => {
+    project = createTempProject();
+    const receipts = Array.from({ length: 6 }, (_, index) => work(index + 1, BASE + (index + 1) * 30 * 60_000 - 1_000));
+    const state = liveness(receipts);
+    let signerCalls = 0;
+    let notices = 0;
+    const store = new WindowRunCadenceStore(project.stateDir);
+    const make = () => new WindowRunCadenceExecutor(store, {
+      now: () => new Date(BASE + 3 * 60 * 60_000).toISOString(),
+      getLiveness: () => state,
+      resolveFirstUnreceiptedTask: () => null,
+      signSynthesis: () => { signerCalls += 1; throw new Error('identity-key-missing'); },
+      notifyFailure: async () => { notices += 1; return { messageId: 92 }; },
+    }, { enabled: true, dryRun: false });
+    const failed = await make().tick();
+    expect(failed).toMatchObject({ status: 'failed', reports: [{ status: 'failed', attemptCount: 0 }], failure: { notified: true } });
+    expect(failed?.reports[0].error).toMatch(/^synthesis-producer-signature-error:/);
+    await make().tick();
+    expect(signerCalls).toBe(1);
+    expect(notices).toBe(1);
+  });
+
+  it('does not initialize or act unless this machine owns the active executor', async () => {
+    project = createTempProject();
+    const state = liveness();
+    let ownsExecutor = false;
+    let actions = 0;
+    const store = new WindowRunCadenceStore(project.stateDir);
+    const executor = new WindowRunCadenceExecutor(store, {
+      now: () => new Date(BASE + 25 * 60_000).toISOString(),
+      getLiveness: () => state,
+      canAct: () => ownsExecutor,
+      resolveFirstUnreceiptedTask: () => 'task-1',
+      requestCheckpoint: async () => { actions += 1; return { delivered: true, receipt: 'checkpoint' }; },
+    }, { enabled: true, dryRun: false });
+    expect(await executor.tick()).toBeNull();
+    expect(store.load()).toBeNull();
+    expect(actions).toBe(0);
+    ownsExecutor = true;
+    expect((await executor.tick())?.status).toBe('running');
+    expect(actions).toBe(1);
+  });
+
+  it('persists checkpoint intent before send and redrives it at most twice across restart', async () => {
+    project = createTempProject();
+    const state = liveness();
+    let nowMs = BASE + 25 * 60_000;
+    let attempts = 0;
+    const store = new WindowRunCadenceStore(project.stateDir);
+    const make = () => new WindowRunCadenceExecutor(store, {
+      now: () => new Date(nowMs).toISOString(),
+      getLiveness: () => state,
+      resolveFirstUnreceiptedTask: () => 'task-1',
+      requestCheckpoint: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('process-lost-after-intent');
+        return { delivered: true, receipt: 'checkpoint-accepted' };
+      },
+    }, { enabled: true, dryRun: false, checkpointRetryMaxAttempts: 2, checkpointRetryBackoffMs: 60_000 });
+    expect((await make().tick())?.checkpoints[0]).toMatchObject({ outcome: 'failed', attemptCount: 1 });
+    await make().tick();
+    expect(attempts).toBe(1);
+    nowMs += 60_000;
+    expect((await make().tick())?.checkpoints[0]).toMatchObject({ outcome: 'delivered', attemptCount: 2, deliveryReceipt: 'checkpoint-accepted' });
+    nowMs += 24 * 60 * 60_000;
+    await make().tick();
+    expect(attempts).toBe(2);
+  });
+
+  it('reconciles an accepted failure notice from local durable history after a lost acknowledgement', async () => {
+    project = createTempProject();
+    const state = liveness();
+    let nowMs = BASE + 36 * 60_000;
+    let sends = 0;
+    const history = new Map<string, number>();
+    const store = new WindowRunCadenceStore(project.stateDir);
+    const make = () => new WindowRunCadenceExecutor(store, {
+      now: () => new Date(nowMs).toISOString(),
+      getLiveness: () => state,
+      resolveFirstUnreceiptedTask: () => null,
+      findDeliveredFailureNotification: (_topic, id) => history.get(id) ?? null,
+      notifyFailure: async (_live, message) => {
+        sends += 1;
+        const id = message.match(/W32 cadence failure receipt: ([a-f0-9]+)/)?.[1];
+        if (id) history.set(id, 77);
+        throw new Error('ack-lost-after-accept');
+      },
+    }, { enabled: true, dryRun: false, reportRetryBackoffMs: 60_000 });
+    const ambiguous = await make().tick();
+    expect(ambiguous?.failure).toMatchObject({ notified: false, notificationAttemptCount: 1 });
+    expect(sends).toBe(1);
+    const reconciled = await make().tick();
+    expect(reconciled?.failure).toMatchObject({ notified: true, notificationAttemptCount: 1, notificationMessageId: 77 });
+    expect(sends).toBe(1);
+  });
+
+  it('bounds a permanently failing failure notice to three durable attempts across restart', async () => {
+    project = createTempProject();
+    const state = liveness();
+    let nowMs = BASE + 36 * 60_000;
+    let sends = 0;
+    const store = new WindowRunCadenceStore(project.stateDir);
+    const make = () => new WindowRunCadenceExecutor(store, {
+      now: () => new Date(nowMs).toISOString(),
+      getLiveness: () => state,
+      resolveFirstUnreceiptedTask: () => null,
+      findDeliveredFailureNotification: () => null,
+      notifyFailure: async () => { sends += 1; throw new Error('telegram-down'); },
+    }, { enabled: true, dryRun: false, reportRetryMaxAttempts: 3, reportRetryBackoffMs: 60_000 });
+    await make().tick();
+    nowMs += 60_000;
+    await make().tick();
+    nowMs += 2 * 60_000;
+    const exhausted = await make().tick();
+    expect(exhausted?.failure).toMatchObject({ notified: false, notificationAttemptCount: 3 });
+    nowMs += 24 * 60 * 60_000;
+    await make().tick();
+    expect(sends).toBe(3);
   });
 
   it('closes without future sends when liveness terminalizes', async () => {

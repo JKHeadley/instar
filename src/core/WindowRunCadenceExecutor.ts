@@ -4,6 +4,7 @@ import path from 'node:path';
 import lockfile from 'proper-lockfile';
 import type { WindowRunLivenessDocument, WindowRunWorkReceipt } from './WindowRunLivenessAuthority.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { sign as signEd25519, verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
 
 export const WINDOW_RUN_CADENCE_VERSION = 1 as const;
 export const WINDOW_RUN_CADENCE_DEFAULTS = {
@@ -61,6 +62,12 @@ export interface WindowCadenceReportReceipt {
   error?: string;
   attemptCount: number;
   nextAttemptAt?: string;
+  /** SHA-256 of the exact synthesis body before the visible signature line. */
+  bodyHash?: string;
+  /** Immutable synthesis body; retries must send byte-identical signed content. */
+  body?: string;
+  /** Ed25519 signature over the exact run/report binding and body hash. */
+  producerSignature?: string;
 }
 
 export interface WindowRunCadenceDocument {
@@ -107,8 +114,19 @@ export interface WindowRunCadenceDeps {
     dueAt: string;
     text: string;
   }) => Promise<{ messageId: number }>;
-  /** Re-query the durable outbound history before retrying an ambiguous send. */
-  findDeliveredSynthesis?: (topicId: number, reportId: string) => number | null;
+  /** Sign the immutable report/run binding before any delivery attempt. */
+  signSynthesis?: (request: {
+    state: Readonly<WindowRunLivenessDocument>;
+    reportId: string;
+    dueAt: string;
+    bodyHash: string;
+  }) => string;
+  /** Re-query the adapter's local durable outbound history before retrying an ambiguous send. */
+  findDeliveredSynthesis?: (request: {
+    topicId: number;
+    report: Readonly<WindowCadenceReportReceipt>;
+    expectedText: string;
+  }) => { messageId: number } | null;
   findDeliveredFailureNotification?: (topicId: number, notificationId: string) => number | null;
   notifyFailure?: (state: Readonly<WindowRunLivenessDocument>, message: string) => Promise<{ messageId: number }>;
   now?: () => string;
@@ -122,12 +140,40 @@ function positiveMs(value: number | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
-function boundedAttempts(value: number | undefined, fallback: number): number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? Math.min(value, 5) : fallback;
+function boundedAttempts(value: number | undefined, fallback: number, hardCeiling: number): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? Math.min(value, hardCeiling) : fallback;
 }
 
 function digest(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+export function cadenceReportProducerPayload(input: {
+  windowId: string;
+  topicId: number;
+  autonomousRunId: string;
+  lifecycleRunId: string;
+  reportId: string;
+  dueAt: string;
+  bodyHash: string;
+}): Buffer {
+  return Buffer.from(JSON.stringify([
+    'instar-window-run-cadence-report-v1',
+    input.windowId,
+    input.topicId,
+    input.autonomousRunId,
+    input.lifecycleRunId,
+    input.reportId,
+    input.dueAt,
+    input.bodyHash,
+  ]), 'utf8');
+}
+
+export function signCadenceReportProducer(payload: Buffer, privateKey: Buffer, publicKey: Buffer): string {
+  if (privateKey.length !== 32 || publicKey.length !== 32) throw new Error('window-run-cadence-signing-key-invalid');
+  const signature = signEd25519(privateKey, payload);
+  if (!verifyEd25519(publicKey, payload, signature)) throw new Error('window-run-cadence-signing-keypair-mismatch');
+  return signature.toString('base64url');
 }
 
 function livenessTerminal(status: WindowRunLivenessDocument['status']): boolean {
@@ -202,9 +248,9 @@ export class WindowRunCadenceExecutor {
       reportIntervalMs: positiveMs(config.reportIntervalMs, WINDOW_RUN_CADENCE_DEFAULTS.reportIntervalMs),
       checkpointLeadMs: positiveMs(config.checkpointLeadMs, WINDOW_RUN_CADENCE_DEFAULTS.checkpointLeadMs),
       receiptGraceMs: positiveMs(config.receiptGraceMs, WINDOW_RUN_CADENCE_DEFAULTS.receiptGraceMs),
-      checkpointRetryMaxAttempts: boundedAttempts(config.checkpointRetryMaxAttempts, WINDOW_RUN_CADENCE_DEFAULTS.checkpointRetryMaxAttempts),
+      checkpointRetryMaxAttempts: boundedAttempts(config.checkpointRetryMaxAttempts, WINDOW_RUN_CADENCE_DEFAULTS.checkpointRetryMaxAttempts, WINDOW_RUN_CADENCE_DEFAULTS.checkpointRetryMaxAttempts),
       checkpointRetryBackoffMs: positiveMs(config.checkpointRetryBackoffMs, WINDOW_RUN_CADENCE_DEFAULTS.checkpointRetryBackoffMs),
-      reportRetryMaxAttempts: boundedAttempts(config.reportRetryMaxAttempts, WINDOW_RUN_CADENCE_DEFAULTS.reportRetryMaxAttempts),
+      reportRetryMaxAttempts: boundedAttempts(config.reportRetryMaxAttempts, WINDOW_RUN_CADENCE_DEFAULTS.reportRetryMaxAttempts, WINDOW_RUN_CADENCE_DEFAULTS.reportRetryMaxAttempts),
       reportRetryBackoffMs: positiveMs(config.reportRetryBackoffMs, WINDOW_RUN_CADENCE_DEFAULTS.reportRetryBackoffMs),
     };
     this.cfg.checkpointLeadMs = Math.min(this.cfg.checkpointLeadMs, this.cfg.receiptIntervalMs);
@@ -365,14 +411,39 @@ export class WindowRunCadenceExecutor {
       const reportId = digest({ windowId: state.windowId, autonomousRunId: state.autonomousRunId, dueAt }).slice(0, 24);
       let report = state.reports.find(item => item.reportId === reportId);
       if (!report) {
-        report = { reportId, dueAt, attemptedAt: now, status: this.cfg.dryRun ? 'would-deliver' : 'attempting', attemptCount: 0 };
+        const body = this.synthesis(state, liveness, reportId);
+        const bodyHash = createHash('sha256').update(body).digest('hex');
+        let producerSignature: string | undefined;
+        let signatureError: string | undefined;
+        if (!this.cfg.dryRun) {
+          try {
+            producerSignature = this.deps.signSynthesis?.({ state: liveness, reportId, dueAt, bodyHash });
+            if (!producerSignature) signatureError = 'synthesis-producer-signature-unavailable';
+          } catch (error) {
+            signatureError = `synthesis-producer-signature-error:${digest(String(error)).slice(0, 24)}`;
+          }
+        }
+        report = {
+          reportId, dueAt, attemptedAt: now,
+          status: this.cfg.dryRun ? 'would-deliver' : signatureError ? 'failed' : 'attempting',
+          attemptCount: 0, body, bodyHash, producerSignature, error: signatureError,
+        };
         state.reports.push(report);
+        if (signatureError) this.fail(state, now, `synthesis-producer-signature-unavailable:${reportId}`);
         this.store.save(state); // crash-open send becomes an explicit ambiguous attempt
       }
       if (!this.cfg.dryRun && report.status !== 'delivered') {
-        const observed = this.deps.findDeliveredSynthesis?.(state.topicId, reportId) ?? null;
+        const body = report.body ?? '';
+        if (!report.bodyHash || createHash('sha256').update(body).digest('hex') !== report.bodyHash || !report.producerSignature) {
+          report.status = 'failed'; report.error ??= 'synthesis-producer-signature-unavailable';
+          this.fail(state, now, `synthesis-producer-signature-unavailable:${reportId}`);
+          this.store.save(state);
+          break;
+        }
+        const text = `${body}\nW32 cadence producer signature: ${report.producerSignature}`;
+        const observed = this.deps.findDeliveredSynthesis?.({ topicId: state.topicId, report, expectedText: text }) ?? null;
         if (observed !== null) {
-          report.status = 'delivered'; report.messageId = observed; report.deliveredAt = now;
+          report.status = 'delivered'; report.messageId = observed.messageId; report.deliveredAt = now;
         } else if (report.attemptCount >= this.cfg.reportRetryMaxAttempts) {
           report.status = 'failed';
           report.error ??= 'synthesis-delivery-attempts-exhausted';
@@ -387,7 +458,7 @@ export class WindowRunCadenceExecutor {
           report.nextAttemptAt = new Date(Date.parse(now) + this.cfg.reportRetryBackoffMs * 2 ** (report.attemptCount - 1)).toISOString();
           this.store.save(state); // persist the bounded attempt before crossing the delivery boundary
           try {
-            const delivered = await this.deps.deliverSynthesis({ state: liveness, reportId, dueAt, text: this.synthesis(state, liveness, reportId) });
+            const delivered = await this.deps.deliverSynthesis({ state: liveness, reportId, dueAt, text });
             report.status = 'delivered'; report.messageId = delivered.messageId; report.deliveredAt = this.now(); report.error = undefined;
           } catch (error) {
             report.status = 'failed'; report.error = String(error).slice(0, 300);
@@ -422,7 +493,9 @@ export class WindowRunCadenceExecutor {
     if (state.failure.notificationNextAttemptAt && Date.parse(now) < Date.parse(state.failure.notificationNextAttemptAt)) return;
     const detail = state.failure.reason.startsWith('receipt-interval-missed:')
       ? `missed its advancing durable-work receipt due at ${state.failure.reason.slice('receipt-interval-missed:'.length)}`
-      : `exhausted bounded Telegram synthesis delivery for ${state.failure.reason.slice('synthesis-delivery-exhausted:'.length)}`;
+      : state.failure.reason.startsWith('synthesis-delivery-exhausted:')
+        ? `exhausted bounded Telegram synthesis delivery for ${state.failure.reason.slice('synthesis-delivery-exhausted:'.length)}`
+        : `could not produce an authenticated synthesis for ${state.failure.reason.split(':').at(-1) ?? 'the due report'}`;
     state.failure.notificationAttemptCount += 1;
     state.failure.notificationNextAttemptAt = new Date(Date.parse(now) + this.cfg.reportRetryBackoffMs * 2 ** (state.failure.notificationAttemptCount - 1)).toISOString();
     this.store.save(state); // crash-open notification becomes a bounded ambiguous attempt

@@ -46,7 +46,8 @@ describe('Window run liveness agent awareness migration', () => {
     applyDefaults(freshTarget, getMigrationDefaults('managed-project'));
     expect((freshTarget as any).monitoring.windowRunLiveness.cadenceExecutor).toEqual({
       enabled: false, dryRun: true, receiptIntervalMs: 1_800_000, reportIntervalMs: 10_800_000,
-      checkpointLeadMs: 300_000, receiptGraceMs: 300_000, reportRetryMaxAttempts: 3, reportRetryBackoffMs: 60_000,
+      checkpointLeadMs: 300_000, receiptGraceMs: 300_000, checkpointRetryMaxAttempts: 2, checkpointRetryBackoffMs: 60_000,
+      reportRetryMaxAttempts: 3, reportRetryBackoffMs: 60_000,
     });
 
     const target = { monitoring: { windowRunLiveness: { cadenceExecutor: { enabled: true, dryRun: false, receiptGraceMs: 60_000 } } } } as Record<string, unknown>;
@@ -54,6 +55,7 @@ describe('Window run liveness agent awareness migration', () => {
     expect((target as any).monitoring.windowRunLiveness.cadenceExecutor).toEqual({
       enabled: true, dryRun: false, receiptGraceMs: 60_000,
       receiptIntervalMs: 1_800_000, reportIntervalMs: 10_800_000, checkpointLeadMs: 300_000,
+      checkpointRetryMaxAttempts: 2, checkpointRetryBackoffMs: 60_000,
       reportRetryMaxAttempts: 3, reportRetryBackoffMs: 60_000,
     });
     const before = JSON.stringify(target);
