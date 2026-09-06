@@ -355,6 +355,11 @@ describe('admission, closure and waivers', () => {
     expect(expired.recurrenceFrozenAt).toBe(initial.windowCeilingAt);
     expect(expired.obligations.filter(duty => duty.id.includes('@')).every(duty => Date.parse(duty.deadline.dueAt) <= Date.parse(initial.windowCeilingAt!))).toBe(true);
     expect(materializeCadenceInstances(expired, '2026-09-01T16:00:00.000Z').compiledObligationIds).toEqual(expired.compiledObligationIds);
+    expired.state = 'closed_failed';
+    const restartedTick = evaluateLifecycleTick(expired, { resolve: () => null }, { requery: () => null }, '2026-09-02T16:00:00.000Z').ledger;
+    expect(restartedTick.state).toBe('closed_failed');
+    expect(restartedTick.compiledObligationIds).toEqual(expired.compiledObligationIds);
+    expect(restartedTick.obligations.some(duty => Date.parse(duty.deadline.dueAt) > Date.parse(initial.windowCeilingAt!))).toBe(false);
   });
 
   it('refuses active and terminal transition bypasses', () => {

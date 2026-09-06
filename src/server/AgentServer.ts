@@ -3984,7 +3984,7 @@ export class AgentServer {
             }
             fs.renameSync(tmp, target);
           } finally {
-            try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* best-effort temp cleanup */ }
+            try { if (fs.existsSync(tmp)) SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'window-run-liveness-projection-atomic-cleanup' }); } catch { /* best-effort temp cleanup */ }
           }
         };
 
@@ -4093,6 +4093,10 @@ export class AgentServer {
             if (!options.telegram) return false;
             await options.telegram.sendToTopic(state.topicId, message, { provenance: 'automation' });
             return true;
+          },
+          notificationAlreadyDelivered: (state, marker) => {
+            if (!options.telegram) return false;
+            return options.telegram.getTopicHistory(state.topicId, 1_000).some(row => row.fromUser === false && row.text.includes(`[${marker}]`));
           },
         },
         { ...raw, enabled: true },

@@ -274,6 +274,7 @@ import {
   WINDOW_DRY_RUN_INVENTORY,
   reconstructMultipartReaffirmation,
   isW32ReaffirmationBootstrap,
+  materializeCadenceInstances,
 } from '../core/WindowLifecycleObligationLedger.js';
 import type { WindowRunLivenessAuthority } from '../core/WindowRunLivenessAuthority.js';
 
@@ -2387,6 +2388,41 @@ export function createRoutes(ctx: RouteContext): Router {
   };
   const windowStore = new EchoWindowLedgerStore(ctx.config.stateDir);
   const windowNow = () => ctx.windowLifecycleNow?.() ?? new Date().toISOString();
+  const terminalLifecycleStates = new Set(['closed_clean', 'closed_with_operator_waiver', 'closed_failed', 'rolled_back']);
+  const enforcingLivenessFor = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument) => {
+    const authority = ctx.windowRunLivenessAuthority;
+    const snapshot = authority?.status();
+    const state = snapshot?.state;
+    return authority && snapshot?.enabled === true && snapshot.dryRun === false && state
+      && state.windowId === ledger.windowId && state.lifecycleRunId === ledger.lifecycleRunId
+      ? { authority, state }
+      : null;
+  };
+  const freezeMatchingWindowLiveness = (
+    ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument,
+    reason: string,
+    terminalStatus: 'closed' | 'failed',
+  ): boolean => {
+    if (ledger.catalogProfile !== 'w32-approved-a204c07d') return false;
+    const match = enforcingLivenessFor(ledger);
+    if (!match) return false;
+    const frozen = match.authority.freeze(reason, terminalStatus);
+    return frozen.status === terminalStatus && frozen.finalSnapshot !== undefined;
+  };
+  const expireWindowAtCeiling = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument): boolean => {
+    if (ledger.catalogProfile !== 'w32-approved-a204c07d' || !enforcingLivenessFor(ledger)) return false;
+    if (ledger.state === 'closed_clean' || ledger.state === 'closed_with_operator_waiver' || ledger.state === 'rolled_back') return false;
+    const ceilingMs = Date.parse(ledger.windowCeilingAt ?? '');
+    const nowMs = Date.parse(windowNow());
+    if (!Number.isFinite(ceilingMs) || !Number.isFinite(nowMs) || nowMs < ceilingMs) return false;
+    const expired = materializeCadenceInstances(ledger, ledger.windowCeilingAt!);
+    expired.recurrenceFrozenAt = ledger.windowCeilingAt;
+    expired.state = 'closed_failed';
+    expired.admission = undefined;
+    if (!freezeMatchingWindowLiveness(expired, 'window-ceiling-expired', 'failed')) return false;
+    windowStore.save(expired);
+    return true;
+  };
   const runtimeRegistry = () => new ProductionRuntimeRegistry((): RuntimeExecutorSnapshot[] => {
     const running = ctx.sessionManager.listRunningSessions();
     const duties = new Map((windowStore.load(WINDOW_LEDGER_AGENT, WINDOW_LEDGER_SCOPE)?.obligations ?? []).map(duty => [duty.id, duty]));
@@ -2464,6 +2500,25 @@ export function createRoutes(ctx: RouteContext): Router {
   const ensureStallInspection = (obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation): StallInspection | null => { if (!/^cadence\.stall-check\.30m@/.test(obligation.id) || Date.parse(windowNow()) > Date.parse(obligation.deadline.dueAt) + obligation.deadline.graceMs || !ctx.watchdog?.isEnabled()) return null; const activeSessionIds = ctx.sessionManager.listRunningSessions().map(session => session.tmuxSession).sort(); const observation = ctx.watchdog.inspectSessionsForStall(windowNow()); const watchdogIds = observation.sessions.map(session => session.name).sort(); if (!ctx.watchdog.verifyStallInspection(observation) || !Number.isSafeInteger(observation.pollRevision) || observation.pollRevision < 1 || observation.observedAt !== windowNow() || JSON.stringify(activeSessionIds) !== JSON.stringify(watchdogIds) || observation.sessions.some(session => typeof session.outputObserved !== 'boolean' || typeof session.escalationActive !== 'boolean' || session.decisionEvaluated !== true || typeof session.decisionEvaluatedAt !== 'string' || Date.parse(session.decisionEvaluatedAt) < Date.parse(obligation.deadline.dueAt))) return null; const payload = { obligationId: obligation.id, inspectedAt: observation.observedAt, watchdogPollRevision: observation.pollRevision, watchdogAuthorityEpoch: observation.authorityEpoch, watchdogAuthorityProof: observation.authorityProof, activeSessionIds, inspectedSessionIds: watchdogIds, sessionResults: observation.sessions, watchdogEnabled: true as const }; const row: StallInspection = { ...payload, inspectionHash: stallInspectionDigest(payload) }; fs.mkdirSync(path.dirname(stallInspectionPath), { recursive: true, mode: 0o700 }); fs.appendFileSync(stallInspectionPath, `${JSON.stringify(row)}\n`, { mode: 0o600 }); return row; };
   const runtimeCompletionProof = (obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation, real: RuntimeExecutorSnapshot) => { const base = { executorId: real.executorId, completedAt: real.completedAt, completionDigest: real.completionDigest }; if (!/^cadence\.stall-check\.30m@/.test(obligation.id)) return { runtimeCompletion: base }; const inspection = readStallInspection(obligation.id); if (!inspection || !ctx.watchdog?.isEnabled()) return null; const authorityValid = ctx.watchdog.verifyStallInspection({ observedAt: inspection.inspectedAt, authorityEpoch: inspection.watchdogAuthorityEpoch, pollRevision: inspection.watchdogPollRevision, authorityProof: inspection.watchdogAuthorityProof, sessions: inspection.sessionResults }); return authorityValid ? { runtimeCompletion: base, ...inspection } : null; };
   const proofPayload = (obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation, extra: Record<string, unknown> = {}) => JSON.stringify({ obligationId: obligation.id, verdict: 'pass', sourceHashes: obligation.sourceSpans.map(s => s.hash), ...obligation.predicate.expected, ...runtimeSemanticFacts(obligation), ...extra });
+  const w32ExpiryFreezeProof = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument, obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation): string | null => {
+    if (ledger.catalogProfile !== 'w32-approved-a204c07d' || obligation.id !== 'w32.close.expiry-freeze' || !ledger.recurrenceFrozenAt) return null;
+    const match = enforcingLivenessFor(ledger);
+    const state = match?.state;
+    if (!state?.finalSnapshot || state.status !== 'closed' || state.legacyProjection?.status !== 'closed') return null;
+    const predicateDigest = createHash('sha256').update(JSON.stringify(state.predicates)).digest('hex');
+    if (state.finalSnapshot.predicateDigest !== predicateDigest) return null;
+    const ceilingMs = Date.parse(ledger.windowCeilingAt ?? '');
+    if (!Number.isFinite(ceilingMs) || ledger.obligations.some(duty => duty.id.includes('@') && Date.parse(duty.deadline.dueAt) > ceilingMs)) return null;
+    return proofPayload(obligation, {
+      recurrenceFrozenAt: ledger.recurrenceFrozenAt,
+      windowCeilingAt: ledger.windowCeilingAt,
+      livenessStatus: state.status,
+      legacyProjectionStatus: state.legacyProjection.status,
+      finalSnapshot: state.finalSnapshot,
+      materializedDutyIds: ledger.compiledObligationIds.filter(id => id.includes('@')),
+      zeroPostCeilingDuties: true,
+    });
+  };
   const runLivenessPayload = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument, obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation): string | null => {
     const snapshot = ctx.windowRunLivenessAuthority?.status();
     const state = snapshot?.state;
@@ -2497,6 +2552,7 @@ export function createRoutes(ctx: RouteContext): Router {
   };
   const deterministicPayload = (ledger: import('../core/WindowLifecycleObligationLedger.js').LedgerDocument, obligation: import('../core/WindowLifecycleObligationLedger.js').Obligation): string | null => {
     if (sourceFreshnessIssues(ledger).length) return null;
+    if (obligation.id === 'w32.close.expiry-freeze') return w32ExpiryFreezeProof(ledger, obligation);
     if (obligation.id === 'start.compilation-proof') return REQUIRED_WINDOW_DUTIES.every(d => ledger.compiledObligationIds.includes(d.id)) ? proofPayload(obligation, { compiledIds: ledger.compiledObligationIds }) : null;
     if (obligation.id === 'continuous.derive-counts') return proofPayload(obligation, { counts: [{ name: 'compiled', value: ledger.compiledObligationIds.length, items: ledger.compiledObligationIds }, { name: 'materialized', value: ledger.obligations.length, items: ledger.obligations.map(o => o.id) }] });
     if (obligation.id === 'close.plan-staleness-guard') { const planId = obligation.predicate.expected?.canonicalPlanId; const view = planId ? ctx.viewer?.get(planId) : null; const outcome = ledger.obligations.find(o => o.id === 'close.plan-outcome.semantic-diff')?.evidence.find(e => e.verifierPassed); if (!view || !outcome?.verifiedPayload) return null; let proof: Record<string, unknown>; try { proof = JSON.parse(outcome.verifiedPayload) as Record<string, unknown>; } catch { /* @silent-fallback-ok — malformed proof fails closed */ return null; } const version = view.updatedAt ?? view.createdAt; if (proof.canonicalPlanId !== planId || proof.planVersionAtOutcome !== version || Date.parse(outcome.timestamp) < Date.parse(version)) return null; return proofPayload(obligation, { planNodeId: proof.planNodeId, charterIncluded: proof.charterIncluded, canonicalPlanId: planId, planVersionAtOutcome: version }); }
@@ -2573,9 +2629,14 @@ export function createRoutes(ctx: RouteContext): Router {
   };
   /* @self-action-controller: window-lifecycle-issue-escalation */
   ctx.windowLifecycleTick = ctx.config.projectName === WINDOW_LEDGER_AGENT ? () => {
-    const enforcement = loadEnforcementState(); if (enforcement.mode === 'off') return;
     const ledger = windowStore.load(WINDOW_LEDGER_AGENT, WINDOW_LEDGER_SCOPE);
-    if (!ledger) return; if (ledger.state === 'closed_clean') return; if (ledger.state === 'closed_with_operator_waiver' || ledger.state === 'rolled_back') return;
+    if (!ledger) return;
+    if (terminalLifecycleStates.has(ledger.state)) {
+      freezeMatchingWindowLiveness(ledger, ledger.state === 'closed_failed' || ledger.state === 'rolled_back' ? `lifecycle-${ledger.state}` : 'lifecycle-close-complete', ledger.state === 'closed_failed' || ledger.state === 'rolled_back' ? 'failed' : 'closed');
+      return;
+    }
+    if (expireWindowAtCeiling(ledger)) return;
+    const enforcement = loadEnforcementState(); if (enforcement.mode === 'off') return;
     const stale = sourceFreshnessIssues(ledger); if (stale.length) { ledger.admission = undefined; ledger.state = ledger.state.startsWith('active') ? 'active_mid_blocked' : ['close_due', 'delivered_pending_post_live', 'close_blocked'].includes(ledger.state) ? 'close_blocked' : 'start_blocked'; ledger.surfacedIssues ??= []; const novelStale = stale.filter(issue => !ledger.surfacedIssues!.includes(issue)); ledger.surfacedIssues.push(...novelStale); windowStore.save(ledger); if (novelStale.length && ctx.telegram) void ctx.telegram.sendToTopic(43003, `Window lifecycle source authority changed:\n${novelStale.map(v => `- ${v}`).join('\n')}`, { provenance: 'automation' }).catch(error => { /* @silent-fallback-ok — delivery failure is logged; the durable block remains authoritative */ console.warn('[window-lifecycle] stale-source escalation failed:', error); }); return; }
     materializeMachineEvidence(ledger); const result = evaluateLifecycleTick(ledger, runtimeRegistry(), evidenceAuthority(), windowNow());
     result.ledger.surfacedIssues ??= []; const novel = result.issues.filter(issue => !result.ledger.surfacedIssues!.includes(issue)); result.ledger.surfacedIssues.push(...novel); windowStore.save(result.ledger);
@@ -2627,16 +2688,80 @@ export function createRoutes(ctx: RouteContext): Router {
   router.post('/window-lifecycle/evaluate', (req, res) => {
     if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' });
     const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' });
+    if (terminalLifecycleStates.has(ledger.state)) return res.status(409).json({ admitted: false, state: ledger.state, issues: ['window-lifecycle-terminal'] });
+    if (expireWindowAtCeiling(ledger)) return res.status(409).json({ admitted: false, state: 'closed_failed', issues: ['window-ceiling-expired'] });
     const stale = sourceFreshnessIssues(ledger); if (stale.length) return res.status(409).json({ admitted: false, state: 'start_blocked', issues: stale }); const native = ledger.nativeEvaluations.at(-1)?.output as { admitted?: boolean } | undefined; if (native?.admitted !== true) return res.status(409).json({ admitted: false, state: 'start_blocked', issues: ['native-structural-preflight-missing-or-refused'] }); materializeMachineEvidence(ledger);
     const result = evaluateFromAuthorities(ledger.obligations, runtimeRegistry(), evidenceAuthority(), windowNow()); ledger.obligations = result.obligations; ledger.state = result.admitted ? 'active_start' : 'start_blocked'; ledger.admissionEvaluatedAt = windowNow(); ledger.admission = result.admitted ? { admitted: true, evaluatedAt: ledger.admissionEvaluatedAt, snapshotDigest: admissionSnapshotDigest(ledger) } : undefined; windowStore.save(ledger); if (!result.admitted && loadEnforcementState().mode === 'dry-run') auditWouldBlock('admission', result.issues);
     return res.status(result.admitted ? 200 : 409).json({ ...result, state: ledger.state });
   });
-  router.post('/window-lifecycle/tick', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); const stale = sourceFreshnessIssues(ledger); if (stale.length) { ctx.windowLifecycleTick?.(); return res.status(409).json({ ledger: windowStore.load('echo', 'echo-window-lifecycle'), issues: stale }); } materializeMachineEvidence(ledger); const result = evaluateLifecycleTick(ledger, runtimeRegistry(), evidenceAuthority(), windowNow()); windowStore.save(result.ledger); if (req.body.actuateRemediations === true) ctx.windowLifecycleTick?.(); return res.status(result.issues.length ? 409 : 200).json(result); });
+  router.post('/window-lifecycle/tick', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); if (terminalLifecycleStates.has(ledger.state)) { ctx.windowLifecycleTick?.(); return res.status(409).json({ ledger: windowStore.load('echo', 'echo-window-lifecycle'), issues: ['window-lifecycle-terminal'] }); } if (expireWindowAtCeiling(ledger)) return res.status(409).json({ ledger: windowStore.load('echo', 'echo-window-lifecycle'), issues: ['window-ceiling-expired'] }); const stale = sourceFreshnessIssues(ledger); if (stale.length) { ctx.windowLifecycleTick?.(); return res.status(409).json({ ledger: windowStore.load('echo', 'echo-window-lifecycle'), issues: stale }); } materializeMachineEvidence(ledger); const result = evaluateLifecycleTick(ledger, runtimeRegistry(), evidenceAuthority(), windowNow()); windowStore.save(result.ledger); if (req.body.actuateRemediations === true) ctx.windowLifecycleTick?.(); return res.status(result.issues.length ? 409 : 200).json(result); });
   router.get('/window-lifecycle', (_req, res) => { if (ctx.config.projectName !== 'echo') return res.status(404).json({ error: 'echo-scope-required' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); return ledger ? res.json({ ledger, closure: evaluateClosure(ledger) }) : res.status(404).json({ error: 'ledger-not-found' }); });
-  router.post('/window-lifecycle/transition', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const stored = windowStore.load('echo', 'echo-window-lifecycle'); if (!stored) return res.status(404).json({ error: 'ledger-not-found' }); try { const stale = sourceFreshnessIssues(stored); if (stale.length) { ctx.windowLifecycleTick?.(); return res.status(409).json({ error: 'source-authority-stale', issues: stale }); } materializeMachineEvidence(stored); const checked = evaluateLifecycleTick(stored, runtimeRegistry(), evidenceAuthority(), windowNow()).ledger; const next = transitionLedger(checked, req.body.target, { now: windowNow(), requeryWaiverApproval: waiver => { const evidence = checked.obligations.flatMap(o => o.evidence).find(e => e.authority === 'verified-operator-approval' && e.nativeCoordinates?.topicId === waiver.approvalCoordinates?.topicId && e.nativeCoordinates?.messageId === waiver.approvalCoordinates?.messageId); const verified = evidence ? evidenceAuthority().requery(evidence) : null; return verified?.verifiedPayload?.trim() === `approve waiver ${waiver.digest}`; } }); windowStore.save(next); ctx.windowLifecycleTick?.(); return res.json(next); } catch (error) { return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); } });
+  router.post('/window-lifecycle/transition', (req, res) => {
+    if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' });
+    const stored = windowStore.load('echo', 'echo-window-lifecycle');
+    if (!stored) return res.status(404).json({ error: 'ledger-not-found' });
+    try {
+      if (terminalLifecycleStates.has(stored.state)) throw new Error('window-lifecycle-terminal');
+      if (expireWindowAtCeiling(stored)) throw new Error('window-ceiling-expired');
+      const stale = sourceFreshnessIssues(stored);
+      if (stale.length) {
+        ctx.windowLifecycleTick?.();
+        return res.status(409).json({ error: 'source-authority-stale', issues: stale });
+      }
+      materializeMachineEvidence(stored);
+      const checked = evaluateLifecycleTick(stored, runtimeRegistry(), evidenceAuthority(), windowNow()).ledger;
+      const closureAuthority = {
+        now: windowNow(),
+        requeryWaiverApproval: (waiver: Waiver) => {
+          const evidence = checked.obligations.flatMap(o => o.evidence).find(e => e.authority === 'verified-operator-approval' && e.nativeCoordinates?.topicId === waiver.approvalCoordinates?.topicId && e.nativeCoordinates?.messageId === waiver.approvalCoordinates?.messageId);
+          const verified = evidence ? evidenceAuthority().requery(evidence) : null;
+          return verified?.verifiedPayload?.trim() === `approve waiver ${waiver.digest}`;
+        },
+      };
+
+      if (checked.catalogProfile === 'w32-approved-a204c07d' && req.body.target === 'delivered_pending_post_live') {
+        if (stored.state !== 'close_due') throw new Error(`w32-final-close-invalid-state:${stored.state}`);
+        const freezeDuty = checked.obligations.find(duty => duty.id === 'w32.close.expiry-freeze');
+        if (!freezeDuty) throw new Error('w32-expiry-freeze-duty-missing');
+        if (checked.obligations.some(duty => duty.phase === 'post-live')) throw new Error('w32-separate-soak-prohibited');
+        const preflightIssues = evaluateClosure(checked, undefined, closureAuthority).issues.filter(issue => !issue.includes(freezeDuty.id));
+        if (preflightIssues.length) throw new Error(`w32-final-close-preflight-refused:${preflightIssues.join(',')}`);
+        if (!freezeMatchingWindowLiveness(checked, 'lifecycle-close-complete', 'closed')) throw new Error('w32-enforcing-liveness-authority-required');
+        const payload = w32ExpiryFreezeProof(checked, freezeDuty);
+        if (!payload) throw new Error('w32-expiry-freeze-proof-unavailable');
+        const canonicalPayloadHash = createHash('sha256').update(payload).digest('hex');
+        const nonce = `deterministic-replay:${canonicalPayloadHash}`;
+        if (!freezeDuty.evidence.some(record => record.nonce === nonce)) {
+          checked.usedNonces.push(nonce);
+          freezeDuty.evidence.push({
+            authority: 'deterministic-replay', agentId: 'echo', scope: 'echo-window-lifecycle', windowId: checked.windowId,
+            obligationId: freezeDuty.id, sourceHashes: freezeDuty.sourceSpans.map(span => span.hash), producer: 'server:window-run-liveness-authority',
+            timestamp: enforcingLivenessFor(checked)!.state.finalSnapshot!.frozenAt, nonce, canonicalPayloadHash, verifierPassed: true, verifiedPayload: payload,
+          });
+        }
+        freezeDuty.status = 'satisfied';
+        // The ordinary evaluation marks close_due as blocked solely because the
+        // freeze receipt cannot exist until this handshake revokes active.
+        checked.state = 'close_due';
+        const delivered = transitionLedger(checked, 'delivered_pending_post_live', closureAuthority);
+        const closed = transitionLedger(delivered, 'closed_clean', closureAuthority);
+        windowStore.save(closed);
+        ctx.windowLifecycleTick?.();
+        return res.json(closed);
+      }
+
+      const next = transitionLedger(checked, req.body.target, closureAuthority);
+      if (next.state === 'closed_clean' || next.state === 'closed_with_operator_waiver') freezeMatchingWindowLiveness(next, 'lifecycle-close-complete', 'closed');
+      windowStore.save(next);
+      ctx.windowLifecycleTick?.();
+      return res.json(next);
+    } catch (error) {
+      return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
   router.post('/window-lifecycle/native-admission', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); try { const current = windowStore.load('echo', 'echo-window-lifecycle'); if (!current) return res.status(404).json({ error: 'ledger-not-found' }); if (req.body.windowId !== current.windowId) return res.status(409).json({ error: 'wrong-window' }); const record = runNativeAdmissionAdapter({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: current.windowId, stateDir: ctx.config.stateDir, package: req.body.package, nonce: req.body.nonce }); const ledger = windowStore.appendNativeEvaluation('echo', 'echo-window-lifecycle', record); const admitted = (record.output as { admitted?: boolean }).admitted === true; if (admitted) { const duty = ledger.obligations.find(o => o.id === 'preground.native-structural-preflight'); if (!duty) throw new Error('native-preflight-obligation-missing'); duty.evidence.push({ authority: 'native-local-store-presence', agentId: 'echo', scope: 'echo-window-lifecycle', windowId: ledger.windowId, obligationId: duty.id, sourceHashes: duty.sourceSpans.map(s => s.hash), producer: `native:${record.evaluatorVersion}`, timestamp: record.evaluatedAt, nonce: record.nonce, canonicalPayloadHash: record.inputHash, verifierPassed: true, verifiedPayload: JSON.stringify(record.output), nativeCoordinates: { storePath: record.storePath } }); duty.status = 'satisfied'; windowStore.save(ledger); } ctx.windowLifecycleTick?.(); return res.status(admitted ? 200 : 409).json({ record, state: ledger.state }); } catch (error) { return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); } });
   router.post('/window-lifecycle/waiver', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); const waiver = req.body.waiver as Waiver; const approval = ledger.obligations.flatMap(o => o.evidence).find(e => e.authority === 'verified-operator-approval' && e.nativeCoordinates?.topicId === waiver?.approvalCoordinates?.topicId && e.nativeCoordinates?.messageId === waiver?.approvalCoordinates?.messageId); const verified = approval ? evidenceAuthority().requery(approval) : null; if (!verified || verified.verifiedPayload?.trim() !== `approve waiver ${waiver.digest}`) return res.status(403).json({ error: 'verified-exact-digest-operator-approval-required' }); try { const next = applyWaiver(ledger, waiver, verified.producer); next.admission = undefined; windowStore.save(next); ctx.windowLifecycleTick?.(); return res.json(next); } catch (error) { /* @silent-fallback-ok — invalid waiver refusal is returned explicitly as HTTP 409 */ return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); } });
-  router.post('/window-lifecycle/rollback', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); const request = req.body.rollback as RollbackRequest; const approval = ledger.obligations.flatMap(o => o.evidence).find(e => e.authority === 'verified-operator-approval' && e.nativeCoordinates?.topicId === request?.approvalCoordinates?.topicId && e.nativeCoordinates?.messageId === request?.approvalCoordinates?.messageId); if (!approval) return res.status(403).json({ error: 'verified-exact-digest-operator-rollback-required' }); try { return res.json(windowStore.rollback('echo', 'echo-window-lifecycle', request, approval, evidenceAuthority())); } catch (error) { return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); } });
+  router.post('/window-lifecycle/rollback', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); const request = req.body.rollback as RollbackRequest; const approval = ledger.obligations.flatMap(o => o.evidence).find(e => e.authority === 'verified-operator-approval' && e.nativeCoordinates?.topicId === request?.approvalCoordinates?.topicId && e.nativeCoordinates?.messageId === request?.approvalCoordinates?.messageId); if (!approval) return res.status(403).json({ error: 'verified-exact-digest-operator-rollback-required' }); try { return res.json(windowStore.rollback('echo', 'echo-window-lifecycle', request, approval, evidenceAuthority(), windowNow(), candidate => { freezeMatchingWindowLiveness(candidate, 'lifecycle-rolled-back', 'failed'); })); } catch (error) { return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); } });
   router.post('/window-lifecycle/reenable', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); try { const inventory = [...WINDOW_DRY_RUN_INVENTORY]; return res.json(windowStore.reenable('echo', 'echo-window-lifecycle', path.join(ctx.config.stateDir, 'window-lifecycle', 'fault-fixed-evidence.json'), () => { const runner = path.join(ctx.config.projectDir, 'node_modules', '.bin', 'vitest'); const output = withSyncOp(() => execFileSync(runner, ['run', ...inventory], { cwd: ctx.config.projectDir, encoding: 'utf8', timeout: 300_000, maxBuffer: 16 * 1024 * 1024 })); return { passed: true, command: `${runner} run ${inventory.join(' ')}`, completedAt: windowNow(), outputHash: createHash('sha256').update(output).digest('hex'), testInventory: inventory }; }, windowNow())); } catch (error) { return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); } });
   router.get('/window-lifecycle/enforcement', (_req, res) => ctx.config.projectName === 'echo' ? res.json(loadEnforcementState()) : res.status(404).json({ error: 'echo-scope-required' }));
   router.post('/window-lifecycle/enforcement/record-shadow', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); if (loadEnforcementState().mode !== 'dry-run') return res.status(409).json({ error: 'shadow-recording-requires-dry-run' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); return produceGraduationReports(ledger) ? res.status(201).json({ recorded: true, reports: readGraduationReports() }) : res.status(409).json({ error: 'shadow-lifecycle-incomplete-or-criteria-failed', closure: evaluateClosure(ledger), postLive: runWindowLifecyclePostLiveCheck(ledger) }); });

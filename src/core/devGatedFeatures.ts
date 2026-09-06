@@ -810,6 +810,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     reason: 'spawns full-tool Opus fix sessions; ongoing spend',
   },
   {
+    configPath: 'autonomousSessions.codexTaskContinuation.enabled',
+    category: 'cost-bearing',
+    reason: 'continues bounded autonomous Codex turns and therefore consumes model capacity; explicit opt-in even on development agents',
+  },
+  {
     configPath: 'monitoring.resumeQueue.enabled',
     category: 'cost-bearing',
     reason: 'drainer spawns sessions + makes LLM calls; ships enabled+dryRun code-default, dev agent flips dryRun locally (reap-notify spec)',

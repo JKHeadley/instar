@@ -484,6 +484,9 @@ describe('lint-dev-agent-dark-gate', () => {
       // +15 below the #1561 baseline: this row is BELOW the failoverRunner insert,
       // so it carries both the +10 (missingLogin) and +15 (failoverRunner) shifts.
       '1804': 'multiMachine.stateSync.threadlinePairing.enabled',
+      // Bounded Codex task continuation is deliberately fleet-dark because each
+      // continuation consumes model capacity; the exclusion registry classifies it.
+      '1871': 'autonomousSessions.codexTaskContinuation.enabled',
       // commitment-auto-expiry (2026-07-10): a 6-line `commitments.autoExpiry`
       // default sub-block was inserted above `promiseBeacon`/`cartographer`.
       // Its `enabled: true` literal is an explicit fleet-on default, not a dark
@@ -492,12 +495,12 @@ describe('lint-dev-agent-dark-gate', () => {
       // PromiseBeacon's four-line default-silent user-output boundary adds no
       // `enabled:` row, so only the three cartographer rows below it shift +4.
       // Below the failoverRunner insert → both +10 (missingLogin) and +15 shifts.
-      '1988': 'cartographer.freshnessSweep.enabled',
-      '2033': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '2058': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1999': 'cartographer.freshnessSweep.enabled',
+      '2044': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '2069': 'cartographer.subtreeNav.llmRerank.enabled',
       // Assisted relogin is intentionally fleet-dark until a per-agent
       // promotion; the exclusion registry classifies it as action-bearing.
-      '2123': 'subscriptionPool.assistedRelogin.enabled',
+      '2134': 'subscriptionPool.assistedRelogin.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

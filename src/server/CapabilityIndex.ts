@@ -852,7 +852,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     prefixes: ['/window-run-liveness'],
     description: 'Authoritative five-predicate autonomous-window liveness. Active is emitted only when the bound executor is running, its server-observed heartbeat is fresh, delivery is reachable, monotone durable work evidence is fresh, and the lifecycle is admitted and unexpired. Missing predicates revoke active, permit at most one durable bounded recovery, and then settle loudly to stalled/failed. GET /window-run-liveness is the Registry First read surface; rollout is dev-gated and dry-run-first.',
     build: ({ ctx }) => ({
-      configured: ctx.config.projectName === 'echo' && (ctx.config.monitoring?.windowRunLiveness?.enabled ?? ctx.config.developmentAgent === true),
+      configured: ctx.config.projectName === 'echo' && resolveDevAgentGate(ctx.config.monitoring?.windowRunLiveness?.enabled, ctx.config),
       endpoints: [
         'GET /window-run-liveness',
         'POST /window-run-liveness/register',

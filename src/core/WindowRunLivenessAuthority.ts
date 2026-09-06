@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import lockfile from 'proper-lockfile';
+import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 export const WINDOW_RUN_LIVENESS_VERSION = 1 as const;
 export const WINDOW_RUN_LIVENESS_DEFAULTS = {
@@ -143,6 +144,11 @@ export interface WindowRunLivenessDocument {
     predicateDigest: string;
     exitProof: WindowRunLivenessExitProof;
   };
+  notificationIntent?: {
+    marker: string;
+    createdAt: string;
+    message: string;
+  };
   notificationDeliveredAt?: string;
 }
 
@@ -189,6 +195,8 @@ export interface WindowRunLivenessDeps {
   /** Rebinds the server-owned run association before recovery verification. */
   rebindExecutor?: (state: Readonly<WindowRunLivenessDocument>, replacementExecutorId: string) => string;
   notifyFailure?: (state: Readonly<WindowRunLivenessDocument>, message: string) => Promise<boolean>;
+  /** Requery the delivery authority for a previously persisted notification marker. */
+  notificationAlreadyDelivered?: (state: Readonly<WindowRunLivenessDocument>, marker: string) => Promise<boolean> | boolean;
   now?: () => string;
 }
 
@@ -249,9 +257,27 @@ export class WindowRunLivenessStore {
         fs.closeSync(fd);
       }
       fs.renameSync(tmp, this.file);
+      if (isTerminal(state.status)) this.recordTerminalWindow(state.windowId, state.finalSnapshot?.frozenAt ?? state.lastEvaluatedAt ?? state.registeredAt);
     } finally {
-      try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* best-effort temp cleanup */ }
+      try { if (fs.existsSync(tmp)) SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'window-run-liveness-atomic-save-cleanup' }); } catch { /* best-effort temp cleanup */ }
     }
+  }
+
+  hasTerminalWindow(windowId: string): boolean {
+    return fs.existsSync(this.terminalWindowPath(windowId));
+  }
+
+  recordTerminalWindow(windowId: string, terminalAt: string): void {
+    const file = this.terminalWindowPath(windowId);
+    if (fs.existsSync(file)) return;
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+    fs.writeFileSync(tmp, `${JSON.stringify({ version: 1, windowId, terminalAt })}\n`, { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  }
+
+  private terminalWindowPath(windowId: string): string {
+    return path.join(path.dirname(this.file), 'terminal-windows', `${digest(windowId)}.json`);
   }
 
   withMutation<T>(mutate: () => T): T {
@@ -322,10 +348,15 @@ export class WindowRunLivenessAuthority {
       if (!/^[A-Za-z0-9._:-]{1,200}$/.test(input.windowId) || !/^[A-Za-z0-9._:-]{1,200}$/.test(input.autonomousRunId) || !/^[A-Za-z0-9._:-]{1,200}$/.test(input.lifecycleRunId) || !/^[A-Za-z0-9._:-]{1,200}$/.test(input.executorId)) throw new Error('window-run-liveness-registration-invalid');
       if (!Number.isSafeInteger(input.topicId) || input.topicId < 0) throw new Error('window-run-liveness-topic-invalid');
       const existing = this.store.load();
+      if (this.store.hasTerminalWindow(input.windowId)) throw new Error('window-run-liveness-terminal-binding-closed');
       if (existing && !isTerminal(existing.status)) {
         const same = existing.windowId === input.windowId && existing.autonomousRunId === input.autonomousRunId && existing.lifecycleRunId === input.lifecycleRunId && existing.executorId === input.executorId && existing.topicId === input.topicId;
         if (same) return existing;
         throw new Error('window-run-liveness-active-binding-exists');
+      }
+      if (existing && isTerminal(existing.status)) {
+        this.store.recordTerminalWindow(existing.windowId, existing.finalSnapshot?.frozenAt ?? existing.lastEvaluatedAt ?? existing.registeredAt);
+        if (existing.windowId === input.windowId) throw new Error('window-run-liveness-terminal-binding-closed');
       }
       const state: WindowRunLivenessDocument = {
         version: WINDOW_RUN_LIVENESS_VERSION,
@@ -384,7 +415,14 @@ export class WindowRunLivenessAuthority {
     try {
       return await this.store.withMutationAsync(async () => {
         const state = this.store.load();
-        if (!state || isTerminal(state.status)) return state;
+        if (!state) return state;
+        if (isTerminal(state.status)) {
+          if (state.status === 'failed' || state.status === 'stalled') {
+            const reason = state.finalSnapshot?.reason ?? state.transitions.at(-1)?.reason ?? state.status;
+            await this.notifyOnce(state, `Window ${state.windowId} ${state.status}: ${reason}. Active has been revoked.`);
+          }
+          return state;
+        }
         return await this.evaluateAndMaybeRecover(state);
       });
     } finally {
@@ -392,17 +430,17 @@ export class WindowRunLivenessAuthority {
     }
   }
 
-  freeze(reason: string): WindowRunLivenessDocument {
+  freeze(reason: string, terminalStatus: 'closed' | 'failed' = 'closed'): WindowRunLivenessDocument {
     return this.store.withMutation(() => {
       const state = this.store.load();
       if (!state) throw new Error('window-run-liveness-not-registered');
       if (state.finalSnapshot) return state;
       const now = this.now();
       const prior = state.status;
-      state.status = 'closed';
+      state.status = terminalStatus;
       state.finalSnapshot = { frozenAt: now, reason: reason.slice(0, 500), statusBeforeFreeze: prior, predicateDigest: digest(state.predicates), exitProof: this.exitProof(state) };
-      this.transition(state, prior, 'closed', `freeze:${reason.slice(0, 200)}`, now);
-      this.project(state, 'closed', now);
+      this.transition(state, prior, terminalStatus, `freeze:${reason.slice(0, 200)}`, now);
+      this.project(state, terminalStatus, now);
       this.store.save(state);
       return state;
     });
@@ -562,7 +600,7 @@ export class WindowRunLivenessAuthority {
     const deliveryOk = sample.deliveryReachable === true;
     const workMonotone = !!sample.work && (!state.lastWorkReceipt || sample.work.sequence >= state.lastWorkReceipt.sequence && (sample.work.sequence > state.lastWorkReceipt.sequence || sample.work.digest === state.lastWorkReceipt.digest));
     const workOk = workMonotone && Number.isFinite(workMs) && workMs <= nowMs && nowMs - workMs <= this.cfg.workEvidenceMaxAgeMs;
-    const lifecycleOk = sample.lifecycle.lifecycleRunId === state.lifecycleRunId && sample.lifecycle.admitted === true && !['idle', 'pre_start_gate', 'start_blocked', 'rolled_back', 'closed_clean', 'closed_with_operator_waiver'].includes(sample.lifecycle.state ?? '') && Number.isFinite(expiresMs) && nowMs < expiresMs;
+    const lifecycleOk = sample.lifecycle.lifecycleRunId === state.lifecycleRunId && sample.lifecycle.admitted === true && !['idle', 'pre_start_gate', 'start_blocked', 'rolled_back', 'closed_clean', 'closed_with_operator_waiver', 'closed_failed'].includes(sample.lifecycle.state ?? '') && Number.isFinite(expiresMs) && nowMs < expiresMs;
     state.predicates = {
       'executor-bound-running': { ok: executorOk, observed: sample.executor.id ? `${sample.executor.id}:${sample.executor.running ? 'running' : 'not-running'}` : 'executor-unbound' },
       'heartbeat-fresh': { ok: heartbeatOk, observed: sample.executor.heartbeatAt ?? 'heartbeat-missing' },
@@ -603,7 +641,16 @@ export class WindowRunLivenessAuthority {
 
   private async notifyOnce(state: WindowRunLivenessDocument, message: string): Promise<void> {
     if (this.cfg.dryRun || state.notificationDeliveredAt || !this.deps.notifyFailure) return;
-    if (await this.deps.notifyFailure(structuredClone(state), message)) {
+    if (!state.notificationIntent) {
+      const marker = `window-run-liveness-notice:${digest({ windowId: state.windowId, autonomousRunId: state.autonomousRunId, lifecycleRunId: state.lifecycleRunId, status: state.status, finalSnapshot: state.finalSnapshot }).slice(0, 24)}`;
+      state.notificationIntent = { marker, createdAt: this.now(), message: `${message}\n[${marker}]` };
+      this.store.save(state);
+    }
+    let alreadyDelivered = false;
+    try {
+      alreadyDelivered = await this.deps.notificationAlreadyDelivered?.(structuredClone(state), state.notificationIntent.marker) === true;
+    } catch { /* @silent-fallback-ok — authority requery failure preserves at-least-once delivery by retrying */ }
+    if (alreadyDelivered || await this.deps.notifyFailure(structuredClone(state), state.notificationIntent.message)) {
       state.notificationDeliveredAt = this.now();
       this.store.save(state);
     }

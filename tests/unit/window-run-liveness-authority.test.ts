@@ -236,6 +236,63 @@ describe('WindowRunLivenessAuthority', () => {
     expect(second.transitions).toEqual(frozen.transitions);
   });
 
+  it('fails closed at the window ceiling and cannot recreate the terminal binding', async () => {
+    const projections: string[] = [];
+    const h = harness({ projectStatus: status => { projections.push(status); return `projected:${status}`; } });
+    await h.authority.tick();
+    const failed = h.authority.freeze('window-ceiling-expired', 'failed');
+    const finalSnapshot = structuredClone(failed.finalSnapshot);
+    expect(failed.status).toBe('failed');
+    expect(failed.finalSnapshot?.reason).toBe('window-ceiling-expired');
+    expect(projections.at(-1)).toBe('failed');
+    expect(h.notices).toHaveLength(0);
+    await h.authority.tick();
+    expect(h.notices).toHaveLength(1);
+    expect(h.notices[0]).toMatch(/^Window w32 failed: window-ceiling-expired\. Active has been revoked\.\n\[window-run-liveness-notice:[a-f0-9]{24}\]$/);
+    expect(h.store.load()?.notificationDeliveredAt).toBe(new Date(BASE).toISOString());
+
+    const restartNotices: string[] = [];
+    const restarted = new WindowRunLivenessAuthority(h.store, {
+      sample: async () => { throw new Error('terminal binding must not be sampled'); },
+      notifyFailure: async (_state, message) => { restartNotices.push(message); return true; },
+    }, { enabled: true, dryRun: false });
+    expect((await restarted.tick())?.finalSnapshot).toEqual(finalSnapshot);
+    expect(restartNotices).toHaveLength(0);
+    expect(() => restarted.register({
+      windowId: 'w32', topicId: 36966, autonomousRunId: 'run-w32', lifecycleRunId: 'lifecycle-w32', executorId: 'replacement-executor',
+    })).toThrow('window-run-liveness-terminal-binding-closed');
+    expect(() => restarted.register({
+      windowId: 'w32', topicId: 36966, autonomousRunId: 'entirely-new-run', lifecycleRunId: 'entirely-new-lifecycle', executorId: 'replacement-executor',
+    })).toThrow('window-run-liveness-terminal-binding-closed');
+    expect(restarted.status().state?.finalSnapshot).toEqual(finalSnapshot);
+    const nextWindow = restarted.register({
+      windowId: 'w33', topicId: 36966, autonomousRunId: 'run-w33', lifecycleRunId: 'lifecycle-w33', executorId: 'replacement-executor',
+    });
+    expect(nextWindow.status).toBe('preparing');
+    restarted.freeze('next-window-finished');
+    expect(() => restarted.register({
+      windowId: 'w32', topicId: 36966, autonomousRunId: 'third-run', lifecycleRunId: 'third-lifecycle', executorId: 'replacement-executor',
+    })).toThrow('window-run-liveness-terminal-binding-closed');
+  });
+
+  it('reconciles a durable notification intent against live history before retrying after restart', async () => {
+    const h = harness();
+    h.authority.freeze('window-ceiling-expired', 'failed');
+    const state = h.store.load()!;
+    state.notificationIntent = { marker: 'window-run-liveness-notice:durable-marker', createdAt: new Date(BASE).toISOString(), message: 'durable notice\n[window-run-liveness-notice:durable-marker]' };
+    h.store.save(state);
+    const retriedNotices: string[] = [];
+    const restarted = new WindowRunLivenessAuthority(h.store, {
+      now: () => new Date(BASE).toISOString(),
+      sample: async () => { throw new Error('terminal notification retry must not sample'); },
+      notificationAlreadyDelivered: async (_terminal, marker) => marker === 'window-run-liveness-notice:durable-marker',
+      notifyFailure: async (_terminal, message) => { retriedNotices.push(message); return true; },
+    }, { enabled: true, dryRun: false });
+    await restarted.tick();
+    expect(retriedNotices).toEqual([]);
+    expect(h.store.load()?.notificationDeliveredAt).toBe(new Date(BASE).toISOString());
+  });
+
   it('freezes deterministic adversarial exit proof from the hash-chained sample and receipt audit', async () => {
     const h = harness();
     await h.authority.tick();
