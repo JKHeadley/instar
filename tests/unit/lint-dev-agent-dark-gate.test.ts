@@ -418,17 +418,17 @@ describe('lint-dev-agent-dark-gate', () => {
       // default block above the existing dark rows. It rides the parent dev
       // gate and adds no `enabled: false` literal, so all audited rows shift +12.
       '118': 'monitoring.windowRunLiveness.cadenceExecutor.enabled',
-      '369': 'monitoring.sessionReaper.enabled',
-      '427': 'monitoring.agentWorktreeReaper.enabled',
-      '546': 'monitoring.mcpProcessReaper.enabled',
-      '560': 'monitoring.agentSleep.enabled',
-      '631': 'monitoring.correctionLearning.enabled',
+      '371': 'monitoring.sessionReaper.enabled',
+      '429': 'monitoring.agentWorktreeReaper.enabled',
+      '548': 'monitoring.mcpProcessReaper.enabled',
+      '562': 'monitoring.agentSleep.enabled',
+      '633': 'monitoring.correctionLearning.enabled',
       // Claim Verification v1 adds a six-line completion-claim provider-policy
       // default above these rows. It introduces no new `enabled: false` literal,
       // so the hand-audited path set is unchanged and later rows shift by +6.
-      '755': 'monitoring.apprenticeshipCycleSla.enabled',
-      '763': 'monitoring.geminiCapacityEscalation.enabled',
-      '793': 'monitoring.greenPrAutoMerge.enabled',
+      '757': 'monitoring.apprenticeshipCycleSla.enabled',
+      '765': 'monitoring.geminiCapacityEscalation.enabled',
+      '795': 'monitoring.greenPrAutoMerge.enabled',
       // red-pr-watchdog (2026-07-09): a 4-line `redPrWatchdog` default sub-block
       // (3 comment lines + `redPrWatchdog: { enabled: true, ... }`) was inserted
       // INSIDE the greenPrAutoMerge block, BELOW its `enabled: false` (668). It
@@ -440,18 +440,18 @@ describe('lint-dev-agent-dark-gate', () => {
       // greenPrAutoMerge.agentNamespace adds an explicit four-line namespace
       // default/comment below that block's own dark `enabled` row. It adds no
       // `enabled: false` literal, so every later attribution shifts by +4.
-      '851': 'threadline.a2aCheckIn.enabled',
-      '982': 'mentor.enabled',
+      '853': 'threadline.a2aCheckIn.enabled',
+      '984': 'mentor.enabled',
       // mentor.visibleEcho is a fleet-on child setting under the existing dark
       // mentor gate. It adds no `enabled: false` row and shifts every later
       // attribution down by one; the hand-audited dotted-path set is unchanged.
-      '994': 'mentor.autonomousFix.enabled',
-      '1009': 'mentee.enabled',
+      '996': 'mentor.autonomousFix.enabled',
+      '1011': 'mentee.enabled',
       // evolutionActions.autoExpiry adds a 10-line fleet-on/dry-run-first block;
       // no dark row is added, and every later attribution shifts by +10.
       // undatedResurfacer adds a further 15-line dev-gated block that omits
       // `enabled`, so it also shifts later rows without adding a dark default.
-      '1094': 'prGate.classClosure.enabled',
+      '1096': 'prGate.classClosure.enabled',
       // +21 lines below: spec #3's multiMachine.seamlessOrchestrator dev-gated
       // sub-block (docs/specs/llm-seamlessness-orchestrator.md) was inserted at the
       // TOP of the multiMachine block; it OMITS `enabled` (rides resolveDevAgentGate),
@@ -460,17 +460,17 @@ describe('lint-dev-agent-dark-gate', () => {
       // multiMachine. It has no `enabled: false` literal and therefore shifts
       // every subsequent attribution without changing the audited path set.
       // ACT-897 peerExecution adds an 8-line dev-gated dry-run block.
-      '1210': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
-      '1214': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
-      '1221': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
-      '1231': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
-      '1468': 'multiMachine.sessionPool.enabled',
+      '1212': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '1216': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+      '1223': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      '1233': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+      '1470': 'multiMachine.sessionPool.enabled',
       // #1367's moveIntent dev-gated sub-block was inserted under sessionPool
       // (docs/specs/nickname-move-intent-llm-rebuild.md); it OMITS `enabled` (rides
       // resolveDevAgentGate), adds no map row, and shifts the subsequent lines.
-      '1519': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1529': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1558': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1521': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1531': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1560': 'multiMachine.sessionPool.holdForStability.enabled',
       // replicated-journal-compaction adds a 5-line compaction default block
       // above stateSync. It uses `run:false` (not an `enabled` gate), so the
       // attributed path set is unchanged and the four rows below shift by +5.
@@ -484,7 +484,7 @@ describe('lint-dev-agent-dark-gate', () => {
       // +32 lines, no `enabled:` literals) shift the cartographer rows below.
       // +15 below the #1561 baseline: this row is BELOW the failoverRunner insert,
       // so it carries both the +10 (missingLogin) and +15 (failoverRunner) shifts.
-      '1819': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1821': 'multiMachine.stateSync.threadlinePairing.enabled',
       // commitment-auto-expiry (2026-07-10): a 6-line `commitments.autoExpiry`
       // default sub-block was inserted above `promiseBeacon`/`cartographer`.
       // Its `enabled: true` literal is an explicit fleet-on default, not a dark
@@ -493,13 +493,13 @@ describe('lint-dev-agent-dark-gate', () => {
       // PromiseBeacon's four-line default-silent user-output boundary adds no
       // `enabled:` row, so only the three cartographer rows below it shift +4.
       // Below the failoverRunner insert → both +10 (missingLogin) and +15 shifts.
-      '1886': 'autonomousSessions.codexTaskContinuation.enabled',
-      '2014': 'cartographer.freshnessSweep.enabled',
-      '2059': 'cartographer.conformanceAudit.llmEnrichment.enabled',
-      '2084': 'cartographer.subtreeNav.llmRerank.enabled',
+      '1888': 'autonomousSessions.codexTaskContinuation.enabled',
+      '2016': 'cartographer.freshnessSweep.enabled',
+      '2061': 'cartographer.conformanceAudit.llmEnrichment.enabled',
+      '2086': 'cartographer.subtreeNav.llmRerank.enabled',
       // Assisted relogin is intentionally fleet-dark until a per-agent
       // promotion; the exclusion registry classifies it as action-bearing.
-      '2149': 'subscriptionPool.assistedRelogin.enabled',
+      '2151': 'subscriptionPool.assistedRelogin.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);
