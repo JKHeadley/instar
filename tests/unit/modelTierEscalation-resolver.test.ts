@@ -176,6 +176,22 @@ describe('closed enums + capability declarations', () => {
     expect(KNOWN_CLAUDE_MODEL_IDS).toContain('claude-opus-4-8');
   });
 
+  it('the Claude 5 family is in the claude closed enum', () => {
+    // The enum lagged a generation, which made a live model indistinguishable
+    // from a typo: a pin to Fable 5.1 was refused `off-enum`, and the shipped
+    // `frameworkDefaultModels['claude-code'] = 'claude-opus-5'` was dropped at
+    // the resolution clamp with no operator-visible reason.
+    expect(KNOWN_CLAUDE_MODEL_IDS).toContain('claude-fable-5-1');
+    expect(KNOWN_CLAUDE_MODEL_IDS).toContain('claude-opus-5');
+    expect(KNOWN_CLAUDE_MODEL_IDS).toContain('claude-sonnet-5');
+  });
+
+  it("carries the 'fable' CLI tier alias next to opus/sonnet/haiku", () => {
+    for (const alias of ['fable', 'opus', 'sonnet', 'haiku']) {
+      expect(KNOWN_CLAUDE_MODEL_IDS, `alias ${alias}`).toContain(alias);
+    }
+  });
+
   it('declares swap capability per adapter (§5.6) — claude mid-session, others launch-time-only', () => {
     expect(SWAP_CAPABILITY['claude-code']).toBe('mid-session');
     expect(SWAP_CAPABILITY['codex-cli']).toBe('launch-time-only');
@@ -198,11 +214,20 @@ describe('§3/§11 — per-component routing surfaces cannot select the escalate
     expect(JSON.stringify(gemini)).not.toContain('claude-fable-5');
   });
 
-  it('the interactive-launch tier resolver never maps a TIER to the escalated id', async () => {
+  it('the interactive-launch tier resolver never maps a TIER to an ultra id', async () => {
+    // Asserted against the ULTRA FAMILY, not one literal id. The exact-match
+    // form had a hole the moment a `-N` sibling existed: `claude-fable-5-1` is
+    // an ultra model this guard would have waved through, and the whole point of
+    // the ratchet is that a cheap tier can never silently resolve to the
+    // expensive lane. 'fable' is added to the tier list for the same reason —
+    // it is now an accepted alias, so it is now a way in.
     const { resolveModelForFramework } = await import('../../src/core/frameworkSessionLaunch.js');
-    for (const tier of ['fast', 'balanced', 'capable', 'haiku', 'sonnet', 'opus']) {
+    for (const tier of ['fast', 'balanced', 'capable', 'haiku', 'sonnet', 'opus', 'fable']) {
       for (const fw of ['claude-code', 'codex-cli', 'gemini-cli', 'pi-cli'] as const) {
-        expect(resolveModelForFramework(fw, tier)).not.toBe('claude-fable-5');
+        const resolved = resolveModelForFramework(fw, tier);
+        if (typeof resolved === 'string') {
+          expect(resolved, `${fw}/${tier}`).not.toMatch(/^claude-fable-/);
+        }
       }
     }
   });

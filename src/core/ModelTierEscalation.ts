@@ -191,6 +191,15 @@ import { KNOWN_GEMINI_MODELS } from '../providers/adapters/gemini-cli/models.js'
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 
 export const KNOWN_CLAUDE_MODEL_IDS = [
+  // Claude 5 family — live on the claude-code subscription CLI (verified
+  // against `claude --model <id> -p` on CLI 2.1.263, 2026-09-06). Their
+  // absence was not a policy choice: the enum simply lagged a generation, so
+  // `frameworkDefaultModels['claude-code'] = 'claude-opus-5'` was silently
+  // dropped at the resolution clamp and a topic pin to Fable 5.1 was refused
+  // `off-enum` — a stale allowlist reads exactly like a deliberate refusal.
+  'claude-fable-5-1',
+  'claude-opus-5',
+  'claude-sonnet-5',
   'claude-fable-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
@@ -198,6 +207,9 @@ export const KNOWN_CLAUDE_MODEL_IDS = [
   'claude-sonnet-4-6',
   'claude-haiku-4-5',
   'claude-haiku-4-5-20251001',
+  // CLI tier aliases. 'fable' was missing while its three siblings were
+  // present — the same lag, one layer down.
+  'fable',
   'opus',
   'sonnet',
   'haiku',
