@@ -34,10 +34,10 @@ acceptance list still refused them, so the two layers had been disagreeing for t
 ## What to Tell Your User
 
 You can now pin a conversation to Fable 5.1, Opus 5 or Sonnet 5 the way you pin any other
-model — just say so in the topic — and `fable` works as shorthand alongside `opus`,
-`sonnet` and `haiku`. If your configuration already named one of the Claude 5 models as its
+model — just say so in the topic — and "fable" works as shorthand, the way "opus", "sonnet"
+and "haiku" already did. If your setup already named one of the Claude 5 models as its
 default, that setting starts being honored instead of quietly ignored. Nothing changes for
-any model that already worked, and no conversation changes model on its own as a result of
+any model that already worked, and no conversation switches model on its own because of
 this.
 
 ## Summary of New Capabilities
