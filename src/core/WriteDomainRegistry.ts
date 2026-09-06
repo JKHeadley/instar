@@ -320,6 +320,14 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     note: 'Window-28 lifecycle authority is deliberately local to the Echo build-lane executor; its ledger, enforcement state, evidence registries, and signed audit artifacts live below the machine-local stateDir and are never a shared git write surface',
   };
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/window-lifecycle', domain: 'machine-local', story: windowLifecycleStory });
+  const windowRunLivenessStory: ConvergenceStory = {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'W32 liveness, cadence, work receipts, recovery authority, and preparation continuation bind to one executor on this machine; their durable stores live below the machine-local stateDir and never replicate or accept a second writer',
+  };
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/window-run-liveness', domain: 'machine-local', story: windowRunLivenessStory });
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/autonomous/preparation/', domain: 'machine-local', story: windowRunLivenessStory });
   const classReviewStory: ConvergenceStory = {
     logical: 'ws2x-replicated',
     onSharedGitSyncedPath: true,

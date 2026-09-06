@@ -16,6 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { generateClaudeMd } from '../../src/scaffold/templates.js';
 
 type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[] };
 
@@ -288,6 +289,39 @@ Check coherence.
     for (const marker of ['**Private Viewing**', '**Secret Drop**', '**Cloudflare Tunnel**', '**Dashboard**', '### Self-Discovery', '### Coherence Gate']) {
       const re = new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
       expect(agents.match(re)?.length, `${marker} should appear exactly once`).toBe(1);
+    }
+  });
+
+  it('mirrors W32 nested bullets from the real generated template without malformed or unrelated over-copy', () => {
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), generateClaudeMd('instar', 'Echo', 4042, true));
+    fs.writeFileSync(path.join(projectDir, 'AGENTS.md'), '# Echo\n\nidentity only\n');
+    fs.writeFileSync(path.join(projectDir, 'GEMINI.md'), '# Gemini\n\nidentity only\n');
+
+    const result = runShadowCaps(migrator(projectDir));
+    expect(result.errors).toEqual([]);
+
+    for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
+      const shadowPath = path.join(projectDir, shadowName);
+      const shadow = fs.readFileSync(shadowPath, 'utf8');
+      expect(shadow).toContain('- **Pre-admission continuation carrier:**');
+      expect(shadow).toContain('### Authoritative Window Run Liveness');
+      expect(shadow).toContain('- **W32 cadence executor:**');
+      const w32Start = shadow.indexOf('**Multi-Session Autonomy**');
+      const w32End = shadow.indexOf('**Codex quota is first-class', w32Start);
+      expect(w32Start).toBeGreaterThanOrEqual(0);
+      expect(w32End).toBeGreaterThan(w32Start);
+      const w32Region = shadow.slice(w32Start, w32End);
+      expect(w32Region).not.toMatch(/^\s*-\s*$/m);
+      expect(w32Region).not.toContain("- What's running:");
+      expect(w32Region).not.toContain('**SessionReaper**');
+      expect(w32Region.length).toBeLessThan(5_000);
+      expect(shadow.match(/Pre-admission continuation carrier/g)?.length).toBe(1);
+      expect(shadow.match(/Authoritative Window Run Liveness/g)?.length).toBe(1);
+      expect(shadow.match(/W32 cadence executor/g)?.length).toBe(1);
+
+      const beforeSecond = shadow;
+      expect(runShadowCaps(migrator(projectDir)).errors).toEqual([]);
+      expect(fs.readFileSync(shadowPath, 'utf8')).toBe(beforeSecond);
     }
   });
 });

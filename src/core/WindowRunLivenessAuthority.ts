@@ -560,6 +560,7 @@ export class WindowRunLivenessAuthority {
             projectionReceipt,
           });
         } catch (error) {
+          // @silent-fallback-ok — the failed rebind is persisted below and forces a loud terminal stall.
           result = { succeeded: false, detail: `replacement-executor-rebind-failed:${error instanceof Error ? error.message : String(error)}`, receipt: result.receipt };
           attempt.outcome = 'failed';
           attempt.detail = result.detail.slice(0, 500);

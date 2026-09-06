@@ -110,7 +110,11 @@ function deployHook(projectDir: string, content: string): string {
   return dst;
 }
 
-function priorStateParseHook(): string {
+// Synthetic anchor-compatible layout: it retains the newer preparation-carrier
+// behavior while removing its marker and the state-parse feature. This verifies
+// the surgical state-parse patch preserves unrelated later bytes; exact historic
+// stock revisions are covered separately by HISTORICAL_STOCK_HOOKS below.
+function anchorCompatibleStateParsePredecessor(): string {
   const bundled = fs.readFileSync(
     path.join(process.cwd(), '.claude', 'skills', 'autonomous', 'hooks', 'autonomous-stop-hook.sh'),
     'utf8',
@@ -190,8 +194,8 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
     });
   });
 
-  it('surgically upgrades the immediately prior stock hook to visible state-parse failure', () => {
-    const dst = deployHook(projectDir, priorStateParseHook());
+  it('surgically upgrades an anchor-compatible state-parse predecessor while preserving later bytes', () => {
+    const dst = deployHook(projectDir, anchorCompatibleStateParsePredecessor());
     expect(fs.readFileSync(dst, 'utf8')).not.toContain('STATE_PARSE_LOUD');
 
     const result = runMigration(newMigrator(projectDir));
@@ -206,7 +210,7 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
   });
 
   it('is idempotent — a second run makes no change and reports nothing', () => {
-    deployHook(projectDir, priorStateParseHook());
+    deployHook(projectDir, anchorCompatibleStateParsePredecessor());
     runMigration(newMigrator(projectDir)); // first run upgrades
 
     const dst = path.join(projectDir, HOOK_REL);
@@ -241,7 +245,7 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
 
   it('preserves stock-derived customization while surgically adding the validator', () => {
     const customLine = '# operator customization: retain this exact line';
-    const priorCustomized = priorStateParseHook().replace(
+    const priorCustomized = anchorCompatibleStateParsePredecessor().replace(
       'set -uo pipefail',
       `${customLine}\nset -uo pipefail`,
     );

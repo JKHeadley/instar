@@ -10352,6 +10352,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       '## Threadline Network (Agent-to-Agent Communication)',
       '## Worktree Convention',
       '**Multi-Session Autonomy**',
+      '- **Pre-admission continuation carrier:**',
+      '### Authoritative Window Run Liveness',
+      '- **W32 cadence executor:**',
       '**Codex quota is first-class in the pool:',
       '**Solo Codex load shedding is fail-safe:',
       '**Evolution action auto-expiry:',
@@ -10519,6 +10522,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // conversation id resolvable at GET /conversations/:id, or it will guess.
       '### Durable Conversation Identity',
     ];
+    // Some mirrored capabilities are nested bullets rather than standalone
+    // sections. These sentinels bound their slice without themselves becoming
+    // capabilities that are appended to framework shadows.
+    const boundaryMarkers = [...markers, "- What's running:", '**SessionReaper**'];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
       const shadowPath = path.join(this.config.projectDir, shadowName);
@@ -10559,7 +10566,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         const tail = after.slice(searchFrom);
         let nextRel = tail.search(/(^|\n)(##|###) [^#\n]/);
         if (nextRel < 0) nextRel = tail.length;
-        for (const other of markers) {
+        for (const other of boundaryMarkers) {
           if (other === marker) continue;
           const oi = tail.indexOf(other);
           if (oi >= 0 && oi < nextRel) nextRel = oi;

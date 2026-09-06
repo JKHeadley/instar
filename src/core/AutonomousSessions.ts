@@ -89,7 +89,10 @@ export function setAutonomousPreparationState(
 ): boolean {
   const file = path.join(autonomousDir(stateDir), `${topic}.local.md`);
   let content: string;
-  try { content = fs.readFileSync(file, 'utf8'); } catch { return false; }
+  try { content = fs.readFileSync(file, 'utf8'); } catch {
+    // @silent-fallback-ok — false is the explicit refusal result for a missing or unreadable carrier.
+    return false;
+  }
   const active = readField(content, 'active') === 'true';
   if ((target === 'preparing' || target === 'recovering' || target === 'terminal') && active) return false;
   if (target === 'promoted' && !active) return false;
@@ -105,7 +108,12 @@ export function setAutonomousPreparationState(
     fs.renameSync(tmp, file);
     return true;
   } catch {
-    try { if (fs.existsSync(tmp)) SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'AutonomousSessions.setPreparationState.cleanup' }); } catch { /* best effort */ }
+    // @silent-fallback-ok — the caller receives false; no preparation transition is claimed.
+    try {
+      if (fs.existsSync(tmp)) SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'AutonomousSessions.setPreparationState.cleanup' });
+    } catch {
+      // @silent-fallback-ok — a stale temp file is non-authoritative and never becomes the carrier.
+    }
     return false;
   }
 }

@@ -262,13 +262,22 @@ describe('IDLE_BACKOFF — safety properties (static)', () => {
 });
 
 describe('IDLE_BACKOFF — existing agents receive the paced hook (migration)', () => {
-  it('preserves IDLE_BACKOFF while surgically upgrading the immediately prior stock hook', () => {
+  it('preserves IDLE_BACKOFF while surgically upgrading an anchor-compatible predecessor', () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'backoff-mig-'));
     try {
       fs.mkdirSync(path.join(projectDir, '.instar'), { recursive: true });
       const dst = path.join(projectDir, HOOK_REL);
       fs.mkdirSync(path.dirname(dst), { recursive: true });
+      // Synthetic anchor-compatible layout: retain the newer preparation
+      // behavior while removing its marker and STATE_PARSE_LOUD. Exact historic
+      // stock bytes are covered by PostUpdateMigrator-autonomousStopHook.test.ts.
       const prior = fs.readFileSync(HOOK_PATH, 'utf8')
+        .replace(
+          `# hook-capability: PREPARATION_CARRIER — a truthful inactive autonomous record in
+# preparing/recovering state falls through to the bounded continuation authority.
+`,
+          '',
+        )
         .replace(
           `# hook-capability: STATE_PARSE_LOUD — a selected state file with missing/malformed
 # frontmatter is a visible hook failure, distinct from the clean no-state exit.
