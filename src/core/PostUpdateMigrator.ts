@@ -136,9 +136,23 @@ export function raiseLaunchdProcessCeilings(plistXml: string, floor: number): st
 export const DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE =
   '`confidence` must be a finite number in `[0, 1]`; a numeric string such as `"0.8"` is accepted and stored as a number, while a qualitative label such as `"high"` is refused rather than mapped to a score. Existing qualitative rows are treated as unmeasurable and are not rewritten. Branch on `assessable`: `sampleSize > 0` does not by itself prove an alignment score is assessable.';
 
+/** Shared new-install/update awareness for W32's authoritative run model. */
+export function WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port: number): string {
+  return `
+### Authoritative Window Run Liveness (Echo, ⚗️ dev-gated, observe-first)
+
+An autonomous window is active only while FIVE independently observed predicates are green: its bound executor process is running; its bound framework transcript has a fresh heartbeat; Telegram delivery is reachable; a fresh monotone durable-work receipt exists; and the exact lifecycle/run binding is admitted and unexpired. Any missing predicate revokes active to at-risk. The authority durably permits exactly one bounded recovery; a verified green re-sample restores active, otherwise it settles loudly to stalled or failed within 15 minutes.
+- **Registry First:** GET http://localhost:${port}/window-run-liveness returns the durable state, predicate verdicts, recovery receipt, hash-chained sample/work audit, transitions, and frozen exit proof. A 503 means it is dark on this agent; never infer health from that.
+- **Durable work receipts:** POST /window-run-liveness/work-advance accepts only the immutable run binding plus a relative artifact path. The server selects the first open/unreceipted task from the run-bound autonomous checklist, resolves and hashes the artifact, rejects unchanged bytes, and mints task/sequence/time/digest; callers never submit task refs, predicate booleans, timestamps, sequences, or digests. Pane narration and spinner changes are not work evidence.
+- **Preparation composition:** before lifecycle admission, the state remains preparing and does not consume the sole recovery. The separate between-window preparation carrier owns that interval.
+- **W32 cadence executor:** when explicitly enabled, GET /window-run-liveness/cadence exposes durable, distinct 30-minute interval receipts and 3-hour synthesis delivery receipts. It prompts the bound executor near a due interval but only a server-minted work receipt can pass it; narration never counts. POST /window-run-liveness/cadence/tick is the authenticated deterministic tick surface. A recovered/rebound executor continues the same cadence record instead of resetting the clock.
+- Ships on Echo development agents with dryRun:true unless explicitly enabled/actuated via monitoring.windowRunLiveness. Proactive trigger: when asked whether a window run is actually alive, stalled, or recovered, read this registry instead of trusting an “active” label.
+`;
+}
+
 /**
  * Exact SHA-256 identities of every canonical autonomous stop-hook revision in
- * repository history through the predecessor of STATE_PARSE_LOUD. These are a
+ * repository history through the predecessor of PREPARATION_CARRIER. These are a
  * conservative migration escape hatch for agents that skipped several releases:
  * exact historical stock bytes may be replaced by the current bundle; any
  * customization changes the hash and is refused. Keep this list append-only.
@@ -165,6 +179,7 @@ export const AUTONOMOUS_STOP_HOOK_STOCK_SHA256 = [
   '972574c945ee1d43335970fab4512269d3e5e9f9afe92a13f94c99ebffba7391',
   'ee403db081bc96043556c767b697df47dec89e3e03fe3de359681fb1c1d9aff9',
   'fbb68b9d14465315653ebe597ec0f62d0846afbc3f59364a0fcc6657eeeddee1',
+  'c1c9d64dd248cf2cdcd1a6cd51be60230bb6a62c80a1dfa0838cdf62109e12eb',
 ] as const;
 
 /**
@@ -4584,6 +4599,47 @@ export class PostUpdateMigrator {
    * are recognized by exact SHA-256; all unknown layouts are refused.
    */
   private migrateAutonomousStopHookTopicKeyed(result: MigrationResult): void {
+    const upgradePreparationCarrier = (): void => {
+      const relPath = '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh';
+      const label = 'skills/autonomous/hooks/autonomous-stop-hook.sh (inactive autonomous records fall through to bounded preparation continuation)';
+      try {
+        const deployed = path.join(this.config.projectDir, ...relPath.split('/'));
+        if (!fs.existsSync(deployed)) return;
+        const current = fs.readFileSync(deployed, 'utf8');
+        if (current.includes('PREPARATION_CARRIER')) return;
+        const currentSha256 = crypto.createHash('sha256').update(current).digest('hex');
+        if (!(AUTONOMOUS_STOP_HOOK_STOCK_SHA256 as readonly string[]).includes(currentSha256)) {
+          result.skipped.push(`${relPath}: customized or unknown layout — left untouched (no exact stock hash for preparation-carrier upgrade)`);
+          return;
+        }
+        const bundled = path.join(__dirname, '..', '..', ...relPath.split('/'));
+        if (!fs.existsSync(bundled)) {
+          result.errors.push(`${relPath} migration: bundled hook is missing`);
+          return;
+        }
+        const next = fs.readFileSync(bundled, 'utf8');
+        if (!next.includes('PREPARATION_CARRIER')) {
+          result.errors.push(`${relPath} migration: bundled hook lacks PREPARATION_CARRIER`);
+          return;
+        }
+        const tempPath = `${deployed}.preparation-carrier.${process.pid}.${randomUUID()}.tmp`;
+        try {
+          fs.writeFileSync(tempPath, next, { mode: 0o755 });
+          fs.renameSync(tempPath, deployed);
+        } finally {
+          if (fs.existsSync(tempPath)) {
+            SafeFsExecutor.safeRmSync(tempPath, {
+              force: true,
+              operation: 'PostUpdateMigrator:migrateAutonomousStopHookTopicKeyed:preparation-temp-cleanup',
+            });
+          }
+        }
+        result.upgraded.push(label);
+      } catch (err) {
+        result.errors.push(`${relPath} migration: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+
     const upgradeAutonomousHookStateParse = (): void => {
       const relPath = '.claude/skills/autonomous/hooks/autonomous-stop-hook.sh';
       const label = 'skills/autonomous/hooks/autonomous-stop-hook.sh (visible corrupt-state refusal instead of silent no-state exit)';
@@ -4785,7 +4841,11 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     // Older canonical stock bytes use the exact historical SHA-256 allowlist;
     // every unknown layout is refused rather than overwritten.
     upgradeAutonomousHookStateParse();
-    // setup-autonomous.sh marker bumped `native-goal/set` → `IS_CODEX_AGENT`: the bundled
+    // Marker bumped `STATE_PARSE_LOUD` → `PREPARATION_CARRIER`: an inactive
+    // autonomous record no longer masks the bounded continuation authority.
+    // Exact-stock replacement only; customized hook bytes remain untouched.
+    upgradePreparationCarrier();
+    // setup-autonomous.sh marker bumped through `W32_PREPARING_LIVENESS`: the bundled
     // setup now ALSO auto-delegates to native /goal for CODEX agents (the prior native /goal
     // wiring was gated on `claude --version >= 2.1.139`, which is empty for a codex agent, so
     // codex autonomous jobs fell through to the dark Phase-1 codexLoopDriver no-op and never
@@ -4803,17 +4863,24 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     // (so the hook resolves the real-check CWD structurally). The REALCHECK_VERIFY sentinel is
     // present ONLY in the new bundled setup; bumping re-deploys it to existing agents carrying
     // COMPLETION_DISCIPLINE but not REALCHECK_VERIFY; customized scripts left untouched.
-    // Marker bumped `REALCHECK_VERIFY` → `SCOPE_ACCRETION`: the bundled setup now
-    // calls POST /autonomous/register at session setup (the server mints the
-    // runId, snapshots the scopeAccretion config + sweep base-root SHAs, clamps
-    // endAt) and writes the returned run_id into the state-file frontmatter, plus
-    // parses `--declared-deliverables`. Bumping re-deploys to agents carrying
-    // REALCHECK_VERIFY but not SCOPE_ACCRETION; customized scripts left untouched.
+    // Marker bumped `REALCHECK_VERIFY` → `SCOPE_ACCRETION`: the bundled setup
+    // calls POST /autonomous/register and records its run id.
     upgrade(
       '.claude/skills/autonomous/scripts/setup-autonomous.sh',
       'SCOPE_ACCRETION',
       'autonomous-state.local.md',
-      'skills/autonomous/scripts/setup-autonomous.sh (scope-accretion: server-side run registration + --declared-deliverables + run_id frontmatter)',
+      'skills/autonomous/scripts/setup-autonomous.sh (scope-accretion registration)',
+    );
+    // Marker bumped `SCOPE_ACCRETION` → `W32_PREPARING_LIVENESS`: it now
+    // honors the server-owned
+    // initialStatus/preparationRequired response. Echo/W32 starts active:false;
+    // authority-dark and non-Echo agents preserve active:true. The marker bump
+    // re-deploys the fix to existing stock-derived installs.
+    upgrade(
+      '.claude/skills/autonomous/scripts/setup-autonomous.sh',
+      'W32_PREPARING_LIVENESS',
+      'SCOPE_ACCRETION',
+      'skills/autonomous/scripts/setup-autonomous.sh (W32 preparation-aware active state)',
     );
     // SKILL.md fixes (cumulative — the upgrade re-deploys the whole bundled SKILL.md, so a
     // single marker bump carries every fix to date):
@@ -4877,7 +4944,15 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       '.claude/skills/autonomous/SKILL.md',
       'SCOPE_ACCRETION',
       'ALL_TASKS_COMPLETE',
-      'skills/autonomous/SKILL.md (scope-accretion: registration step + Layer A recording duty + ratification guidance)',
+      'skills/autonomous/SKILL.md (scope-accretion registration guidance)',
+    );
+    // W32_PREPARING_LIVENESS teaches existing agents to honor the server's
+    // preparationRequired response rather than writing a false active:true.
+    upgrade(
+      '.claude/skills/autonomous/SKILL.md',
+      'W32_PREPARING_LIVENESS',
+      'SCOPE_ACCRETION',
+      'skills/autonomous/SKILL.md (W32 preparation-aware active state)',
     );
   }
 
@@ -6134,6 +6209,24 @@ setTimeout(() => process.exit(0), 2000);
 
     let patched = false;
     const port = this.config.port;
+
+    if (!content.includes('Pre-admission continuation carrier')) {
+      content += '\n- **Pre-admission continuation carrier:** Keep an unadmitted autonomous record truthfully `active:false`. With `autonomousSessions.codexTaskContinuation.preparationCarrierEnabled` enabled, `POST /autonomous/preparation/start` creates a bounded `autonomous-preparation` ledger; recover it with `/:topic/recover`, promote only after independent admission already reports `active:true`, or terminalize on failure. It never consumes the active cap, and a native `/goal` never activates the run.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added pre-admission autonomous continuation carrier awareness');
+    }
+
+    if (!content.includes('Authoritative Window Run Liveness')) {
+      content += WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Authoritative Window Run Liveness section');
+    }
+
+    if (!content.includes('W32 cadence executor:')) {
+      content += '\n- **W32 cadence executor:** `GET /window-run-liveness/cadence` exposes durable 30-minute receipt intervals and 3-hour Telegram synthesis receipts. It consumes only server-minted advancing work receipts, continues across executor recovery/rebind, and never treats narration as progress. `POST /window-run-liveness/cadence/tick` is the authenticated deterministic tick. Enable explicitly with `monitoring.windowRunLiveness.cadenceExecutor.enabled`; ship dry-run first.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added W32 cadence executor awareness');
+    }
 
     if (!content.includes('Registry First — capability registry:')) {
       content += '\n- **Registry First — capability registry:** when asking which machine can serve a capability, consult `GET /capability-registry`; it distinguishes unavailable, unobserved, stale, and available evidence.\n';
@@ -10259,6 +10352,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       '## Threadline Network (Agent-to-Agent Communication)',
       '## Worktree Convention',
       '**Multi-Session Autonomy**',
+      '- **Pre-admission continuation carrier:**',
+      '### Authoritative Window Run Liveness',
+      '- **W32 cadence executor:**',
       '**Codex quota is first-class in the pool:',
       '**Solo Codex load shedding is fail-safe:',
       '**Evolution action auto-expiry:',
@@ -10426,6 +10522,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
       // conversation id resolvable at GET /conversations/:id, or it will guess.
       '### Durable Conversation Identity',
     ];
+    // Some mirrored capabilities are nested bullets rather than standalone
+    // sections. These sentinels bound their slice without themselves becoming
+    // capabilities that are appended to framework shadows.
+    const boundaryMarkers = [...markers, "- What's running:", '**SessionReaper**'];
 
     for (const shadowName of ['AGENTS.md', 'GEMINI.md']) {
       const shadowPath = path.join(this.config.projectDir, shadowName);
@@ -10466,7 +10566,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         const tail = after.slice(searchFrom);
         let nextRel = tail.search(/(^|\n)(##|###) [^#\n]/);
         if (nextRel < 0) nextRel = tail.length;
-        for (const other of markers) {
+        for (const other of boundaryMarkers) {
           if (other === marker) continue;
           const oi = tail.indexOf(other);
           if (oi >= 0 && oi < nextRel) nextRel = oi;

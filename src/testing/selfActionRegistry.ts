@@ -1208,6 +1208,44 @@ const windowLifecycleIssueEscalation: SelfActionController = {
   makeUnderPressure: (f, sink) => makeWindowLifecycleIssueEscalation(f, sink),
 };
 
+/** W32 cadence delivery under permanently failing session/Telegram paths.
+ * Checkpoint, report, and failure-notice intents are persisted before their
+ * boundary calls; their independent 2/3/3 brakes survive restart. */
+const windowRunCadenceDeliveryRedrive: SelfActionController = {
+  id: 'window-run-cadence-delivery-redrive',
+  actionVerb: 'retry-cadence-delivery',
+  models: 'src/core/WindowRunCadenceExecutor.ts (durable checkpoint/report/notification counters + exponential backoff + 2/3/3 brakes)',
+  modelsPath: 'src/core/WindowRunCadenceExecutor.ts',
+  boundK: 8,
+  perTargetBoundK: 3,
+  ticks: 20,
+  tickMs: 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeWindowRunCadenceDeliveryRedrive(f, sink),
+  },
+  makeUnderPressure: (f, sink) => makeWindowRunCadenceDeliveryRedrive(f, sink),
+};
+
+function makeWindowRunCadenceDeliveryRedrive(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const targets = [
+    { target: 'checkpoint-1', max: 2 },
+    { target: 'report-1', max: 3 },
+    { target: 'failure-notice-1', max: 3 },
+  ] as const;
+  return {
+    tick() {
+      sink.considered += 1;
+      const due = targets.find(item => ((f.durableState.get(`window-run-cadence:${item.target}`) as number | undefined) ?? 0) < item.max);
+      if (!due) return;
+      const key = `window-run-cadence:${due.target}`;
+      const attempts = (f.durableState.get(key) as number | undefined) ?? 0;
+      sink.emit({ verb: 'retry-cadence-delivery', target: due.target });
+      f.durableState.set(key, attempts + 1);
+    },
+  };
+}
+
 function makeWindowLifecycleIssueEscalation(f: PressureFixture, sink: ActionSink): { tick(): void } {
   const DURABLE_KEY = 'window-lifecycle:surfaced-issues';
   const ISSUE = 'cadence.report.3h@window:predicate-unsatisfied';
@@ -1261,6 +1299,7 @@ function makeIdentityReannouncePressureLoop(f: PressureFixture, sink: ActionSink
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   identityReannounce,
+  windowRunCadenceDeliveryRedrive,
   windowLifecycleIssueEscalation,
   subscriptionReloginRedrive,
   standDownMaintenance,

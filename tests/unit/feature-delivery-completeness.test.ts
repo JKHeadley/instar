@@ -148,6 +148,7 @@ describe('Feature Delivery Completeness', () => {
       'Playbook',
       'Worktree Convention',
       'Multi-Session Autonomy',    // per-topic concurrent autonomous jobs (templates.ts + migrator parity)
+      'Pre-admission continuation carrier', // W32: inactive preparation/recovery remains honestly active:false while the bounded Codex continuation carrier keeps the setup turn alive; template + migrator + framework-shadow parity.
       'Durable Inbound Message Queue', // custody queue + hold-for-stability (templates.ts + migrator parity, CMT-1118)
       'Process Health (Dashboard Tab)', // Failure-Learning Loop read surface (templates.ts + migrator + shadow-marker parity)
       "Preferences I've learned about you", // Correction & Preference Learning Sentinel Slice 1a read surface (templates.ts + migrator + shadow-marker parity)
@@ -233,6 +234,8 @@ describe('Feature Delivery Completeness', () => {
     // Some migrator sections are legacy patches for old agents that have since been
     // absorbed into the base template differently. These don't need template parity.
     const legacyMigratorSections = [
+      'Authoritative Window Run Liveness', // W32 shared helper: generateClaudeMd invokes WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION(port), so templates.ts contains the function reference rather than this literal; the helper supplies fresh-install + migration parity and the framework-shadow marker is tracked directly.
+      'W32 cadence executor:', // W32 cadence addendum lives inside the same shared helper; migrateClaudeMd also sniffs it independently to upgrade an earlier liveness section without duplication.
       'Permission-Prompt Floor',  // framework-permission-prompt-robustness: migrateClaudeMd adds a `### Permission-Prompt Floor` awareness section so existing agents learn the always-on resolver; the generateClaudeMd (new-agent template) counterpart is a tracked minor follow-up, so for now this is migrator-only awareness, not template-shadow parity.
       'Machine Load Assessment',  // robust-load-assessment-fleet (CMT-1703): migrateClaudeMd + generateClaudeMd both add the load-assess.sh awareness section via the shared MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION(); ships ON for all agents (observe-only, no dark gate / no framework-shadow marker), so it's tracked here.
       'Single-Machine Failover-Gap Guard', // Agent-awareness closure for GET /pool/failover-gap: shared template+migrator section; the existing CapabilityIndex entry owns discoverability. Dev-gated dark, dry-run first, signal-only read surface; same non-shadowed monitoring class as Machine-Coherence Guard.

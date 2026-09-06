@@ -67,3 +67,45 @@ All routes require Bearer auth and are registered in the machine-local write dom
 - `POST /window-lifecycle/enforcement/graduate` — graduate to enforcement on valid dual-lifecycle
   evidence (forged or reused provenance refused).
 - `POST /window-lifecycle/enforcement/off` — turn the plane off (neither ticks nor blocks).
+
+## Window 32 execution authority
+
+Window 32 adds a preparation carrier, a run-liveness authority, and a cadence executor around
+the obligation ledger. These components keep two states distinct: preparation may continue
+while the autonomous run is inactive, but the run cannot be presented as active until the
+server has re-read its admission, executor, heartbeat, reachability, work-advance, and ceiling
+facts. Callers bind immutable identities and artifact references; they cannot submit their own
+predicate results. A disabled component returns `503`, an absent registration returns `404`,
+and a failed authority check returns `409` rather than manufacturing progress.
+
+The authenticated surfaces are:
+
+- `POST /gate/between-window-admission` — evaluate the exact charter package against the
+  stored approval and reaffirmation records without mutating either store.
+- `POST /autonomous/preparation/start` — start the bounded continuation carrier while leaving
+  the matching autonomous run explicitly inactive.
+- `POST /autonomous/preparation/:topic/recover` — mark an interrupted inactive preparation
+  carrier as recovering.
+- `POST /autonomous/preparation/:topic/promote` — retire preparation only after the canonical
+  autonomous record is already active.
+- `POST /autonomous/preparation/:topic/terminalize` — stop an inactive preparation carrier;
+  an active autonomous run is refused.
+- `POST /window-run-liveness/register` — bind the window, topic, autonomous run, lifecycle
+  run, and executor identities. Predicate-like request fields are rejected.
+- `GET /window-run-liveness` — read the current server-owned liveness state and final frozen
+  snapshot, when present.
+- `POST /window-run-liveness/tick` — re-read all production liveness predicates and persist
+  the resulting authoritative state.
+- `POST /window-run-liveness/work-advance` — mint a receipt from an artifact reference after
+  the server validates the bound run; caller-supplied receipt facts are rejected.
+- `GET /window-run-liveness/cadence` — read the registered cadence, interval receipts,
+  report-delivery receipts, and recovery state.
+- `POST /window-run-liveness/cadence/tick` — execute one bounded cadence pass and persist its
+  result, including any due report or recovery action.
+- `POST /window-lifecycle/remediation/:obligationId/resolve` — resolve a live remediation
+  episode only with fresh, re-queried Telegram evidence that semantically matches the duty.
+
+These records are machine-local by design: they describe the executor and evidence visible on
+one machine and must not be merged with another machine's observations. At the window ceiling,
+the authority freezes a final snapshot and refuses later ticks or registrations from reviving
+the run.

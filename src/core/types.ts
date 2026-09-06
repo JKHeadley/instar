@@ -4598,6 +4598,8 @@ export interface InstarConfig {
      */
     codexTaskContinuation?: {
       enabled?: boolean;
+      /** Separate dark gate for truthful pre-admission autonomous continuation. */
+      preparationCarrierEnabled?: boolean;
       maxDurationSeconds?: number;
       maxContinuations?: number;
       auditRetentionDays?: number;
@@ -5525,6 +5527,33 @@ export interface MonitoringConfig {
   memoryMonitoring: boolean;
   /** Health check interval in ms */
   healthCheckIntervalMs: number;
+  /**
+   * Authoritative autonomous-window liveness state. Omitted resolves through
+   * the development-agent gate (live on dev, dark on fleet); dryRun defaults
+   * true so the first rollout records at-risk/recovery verdicts without
+   * restarting an executor or notifying the operator.
+   */
+  windowRunLiveness?: {
+    enabled?: boolean;
+    dryRun?: boolean;
+    heartbeatMaxAgeMs?: number;
+    workEvidenceMaxAgeMs?: number;
+    /** Hard-clamped by the authority to no more than 15 minutes. */
+    recoveryCeilingMs?: number;
+    /** Durable W32 receipt/report executor. Explicitly enabled; dry-run first. */
+    cadenceExecutor?: {
+      enabled?: boolean;
+      dryRun?: boolean;
+      receiptIntervalMs?: number;
+      reportIntervalMs?: number;
+      checkpointLeadMs?: number;
+      receiptGraceMs?: number;
+      checkpointRetryMaxAttempts?: number;
+      checkpointRetryBackoffMs?: number;
+      reportRetryMaxAttempts?: number;
+      reportRetryBackoffMs?: number;
+    };
+  };
   /**
    * Boot health beacon — a minimal /health responder bound from the very start
    * of the server boot so the supervisor sees liveness during the heavy

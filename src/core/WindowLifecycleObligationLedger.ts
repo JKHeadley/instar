@@ -12,14 +12,15 @@ export const RECURRING_DUTY_DEFAULT_GRACE_MS = 15 * 60_000;
 export type LifecyclePhase = 'pre-start' | 'start' | 'continuous' | 'cadence' | 'mid' | 'close' | 'post-live';
 export type ObligationStatus = 'pending' | 'satisfied' | 'failed' | 'blocked' | 'expired' | 'unknown' | 'open-unexecuted' | 'waived-for-debt' | 'waived-for-phase-transition';
 export type ExecutorClass = 'pending-executable' | 'completed-one-shot' | 'future-phase';
-export type EvidenceAuthority = 'native-local-store-presence' | 'content-bound-store-row' | 'live-requeried-message' | 'replicated-export' | 'verified-operator-approval' | 'runtime-registry-proof' | 'deterministic-replay';
-export type LifecycleState = 'idle' | 'pre_start_gate' | 'start_blocked' | 'active_start' | 'active_mid_due' | 'active_mid_blocked' | 'active_mid_satisfied' | 'close_due' | 'close_blocked' | 'delivered_pending_post_live' | 'closed_clean' | 'closed_with_operator_waiver' | 'rolled_back';
+export type EvidenceAuthority = 'native-local-store-presence' | 'content-bound-store-row' | 'live-requeried-message' | 'replicated-export' | 'verified-operator-approval' | 'runtime-registry-proof' | 'run-liveness-authority' | 'deterministic-replay';
+export type LifecycleState = 'idle' | 'pre_start_gate' | 'start_blocked' | 'active_start' | 'active_mid_due' | 'active_mid_blocked' | 'active_mid_satisfied' | 'close_due' | 'close_blocked' | 'delivered_pending_post_live' | 'closed_clean' | 'closed_with_operator_waiver' | 'closed_failed' | 'rolled_back';
+export type WindowDutyProfile = 'legacy-w28-w31' | 'w32-approved-a204c07d';
 
 export interface SourceSpan { source: string; hash: string; byteStart: number; byteEnd: number; lineStart: number; lineEnd: number }
 export interface EvidenceRecord {
   authority: EvidenceAuthority; agentId: string; scope: string; windowId: string; obligationId: string;
   sourceHashes: string[]; producer: string; timestamp: string; nonce: string; canonicalPayloadHash: string;
-  verifierPassed: boolean; verifiedPayload?: string; nativeCoordinates?: { topicId?: number; messageId?: number; storePath?: string };
+  verifierPassed: boolean; verifiedPayload?: string; nativeCoordinates?: { topicId?: number; messageId?: number; messageIds?: number[]; storePath?: string };
 }
 export interface ExecutorBinding {
   class?: ExecutorClass; kind: string; executorId: string; owner: string; registryCoordinates: string;
@@ -40,8 +41,8 @@ export interface FailureRemediation {
   observerTopicId?: number; debtRequired: boolean; repostRequired: boolean; correctionRequired: boolean; scopeReviewRequired: boolean;
 }
 export interface SourceAstNode { kind: 'heading' | 'list-item' | 'paragraph'; text: string; span: SourceSpan; operative: boolean }
-export interface CompiledSources { hashes: Record<string, string>; byteLengths: Record<string, number>; obligations: Obligation[]; operativeLines: SourceSpan[]; ast?: SourceAstNode[]; facts?: Record<string, string[]>; challenges?: Record<string, string> }
-export interface LedgerDocument { version: 1; lifecycleRunId: string; agentId: 'echo'; scope: 'echo-window-lifecycle'; windowId: string; state: LifecycleState; sourceHashes: Record<string, string>; compiledObligationIds: string[]; obligations: Obligation[]; usedNonces: string[]; nativeEvaluations: NativeEvaluationRecord[]; surfacedIssues?: string[]; requiredRemediations?: FailureRemediation[]; admissionEvaluatedAt?: string; admission?: { admitted: true; evaluatedAt: string; snapshotDigest: string }; waivers?: Waiver[]; rollback?: { at: string; reason: string; operatorEvidence: EvidenceRecord; operatorPrincipalId: string; windowId: string; scope: 'echo-window-lifecycle'; enforcementDisabled: true; auditReadOnly: true; manualRitualRequired: true; reenabledAt?: string; faultFixedEvidence?: string; dryRunSuitePassed?: true } }
+export interface CompiledSources { hashes: Record<string, string>; byteLengths: Record<string, number>; obligations: Obligation[]; operativeLines: SourceSpan[]; ast?: SourceAstNode[]; facts?: Record<string, string[]>; challenges?: Record<string, string>; catalogProfile?: WindowDutyProfile; compiledAt?: string; charterCeilingAt?: string }
+export interface LedgerDocument { version: 1; lifecycleRunId: string; agentId: 'echo'; scope: 'echo-window-lifecycle'; windowId: string; state: LifecycleState; sourceHashes: Record<string, string>; catalogProfile?: WindowDutyProfile; windowStartedAt?: string; windowCeilingAt?: string; recurrenceFrozenAt?: string; compiledObligationIds: string[]; obligations: Obligation[]; usedNonces: string[]; nativeEvaluations: NativeEvaluationRecord[]; surfacedIssues?: string[]; requiredRemediations?: FailureRemediation[]; admissionEvaluatedAt?: string; admission?: { admitted: true; evaluatedAt: string; snapshotDigest: string }; waivers?: Waiver[]; rollback?: { at: string; reason: string; operatorEvidence: EvidenceRecord; operatorPrincipalId: string; windowId: string; scope: 'echo-window-lifecycle'; enforcementDisabled: true; auditReadOnly: true; manualRitualRequired: true; reenabledAt?: string; faultFixedEvidence?: string; dryRunSuitePassed?: true } }
 export interface NativeEvaluationRecord { agentId: 'echo'; scope: 'echo-window-lifecycle'; windowId: string; inputHash: string; inputBytes: string; storePath: string; storeHash: string; storeBytesLength: number; evaluatorVersion: string; output: unknown; evaluatedAt: string; nonce: string; mapping: Record<string, string> }
 
 export interface RuntimeExecutorSnapshot {
@@ -54,7 +55,7 @@ export interface RuntimeExecutorSnapshot {
 export interface WindowRuntimeRegistry { resolve(executorId: string, obligationId: string): RuntimeExecutorSnapshot | null }
 export interface LiveMessageRow { messageId: number; topicId: number; text: string; fromUser: boolean; timestamp: string; verifiedOperator?: boolean; senderUid?: string; sessionName?: string | null; provenance?: string; authorship?: string }
 export interface WindowEvidenceAuthority { requery(record: EvidenceRecord): EvidenceRecord | null }
-interface DutyDefinition { id: string; phase: LifecyclePhase; sourcePattern: RegExp; sourcePatterns?: RegExp[]; sample: string; role: string; authority: EvidenceAuthority; core: boolean; failure: string; recurring?: boolean; waiverPolicy?: Obligation['waiverPolicy'] }
+export interface DutyDefinition { id: string; phase: LifecyclePhase; sourcePattern: RegExp; sourcePatterns?: RegExp[]; sample: string; role: string; authority: EvidenceAuthority; core: boolean; failure: string; recurring?: boolean; waiverPolicy?: Obligation['waiverPolicy'] }
 export const REQUIRED_WINDOW_DUTIES: readonly DutyDefinition[] = [
   ...['pathway.full-reread.observer-1','pathway.full-reread.observer-2','observer1.full-reread.observer-1','observer1.full-reread.observer-2'].map(id => ({ id:`preground.${id}`, phase:'pre-start' as const, sourcePattern:/re-read the entire Pathway|same for the observer 1 topic/i, sample:'Both observers must re-read the entire Pathway from July 25 and the observer 1 topic.', role:id.endsWith('observer-1')?'observer-1':'observer-2', authority:'live-requeried-message' as const, core:true, failure:'block-phase' })),
   { id:'preground.visible-discussion.pathway', phase:'pre-start', sourcePattern:/coordination.*VISIBLY|discuss it with each other/i, sample:'Observer coordination must happen VISIBLY and discuss the Pathway assessment.', role:'observer-2', authority:'live-requeried-message', core:true, failure:'block-phase' },
@@ -62,7 +63,7 @@ export const REQUIRED_WINDOW_DUTIES: readonly DutyDefinition[] = [
   { id:'preground.independent-assessments', phase:'pre-start', sourcePattern:/independently scores|each observer must actually/i, sample:'Each observer must create an independent assessment before reconciliation.', role:'observer-2', authority:'live-requeried-message', core:true, failure:'block-phase' },
   { id:'preground.unresolved-disagreement-shown', phase:'pre-start', sourcePattern:/unresolved disagreement.*shown/i, sample:'Every unresolved disagreement must be shown to the operator.', role:'observer-2', authority:'live-requeried-message', core:true, failure:'block-phase' },
   { id:'preground.combined-recommendation', phase:'pre-start', sourcePattern:/combine the assessments/i, sample:'Observers must combine assessments into the next-window recommendation.', role:'observer-2', authority:'live-requeried-message', core:true, failure:'block-phase' },
-  { id:'preground.native-structural-preflight', phase:'pre-start', sourcePattern:/admission[- ]gate|opening cannot complete|run must appear in the LIVE run listing before the opening is declared complete/i, sample:'The native admission-gate structural preflight is required.', role:'observer-2', authority:'native-local-store-presence', core:true, failure:'block-phase' },
+  { id:'preground.native-structural-preflight', phase:'pre-start', sourcePattern:/admission[- ]gate|opening cannot complete|opening requires:(?![^\n]*\b(?:not|never|without|optional|need not|does not|doesn't)\b[^\n]*(?:run registered|liveness predicates))[^\n]*\brun registered\s*,\s*liveness predicates initially green\b|run must appear in the LIVE run listing before the opening is declared complete/i, sample:'The native admission-gate structural preflight is required.', role:'observer-2', authority:'native-local-store-presence', core:true, failure:'block-phase' },
   { id:'start.source-ingestion.tenets', phase:'start', sourcePattern:/tenets.*compiled|tenets in force|The Tenets|reaffirm the tenets WORD FOR WORD/i, sample:'Current tenets must be ingested with source spans.', role:'echo', authority:'content-bound-store-row', core:true, failure:'block-phase' },
   { id:'start.source-ingestion.charter', phase:'start', sourcePattern:/charter|WINDOW LIFECYCLE/i, sample:'Current charter must be ingested with source spans.', role:'echo', authority:'content-bound-store-row', core:true, failure:'block-phase' },
   { id:'start.compilation-proof', phase:'start', sourcePattern:/obligation ledger compiled|negative tests per omitted duty|approved charter compiles AS APPROVED|recompile .*duties from THIS approved charter directly/i, sample:'Compilation coverage and source-derived challenges are required.', role:'echo', authority:'deterministic-replay', core:true, failure:'block-phase' },
@@ -100,6 +101,60 @@ export const REQUIRED_WINDOW_DUTIES: readonly DutyDefinition[] = [
   ].map(([id, sourcePattern, authority]) => ({ id:`close.${id}`, phase:'close' as const, sourcePattern:sourcePattern as RegExp, sample:`Close ${id} must pass.`, role:'observer-1', authority:authority as EvidenceAuthority, core:true, failure:'fail-close' })),
   { id:'postlive.verdict.pass-required', phase:'post-live', sourcePattern:/post-live verdict|post-live review|post-repair observation|Declared soak/i, sample:'A real or deterministic post-live pass is required.', role:'observer-2', authority:'deterministic-replay', core:true, failure:'fail-close' },
 ] as const;
+
+export const WINDOW_32_APPROVED_CHARTER_SHA256 = 'a204c07d213bcc16965d6e0dcbe515626fbac41edf0edeede09afaf40d83dd88';
+const WINDOW_31_ONLY_DUTY_IDS = new Set([
+  'start.compilation-proof',
+  'continuous.derive-counts',
+  'continuous.save-before-words',
+  'continuous.scope-drift',
+  'mid.worker-lane-status',
+  'close.consumer-proof',
+  'close.debt-register',
+  'close.no-done-without-effect',
+  'close.terminal-census',
+  'postlive.verdict.pass-required',
+]);
+
+/** W32 inherits the standing TENETS duties that its exact source pair actually
+ * states, then adds only the liveness/exit contract approved in its charter.
+ * The W31-only compiler/close experiment remains in the legacy profile. */
+export const WINDOW_32_REQUIRED_DUTIES: readonly DutyDefinition[] = [
+  ...REQUIRED_WINDOW_DUTIES.filter(duty => !WINDOW_31_ONLY_DUTY_IDS.has(duty.id)),
+  { id:'w32.start.executor-bound-running', phase:'start', sourcePattern:/A real executor is bound and running\./i, sample:'A real executor must be bound and running before W32 is active.', role:'orchestrator', authority:'run-liveness-authority', core:true, failure:'block-phase' },
+  { id:'w32.start.heartbeat-fresh', phase:'start', sourcePattern:/Its heartbeat is fresh\./i, sample:'The W32 executor heartbeat must be fresh.', role:'orchestrator', authority:'run-liveness-authority', core:true, failure:'block-phase' },
+  { id:'w32.start.delivery-path-reachable', phase:'start', sourcePattern:/Its delivery path is reachable\./i, sample:'The W32 delivery path must be reachable.', role:'orchestrator', authority:'run-liveness-authority', core:true, failure:'block-phase' },
+  { id:'w32.start.durable-work-advanced', phase:'start', sourcePattern:/Durable work evidence has advanced within the declared interval\./i, sample:'Durable W32 work evidence must advance within the declared interval.', role:'orchestrator', authority:'run-liveness-authority', core:true, failure:'block-phase' },
+  { id:'w32.continuous.admitted-and-unexpired', phase:'continuous', sourcePattern:/window is admitted beyond `pre_start_gate` and has not expired/i, sample:'W32 must be admitted beyond pre_start_gate and unexpired while active.', role:'echo', authority:'run-liveness-authority', core:true, failure:'block-phase' },
+  { id:'w32.continuous.missing-predicate-at-risk', phase:'continuous', sourcePattern:/A missing predicate moves the run to `at-risk`\./i, sample:'A missing W32 liveness predicate must move the run to at-risk.', role:'echo', authority:'deterministic-replay', core:true, failure:'block-phase' },
+  { id:'w32.continuous.bounded-recovery', phase:'continuous', sourcePattern:/One bounded recovery attempt may occur\./i, sample:'W32 permits at most one bounded recovery attempt.', role:'echo', authority:'deterministic-replay', core:true, failure:'block-phase' },
+  { id:'w32.continuous.registration-not-liveness', phase:'continuous', sourcePattern:/No state may remain green from registration alone\./i, sample:'Registration alone must never keep W32 green.', role:'echo', authority:'deterministic-replay', core:true, failure:'block-phase' },
+  { id:'w32.close.three-advancing-intervals', phase:'close', sourcePattern:/Three consecutive 30-minute cadence intervals each produce an advancing durable receipt\./i, sample:'Three consecutive W32 cadence intervals must each advance a durable receipt.', role:'observer-1', authority:'deterministic-replay', core:true, failure:'fail-close' },
+  { id:'w32.close.induced-executor-loss', phase:'close', sourcePattern:/deliberately end the active executor\/turn\./i, sample:'The active W32 executor must be deliberately ended after interval one.', role:'observer-2', authority:'deterministic-replay', core:true, failure:'fail-close' },
+  { id:'w32.close.resume-once-or-fail-loudly', phase:'close', sourcePattern:/resumes exactly once from the first unreceipted task or marks the run failed loudly within 15 minutes\./i, sample:'W32 must resume exactly once or fail loudly within 15 minutes.', role:'observer-2', authority:'deterministic-replay', core:true, failure:'fail-close' },
+  { id:'w32.close.all-reports-delivered', phase:'close', sourcePattern:/Every report due during the window is delivered/i, sample:'Every report due during W32 must be delivered.', role:'observer-1', authority:'deterministic-replay', core:true, failure:'fail-close' },
+  { id:'w32.close.zero-false-active', phase:'close', sourcePattern:/Zero sampled minutes are labeled `active` while any required liveness predicate is false\./i, sample:'W32 must record zero false-active sampled minutes.', role:'observer-2', authority:'deterministic-replay', core:true, failure:'fail-close' },
+  { id:'w32.continuous.pre-start-gate-exit', phase:'continuous', sourcePattern:/lifecycle leaves `pre_start_gate` before substantive execution\./i, sample:'W32 must leave pre_start_gate before substantive execution.', role:'echo', authority:'run-liveness-authority', core:true, failure:'block-phase' },
+  { id:'w32.close.expiry-freeze', phase:'close', sourcePatterns:[/recurring-duty materialization stops immediately, the final snapshot freezes, and active is revoked\./i, /Zero post-ceiling duties are created\./i], sourcePattern:/recurring-duty materialization stops immediately, the final snapshot freezes, and active is revoked\./i, sample:'W32 expiry or close must freeze recurrence and revoke active without post-ceiling duties.', role:'echo', authority:'deterministic-replay', core:true, failure:'fail-close' },
+  { id:'w32.close.independent-loss-verification', phase:'close', sourcePattern:/A second observer independently verifies the induced loss, state transitions, recovery cardinality, receipts, and Telegram delivery\./i, sample:'A second observer must independently verify the W32 adversarial proof.', role:'observer-2', authority:'live-requeried-message', core:true, failure:'fail-close' },
+  { id:'w32.close.immediate-on-pass', phase:'close', sourcePattern:/window closes immediately when the live adversarial exit test and close receipts pass\./i, sample:'W32 must close immediately when its exit test and close receipts pass.', role:'observer-1', authority:'deterministic-replay', core:true, failure:'fail-close' },
+  { id:'w32.close.no-separate-soak', phase:'close', sourcePattern:/There is no separate soak\./i, sample:'W32 has no separate soak.', role:'observer-1', authority:'deterministic-replay', core:true, failure:'fail-close' },
+  { id:'w32.continuous.opening-complete', phase:'continuous', sourcePattern:/Opening requires: verbatim start reaffirmation, this exact approved charter copied from proposal to charter, workers named, run registered, liveness predicates initially green, lifecycle beyond `pre_start_gate`, and canonical plan moved to W32 with read-back proof\./i, sample:'The exact W32 opening contract must be proven before substantive execution.', role:'observer-1', authority:'run-liveness-authority', core:true, failure:'block-phase' },
+] as const;
+
+export function verifyRequiredDutySources(definitions: readonly DutyDefinition[], ast: readonly SourceAstNode[]): { ok: boolean; issues: string[] } {
+  const issues = definitions.flatMap(definition => {
+    const patterns = definition.sourcePatterns ?? [definition.sourcePattern];
+    const missing = patterns.some(pattern => {
+      const found = ast.some(candidate => { pattern.lastIndex = 0; return pattern.test(candidate.text); });
+      pattern.lastIndex = 0;
+      return !found;
+    });
+    return missing ? [`uncompiled-operative-duty:${definition.id}`] : [];
+  });
+  return { ok: issues.length === 0, issues };
+}
+
 export function minimumWindowDutyFixture(): string { return `${REQUIRED_WINDOW_DUTIES.map(d => d.sample).join('\n')}
 Each observer independently scores and each observer must actually perform the read.
 The observers combine the assessments; every unresolved disagreement is shown.
@@ -181,7 +236,18 @@ export function compileWindowSources(input: { agentId: string; scope: string; wi
     charterExpiry: allText.match(/\bending\s+(\d{4}-\d{2}-\d{2}\s+~?\d{1,2}:\d{2}\s+[A-Z]{2,5})/i)?.[1]?.trim() ?? (allText.match(/24 hours/i)?.[0] ?? ''),
   };
   const charterDurationMs = ast.some(n => /24 hours|24h/i.test(n.text)) ? 24 * 3_600_000 : 24 * 3_600_000;
-  for (const definition of input.requireMinimumCatalog === false ? [] : REQUIRED_WINDOW_DUTIES) {
+  let requiredDuties: readonly DutyDefinition[] = [];
+  let catalogProfile: WindowDutyProfile = 'legacy-w28-w31';
+  if (input.requireMinimumCatalog !== false) {
+    if (input.windowId.toLowerCase() === 'w32') {
+      if (hashes[input.charterPath] !== WINDOW_32_APPROVED_CHARTER_SHA256) throw new Error('window-duty-profile-identity-mismatch:w32-approved-charter');
+      requiredDuties = WINDOW_32_REQUIRED_DUTIES;
+      catalogProfile = 'w32-approved-a204c07d';
+    } else requiredDuties = REQUIRED_WINDOW_DUTIES;
+  }
+  const requiredCoverage = verifyRequiredDutySources(requiredDuties, ast);
+  if (!requiredCoverage.ok) throw new Error(requiredCoverage.issues.join(','));
+  for (const definition of requiredDuties) {
     const matchedSpans = (definition.sourcePatterns ?? [definition.sourcePattern]).map(pattern => { const node = ast.find(candidate => pattern.test(candidate.text)); if (!node) throw new Error(`uncompiled-operative-duty:${definition.id}`); pattern.lastIndex = 0; const matched = pattern.exec(node.text); if (!matched) throw new Error(`uncompiled-operative-duty:${definition.id}`); const prefixBytes = Buffer.byteLength(node.text.slice(0, matched.index)); const matchBytes = Buffer.byteLength(matched[0]); return { ...node.span, byteStart: node.span.byteStart + prefixBytes, byteEnd: node.span.byteStart + prefixBytes + matchBytes }; });
     const futurePhase = definition.phase === 'mid' || definition.phase === 'close' || definition.phase === 'post-live';
     const sourceText = ast.find(candidate => definition.sourcePattern.test(candidate.text))?.text ?? definition.sample; definition.sourcePattern.lastIndex = 0; const dueAt = definition.phase === 'mid' ? new Date(Date.parse(now) + charterDurationMs / 2).toISOString() : (definition.phase === 'close' || definition.phase === 'post-live') ? new Date(Date.parse(now) + charterDurationMs).toISOString() : inferDueAt(sourceText, now);
@@ -190,7 +256,7 @@ export function compileWindowSources(input: { agentId: string; scope: string; wi
       deadline: { dueAt, graceMs: definition.recurring ? RECURRING_DUTY_DEFAULT_GRACE_MS : 0 }, predicate: { recurring: definition.recurring, requiredAuthority: definition.authority, expected: expectedFactsForDuty(definition.id, challenges) }, evidencePolicy: { requiredAuthority: definition.authority },
       executorBinding: emptyBinding(), failureAction: definition.failure, status: 'pending', evidence: [], eligibleAt: futurePhase ? dueAt : undefined, lastEvaluatedAt: null });
   }
-  const compiled = { hashes, byteLengths, obligations, operativeLines, ast, facts, challenges };
+  const compiled = { hashes, byteLengths, obligations, operativeLines, ast, facts, challenges, catalogProfile, compiledAt: now, charterCeilingAt: new Date(Date.parse(now) + charterDurationMs).toISOString() };
   const coverage = verifyCompilationCoverage(compiled); if (!coverage.ok) throw new Error(coverage.issues.join(',')); return compiled;
 }
 
@@ -292,7 +358,7 @@ function authoritySatisfies(actual: EvidenceAuthority, required: EvidenceAuthori
     'content-bound-store-row': ['content-bound-store-row', 'live-requeried-message', 'replicated-export', 'verified-operator-approval'],
     'live-requeried-message': ['live-requeried-message', 'verified-operator-approval'],
     'replicated-export': ['replicated-export'], 'verified-operator-approval': ['verified-operator-approval'],
-    'runtime-registry-proof': ['runtime-registry-proof'], 'deterministic-replay': ['deterministic-replay'],
+    'runtime-registry-proof': ['runtime-registry-proof'], 'run-liveness-authority': ['run-liveness-authority'], 'deterministic-replay': ['deterministic-replay'],
   };
   return compatible[required].includes(actual);
 }
@@ -315,7 +381,7 @@ export function bindEvidenceAuthority(obligation: Obligation, authority: WindowE
 }
 
 export function evaluateFromAuthorities(obligations: Obligation[], runtime: WindowRuntimeRegistry, evidence: WindowEvidenceAuthority, now = new Date().toISOString()) {
-  return evaluateObligations(obligations.map(o => bindEvidenceAuthority(bindRuntimeAuthority(o, runtime), evidence)), now);
+  return evaluateObligations(obligations.map(o => bindEvidenceAuthority(o.evidencePolicy.requiredAuthority === 'run-liveness-authority' ? o : bindRuntimeAuthority(o, runtime), evidence)), now);
 }
 
 /** Production local-store verifier. Local rows earn only content-bound-store-row;
@@ -323,11 +389,22 @@ export function evaluateFromAuthorities(obligations: Obligation[], runtime: Wind
 export class ProductionMessageEvidenceAuthority implements WindowEvidenceAuthority {
   constructor(private readonly storePath: string, private readonly liveRequery?: (topicId: number, messageId: number) => LiveMessageRow | null) {}
   requery(record: EvidenceRecord): EvidenceRecord | null {
-    const c = record.nativeCoordinates; if (!c || !Number.isInteger(c.topicId) || !Number.isInteger(c.messageId)) return null;
-    let row: LiveMessageRow | undefined;
+    const c = record.nativeCoordinates; if (!c || typeof c.topicId !== 'number' || !Number.isInteger(c.topicId) || typeof c.messageId !== 'number' || !Number.isInteger(c.messageId)) return null;
+    let storedRows: LiveMessageRow[];
     try {
-      row = fs.readFileSync(this.storePath, 'utf8').split(/\n/).filter(Boolean).map(line => JSON.parse(line) as LiveMessageRow).find(item => item.topicId === c.topicId && item.messageId === c.messageId);
+      storedRows = fs.readFileSync(this.storePath, 'utf8').split(/\n/).filter(Boolean).map(line => JSON.parse(line) as LiveMessageRow);
     } catch { /* @silent-fallback-ok — unreadable evidence store earns no authority */ return null; }
+    if (c.messageIds) {
+      if (record.authority !== 'live-requeried-message' || c.messageIds.length < 2 || c.messageIds.some(messageId => !Number.isInteger(messageId)) || new Set(c.messageIds).size !== c.messageIds.length || c.messageId !== c.messageIds[0]) return null;
+      const rows = c.messageIds.map(messageId => storedRows.find(item => item.topicId === c.topicId && item.messageId === messageId));
+      if (rows.some(row => !row)) return null;
+      const liveRows = rows.map(row => this.liveRequery?.(c.topicId!, row!.messageId));
+      if (liveRows.some((live, index) => !live || live.topicId !== c.topicId || live.messageId !== rows[index]!.messageId || live.text !== rows[index]!.text)) return null;
+      const payload = reconstructMultipartReaffirmation({ rows: liveRows as LiveMessageRow[], topicId: c.topicId, windowId: record.windowId, obligationId: record.obligationId });
+      if (!payload || hash(payload) !== record.canonicalPayloadHash) return null;
+      return { ...record, authority: 'live-requeried-message', verifierPassed: true, verifiedPayload: payload };
+    }
+    const row = storedRows.find(item => item.topicId === c.topicId && item.messageId === c.messageId);
     if (!row || hash(row.text) !== record.canonicalPayloadHash) return null;
     if (record.authority === 'content-bound-store-row') return { ...record, authority: 'content-bound-store-row', verifierPassed: true, verifiedPayload: row.text };
     const live = this.liveRequery?.(c.topicId!, c.messageId!);
@@ -335,6 +412,28 @@ export class ProductionMessageEvidenceAuthority implements WindowEvidenceAuthori
     if (record.authority === 'verified-operator-approval' && !live.verifiedOperator) return null;
     return { ...record, authority: record.authority === 'verified-operator-approval' ? 'verified-operator-approval' : 'live-requeried-message', verifierPassed: true, verifiedPayload: live.text };
   }
+}
+
+export function reconstructMultipartReaffirmation(input: { rows: LiveMessageRow[]; topicId: number; windowId: string; obligationId: string }): string | null {
+  if (input.rows.length < 2 || new Set(input.rows.map(row => row.messageId)).size !== input.rows.length || input.rows.some(row => row.topicId !== input.topicId)) return null;
+  const phase = input.obligationId.startsWith('start.') ? 'START' : input.obligationId.startsWith('mid.') ? 'MIDDLE' : input.obligationId.includes('end-reaffirmation') ? 'END' : null;
+  const windowNumber = input.windowId.match(/^w(\d+)$/i)?.[1];
+  if (!phase || !windowNumber) return null;
+  const bodies: string[] = [];
+  for (const [index, row] of input.rows.entries()) {
+    const normalized = row.text.replace(/\r\n/g, '\n');
+    const match = normalized.match(/^\[WINDOW (\d+) (START|MIDDLE|END) TENET REAFFIRMATION [—-] part (\d+)\/(\d+), verbatim, byte-validated\]\n\n([\s\S]*)$/);
+    if (!match || match[1] !== windowNumber || match[2] !== phase || Number(match[3]) !== index + 1 || Number(match[4]) !== input.rows.length) return null;
+    bodies.push(match[5]);
+  }
+  return `${bodies.join('\n\n')}\n`;
+}
+
+export function isW32ReaffirmationBootstrap(input: { catalogProfile?: WindowDutyProfile; obligation: Obligation; rows: LiveMessageRow[]; topicId: number; reconstructed: string; requestedAuthority: EvidenceAuthority }): boolean {
+  if (input.catalogProfile !== 'w32-approved-a204c07d' || input.obligation.id !== 'start.reaffirmation' || input.requestedAuthority !== 'live-requeried-message' || input.topicId !== 36966 || input.rows.length !== 7) return false;
+  if (input.rows.some(row => row.topicId !== input.topicId || row.fromUser || row.sessionName !== 'echo-observer' || (!['agent-outbound', 'agent-verified'].includes(row.authorship ?? '') && row.provenance !== 'agent'))) return false;
+  const reconstructedHash = hash(input.reconstructed);
+  return input.obligation.sourceSpans.some(span => path.basename(span.source) === 'TENETS.md' && span.hash === reconstructedHash);
 }
 
 export class ProductionRuntimeRegistry implements WindowRuntimeRegistry {
@@ -347,18 +446,22 @@ export class ProductionRuntimeRegistry implements WindowRuntimeRegistry {
 }
 
 export function evaluateObligations(obligations: Obligation[], now = new Date().toISOString()): { admitted: boolean; obligations: Obligation[]; issues: string[] } {
-  const issues: string[] = [];
+  const issues: string[] = []; const admissionIssues: string[] = [];
   const evaluated = obligations.map(original => {
     const obligation = structuredClone(original);
     const hasProof = obligation.evidence.some(e => evidenceApplies(e, obligation) && authoritySatisfies(e.authority, obligation.evidencePolicy.requiredAuthority));
     if (hasProof && ['pending', 'unknown', 'open-unexecuted', 'blocked', 'failed'].includes(obligation.status)) obligation.status = 'satisfied';
     if (!hasProof && obligation.status === 'satisfied') obligation.status = 'unknown';
-    const result = evaluateExecutor(obligation, now); obligation.lastEvaluatedAt = now;
+    const result = obligation.evidencePolicy.requiredAuthority === 'run-liveness-authority'
+      ? { ok: hasProof, class: classifyExecutor(obligation, now), issues: hasProof ? [] : ['run-liveness-authority-unsatisfied'] }
+      : evaluateExecutor(obligation, now);
+    obligation.lastEvaluatedAt = now;
     if (!hasProof && (obligation.phase === 'pre-start' || obligation.phase === 'start')) result.issues.push('predicate-unsatisfied');
     if (!result.ok && obligation.status === 'pending') obligation.status = 'open-unexecuted';
-    result.issues.forEach(issue => issues.push(`${obligation.id}:${issue}`)); return obligation;
+    const activationPostcondition = ['w32.continuous.admitted-and-unexpired', 'w32.continuous.pre-start-gate-exit', 'w32.continuous.opening-complete'].includes(obligation.id);
+    result.issues.forEach(issue => { const rendered = `${obligation.id}:${issue}`; issues.push(rendered); if (!activationPostcondition) admissionIssues.push(rendered); }); return obligation;
   });
-  return { admitted: issues.length === 0 && evaluated.every(o => !['pending', 'unknown', 'open-unexecuted', 'failed', 'blocked', 'expired'].includes(o.status) || !['pre-start', 'start'].includes(o.phase)), obligations: evaluated, issues };
+  return { admitted: admissionIssues.length === 0 && evaluated.every(o => !['pending', 'unknown', 'open-unexecuted', 'failed', 'blocked', 'expired'].includes(o.status) || !['pre-start', 'start'].includes(o.phase)), obligations: evaluated, issues };
 }
 
 export function transitionFuturePhase(obligation: Obligation, now: string): Obligation {
@@ -370,15 +473,20 @@ export function transitionFuturePhase(obligation: Obligation, now: string): Obli
 
 export function materializeCadenceInstances(ledger: LedgerDocument, through: string): LedgerDocument {
   if (!validTime(through)) throw new Error('invalid-timestamp'); const copy = structuredClone(ledger);
+  if (copy.recurrenceFrozenAt || ['close_due', 'close_blocked', 'delivered_pending_post_live', 'closed_clean', 'closed_with_operator_waiver', 'closed_failed', 'rolled_back'].includes(copy.state)) return copy;
+  const requestedThrough = Date.parse(through);
+  const ceiling = validTime(copy.windowCeilingAt) ? Date.parse(copy.windowCeilingAt) : Infinity;
+  const materializeThrough = Math.min(requestedThrough, ceiling);
   for (const template of copy.obligations.filter(o => o.predicate.recurring && !o.id.includes('@'))) {
     const interval = template.id.includes('30m') ? 30 * 60_000 : template.id.includes('3h') ? 3 * 3_600_000 : 0; if (!interval) continue;
-    const start = Date.parse(template.deadline.dueAt); if (Date.parse(through) < start) continue;
-    for (let due = start; due <= Date.parse(through); due += interval) {
+    const start = Date.parse(template.deadline.dueAt); if (materializeThrough < start) continue;
+    for (let due = start; due <= materializeThrough; due += interval) {
       const id = `${template.id}@${new Date(due).toISOString()}`; if (copy.compiledObligationIds.includes(id)) continue;
       const instance = structuredClone(template); instance.id = id; instance.deadline.dueAt = new Date(due).toISOString(); instance.eligibleAt = instance.deadline.dueAt; instance.predicate.recurring = true; instance.status = 'pending'; instance.evidence = []; instance.lastEvaluatedAt = null;
       copy.obligations.push(instance); copy.compiledObligationIds.push(id);
     }
   }
+  if (requestedThrough >= ceiling) copy.recurrenceFrozenAt = copy.windowCeilingAt;
   return copy;
 }
 
@@ -433,9 +541,7 @@ export function validateWaiver(waiver: Waiver, ledger: LedgerDocument, locallyBo
 }
 
 export function createLedger(input: { agentId: string; scope: string; windowId: string; compiled: CompiledSources }): LedgerDocument {
-  assertEchoScope(input.agentId, input.scope); const ledger: LedgerDocument = { version: 1, lifecycleRunId: crypto.randomUUID(), agentId: 'echo', scope: 'echo-window-lifecycle', windowId: input.windowId, state: 'pre_start_gate', sourceHashes: input.compiled.hashes, compiledObligationIds: input.compiled.obligations.map(o => o.id), obligations: input.compiled.obligations, usedNonces: [], nativeEvaluations: [], waivers: [] };
-  const closeAt = ledger.obligations.filter(o => o.phase === 'close' || o.phase === 'post-live').map(o => Date.parse(o.deadline.dueAt)).filter(Number.isFinite);
-  return closeAt.length ? materializeCadenceInstances(ledger, new Date(Math.max(...closeAt)).toISOString()) : ledger;
+  assertEchoScope(input.agentId, input.scope); return { version: 1, lifecycleRunId: crypto.randomUUID(), agentId: 'echo', scope: 'echo-window-lifecycle', windowId: input.windowId, state: 'pre_start_gate', sourceHashes: input.compiled.hashes, catalogProfile: input.compiled.catalogProfile, windowStartedAt: input.compiled.compiledAt, windowCeilingAt: input.compiled.charterCeilingAt, compiledObligationIds: input.compiled.obligations.map(o => o.id), obligations: input.compiled.obligations, usedNonces: [], nativeEvaluations: [], waivers: [] };
 }
 
 const TRANSITIONS: Readonly<Record<LifecycleState, readonly LifecycleState[]>> = {
@@ -443,7 +549,7 @@ const TRANSITIONS: Readonly<Record<LifecycleState, readonly LifecycleState[]>> =
   active_start: ['active_mid_due', 'rolled_back'], active_mid_due: ['active_mid_blocked', 'active_mid_satisfied', 'rolled_back'],
   active_mid_blocked: ['active_mid_due', 'rolled_back'], active_mid_satisfied: ['close_due', 'rolled_back'], close_due: ['close_blocked', 'delivered_pending_post_live', 'rolled_back'],
   close_blocked: ['close_due', 'rolled_back'], delivered_pending_post_live: ['close_blocked', 'closed_clean', 'closed_with_operator_waiver', 'rolled_back'],
-  closed_clean: [], closed_with_operator_waiver: [], rolled_back: [],
+  closed_clean: [], closed_with_operator_waiver: [], closed_failed: [], rolled_back: [],
 };
 export function transitionLedger(ledger: LedgerDocument, target: LifecycleState, closureAuthority?: ClosureAuthority): LedgerDocument {
   assertEchoScope(ledger.agentId, ledger.scope);
@@ -455,7 +561,9 @@ export function transitionLedger(ledger: LedgerDocument, target: LifecycleState,
   if (target === 'close_due' && !phaseReady(['mid'])) throw new Error('mid-phase-not-satisfied');
   if (target === 'delivered_pending_post_live' && !phaseReady(['close'])) throw new Error('close-phase-not-satisfied');
   if (target === 'closed_clean' || target === 'closed_with_operator_waiver') { const closure = evaluateClosure(ledger, undefined, closureAuthority); if (closure.state !== target) throw new Error(`closure-refused:${closure.issues.join(',')}`); }
-  const copy = structuredClone(ledger); copy.state = target; return copy;
+  const copy = structuredClone(ledger); copy.state = target;
+  if (['close_due', 'close_blocked', 'delivered_pending_post_live', 'closed_clean', 'closed_with_operator_waiver', 'closed_failed', 'rolled_back'].includes(target)) copy.recurrenceFrozenAt ??= closureAuthority?.now ?? new Date().toISOString();
+  return copy;
 }
 
 export function applyWaiver(ledger: LedgerDocument, waiver: Waiver, locallyBoundOperatorId: string, now = new Date().toISOString()): LedgerDocument {
@@ -472,7 +580,7 @@ export class EchoWindowLedgerStore {
   backupExisting(reason = 'manual', at = new Date().toISOString()): string | null { if (!fs.existsSync(this.file)) return null; const bytes = fs.readFileSync(this.file); const stamp = at.replace(/[:.]/g, '-'); const digest = hash(bytes).slice(0, 16); const backup = path.join(path.dirname(this.file), 'backups', `ledger.${stamp}.${reason}.${digest}.json`); fs.mkdirSync(path.dirname(backup), { recursive: true, mode: 0o700 }); fs.writeFileSync(backup, bytes, { mode: 0o600 }); return backup; }
   save(ledger: LedgerDocument): void { this.validate(ledger); fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 }); const tmp = `${this.file}.${process.pid}.tmp`; fs.writeFileSync(tmp, `${JSON.stringify(ledger, null, 2)}\n`, { mode: 0o600 }); fs.renameSync(tmp, this.file); }
   appendNativeEvaluation(agentId: string, scope: string, record: NativeEvaluationRecord): LedgerDocument { const ledger = this.load(agentId, scope); if (!ledger) throw new Error('ledger-not-found'); if (record.agentId !== ledger.agentId || record.scope !== ledger.scope || record.windowId !== ledger.windowId) throw new Error('foreign-native-evaluation'); if (ledger.usedNonces.includes(record.nonce)) throw new Error('nonce-replay'); ledger.usedNonces.push(record.nonce); ledger.nativeEvaluations.push(record); ledger.admission = undefined; this.save(ledger); return ledger; }
-  rollback(agentId: string, scope: string, request: RollbackRequest, operatorEvidence: EvidenceRecord, authority: WindowEvidenceAuthority, at = new Date().toISOString()): LedgerDocument { assertEchoScope(agentId, scope); const ledger = this.load(agentId, scope); if (!ledger) throw new Error('ledger-not-found'); const { digest: _digest, approvalCoordinates: _coords, ...payload } = request; if (request.windowId !== ledger.windowId || request.digest !== rollbackDigest(payload) || ledger.usedNonces.includes(request.nonce) || !validTime(request.createdAt) || Date.parse(request.createdAt) >= Date.parse(at)) throw new Error('invalid-rollback-payload'); const verified = authority.requery(operatorEvidence); if (!verified || verified.authority !== 'verified-operator-approval' || !verified.producer || verified.agentId !== ledger.agentId || verified.scope !== ledger.scope || verified.windowId !== ledger.windowId || verified.nativeCoordinates?.topicId !== request.approvalCoordinates.topicId || verified.nativeCoordinates?.messageId !== request.approvalCoordinates.messageId || verified.verifiedPayload?.trim() !== `approve rollback ${request.digest}`) throw new Error('verified-operator-rollback-required'); ledger.usedNonces.push(request.nonce); ledger.state = 'rolled_back'; ledger.rollback = { at, reason: request.reason, operatorEvidence: verified, operatorPrincipalId: verified.producer, windowId: ledger.windowId, scope: ledger.scope, enforcementDisabled: true, auditReadOnly: true, manualRitualRequired: true }; ledger.admission = undefined; this.save(ledger); return ledger; }
+  rollback(agentId: string, scope: string, request: RollbackRequest, operatorEvidence: EvidenceRecord, authority: WindowEvidenceAuthority, at = new Date().toISOString(), beforePersist?: (ledger: LedgerDocument) => void): LedgerDocument { assertEchoScope(agentId, scope); const ledger = this.load(agentId, scope); if (!ledger) throw new Error('ledger-not-found'); const { digest: _digest, approvalCoordinates: _coords, ...payload } = request; if (request.windowId !== ledger.windowId || request.digest !== rollbackDigest(payload) || ledger.usedNonces.includes(request.nonce) || !validTime(request.createdAt) || Date.parse(request.createdAt) >= Date.parse(at)) throw new Error('invalid-rollback-payload'); const verified = authority.requery(operatorEvidence); if (!verified || verified.authority !== 'verified-operator-approval' || !verified.producer || verified.agentId !== ledger.agentId || verified.scope !== ledger.scope || verified.windowId !== ledger.windowId || verified.nativeCoordinates?.topicId !== request.approvalCoordinates.topicId || verified.nativeCoordinates?.messageId !== request.approvalCoordinates.messageId || verified.verifiedPayload?.trim() !== `approve rollback ${request.digest}`) throw new Error('verified-operator-rollback-required'); ledger.usedNonces.push(request.nonce); ledger.state = 'rolled_back'; ledger.rollback = { at, reason: request.reason, operatorEvidence: verified, operatorPrincipalId: verified.producer, windowId: ledger.windowId, scope: ledger.scope, enforcementDisabled: true, auditReadOnly: true, manualRitualRequired: true }; ledger.admission = undefined; beforePersist?.(structuredClone(ledger)); this.save(ledger); return ledger; }
   reenable(agentId: string, scope: string, faultFixedEvidencePath: string, dryRunRunner?: () => WindowDryRunResult, at = new Date().toISOString()): LedgerDocument { assertEchoScope(agentId, scope); const ledger = this.load(agentId, scope); if (!ledger || ledger.state !== 'rolled_back' || !ledger.rollback) throw new Error('rollback-not-active'); let fixedHash: string; try { fixedHash = hash(fs.readFileSync(faultFixedEvidencePath)); } catch { throw new Error('fault-fixed-evidence-required'); } if (!dryRunRunner) throw new Error('dry-run-runner-required'); let suite: WindowDryRunResult; try { suite = dryRunRunner(); } catch { throw new Error('dry-run-suite-required'); } if (suite.passed !== true || !validTime(suite.completedAt) || Date.parse(suite.completedAt) < Date.parse(ledger.rollback.at) || !/^[a-f0-9]{64}$/.test(suite.outputHash) || !WINDOW_DRY_RUN_INVENTORY.every(file => suite.testInventory.includes(file))) throw new Error('dry-run-suite-required'); const suitePath = path.join(path.dirname(this.file), 'dry-run-suite.json'); fs.writeFileSync(suitePath, `${JSON.stringify({ ...suite, sourceHashes: ledger.sourceHashes }, null, 2)}\n`, { mode: 0o600 }); ledger.rollback.reenabledAt = at; ledger.rollback.faultFixedEvidence = `${faultFixedEvidencePath}#sha256:${fixedHash}`; ledger.rollback.dryRunSuitePassed = true; ledger.state = 'pre_start_gate'; this.save(ledger); return ledger; }
   private validate(ledger: LedgerDocument): void { assertEchoScope(ledger.agentId, ledger.scope); if (!/^[0-9a-f-]{36}$/.test(ledger.lifecycleRunId)) throw new Error('lifecycle-run-id-missing'); if (!Array.isArray(ledger.compiledObligationIds)) throw new Error('compiled-census-missing'); for (const n of ledger.nativeEvaluations) if (n.agentId !== ledger.agentId || n.scope !== ledger.scope || n.windowId !== ledger.windowId) throw new Error('foreign-native-evaluation'); for (const o of ledger.obligations) { assertEchoScope(o.agentId, o.scope); if (o.windowId !== ledger.windowId) throw new Error('cross-window-obligation'); for (const e of o.evidence) { assertEchoScope(e.agentId, e.scope); if (e.windowId !== ledger.windowId || e.obligationId !== o.id) throw new Error('foreign-evidence-binding'); } } }
 }
@@ -516,6 +624,7 @@ export function deriveFailureRemediation(obligation: Obligation): FailureRemedia
 export function evaluateLifecycleGuard(ledger: LedgerDocument, action: LifecycleGuardAction): { allowed: boolean; reasons: string[] } {
   if (ledger.state === 'rolled_back') return action === 'telegram-send' ? { allowed: false, reasons: ['rollback:operator-account-send-disabled'] } : { allowed: true, reasons: [] };
   if (ledger.state === 'closed_clean' || ledger.state === 'closed_with_operator_waiver') return { allowed: true, reasons: [] };
+  if (ledger.state === 'closed_failed') return { allowed: false, reasons: ['window-ceiling-expired'] };
   const unresolved = ledger.obligations.filter(o => ['pending', 'unknown', 'open-unexecuted', 'failed', 'blocked', 'expired'].includes(o.status));
   const selected = unresolved.filter(o => {
     const remediation = deriveFailureRemediation(o);

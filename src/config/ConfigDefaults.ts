@@ -110,6 +110,23 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   monitoring: {
     memoryMonitoring: true,
     healthCheckIntervalMs: 30000,
+    // W32 cadence executor consumes authoritative work receipts, persists one
+    // result per 30-minute interval, and independently sends 3-hour synthesis.
+    // Explicitly dark and dry-run-first; migration is add-missing-only.
+    windowRunLiveness: {
+      cadenceExecutor: {
+        enabled: false,
+        dryRun: true,
+        receiptIntervalMs: 30 * 60_000,
+        reportIntervalMs: 3 * 60 * 60_000,
+        checkpointLeadMs: 5 * 60_000,
+        receiptGraceMs: 5 * 60_000,
+        checkpointRetryMaxAttempts: 2,
+        checkpointRetryBackoffMs: 60_000,
+        reportRetryMaxAttempts: 3,
+        reportRetryBackoffMs: 60_000,
+      },
+    },
     // Boot health beacon — a minimal /health responder that answers from the start
     // of boot so the supervisor can't mistake a slow boot for a dead process (topic
     // 21816 root cause #1). DEV-GATED (CMT-1438): `enabled` is deliberately OMITTED
@@ -1864,6 +1881,17 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // and an operator's explicit value is never overwritten. The hook reads
   // `enabled` + `judgeTimeoutMs` at the chokepoint (no restart needed to toggle).
   autonomousSessions: {
+    // Bounded Codex continuation and its autonomous preparation carrier both
+    // ship dark. applyDefaults backfills these leaves without overriding an
+    // operator's explicit rollout choice.
+    codexTaskContinuation: {
+      enabled: false,
+      preparationCarrierEnabled: false,
+      maxDurationSeconds: 14400,
+      maxContinuations: 40,
+      auditRetentionDays: 14,
+      auditMaxRows: 5000,
+    },
     completionDiscipline: {
       // Operator-mandated behavior ("the completion bar is the FULL feature"),
       // not a dark-launch experiment (Open-Q2 → on). The flag exists for instant

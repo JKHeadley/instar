@@ -5,6 +5,8 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 
 export interface CodexTaskContinuationConfig {
   enabled?: boolean;
+  /** Independently dark gate for the autonomous pre-admission carrier. */
+  preparationCarrierEnabled?: boolean;
   maxDurationSeconds?: number;
   maxContinuations?: number;
   auditRetentionDays?: number;
@@ -25,6 +27,13 @@ export interface ContinuationLedger {
   updatedAt: string;
   bodyDigest: string;
   body: string;
+  /**
+   * Ordinary task continuation is the legacy/default mode. An autonomous
+   * preparation carrier keeps pre-admission work moving without making the
+   * autonomous run itself active.
+   */
+  mode?: 'ordinary' | 'autonomous-preparation';
+  preparationState?: 'preparing' | 'recovering' | 'promoted' | 'terminal';
 }
 
 const FIRST_STOP_BIND = '__bind_on_first_stop__';
@@ -40,6 +49,9 @@ export type ContinuationReason =
   | 'no-task-structure'
   | 'all-tasks-complete'
   | 'renewed'
+  | 'preparation-recovering'
+  | 'preparation-promoted'
+  | 'preparation-terminalized'
   | 'open-tasks'
   | 'audit-failed'
   | 'lock-unavailable';
@@ -54,6 +66,7 @@ export interface ContinuationDecision {
 
 const DEFAULTS: Required<CodexTaskContinuationConfig> = {
   enabled: false,
+  preparationCarrierEnabled: false,
   maxDurationSeconds: 14_400,
   maxContinuations: 40,
   auditRetentionDays: 14,
@@ -118,6 +131,7 @@ export class CodexTaskContinuationStore {
   }
 
   get enabled(): boolean { return this.cfg.enabled; }
+  get preparationCarrierEnabled(): boolean { return this.cfg.preparationCarrierEnabled; }
 
   start(input: {
     topicId: string;
@@ -125,18 +139,26 @@ export class CodexTaskContinuationStore {
     tasks: string[];
     durationSeconds?: number;
     maxContinuations?: number;
+    mode?: 'ordinary' | 'autonomous-preparation';
   }): ContinuationLedger {
     if (!this.cfg.enabled) throw new Error('continuation-disabled');
+    if (input.mode === 'autonomous-preparation' && !this.cfg.preparationCarrierEnabled) {
+      throw new Error('preparation-carrier-disabled');
+    }
     if (!/^\d+$/.test(input.topicId)) throw new Error('invalid-owner');
     return this.withNamedLock('maintenance', () => {
       this.pruneInactiveLedgers();
       return this.withLock(input.topicId, () => {
-      if (!this.read(input.topicId) && this.list().length >= MAX_LEDGER_FILES) throw new Error('continuation-capacity');
+      const prior = this.read(input.topicId);
+      if (input.mode === 'autonomous-preparation' && prior?.mode === 'autonomous-preparation') {
+        throw new Error('preparation-ledger-exists');
+      }
+      if (input.mode === 'autonomous-preparation' && prior?.active) throw new Error('continuation-ledger-already-active');
+      if (!prior && this.list().length >= MAX_LEDGER_FILES) throw new Error('continuation-capacity');
       const taskLines = input.tasks.map((t) => `- [ ] ${String(t).replace(/[\r\n]+/g, ' ').trim()}`).filter((t) => t.length > 6);
       if (taskLines.length === 0) throw new Error('empty-task-list');
       const body = normalizeTaskBody(`${taskLines.join('\n')}\n`);
       if (Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES) throw new Error('task-list-too-large');
-      const prior = this.read(input.topicId);
       const tombstone = this.readTombstone(input.topicId);
       const generationBase = Math.max(prior?.generation ?? 0, tombstone, this.readGlobalTombstone());
       if (!Number.isSafeInteger(generationBase) || generationBase >= Number.MAX_SAFE_INTEGER) throw new Error('operator-stop');
@@ -150,10 +172,17 @@ export class CodexTaskContinuationStore {
         continuationCount: 0,
         maxContinuations: Math.max(1, Math.min(input.maxContinuations ?? this.cfg.maxContinuations, this.cfg.maxContinuations)),
         updatedAt: now, bodyDigest: digest(body), body,
+        mode: input.mode ?? 'ordinary',
+        ...(input.mode === 'autonomous-preparation' ? { preparationState: 'preparing' as const } : {}),
       };
       this.write(ledger);
       try { this.audit(ledger, 'allow', 'open-tasks', parseContinuationTasks(body).length, 0); }
-      catch (err) { ledger.active = false; this.write(ledger); throw err; }
+      catch (err) {
+        ledger.active = false;
+        if (ledger.mode === 'autonomous-preparation') ledger.preparationState = 'terminal';
+        this.write(ledger);
+        throw err;
+      }
       return ledger;
       });
     });
@@ -171,6 +200,7 @@ export class CodexTaskContinuationStore {
     if (!/^\d+$/.test(topicId)) throw new Error('invalid-owner');
     return this.withNamedLock('maintenance', () => this.withLock(topicId, () => {
       const prior = this.requireValid(topicId);
+      if (prior.mode === 'autonomous-preparation') throw new Error('preparation-use-recover-route');
       const tasks = parseContinuationTasks(prior.body);
       if (tasks.length === 0 || tasks.every((task) => !task.open)) throw new Error('no-open-tasks');
       const tombstone = this.readTombstone(topicId);
@@ -191,7 +221,12 @@ export class CodexTaskContinuationStore {
       };
       this.write(ledger);
       try { this.audit(ledger, 'allow', 'renewed', tasks.filter((task) => task.open).length, 0); }
-      catch (err) { ledger.active = false; this.write(ledger); throw err; }
+      catch (err) {
+        ledger.active = false;
+        if (ledger.mode === 'autonomous-preparation') ledger.preparationState = 'terminal';
+        this.write(ledger);
+        throw err;
+      }
       return ledger;
     }));
   }
@@ -222,6 +257,32 @@ export class CodexTaskContinuationStore {
     });
   }
 
+  /** Mark an admitted preparation attempt as being recovered. This changes
+   * only the bounded continuation carrier; it never activates an autonomous
+   * run or makes the topic count against the autonomous concurrency cap. */
+  markPreparationRecovering(topicId: string): ContinuationLedger {
+    return this.withLock(topicId, () => {
+      const ledger = this.requireLivePreparation(topicId);
+      ledger.preparationState = 'recovering';
+      ledger.updatedAt = new Date().toISOString();
+      this.write(ledger);
+      this.audit(ledger, 'allow', 'preparation-recovering', parseContinuationTasks(ledger.body).filter((task) => task.open).length, ledger.continuationCount);
+      return ledger;
+    });
+  }
+
+  /** End the carrier after an independently-authoritative run activation has
+   * been observed by the caller. Promotion is one-way and cannot label the
+   * autonomous run active by itself. */
+  promotePreparation(topicId: string): ContinuationLedger {
+    return this.finishPreparation(topicId, 'promoted', 'preparation-promoted');
+  }
+
+  /** Honest terminal boundary for a preparation that cannot be admitted. */
+  terminalizePreparation(topicId: string): ContinuationLedger {
+    return this.finishPreparation(topicId, 'terminal', 'preparation-terminalized');
+  }
+
   stop(topicId: string): boolean {
     return this.withLock(topicId, () => {
       const ledger = this.read(topicId);
@@ -229,6 +290,7 @@ export class CodexTaskContinuationStore {
       atomicWrite(this.tombstonePath(topicId), `${generation}\n`);
       if (ledger) {
         ledger.active = false;
+        if (ledger.mode === 'autonomous-preparation') ledger.preparationState = 'terminal';
         ledger.updatedAt = new Date().toISOString();
         this.write(ledger);
         this.audit(ledger, 'deactivate', 'operator-stop', null, ledger.continuationCount);
@@ -258,6 +320,9 @@ export class CodexTaskContinuationStore {
         const ledger = this.read(topicId);
         if (!ledger) return this.recordAllow(null, topicId, sessionId, 'no-ledger');
         if (!this.isStructurallyValid(ledger)) return this.deactivate(ledger, 'invalid-state');
+        if (ledger.mode === 'autonomous-preparation' && !this.cfg.preparationCarrierEnabled) {
+          return this.deactivate(ledger, 'disabled');
+        }
         if (this.readTombstone(topicId) > ledger.generation || this.readGlobalTombstone() > ledger.generation) {
           return this.deactivate(ledger, 'operator-stop');
         }
@@ -312,12 +377,38 @@ export class CodexTaskContinuationStore {
 
   private deactivate(ledger: ContinuationLedger, reason: ContinuationReason, writeAudit = true): ContinuationDecision {
     ledger.active = false;
+    if (ledger.mode === 'autonomous-preparation') ledger.preparationState = 'terminal';
     ledger.updatedAt = new Date().toISOString();
     this.write(ledger);
     if (writeAudit) {
       try { this.audit(ledger, 'deactivate', reason, null, ledger.continuationCount); } catch { /* already stopping */ }
     }
     return { decision: 'deactivate', reason, openTaskCount: null, continuationCount: ledger.continuationCount };
+  }
+
+  private finishPreparation(
+    topicId: string,
+    state: 'promoted' | 'terminal',
+    reason: 'preparation-promoted' | 'preparation-terminalized',
+  ): ContinuationLedger {
+    return this.withLock(topicId, () => {
+      const ledger = this.requireLivePreparation(topicId);
+      ledger.active = false;
+      ledger.preparationState = state;
+      ledger.updatedAt = new Date().toISOString();
+      this.write(ledger);
+      this.audit(ledger, 'deactivate', reason, null, ledger.continuationCount);
+      return ledger;
+    });
+  }
+
+  private requireLivePreparation(topicId: string): ContinuationLedger {
+    const ledger = this.requireValid(topicId);
+    if (!ledger.active || ledger.mode !== 'autonomous-preparation') throw new Error('preparation-not-active');
+    if (ledger.preparationState !== 'preparing' && ledger.preparationState !== 'recovering') {
+      throw new Error('invalid-preparation-transition');
+    }
+    return ledger;
   }
 
   private recordAllow(ledger: ContinuationLedger | null, topicId: string, sessionId: string, reason: ContinuationReason): ContinuationDecision {
@@ -341,7 +432,13 @@ export class CodexTaskContinuationStore {
   }
 
   private isStructurallyValid(v: ContinuationLedger): boolean {
-    return v.version === 1 && /^\d+$/.test(v.topicId) && !!v.sessionId && Number.isInteger(v.generation) && v.generation > 0
+    const mode = v.mode ?? 'ordinary';
+    const preparationValid = mode === 'ordinary'
+      ? v.preparationState === undefined
+      : mode === 'autonomous-preparation'
+        && ['preparing', 'recovering', 'promoted', 'terminal'].includes(v.preparationState ?? '')
+        && (v.active ? v.preparationState === 'preparing' || v.preparationState === 'recovering' : v.preparationState === 'promoted' || v.preparationState === 'terminal');
+    return preparationValid && v.version === 1 && /^\d+$/.test(v.topicId) && !!v.sessionId && Number.isInteger(v.generation) && v.generation > 0
       && Number.isInteger(v.continuationCount) && v.continuationCount >= 0
       && Number.isInteger(v.maxContinuations) && v.maxContinuations > 0 && v.maxContinuations <= this.cfg.maxContinuations
       && Number.isInteger(v.durationSeconds) && v.durationSeconds > 0 && v.durationSeconds <= this.cfg.maxDurationSeconds

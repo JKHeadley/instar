@@ -75,7 +75,7 @@ export interface ScopeAccretionBreakerState {
   trippedAt?: string;
 }
 
-export type AutonomousRunStatus = 'active' | 'met' | 'ended' | 'expired' | 'archived';
+export type AutonomousRunStatus = 'preparing' | 'active' | 'at-risk' | 'failed' | 'met' | 'ended' | 'expired' | 'archived';
 
 export interface UnbuiltArtifactEntry {
   path: string;
@@ -163,6 +163,8 @@ export interface RegisterRunInput {
   scopeAccretion: ScopeAccretionSnapshot;
   baseRoots: SweepBaseRoot[];
   maxDurationMs: number;
+  /** W32 authority owns promotion when present; omitted preserves legacy behavior. */
+  initialStatus?: 'preparing' | 'active';
 }
 
 export type RegisterRunResult =
@@ -286,6 +288,13 @@ export class AutonomousRunStore {
     return true;
   }
 
+  /** Non-terminal registration, including W32 pre-active/demoted states. */
+  isOpen(rec: AutonomousRunRecord, now: number = Date.now()): boolean {
+    if (!['preparing', 'active', 'at-risk'].includes(rec.status)) return false;
+    const end = Date.parse(rec.endAt);
+    return !Number.isFinite(end) || now <= end;
+  }
+
   /** Every currently-active registered run on this server (R35 arming). */
   listActive(now: number = Date.now()): AutonomousRunRecord[] {
     let names: string[] = [];
@@ -311,7 +320,7 @@ export class AutonomousRunStore {
 
   register(input: RegisterRunInput, now: number = Date.now()): RegisterRunResult {
     const existing = this.getRecord(input.topicId);
-    if (existing && this.isActive(existing, now)) {
+    if (existing && this.isOpen(existing, now)) {
       // One registration per active run: refuse while non-terminal + unexpired.
       return { ok: false, conflict: true, existingRunId: existing.runId };
     }
@@ -346,7 +355,7 @@ export class AutonomousRunStore {
       scopeAccretion: input.scopeAccretion,
       baseRoots: input.baseRoots,
       worktreeFirstSeen: {},
-      status: 'active',
+      status: input.initialStatus ?? 'active',
       corroborated: {},
       negativeCache: {},
       ratifiedArtifacts: [],
@@ -380,6 +389,17 @@ export class AutonomousRunStore {
       this.writeRecord(rec);
       return rec;
     });
+  }
+
+  /** W32's sole compatibility projection; never itself decides liveness. */
+  projectLiveness(topicId: string, runId: string, status: 'preparing' | 'active' | 'at-risk' | 'failed', executorId?: string): AutonomousRunRecord {
+    const next = this.update(topicId, runId, rec => {
+      if (!['preparing', 'active', 'at-risk'].includes(rec.status) && rec.status !== status) throw new Error('autonomous-run-terminal');
+      rec.status = status;
+      if (executorId) rec.sessionId = executorId;
+    });
+    if (!next) throw new Error('autonomous-run-not-found');
+    return next;
   }
 
   enrollStandingDrive(topicId: string, runId: string, extension: StandingDriveExtensionV1): AutonomousRunRecord {
@@ -418,7 +438,7 @@ export class AutonomousRunStore {
     return this.update(topicId, runId, (rec) => {
       // Terminality is one-way (R43): never demote a terminal record back to active,
       // and never overwrite one terminal status with another (first exit wins).
-      if (rec.status !== 'active') return;
+      if (!['preparing', 'active', 'at-risk'].includes(rec.status)) return;
       rec.status = status;
       rec.endedAt = new Date().toISOString();
       if (reason) rec.endReason = reason.slice(0, 500);
@@ -465,7 +485,7 @@ export class AutonomousRunStore {
       if (!Number.isFinite(end) || now - end < ARCHIVE_AFTER_END_MS) continue;
       // A still-'active' record reaped here is the crash/tamper case — the caller
       // enumerates its unbuilt set loudly before it disappears into the archive.
-      if (rec.status === 'active') reaped.push(rec);
+      if (['preparing', 'active', 'at-risk'].includes(rec.status)) reaped.push(rec);
       this.archive(rec);
     }
     return reaped;

@@ -848,6 +848,22 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'windowRunLiveness',
+    prefixes: ['/window-run-liveness'],
+    description: 'Authoritative five-predicate autonomous-window liveness plus an explicitly enabled durable cadence executor. The executor consumes server-minted work receipts for distinct 30-minute intervals and independently delivers due 3-hour Telegram synthesis; it never labels narration as progress. Missing predicates revoke active, permit at most one durable bounded recovery, and then settle loudly to stalled/failed.',
+    build: ({ ctx }) => ({
+      configured: ctx.config.projectName === 'echo' && resolveDevAgentGate(ctx.config.monitoring?.windowRunLiveness?.enabled, ctx.config),
+      endpoints: [
+        'GET /window-run-liveness',
+        'POST /window-run-liveness/register',
+        'POST /window-run-liveness/tick',
+        'POST /window-run-liveness/work-advance',
+        'GET /window-run-liveness/cadence',
+        'POST /window-run-liveness/cadence/tick',
+      ],
+    }),
+  },
+  {
     key: 'semantic',
     prefixes: ['/semantic'],
     description: 'Semantic memory — successor to deprecated /memory',
@@ -896,7 +912,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'codexTaskContinuation',
     prefixes: ['/continuation'],
-    description: 'Bounded ordinary-work continuation for Codex — explicit per-topic task ledgers keep a local Codex session moving only while unchecked tasks and both duration/count budgets remain. Operator stop, ownership mismatch, malformed state, lock contention, or audit failure all fail toward normal stop. Off by default.',
+    description: 'Bounded Codex continuation — explicit per-topic task ledgers keep ordinary work moving and, behind a separate dark gate, truthfully carry pre-admission autonomous preparation without claiming the run is active. Operator stop, ownership mismatch, malformed state, lock contention, or audit failure all fail toward normal stop.',
     build: ({ ctx }) => ({
       enabled: (ctx.liveConfig?.get(
         'autonomousSessions.codexTaskContinuation',
@@ -910,6 +926,10 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /continuation/:topic/stop',
         'POST /continuation/stop-all',
         'POST /continuation/decide',
+        'POST /autonomous/preparation/start — begin a bounded inactive preparation carrier',
+        'POST /autonomous/preparation/:topic/recover — move a live carrier to recovering',
+        'POST /autonomous/preparation/:topic/promote — retire only after independent active admission',
+        'POST /autonomous/preparation/:topic/terminalize — retire a failed inactive preparation',
       ],
     }),
   },

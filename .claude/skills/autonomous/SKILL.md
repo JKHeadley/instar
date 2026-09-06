@@ -104,7 +104,7 @@ Write this content:
      when set, the stop-hook RUNS it on a met:true verdict and only allows the exit if it ALSO
      passes (fail/timeout → keep working). This sentinel is the PostUpdateMigrator marker that
      re-deploys this SKILL.md to existing agents. Spec: autonomous-completion-real-checks.md -->
-<!-- SCOPE_ACCRETION — scope-accretion completion discipline: register the run server-side
+<!-- W32_PREPARING_LIVENESS — scope-accretion completion discipline: register the run server-side
      (POST /autonomous/register) and record the returned run_id in the frontmatter; the server
      then holds completion while deliverables THIS run creates sit unbuilt, uncorroborated, and
      unratified. This sentinel is the PostUpdateMigrator marker that re-deploys this SKILL.md to
@@ -112,7 +112,8 @@ Write this content:
 
 ```markdown
 ---
-active: true
+active: {false when POST /autonomous/register returns preparationRequired:true; true otherwise}
+status: {the initialStatus returned by POST /autonomous/register; active when absent}
 iteration: 1
 session_id: {VALUE OF $CLAUDE_CODE_SESSION_ID — get via: echo $CLAUDE_CODE_SESSION_ID}
 goal: "YOUR GOAL"
@@ -193,7 +194,11 @@ jq -nc --arg t "TOPIC_ID" --arg c "YOUR completion_condition text" --arg w "$(pw
     --data-binary @- "http://localhost:${PORT}/autonomous/register"
 ```
 
-Write the returned `runId` into the state file's `run_id:` frontmatter field. If the mission is
+Write the returned `runId` into the state file's `run_id:` frontmatter field. When the response says
+`preparationRequired:true`, write `active:false` and `status:preparing`; the server's five-predicate
+liveness authority is the only path that may later promote the canonical file to `active:true`.
+When that field is absent/false (authority dark, observe-only/dry-run, or non-Echo), preserve the legacy `active:true` start; shadow observation must not alter compatibility state.
+If the mission is
 GENUINELY draft-only (the operator asked for drafts, not builds), list those exact repo-relative
 paths in `declaredDeliverables` — that list is operator-visible at setup and immutable mid-run.
 If the server is unreachable, leave `run_id` empty and continue — the gate degrades honestly.

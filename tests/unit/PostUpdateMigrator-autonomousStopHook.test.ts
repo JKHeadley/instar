@@ -110,12 +110,22 @@ function deployHook(projectDir: string, content: string): string {
   return dst;
 }
 
-function priorStateParseHook(): string {
+// Synthetic anchor-compatible layout: it retains the newer preparation-carrier
+// behavior while removing its marker and the state-parse feature. This verifies
+// the surgical state-parse patch preserves unrelated later bytes; exact historic
+// stock revisions are covered separately by HISTORICAL_STOCK_HOOKS below.
+function anchorCompatibleStateParsePredecessor(): string {
   const bundled = fs.readFileSync(
     path.join(process.cwd(), '.claude', 'skills', 'autonomous', 'hooks', 'autonomous-stop-hook.sh'),
     'utf8',
   );
   return bundled
+    .replace(
+      `# hook-capability: PREPARATION_CARRIER — a truthful inactive autonomous record in
+# preparing/recovering state falls through to the bounded continuation authority.
+`,
+      '',
+    )
     .replace(
       `# hook-capability: STATE_PARSE_LOUD — a selected state file with missing/malformed
 # frontmatter is a visible hook failure, distinct from the clean no-state exit.
@@ -162,6 +172,11 @@ const HISTORICAL_STOCK_HOOKS = [
     commit: 'c7f95344e7d7a43104cc2a37a0ab92bbd97eb78e',
     sha256: '972574c945ee1d43335970fab4512269d3e5e9f9afe92a13f94c99ebffba7391',
   },
+  {
+    label: 'STATE_PARSE_LOUD predecessor stock hook',
+    commit: '38b8371c1d042c89282ead1e659fb4dbc66cee80',
+    sha256: 'c1c9d64dd248cf2cdcd1a6cd51be60230bb6a62c80a1dfa0838cdf62109e12eb',
+  },
 ] as const;
 
 describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
@@ -179,8 +194,8 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
     });
   });
 
-  it('surgically upgrades the immediately prior stock hook to visible state-parse failure', () => {
-    const dst = deployHook(projectDir, priorStateParseHook());
+  it('surgically upgrades an anchor-compatible state-parse predecessor while preserving later bytes', () => {
+    const dst = deployHook(projectDir, anchorCompatibleStateParsePredecessor());
     expect(fs.readFileSync(dst, 'utf8')).not.toContain('STATE_PARSE_LOUD');
 
     const result = runMigration(newMigrator(projectDir));
@@ -195,7 +210,7 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
   });
 
   it('is idempotent — a second run makes no change and reports nothing', () => {
-    deployHook(projectDir, priorStateParseHook());
+    deployHook(projectDir, anchorCompatibleStateParsePredecessor());
     runMigration(newMigrator(projectDir)); // first run upgrades
 
     const dst = path.join(projectDir, HOOK_REL);
@@ -230,7 +245,7 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
 
   it('preserves stock-derived customization while surgically adding the validator', () => {
     const customLine = '# operator customization: retain this exact line';
-    const priorCustomized = priorStateParseHook().replace(
+    const priorCustomized = anchorCompatibleStateParsePredecessor().replace(
       'set -uo pipefail',
       `${customLine}\nset -uo pipefail`,
     );
@@ -260,6 +275,7 @@ describe('PostUpdateMigrator — autonomous stop hook topic-keying', () => {
       const updated = fs.readFileSync(dst, 'utf8');
 
       expect(updated).toContain('STATE_PARSE_LOUD');
+      expect(updated).toContain('PREPARATION_CARRIER');
       expect(updated).toContain('state_parse_failure');
       expect(updated).toContain('MULTI-SESSION (per-topic state)');
       expect(() => execFileSync('bash', ['-n', dst])).not.toThrow();

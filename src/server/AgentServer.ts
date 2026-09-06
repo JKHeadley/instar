@@ -27,6 +27,13 @@ import { resolveOwningSession } from '../monitoring/McpProcessReaper.js';
 import { isHeavyMcpSignature } from '../monitoring/mcpIdleLiveOffload.js';
 import { McpIdleOffloadSweep, type HeavyLiveMcpProc } from '../monitoring/McpIdleOffloadSweep.js';
 import { TopicOperatorStore } from '../users/TopicOperatorStore.js';
+import { AutonomousRunStore } from '../core/AutonomousRunStore.js';
+import { parseContinuationTasks } from '../core/CodexTaskContinuationStore.js';
+import { EchoWindowLedgerStore } from '../core/WindowLifecycleObligationLedger.js';
+import { WindowRunLivenessAuthority, WindowRunLivenessStore } from '../core/WindowRunLivenessAuthority.js';
+import { WindowRunCadenceExecutor, WindowRunCadenceStore, cadenceReportProducerPayload, signCadenceReportProducer } from '../core/WindowRunCadenceExecutor.js';
+import { verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
+import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
 import { ConversationRegistry } from '../core/ConversationRegistry.js';
 import { createConversationBindAuth } from '../core/conversationBindToken.js';
 import { MandateStore } from '../coordination/MandateStore.js';
@@ -396,6 +403,7 @@ export class AgentServer {
   private featureMetricsPruneTimer: ReturnType<typeof setInterval> | null = null;
   private claimObservationHousekeeperTimer: ReturnType<typeof setInterval> | null = null;
   private windowLifecycleTimer: ReturnType<typeof setInterval> | null = null;
+  private windowRunLivenessTimer: ReturnType<typeof setInterval> | null = null;
   private a2aDeliveryTracker: import('../threadline/A2ADeliveryTracker.js').A2ADeliveryTracker | null = null;
   private tokenLedgerPoller: TokenLedgerPoller | null = null;
   private resourceLedger: ResourceLedger | null = null;
@@ -655,6 +663,12 @@ export class AgentServer {
     commitmentTracker?: import('../monitoring/CommitmentTracker.js').CommitmentTracker;
     /** Test-only deterministic clock for the Echo W28 lifecycle. */
     windowLifecycleNow?: () => string;
+    /** Test override for W32's production-path run-liveness authority. */
+    windowRunLivenessAuthority?: import('../core/WindowRunLivenessAuthority.js').WindowRunLivenessAuthority;
+    /** Test override for W32's durable cadence executor. */
+    windowRunCadenceExecutor?: import('../core/WindowRunCadenceExecutor.js').WindowRunCadenceExecutor;
+    /** Test-only path seam; production resolves the framework-owned transcript. */
+    windowRunLivenessTranscriptPath?: (session: import('../core/types.js').Session) => string | null;
     workQueue?: WorkQueueRegistry;
     prHandLease?: import('../core/PrHandLease.js').PrHandLease;
     /** Duplicate-session stand-down registry (docs/specs/duplicate-session-standdown.md).
@@ -3885,8 +3899,283 @@ export class AgentServer {
         }
       })();
     });
+    const resolveWindowFirstUnreceiptedTask = (state: Readonly<import('../core/WindowRunLivenessAuthority.js').WindowRunLivenessDocument>): string | null => {
+      const localPath = path.join(options.config.stateDir, 'autonomous', `${state.topicId}.local.md`);
+      const content = fs.readFileSync(localPath, 'utf8');
+      if (!content.startsWith('---\n')) throw new Error('window-run-liveness-task-ledger-frontmatter-missing');
+      const frontmatterEnd = content.indexOf('\n---', 4);
+      if (frontmatterEnd < 0) throw new Error('window-run-liveness-task-ledger-frontmatter-unclosed');
+      const frontmatter = content.slice(0, frontmatterEnd);
+      const runMatch = frontmatter.match(/^run_id:\s*["']?([^"'\s]+)["']?\s*$/m);
+      if (!runMatch || runMatch[1] !== state.autonomousRunId) throw new Error('window-run-liveness-task-ledger-run-mismatch');
+      const body = content.slice(frontmatterEnd + 4);
+      const used = new Set(state.audit.entries
+        .filter(entry => entry.kind === 'work-receipt' && entry.workReceipt)
+        .map(entry => entry.workReceipt!.taskRef));
+      const tasks = parseContinuationTasks(body);
+      for (let index = 0; index < tasks.length; index++) {
+        if (!tasks[index].open) continue;
+        const taskRef = `autonomous:${state.autonomousRunId}:${index + 1}`;
+        if (!used.has(taskRef)) return taskRef;
+      }
+      return null;
+    };
+    const windowRunLivenessAuthority = options.windowRunLivenessAuthority ?? (() => {
+      const raw = options.config.monitoring?.windowRunLiveness;
+      if (options.config.projectName !== 'echo' || !resolveDevAgentGate(raw?.enabled, options.config)) return null;
+      const runStore = new AutonomousRunStore(options.config.stateDir);
+      const lifecycleStore = new EchoWindowLedgerStore(options.config.stateDir);
+      const projectLegacyStatus = (state: Readonly<import('../core/WindowRunLivenessAuthority.js').WindowRunLivenessDocument>, status: import('../core/WindowRunLivenessAuthority.js').WindowRunLivenessStatus, executorId = state.executorId): string => {
+        const runStatus = status === 'active' ? 'active' : status === 'preparing' ? 'preparing' : status === 'at-risk' ? 'at-risk' : 'failed';
+        const localPath = path.join(options.config.stateDir, 'autonomous', `${state.topicId}.local.md`);
+        const currentLocal = fs.readFileSync(localPath, 'utf8');
+        if (!currentLocal.startsWith('---\n')) throw new Error('window-run-liveness-local-frontmatter-missing');
+        const frontmatterEnd = currentLocal.indexOf('\n---', 4);
+        if (frontmatterEnd < 0) throw new Error('window-run-liveness-local-frontmatter-unclosed');
+        const currentFrontmatter = currentLocal.slice(0, frontmatterEnd);
+        const localBody = currentLocal.slice(frontmatterEnd);
+        const replaceLocalField = (content: string, key: string, value: string): string => {
+          const expression = new RegExp(`^${key}:.*$`, 'gm');
+          const matches = content.match(expression) ?? [];
+          if (matches.length > 1) throw new Error(`window-run-liveness-local-${key}-ambiguous`);
+          if (matches.length === 1) return content.replace(expression, `${key}: ${value}`);
+          const lines = content.split('\n');
+          const insertAt = lines[0]?.trim() === '---' ? 1 : 0;
+          lines.splice(insertAt, 0, `${key}: ${value}`);
+          return lines.join('\n');
+        };
+        const renderLocal = (active: boolean, projectedStatus: string): string => {
+          let nextFrontmatter = replaceLocalField(currentFrontmatter, 'active', active ? 'true' : 'false');
+          nextFrontmatter = replaceLocalField(nextFrontmatter, 'session_id', `"${executorId}"`);
+          nextFrontmatter = replaceLocalField(nextFrontmatter, 'status', projectedStatus);
+          if ((nextFrontmatter.match(/^active:\s*true\s*$/gm) ?? []).length !== (active ? 1 : 0)) throw new Error('window-run-liveness-local-active-verification-failed');
+          return nextFrontmatter + localBody;
+        };
+        const nextLocal = renderLocal(status === 'active', runStatus);
+        const inactiveLocal = renderLocal(false, status === 'active' ? 'at-risk' : runStatus);
+        const localBytes = Buffer.from(nextLocal, 'utf8');
+        const localDigest = createHash('sha256').update(localBytes).digest('hex');
+        const markerPath = path.join(options.config.stateDir, 'autonomous', `active-${state.topicId}.json`);
+        const markerExists = fs.existsSync(markerPath);
+        // For active promotion, validate every target before mutating one. A
+        // malformed adapter must leave all compatibility surfaces inactive.
+        let currentMarker: Record<string, unknown> | null = null;
+        if (markerExists) {
+          try {
+            currentMarker = JSON.parse(fs.readFileSync(markerPath, 'utf8')) as Record<string, unknown>;
+          } catch (error) {
+            // Promotion cannot begin with an unreadable target. Demotion may
+            // replace malformed JSON with a minimal inactive marker so the
+            // canonical local.md revocation is never held hostage by it.
+            if (status === 'active') throw error;
+            currentMarker = {};
+          }
+        }
+        const renderMarker = (active: boolean, projectedStatus: string): string | null => currentMarker
+          ? `${JSON.stringify({ ...currentMarker, active, status: active ? 'running' : projectedStatus, runId: state.autonomousRunId, sessionId: executorId }, null, 2)}\n`
+          : null;
+        const markerBytes = renderMarker(status === 'active', runStatus);
+        const inactiveMarkerBytes = renderMarker(false, status === 'active' ? 'at-risk' : runStatus);
+        const writeAtomic = (target: string, bytes: string | Buffer): void => {
+          const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`;
+          try {
+            const fd = fs.openSync(tmp, 'w', 0o600);
+            try {
+              fs.writeFileSync(fd, bytes);
+              fs.fsyncSync(fd);
+            } finally {
+              fs.closeSync(fd);
+            }
+            fs.renameSync(tmp, target);
+          } finally {
+            try { if (fs.existsSync(tmp)) SafeFsExecutor.safeUnlinkSync(tmp, { operation: 'window-run-liveness-projection-atomic-cleanup' }); } catch { /* best-effort temp cleanup */ }
+          }
+        };
+
+        let run: ReturnType<AutonomousRunStore['projectLiveness']>;
+        try {
+          if (status === 'active') {
+            // The authority has already durably committed green. Compatibility
+            // promotion is idempotent and rolls back to inactive on any throw.
+            run = runStore.projectLiveness(String(state.topicId), state.autonomousRunId, runStatus, executorId);
+            writeAtomic(localPath, localBytes);
+            if (markerBytes !== null) writeAtomic(markerPath, markerBytes);
+          } else {
+            // Revocation order is the inverse: silence the canonical Stop-hook
+            // driver and legacy marker before finalizing the run-store status.
+            writeAtomic(localPath, localBytes);
+            if (markerBytes !== null) writeAtomic(markerPath, markerBytes);
+            run = runStore.projectLiveness(String(state.topicId), state.autonomousRunId, runStatus, executorId);
+          }
+        } catch (error) {
+          // Best-effort is insufficient for promotion: explicitly force every
+          // writable compatibility surface inactive, then surface the failure
+          // so the authority leaves legacyProjection unacknowledged and retries.
+          const rollbackErrors: string[] = [];
+          try { writeAtomic(localPath, inactiveLocal); } catch (rollback) { rollbackErrors.push(`local:${String(rollback)}`); }
+          try { if (inactiveMarkerBytes !== null) writeAtomic(markerPath, inactiveMarkerBytes); } catch (rollback) { rollbackErrors.push(`marker:${String(rollback)}`); }
+          try { runStore.projectLiveness(String(state.topicId), state.autonomousRunId, status === 'preparing' ? 'preparing' : 'at-risk', executorId); } catch (rollback) { rollbackErrors.push(`run:${String(rollback)}`); }
+          if (rollbackErrors.length > 0) throw new Error(`window-run-liveness-projection-failed:${String(error)};rollback-failed:${rollbackErrors.join('|')}`);
+          throw error;
+        }
+        const markerDigest = markerBytes === null ? null : createHash('sha256').update(markerBytes).digest('hex');
+        return createHash('sha256').update(JSON.stringify({ runId: run.runId, status: run.status, executorId: run.sessionId, localDigest, markerDigest })).digest('hex');
+      };
+      return new WindowRunLivenessAuthority(
+        new WindowRunLivenessStore(options.config.stateDir),
+        {
+          now: () => options.windowLifecycleNow?.() ?? new Date().toISOString(),
+          sample: (state) => {
+            const now = options.windowLifecycleNow?.() ?? new Date().toISOString();
+            const run = runStore.getByPair(String(state.topicId), state.autonomousRunId);
+            const ledger = lifecycleStore.load('echo', 'echo-window-lifecycle');
+            const boundSession = options.telegram?.getSessionForTopic(state.topicId) ?? null;
+            const session = options.sessionManager.listRunningSessions().find(item => item.tmuxSession === state.executorId);
+            const sessionBoundToRun = !!session && (run?.sessionId === session.id || run?.sessionId === session.tmuxSession);
+            const running = boundSession === state.executorId && sessionBoundToRun && options.sessionManager.isSessionAlive(state.executorId);
+            let heartbeatAt: string | null = null;
+            if (sessionBoundToRun && session?.claudeSessionId && session.framework) {
+              const transcript = options.windowRunLivenessTranscriptPath?.(session) ?? resolveFrameworkTranscriptPath({ framework: session.framework, sessionId: session.claudeSessionId, projectDir: session.cwd ?? options.config.projectDir });
+              try {
+                if (transcript) heartbeatAt = fs.statSync(transcript).mtime.toISOString();
+              } catch { /* absent/unreadable transcript is an honestly missing heartbeat */ }
+            }
+            const telegramStatus = options.telegram?.getStatus();
+            const lifecycleMatches = ledger?.lifecycleRunId === state.lifecycleRunId && ledger.windowId === state.windowId;
+            return {
+              sampledAt: now,
+              executor: { id: boundSession, running, heartbeatAt },
+              deliveryReachable: !!telegramStatus?.started
+                && telegramStatus.fatalReason === null
+                && telegramStatus.lastError === null
+                && telegramStatus.consecutivePollErrors === 0,
+              work: state.lastWorkReceipt ?? null,
+              lifecycle: {
+                lifecycleRunId: lifecycleMatches ? ledger!.lifecycleRunId : null,
+                state: lifecycleMatches ? ledger!.state : null,
+                admitted: lifecycleMatches && ledger!.admission?.admitted === true,
+                expiresAt: run?.runId === state.autonomousRunId ? run.endAt : null,
+              },
+            };
+          },
+          verifyWorkArtifact: (state, request) => {
+            const run = runStore.getByPair(String(state.topicId), state.autonomousRunId);
+            if (!run || !runStore.isOpen(run) || run.sessionId === undefined) throw new Error('window-run-liveness-run-authority-missing');
+            const session = options.sessionManager.listRunningSessions().find(item => item.tmuxSession === state.executorId);
+            if (!session || (run.sessionId !== session.id && run.sessionId !== session.tmuxSession)) throw new Error('window-run-liveness-run-executor-mismatch');
+            const allowedRoot = fs.realpathSync(run.workDir);
+            const projectRoot = fs.realpathSync(options.config.projectDir);
+            if (allowedRoot !== projectRoot && !allowedRoot.startsWith(`${projectRoot}${path.sep}`)) throw new Error('window-run-liveness-run-root-not-allowed');
+            const requested = path.resolve(allowedRoot, request.artifactRef);
+            const resolved = fs.realpathSync(requested);
+            if (resolved !== allowedRoot && !resolved.startsWith(`${allowedRoot}${path.sep}`)) throw new Error('window-run-liveness-artifact-outside-run');
+            const stat = fs.statSync(resolved);
+            if (!stat.isFile() || stat.size > 16 * 1024 * 1024) throw new Error('window-run-liveness-artifact-invalid');
+            const taskRef = resolveWindowFirstUnreceiptedTask(state);
+            if (!taskRef) throw new Error('window-run-liveness-no-open-unreceipted-task');
+            return {
+              artifact: path.relative(allowedRoot, resolved) || path.basename(resolved),
+              digest: createHash('sha256').update(fs.readFileSync(resolved)).digest('hex'),
+              taskRef,
+            };
+          },
+          resolveRecoveryTask: (state) => resolveWindowFirstUnreceiptedTask(state),
+          projectStatus: (state, status) => projectLegacyStatus(state, status),
+          rebindExecutor: (state, replacementExecutorId) => projectLegacyStatus(state, state.status, replacementExecutorId),
+          recover: async ({ attemptId, state, taskRef }) => {
+            if (!options.sessionRefresh) return { succeeded: false, detail: 'session-refresh-unavailable', receipt: `unavailable:${attemptId}` };
+            const result = await options.sessionRefresh.refreshSession({
+              sessionName: state.executorId,
+              reason: `window-run-liveness:${attemptId}`,
+              followUpPrompt: `Resume Window ${state.windowId} exactly once at server-bound task ${taskRef}. Do not skip or substitute another task.`,
+            });
+            return result.ok
+              ? { succeeded: true, detail: `refreshed:${result.newSessionName}:${taskRef}`, receipt: `${attemptId}:${result.newSessionName}:${result.topicId}:${taskRef}`, replacementExecutorId: result.newSessionName, resumedTaskRef: taskRef }
+              : { succeeded: false, detail: `${result.code}:${result.message}`, receipt: `${attemptId}:${result.code}` };
+          },
+          notifyFailure: async (state, message) => {
+            if (!options.telegram) return false;
+            await options.telegram.sendToTopic(state.topicId, message, { provenance: 'automation' });
+            return true;
+          },
+          notificationAlreadyDelivered: (state, marker) => {
+            if (!options.telegram) return false;
+            return options.telegram.getTopicHistory(state.topicId, 1_000).some(row => row.fromUser === false && row.text.includes(`[${marker}]`));
+          },
+        },
+        { ...raw, enabled: true },
+      );
+    })();
+    const cadenceRaw = options.config.monitoring?.windowRunLiveness?.cadenceExecutor;
+    const windowRunCadenceExecutor = options.windowRunCadenceExecutor ?? (windowRunLivenessAuthority && cadenceRaw?.enabled === true
+      ? new WindowRunCadenceExecutor(
+        new WindowRunCadenceStore(options.config.stateDir),
+        {
+          now: () => options.windowLifecycleNow?.() ?? new Date().toISOString(),
+          getLiveness: () => windowRunLivenessAuthority.status().state,
+          canAct: (state) => {
+            const registry = options.sessionOwnershipRegistry;
+            if (!registry) return options.coordinator?.enabled !== true;
+            if (!options.meshSelfId) return false;
+            const owner = registry.read(String(state.topicId));
+            return owner?.status === 'active' && owner.ownerMachineId === options.meshSelfId;
+          },
+          resolveFirstUnreceiptedTask: resolveWindowFirstUnreceiptedTask,
+          requestCheckpoint: async ({ state, dueAt, taskRef }) => {
+            const prompt = `W32 cadence checkpoint is due at ${dueAt}. Continue exactly at server-bound task ${taskRef}; save substantive artifact progress, then submit it to POST /window-run-liveness/work-advance. Narration does not count as a receipt.`;
+            const delivered = options.sessionManager.sendInput(state.executorId, prompt);
+            return { delivered, receipt: createHash('sha256').update(JSON.stringify({ executorId: state.executorId, dueAt, taskRef, delivered })).digest('hex') };
+          },
+          signSynthesis: ({ state, reportId, dueAt, bodyHash }) => {
+            const identity = JSON.parse(fs.readFileSync(path.join(options.config.stateDir, 'identity.json'), 'utf8')) as { privateKey?: unknown; publicKey?: unknown };
+            if (typeof identity.privateKey !== 'string' || typeof identity.publicKey !== 'string') throw new Error('window-run-cadence-signing-key-unavailable');
+            return signCadenceReportProducer(cadenceReportProducerPayload({
+              windowId: state.windowId, topicId: state.topicId, autonomousRunId: state.autonomousRunId,
+              lifecycleRunId: state.lifecycleRunId, reportId, dueAt, bodyHash,
+            }), Buffer.from(identity.privateKey, 'base64'), Buffer.from(identity.publicKey, 'base64'));
+          },
+          findDeliveredSynthesis: ({ topicId, report, expectedText }) => {
+            const state = windowRunLivenessAuthority.status().state;
+            if (!state || !report.bodyHash || !report.producerSignature) return null;
+            let publicKey: Buffer;
+            try {
+              const identity = JSON.parse(fs.readFileSync(path.join(options.config.stateDir, 'identity.json'), 'utf8')) as { publicKey?: unknown };
+              if (typeof identity.publicKey !== 'string') return null;
+              publicKey = Buffer.from(identity.publicKey, 'base64');
+            } catch { return null; }
+            if (publicKey.length !== 32 || !verifyEd25519(publicKey, cadenceReportProducerPayload({
+              windowId: state.windowId, topicId, autonomousRunId: state.autonomousRunId,
+              lifecycleRunId: state.lifecycleRunId, reportId: report.reportId, dueAt: report.dueAt, bodyHash: report.bodyHash,
+            }), Buffer.from(report.producerSignature, 'base64url'))) return null;
+            const row = options.telegram?.getTopicHistory(topicId, 1_000).find(item => item.messageId > 0
+              && !item.fromUser && item.forwarded === false && item.provenance === 'automation'
+              && item.authorship === 'agent-outbound' && item.text === expectedText);
+            return row ? { messageId: row.messageId } : null;
+          },
+          deliverSynthesis: async ({ state, text, reportId, dueAt }) => {
+            if (!options.telegram) throw new Error('window-run-cadence-telegram-unavailable');
+            const result = await options.telegram.sendToTopic(state.topicId, text, { provenance: 'automation' });
+            return { messageId: result.messageId };
+          },
+          notifyFailure: async (state, message) => {
+            if (!options.telegram) throw new Error('window-run-cadence-telegram-unavailable');
+            const result = await options.telegram.sendToTopic(state.topicId, message, { provenance: 'automation' });
+            return { messageId: result.messageId };
+          },
+          findDeliveredFailureNotification: (topicId, notificationId) => {
+            const marker = `W32 cadence failure receipt: ${notificationId}`;
+            const row = options.telegram?.getTopicHistory(topicId, 1_000).find(item => !item.fromUser
+              && item.forwarded === false && item.provenance === 'automation'
+              && item.authorship === 'agent-outbound' && item.text.endsWith(marker));
+            return row?.messageId ?? null;
+          },
+        },
+        { ...cadenceRaw, enabled: true },
+      ) : null);
     const routeCtx: import('./routes.js').RouteContext = {
       windowLifecycleNow: options.windowLifecycleNow,
+      windowRunLivenessAuthority,
+      windowRunCadenceExecutor,
       capabilityRegistry: new CapabilityRegistryReceiver(),
       config: options.config,
       sessionManager: options.sessionManager,
@@ -4301,6 +4590,17 @@ export class AgentServer {
       try { routeCtx.windowLifecycleTick(); } catch (error) { /* @silent-fallback-ok — failure is surfaced loudly and the periodic retry remains armed */ console.warn('[window-lifecycle] initial tick failed:', error); }
       this.windowLifecycleTimer = setInterval(() => { try { routeCtx.windowLifecycleTick?.(); } catch (error) { /* @silent-fallback-ok — failure is surfaced loudly and retried on the next tick */ console.warn('[window-lifecycle] periodic tick failed:', error); } }, 60_000);
       this.windowLifecycleTimer.unref?.();
+    }
+    if (windowRunLivenessAuthority) {
+      const tickWindowRun = async (phase: 'initial' | 'periodic'): Promise<void> => {
+        try { await windowRunLivenessAuthority.tick(); } catch (error) { console.warn(`[window-run-liveness] ${phase} tick failed:`, error); }
+        try { await windowRunCadenceExecutor?.tick(); } catch (error) { console.warn(`[window-run-cadence] ${phase} tick failed:`, error); }
+      };
+      void tickWindowRun('initial');
+      this.windowRunLivenessTimer = setInterval(() => {
+        void tickWindowRun('periodic');
+      }, 60_000);
+      this.windowRunLivenessTimer.unref?.();
     }
     this.app.use(createThroughputRoutes({ stateDir: options.config.stateDir }));
 
@@ -6138,6 +6438,10 @@ export class AgentServer {
     if (this.windowLifecycleTimer) {
       clearInterval(this.windowLifecycleTimer);
       this.windowLifecycleTimer = null;
+    }
+    if (this.windowRunLivenessTimer) {
+      clearInterval(this.windowRunLivenessTimer);
+      this.windowRunLivenessTimer = null;
     }
     if (this.subscriptionLoginLedger) {
       try { this.subscriptionLoginLedger.close(); }

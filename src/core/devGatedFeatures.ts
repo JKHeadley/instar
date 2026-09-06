@@ -785,6 +785,16 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     reason: 'real-dollar spending authority (metered-door money gate + PIN caps/arming); dark for everyone incl. dev agents until an explicit operator enable — FD-16',
   },
   {
+    configPath: 'monitoring.windowRunLiveness.cadenceExecutor.enabled',
+    category: 'action-bearing',
+    reason: 'injects autonomous checkpoint prompts and sends operator-facing Telegram synthesis reports; requires an explicit per-agent rollout choice',
+  },
+  {
+    configPath: 'autonomousSessions.codexTaskContinuation.enabled',
+    category: 'action-bearing',
+    reason: 'automatically continues bounded Codex turns through the Stop hook; requires an explicit per-agent rollout choice',
+  },
+  {
     configPath: 'subscriptionPool.assistedRelogin.enabled',
     category: 'action-bearing',
     reason: 'submits provider credentials and mutates a live Claude login; dark for everyone including development agents until reviewed approval and a disposable-identity canary',
@@ -808,6 +818,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     configPath: 'mentor.autonomousFix.enabled',
     category: 'cost-bearing',
     reason: 'spawns full-tool Opus fix sessions; ongoing spend',
+  },
+  {
+    configPath: 'autonomousSessions.codexTaskContinuation.enabled',
+    category: 'cost-bearing',
+    reason: 'continues bounded autonomous Codex turns and therefore consumes model capacity; explicit opt-in even on development agents',
   },
   {
     configPath: 'monitoring.resumeQueue.enabled',

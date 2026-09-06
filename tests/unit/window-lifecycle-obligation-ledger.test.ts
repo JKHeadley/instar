@@ -5,10 +5,10 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {
   compileWindowSources, verifyCompilationCoverage, classifyExecutor, evaluateExecutor, evaluateObligations,
-  evaluateClosure, createLedger, waiverDigest, validateWaiver, evaluateFromAuthorities, ProductionMessageEvidenceAuthority,
-  REQUIRED_WINDOW_DUTIES, RECURRING_DUTY_DEFAULT_GRACE_MS, minimumWindowDutyFixture, materializeCadenceInstances, transitionLedger,
+  evaluateClosure, createLedger, waiverDigest, validateWaiver, evaluateFromAuthorities, evaluateLifecycleTick, ProductionMessageEvidenceAuthority,
+  REQUIRED_WINDOW_DUTIES, WINDOW_32_REQUIRED_DUTIES, WINDOW_32_APPROVED_CHARTER_SHA256, RECURRING_DUTY_DEFAULT_GRACE_MS, minimumWindowDutyFixture, materializeCadenceInstances, transitionLedger,
   predicateSatisfied, sourceFreshnessIssues, evaluateLifecycleGuard, applyWaiver,
-  runWindowLifecyclePostLiveCheck, deriveFailureRemediation,
+  runWindowLifecyclePostLiveCheck, deriveFailureRemediation, verifyRequiredDutySources, isW32ReaffirmationBootstrap,
   type Obligation, type EvidenceRecord, type Waiver,
 } from '../../src/core/WindowLifecycleObligationLedger.js';
 
@@ -61,6 +61,84 @@ describe('WindowLifecycleObligationLedger compiler', () => {
     fs.writeFileSync(charter, `# WINDOW 31 CHARTER\nApproved by Justin.\nWindow opens 2026-08-31; ceiling 2026-09-01 20:25 PDT.\nCanonical plan 3a08766f-5738-474f-8857-b713f753a7e2.\n1. REPAIR THE ENGINE, THEN MAKE THE NUMBER MOVE: fix ACT-353, ACT-354, ACT-355, and the compiler source contract so the approved charter compiles AS APPROVED. Then recompile W31's duties from THIS approved charter directly. EXIT TEST: the ENGINE must refuse the close for one omitted duty.\n2. NATIVE RE-GROUND EVIDENCE: the observer re-read, both assessments, and the visible reconciliation become receipt-backed lifecycle evidence the engine consumes.\n3. CLOSE RITUAL AS AN EXECUTABLE RECEIPT-GATED SEQUENCE: a runner refuses skips and resumes from the first unreceipted step.\nStanding debt carried with owners.\nThe run must appear in the LIVE run listing before the opening is declared complete.\n`);
     const compiled = compileWindowSources({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w31', tenetsPath: tenets, charterPath: charter, now: NOW });
     expect(REQUIRED_WINDOW_DUTIES.every(duty => compiled.obligations.some(o => o.id === duty.id))).toBe(true);
+  });
+  it('compiles the exact approved W32 charter without diagnostic rendering', () => {
+    const tenets = path.resolve('tests/fixtures/window-32-tenets.md');
+    const charter = path.resolve('tests/fixtures/window-32-approved-charter.md');
+    const compiled = compileWindowSources({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w32', tenetsPath: tenets, charterPath: charter, now: NOW });
+    expect(compiled.hashes).toMatchObject({
+      [tenets]: '2c9ac586f74e1a1b68a7271aed0232bf1a1f3c4b56573b68a7bd65ec4298b104',
+      [charter]: WINDOW_32_APPROVED_CHARTER_SHA256,
+    });
+    expect(compiled.catalogProfile).toBe('w32-approved-a204c07d');
+    const charterMappings: Record<string, number> = {
+      'preground.native-structural-preflight': 72,
+      'w32.start.executor-bound-running': 21,
+      'w32.start.heartbeat-fresh': 22,
+      'w32.start.delivery-path-reachable': 23,
+      'w32.start.durable-work-advanced': 24,
+      'w32.continuous.admitted-and-unexpired': 25,
+      'w32.continuous.missing-predicate-at-risk': 27,
+      'w32.continuous.bounded-recovery': 27,
+      'w32.continuous.registration-not-liveness': 27,
+      'w32.close.three-advancing-intervals': 33,
+      'w32.close.induced-executor-loss': 34,
+      'w32.close.resume-once-or-fail-loudly': 35,
+      'w32.close.all-reports-delivered': 36,
+      'w32.close.zero-false-active': 37,
+      'w32.continuous.pre-start-gate-exit': 38,
+      'w32.close.expiry-freeze': 39,
+      'w32.close.independent-loss-verification': 40,
+      'w32.close.immediate-on-pass': 15,
+      'w32.close.no-separate-soak': 15,
+      'w32.continuous.opening-complete': 72,
+    };
+    for (const [id, lineStart] of Object.entries(charterMappings)) {
+      expect(compiled.obligations.find(duty => duty.id === id)?.sourceSpans[0], id).toMatchObject({ source: charter, lineStart });
+    }
+    expect(WINDOW_32_REQUIRED_DUTIES.every(duty => compiled.obligations.some(o => o.id === duty.id))).toBe(true);
+    expect(compiled.obligations.some(duty => duty.id === 'postlive.verdict.pass-required')).toBe(false);
+  });
+  it('keeps every W32 start source artifact in the census and rejects a stale compiled source hash', () => {
+    const tenets = path.resolve('tests/fixtures/window-32-tenets.md');
+    const charter = path.resolve('tests/fixtures/window-32-approved-charter.md');
+    const compiled = compileWindowSources({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w32', tenetsPath: tenets, charterPath: charter, now: NOW });
+    const sourceDuties = compiled.obligations.filter(duty => /^source\./.test(duty.id) && ['pre-start', 'start'].includes(duty.phase));
+    expect(sourceDuties).toHaveLength(6);
+    for (const omitted of sourceDuties) {
+      const coverage = verifyCompilationCoverage({ ...compiled, obligations: compiled.obligations.filter(duty => duty.id !== omitted.id) });
+      expect(coverage.issues, omitted.id).toContain(`uncompiled-operative-duty:${omitted.sourceSpans[0].source}:${omitted.sourceSpans[0].lineStart}`);
+    }
+    const ledger = createLedger({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w32', compiled });
+    ledger.sourceHashes[tenets] = '0'.repeat(64);
+    expect(sourceFreshnessIssues(ledger)).toContain(`stale-source:${tenets}`);
+  });
+  it('selects the W32 profile only for the byte-exact approved charter', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'window-w32-identity-')); const charter = path.join(dir, 'WINDOW-32-CHARTER.md');
+    fs.writeFileSync(charter, fs.readFileSync(path.resolve('tests/fixtures/window-32-approved-charter.md'), 'utf8').replace('APPROVED', 'DRAFT'));
+    expect(() => compileWindowSources({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w32', tenetsPath: path.resolve('tests/fixtures/window-32-tenets.md'), charterPath: charter, now: NOW })).toThrow('window-duty-profile-identity-mismatch:w32-approved-charter');
+  });
+  it.each([
+    ['unrelated opening', 'Opening requires: a plain-language kickoff.'],
+    ['only registration', 'Opening requires: the run registered.'],
+    ['only liveness', 'Opening requires: liveness predicates initially green.'],
+    ['negated registration', 'Opening requires: the run not registered, liveness predicates initially green.'],
+    ['contrary relationship', "Opening requires: it does not require run registered, liveness predicates initially green."],
+  ])('refuses W32 native preflight language with %s', (_case, openingLine) => {
+    const nativeDuty = WINDOW_32_REQUIRED_DUTIES.find(duty => duty.id === 'preground.native-structural-preflight')!;
+    expect(verifyRequiredDutySources([nativeDuty], [{ kind: 'paragraph', text: openingLine, span: { source: 'charter', hash: 'a'.repeat(64), byteStart: 0, byteEnd: openingLine.length, lineStart: 1, lineEnd: 1 }, operative: true }])).toEqual({ ok: false, issues: ['uncompiled-operative-duty:preground.native-structural-preflight'] });
+  });
+  it.each(WINDOW_32_REQUIRED_DUTIES)('refuses omission of W32 selected-profile duty $id', duty => {
+    const compiled = compileWindowSources({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w32', tenetsPath: path.resolve('tests/fixtures/window-32-tenets.md'), charterPath: path.resolve('tests/fixtures/window-32-approved-charter.md'), now: NOW });
+    const mutatedAst = compiled.ast!.map(node => {
+      let text = node.text;
+      for (const pattern of duty.sourcePatterns ?? [duty.sourcePattern]) {
+        pattern.lastIndex = 0;
+        while (pattern.test(text)) { pattern.lastIndex = 0; text = text.replace(pattern, '[omitted W32 duty]'); pattern.lastIndex = 0; }
+      }
+      return { ...node, text };
+    });
+    expect(verifyRequiredDutySources([duty], mutatedAst)).toEqual({ ok: false, issues: [`uncompiled-operative-duty:${duty.id}`] });
   });
   it('gives recurring duties a default grace window while keeping one-shot duties strict', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'window-recurring-grace-')); const tenets = path.join(dir, 'TENETS.md'); const charter = path.join(dir, 'charter.md');
@@ -162,6 +240,30 @@ describe('production authority re-query', () => {
     const bytes = 'TENETS\nword for word\n'; const sourceHash = crypto.createHash('sha256').update(bytes).digest('hex'); const duty = obligation({ id: 'start.reaffirmation', sourceSpans: [{ source: 'TENETS.md', hash: sourceHash, byteStart: 0, byteEnd: bytes.length, lineStart: 1, lineEnd: 2 }], evidencePolicy: { requiredAuthority: 'live-requeried-message' } }); const proof = evidence(duty.id); proof.authority = 'live-requeried-message'; proof.sourceHashes = [sourceHash]; proof.verifiedPayload = bytes;
     expect(predicateSatisfied(duty, proof)).toBe(true); proof.verifiedPayload = `${bytes}summary`; expect(predicateSatisfied(duty, proof)).toBe(false);
   });
+  it('reconstructs an ordered live multipart reaffirmation and rejects missing, reordered, foreign, or altered parts', () => {
+    const source = fs.readFileSync(path.resolve('tests/fixtures/window-32-tenets.md'), 'utf8'); const sourceHash = crypto.createHash('sha256').update(source).digest('hex');
+    const markers = ['## Goals 1–8', '## Tenet 5 — REFINEMENT', '## Tenet 9 (complete rewrite', '## Tenet 10 (captured', '## The 80/20 standard', '## Tenet 13 (proposed']; const offsets = markers.map(marker => source.indexOf(marker)); expect(offsets.every(offset => offset > 0)).toBe(true);
+    const bodies = [source.slice(0, offsets[0]), ...offsets.slice(0, -1).map((offset, index) => source.slice(offset, offsets[index + 1])), source.slice(offsets.at(-1)!)].map(body => body.replace(/\n\n$/, '').replace(/\n$/, ''));
+    const logicalMessageIds = [68736, 68729, 68737, 68732, 68733, 68744, 68734];
+    const rows = bodies.map((body, index) => ({ messageId: logicalMessageIds[index], topicId: 36966, text: `[WINDOW 32 START TENET REAFFIRMATION — part ${index + 1}/7, verbatim, byte-validated]\n\n${body}`, fromUser: false, timestamp: new Date(Date.parse(NOW) + index * 1_000).toISOString(), sessionName: 'echo-observer', provenance: 'agent' }));
+    const deliveryOrderedRows = [...rows].sort((a, b) => a.messageId - b.messageId); expect(deliveryOrderedRows.map(row => row.messageId)).not.toEqual(logicalMessageIds);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'window-multipart-reaffirmation-')); const store = path.join(dir, 'telegram-messages.jsonl'); fs.writeFileSync(store, `${deliveryOrderedRows.map(row => JSON.stringify(row)).join('\n')}\n`);
+    let liveRows = structuredClone(deliveryOrderedRows); const authority = new ProductionMessageEvidenceAuthority(store, (topicId, messageId) => liveRows.find(row => row.topicId === topicId && row.messageId === messageId) ?? null);
+    const duty = obligation({ id: 'start.reaffirmation', windowId: 'w32', sourceSpans: [{ source: 'TENETS.md', hash: sourceHash, byteStart: 0, byteEnd: Buffer.byteLength(source), lineStart: 1, lineEnd: 113 }], evidencePolicy: { requiredAuthority: 'live-requeried-message' } });
+    const proof = evidence(duty.id); proof.windowId = 'w32'; proof.authority = 'live-requeried-message'; proof.sourceHashes = [sourceHash]; proof.canonicalPayloadHash = sourceHash; proof.nativeCoordinates = { topicId: 36966, messageId: logicalMessageIds[0], messageIds: logicalMessageIds };
+    const verified = authority.requery(proof); expect(verified?.verifiedPayload).toBe(source); expect(predicateSatisfied(duty, verified!)).toBe(true);
+    const bootstrap = { catalogProfile: 'w32-approved-a204c07d' as const, obligation: duty, rows, topicId: 36966, reconstructed: source, requestedAuthority: 'live-requeried-message' as const };
+    expect(isW32ReaffirmationBootstrap(bootstrap)).toBe(true);
+    expect(isW32ReaffirmationBootstrap({ ...bootstrap, catalogProfile: 'legacy-w28-w31' })).toBe(false);
+    expect(isW32ReaffirmationBootstrap({ ...bootstrap, obligation: { ...duty, id: 'mid.reaffirmation' } })).toBe(false);
+    expect(isW32ReaffirmationBootstrap({ ...bootstrap, topicId: 43003 })).toBe(false);
+    expect(isW32ReaffirmationBootstrap({ ...bootstrap, reconstructed: `${source}altered` })).toBe(false);
+    expect(isW32ReaffirmationBootstrap({ ...bootstrap, rows: rows.map((row, index) => index === 3 ? { ...row, sessionName: 'echo-worker' } : row) })).toBe(false);
+    const missing = structuredClone(proof); missing.nativeCoordinates!.messageIds = missing.nativeCoordinates!.messageIds!.slice(0, -1); expect(authority.requery(missing)).toBeNull();
+    const reordered = structuredClone(proof); [reordered.nativeCoordinates!.messageIds![0], reordered.nativeCoordinates!.messageIds![1]] = [reordered.nativeCoordinates!.messageIds![1], reordered.nativeCoordinates!.messageIds![0]]; reordered.nativeCoordinates!.messageId = reordered.nativeCoordinates!.messageIds![0]; expect(authority.requery(reordered)).toBeNull();
+    liveRows = structuredClone(deliveryOrderedRows); liveRows[3].topicId = 43003; expect(authority.requery(proof)).toBeNull();
+    liveRows = structuredClone(deliveryOrderedRows); liveRows[3].text += ' altered'; expect(authority.requery(proof)).toBeNull();
+  });
 
   it('detects source mutation and disappearance from compiled hashes', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'source-fresh-')); const source = path.join(dir, 'TENETS.md'); fs.writeFileSync(source, 'original');
@@ -171,6 +273,20 @@ describe('production authority re-query', () => {
   it('ignores caller-asserted runtime booleans and fails when the real registry has no assignment', () => {
     const result = evaluateFromAuthorities([obligation()], { resolve: () => null }, { requery: () => null }, NOW);
     expect(result.admitted).toBe(false); expect(result.issues.join(',')).toContain('runtime-assignment-missing');
+  });
+  it('evaluates run-liveness duties only through their server authority, never RuntimeRegistry commitments', () => {
+    const duty = obligation({ id: 'w32.start.executor-bound-running', evidencePolicy: { requiredAuthority: 'run-liveness-authority' } });
+    const proof = evidence(duty.id); proof.authority = 'run-liveness-authority';
+    const runtime = { resolve: () => { throw new Error('run-liveness touched legacy RuntimeRegistry'); } };
+    const admitted = evaluateFromAuthorities([{ ...duty, evidence: [proof] }], runtime, { requery: record => record }, NOW);
+    expect(admitted.admitted).toBe(true);
+    const refused = evaluateFromAuthorities([duty], runtime, { requery: () => null }, NOW);
+    expect(refused.admitted).toBe(false);
+    expect(refused.issues).toEqual(expect.arrayContaining([
+      `${duty.id}:run-liveness-authority-unsatisfied`,
+      `${duty.id}:predicate-unsatisfied`,
+    ]));
+    expect(refused.issues.some(issue => issue.includes('runtime-assignment'))).toBe(false);
   });
   it('turns vanished previously-satisfied evidence into unknown', () => {
     const duty = obligation({ status: 'satisfied', evidence: [evidence('duty')] }); const result = evaluateFromAuthorities([duty], { resolve: () => ({ executorId: 'x', owner: 'echo', kind: 'internal', registryCoordinates: 'obligation:duty', enabled: true, dryRun: false, running: false }) }, { requery: () => null }, NOW);
@@ -219,6 +335,31 @@ describe('admission, closure and waivers', () => {
   it('preserves the recurring grace on materialized cadence instances', () => {
     const recurring = obligation({ id: 'cadence.stall-check.30m', phase: 'cadence', predicate: { recurring: true }, deadline: { dueAt: NOW, graceMs: RECURRING_DUTY_DEFAULT_GRACE_MS } }); const ledger = createLedger({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w28', compiled: { hashes: {}, byteLengths: {}, operativeLines: [], obligations: [recurring] } });
     const next = materializeCadenceInstances(ledger, '2026-08-28T16:30:00.000Z'); expect(next.obligations.filter(o => o.id.includes('@')).every(o => o.deadline.graceMs === RECURRING_DUTY_DEFAULT_GRACE_MS)).toBe(true);
+  });
+  it('materializes W32 cadence only as time becomes due and freezes the census at close or ceiling', () => {
+    const compiled = compileWindowSources({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w32', tenetsPath: path.resolve('tests/fixtures/window-32-tenets.md'), charterPath: path.resolve('tests/fixtures/window-32-approved-charter.md'), now: NOW });
+    const initial = createLedger({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: 'w32', compiled });
+    expect(initial.obligations.filter(duty => duty.id.includes('@'))).toHaveLength(0);
+    const atNinetyMinutes = '2026-08-28T17:30:00.000Z';
+    const ticked = evaluateLifecycleTick(initial, { resolve: () => null }, { requery: () => null }, atNinetyMinutes).ledger;
+    const dueInstances = ticked.obligations.filter(duty => duty.id.includes('@'));
+    expect(dueInstances).toHaveLength(4);
+    expect(dueInstances.every(duty => Date.parse(duty.deadline.dueAt) <= Date.parse(atNinetyMinutes))).toBe(true);
+
+    ticked.state = 'active_mid_satisfied'; ticked.obligations.filter(duty => duty.phase === 'mid').forEach(duty => { duty.status = 'waived-for-phase-transition'; });
+    const closing = transitionLedger(ticked, 'close_due', { now: atNinetyMinutes });
+    expect(closing.recurrenceFrozenAt).toBe(atNinetyMinutes);
+    expect(materializeCadenceInstances(closing, '2026-08-29T12:00:00.000Z').compiledObligationIds).toEqual(closing.compiledObligationIds);
+
+    const expired = materializeCadenceInstances(initial, '2026-08-30T16:00:00.000Z');
+    expect(expired.recurrenceFrozenAt).toBe(initial.windowCeilingAt);
+    expect(expired.obligations.filter(duty => duty.id.includes('@')).every(duty => Date.parse(duty.deadline.dueAt) <= Date.parse(initial.windowCeilingAt!))).toBe(true);
+    expect(materializeCadenceInstances(expired, '2026-09-01T16:00:00.000Z').compiledObligationIds).toEqual(expired.compiledObligationIds);
+    expired.state = 'closed_failed';
+    const restartedTick = evaluateLifecycleTick(expired, { resolve: () => null }, { requery: () => null }, '2026-09-02T16:00:00.000Z').ledger;
+    expect(restartedTick.state).toBe('closed_failed');
+    expect(restartedTick.compiledObligationIds).toEqual(expired.compiledObligationIds);
+    expect(restartedTick.obligations.some(duty => Date.parse(duty.deadline.dueAt) > Date.parse(initial.windowCeilingAt!))).toBe(false);
   });
 
   it('refuses active and terminal transition bypasses', () => {
