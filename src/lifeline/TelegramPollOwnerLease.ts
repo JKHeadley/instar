@@ -136,3 +136,25 @@ export function lifelineOwnsPoll(
   if (!lease) return false;
   return lease.tokenHash === tokenHash(botToken);
 }
+
+/**
+ * Strict positive-evidence variant for reachability authorities.
+ *
+ * `lifelineOwnsPoll()` retains its original one-sided collision-avoidance
+ * semantics: it rejects leases older than the ceiling but accepts a matching
+ * future-dated heartbeat. Positive liveness needs a stricter safety direction.
+ * This view accepts only an age inside the closed [0, staleMs] interval, so
+ * future, stale, malformed, absent, or wrong-token evidence all fail closed.
+ */
+export function lifelinePollIsReachable(
+  stateDir: string,
+  botToken: string,
+  now: number = Date.now(),
+  staleMs: number = DEFAULT_LEASE_STALE_MS,
+): boolean {
+  if (!Number.isFinite(now) || !Number.isFinite(staleMs) || staleMs < 0) return false;
+  const lease = readLease(stateDir, now, staleMs);
+  if (!lease || lease.tokenHash !== tokenHash(botToken)) return false;
+  const ageMs = now - lease.heartbeatTs;
+  return Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= staleMs;
+}
