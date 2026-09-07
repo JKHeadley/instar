@@ -1,0 +1,23 @@
+{
+  "ts": "2026-09-07T10:38:38.557Z",
+  "slug": "w32-internal-beacon-cadence",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 19,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/WindowRunLivenessAuthority.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 15,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

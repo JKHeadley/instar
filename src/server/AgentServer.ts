@@ -4060,7 +4060,16 @@ export class AgentServer {
           },
           verifyWorkArtifact: (state, request) => {
             const run = runStore.getByPair(String(state.topicId), state.autonomousRunId);
-            if (!run || !runStore.isOpen(run) || run.sessionId === undefined) throw new Error('window-run-liveness-run-authority-missing');
+            const authoritativeNow = Date.parse(request.observedAt);
+            const runCeiling = run ? Date.parse(run.endAt) : Number.NaN;
+            const openBeforeCeiling = !!run
+              && Number.isFinite(authoritativeNow)
+              && Number.isFinite(runCeiling)
+              && authoritativeNow < runCeiling
+              && runStore.isOpen(run, authoritativeNow);
+            if (!openBeforeCeiling || !run || run.sessionId === undefined) {
+              throw new Error('window-run-liveness-run-authority-missing');
+            }
             const session = options.sessionManager.listRunningSessions().find(item => item.tmuxSession === state.executorId);
             if (!session || (run.sessionId !== session.id && run.sessionId !== session.tmuxSession)) throw new Error('window-run-liveness-run-executor-mismatch');
             const allowedRoot = fs.realpathSync(run.workDir);

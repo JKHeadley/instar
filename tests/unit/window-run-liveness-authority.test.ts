@@ -219,6 +219,35 @@ describe('WindowRunLivenessAuthority', () => {
     expect(h.store.load()?.lastWorkReceipt).toEqual(receipt);
   });
 
+  it('uses one fail-closed authority timestamp for artifact admission and receipt stamping', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'w32-run-clock-'));
+    const store = new WindowRunLivenessStore(dir);
+    let clock = new Date(BASE).toISOString();
+    let nowCalls = 0;
+    let verifierObservedAt: string | undefined;
+    const authority = new WindowRunLivenessAuthority(store, {
+      now: () => { nowCalls++; return clock; },
+      sample: () => { throw new Error('sample-not-expected'); },
+      verifyWorkArtifact: (_state, request) => {
+        verifierObservedAt = request.observedAt;
+        // Simulate verification crossing the external wall-clock ceiling. The
+        // authority must retain the single timestamp captured at request entry.
+        clock = new Date(BASE + 24 * 60 * 60_000).toISOString();
+        return { artifact: request.artifactRef, digest: 'b'.repeat(64), taskRef: 'task-1' };
+      },
+    }, { enabled: true, dryRun: false });
+    authority.register({ windowId: 'w32', topicId: 36966, autonomousRunId: 'run-w32', lifecycleRunId: 'lifecycle-w32', executorId: 'echo-topic-36966' });
+    const binding = { windowId: 'w32', topicId: 36966, autonomousRunId: 'run-w32', lifecycleRunId: 'lifecycle-w32', executorId: 'echo-topic-36966', artifactRef: 'artifact.txt' };
+    const receipt = await authority.recordWorkAdvance(binding);
+    expect(receipt.observedAt).toBe(new Date(BASE).toISOString());
+    expect(verifierObservedAt).toBe(receipt.observedAt);
+    expect(nowCalls).toBe(2); // registration + one receipt timestamp
+
+    clock = 'not-an-authority-clock';
+    await expect(authority.recordWorkAdvance({ ...binding, artifactRef: 'other.txt' })).rejects.toThrow('window-run-liveness-clock-invalid');
+    expect(store.load()?.lastWorkReceipt).toEqual(receipt);
+  });
+
   it('refuses work receipts for a mismatched run binding', async () => {
     const h = harness();
     await expect(h.authority.recordWorkAdvance({

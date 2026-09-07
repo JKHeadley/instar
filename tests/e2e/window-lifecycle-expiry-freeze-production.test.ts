@@ -42,6 +42,7 @@ describe('W32 expiry freeze production path', () => {
       baseRoots: [], maxDurationMs: 24 * 60 * 60_000, initialStatus: 'preparing',
     }, startMs);
     if (!registered.ok) throw new Error('autonomous fixture registration failed');
+    expect(runs.getByPair('36966', registered.runId)?.endAt).toBe(ledger.windowCeilingAt);
     fs.mkdirSync(path.join(project.stateDir, 'autonomous'), { recursive: true });
     const localPath = path.join(project.stateDir, 'autonomous', '36966.local.md');
     const markerPath = path.join(project.stateDir, 'autonomous', 'active-36966.json');
@@ -82,6 +83,9 @@ describe('W32 expiry freeze production path', () => {
 
       nowMs = Date.parse(ledger.windowCeilingAt!);
       fs.utimesSync(transcript, new Date(nowMs), new Date(nowMs));
+      fs.writeFileSync(artifact, 'durable receipt exactly at the ceiling\n');
+      const ceilingReceipt = await auth(request(server.getApp()).post('/window-run-liveness/work-advance')).send({ ...binding, artifactRef: path.basename(artifact) }).expect(409);
+      expect(ceilingReceipt.body).toEqual({ error: 'window-run-liveness-run-authority-missing' });
       const expired = await auth(request(server.getApp()).post('/window-lifecycle/tick')).send({ agentId: 'echo', scope: 'echo-window-lifecycle' }).expect(409);
       expect(expired.body).toMatchObject({ ledger: { state: 'closed_failed', recurrenceFrozenAt: ledger.windowCeilingAt }, issues: ['window-ceiling-expired'] });
       expect(expired.body.ledger.obligations.filter((duty: any) => duty.id.includes('@')).every((duty: any) => Date.parse(duty.deadline.dueAt) <= nowMs)).toBe(true);
