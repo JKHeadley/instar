@@ -22,6 +22,7 @@ describe('window run liveness production wiring', () => {
   let server: AgentServer;
   let sessions: MockSessionManager;
   let transcript: string;
+  let configHome: string;
   let artifact: string;
   const checkpointInputs: string[] = [];
   const outboundRows: any[] = [];
@@ -31,7 +32,13 @@ describe('window run liveness production wiring', () => {
 
   beforeAll(async () => {
     project = createTempProject();
-    transcript = path.join(project.stateDir, 'bound-session.jsonl');
+    // Production Echo's observer is a subscription-pool-routed claude-code
+    // session: its transcript lives under its LIVE CLAUDE_CONFIG_DIR, not
+    // ~/.claude. No transcript override here — the server must resolve the
+    // real path from the session's config home or the heartbeat is missing.
+    configHome = path.join(project.stateDir, 'claude-followme-pool-a');
+    transcript = path.join(configHome, 'projects', project.dir.replace(/[\/.]/g, '-'), 'provider-session-1.jsonl');
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
     artifact = path.join(project.dir, 'artifact.txt');
     fs.writeFileSync(transcript, '{"type":"session-event"}\n');
     fs.writeFileSync(artifact, 'first durable result\n');
@@ -45,6 +52,7 @@ describe('window run liveness production wiring', () => {
     sessions.sendInput = (tmuxSession: string, input: string) => { checkpointInputs.push(`${tmuxSession}:${input}`); return sessions._aliveSet.has(tmuxSession); };
     sessions._sessions.push({ id: 'instar-session-1', name: 'echo', status: 'running', tmuxSession: 'echo-topic-36966', startedAt: new Date(nowMs).toISOString(), claudeSessionId: 'provider-session-1', framework: 'claude-code', cwd: project.dir } as any);
     sessions._aliveSet.add('echo-topic-36966');
+    (sessions as any).configHomeForSession = (tmuxSession: string) => tmuxSession === 'echo-topic-36966' ? configHome : undefined;
 
     const runs = new AutonomousRunStore(project.stateDir);
     const registered = runs.register({
@@ -92,7 +100,7 @@ describe('window run liveness production wiring', () => {
           return sessionKey === '36966' ? { sessionKey, ownerMachineId, ownershipEpoch: 1, status: 'active', nonce: 'owner', timestamp: nowMs, updatedAt: new Date(nowMs).toISOString() } : null;
         },
       } as never,
-      windowLifecycleNow: () => new Date(nowMs).toISOString(), windowRunLivenessTranscriptPath: () => transcript,
+      windowLifecycleNow: () => new Date(nowMs).toISOString(),
       sessionRefresh: { refreshSession: async () => ({ ok: true, oldSessionName: 'echo-topic-36966', newSessionName: 'echo-topic-36966', topicId: 36966 }) } as never,
     });
     await server.start();
