@@ -1,0 +1,11 @@
+{
+  "profileId": "justin-telegram",
+  "executionOwner": "telegram-origin-broker",
+  "exclusiveEnrollment": {
+    "version": 1,
+    "checkedAt": 1788737445037,
+    "retiredPids": [],
+    "proofDigest": "5ca989af46edd32e252bd8789090829ed65d5525e10831f7bef97a57b81144de"
+  },
+  "messagesSent": 0
+}

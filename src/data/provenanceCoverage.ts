@@ -252,6 +252,9 @@ export const DP_TOPIC_INTENT_EXTRACT = 'topic-intent-extract';
 /** Committed source/directory node → bounded Cartographer code-map summary. */
 export const DP_CARTOGRAPHER_SUMMARY_AUTHOR = 'cartographer-summary-author';
 
+/** Uncertain Telegram delivery → read-only diagnosis, never replay authority. */
+export const DP_TELEGRAM_ORIGIN_RECOVERY = 'telegram-origin-recovery';
+
 /** Project spec + referenced committed files → drift signal. */
 export const DP_PROJECT_DRIFT_CHECK = 'project-drift-check';
 
@@ -870,6 +873,16 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
   },
 
   // — Jobs —
+  {
+    decisionPoint: DP_TELEGRAM_ORIGIN_RECOVERY,
+    component: 'telegram-origin-recovery',
+    status: 'wired',
+    volumeClass: 'budget:100',
+    contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason: 'A read-only diagnosis has no independently labeled correctness outcome and cannot authorize dispatch or retries.',
+    reason: 'Bounded delivery diagnosis records only input identities and shape; no message body or diagnostic text enters provenance context.',
+  },
   {
     decisionPoint: 'pipe-session-spawn',
     component: 'PipeSessionSpawner',

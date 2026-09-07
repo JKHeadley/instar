@@ -2461,6 +2461,21 @@
     .feat-reversibility { font-size: 12px; color: var(--text-dim); line-height: 1.5; padding: 12px 14px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; }
 
     /* ── Systems Tab ──────────────────────────────────────────── */
+    /* Origin controls reuse shared action buttons and theme colors. */
+    #originsTab .action-btn { min-height: 44px; font: inherit; padding: 10px 14px; }
+    #originsTab .glance-root:has(> .glance-drilldown:not([hidden])) > .glance-layer { display: none; }
+    #originsTab .glance-drill-back { min-height: 44px; }
+    #originsTab .origin-settings { border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--bg-panel); display: flex; flex-direction: column; gap: 8px; }
+    #originsTab .origin-bit { display: flex; align-items: center; gap: 10px; min-height: 44px; cursor: pointer; }
+    #originsTab .origin-bit[hidden] { display: none; }
+    #originsTab input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
+    #originsTab .origin-scope { display: flex; flex-direction: column; gap: 6px; }
+    #originsTab select { width: 100%; min-width: 0; min-height: 44px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+    #originsTab .origin-save { border-color: var(--accent); color: var(--accent); }
+    #originsTab [role=status]:empty { display: none; }
+    #originsTab p { line-height: 1.45; }
+    #originsTab summary { cursor: pointer; min-height: 44px; padding: 10px 0; line-height: 1.4; }
+    #originsTab .origin-status-details { border-bottom: 1px solid var(--border); padding: 4px 0; }
     .systems-container { grid-column: 1 / -1; min-width: 0; overflow-y: auto; background: var(--bg); padding: 20px; }
     .systems-main { max-width: 960px; margin: 0 auto; }
     .systems-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
@@ -2934,6 +2949,7 @@
             <button class="tab active" data-tab="sessions" onclick="switchTab('sessions')">Sessions <span class="tab-count" id="tabSessionCount">0</span></button>
             <button class="tab" data-tab="machines" onclick="switchTab('machines')">Machines</button>
             <button class="tab" data-tab="jobs" onclick="switchTab('jobs')">Jobs <span class="tab-count" id="tabJobCount">0</span></button>
+            <button class="tab" data-tab="origins" onclick="switchTab('origins')">Message origins</button>
             <button class="tab" data-tab="systems" onclick="switchTab('systems')">Health</button>
           </div>
           <div class="tab-group" role="group" aria-label="Work & Delivery">
@@ -4089,6 +4105,7 @@
          The old ~390-word subsystem prose became a plain headline + tiles; each
          subsystem's full description / processes / metrics live one drill down.
          The shared component renders the headline + tiles + drill-down here. -->
+    <section class="systems-container" id="originsTab" style="display:none;flex-direction:column;overflow:auto;padding:20px;gap:12px;min-width:0"><p class="tab-purpose">Inspect message authorship and choose which origin details appear.</p></section>
     <div class="systems-container" id="systemsTab" style="display:none">
       <div class="systems-main">
         <div class="systems-header">
@@ -4237,6 +4254,7 @@
             document.getElementById('authOverlay').style.display = 'none';
             document.getElementById('app').style.display = 'grid';
             connectWebSocket();
+            if (currentTab === 'origins') originPanel?.refresh();
             startWaPolling();
             startVitalSigns();
             startPoolSessionsPolling();
@@ -5360,6 +5378,9 @@
         display: ['flex'],
         onActivate: () => { if (!featuresLoaded) loadFeatures(); },
       },
+      {
+        id: 'origins',
+        panels: ['originsTab'], display: ['flex'], onActivate: () => startOrigins(), onDeactivate: () => originPanel?.stop() },
       {
         id: 'systems',
         panels: ['systemsTab'],
@@ -9763,6 +9784,18 @@
           body.innerHTML = '<div class="ins-empty">Couldn’t load insights just now — ' + escapeHtml(msg) + '. Check back shortly.</div>';
         }
       }
+    }
+
+    let originPanel = null;
+    async function startOrigins() {
+      try {
+        const { mountOriginPanel } = await import('/dashboard/origin.js');
+        originPanel ??= mountOriginPanel(document.getElementById('originsTab'), {
+          request: (url, options = {}) => fetch(url, { ...options, headers: { Authorization: `Bearer ${token}`, 'X-Instar-Operator-Session': operatorSessionToken, ...(options.headers || {}) } }),
+          unlock: () => { document.getElementById('authOverlay').style.display = 'flex'; document.getElementById('pinInput').focus(); },
+        });
+        originPanel.start();
+      } catch { document.getElementById('originsTab').textContent = 'Message origins are unavailable. Refresh to try again.'; }
     }
 
     // ── Process Health tab (PROCESS-HEALTH-DASHBOARD-TAB-SPEC) ──

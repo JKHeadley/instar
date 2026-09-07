@@ -46,7 +46,7 @@
  */
 
 import type { TopicProfileStore, TopicProfile } from './TopicProfileStore.js';
-import { ProfileValidationRefusal, ProfileLockTimeoutError, FlushRefusedError } from './TopicProfileStore.js';
+import { ProfileValidationRefusal, ProfileLockTimeoutError, ProfileDisplayConflictError, FlushRefusedError } from './TopicProfileStore.js';
 import type { TopicProfileResolver } from './TopicProfileResolver.js';
 import {
   validateProfileFields,
@@ -156,8 +156,9 @@ export interface TopicProfileWriteSurfaceDeps {
   now?: () => number;
 }
 
-const NEW_AXES = ['model', 'modelTier', 'thinkingMode', 'effort', 'escalationOverride'] as const;
+const NEW_AXES = ['model', 'modelTier', 'thinkingMode', 'effort', 'escalationOverride', 'messageOriginDisplay'] as const;
 const ALL_FIELDS = ['framework', ...NEW_AXES] as const;
+const EXECUTION_FIELDS = ALL_FIELDS.filter(field => field !== 'messageOriginDisplay');
 const DEFAULT_REAPPLY_COOLDOWN_MS = 600_000;
 
 export class TopicProfileWriteSurface {
@@ -180,6 +181,8 @@ export class TopicProfileWriteSurface {
     discloseInReply?: boolean;
     /** §10.1 propose-confirm provenance flag for the audit. */
     agentComposedPayload?: boolean;
+    /** Trusted HTTP cosmetic compare-and-set; store checks under its lock. */
+    expectedDisplayRevision?: string;
   }): Promise<ProfileWriteResult> {
     const topicKey = String(req.topicKey);
     const regime = this.deps.regime();
@@ -235,10 +238,11 @@ export class TopicProfileWriteSurface {
     for (const field of NEW_AXES) {
       const value = patch[field];
       if (value === undefined) continue;
-      if (value === null) {
+      if (field === 'messageOriginDisplay' || value === null) {
+        // Cosmetic presentation is independent of model-profile rollout.
         // §5.2(b): clearing a pin is a recovery write — permitted (LIVE) in
         // every regime, never shadowed.
-        (liveNewAxes as Record<string, unknown>)[field] = null;
+        (liveNewAxes as Record<string, unknown>)[field] = value;
       } else if (!regime.enabled) {
         refusedFields.push(field);
       } else if (regime.dryRun) {
@@ -285,7 +289,7 @@ export class TopicProfileWriteSurface {
           { ...livePatch, updatedBy },
           // §5.1 cadence: every accepted write here is individually disclosed
           // (no §8 coalescing window until the orchestrator is live).
-          { shiftPrevious: true },
+          { shiftPrevious: true, expectedDisplayRevision: req.expectedDisplayRevision },
         );
         changed = result.changed;
         supersededParked = result.supersededParked;
@@ -345,7 +349,7 @@ export class TopicProfileWriteSurface {
             ? ` Persisted, but the respawn failed: ${respawn.error} — it takes effect on this topic's next session.`
             : ' Takes effect when a session starts for this topic.';
       }
-    } else if (Object.keys(liveNewAxes).length > 0 && changed) {
+    } else if (Object.keys(liveNewAxes).some(field => field !== 'messageOriginDisplay') && changed) {
       if (fullyLive && this.deps.orchestrator) {
         await this.deps.orchestrator.onProfileWrite(topicKey, { frameworkChanged: false, origin: req.origin });
         respawnNote = ' Applying shortly (waiting for an idle moment).';
@@ -355,6 +359,8 @@ export class TopicProfileWriteSurface {
         // reconcile is the backstop).
         respawnNote = ' Takes effect at this topic\'s next session restart.';
       }
+    } else if (liveNewAxes.messageOriginDisplay !== undefined && changed) {
+      respawnNote = ' Applies to newly prepared messages; origin recording continues.';
     }
 
     // ── §8 disclosure (delta-carrying, audit-stamped) ───────────────────────
@@ -425,7 +431,7 @@ export class TopicProfileWriteSurface {
 
     // Full-field restore (undo is a REPLACE-shaped write: absent fields clear).
     const patch: ValidatedProfilePatch = {};
-    for (const field of ALL_FIELDS) {
+    for (const field of EXECUTION_FIELDS) {
       (patch as Record<string, unknown>)[field] = previous
         ? ((previous as unknown as Record<string, unknown>)[field] ?? null)
         : null;
@@ -528,9 +534,9 @@ export class TopicProfileWriteSurface {
       note = 'Cleared — takes effect at this topic\'s next session restart.';
     }
 
-    const reply = `${note} This topic is back on the defaults.\n(profile change ${seq})`;
+    const reply = `${note} Execution settings are back on defaults; origin display preferences are unchanged.\n(profile change ${seq})`;
     if (!req.discloseInReply) await this.deps.disclose(topicKey, reply).catch(() => {});
-    return { ok: true, reply, appliedLive: [...ALL_FIELDS] };
+    return { ok: true, reply, appliedLive: [...EXECUTION_FIELDS] };
   }
 
   /**
@@ -575,7 +581,7 @@ export class TopicProfileWriteSurface {
     }
 
     const patch: ValidatedProfilePatch = {};
-    for (const field of ALL_FIELDS) {
+    for (const field of EXECUTION_FIELDS) {
       (patch as Record<string, unknown>)[field] = (parked.profile as unknown as Record<string, unknown>)[field] ?? null;
     }
     const frameworkChanged = (this.deps.store.resolve(topicKey)?.framework ?? null) !== (parked.profile.framework ?? null);
@@ -640,9 +646,11 @@ export class TopicProfileWriteSurface {
     for (const field of ALL_FIELDS) {
       const value = (validated.patch as Record<string, unknown>)[field];
       if (value === undefined) continue;
-      const rendered = value === null ? 'cleared' : String(value);
+      const rendered = value === null ? 'cleared' : typeof value === 'object' ? JSON.stringify(value) : String(value);
       if (field === 'framework') {
         lines.push(`  • framework → ${rendered}: switches now (live)`);
+      } else if (field === 'messageOriginDisplay') {
+        lines.push(`  • Message signature display → ${rendered}: applies to new messages after confirmation; recording continues`);
       } else if (value === null) {
         lines.push(`  • ${field} → ${rendered}: applies now (recovery write, live in every regime)`);
       } else if (!regime.enabled) {
@@ -672,6 +680,9 @@ export class TopicProfileWriteSurface {
       + (resolved.effort ? ` at ${resolved.effort} effort` : '')
       + ` (framework: ${resolved.sources.framework}, model: ${resolved.sources.model}).`,
     );
+    const display = entry?.current?.messageOriginDisplay;
+    lines.push(display == null ? 'Message signature display inherits agent settings; origin recording continues.'
+      : `Message signature display: ${Object.entries(display).map(([field, value]) => `${field} ${value ? 'shown' : 'hidden'}`).join(', ')}. Unspecified fields inherit agent settings; origin recording continues.`);
     // §9 framework-aware escalation disclosure.
     if (resolved.escalationOverride === 'suppress') {
       lines.push('Auto-escalation is OFF for this topic — heavy work stays on the pinned baseline.');
@@ -686,7 +697,7 @@ export class TopicProfileWriteSurface {
     if (entry?.intendedProfile) {
       const fields = Object.entries(entry.intendedProfile.fields)
         .filter(([, v]) => v !== undefined)
-        .map(([k, v]) => `${k}: ${String(v)}`)
+        .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
         .join(', ');
       lines.push(`Would-be (dry-run intent, not applied): ${fields}.`);
     }
@@ -768,7 +779,7 @@ export class TopicProfileWriteSurface {
     const renderSide = (side: Record<string, unknown>): string => {
       const entries = Object.entries(side);
       if (entries.length === 0) return 'defaults';
-      return entries.map(([k, v]) => `${k}: ${String(v)}`).join(', ');
+      return entries.map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`).join(', ');
     };
     return `Topic profile — was: ${renderSide(before)} → now: ${renderSide(after)}`;
   }
@@ -779,6 +790,10 @@ export class TopicProfileWriteSurface {
     principal: string,
     origin: ProfileWriteOrigin,
   ): ProfileWriteResult {
+    if (err instanceof ProfileDisplayConflictError) {
+      this.deps.audit({ type: 'write', outcome: 'refused', reason: 'display-conflict', topic: topicKey, principal, origin });
+      return { ok: false, reply: err.message, refusal: { reason: 'display-conflict' } };
+    }
     if (err instanceof ProfileValidationRefusal) {
       this.deps.audit({
         type: 'write', outcome: 'refused', reason: `validation:${err.validation.failure}`,

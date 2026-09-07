@@ -124,6 +124,11 @@ export function hasNoVisibleCharacters(text: string): boolean {
  */
 export const READER_VISIBLE_TELEGRAM_PARAMS: Readonly<Record<string, string | readonly string[]>> = {
   sendMessage: 'text',
+  // Bot API media methods: captions are reader-visible, while a valid media
+  // reference is opaque rendered content (handled before caption-only checks).
+  sendPhoto: 'caption', sendVideo: 'caption', sendAudio: 'caption', sendDocument: 'caption',
+  sendAnimation: 'caption', sendVoice: 'caption', sendVideoNote: 'video_note', sendSticker: 'sticker',
+  sendMediaGroup: 'media', editMessageMedia: 'media', editMessageCaption: 'caption', copyMessage: 'caption',
   // `editMessageText` also accepts `rich_message`, and a method can carry reader-visible content in
   // MORE THAN ONE field — which this map could not express until review pass 43. Checking only `text`
   // meant an edit carrying its content as `rich_message` returned silently and was sent unexamined.
@@ -192,6 +197,9 @@ export const BODY_CARRYING_TELEGRAM_METHODS: ReadonlySet<string> = new Set(
  *                            topic + message state changes; they carry ids, not prose
  */
 export const NO_READER_VISIBLE_FIELD_TELEGRAM_METHODS: ReadonlySet<string> = new Set([
+  // These copy pre-existing server-side content, taking IDs rather than any
+  // caller-authored text/caption. copyMessage's optional caption is above.
+  'forwardMessage', 'forwardMessages', 'copyMessages',
   'answerCallbackQuery',
   'sendChatAction',
   'getUpdates',
@@ -848,6 +856,18 @@ export function effectiveReaderVisibleField(
 }
 
 export function assertOutgoingPayloadVisible(method: string, params: Record<string, unknown>): void {
+  const mediaFields: Record<string, string> = { sendPhoto: 'photo', sendVideo: 'video', sendAudio: 'audio',
+    sendDocument: 'document', sendAnimation: 'animation', sendVoice: 'voice', sendVideoNote: 'video_note', sendSticker: 'sticker' };
+  const media = mediaFields[method] ? params[mediaFields[method]] : undefined;
+  // A file ID/URL does not reveal the media's pixels/sound. As with rich photo
+  // blocks, this is undecidable content, not evidence of an invisible message.
+  // Only the method's actual media field can vouch; a sendMessage sibling cannot.
+  if (typeof media === 'string' && media.length > 0) return;
+  if (method === 'sendMediaGroup' || method === 'editMessageMedia') {
+    const items = Array.isArray(params.media) ? params.media : [params.media];
+    if (items.some(item => item && typeof item === 'object' && typeof (item as Record<string, unknown>).media === 'string' &&
+      String((item as Record<string, unknown>).media).length > 0)) return;
+  }
   const field = effectiveReaderVisibleField(method, params);
   if (field !== undefined) assertOneOutgoingField(method, params, field);
 }

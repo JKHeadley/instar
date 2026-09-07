@@ -13,6 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
+import ts from 'typescript';
 import {
   registerSqliteHandle,
   closeAllSqlite,
@@ -79,10 +80,17 @@ describe('SQLite close-on-exit — server.ts wiring (ordering)', () => {
   });
 
   it('the graceful shutdown calls closeAllSqlite() AFTER server.stop() (writers stopped first)', () => {
-    const shutdownStart = serverSrc.indexOf('const shutdown = async () => {');
-    expect(shutdownStart).toBeGreaterThan(0);
-    // bound the search to the shutdown function body
-    const body = serverSrc.slice(shutdownStart, shutdownStart + 6000);
+    const source = ts.createSourceFile('server.ts', serverSrc, ts.ScriptTarget.Latest, true);
+    const findShutdown = (node: ts.Node): ts.ArrowFunction | undefined => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === 'shutdown'
+        && node.initializer && ts.isArrowFunction(node.initializer)) return node.initializer;
+      return ts.forEachChild(node, findShutdown);
+    };
+    const shutdown = findShutdown(source);
+    expect(shutdown).toBeDefined();
+    // Parse the complete function: adding an earlier cleanup must not truncate
+    // the assertion's view before the actual registry close call.
+    const body = shutdown!.body.getText(source);
     const stopIdx = body.indexOf('await server.stop()');
     expect(stopIdx).toBeGreaterThan(0);
     // Find the actual CALL after server.stop() — there is an incidental mention

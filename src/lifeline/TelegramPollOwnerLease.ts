@@ -42,6 +42,8 @@ export interface PollOwnerLease {
   heartbeatTs: number;
   /** Lease schema version (forward-compat). */
   v: 1;
+  /** Optional compatible-writer evidence; old lifelines intentionally omit it. */
+  originProtocol?: 'instar-telegram-origin-v1';
 }
 
 /** Default staleness threshold (ms). A lease whose heartbeatTs is older than
@@ -65,12 +67,14 @@ export function writeLease(
   botToken: string,
   pid: number,
   now: number = Date.now(),
+  originProtocol?: PollOwnerLease['originProtocol'],
 ): void {
   const lease: PollOwnerLease = {
     pid,
     tokenHash: tokenHash(botToken),
     heartbeatTs: now,
     v: 1,
+    ...(originProtocol ? { originProtocol } : {}),
   };
   const target = leasePath(stateDir);
   const tmp = `${target}.${pid}.${Math.random().toString(36).slice(2)}.tmp`;

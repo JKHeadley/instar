@@ -750,6 +750,10 @@ export class MachineIdentityManager {
    * Remove this machine's identity and keys (for `instar leave`).
    */
   removeLocalIdentity(): void {
+    if (this.hasIdentity()) {
+      const identity = this.loadIdentity();
+      new IdentityStore({ stateDir: this.instarDir }).retainCurrentSigningKeyHistory(identity.machineId);
+    }
     for (const file of [this.identityPath, this.signingKeyPath, this.encryptionKeyPath]) {
       if (fs.existsSync(file)) {
         SafeFsExecutor.safeUnlinkSync(file, { operation: 'src/core/MachineIdentity.ts:389' });

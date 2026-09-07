@@ -110,10 +110,10 @@ export class MasterKeyManager {
     const inTestRun = (!!process.env.VITEST || process.env.NODE_ENV === 'test') && !keychainOps;
     this.forceFile = forceFile || inTestRun;
     this.keyFilePath = path.join(stateDir, 'machine', 'secrets-master.key');
-    this.kc = keychainOps ?? {
+    this.kc = keychainOps ?? (inTestRun ? { read: () => null, write: () => false } : {
       read: (service, account) => this.readOsKeychain(service, account),
       write: (service, account, key) => this.writeOsKeychain(service, account, key),
-    };
+    });
   }
 
   /**

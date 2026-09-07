@@ -28,6 +28,68 @@
  * configuration or an explicit offload request.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+
+/** Existing installs have no ownership rows. Corrupt ownership is a hard error, never permission. */
+export function readManagedTelegramUserDataDirs(projectDir: string): string[] {
+  const file = path.join(projectDir, '.instar', 'state', 'playwright-profiles.json');
+  let raw: string;
+  try { raw = fs.readFileSync(file, 'utf8'); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+  const registry = JSON.parse(raw) as { profiles?: unknown[] };
+  if (!registry || !Array.isArray(registry.profiles)) throw new Error('managed-telegram-registry-unreadable');
+  return registry.profiles.flatMap(value => {
+    if (!value || typeof value !== 'object') throw new Error('managed-telegram-registry-unreadable');
+    const profile = value as { executionOwner?: unknown; userDataDir?: unknown };
+    if (profile.executionOwner !== 'telegram-origin-broker') return [];
+    if (typeof profile.userDataDir !== 'string' || !path.isAbsolute(profile.userDataDir)) throw new Error('managed-telegram-registry-unreadable');
+    return [profile.userDataDir];
+  });
+}
+
+/** Shared by launch, dynamic load and provider registration. No server may receive a managed
+ * Telegram profile capability, including an alias through a symlink or environment value. */
+export function assertMcpDoesNotExposeManagedTelegram(definition: unknown, managedUserDataDirs: readonly string[]): void {
+  const canonical = (value: string): string => {
+    const resolved = path.resolve(value);
+    return fs.existsSync(resolved) ? fs.realpathSync(resolved) : resolved;
+  };
+  const managed = managedUserDataDirs.map(dir => ({ original: path.resolve(dir), real: canonical(dir) }));
+  if (!managed.length) return;
+  const inspect = (value: unknown): void => {
+    if (typeof value === 'string') {
+      let decoded = value;
+      try { decoded = decodeURIComponent(value); } catch { /* Literal non-URL strings remain inspectable. */ }
+      const pieces = [decoded, ...decoded.split(/[\s="']/)].filter(Boolean);
+      for (const owner of managed) {
+        if (decoded.includes(owner.original) || decoded.includes(owner.real)) throw new Error('managed-telegram-profile-private');
+        for (const piece of pieces) {
+          if (!piece.startsWith('/') && !piece.startsWith('.')) continue;
+          const resolved = canonical(piece);
+          if (resolved === owner.real || resolved.startsWith(owner.real + path.sep)) throw new Error('managed-telegram-profile-private');
+        }
+      }
+    } else if (Array.isArray(value)) value.forEach(inspect);
+    else if (value && typeof value === 'object') Object.values(value).forEach(inspect);
+  };
+  inspect(definition);
+}
+
+/** Mandatory security filtering; independent of the optional dynamic-MCP lifecycle switch. */
+export function filterManagedTelegramMcpConfig(full: McpJson, managedUserDataDirs: readonly string[]): McpJson {
+  if (!managedUserDataDirs.length) return full;
+  if (!full || typeof full !== 'object' || !full.mcpServers || typeof full.mcpServers !== 'object' || Array.isArray(full.mcpServers)) {
+    throw new Error('managed-telegram-mcp-config-unreadable');
+  }
+  const filtered: Record<string, unknown> = {};
+  for (const [name, definition] of Object.entries(full.mcpServers)) {
+    try { assertMcpDoesNotExposeManagedTelegram(definition, managedUserDataDirs); filtered[name] = definition; }
+    catch (error) { if ((error as Error).message !== 'managed-telegram-profile-private') throw error; }
+  }
+  return { ...full, mcpServers: filtered };
+}
+
 /** The minimal `.mcp.json` shape we read/filter. */
 export interface McpJson {
   mcpServers?: Record<string, unknown>;

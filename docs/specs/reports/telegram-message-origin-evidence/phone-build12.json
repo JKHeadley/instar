@@ -1,0 +1,61 @@
+{
+  "kind": "actual-chrome-phone-origin-panel",
+  "viewport": {
+    "width": 375,
+    "height": 812
+  },
+  "externalRequests": [
+    {
+      "origin": "https://cdn.jsdelivr.net",
+      "blocked": true
+    },
+    {
+      "origin": "https://cdn.jsdelivr.net",
+      "blocked": true
+    },
+    {
+      "origin": "https://cdn.jsdelivr.net",
+      "blocked": true
+    },
+    {
+      "origin": "https://cdn.jsdelivr.net",
+      "blocked": true
+    },
+    {
+      "origin": "https://cdn.jsdelivr.net",
+      "blocked": true
+    },
+    {
+      "origin": "https://cdn.jsdelivr.net",
+      "blocked": true
+    },
+    {
+      "origin": "https://cdn.jsdelivr.net",
+      "blocked": true
+    },
+    {
+      "origin": "https://cdn.jsdelivr.net",
+      "blocked": true
+    }
+  ],
+  "checks": [
+    "actual PIN unlock",
+    "rendered durable audit record",
+    "status details collapse and open on click",
+    "checkbox save persisted",
+    "original immutable evidence preserved"
+  ],
+  "layout": {
+    "viewport": 375,
+    "documentWidth": 375,
+    "panelWidth": 375,
+    "checkboxes": 5,
+    "saveBottom": 547.6875
+  },
+  "status": "passed",
+  "screenshot": "phone-build12.png",
+  "sourceEvidenceSha256": "305f5722637d7936e16c82cf2ee9ccf9133a5ca021efe0929d4bb740ac473520",
+  "evidenceBoundary": "Actual browser HTTP/PIN/audit/save; fixture excludes dashboard WebSocket health. All eight external CDN requests were blocked before dispatch.",
+  "build": 12,
+  "productionActivated": false
+}

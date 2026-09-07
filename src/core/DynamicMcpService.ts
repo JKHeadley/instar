@@ -17,7 +17,7 @@ import { DynamicMcpManager, type DynamicMcpDeps, type RequestActor, type Request
 import { McpLoadedSetStore } from './McpLoadedSetStore.js';
 import { McpApprovalNonceStore } from './McpApprovalNonceStore.js';
 import { PendingMcpApprovalStore, type PendingMcpApprovalView, type McpChangeKind } from './PendingMcpApprovalStore.js';
-import { resolveBaselineServers, type DynamicMcpConfig, type McpJson } from './dynamicMcpConfig.js';
+import { assertMcpDoesNotExposeManagedTelegram, readManagedTelegramUserDataDirs, resolveBaselineServers, type DynamicMcpConfig, type McpJson } from './dynamicMcpConfig.js';
 
 export interface DynamicMcpServicePrimitives {
   /** `<projectDir>` (for `.mcp.json`) and where `.instar/state/mcp-loaded` lives. */
@@ -67,6 +67,14 @@ export class DynamicMcpService {
       isMidToolUse: (t) => p.isMidToolUse(t),
       restartSession: (t) => p.restart(t),
       audit: p.audit,
+      assertServerLoadAllowed: server => {
+        const managed = readManagedTelegramUserDataDirs(p.projectDir);
+        if (!managed.length) return;
+        const full = JSON.parse(fs.readFileSync(path.join(p.projectDir, '.mcp.json'), 'utf8')) as McpJson;
+        const definition = full.mcpServers?.[server];
+        if (!definition) throw new Error('managed-telegram-mcp-config-unreadable');
+        assertMcpDoesNotExposeManagedTelegram(definition, managed);
+      },
     };
     this.manager = new DynamicMcpManager(deps);
   }

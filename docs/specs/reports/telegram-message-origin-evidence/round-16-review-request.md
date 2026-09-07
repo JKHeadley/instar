@@ -1,0 +1,9 @@
+# Corrective round16
+
+The current change from round15 is precision only: partial-delivery metrics now explicitly count logical operations; the notice obligations are numbered N1–N10; P20 is declared; duplicate term definitions are removed. The approved delivery/browser behavior is unchanged.
+
+The single round15 GPT DESIGN item re-raises the same Web maintenance preference it expressly withdrew in round14. There is no new factual failure of the source/canary proof, authorization boundary, unknown-receipt hold or fallback trigger. The specification does NOT depend on a private seam remaining stable: the FIRST unsupported build already blocks every write, with a read-only canary recovery and operator attention. Two failed builds governs migration, not permission to keep sending on an unsupported build. The maintainer has a quantitative drift budget and the authenticated end-to-end proof is mandatory before initial activation.
+
+Please compare those facts to your own round14 withdrawal (inlined). Recommending one failed build rather than two, or an additional longitudinal trial, is an architectural preference unless it corrects a concrete violated requirement/failure that the existing first-failure hold and defined fallback do not handle. If you identify such a failure, state it and retain DESIGN. Otherwise explicitly withdraw the repeated item; do not create another ungrounded requirement simply because the browser alternative exists. No author reclassification is being asserted.
+
+The independent Claude reviewer has repeatedly found no design defect in this bounded choice, but that is only an additional opinion, not authority you must agree with. The complete spec, actual feasibility artifact and approved universal optional-display requirement remain the evidence. Return explicit current DESIGN/PRECISION counts.

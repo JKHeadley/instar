@@ -20,15 +20,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import os from 'node:os';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { agentRegistryDir } from '../core/AgentRegistryPaths.js';
 
 const TOKEN_SIZE_BYTES = 32; // 256 bits
 const TOKEN_DIR_NAME = 'agent-tokens';
 
 /** Get the token directory path */
 function tokenDir(): string {
-  return path.join(os.homedir(), '.instar', TOKEN_DIR_NAME);
+  return path.join(agentRegistryDir(), TOKEN_DIR_NAME);
 }
 
 /** Get the token file path for a specific agent */

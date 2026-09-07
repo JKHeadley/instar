@@ -38,7 +38,11 @@ import {
   SLACK_THREAD_TS_RE,
 } from './conversationIdentity.js';
 
+import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
+
 export interface DeliverOpts {
+  /** Internal call evidence only; never populated from caller HTTP metadata. */
+  originAuthor?: import('../messaging/telegram-origin/OriginAutomationAuthor.js').OriginAutomationAuthor;
   isProxy?: boolean;
   source?: string;
   tier?: string;
@@ -77,6 +81,7 @@ export type DeliveryOutcome =
         | 'no-slack-adapter'
         | 'send-failed'
         | 'telegram-send-failed'
+        | 'telegram-origin-held'
         | 'conversation-unreachable'
         | 'conversation-binding-incoherent'
         | 'binding-target-unresolved'
@@ -87,6 +92,7 @@ export type DeliveryOutcome =
          *  loss notice about a conversation that is alive and answering. */
         | 'standing-down';
       detail?: string;
+      originHold?: { operationId: string | null; outcome: string; reason: string; logicalReplaySafe?: boolean };
       /** §5.1: true ONLY for the pinned permanent error set — the beacon
        *  treats it as TERMINAL (dead-letter), never an infinite retry. */
       permanent?: boolean;
@@ -148,7 +154,7 @@ export interface ConversationDeliveryDeps {
   /** §9 followThrough gate state, resolved through resolveDevAgentGate at wiring. */
   followThrough: () => { enabled: boolean; dryRun: boolean };
   /** Today's Telegram path (`id > 0` arm) — queue/dedup/tone-gate untouched. */
-  sendTelegram: (topicId: number, text: string, opts?: DeliverOpts) => Promise<boolean>;
+  sendTelegram: (topicId: number, text: string, opts?: DeliverOpts) => Promise<boolean | DeliveryOutcome>;
   /** The local Slack adapter send (channel + thread_ts), when one exists. */
   sendSlack?: (channelId: string, text: string, threadTs?: string, opts?: DeliverOpts) => Promise<void>;
   /** §4: PresenceProxy's system-channel suppression moves INTO the funnel —
@@ -236,10 +242,15 @@ export function createConversationDelivery(deps: ConversationDeliveryDeps): Deli
     if (id > 0) {
       try {
         const ok = await deps.sendTelegram(id, text, opts);
+        if (typeof ok !== 'boolean') return ok;
         return ok
           ? { delivered: true, outcome: 'delivered' }
           : { delivered: false, outcome: 'not-delivered', reason: 'telegram-send-failed' };
       } catch (err) {
+        if (err instanceof TelegramOriginHoldError) return {
+          delivered: false, outcome: 'not-delivered', reason: 'telegram-origin-held',
+          originHold: { operationId: err.operationId, outcome: err.outcome, reason: err.reason },
+        };
         return {
           delivered: false,
           outcome: 'not-delivered',

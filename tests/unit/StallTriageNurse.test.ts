@@ -472,6 +472,7 @@ describe('StallTriageNurse', () => {
       expect(deps.sendToTopic).toHaveBeenCalledWith(
         1,
         expect.stringContaining('busy building'),
+        expect.objectContaining({ model: expect.objectContaining({ status: 'unknown', reason: 'author-provider-model-unavailable' }) }),
       );
       expect(result.actionsTaken).toContain('status_update');
     });
@@ -557,7 +558,7 @@ describe('StallTriageNurse', () => {
 
       await nurse.triage(3, 'sess', 'hello', Date.now());
 
-      expect(deps.sendToTopic).toHaveBeenCalledWith(3, expect.stringContaining('Interrupting'));
+      expect(deps.sendToTopic).toHaveBeenCalledWith(3, expect.stringContaining('Interrupting'), expect.objectContaining({ model: expect.objectContaining({ status: 'unknown' }) }));
     });
 
     it('unstick calls sendKey with C-c', async () => {
@@ -597,7 +598,7 @@ describe('StallTriageNurse', () => {
 
       await nurse.triage(4, 'sess', 'hello', Date.now());
 
-      expect(deps.sendToTopic).toHaveBeenCalledWith(4, expect.stringContaining('Unsticking'));
+      expect(deps.sendToTopic).toHaveBeenCalledWith(4, expect.stringContaining('Unsticking'), expect.objectContaining({ model: expect.objectContaining({ status: 'unknown' }) }));
     });
 
     it('restart calls sendToTopic then respawnSession', async () => {
@@ -616,7 +617,7 @@ describe('StallTriageNurse', () => {
 
       await nurse.triage(5, 'sess', 'hello', Date.now());
 
-      expect(deps.sendToTopic).toHaveBeenCalledWith(5, expect.stringContaining('Restarting'));
+      expect(deps.sendToTopic).toHaveBeenCalledWith(5, expect.stringContaining('Restarting'), expect.objectContaining({ model: expect.objectContaining({ status: 'unknown' }) }));
       expect(deps.respawnSession).toHaveBeenCalledWith('sess', 5, { silent: true });
     });
 

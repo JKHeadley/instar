@@ -38,6 +38,7 @@ const PENDING_BASELINE = [
 ].sort();
 
 const EXEMPT_BASELINE = [
+  'telegram-origin-recovery', // advisory-only, no parsed decision or routing-nature claim; same posture as DashboardInsightEngine
   'InteractivePoolCanaryJudge',
   // MoveIntentClassifier (2026-07-04): ships its OWN dedicated discrimination
   // benchmark (tests/unit/move-intent-discrimination.test.ts — deterministic

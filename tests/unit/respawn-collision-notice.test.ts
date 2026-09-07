@@ -1,6 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import {
   RESPAWN_COLLISION_NOTICE,
   sendRespawnCollisionNotice,
@@ -9,6 +11,25 @@ import { clearGenerationlessCodexResumeBinding, wireTelegramRouting } from '../.
 import type { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import type { SessionManager } from '../../src/core/SessionManager.js';
 import type { Message } from '../../src/core/types.js';
+import * as deterministicOrigin from '../../src/messaging/telegram-origin/OriginDeterministicSend.js';
+
+const fixture = vi.hoisted(() => ({ inboundDir: '' }));
+vi.mock('../../src/messaging/shared/telegramInboundFiles.js', () => ({
+  getTelegramInboundDir: () => {
+    if (!fixture.inboundDir) throw new Error('test inbound fixture is not active');
+    return fixture.inboundDir;
+  },
+}));
+beforeEach(() => { fixture.inboundDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-respawn-notice-')); });
+afterEach(async () => {
+  // Routing assertions await the terminal spawn/notice boundary; drain its
+  // remaining promise continuations before removing only this test's files.
+  await new Promise<void>(resolve => setImmediate(resolve));
+  vi.restoreAllMocks();
+  const directory = fixture.inboundDir; fixture.inboundDir = '';
+  SafeFsExecutor.safeRmSync(directory, { recursive: true, force: true, operation: 'test:instar-respawn-notice-inbound-cleanup' });
+  expect(fs.existsSync(directory)).toBe(false);
+});
 
 // The regression intentionally drives the real respawn wiring. Keep that path
 // real, but fence the production scaffold boundary: server.ts captures the
@@ -32,7 +53,9 @@ describe('respawn collision custody notice', () => {
     expect(sent[0].text).toContain('Please resend');
   });
 
-  it('tells the user exactly once when a second inbound collides with an unresolved respawn', async () => {
+  it.each([['ordinary death', ''], ['context exhaustion', 'conversation too long']])('tells the user exactly once through the origin producer when a second inbound collides with %s', async (_cause, output) => {
+    // Call through the shipped wrapper: bypassing it must fail even if text arrives.
+    const deterministicSend = vi.spyOn(deterministicOrigin, 'sendDeterministicTelegramNotice');
     const sent: string[] = [];
     let releaseSpawn!: (name: string) => void;
     const heldSpawn = new Promise<string>((resolve) => { releaseSpawn = resolve; });
@@ -54,7 +77,7 @@ describe('respawn collision custody notice', () => {
     const sessionManager = {
       isSessionAlive: () => false,
       requiresCodexGenerationRespawn: () => false,
-      captureOutput: () => '',
+      captureOutput: () => output,
       clearSessionFrameworkCache: vi.fn(),
       spawnInteractiveSession,
       injectTelegramMessage,
@@ -70,16 +93,24 @@ describe('respawn collision custody notice', () => {
       metadata: { messageThreadId: 458, telegramUserId: 8820318295, firstName: 'Echo' },
     } as Message);
 
-    await rawAdapter.onTopicMessage!(message('tg-1', 'first message'));
-    await vi.waitFor(() => expect(spawnInteractiveSession).toHaveBeenCalledTimes(1));
-    await rawAdapter.onTopicMessage!(message('tg-2', 'second message'));
+    try {
+      await rawAdapter.onTopicMessage!(message('tg-1', 'first message'));
+      await vi.waitFor(() => expect(spawnInteractiveSession).toHaveBeenCalledTimes(1));
+      await rawAdapter.onTopicMessage!(message('tg-2', 'second message'));
 
-    expect(sent.filter((text) => text === RESPAWN_COLLISION_NOTICE)).toEqual([RESPAWN_COLLISION_NOTICE]);
-    expect(spawnInteractiveSession).toHaveBeenCalledTimes(1);
-    expect(injectTelegramMessage).not.toHaveBeenCalled();
+      expect(sent.filter((text) => text === RESPAWN_COLLISION_NOTICE)).toEqual([RESPAWN_COLLISION_NOTICE]);
+      expect(spawnInteractiveSession).toHaveBeenCalledTimes(1);
+      expect(injectTelegramMessage).not.toHaveBeenCalled();
+      // Prove the real classifier entered the intended arm, not two copies of the ordinary case.
+      expect(sent.some(text => text.includes('Conversation got too long'))).toBe(output !== '');
 
-    // Let the detached respawn settle after the collision assertions.
-    releaseSpawn('replacement-session');
+      const collisions = deterministicSend.mock.calls.filter(call => call[1] === 'respawn-collision');
+      expect(collisions).toEqual([[rawAdapter, 'respawn-collision', 458, RESPAWN_COLLISION_NOTICE]]);
+    } finally {
+      // The detached respawn must settle before another branch gets a fresh registry.
+      releaseSpawn('replacement-session');
+      await vi.waitFor(() => expect(rawAdapter.registerTopicSession).toHaveBeenCalled());
+    }
   });
 
   it('fresh-respawns a stale generationless Codex pane with history and the current inbound', async () => {
@@ -123,9 +154,12 @@ describe('respawn collision custody notice', () => {
     expect(name).toBe('generationless-topic');
     expect(options.resumeSessionId).toBeUndefined();
     const pointer = String(prompt).match(/\[IMPORTANT: Read (.+?) —/);
-    const bootstrap = pointer ? fs.readFileSync(pointer[1], 'utf8') : String(prompt);
+    expect(pointer, 'the generationless history actually uses the bootstrap-file boundary').not.toBeNull();
+    expect(path.dirname(pointer![1])).toBe(fixture.inboundDir);
+    const bootstrap = fs.readFileSync(pointer![1], 'utf8');
     expect(bootstrap).toContain('Earlier bounded history');
     expect(bootstrap).toContain('Current inbound survives recovery');
+    await vi.waitFor(() => expect(rawAdapter.registerTopicSession).toHaveBeenCalled());
     expect(clearSessionFrameworkCache).toHaveBeenCalledWith('stale-generationless-pane');
     expect(injectTelegramMessage).not.toHaveBeenCalled();
   });
@@ -134,12 +168,6 @@ describe('respawn collision custody notice', () => {
     const remove = vi.fn();
     clearGenerationlessCodexResumeBinding({ remove } as never, 458);
     expect(remove).toHaveBeenCalledWith(458);
-  });
-
-  it('is wired into both dead-session respawn collision guards', () => {
-    const source = fs.readFileSync(path.resolve('src/commands/server.ts'), 'utf8');
-    const calls = source.match(/sendRespawnCollisionNotice\(telegram\.sendToTopic\.bind\(telegram\), topicId\)/g) ?? [];
-    expect(calls).toHaveLength(2);
   });
 
   it('does not move the sentinel-before-exactly-once safety ordering', () => {

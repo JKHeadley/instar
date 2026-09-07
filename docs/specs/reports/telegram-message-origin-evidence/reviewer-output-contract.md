@@ -1,0 +1,2 @@
+# Reviewer output contract
+For this spec-converge review, classify each finding explicitly as DESIGN (changes implementation, behavior, safety, performance or a false factual claim) or PRECISION (wording only, no change in behavior). Report zero findings plainly when no concrete defect remains. Do not mark a design defect precision to help convergence. The author must preserve the operator's direct requirement; propose alternatives without silently weakening it. Implementations described in a draft are proposals, not claims that those components already exist.

@@ -31,6 +31,7 @@ import os from 'node:os';
 // Reuse the EXACT boot-block sanitizer (control-char/ANSI strip + angle-bracket escape
 // + backtick neutralize) so the two boot surfaces can never drift (D16).
 import { sanitizeForBlock } from './BootSelfKnowledge.js';
+import { validWebKBuildEnrollment } from '../messaging/telegram-origin/TelegramWebKDriver.js';
 
 // ── Types (D-model) ──────────────────────────────────────────────────────────
 
@@ -80,6 +81,16 @@ export interface PlaywrightProfile {
   isDefault: boolean;
   createdAt: string;
   accounts: PlaywrightAccount[];
+  /** Server-owned Telegram submission profile; never a generic writable MCP profile. */
+  executionOwner?: 'telegram-origin-broker';
+  /** Machine-local enrollment; no transport/session keys or cookies. */
+  telegramBroker?: {
+    accountId: string;
+    accountNumber: number;
+    executablePath: string;
+    supportedBuilds: import('../messaging/telegram-origin/TelegramWebKDriver.js').WebKBuildEnrollment[];
+    exclusiveEnrollment?: { version: 1; checkedAt: number; retiredPids: number[]; proofDigest: string };
+  };
 }
 
 interface RegistryFile {
@@ -426,6 +437,7 @@ export class PlaywrightProfileRegistry {
       if (store.profiles.some((p) => p.id === id)) {
         throw new PlaywrightRegistryError(`profile '${id}' already exists`, 409);
       }
+      this.assertDirectoryNotManaged(store, userDataDir);
       if (store.profiles.length >= MAX_PROFILES) {
         throw new PlaywrightRegistryError(`maxProfiles=${MAX_PROFILES} reached`, 422);
       }
@@ -581,6 +593,7 @@ export class PlaywrightProfileRegistry {
     this.mutate<void>((store) => {
       const profile = store.profiles.find((p) => p.id === profileId);
       if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+      if (profile.executionOwner === 'telegram-origin-broker') throw new PlaywrightRegistryError('managed Telegram profile belongs to its submission broker', 409);
       if (profile.isDefault) throw new PlaywrightRegistryError('cannot delete the default profile', 409);
       store.profiles = store.profiles.filter((p) => p.id !== profileId);
       return { next: store, result: undefined };
@@ -591,6 +604,7 @@ export class PlaywrightProfileRegistry {
     this.mutate<void>((store) => {
       const profile = store.profiles.find((p) => p.id === profileId);
       if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+      if (profile.executionOwner === 'telegram-origin-broker') throw new PlaywrightRegistryError('managed Telegram account enrollment cannot be removed through generic browser tools', 409);
       const before = profile.accounts.length;
       profile.accounts = profile.accounts.filter(
         (a) => !(a.service === service && a.identity === identity),
@@ -604,6 +618,57 @@ export class PlaywrightProfileRegistry {
 
   // ── Activation (compute + optional write) — D10 ─────────────────────────────────
 
+  /** Trusted enrollment/migration entrypoint, deliberately absent from generic HTTP/MCP actions.
+   * Existing writable processes must be revoked separately before broker activation. */
+  claimTelegramBrokerProfile(profileId: string, enrollment?: PlaywrightProfile['telegramBroker']): PlaywrightProfile {
+    return this.mutate<PlaywrightProfile>((store) => {
+      const profile = store.profiles.find(p => p.id === profileId);
+      if (!profile) throw new PlaywrightRegistryError('Telegram profile not found', 404);
+      if (!profile.userDataDir || profile.isDefault) throw new PlaywrightRegistryError('Telegram broker requires a dedicated non-default profile', 409);
+      if (!profile.accounts.some(a => a.service.toLowerCase() === 'telegram' && a.owner === 'operator')) throw new PlaywrightRegistryError('operator Telegram account enrollment required', 409);
+      const canonical = canonicalProfileDirectory;
+      if (store.profiles.some(p => p.id !== profileId && p.userDataDir && canonical(p.userDataDir) === canonical(profile.userDataDir!))) {
+        throw new PlaywrightRegistryError('Telegram profile directory is shared with another profile', 409);
+      }
+      if (enrollment) {
+        if (!/^[1-9][0-9]*$/.test(enrollment.accountId) || !Number.isSafeInteger(enrollment.accountNumber) ||
+          enrollment.accountNumber < 1 || enrollment.accountNumber > 4 || !path.isAbsolute(enrollment.executablePath) ||
+          !Array.isArray(enrollment.supportedBuilds) || !enrollment.supportedBuilds.length || enrollment.supportedBuilds.length > 2 ||
+          enrollment.supportedBuilds.some(build => !validWebKBuildEnrollment(build))) throw new PlaywrightRegistryError('invalid Telegram broker enrollment', 400);
+        const exclusive = enrollment.exclusiveEnrollment;
+        if (exclusive && (exclusive.version !== 1 || !Number.isSafeInteger(exclusive.checkedAt) || exclusive.checkedAt <= 0 ||
+          !Array.isArray(exclusive.retiredPids) || exclusive.retiredPids.length > 64 || exclusive.retiredPids.some(pid => !Number.isSafeInteger(pid) || pid <= 0) ||
+          !/^[0-9a-f]{64}$/.test(exclusive.proofDigest))) throw new PlaywrightRegistryError('invalid exclusive browser enrollment proof', 400);
+        profile.telegramBroker = structuredClone(enrollment);
+      }
+      profile.executionOwner = 'telegram-origin-broker';
+      return { next: store, result: profile };
+    });
+  }
+
+  /** Security callers must propagate read/corruption failures; never turn them into an empty guard. */
+  managedTelegramUserDataDirs(): string[] {
+    return this.ensureSeeded().profiles.filter(p => p.executionOwner === 'telegram-origin-broker').map(p => {
+      if (!p.userDataDir || !path.isAbsolute(p.userDataDir)) throw new PlaywrightRegistryError('invalid managed Telegram profile directory', 409);
+      return p.userDataDir;
+    });
+  }
+
+  requireTelegramBrokerProfile(profileId: string): PlaywrightProfile {
+    const store = this.ensureSeeded();
+    const profile = store.profiles.find(p => p.id === profileId);
+    if (!profile || profile.executionOwner !== 'telegram-origin-broker' || !profile.userDataDir || profile.isDefault || !path.isAbsolute(profile.userDataDir)) {
+      throw new PlaywrightRegistryError('Telegram profile has not been enrolled for exclusive broker execution', 409);
+    }
+    // Recheck at use time: a new registry entry or a newly materialized symlink
+    // can alias this directory after the original exclusive enrollment.
+    const directory = canonicalProfileDirectory(profile.userDataDir);
+    if (store.profiles.some(other => other.id !== profileId && other.userDataDir && canonicalProfileDirectory(other.userDataDir) === directory)) {
+      throw new PlaywrightRegistryError('Telegram profile directory is shared with another profile', 409);
+    }
+    return profile;
+  }
+
   /**
    * Compute the intended .mcp.json/.settings.json args mutation WITHOUT writing.
    * INSERT `--user-data-dir <dir>` as two array elements when absent; REPLACE the value
@@ -614,6 +679,8 @@ export class PlaywrightProfileRegistry {
     const store = this.ensureSeeded();
     const profile = store.profiles.find((p) => p.id === profileId);
     if (!profile) throw new PlaywrightRegistryError(`profile '${profileId}' not found`, 404);
+    if (profile.executionOwner === 'telegram-origin-broker') throw new PlaywrightRegistryError('managed Telegram profile is available through typed broker operations only', 409);
+    if (profile.userDataDir) this.assertDirectoryNotManaged(store, profile.userDataDir);
 
     const resolved = this.resolvePlaywrightMcpConfig();
     if (!resolved) {
@@ -645,6 +712,11 @@ export class PlaywrightProfileRegistry {
    * Returns the file written.
    */
   writeActivation(plan: PlaywrightActivationPlan): { file: string } {
+    // Recheck ownership at mutation time, including plans computed before enrollment.
+    const livePlan = this.computeActivation(plan.profileId);
+    if (plan.file !== livePlan.file || plan.userDataDir !== livePlan.userDataDir || JSON.stringify(plan.nextArgs) !== JSON.stringify(livePlan.nextArgs)) {
+      throw new PlaywrightRegistryError('browser activation plan changed; recompute it', 409);
+    }
     let parsed: { mcpServers?: Record<string, unknown> };
     try {
       parsed = JSON.parse(fs.readFileSync(plan.file, 'utf8')) as { mcpServers?: Record<string, unknown> };
@@ -778,6 +850,14 @@ export class PlaywrightProfileRegistry {
    * Path-jail a caller-supplied userDataDir (D9): path.resolve'd, absolute, confined under
    * projectDir (agent home), not flag-shaped (`-` prefix), no NUL. Else throw 400.
    */
+  private assertDirectoryNotManaged(store: RegistryFile, directory: string): void {
+    const target = canonicalProfileDirectory(directory);
+    if (store.profiles.some(profile => profile.executionOwner === 'telegram-origin-broker' && profile.userDataDir &&
+      canonicalProfileDirectory(profile.userDataDir) === target)) {
+      throw new PlaywrightRegistryError('managed Telegram directory is available through typed broker operations only', 409);
+    }
+  }
+
   private jailUserDataDir(input: string): string {
     const raw = String(input);
     if (raw.includes('\u0000')) {
@@ -796,6 +876,16 @@ export class PlaywrightProfileRegistry {
     }
     return resolved;
   }
+}
+
+/** Resolve existing parent symlinks too, before the profile directory is materialized. */
+function canonicalProfileDirectory(directory: string): string {
+  let parent = path.resolve(directory);
+  const missing: string[] = [];
+  while (!fs.existsSync(parent) && path.dirname(parent) !== parent) {
+    missing.unshift(path.basename(parent)); parent = path.dirname(parent);
+  }
+  return path.resolve(fs.realpathSync(parent), ...missing);
 }
 
 // ── Module-level pure helpers ──────────────────────────────────────────────────

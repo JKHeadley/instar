@@ -47,6 +47,7 @@ export const GLANCE_ADOPTED_TABS = [
   'machines', 'systems', 'spend', 'routing-map', // Phase 3 (the jargon belt); 'systems' is the Health tab
   // Phase 4 — the sweep: every remaining data-summary view on the floor.
   'pr-pipeline', 'tokens', 'llm-activity', 'secrets', 'resources', 'initiatives',
+  'origins', // real settings / recording / message drills in origin.js
   'feedback-drain', // operated summary reviewed against the F10/F11 floor
 ];
 

@@ -71,7 +71,7 @@ export function fingerprint(text: string): string {
 export class OutboundContentDedup {
   private readonly cfg: Required<OutboundContentDedupConfig>;
   /** topicId -> (fingerprint -> last-sent epoch ms) */
-  private readonly seen = new Map<number, Map<string, number>>();
+  private readonly seen = new Map<number | string, Map<string, number>>();
   /** topicId -> (fingerprint -> reserved-at epoch ms). An IN-FLIGHT claim taken
    *  by `tryReserve` BEFORE a send starts and cleared by `record` (success) or
    *  `releaseReservation` (failure). This closes the check-then-send race that
@@ -80,7 +80,7 @@ export class OutboundContentDedup {
    *  arrives in that window used to pass the duplicate check (nothing recorded
    *  yet) and send a second copy. Reservations auto-expire after `reserveTtlMs`
    *  so a leaked claim can never permanently suppress a fingerprint. */
-  private readonly reserved = new Map<number, Map<string, number>>();
+  private readonly reserved = new Map<number | string, Map<string, number>>();
   private readonly now: () => number;
   /** Optional durable backing so a duplicate is caught ACROSS a restart / across
    *  overlapping processes (the in-memory `seen` Map resets on restart — the exact
@@ -102,7 +102,7 @@ export class OutboundContentDedup {
   /** Is `text` an exact duplicate of a message sent to `topicId` within the
    *  window? Pure read — does NOT record. Returns false when disabled or the
    *  text is below the length floor. */
-  isDuplicate(topicId: number, text: string): boolean {
+  isDuplicate(topicId: number | string, text: string): boolean {
     if (!this.cfg.enabled) return false;
     const norm = normalizeForDedup(text);
     if (norm.length < this.cfg.minLength) return false;
@@ -130,7 +130,7 @@ export class OutboundContentDedup {
    *  Below-floor text is never deduped → always returns true with no reservation
    *  (brief acks legitimately repeat). This supersedes the plain `isDuplicate`
    *  check at the send callsite to close the check-then-send race. */
-  tryReserve(topicId: number, text: string): boolean {
+  tryReserve(topicId: number | string, text: string): boolean {
     if (!this.cfg.enabled) return true;
     const norm = normalizeForDedup(text);
     if (norm.length < this.cfg.minLength) return true;
@@ -139,6 +139,7 @@ export class OutboundContentDedup {
     if (this.isDuplicate(topicId, text)) return false;
     // Currently in flight (a live, non-expired reservation) → duplicate.
     const now = this.now();
+    if (this.store?.hasOriginReservation?.(topicId, fp, now) === true) return false;
     const resMap = this.reserved.get(topicId);
     const reservedAt = resMap?.get(fp);
     if (reservedAt !== undefined && now - reservedAt < this.cfg.reserveTtlMs) return false;
@@ -155,7 +156,7 @@ export class OutboundContentDedup {
 
   /** Release an in-flight reservation taken by `tryReserve` — call when the send
    *  FAILED, so the legitimate retry of the same text isn't wrongly suppressed. */
-  releaseReservation(topicId: number, text: string): void {
+  releaseReservation(topicId: number | string, text: string): void {
     const norm = normalizeForDedup(text);
     if (norm.length < this.cfg.minLength) return;
     this.reserved.get(topicId)?.delete(fingerprint(norm));
@@ -164,7 +165,7 @@ export class OutboundContentDedup {
   /** Record that `text` was sent to `topicId` now. Call AFTER a successful send.
    *  No-op for below-floor text (it can never be a dedup target anyway). Also
    *  clears any in-flight reservation for this fingerprint (the send resolved). */
-  record(topicId: number, text: string): void {
+  record(topicId: number | string, text: string): void {
     if (!this.cfg.enabled) return;
     const norm = normalizeForDedup(text);
     if (norm.length < this.cfg.minLength) return;
@@ -185,6 +186,25 @@ export class OutboundContentDedup {
   }
 
   /** Drop expired entries, then enforce the per-topic ring cap (oldest-first). */
+  reserveOrigin(topicId: number | string, text: string, operationId: string, deadlineAt: number): 'reserved' | 'duplicate' | 'unavailable' {
+    const norm = normalizeForDedup(text);
+    if (!this.cfg.enabled || norm.length < this.cfg.minLength) return 'reserved';
+    const now = this.now(), fp = fingerprint(norm), reservedAt = this.reserved.get(topicId)?.get(fp);
+    if (reservedAt !== undefined && now - reservedAt < this.cfg.reserveTtlMs) return 'duplicate';
+    if (!Number.isSafeInteger(deadlineAt) || deadlineAt < now || deadlineAt - now > 24 * 60 * 60_000) return 'unavailable';
+    return this.store?.reserveOrigin?.({ topicId, fingerprint: fp, operationId, now,
+      expiresAt: deadlineAt + this.cfg.windowMs, sentSince: now - this.cfg.windowMs }) ?? 'unavailable';
+  }
+
+  /** Only a fully accepted operation settles its own reservation. Any failure
+   * retains suppression until its outbox deadline plus the ordinary window. */
+  completeOrigin(topicId: number | string, text: string, operationId: string): void {
+    const norm = normalizeForDedup(text);
+    if (!this.cfg.enabled || norm.length < this.cfg.minLength) return;
+    const now = this.now();
+    this.store?.completeOrigin?.({ topicId, fingerprint: fingerprint(norm), operationId, now, expiresAt: now + this.cfg.windowMs });
+  }
+
   private pruneTopic(topicMap: Map<string, number>): void {
     const cutoff = this.now() - this.cfg.windowMs;
     for (const [fp, at] of topicMap) {

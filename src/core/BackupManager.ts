@@ -1,3 +1,4 @@
+import { ORIGIN_LOCAL_BACKUP_PREFIXES } from '../messaging/telegram-origin/OriginLocalPaths.js';
 /**
  * Backup Manager — snapshot and restore agent state files.
  *
@@ -28,6 +29,7 @@ const BLOCKED_FILES = new Set(['config.json', 'secrets', 'machine']);
 // defense against that failure mode. Any entry under one of these prefixes is
 // skipped during snapshot creation regardless of config source.
 const BLOCKED_PATH_PREFIXES = new Set([
+  ...ORIGIN_LOCAL_BACKUP_PREFIXES,
   '.instar/secrets/',
   // Durable Inbound Message Queue (spec §5.5): the custody store + sidecars +
   // quarantined copies are in-flight per-machine state — restoring them to a

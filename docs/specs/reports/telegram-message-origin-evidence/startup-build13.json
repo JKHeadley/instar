@@ -1,0 +1,232 @@
+{
+  "build": "13",
+  "runtimeAssertionsPassed": true,
+  "originalOverallOutcome": "failed",
+  "cleanupConservativeProblem": [
+    "identity changed before kill 68302"
+  ],
+  "independentClosure": {
+    "at": "2026-09-07T05:11:42.699Z",
+    "survivors": [],
+    "sockets": [],
+    "privateSocket": false,
+    "portsFree": {
+      "mainPort": true,
+      "fixturePort": true
+    },
+    "registryEntries": 0,
+    "originalEvidenceUnchanged": true,
+    "closed": true
+  },
+  "controls": {
+    "observed": 15,
+    "allPassed": true
+  },
+  "lease": {
+    "seconds": 135,
+    "samples": 27,
+    "epochs": [
+      1
+    ],
+    "allHeld": true
+  },
+  "detectorHealth": [
+    {
+      "phase": "detector-health-before-restart",
+      "at": 1788757717190,
+      "health": {
+        "sources": {
+          "config": {
+            "state": "healthy",
+            "reason": "source-observed",
+            "attemptedAt": 1788757716477,
+            "succeededAt": 1788757716496,
+            "busy": false,
+            "revision": 3
+          },
+          "noticePolicy": {
+            "state": "healthy",
+            "reason": "policy-source-observed",
+            "attemptedAt": 1788757716431,
+            "succeededAt": 1788757716451,
+            "busy": false,
+            "revision": 5
+          },
+          "nativeObservations": {
+            "state": "idle",
+            "reason": "no-tracked-sessions",
+            "succeededAt": null,
+            "harnesses": {}
+          }
+        },
+        "canaries": {
+          "ownedContracts": {
+            "scope": "owned-file-backed-secretstore-fixture",
+            "osKeychainVerified": false,
+            "state": "pass",
+            "reason": "owned-file-key-contracts-verified",
+            "attemptedAt": 1788757706458,
+            "finishedAt": 1788757706859,
+            "validUntil": 1788761306859,
+            "attempts": 1,
+            "intervalMs": 3600000,
+            "checks": [
+              "encrypted-config-read",
+              "exact-hub-permission",
+              "opt-out-observed",
+              "hub-rebind-refused",
+              "credential-rotation-refused",
+              "malformed-source-refused"
+            ]
+          },
+          "nativeModels": {
+            "state": "failed",
+            "reason": "native-canary-failed",
+            "sampledAt": 1788757706966,
+            "validUntil": null,
+            "cleanupVerified": true,
+            "cliVersion": null,
+            "cliDigest": "b973d440acac501fd2594a43e7ca9ce41e0a65b9dfb28d0d7a7837c99e1261e3",
+            "parserDigest": "98746a93a7c061fa4ec6805a94363e0933158cce4b13d21858ac05aba60b413f",
+            "harness": "codex-cli",
+            "unsupportedHarnesses": [
+              "claude-code",
+              "gemini-cli",
+              "pi-cli",
+              "grok-build"
+            ],
+            "scope": "native-cli-format-with-loopback-provider",
+            "providerExecutionVerified": false
+          }
+        }
+      }
+    },
+    {
+      "phase": "detector-health-after-restart",
+      "at": 1788757870445,
+      "health": {
+        "sources": {
+          "config": {
+            "state": "healthy",
+            "reason": "source-observed",
+            "attemptedAt": 1788757869453,
+            "succeededAt": 1788757869472,
+            "busy": false,
+            "revision": 0
+          },
+          "noticePolicy": {
+            "state": "healthy",
+            "reason": "policy-source-observed",
+            "attemptedAt": 1788757869453,
+            "succeededAt": 1788757869472,
+            "busy": false,
+            "revision": 0
+          },
+          "nativeObservations": {
+            "state": "idle",
+            "reason": "no-tracked-sessions",
+            "succeededAt": null,
+            "harnesses": {}
+          }
+        },
+        "canaries": {
+          "ownedContracts": {
+            "scope": "owned-file-backed-secretstore-fixture",
+            "osKeychainVerified": false,
+            "state": "pass",
+            "reason": "owned-file-key-contracts-verified",
+            "attemptedAt": 1788757869518,
+            "finishedAt": 1788757869926,
+            "validUntil": 1788761469926,
+            "attempts": 1,
+            "intervalMs": 3600000,
+            "checks": [
+              "encrypted-config-read",
+              "exact-hub-permission",
+              "opt-out-observed",
+              "hub-rebind-refused",
+              "credential-rotation-refused",
+              "malformed-source-refused"
+            ]
+          },
+          "nativeModels": {
+            "state": "failed",
+            "reason": "native-canary-failed",
+            "sampledAt": 1788757869996,
+            "validUntil": null,
+            "cleanupVerified": true,
+            "cliVersion": null,
+            "cliDigest": "b973d440acac501fd2594a43e7ca9ce41e0a65b9dfb28d0d7a7837c99e1261e3",
+            "parserDigest": "98746a93a7c061fa4ec6805a94363e0933158cce4b13d21858ac05aba60b413f",
+            "harness": "codex-cli",
+            "unsupportedHarnesses": [
+              "claude-code",
+              "gemini-cli",
+              "pi-cli",
+              "grok-build"
+            ],
+            "scope": "native-cli-format-with-loopback-provider",
+            "providerExecutionVerified": false
+          }
+        }
+      }
+    }
+  ],
+  "originalHeldReceipts": [
+    {
+      "phase": "original-held-operation-accepted-by-new-main",
+      "at": 1788757870446,
+      "operationId": "575f9ce5-3080-47df-b448-b4f98d4cdb6e",
+      "receipt": {
+        "child_id": "31290b56-eb3e-4a79-8103-fd411a4d4e25",
+        "state": "accepted",
+        "message_id": "105"
+      },
+      "newMainPid": 68301
+    },
+    {
+      "phase": "original-owner-outage-operation-accepted",
+      "at": 1788757870446,
+      "operationId": "2611fa99-3a20-4a42-887e-32bc7554b03b",
+      "receipt": {
+        "child_id": "76eddd74-38dc-4e1d-b49f-84183ef1db0a",
+        "state": "accepted",
+        "message_id": "104"
+      }
+    }
+  ],
+  "acceptedReceiptPreserved": true,
+  "duplicateSuppressed": {
+    "phase": "accepted-content-repeat-suppressed",
+    "at": 1788757871455,
+    "sendCount": 5,
+    "response": {
+      "ok": true,
+      "suppressedDuplicate": true,
+      "originId": "e5c82dcf-fa88-4ebe-927d-ba4a9267e3c7",
+      "operationId": "db67ff81-0e05-4f13-9bec-057f8ab699e8",
+      "retryable": false
+    }
+  },
+  "targetTopicSendCount": 6,
+  "distDigests": {
+    "commands/server.js": "f0be82272703f3625b6bc354912a50a48a5997b569dd9e19a971f57f119db9a2",
+    "lifeline/TelegramLifeline.js": "4c60a975e2c9fb6f123158b133943ab588288e842459afd4ab9d247253d2605c",
+    "lifeline/ServerSupervisor.js": "142b81b631d7fae4445c5eaf80beb1727bf758ae7629491015c82f434d7cb44e",
+    "core/MultiMachineCoordinator.js": "e6c680c1da7f8cc10d5710fc53d409ad429cd8515122f2aa4bff3f8869f771b7",
+    "messaging/telegram-origin/TelegramOriginBoot.js": "62ce93c5f646043b969095537f5baa1f75687da4f74ff0c711339a34364c7bf3",
+    "messaging/telegram-origin/TelegramOriginRuntime.js": "0151d0749a96aaca14dd547e0479d507638de03983659700feb8853ab3bd3b79",
+    "messaging/telegram-origin/OriginConfigReader.js": "ee4f7296b6e8be65bf8c55f6f144dd50ee6c2142840e7187ef2937f80ff1248c",
+    "messaging/telegram-origin/OriginConfigReader.worker.js": "46dad6b9780cb453b25607f88661f2f76f78c3c58e886ba4c673fd05d8f6bbd0",
+    "messaging/telegram-origin/OriginNoticePolicyObserver.js": "32f1a0cc0b10c49a00d613b2f39b3ce3aa269716b200686b09a5ba61f0ca2148",
+    "messaging/telegram-origin/OriginDetectorCanary.js": "6eef9efd3e577e92caeaaba30cf31b101c8e675e1571af60bb4e69d5cc17891d",
+    "messaging/telegram-origin/OriginDetectorCanary.worker.js": "e78ece55f4245812ff07fee8d722065c11e62d092f6c737ee974ae95e9eadf1a",
+    "messaging/telegram-origin/OriginNativeCanaryLane.js": "764f6e501fbd3c7d73289b0675e51bbcaa2eb96c58ef215ef60141ca07551956",
+    "messaging/telegram-origin/RuntimeOriginObserver.js": "98746a93a7c061fa4ec6805a94363e0933158cce4b13d21858ac05aba60b413f",
+    "core/SecretStore.js": "e1d78af0e982a7568c32873ede94bcc806a21cb52dfdf3b12e93aa70f696d8e9"
+  },
+  "nativeDiagnosticBoundary": "Outer kernel fixture intentionally does not establish native canary success; failed/unavailable must retain verified cleanup and explicit loopback scope. Separate build13 native E2E supplies native success evidence.",
+  "sourceFingerprint": "1dd16ed8fc96d345e9143584bf72ce56d32ad01c907ffd4f57a3739088048360",
+  "originalEvidenceSha256": "fc5633a2e59817398e3b9db174d006ae66c72abb1f31f06f01d947bca3513d3b",
+  "runtimeResultSha256": "99f10dbb7cf62f6c01bafbabad3ea6e50351e80c4b6d6570f6ddd2fe8c64763c"
+}

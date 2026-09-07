@@ -1,3 +1,5 @@
+import { ORIGIN_LOCAL_GITIGNORE } from '../messaging/telegram-origin/OriginLocalPaths.js';
+import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuard.js';
 /**
  * Post-Update Migrator — the "intelligence download" layer.
  *
@@ -20,6 +22,8 @@
  */
 
 import fs from 'node:fs';
+import { telegramOriginAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -5196,6 +5200,11 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     this.migrateHookLayout(hooksDir, instarHooksDir, result);
 
     try {
+      fs.writeFileSync(path.join(instarHooksDir, 'telegram-origin-guard.js'), originToolGuardHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/telegram-origin-guard.js');
+    } catch (error) { result.errors.push(`telegram-origin-guard.js: ${error instanceof Error ? error.message : String(error)}`); }
+
+    try {
       // Session start hook — the most important one for self-discovery
       fs.writeFileSync(path.join(instarHooksDir, 'session-start.sh'), this.getSessionStartHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/session-start.sh (capability awareness)');
@@ -5560,6 +5569,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       'slopcheck-guard.js',
       'analysis-paralysis-guard.js',
       'post-action-reflection.js', 'external-communication-guard.js',
+      'telegram-origin-guard.js',
       'scope-coherence-collector.js', 'scope-coherence-checkpoint.js',
       'instructions-loaded-tracker.js', 'subagent-start-tracker.js',
       'free-text-guard.sh', 'claim-intercept.js', 'claim-intercept-response.js', 'response-review.js',
@@ -6209,6 +6219,41 @@ setTimeout(() => process.exit(0), 2000);
 
     let patched = false;
     const port = this.config.port;
+
+    if (!content.includes('### Telegram message origin')) {
+      content += telegramOriginAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Telegram origin recording and hold awareness');
+    }
+
+    if (!content.includes('messageOrigin.outageNotice.enabled')) {
+      content += '\n' + telegramOriginNoticeAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Telegram outage notice permission awareness');
+    }
+
+    if (!content.includes('Message origins on your phone:')) {
+      content += '\n' + telegramOriginDashboardAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added phone origin audit and settings awareness');
+    }
+
+    if (!content.includes('Origin detector health:')) {
+      content += '\n' + telegramOriginDetectorAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Telegram origin detector health awareness');
+    }
+
+    if (!content.includes('Origin lease renewal dependency:')) {
+      content += '\n' + telegramOriginLeaseAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Telegram origin lease dependency awareness');
+    }
+    if (!content.includes('Origin rollout certification:')) {
+      content += '\n' + telegramOriginCertificationAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Telegram origin rollout certification awareness');
+    }
 
     if (!content.includes('Pre-admission continuation carrier')) {
       content += '\n- **Pre-admission continuation carrier:** Keep an unadmitted autonomous record truthfully `active:false`. With `autonomousSessions.codexTaskContinuation.preparationCarrierEnabled` enabled, `POST /autonomous/preparation/start` creates a bounded `autonomous-preparation` ledger; recover it with `/:topic/recover`, promote only after independent admission already reports `active:true`, or terminalize on failure. It never consumes the active cap, and a native `/goal` never activates the run.\n';
@@ -10280,6 +10325,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // ensured exists in CLAUDE.md. Kept in document order so appended
     // sections preserve narrative ordering in the shadow.
     const markers = [
+      '### Telegram message origin',
       '### Mesh Rope Health (recovery probe + partition alerts)',
       '### Machine Identity Recovery',
       // Duplicate-session stand-down: the VOICE half is framework-agnostic by
@@ -10575,6 +10621,22 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         const section = after.slice(0, sectionEnd).trimEnd();
         appended = appended.trimEnd() + '\n\n' + section + '\n';
         mirrored++;
+      }
+
+      // A deployed shadow may already contain the origin heading while
+      // lacking later permission/certification guidance. Mirror those shared
+      // fragments independently, without copying neighboring sections again.
+      for (const [marker, render] of [
+        ['messageOrigin.outageNotice.enabled', telegramOriginNoticeAwareness],
+        ['Origin rollout certification:', telegramOriginCertificationAwareness],
+        ['Origin lease renewal dependency:', telegramOriginLeaseAwareness],
+        ['Message origins on your phone:', telegramOriginDashboardAwareness],
+        ['Origin detector health:', telegramOriginDetectorAwareness],
+      ] as const) {
+        if (claudeMd.includes(marker) && !appended.includes(marker)) {
+          appended = appended.trimEnd() + '\n\n' + render();
+          mirrored++;
+        }
       }
 
       if (mirrored > 0) {
@@ -11519,6 +11581,12 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
 
     let patched = false;
 
+    // Presentation and outage-notice permission defaults are independent from writer enrollment.
+    if (migrateTelegramOriginDisplay(config)) {
+      patched = true;
+      result.upgraded.push('config.json: added missing Telegram origin display and outage-notice defaults');
+    }
+
     // Codex lifecycle reliability rollout. Stage B becomes pending only when
     // this installed package carries valid Echo-signed release evidence.
     // Explicit false is operator authority and is never overwritten. Stage C
@@ -12154,6 +12222,10 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
     // Fix .instar-level .gitignore (GitStateManager's internal git tracking)
     const instarGitignore = path.join(this.config.stateDir, '.gitignore');
     this.removeGitignoreEntry(instarGitignore, 'relationships/', result, '.instar/.gitignore');
+    for (const entry of ORIGIN_LOCAL_GITIGNORE) {
+      this.addGitignoreEntry(instarGitignore, entry, result, '.instar/.gitignore');
+      this.addGitignoreEntry(projectGitignore, `.instar/${entry}`, result, 'project .gitignore');
+    }
 
     // PR-REVIEW-HARDENING Phase A: ensure .instar/secrets/pr-gate/ is excluded
     // from the project repo. The BackupManager.BLOCKED_PATH_PREFIXES guard
@@ -12632,8 +12704,9 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
+  getHookContent(name: 'telegram-origin-guard' | 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
     switch (name) {
+      case 'telegram-origin-guard': return originToolGuardHook();
       case 'session-start': return this.getSessionStartHook();
       case 'mcp-health-autorefresh': return this.getMcpHealthAutorefreshHook();
       case 'compaction-recovery': return this.getCompactionRecovery();
@@ -16173,6 +16246,9 @@ process.stdin.on('end', async () => {
    */
   // eslint-disable-next-line @typescript-eslint/naming-convention
   public static readonly TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS: ReadonlySet<string> = new Set([
+    // Decision-ref preservation version shipped before origin credentials and
+    // receipt-based ambiguous-outcome guidance (through v1.3.1225).
+    '609f0fe432fe0c35043e05721658a24bcd21ae5b84fcbf99b37a75298e9499e6',
     // Tier-1 initial-init shipped version. Shipped at 362ff59d.
     '98f70b86856e37f2719c39ecec152adf07ec30ce73c8134ab831b35c5b1c25b3',
     // Rebrand to Instar (no behavioral change). Shipped at 686f5758.

@@ -16,6 +16,7 @@
   },
   "scripts": {
     "generate:manifest": "node scripts/generate-builtin-manifest.cjs",
+    "release:certify-telegram-origin": "node scripts/certify-telegram-origin-release.mjs",
     "build": "node scripts/generate-builtin-manifest.cjs && tsc && node scripts/generate-standards-registry-asset.mjs && chmod 0755 dist/cli.js && node scripts/sign-instar-lockfile.mjs",
     "dev": "tsc --watch",
     "test": "vitest run",
@@ -130,6 +131,7 @@
     "moltbridge": "^0.1.6",
     "picocolors": "^1.0.0",
     "proper-lockfile": "^4.1.2",
+    "smol-toml": "1.8.0",
     "ssh2": "1.17.0",
     "telegram": "^2.26.22",
     "undici": "^6.27.0",

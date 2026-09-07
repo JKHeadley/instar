@@ -112,7 +112,7 @@ function retrieveSecret(secretDropId: string, field: string, projectDir: string)
 }
 
 /** Step 5 round-trip via the Telegram Bot HTTP API. Returns the observed reply (or throws). */
-async function telegramRoundTrip(botToken: string, nonce: string, timeoutMs: number): Promise<string> {
+async function telegramRoundTrip(botToken: string, nonce: string, timeoutMs: number, projectDir: string): Promise<string> {
   // Discover the bot's own chat by reading recent updates first (so we reply into an existing chat),
   // OR — for a self-test — send to the bot's getMe + use the most recent chat id from getUpdates.
   const api = (m: string) => `https://api.telegram.org/bot${botToken}/${m}`;
@@ -125,12 +125,8 @@ async function telegramRoundTrip(botToken: string, nonce: string, timeoutMs: num
   }
   const lastUpdateId = updates0.result?.length ? updates0.result[updates0.result.length - 1].update_id : 0;
   // Send the probe.
-  const probe = `test-as-self ${nonce}`;
-  await telegramFetch(api('sendMessage'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text: probe }),
-  });
+  const { sendRecordedTestProbe } = await import('../messaging/telegram-origin/OriginTestProbe.js');
+  await sendRecordedTestProbe({ projectDir, botToken, chatId, nonce, timeoutMs });
   // Poll for a reply that contains the nonce (the throwaway agent's response).
   const deadline = nowMs() + timeoutMs;
   let offset = lastUpdateId + 1;
@@ -254,7 +250,7 @@ export async function runTestAsSelf(opts: TestAsSelfOptions): Promise<{ report: 
     if (wantRoundTrip) {
       if (!await runStep('5. roundtrip', async () => {
         const nonce = `n${Date.now().toString(36)}`;
-        const reply = await telegramRoundTrip(ctx.botToken!, nonce, stepDeadlineMs);
+        const reply = await telegramRoundTrip(ctx.botToken!, nonce, stepDeadlineMs, ctx.target);
         return `reply observed (${reply.slice(0, 40)}…)`;
       })) return finish(ctx, opts, 5);
     } else {

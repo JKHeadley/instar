@@ -236,6 +236,10 @@ describe('IdentityStore', () => {
         signingPublicKey: 'signing-b', encryptionPublicKey: 'encryption-b', keyEpoch: 1,
       });
       expect(recovered.getEpoch('m_peer').keyEpoch).toBe(1);
+      expect(recovered.signingKeyHistory('m_peer')).toEqual([
+        expect.objectContaining({ epoch: 0, publicKey: 'signing-a', validFrom: '2026-08-30T12:00:00.000Z', validUntil: '2026-08-30T12:05:00.000Z' }),
+        expect.objectContaining({ epoch: 1, publicKey: 'signing-b', validFrom: '2026-08-30T12:05:00.000Z', validUntil: null }),
+      ]);
       expect(recovered.listUnacknowledged()).toEqual([expect.objectContaining({ machineId: 'm_peer', keyEpoch: 1 })]);
       expect(recovered.readChanges().filter((row) => row.path === 'signing-rotation')).toHaveLength(1);
       expect(fs.existsSync(recovered.transactionPath)).toBe(false);

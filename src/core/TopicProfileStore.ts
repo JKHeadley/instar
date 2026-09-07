@@ -38,6 +38,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import { SUPPORTED_FRAMEWORKS } from './TopicFrameworksStore.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -53,6 +54,8 @@ import {
 
 /** §4 — the Topic Profile object. Every axis independently nullable. */
 export interface TopicProfile {
+  /** Shared conversation presentation; never disables origin capture. */
+  messageOriginDisplay?: Partial<import('../messaging/telegram-origin/types.js').OriginDisplaySettings> | null;
   framework?: IntelligenceFramework | null;
   /** Explicit BASELINE model id — mutually exclusive with modelTier. */
   model?: string | null;
@@ -128,7 +131,17 @@ export class ProfileValidationRefusal extends Error {
   }
 }
 
+export function topicDisplayRevision(display: TopicProfile['messageOriginDisplay']): string {
+  return createHash('sha256').update(JSON.stringify(display ?? null)).digest('hex');
+}
+
+export class ProfileDisplayConflictError extends Error {
+  constructor() { super('Display settings changed; refresh before saving again.'); this.name = 'ProfileDisplayConflictError'; }
+}
+
 export interface MutateOptions {
+  /** Optional cosmetic compare-and-set, checked only while holding the topic lock. */
+  expectedDisplayRevision?: string;
   /**
    * Shift current→previous before applying the patch. The orchestration
    * layer sets this on the FIRST write of a disclosed burst / coalescing
@@ -202,7 +215,7 @@ export interface TopicProfileStoreOptions {
 
 const WRITE_LOCK_TIMEOUT_MS = 5_000;
 
-const PROFILE_FIELDS = ['framework', 'model', 'modelTier', 'escalationOverride', 'thinkingMode', 'effort'] as const;
+const PROFILE_FIELDS = ['framework', 'model', 'modelTier', 'escalationOverride', 'thinkingMode', 'effort', 'messageOriginDisplay'] as const;
 type ProfileField = (typeof PROFILE_FIELDS)[number];
 
 export class TopicProfileStore {
@@ -320,6 +333,13 @@ export class TopicProfileStore {
       key,
       async () => {
         const entry = this.entryFor(key);
+        if (opts.expectedDisplayRevision !== undefined &&
+          topicDisplayRevision(entry.current?.messageOriginDisplay) !== opts.expectedDisplayRevision) {
+          throw new ProfileDisplayConflictError();
+        }
+        // Derive this from actual supplied fields, never a caller's exemption flag.
+        const suppliedFields = PROFILE_FIELDS.filter(field => patch[field] !== undefined);
+        const displayOnly = suppliedFields.length === 1 && suppliedFields[0] === 'messageOriginDisplay';
         const base: TopicProfile = entry.current ?? {
           updatedAt: this.now().toISOString(),
           updatedBy: patch.updatedBy,
@@ -331,7 +351,7 @@ export class TopicProfileStore {
         for (const field of PROFILE_FIELDS) {
           if (patch[field] === undefined) continue;
           const next = patch[field] as TopicProfile[ProfileField];
-          if (merged[field] !== next) changed = true;
+          if (!profileFieldEqual(merged[field], next)) changed = true;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (merged as any)[field] = next;
         }
@@ -346,7 +366,10 @@ export class TopicProfileStore {
         }
 
         merged.updatedAt = this.now().toISOString();
-        merged.updatedBy = patch.updatedBy;
+        // Keep execution-history provenance for legacy undo eligibility.
+        // Cosmetic authorship is audited by the write surface; updatedAt still
+        // advances so replicated display preferences remain fresh.
+        merged.updatedBy = displayOnly ? base.updatedBy : patch.updatedBy;
 
         // §10.4 — a deliberate operator pin atomically supersedes a parked
         // intended-but-unhealthy profile + the breaker counter in the SAME
@@ -354,20 +377,20 @@ export class TopicProfileStore {
         // through park()/unparkProfile(), not here.
         const isOperatorWrite = !patch.updatedBy.startsWith('system:');
         let supersededParked = false;
-        if (isOperatorWrite && entry.parked) {
+        if (isOperatorWrite && !displayOnly && entry.parked) {
           entry.parked = null;
           entry.breakerCount = 0;
           supersededParked = true;
         }
 
-        if (opts.shiftPrevious) {
+        if (opts.shiftPrevious && !displayOnly) {
           entry.previous = entry.current ? { ...entry.current } : null;
         }
         entry.current = merged;
 
         // An accepted LIVE write clears that topic's stale dry-run shadow
         // (§14 supersession discipline).
-        if (entry.intendedProfile) entry.intendedProfile = null;
+        if (!displayOnly && entry.intendedProfile) entry.intendedProfile = null;
 
         await this.flushDurably();
         return { changed: true, entry, supersededParked };
@@ -505,8 +528,10 @@ export class TopicProfileStore {
         };
       }
       entry.previous = entry.current ? { ...entry.current } : null;
-      entry.current = revertTo
-        ? { ...revertTo, updatedAt: this.now().toISOString(), updatedBy: 'system:circuit-breaker' }
+      const display = entry.current?.messageOriginDisplay;
+      // Model recovery cannot restore a historical cosmetic preference.
+      entry.current = revertTo || display != null
+        ? { ...revertTo, messageOriginDisplay: display ?? null, updatedAt: this.now().toISOString(), updatedBy: 'system:circuit-breaker' }
         : null;
       entry.breakerCount = 0;
       await this.flushDurably();
@@ -932,6 +957,11 @@ function clampArrivingFields(
 ): { fields: Omit<TopicProfile, 'updatedAt' | 'updatedBy'>; fieldDropped: ProfileValidationError[] } {
   const fieldDropped: ProfileValidationError[] = [];
   const fields: Omit<TopicProfile, 'updatedAt' | 'updatedBy'> = {};
+  if (source.messageOriginDisplay != null) {
+    const checked = validateProfileFields({ messageOriginDisplay: source.messageOriginDisplay as TopicProfile['messageOriginDisplay'] }, fallbackFramework);
+    if (checked.ok) fields.messageOriginDisplay = checked.patch.messageOriginDisplay;
+    else fieldDropped.push(checked.error);
+  }
 
   // Framework first — the model arm validates against it (§10.2).
   let effectiveFramework: IntelligenceFramework = fallbackFramework;
@@ -974,9 +1004,17 @@ export function profilesEqual(a: TopicProfile | null, b: TopicProfile | null): b
   if (a === null && b === null) return true;
   if (a === null || b === null) return false;
   for (const field of PROFILE_FIELDS) {
-    if ((a[field] ?? null) !== (b[field] ?? null)) return false;
+    if (!profileFieldEqual(a[field], b[field])) return false;
   }
   return true;
+}
+
+function profileFieldEqual(a: unknown, b: unknown): boolean {
+  if (a && b && typeof a === 'object' && typeof b === 'object') {
+    const left = a as Record<string, unknown>, right = b as Record<string, unknown>;
+    return Object.keys(left).length === Object.keys(right).length && Object.keys(left).every(key => left[key] === right[key]);
+  }
+  return (a ?? null) === (b ?? null);
 }
 
 function deepCloneTopics(topics: Record<string, TopicProfileEntry>): Record<string, TopicProfileEntry> {

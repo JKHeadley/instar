@@ -9,6 +9,28 @@ import { createA2ACheckInScheduler } from '../../../src/threadline/A2ACheckInSch
 const INTERVAL = 420_000;
 
 describe('createA2ACheckInScheduler — Layer 4 end-to-end (mock I/O)', () => {
+  it('keeps overlapping summarizer selections attached to the body each call authored', async () => {
+    let now = 0;
+    const pending: Array<{ finish: (body: string) => void; call: import('../../../src/messaging/telegram-origin/OriginAutomationAuthor.js').OriginAuthorCall }> = [];
+    const surface = vi.fn(async () => undefined);
+    const make = (threadId: string) => createA2ACheckInScheduler({
+      listActiveThreads: () => [{ threadId, peerName: 'Dawn', topicId: 42 }],
+      summarize: (_prompt, call) => new Promise<string>(finish => pending.push({ finish, call })),
+      surface, getHistory: () => 'Dawn: still working', now: () => now,
+      config: { enabled: true, heartbeatEnabled: true, heartbeatIntervalMs: INTERVAL },
+    });
+    const first = make('first'), second = make('second'); await first.tick(); await second.tick();
+    now = INTERVAL + 1; const runs = [first.tick(), second.tick()];
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    pending[0].call.options({ model: 'fast' }).onModel!({ model: 'resolved-first', framework: 'codex-cli' });
+    pending[1].call.options({ model: 'fast' }).onModel!({ model: 'initial-second', framework: 'claude-code' });
+    pending[1].call.options({ model: 'fast' }).onModel!({ model: 'fallback-second', framework: 'claude-code' });
+    pending[1].finish('Dawn says the second check is ready.'); pending[0].finish('Dawn says the first check is ready.');
+    await Promise.all(runs);
+    const rows = surface.mock.calls.map(call => (call as unknown as [{ threadId: string; body: string; originAuthor: { model: { value: string; status: string } } }])[0]);
+    expect(rows.find(row => row.threadId === 'first')).toMatchObject({ body: 'Dawn says the first check is ready.', originAuthor: { model: { value: 'resolved-first', status: 'configured' } } });
+    expect(rows.find(row => row.threadId === 'second')).toMatchObject({ body: 'Dawn says the second check is ready.', originAuthor: { model: { value: 'fallback-second', status: 'configured' } } });
+  });
   it('a silence-breaker tick redacts the prompt and surfaces a guarded summary to the topic', async () => {
     const clock = { t: 0 };
     const summarize = vi.fn(async () => 'Dawn says the migration is progressing; nothing needs you.');

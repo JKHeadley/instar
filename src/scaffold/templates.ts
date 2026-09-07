@@ -9,6 +9,8 @@
  * When augmenting an existing project, only missing files are created.
  */
 
+import { telegramOriginAwareness } from "../messaging/telegram-origin/OriginAwareness.js";
+
 // The "Playwright Profile Registry" CLAUDE.md awareness section is authored ONCE in
 // PostUpdateMigrator (the single source of truth shared by new installs here and the
 // existing-agent migration there) so the two can never drift. Imported as a runtime
@@ -1751,6 +1753,7 @@ The AutonomousLivenessReconciler also covers a second dead-work shape: an autono
 `;
 
   if (hasTelegram) {
+    content += telegramOriginAwareness(port);
     content += `
 ## Telegram Relay
 

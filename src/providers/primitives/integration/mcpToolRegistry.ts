@@ -19,6 +19,13 @@
 
 import type { CancellationOptions } from '../../types.js';
 import { CapabilityFlag } from '../../capabilities.js';
+import { assertMcpDoesNotExposeManagedTelegram, readManagedTelegramUserDataDirs } from '../../../core/dynamicMcpConfig.js';
+
+/** Provider registration guard for agent-local managed profiles. Launch applies this again
+ * across inherited user/project configs, so changing providers cannot restore a capability. */
+export function assertManagedTelegramMcpRegistration(spec: McpServerSpec, projectDir = process.cwd()): void {
+  assertMcpDoesNotExposeManagedTelegram(spec, readManagedTelegramUserDataDirs(projectDir));
+}
 
 export interface McpToolRegistry {
   readonly capability: typeof CapabilityFlag.McpToolRegistry;

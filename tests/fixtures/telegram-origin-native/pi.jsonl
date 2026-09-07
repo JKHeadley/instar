@@ -1,0 +1,6 @@
+{"type": "session", "version": 3, "id": "11111111-1111-4111-8111-111111111111", "cwd": "/fixture"}
+{"type": "message", "id": "user-a", "parentId": null, "message": {"role": "user", "content": [{"type": "text", "text": "Fixture"}]}}
+{"type": "message", "id": "answer-a", "parentId": "user-a", "message": {"role": "assistant", "provider": "fixture", "model": "pi-native-first", "content": []}}
+{"type": "model_change", "id": "change", "parentId": "answer-a", "provider": "fixture", "modelId": "pi-config-only"}
+{"type": "message", "id": "user-b", "parentId": "change", "message": {"role": "user", "content": [{"type": "text", "text": "Fixture two"}]}}
+{"type": "message", "id": "answer-b", "parentId": "user-b", "message": {"role": "assistant", "provider": "fixture", "model": "pi-native-second", "content": []}}

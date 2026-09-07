@@ -1,3 +1,4 @@
+import { ORIGIN_LOCAL_GITIGNORE } from '../messaging/telegram-origin/OriginLocalPaths.js';
 /**
  * Git State Manager — optional git tracking of agent state files.
  *
@@ -46,7 +47,10 @@ remediation/cross-process-attempts-*.jsonl
 remediation/llm-raw-*.jsonl
 `;
 
-export const DEFAULT_GITIGNORE = `# Runtime state -- NOT tracked
+export const DEFAULT_GITIGNORE = `# Telegram origin custody -- machine-local
+${ORIGIN_LOCAL_GITIGNORE.join('\n')}
+
+# Runtime state -- NOT tracked
 state/
 logs/
 *.tmp

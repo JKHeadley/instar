@@ -54,11 +54,23 @@ export type IdentityMutationPath =
   | 'replication'
   | 'revocation';
 
+export interface IdentitySigningKeyEpoch {
+  epoch: number;
+  fingerprint: string;
+  /** Public verification material only; private keys never enter history. */
+  publicKey: string;
+  /** Local trust-establishment time. Null means a pre-history installation. */
+  validFrom: string | null;
+  validUntil: string | null;
+  revokedAt: string | null;
+}
+
 export interface IdentityEpochEntry {
   keyEpoch: number;
   recoveryEpoch: number;
   signingTombstones: Array<{ epoch: number; fingerprint: string }>;
   recoveryTombstones: Array<{ epoch: number; fingerprint: string }>;
+  signingKeys?: IdentitySigningKeyEpoch[];
   revokedAt?: string;
 }
 
@@ -300,6 +312,39 @@ export class IdentityStore {
     return stored ?? { keyEpoch: 0, recoveryEpoch: 0, signingTombstones: [], recoveryTombstones: [] };
   }
 
+  /** Historical reads never manufacture a key's validity from identity.createdAt. */
+  signingKeyHistory(machineId: string): IdentitySigningKeyEpoch[] {
+    const epoch = this.getEpoch(machineId);
+    const identity = this.loadIdentity(machineId, 'remote') ?? this.loadIdentity(machineId, 'local');
+    return this.retainSigningKey(epoch, identity?.machineId === machineId ? identity.signingPublicKey : undefined,
+      identity?.keyEpoch ?? epoch.keyEpoch);
+  }
+
+  /** Preserve a legacy install's last verification key before identity removal.
+   * Failure aborts local file removal, never reverses an existing revocation. */
+  retainCurrentSigningKeyHistory(machineId: string): void {
+    const epochs = this.loadEpochs();
+    const current = epochs.machines[machineId] ?? this.getEpoch(machineId);
+    const signingKeys = this.signingKeyHistory(machineId);
+    if (signingKeys.length === 0) throw new IdentityStoreRefusal('signing-history-unavailable', 'Cannot remove identity without retaining its public verification key');
+    epochs.machines[machineId] = { ...current, keyEpoch: Math.max(current.keyEpoch, ...signingKeys.map(key => key.epoch)), signingKeys };
+    atomicWrite(this.epochPath, JSON.stringify(epochs, null, 2));
+  }
+
+  private retainSigningKey(entry: IdentityEpochEntry, publicKey?: string, keyEpoch = entry.keyEpoch): IdentitySigningKeyEpoch[] {
+    const history = (entry.signingKeys ?? []).map(key => ({ ...key }));
+    if (publicKey && !history.some(key => key.epoch === keyEpoch && key.publicKey === publicKey)) {
+      history.push({ epoch: keyEpoch, fingerprint: fingerprint(publicKey)!, publicKey,
+        validFrom: null, validUntil: entry.revokedAt ?? null, revokedAt: entry.revokedAt ?? null });
+    }
+    return history;
+  }
+
+  private revokeSigningHistory(entry: IdentityEpochEntry, identity: MachineIdentity | null, at: string): IdentitySigningKeyEpoch[] {
+    return this.retainSigningKey(entry, identity?.signingPublicKey, identity?.keyEpoch ?? entry.keyEpoch)
+      .map(key => ({ ...key, validUntil: key.validUntil ?? at, revokedAt: key.revokedAt ?? at }));
+  }
+
   /**
    * Apply one identity mutation. Synchronous by design: Node's event loop plus the
    * re-entrancy refusal makes one process a single writer; atomic rename prevents
@@ -490,12 +535,20 @@ export class IdentityStore {
       throw new IdentityStoreRefusal('recovery-key-tombstoned', 'Announced recovery key was previously superseded');
     }
 
+    const acceptedAt = new Date(this.now()).toISOString();
+    const signingKeys = this.retainSigningKey(priorEpoch, current?.signingPublicKey ?? mutation.previousSigningPublicKey, currentKeyEpoch);
+    if (signingChanged || localRecovery) for (const key of signingKeys) key.validUntil ??= acceptedAt;
+    if (!signingKeys.some(key => key.epoch === nextKeyEpoch && key.publicKey === next.signingPublicKey)) {
+      signingKeys.push({ epoch: nextKeyEpoch, fingerprint: newSigningFp, publicKey: next.signingPublicKey,
+        validFrom: acceptedAt, validUntil: null, revokedAt: null });
+    }
     const epochEntry: IdentityEpochEntry = {
       ...priorEpoch,
       keyEpoch: nextKeyEpoch,
       recoveryEpoch: nextRecoveryEpoch,
       signingTombstones: [...priorEpoch.signingTombstones],
       recoveryTombstones: [...priorEpoch.recoveryTombstones],
+      signingKeys,
       ...(revoked && mutation.clearRevocation ? { revokedAt: undefined } : {}),
     };
     if ((signingChanged || localRecovery) && oldSigningFp && !epochEntry.signingTombstones.some((row) => row.fingerprint === oldSigningFp)) {
@@ -516,7 +569,6 @@ export class IdentityStore {
       machines: { ...epochs.machines, [next.machineId]: epochEntry },
     };
 
-    const acceptedAt = new Date(this.now()).toISOString();
     let nextUnacknowledged: UnacknowledgedRotationFile | undefined;
     if (signingChanged || localRecovery) {
       const unacknowledged = this.loadUnacknowledged();
@@ -592,6 +644,7 @@ export class IdentityStore {
       signingTombstones: [...current.signingTombstones],
       recoveryTombstones: [...current.recoveryTombstones],
       revokedAt: at,
+      signingKeys: this.revokeSigningHistory(current, identity, at),
     };
     if (signing && !next.signingTombstones.some((row) => row.fingerprint === signing)) next.signingTombstones.push({ epoch: current.keyEpoch, fingerprint: signing });
     if (recovery && !next.recoveryTombstones.some((row) => row.fingerprint === recovery)) next.recoveryTombstones.push({ epoch: current.recoveryEpoch, fingerprint: recovery });
@@ -626,6 +679,7 @@ export class IdentityStore {
         signingTombstones: [...prior.signingTombstones],
         recoveryTombstones: [...prior.recoveryTombstones],
         revokedAt: at,
+        signingKeys: this.revokeSigningHistory(prior, identity, at),
       };
       if (signing !== 'unknown' && !revokedEpoch.signingTombstones.some((row) => row.fingerprint === signing)) {
         revokedEpoch.signingTombstones.push({ epoch: prior.keyEpoch, fingerprint: signing });

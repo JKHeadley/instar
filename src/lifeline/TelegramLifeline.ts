@@ -1,3 +1,5 @@
+import { withDeterministicOrigin } from '../messaging/telegram-origin/OriginDeterministicSend.js';
+import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
 /**
  * Telegram Lifeline — minimal persistent process that owns the Telegram connection.
  *
@@ -254,6 +256,7 @@ interface TelegramUpdate {
 }
 
 export class TelegramLifeline {
+  private telegramOriginBoot?: Awaited<ReturnType<typeof import('../messaging/telegram-origin/TelegramOriginBoot.js').bootTelegramOrigin>>;
   private config: LifelineConfig;
   private projectConfig: ReturnType<typeof loadConfig>;
   private queue: MessageQueue;
@@ -465,6 +468,21 @@ export class TelegramLifeline {
       console.error(`[Lifeline] Registry heartbeat failed to start (non-critical): ${err instanceof Error ? err.message : err}`);
     }
 
+    const { bootTelegramOrigin } = await import('../messaging/telegram-origin/TelegramOriginBoot.js');
+    this.telegramOriginBoot = await bootTelegramOrigin({ config: this.projectConfig, token: this.config.token,
+      noticeOwner: true,
+      diagnosticMode: 'delegate',
+      holdsLease: () => this.polling && shouldOwnTelegramPoll(this.projectConfig),
+      diagnoseUnknown: async (originId, reason) => {
+        const response = await fetch(`http://127.0.0.1:${this.projectConfig.port}/telegram/origins/diagnose`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.projectConfig.authToken}` },
+          body: JSON.stringify({ originId, reason }), signal: AbortSignal.timeout(30_000),
+        });
+        if (response.status !== 202) throw new Error('origin diagnostic server unavailable');
+      },
+      onNoticeState: notice => console.info('[Lifeline] origin notification state', notice),
+    });
+
     // Ensure Lifeline topic exists (auto-recreate if deleted)
     this.lifelineTopicId = await this.ensureLifelineTopic();
     if (this.lifelineTopicId) {
@@ -629,6 +647,8 @@ export class TelegramLifeline {
    */
   private async quiesceEverything(): Promise<void> {
     this.polling = false;
+    try { await this.telegramOriginBoot?.close(); }
+    catch (error) { console.error('[telegram-origin] lifeline shutdown cleanup incomplete', error); }
     if (this.pollTimeout) clearTimeout(this.pollTimeout);
     if (this.replayInterval) { clearInterval(this.replayInterval); this.replayInterval = null; }
     if (this.restartSignalInterval) { clearInterval(this.restartSignalInterval); this.restartSignalInterval = null; }
@@ -822,7 +842,7 @@ export class TelegramLifeline {
     if (!payload || typeof payload.observedDiff !== 'number') return;
     const topicId = this.lifelineTopicId ?? 1;
     const prev = typeof payload.previousVersion === 'string' ? payload.previousVersion : 'an older version';
-    void this.sendToTopic(
+    void this.sendFixedNotice(
       topicId,
       `Lifeline self-restarted: was ${payload.observedDiff} patches behind the server (was on v${prev}, now on v${this.lifelineVersion}). ` +
       `This was an automatic catch-up — no action needed.`,
@@ -1101,7 +1121,8 @@ export class TelegramLifeline {
       // instead of double-polling and producing 409 Conflicts. Refreshed on
       // every successful tick. Best-effort + non-throwing (writeLease swallows
       // and warns on any I/O hiccup — polling is what matters).
-      writePollOwnerLease(this.projectConfig.stateDir, this.config.token, process.pid);
+      writePollOwnerLease(this.projectConfig.stateDir, this.config.token, process.pid, Date.now(),
+        this.telegramOriginBoot ? 'instar-telegram-origin-v1' : undefined);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       if (errMsg.includes('401') || errMsg.includes('Unauthorized')) {
@@ -1213,7 +1234,7 @@ export class TelegramLifeline {
       const forwarded = await this.forwardToServer(topicId, text, msg);
       if (forwarded) {
         // Delivery confirmation — user knows message reached the server
-        await this.sendToTopic(topicId, '✓ Delivered');
+        await this.sendFixedNotice(topicId, '✓ Delivered');
         return;
       }
       // Server appears healthy but forward failed. Preserve the message, but do
@@ -1230,7 +1251,7 @@ export class TelegramLifeline {
       });
       if (this.shouldSendQueueAck(topicId)) {
         const notice = buildQueueAcknowledgement('healthy-forward-failed', 'message');
-        if (notice) await this.sendToTopic(topicId, notice);
+        if (notice) await this.sendFixedNotice(topicId, notice);
       }
       return;
     }
@@ -1249,7 +1270,7 @@ export class TelegramLifeline {
 
     // Notify user that message is queued (rate-limited to prevent spam during restart loops)
     if (this.shouldSendQueueAck(topicId)) {
-      await this.sendToTopic(topicId,
+      await this.sendFixedNotice(topicId,
         buildQueuedNotice('message', this.queue.length, /* serverHealthy */ false)
       );
     }
@@ -1281,7 +1302,7 @@ export class TelegramLifeline {
     if (serverWasHealthy) {
       const forwarded = await this.forwardToServer(topicId, content, msg);
       if (forwarded) {
-        await this.sendToTopic(topicId, '✓ Delivered');
+        await this.sendFixedNotice(topicId, '✓ Delivered');
         return;
       }
     }
@@ -1302,7 +1323,7 @@ export class TelegramLifeline {
     if (this.shouldSendQueueAck(topicId)) {
       const reason = serverWasHealthy ? 'healthy-forward-failed' : 'server-unhealthy';
       const delayedNotice = buildQueueAcknowledgement(reason, 'photo');
-      await this.sendToTopic(topicId, delayedNotice ?? buildQueuedNotice('photo', this.queue.length, false));
+      await this.sendFixedNotice(topicId, delayedNotice ?? buildQueuedNotice('photo', this.queue.length, false));
     }
   }
 
@@ -1388,7 +1409,7 @@ export class TelegramLifeline {
     if (serverWasHealthy) {
       const forwarded = await this.forwardToServer(topicId, content, msg);
       if (forwarded) {
-        await this.sendToTopic(topicId, '✓ Delivered');
+        await this.sendFixedNotice(topicId, '✓ Delivered');
         return;
       }
     }
@@ -1410,7 +1431,7 @@ export class TelegramLifeline {
     if (this.shouldSendQueueAck(topicId)) {
       const reason = serverWasHealthy ? 'healthy-forward-failed' : 'server-unhealthy';
       const delayedNotice = buildQueueAcknowledgement(reason, 'file');
-      await this.sendToTopic(topicId, delayedNotice ?? buildQueuedNotice('file', this.queue.length, false));
+      await this.sendFixedNotice(topicId, delayedNotice ?? buildQueuedNotice('file', this.queue.length, false));
     }
   }
 
@@ -1872,29 +1893,29 @@ export class TelegramLifeline {
     }
 
     if (cmd === '/lifeline restart') {
-      await this.sendToTopic(topicId, 'Restarting server...');
+      await this.sendFixedNotice(topicId, 'Restarting server...');
       this.supervisor.wakeFromSleep(); // explicit restart clears any hard-sleep state
       this.supervisor.resetCircuitBreaker();
       await this.supervisor.stop();
       const started = await this.supervisor.start();
-      await this.sendToTopic(topicId, started ? 'Server restarted.' : 'Server failed to restart.');
+      await this.sendFixedNotice(topicId, started ? 'Server restarted.' : 'Server failed to restart.');
       return;
     }
 
     if (cmd === '/lifeline reset') {
       this.supervisor.wakeFromSleep(); // explicit reset clears any hard-sleep state
       this.supervisor.resetCircuitBreaker();
-      await this.sendToTopic(topicId, 'Circuit breaker reset. Restarting server...');
+      await this.sendFixedNotice(topicId, 'Circuit breaker reset. Restarting server...');
       await this.supervisor.stop();
       const started = await this.supervisor.start();
-      await this.sendToTopic(topicId, started ? 'Server restarted after reset.' : 'Server failed to restart after reset.');
+      await this.sendFixedNotice(topicId, started ? 'Server restarted after reset.' : 'Server failed to restart after reset.');
       return;
     }
 
     if (cmd === '/lifeline queue') {
       const messages = this.queue.peek();
       if (messages.length === 0) {
-        await this.sendToTopic(topicId, 'No queued messages.');
+        await this.sendFixedNotice(topicId, 'No queued messages.');
         return;
       }
       const lines = messages.map((m, i) =>
@@ -1932,11 +1953,11 @@ export class TelegramLifeline {
         'The lifeline keeps your Telegram connection alive even when the server is down.',
         'Messages sent while the server is down are queued and replayed on recovery.',
       ];
-      await this.sendToTopic(topicId, lines.join('\n'));
+      await this.sendFixedNotice(topicId, lines.join('\n'));
       return;
     }
 
-    await this.sendToTopic(topicId, 'Unknown lifeline command. Try /lifeline help');
+    await this.sendFixedNotice(topicId, 'Unknown lifeline command. Try /lifeline help');
   }
 
   // ── Queue Replay ──────────────────────────────────────────
@@ -2050,7 +2071,7 @@ export class TelegramLifeline {
       for (const [topicId, counts] of deliveredByTopic) {
         for (const notice of buildQueueDeliveryNotices(counts)) {
           try {
-            await this.sendToTopic(topicId, notice);
+            await this.sendFixedNotice(topicId, notice);
           } catch { /* best effort */ }
         }
       }
@@ -2202,7 +2223,7 @@ export class TelegramLifeline {
    */
   private async notifySentinelStalled(info: { hoursStalled: number; retryIntervalHours: number }): Promise<void> {
     const topicId = this.lifelineTopicId ?? 1;
-    await this.sendToTopic(topicId,
+    await this.sendFixedNotice(topicId,
       `⏳ STILL DOWN AFTER ${info.hoursStalled} HOURS\n\n` +
       `My server has been down for about ${info.hoursStalled} hours. I've kept retrying every ` +
       `${info.retryIntervalHours} hours and will keep trying — but at this point a human may be needed.\n\n` +
@@ -2222,7 +2243,7 @@ export class TelegramLifeline {
     // Singleton enforcement — check for existing doctor session
     const existingSession = this.findExistingDoctorSession();
     if (existingSession) {
-      await this.sendToTopic(topicId,
+      await this.sendFixedNotice(topicId,
         `A diagnostic session is already running: ${existingSession}\n\n` +
         `Attach from any terminal:\n` +
         `  tmux attach -t ${existingSession}`
@@ -2230,7 +2251,7 @@ export class TelegramLifeline {
       return;
     }
 
-    await this.sendToTopic(topicId, '🔍 Gathering crash diagnostics and starting diagnostic session...');
+    await this.sendFixedNotice(topicId, '🔍 Gathering crash diagnostics and starting diagnostic session...');
 
     try {
       const { sessionName, sessionSecret } = await this.spawnDoctorSession();
@@ -2244,7 +2265,7 @@ export class TelegramLifeline {
         ? '\n\nℹ️ Server is currently healthy. Starting diagnostic session anyway.'
         : '';
 
-      await this.sendToTopic(topicId,
+      await this.sendFixedNotice(topicId,
         `Diagnostic session started: ${sessionName}\n\n` +
         `Attach from any terminal:\n` +
         `  tmux attach -t ${sessionName}\n\n` +
@@ -2597,7 +2618,7 @@ export class TelegramLifeline {
         clearTimeout(this.doctorSessionTimeout);
         this.doctorSessionTimeout = null;
       }
-      this.sendToTopic(this.lifelineTopicId ?? 1,
+      this.sendFixedNotice(this.lifelineTopicId ?? 1,
         `⏱️ Doctor session ${sessionName} timed out after 30 minutes and was terminated.\n` +
         `Use /lifeline doctor to start a new session if needed.`
       ).catch(() => {});
@@ -2822,7 +2843,7 @@ export class TelegramLifeline {
       console.log(`[Lifeline] ${existingId ? 'Recreated' : 'Created'} Lifeline topic: ${topicId}`);
 
       // Send welcome message in new topic
-      await this.sendToTopic(topicId,
+      await this.sendFixedNotice(topicId,
         '🟢 Lifeline connected. This topic is always available — even when the server is down.'
       );
 
@@ -2866,6 +2887,13 @@ export class TelegramLifeline {
 
   // ── Telegram API ──────────────────────────────────────────
 
+  /** Only audited final templates use this path; crash/doctor/queue excerpts
+   * retain the ordinary unknown-source contract. */
+  private sendFixedNotice(topicId: number, text: string): Promise<void> {
+    return withDeterministicOrigin(this.telegramOriginBoot?.runtime.service, 'telegram-lifeline',
+      () => this.sendToTopic(topicId, text));
+  }
+
   private async sendToTopic(topicId: number, text: string): Promise<void> {
     const params: Record<string, unknown> = {
       chat_id: this.config.chatId,
@@ -2878,6 +2906,10 @@ export class TelegramLifeline {
     try {
       await this.apiCall('sendMessage', { ...params, parse_mode: 'Markdown' });
     } catch (firstErr) {
+      if (firstErr instanceof TelegramOriginHoldError) {
+        console.warn(`[Lifeline] origin held topic ${topicId}: ${firstErr.reason}`);
+        return;
+      }
       // A CONTENT refusal is terminal — see the adapter's note. Retrying cannot make an invisible
       // payload visible, and the bare retry emitted a second structured refusal record for one
       // operation (review pass 30 finding 2).

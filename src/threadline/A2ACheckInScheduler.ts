@@ -17,6 +17,7 @@
 
 import { runCheckIn, type CheckInRequest, type CheckInOutcome } from './A2ACheckInProxy.js';
 import type { SummaryKind } from './A2ACheckInSummarizer.js';
+import { OriginAuthorCall, type OriginAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 
 export interface ActiveThreadRef {
   threadId: string;
@@ -112,8 +113,8 @@ export class A2ACheckInScheduler {
  */
 export interface A2ACheckInWiring {
   listActiveThreads: () => ActiveThreadRef[];
-  summarize: (prompt: string) => Promise<string>;
-  surface: (args: { threadId: string; topicId?: number; peerName: string; body: string; kind: SummaryKind }) => Promise<void>;
+  summarize: (prompt: string, authorCall: OriginAuthorCall) => Promise<string>;
+  surface: (args: { threadId: string; topicId?: number; peerName: string; body: string; kind: SummaryKind; originAuthor: OriginAutomationAuthor }) => Promise<void>;
   getHistory: (threadId: string) => Promise<string> | string;
   config: A2ACheckInSchedulerConfig;
   now?: () => number;
@@ -121,8 +122,11 @@ export interface A2ACheckInWiring {
 }
 
 export function createA2ACheckInScheduler(w: A2ACheckInWiring): A2ACheckInScheduler {
-  const checkIn = (req: CheckInRequest): Promise<CheckInOutcome> =>
-    runCheckIn(req, { summarize: w.summarize, surface: w.surface, getHistory: w.getHistory });
+  const checkIn = (req: CheckInRequest): Promise<CheckInOutcome> => {
+    const authorCall = new OriginAuthorCall();
+    return runCheckIn(req, { summarize: prompt => w.summarize(prompt, authorCall),
+      surface: args => w.surface({ ...args, originAuthor: authorCall.snapshot() }), getHistory: w.getHistory });
+  };
   return new A2ACheckInScheduler({
     listActiveThreads: w.listActiveThreads,
     checkIn,

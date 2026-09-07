@@ -1,3 +1,4 @@
+import { bindUnknownProducerTelegramSender, sendDeterministicTelegramNotice } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
  * `instar server start|stop` — Manage the persistent agent server.
  *
@@ -96,7 +97,8 @@ import type { TopicProfileStore } from '../core/TopicProfileStore.js';
 import type { TopicResumeMap } from '../core/TopicResumeMap.js';
 import type { IdleReading } from '../core/classifyProfileChange.js';
 import { closeAllSqlite } from '../core/SqliteRegistry.js';
-import { DP_SUBSCRIPTION_RELOGIN_ACTION } from '../data/provenanceCoverage.js';
+import { DP_SUBSCRIPTION_RELOGIN_ACTION, DP_TELEGRAM_ORIGIN_RECOVERY } from '../data/provenanceCoverage.js';
+import { buildBoundedContext, buildStructuredSha256Identity } from '../core/JudgmentProvenanceLog.js';
 import { SessionManager, type SessionTerminateAuthority, IDLE_PROMPT_PATTERNS } from '../core/SessionManager.js';
 import { configureSyncOpMarker, defaultInflightMarkerReader } from '../core/InFlightSyncOpMarker.js';
 import { StateManager } from '../core/StateManager.js';
@@ -2915,7 +2917,7 @@ export function wireTelegramRouting(
               ).catch(() => {});
             } else if (classification.cause === 'context_exhausted') {
               isContextExhausted = true;
-              telegram.sendToTopic(topicId,
+              sendDeterministicTelegramNotice(telegram, 'session-lifecycle', topicId,
                 `🔄 Conversation got too long — starting a fresh session with your recent history.`
               ).catch(() => {});
             }
@@ -2929,7 +2931,7 @@ export function wireTelegramRouting(
           if (!admitLocalSpawn('telegram-respawn-context-exhausted')) return;
           if (spawningTopics.has(topicId)) {
             console.log(`[telegram→session] Spawn already in progress for topic ${topicId} — skipping duplicate respawn`);
-            void sendRespawnCollisionNotice(telegram.sendToTopic.bind(telegram), topicId).catch((err) => {
+            void sendRespawnCollisionNotice((topic, text) => sendDeterministicTelegramNotice(telegram, 'respawn-collision', topic, text), topicId).catch((err) => {
               console.error(`[telegram→session] Failed to send respawn-collision loss notice for topic ${topicId}:`, err);
             });
             return;
@@ -2955,13 +2957,21 @@ export function wireTelegramRouting(
           // message triggers a new respawn → multiple concurrent spawns → chaos.
           if (spawningTopics.has(topicId)) {
             console.log(`[telegram→session] Spawn already in progress for topic ${topicId} — skipping duplicate respawn`);
-            void sendRespawnCollisionNotice(telegram.sendToTopic.bind(telegram), topicId).catch((err) => {
+            void sendRespawnCollisionNotice((topic, text) => sendDeterministicTelegramNotice(telegram, 'respawn-collision', topic, text), topicId).catch((err) => {
               console.error(`[telegram→session] Failed to send respawn-collision loss notice for topic ${topicId}:`, err);
             });
             return;
           }
           const _spawnTokB = spawningTopics.add(topicId);
-          telegram.sendToTopic(topicId, `🔄 Session restarting — message queued.`).catch(() => {});
+          sendDeterministicTelegramNotice(telegram, 'session-lifecycle', topicId, `🔄 Session restarting — message queued.`).catch(() => {
+            DegradationReporter.getInstance().report({
+              feature: 'telegram-session-lifecycle-notice',
+              primary: 'Confirm delivery of the recorded session lifecycle notice',
+              fallback: 'Leave the original operation under its existing delivery authority',
+              reason: 'Lifecycle notice delivery was not confirmed',
+              impact: 'The notice may be held or uncertain; no replacement send is authorized',
+            });
+          });
           respawnSessionForTopic(sessionManager, telegram, targetSession, topicId, text, topicMemory, resolvedUser ?? undefined)
             .then(() => confirmLocalSessionPoolClaim())
             .catch(err => {
@@ -2977,7 +2987,15 @@ export function wireTelegramRouting(
                 lifelineTopicId: telegram.getLifelineTopicId() ?? null,
                 kind: 'restart',
               });
-              telegram.sendToTopic(topicId, userMessage).catch(() => {});
+              sendDeterministicTelegramNotice(telegram, 'cold-start-fallback', topicId, userMessage).catch(() => {
+                DegradationReporter.getInstance().report({
+                  feature: 'telegram-session-lifecycle-notice',
+                  primary: 'Confirm delivery of the recorded session lifecycle notice',
+                  fallback: 'Leave the original operation under its existing delivery authority',
+                  reason: 'Lifecycle notice delivery was not confirmed',
+                  impact: 'The notice may be held or uncertain; no replacement send is authorized',
+                });
+              });
             })
             .finally(() => {
               spawningTopics.clear(topicId, _spawnTokB);
@@ -3031,7 +3049,15 @@ export function wireTelegramRouting(
       spawnSessionForTopic(sessionManager, telegram, spawnName, topicId, text, topicMemory, resolvedUser ?? undefined).then((newSessionName) => {
         telegram.registerTopicSession(topicId, newSessionName, spawnName);
         confirmLocalSessionPoolClaim();
-        telegram.sendToTopic(topicId, `Session starting up — reading your message now. One moment.`).catch(() => {});
+        sendDeterministicTelegramNotice(telegram, 'session-lifecycle', topicId, `Session starting up — reading your message now. One moment.`).catch(() => {
+          DegradationReporter.getInstance().report({
+            feature: 'telegram-session-lifecycle-notice',
+            primary: 'Confirm delivery of the recorded session lifecycle notice',
+            fallback: 'Leave the original operation under its existing delivery authority',
+            reason: 'Lifecycle notice delivery was not confirmed',
+            impact: 'The notice may be held or uncertain; no replacement send is authorized',
+          });
+        });
         console.log(`[telegram→session] Auto-spawned "${newSessionName}" for topic ${topicId}`);
       }).catch((err) => {
         console.error(`[telegram→session] Auto-spawn failed:`, err);
@@ -3046,7 +3072,15 @@ export function wireTelegramRouting(
           lifelineTopicId: telegram.getLifelineTopicId() ?? null,
           kind: 'spawn',
         });
-        telegram.sendToTopic(topicId, userMessage).catch(() => {});
+        sendDeterministicTelegramNotice(telegram, 'cold-start-fallback', topicId, userMessage).catch(() => {
+          DegradationReporter.getInstance().report({
+            feature: 'telegram-session-lifecycle-notice',
+            primary: 'Confirm delivery of the recorded session lifecycle notice',
+            fallback: 'Leave the original operation under its existing delivery authority',
+            reason: 'Lifecycle notice delivery was not confirmed',
+            impact: 'The notice may be held or uncertain; no replacement send is authorized',
+          });
+        });
       }).finally(() => {
         spawningTopics.clear(topicId, _spawnTokC);
       });
@@ -3882,7 +3916,7 @@ export async function startServer(options: StartOptions): Promise<void> {
    * Sends to both Telegram (via batcher) and Slack (directly) when available.
    * Interactive messages (session replies, user-facing responses) still use sendToTopic/sendToChannel directly.
    */
-  function notify(tier: NotificationTier, category: string, message: string, topicId?: number): void {
+  function notify(tier: NotificationTier, category: string, message: string, topicId?: number, origin?: import('../messaging/NotificationBatcher.js').BatcherOrigin): void {
     // Telegram: via notification batcher
     const resolvedTopicId = topicId ?? _notifyState?.get<number>('agent-attention-topic') ?? 0;
     if (resolvedTopicId) {
@@ -3892,6 +3926,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         message,
         timestamp: new Date(),
         topicId: resolvedTopicId,
+        ...(origin ? { origin } : {}),
       }).catch(() => { /* @silent-fallback-ok */ });
     }
 
@@ -4433,6 +4468,16 @@ export async function startServer(options: StartOptions): Promise<void> {
       onLeasePullTick: () => _leaseHandbackReconciler?.observe(),
     });
     const machineRole = coordinator.start();
+    // The origin writer below requires a current lease even on ordinary,
+    // non-development installations. Enroll its renewal carrier before lease
+    // initialization; this does not bypass explicit opt-outs or lease fences.
+    const originLeaseRenewal = config.messaging.some(m => m.type === 'telegram' && m.enabled)
+      ? coordinator.enrollOriginWriterLeaseRenewal() : undefined;
+    const releaseOriginLeaseRenewal = () => {
+      originLeaseRenewal?.();
+      process.removeListener('exit', releaseOriginLeaseRenewal);
+    };
+    if (originLeaseRenewal) process.once('exit', releaseOriginLeaseRenewal);
     if (coordinator.enabled) {
       console.log(pc.green(`  Multi-machine: ${pc.bold(machineRole)} (${coordinator.identity!.machineId.slice(0, 12)}...)`));
       if (machineRole === 'standby') {
@@ -5781,7 +5826,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           const o = (config as any)?.multiMachine?.sessionPool?.ownershipCheckedSpawn ?? {};
           return { enabled: o.enabled === true, dryRun: o.dryRun !== false };
         };
-        await coordinator.initializeLease();
+        await coordinator.initializeLease().catch(error => { releaseOriginLeaseRenewal(); throw error; });
         console.log(pc.dim(`  Fenced lease active (epoch ${leaseCoordinator.currentEpoch()}, holder=${leaseCoordinator.currentHolder() ?? 'none'})`));
 
         // ── U4.3 — traffic-independent rope-health recovery probe ──────────
@@ -6214,6 +6259,62 @@ export async function startServer(options: StartOptions): Promise<void> {
       ownerEpochForConversation: (conversationId) => stageBOwnerEpochForConversation(conversationId),
       stageCRecoveryEnabled,
     });
+    const originTelegramConfig = config.messaging.find(m => m.type === 'telegram' && m.enabled);
+    const originBotToken = (originTelegramConfig?.config as { token?: unknown } | undefined)?.token;
+    let telegramOriginBoot: Awaited<ReturnType<typeof import('../messaging/telegram-origin/TelegramOriginBoot.js').bootTelegramOrigin>> | undefined;
+    if (originTelegramConfig) {
+      const { bootTelegramOrigin } = await import('../messaging/telegram-origin/TelegramOriginBoot.js')
+        .catch(error => { releaseOriginLeaseRenewal(); throw error; });
+      telegramOriginBoot = await bootTelegramOrigin({ config, token: typeof originBotToken === 'string' && originBotToken ? originBotToken : undefined,
+        noticeOwner: typeof originBotToken === 'string' && !!originBotToken && !lifelineOwnsTelegramPoll(config.stateDir, originBotToken) && options.telegram !== false,
+        holdsLease: () => coordinator.holdsLease(),
+        isSessionLive: binding => {
+          const session = state.getSession(binding.sessionId);
+          return session?.status === 'running' && session.framework === binding.harnessId;
+        },
+        attachSessionLifecycle: lifecycle => sessionManager.setOriginLifecycle(lifecycle),
+        listLiveSessions: () => sessionManager.listRunningSessions().map(session => ({ sessionId: session.id, harnessId: session.framework ?? null })),
+        reviewLegacyRecovery: async text => {
+          const { checkToneLocally } = await import('../messaging/local-tone-check.js');
+          return (await checkToneLocally(messagingToneGate ?? null, text, { channel: 'telegram' })).passed;
+        },
+        diagnoseUnknown: async (originId, reason) => {
+          if (!sharedIntelligence) throw new Error('origin diagnostic intelligence unavailable');
+          const prompt = `Diagnose an uncertain Telegram delivery. Never authorize retries or invent receipts. Origin=${originId}; reason=${reason}. Return a brief read-only diagnostic.`;
+          const diagnosis = await sharedLlmQueue.enqueue('background', signal => sharedIntelligence!.evaluate(
+            prompt,
+            { model: 'fast', maxTokens: 150, signal, attribution: { component: 'telegram-origin-recovery' },
+              provenance: { decisionPoint: DP_TELEGRAM_ORIGIN_RECOVERY, promptId: 'telegram-origin-recovery-v1',
+                optionsPresented: ['read-only-diagnosis'], context: buildBoundedContext({
+                  promptIdentitySha256: buildStructuredSha256Identity(prompt), promptChars: prompt.length,
+                  originIdentitySha256: buildStructuredSha256Identity(originId),
+                  reasonIdentitySha256: buildStructuredSha256Identity(reason),
+                }) } }), 1);
+          console.info('[telegram-origin] delivery diagnosis', { originId, reason, diagnosis });
+          return diagnosis;
+        },
+        onNoticeState: notice => console.info('[telegram-origin] notification state', notice),
+        onBrowserRecoveryAttention: async input => {
+          if (!telegram) throw new Error('origin attention authority unavailable');
+          await telegram.createAttentionItem({ id: `telegram-origin:${input.id}`, category: 'telegram-origin', priority: 'HIGH',
+            title: 'Telegram browser delivery paused', sourceContext: 'telegram-origin-browser-recovery',
+            summary: 'The managed Telegram browser failed its account or version check after a fresh-process retry. Its messages remain held while the browser integration recovers.',
+            description: input.publicTransportAlternative ? 'Two distinct browser builds failed. An independently authorized MTProto client is an alternative to repairing the browser integration.' : undefined }, { hubOnly: true });
+        },
+      }).catch(error => { releaseOriginLeaseRenewal(); throw error; });
+      const enrollment = await sessionManager.enrollExistingOriginSessions();
+      if (enrollment.unavailable.length) console.warn('[telegram-origin] existing sessions require origin enrollment', enrollment.unavailable);
+    }
+    const { postOriginAutomationReply } = await import('../messaging/telegram-origin/OriginAutomationReply.js');
+    const { originDeliveryConfirmed } = await import('../messaging/telegram-origin/OriginDeliveryResolution.js');
+    let originReceiptPeer: import('../messaging/telegram-origin/OriginDeliveryResolution.js').OriginReceiptPeer | undefined;
+    const resolveOriginDelivery = (operationId: string) => originDeliveryConfirmed(telegramOriginBoot?.runtime.store, operationId, originReceiptPeer);
+    notificationBatcher.setOriginDeliveryResolver(resolveOriginDelivery);
+    const { deterministicAutomationAuthor, unknownAutomationAuthor } = await import('../messaging/telegram-origin/OriginAutomationAuthor.js');
+    const sendAutomationReply = (producerId: string, topicId: number, body: Record<string, unknown>,
+      author?: import('../messaging/telegram-origin/OriginAutomationAuthor.js').OriginAutomationAuthor, logicalSendId?: string) =>
+      postOriginAutomationReply({ service: telegramOriginBoot?.runtime.service, port: config.port,
+        authToken: config.authToken ?? '', producerId, topicId, body, author, logicalSendId });
     // Wire the SAME TTL-cached SDK-credit reader PR1's routing policy uses, so
     // the reroute 'auto' decision and the intelligence-funnel routing share one
     // credit source and can't drift (june15-headless-spawn-reroute, PR2). Only
@@ -7574,9 +7675,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       const quotaNotifier = new QuotaNotifier(config.stateDir);
       const alertTopicId = state.get<number>('agent-attention-topic') ?? null;
       quotaNotifier.configure(
-        async (_topicId, text) => {
+        async (_topicId, text, author) => {
           const tier: NotificationTier = text.includes('EXHAUSTED') || text.includes('critical') ? 'IMMEDIATE' : 'SUMMARY';
-          notify(tier, 'quota', text);
+          notify(tier, 'quota', text, undefined, author ? { producerId: 'quota-notifier', author } : undefined);
         },
         alertTopicId,
       );
@@ -7976,6 +8077,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegram,
         scheduler,
         notificationBatcher,
+        originService: telegramOriginBoot?.runtime.service,
       });
       console.log(pc.green(
         `  Telegram send side wired (${sendSide.mode}; scheduler: ${sendSide.schedulerAttached ? 'attached' : 'not configured'}; batcher: attached)`,
@@ -7993,6 +8095,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           localAgentName: config.projectName,
           config: telegramBridgeConfig,
           telegram,
+          originService: telegramOriginBoot?.runtime.service,
           isOwner: () => coordinator.isAwake && coordinator.holdsLease(),
         });
         console.log(pc.dim(
@@ -8448,15 +8551,27 @@ export async function startServer(options: StartOptions): Promise<void> {
       // id>0 → today's Telegram path via the existing /telegram/reply route
       // (queue/dedup/tone-gate untouched).
       sendTelegram: async (topicId, text, opts) => {
-        const url = `http://localhost:${config.port}/telegram/reply/${topicId}`;
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.authToken}` },
-          body: JSON.stringify({
-            text,
-            metadata: { source: opts?.source ?? 'conversation-funnel', isProxy: opts?.isProxy, tier: opts?.tier, allowDuplicate: opts?.allowDuplicate },
-          }),
-        });
+        let response: Response;
+        try {
+          response = await sendAutomationReply(opts?.source === 'promise-beacon' ? 'promise-beacon' : 'conversation-funnel', topicId, {
+            text, metadata: { source: opts?.source ?? 'conversation-funnel', isProxy: opts?.isProxy,
+              tier: opts?.tier, allowDuplicate: opts?.allowDuplicate },
+          }, opts?.originAuthor, opts?.logicalSendId);
+        } catch {
+          // Losing the local HTTP response does not prove Telegram refused it.
+          return { delivered: false, outcome: 'not-delivered', reason: 'telegram-origin-held',
+            originHold: { operationId: null, outcome: 'outcome-unknown', reason: 'automation-response-unavailable',
+              logicalReplaySafe: !!telegramOriginBoot && !!opts?.logicalSendId } };
+        }
+        if (!response.ok) {
+          const body = await response.clone().json().catch(() => null) as Record<string, unknown> | null;
+          if (body?.error === 'telegram-origin-held') return {
+            delivered: false, outcome: 'not-delivered', reason: 'telegram-origin-held',
+            originHold: { operationId: typeof body.operationId === 'string' ? body.operationId : null,
+              outcome: typeof body.outcome === 'string' ? body.outcome : 'held',
+              reason: typeof body.reason === 'string' ? body.reason : 'origin-held' },
+          };
+        }
         return response.ok;
       },
       // id<0 → the local Slack adapter (channel + thread_ts). Late-bound over
@@ -9629,7 +9744,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         lifelineTopic: () => telegram?.getLifelineTopicId() ?? null,
         // Legacy + fallback transport → through the formatter/tone-gate
         // (HTML-escaped, quiet-hours aware). The notifier already coalesces.
-        send: (topicId, text) => notify('SUMMARY', 'session-reap', text, topicId),
+        send: (topicId, text) => notify('SUMMARY', 'session-reap', text, topicId, { producerId: 'reap-notifier', author: unknownAutomationAuthor('reap-reason-author-unavailable') }),
         enqueueNotice: reapNoticeStore
           ? (input) => reapNoticeStore!.enqueue({
               delivery_id: input.delivery_id,
@@ -9691,10 +9806,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       const { getCurrentBootId } = await import('../server/boot-id.js');
       reapNoticeDrain = new ReapNoticeDrain({
         store: reapNoticeStore,
-        sendToTopic: async (topicId, text) => {
+        sendToTopic: bindUnknownProducerTelegramSender(telegramOriginBoot?.runtime.service, 'reap-notice-drain', async (topicId, text) => {
           if (!telegram) throw new Error('telegram adapter not available');
           await telegram.sendToTopic(topicId, text);
-        },
+        }),
         recordNotify: (e) => reapLog.recordNotify(e),
         emitAttention: async (item) => {
           if (!telegram) return;
@@ -11419,8 +11534,11 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // StallTriageNurse — LLM-powered session recovery (uses shared intelligence)
     // Platform-aware: works with Telegram topics AND Slack channels
+    const { triageOriginSender, readTriageSessionAuthor } = await import('../monitoring/TriageOrigin.js');
     let triageNurse: StallTriageNurse | undefined;
     if (config.monitoring.triage?.enabled && (telegram || _slackAdapter)) {
+      const sendTriageNotice = triageOriginSender(telegramOriginBoot?.runtime.service, 'stall-triage-nurse',
+        (topicId, text) => telegram!.sendToTopic(topicId, text));
       triageNurse = new StallTriageNurse(
         {
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
@@ -11440,7 +11558,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
             return [];
           },
-          sendToTopic: async (topicId, text) => {
+          sendToTopic: async (topicId, text, originAuthor) => {
             const slackChId = slackProxyChannelMap.get(topicId);
             if (slackChId && _slackAdapter) {
               // Never send monitoring messages to system channels (dashboard, lifeline)
@@ -11448,7 +11566,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               await _slackAdapter.sendToChannel(slackChId, text);
               return;
             }
-            if (telegram) await telegram.sendToTopic(topicId, text);
+            if (telegram) await sendTriageNotice(topicId, text, originAuthor);
           },
           respawnSession: (name, topicId, options) => {
             if (telegram) {
@@ -11504,6 +11622,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Platform-aware: works with Telegram topics AND Slack channels
     let triageOrchestrator: TriageOrchestrator | undefined;
     if (config.monitoring.triageOrchestrator?.enabled && (telegram || _slackAdapter)) {
+      const sendTriageNotice = triageOriginSender(telegramOriginBoot?.runtime.service, 'triage-orchestrator',
+        (topicId, text) => telegram!.sendToTopic(topicId, text));
       triageOrchestrator = new TriageOrchestrator(
         {
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
@@ -11522,14 +11642,14 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
             return [];
           },
-          sendToTopic: async (topicId, text) => {
+          sendToTopic: async (topicId, text, originAuthor) => {
             const slackChId = slackProxyChannelMap.get(topicId);
             if (slackChId && _slackAdapter) {
               if (_slackAdapter.isSystemChannel(slackChId)) return;
               await _slackAdapter.sendToChannel(slackChId, text);
               return;
             }
-            if (telegram) await telegram.sendToTopic(topicId, text);
+            if (telegram) await sendTriageNotice(topicId, text, originAuthor);
           },
           respawnSession: (name, topicId, options) => {
             if (telegram) return respawnSessionForTopic(sessionManager, telegram, name, topicId, undefined, topicMemory, undefined, undefined, options);
@@ -11541,6 +11661,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             const slackChId = slackProxyChannelMap.get(topicId);
             if (slackChId && _slackAdapter) { _slackAdapter.clearStallTracking(slackChId); return; }
             if (telegram) telegram.clearStallTracking(topicId);
+          },
+          readTriageAuthor: async name => {
+            const matches = state.listSessions().filter(session => session.tmuxSession === name);
+            return readTriageSessionAuthor(telegramOriginBoot?.runtime, matches.length === 1 ? matches[0].id : undefined);
           },
           spawnTriageSession: (name, options) => sessionManager.spawnTriageSession(name, options),
           getTriageSessionUuid: (sessionName) => {
@@ -11994,7 +12118,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               await _slackAdapter.sendToChannel(slackChId, text);
               return;
             }
-            if (telegram) await telegram.sendToTopic(topicId, text);
+            if (telegram) await sendDeterministicTelegramNotice(telegram, 'session-monitor', topicId, text);
           },
           triggerTriage: triageOrchestrator
             ? async (topicId, sessionName, reason) => {
@@ -12970,11 +13094,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       getTopicForSession: (name) => telegram?.getTopicForSession(name),
       getLifelineTopicId: () => telegram?.getLifelineTopicId?.(),
       deliverNotice: async (topicId, text) => {
-        const resp = await fetch(`http://localhost:${config.port}/telegram/reply/${topicId}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.authToken}` },
-          body: JSON.stringify({ text, metadata: { provenance: 'automation' } }),
-        });
+        const resp = await sendAutomationReply('rate-limit-sentinel', topicId, { text, metadata: { provenance: 'automation' } }, deterministicAutomationAuthor());
         return resp.ok;
       },
       recordRecovery,
@@ -13303,11 +13423,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               IDLE_PROMPT_PATTERNS.some((pat) => frame.includes(pat)),
             deliverToTopic: async (topicId, text) => {
               try {
-                const resp = await fetch(`http://localhost:${config.port}/telegram/reply/${topicId}`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.authToken}` },
-                  body: JSON.stringify({ text, metadata: { provenance: 'automation' } }),
-                });
+                const resp = await sendAutomationReply('silence-sentinel', topicId, { text, metadata: { provenance: 'automation' } }, deterministicAutomationAuthor());
                 return resp.ok;
               } catch {
                 // @silent-fallback-ok: a failed per-topic delivery returns false so
@@ -14980,15 +15096,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
 
             // Send to Telegram
-            const url = `http://localhost:${config.port}/telegram/reply/${topicId}`;
-            const response = await fetch(url, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${config.authToken}`,
-              },
-              body: JSON.stringify({ text, metadata }),
-            });
+            const response = await sendAutomationReply('presence-proxy', topicId, { text, metadata }, metadata?.originAuthor);
             if (!response.ok) {
               throw new Error(`Reply failed: ${response.status}`);
             }
@@ -15606,15 +15714,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               sessionManager.listRunningSessions()
                 .filter((s) => telegram?.getTopicForSession?.(s.tmuxSession) === topicId).length,
             sendMessage: async (topicId, text, metadata) => {
-              const url = `http://localhost:${config.port}/telegram/reply/${topicId}`;
-              const response = await fetch(url, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${config.authToken}`,
-                },
-                body: JSON.stringify({ text, metadata }),
-              });
+              const response = await sendAutomationReply('promise-beacon', topicId, { text, metadata }, metadata?.originAuthor);
               if (!response.ok) throw new Error(`Beacon reply failed: ${response.status}`);
             },
             // ── durable-conversation-identity §6.1 step 2: the funnel swap ──
@@ -15628,9 +15728,11 @@ export async function startServer(options: StartOptions): Promise<void> {
                 isProxy: opts.isProxy,
                 tier: typeof opts.tier === 'number' ? String(opts.tier) : opts.tier,
                 logicalSendId: opts.logicalSendId,
+                originAuthor: opts.originAuthor,
                 ...(opts.boundTuple ? { boundTuple: opts.boundTuple } : {}),
               }),
             // §5.0(a): journal send-retire after the sendSeq persist (R5-M3 order).
+            resolveOriginDelivery,
             retireSend: (conversationId, logicalSendId) => {
               try { conversationRegistry.retireSend(conversationId, logicalSendId); } catch { /* guard bookkeeping */ }
             },
@@ -15784,15 +15886,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                     };
                   },
                   sendMessage: async (topicId, text, metadata) => {
-                    const url = `http://localhost:${config.port}/telegram/reply/${topicId}`;
-                    const response = await fetch(url, {
-                      method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${config.authToken}`,
-                      },
-                      body: JSON.stringify({ text, metadata }),
-                    });
+                    const response = await sendAutomationReply('autonomous-heartbeat', topicId, { text, metadata }, deterministicAutomationAuthor());
                     if (!response.ok) throw new Error(`Autonomous-heartbeat reply failed: ${response.status}`);
                   },
                 },
@@ -15861,18 +15955,9 @@ export async function startServer(options: StartOptions): Promise<void> {
                 ackText = `⚠️ couldn't resume the watcher${paused.length === 1 ? '' : 's'} on this topic — try again or open the dashboard.`;
               }
               try {
-                const ackUrl = `http://localhost:${config.port}/telegram/reply/${topicId}`;
-                await fetch(ackUrl, {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${config.authToken}`,
-                  },
-                  body: JSON.stringify({
-                    text: ackText,
-                    metadata: { source: 'promise-beacon', isProxy: true, tier: 1 },
-                  }),
-                });
+                await sendAutomationReply('promise-beacon-resume', topicId, {
+                  text: ackText, metadata: { source: 'promise-beacon', isProxy: true, tier: 1 },
+                }, deterministicAutomationAuthor());
               } catch (err) {
                 console.warn('[PromiseBeacon] resume ack send failed:', (err as Error).message);
               }
@@ -17332,6 +17417,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const a2aCheckInCfg = (config.threadline as { a2aCheckIn?: { enabled?: boolean; heartbeatEnabled?: boolean; heartbeatIntervalMs?: number } } | undefined)?.a2aCheckIn;
     if (a2aCheckInCfg?.enabled && _sharedIntelligence && telegram) {
       const { createA2ACheckInScheduler } = await import('../threadline/A2ACheckInScheduler.js');
+      const { withThreadlineTelegramAuthor } = await import('../threadline/TelegramOriginAttribution.js');
       const intelligence = _sharedIntelligence;
       const tg = telegram;
       const a2aCheckInScheduler = createA2ACheckInScheduler({
@@ -17345,9 +17431,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             .listActive()
             .map(({ threadId, entry }) => ({ threadId, peerName: entry.remoteAgent ?? 'peer', topicId: entry.originTopicId }))
             .filter((t): t is { threadId: string; peerName: string; topicId: number } => typeof t.topicId === 'number'),
-        summarize: (prompt) => sharedLlmQueue.enqueue('background', () => intelligence.evaluate(prompt, { model: 'fast', attribution: { component: 'server:a2a-checkin' } })), // attribution for /metrics/features
-        surface: async ({ topicId, body }) => {
-          if (typeof topicId === 'number') await tg.sendToTopic(topicId, body);
+        summarize: (prompt, authorCall) => sharedLlmQueue.enqueue('background', () => intelligence.evaluate(prompt, authorCall.options({ model: 'fast', attribution: { component: 'server:a2a-checkin' } }))),
+        surface: async ({ topicId, body, originAuthor }) => {
+          if (typeof topicId === 'number') await withThreadlineTelegramAuthor(telegramOriginBoot?.runtime.service,
+            'a2a-checkin', topicId, body, originAuthor, () => tg.sendToTopic(topicId, body));
         },
         getHistory: async (threadId) => {
           try {
@@ -17387,6 +17474,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         commitmentTracker,
         salienceGate,
         messageStore,
+        originService: telegramOriginBoot?.runtime.service,
         localAgent: config.projectName,
         injectIntoSession: async (sessionName: string, text: string) => {
           // Confirm the inject actually submitted (not left stuck at the prompt
@@ -23010,6 +23098,20 @@ export async function startServer(options: StartOptions): Promise<void> {
             // for absent, 500-topic cap). Stateless read over the in-memory
             // store; answers 'disabled' until the store is constructed. Joins
             // the read/observe RBAC class beside working-set-pull (MeshRpc.ts).
+            'telegram-origin': async (cmd, sender) => {
+              if (!telegramOriginBoot) return { ok: false, reason: 'origin-runtime-unavailable' };
+              const { handleOriginMesh } = await import('../messaging/telegram-origin/OriginMesh.js');
+              return handleOriginMesh({ runtime: telegramOriginBoot.runtime,
+                command: cmd as import('../messaging/telegram-origin/OriginMesh.js').OriginMeshCommand,
+                authenticatedSender: sender,
+                resolveKey: machineId => {
+                  const manager = coordinator.managers.identityManager;
+                  const entry = manager.loadRegistry().machines[machineId];
+                  if (!entry || entry.status !== 'active' || entry.revokedAt) return null;
+                  return telegramOriginBoot.runtime.options.resolveOriginKey?.(machineId) ?? null;
+                },
+              });
+            },
             'topic-profile-pull': (cmd) => {
               if (!_topicProfileStore) return { ok: false, reason: 'topic-profile disabled' };
               return createTopicProfilePullHandler({
@@ -23314,6 +23416,67 @@ export async function startServer(options: StartOptions): Promise<void> {
             return resolveMeshPeerUrl(meshResolver, machineId, entry.endpoints, entry.lastKnownUrl);
           };
           _meshSelfId = meshSelfId;
+          if (telegramOriginBoot) {
+            const { OriginPoolAudit } = await import('../messaging/telegram-origin/OriginPoolAudit.js');
+            const { originAuditAudience, ORIGIN_METRICS_AUDIENCE } = await import('../messaging/telegram-origin/OriginMesh.js');
+            const { mintPoolLinkAssertion } = await import('../core/PoolLinkAssertion.js');
+            const originRuntime = telegramOriginBoot.runtime;
+            originRuntime.enrollmentPeerTransport = async (machineId, command, timeoutMs) => {
+              const url = peerUrl(machineId);
+              if (!url) return { ok: false };
+              return meshClient.send({ machineId, url }, command, 0, { timeoutMs });
+            };
+            originReceiptPeer = { selfMachineId: meshSelfId, agentId: config.projectName,
+              send: async (machineId, command, timeoutMs) => {
+                const url = peerUrl(machineId);
+                if (!url) return { ok: false };
+                return meshClient.send({ machineId, url }, command, 0, { timeoutMs });
+              } };
+            originRuntime.poolAudit = new OriginPoolAudit({
+              operatorScopeRequired: true,
+              shardIds: () => [meshSelfId, ...Object.keys(meshIdMgr.loadRegistry().machines)],
+              readShardMetrics: async machineId => {
+                if (machineId === meshSelfId) return originRuntime.store.getFederatedMetrics(machineId);
+                const url = peerUrl(machineId);
+                if (!url) throw new Error('origin-shard-unreachable');
+                const response = await meshClient.send({ machineId, url },
+                  { type: 'telegram-origin', protocol: 'instar-telegram-origin-v1', action: 'metrics',
+                    operatorAssertion: mintPoolLinkAssertion({ holderFingerprint: machineId, viewId: ORIGIN_METRICS_AUDIENCE, method: 'GET' },
+                      'pin-session', { selfFingerprint: meshSelfId, sign: canonical => signEd25519(canonical, meshIdMgr.loadSigningKey()),
+                        mintJti: () => randomBytes(24).toString('hex'), now: Date.now, ttlMs: 10_000 }) }, 0, { timeoutMs: 2000 });
+                const result = response.result as { ok?: boolean; metrics?: import('../messaging/telegram-origin/StoreTypes.js').OriginMetrics } | undefined;
+                if (!response.ok || !result?.ok || !result.metrics) throw new Error('origin-shard-metrics-unavailable');
+                return result.metrics;
+              },
+              readShard: async (machineId, query) => {
+                if (machineId === meshSelfId) return originRuntime.store.listOrigins(query);
+                const url = peerUrl(machineId);
+                if (!url) throw new Error('origin-shard-unreachable');
+                const response = await meshClient.send({ machineId, url },
+                  { type: 'telegram-origin', protocol: 'instar-telegram-origin-v1', action: 'audit', query,
+                    operatorAssertion: mintPoolLinkAssertion({ holderFingerprint: machineId, viewId: originAuditAudience(query), method: 'GET' },
+                      'pin-session', { selfFingerprint: meshSelfId, sign: canonical => signEd25519(canonical, meshIdMgr.loadSigningKey()),
+                        mintJti: () => randomBytes(24).toString('hex'), now: Date.now, ttlMs: 10_000 }) }, 0, { timeoutMs: 2000 });
+                const result = response.result as { ok?: boolean; page?: import('../messaging/telegram-origin/StoreTypes.js').OriginListPage } | undefined;
+                if (!response.ok || !result?.ok || !result.page) throw new Error('origin-shard-unavailable');
+                return result.page;
+              },
+            });
+            telegramOriginBoot.runtime.service.options.peerEvidence = async record => {
+              // Exactly one authenticated peer attempt within the remaining
+              // evidence budget. Its receipt is inert, never an execution grant.
+              const peer = meshIdMgr.getActiveMachines().find(machine => machine.machineId !== meshSelfId && peerUrl(machine.machineId));
+              const url = peer ? peerUrl(peer.machineId) : null;
+              if (!peer || !url) throw new Error('origin-evidence-peer-unavailable');
+              const response = await meshClient.send({ machineId: peer.machineId, url },
+                { type: 'telegram-origin', protocol: 'instar-telegram-origin-v1', action: 'evidence', record }, 0, { timeoutMs: 1250 });
+              const result = response.result as { ok?: boolean; receipt?: { originId?: string; digest?: string } } | undefined;
+              if (!response.ok || !result?.ok || result.receipt?.originId !== record.originId || result.receipt.digest !== record.envelopeDigest) {
+                throw new Error('origin-evidence-peer-unconfirmed');
+              }
+              return result.receipt;
+            };
+          }
           // U4.4 — the offer transport (HOLDER side) + the post-hand-back delivery
           // canary (PREFERRED side), both over the signed mesh RPC.
           _handbackSendOffer = async (target, offer) => {
@@ -24563,7 +24726,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               sendNotice: async (noticeTopicId, noticeText) => {
                 if (!telegram) return false;
                 try {
-                  await telegram.sendToTopic(noticeTopicId, noticeText);
+                  await sendDeterministicTelegramNotice(telegram, 'owner-dark-ladder', noticeTopicId, noticeText);
                   return true;
                 } catch {
                   // @silent-fallback-ok: a failed send returns false — the ladder
@@ -25387,6 +25550,17 @@ export async function startServer(options: StartOptions): Promise<void> {
               return typeof v === 'number' && v > 0 ? v : 15_000;
             })();
             telegram.outboundRelay = async (topicId, text, opts) => {
+              if (telegramOriginBoot) {
+                const holder = coordinator.getSyncStatus().leaseHolder;
+                const url = holder ? peerUrl(holder) : null;
+                const { TelegramOriginHoldError } = await import('../messaging/telegram-origin/types.js');
+                if (!holder || !url || holder === meshSelfId) throw new TelegramOriginHoldError('origin-credential-owner-unavailable');
+                const { relayOriginBot } = await import('../messaging/telegram-origin/OriginMeshRelay.js');
+                const tg = originTelegramConfig!.config as { chatId: string; formatMode?: import('../messaging/TelegramMarkdownFormatter.js').FormatMode };
+                return relayOriginBot({ runtime: telegramOriginBoot.runtime, topicId, text, chatId: tg.chatId,
+                  silent: opts?.silent, formatMode: tg.formatMode, kindMetadata: opts?.kindMetadata,
+                  send: command => meshClient.send({ machineId: holder, url }, command, 0, { timeoutMs: relayTimeoutMs }) });
+              }
               const r = await relayOutbound(topicId, text, opts, {
                 leaseHolder: () => coordinator.getSyncStatus().leaseHolder,
                 selfMachineId: meshSelfId,
@@ -26350,7 +26524,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       })),
     });
 
-    const server = new AgentServer({ config, singleInstanceLock, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, getLastRelayEvent: threadlineGetLastRelayEvent, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
+    const server = new AgentServer({ config, singleInstanceLock, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, m.nickname ?? m.machineId])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? p.machineId, url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: m.nickname ?? m.machineId, url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, guardLatchStore: guardLatchStore ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, getLastRelayEvent: threadlineGetLastRelayEvent, threadlineReplyWaiters, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx });    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     const readIdentityProjectionPeerRows = async () => {
       const peers = _resolvePeerUrls?.() ?? [];
       const extra = (config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
@@ -27681,6 +27855,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       // but the resume-UUID save + sidecar flush should run once.
       if (_shuttingDown) return;
       _shuttingDown = true;
+      try { await telegramOriginBoot?.close(); }
+      catch (error) { console.error('[telegram-origin] shutdown cleanup incomplete', error); }
       console.log('\nShutting down...');
 
       // Dispose the interactive-pool adapter (kills its tmux REPL sessions
@@ -27745,6 +27921,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
       registrySyncDebouncer?.stop();
       gitSync?.stop();
+      releaseOriginLeaseRenewal();
       coordinator.stop();
       ropeHealthMonitor?.stop();
       coherenceMonitor.stop();

@@ -252,7 +252,7 @@ describe('runSendLifelineGreeting (C2/D1 — magic moment after server start)', 
     fs.mkdirSync(path.join(tmp, '.instar'), { recursive: true });
     fs.writeFileSync(
       path.join(tmp, '.instar', 'config.json'),
-      JSON.stringify({ messaging }),
+      JSON.stringify({ messaging, port: 4042, authToken: 'fixture-auth' }),
     );
   }
 
@@ -291,7 +291,7 @@ describe('runSendLifelineGreeting (C2/D1 — magic moment after server start)', 
     expect(updates).toEqual({});
   });
 
-  it('attempts the sendMessage call when token + chatId + lifelineTopicId are all present', async () => {
+  it('asks the server to author the greeting when Lifeline is configured', async () => {
     writeMessagingConfig([
       {
         type: 'telegram',
@@ -308,7 +308,7 @@ describe('runSendLifelineGreeting (C2/D1 — magic moment after server start)', 
           url: typeof url === 'string' ? url : String(url),
           body: init?.body ? JSON.parse(init.body as string) : null,
         });
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        return new Response(JSON.stringify({ messageId: 42 }), { status: 200 });
       });
     try {
       await runSendLifelineGreeting(
@@ -316,16 +316,8 @@ describe('runSendLifelineGreeting (C2/D1 — magic moment after server start)', 
         { ...baseOptions, projectDir: tmp },
       );
       expect(fetchCalls).toHaveLength(1);
-      expect(fetchCalls[0].url).toMatch(/api\.telegram\.org\/botx%3Ay\/sendMessage/);
-      const body = fetchCalls[0].body as {
-        chat_id: string;
-        message_thread_id: number;
-        text: string;
-      };
-      expect(body.chat_id).toBe('-100abc');
-      expect(body.message_thread_id).toBe(42);
-      expect(body.text).toContain('codey');
-      expect(body.text).toContain('Justin');
+      expect(fetchCalls[0].url).toBe('http://127.0.0.1:4042/telegram/setup/greeting');
+      expect(fetchCalls[0].body).toEqual({ agentName: 'codey', userName: 'Justin', autonomy: 'proactive' });
     } finally {
       stubFetch.mockRestore();
     }

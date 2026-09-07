@@ -1,3 +1,4 @@
+import { deterministicAutomationAuthor, unknownAutomationAuthor, type OriginAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 /**
  * Quota Notifier — sends alerts when quota thresholds are crossed.
  *
@@ -35,7 +36,7 @@ interface NotificationState {
   lastNotifiedAt: string | null;
 }
 
-type SendFn = (topicId: number, text: string) => Promise<void>;
+type SendFn = (topicId: number, text: string, author?: OriginAutomationAuthor) => Promise<void>;
 
 export class QuotaNotifier {
   private state: NotificationState;
@@ -89,7 +90,7 @@ export class QuotaNotifier {
         critical: `Weekly quota is at ${percent}%. Only high-priority and critical jobs will run now. Let me know if you want to adjust the thresholds.`,
         limit: `We've hit the weekly quota limit (${percent}%). No new sessions will start until the quota resets.`,
       };
-      await this.send(labels[currentLevel]);
+      await this.send(labels[currentLevel], deterministicAutomationAuthor());
       this.state.lastWeeklyLevel = currentLevel;
       this.recordNotification('weekly', currentLevel, percent);
       this.saveState();
@@ -112,7 +113,7 @@ export class QuotaNotifier {
         warning: `Short-term usage is at ${percent}% — I may need to slow down to stay under the rate limit.`,
         limit: `Hit the short-term rate limit (${percent}%). I'll pause starting new sessions until it resets.`,
       };
-      await this.send(labels[currentLevel]);
+      await this.send(labels[currentLevel], deterministicAutomationAuthor());
       this.state.lastFiveHourLevel = currentLevel;
       this.recordNotification('five_hour', currentLevel, percent);
       this.saveState();
@@ -124,13 +125,13 @@ export class QuotaNotifier {
     }
   }
 
-  private async send(text: string): Promise<void> {
+  private async send(text: string, author: OriginAutomationAuthor = unknownAutomationAuthor()): Promise<void> {
     if (!this.sendToTopic || !this.alertTopicId) {
       console.log(`[QuotaNotifier] ${text}`);
       return;
     }
     try {
-      await this.sendToTopic(this.alertTopicId, text);
+      await this.sendToTopic(this.alertTopicId, text, author);
     } catch (err) {
       console.error('[QuotaNotifier] Failed to send:', err);
     }
