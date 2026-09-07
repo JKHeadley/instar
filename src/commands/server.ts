@@ -11664,10 +11664,15 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (!session?.claudeSessionId) {
               return { resolved: false, path: '', size: 0, mtime: 0 };
             }
+            // A pool-routed claude session's transcript lives under its live
+            // CLAUDE_CONFIG_DIR; the default home would probe a file that never exists.
+            const recoveryProbeHome = (session.framework ?? 'claude-code') === 'claude-code'
+              ? sessionManager.configHomeForSession(session.tmuxSession) : undefined;
             return probeTranscript({
               framework: session.framework ?? 'claude-code',
               sessionId: session.claudeSessionId,
               projectDir: session.cwd ?? config.sessions.projectDir,
+              ...(recoveryProbeHome ? { configHome: recoveryProbeHome } : {}),
             });
           },
           respawnSession: async (topicId, _sessionName, recoveryPrompt) => {
@@ -19780,6 +19785,9 @@ export async function startServer(options: StartOptions): Promise<void> {
         listRunningSessions: () => sessionManager.listRunningSessions(),
         captureOutput: (s, n) => sessionManager.captureOutput(s, n) ?? '',
         frameworkForSession: (s) => sessionManager.frameworkForSession(s) as 'claude-code' | 'codex-cli' | undefined,
+        // A pool-routed claude session's transcript lives under its live
+        // CLAUDE_CONFIG_DIR; without this the gate-E probe reads unresolved for it.
+        configHomeForSession: (s) => sessionManager.configHomeForSession(s),
         // The agent's session-launch cwd — Claude Code encodes it into the transcript
         // path so the reaper's fallback probe() can resolve + verify idle. Without this
         // the probe used '' and every transcript read as unresolved (kept everything).
@@ -20527,7 +20535,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             // resolves; '' would encode to an empty dir that never exists →
             // always-unresolved (the bug that made the reaper's idle-proof never work).
             // See SessionReaper.probe().
-            const tp = probeTranscript({ framework, sessionId, projectDir: config.projectDir });
+            const backstopProbeHome = framework === 'claude-code' ? sessionManager.configHomeForSession(session.tmuxSession) : undefined;
+            const tp = probeTranscript({ framework, sessionId, projectDir: config.projectDir, ...(backstopProbeHome ? { configHome: backstopProbeHome } : {}) });
             // Tail hash: read the last progressFloorBytes so a heartbeat-byte append
             // (same tail) is NOT counted as a meaningful advance.
             let tailHash: string | null = null;

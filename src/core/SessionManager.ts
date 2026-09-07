@@ -4589,6 +4589,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         framework: session.framework ?? 'claude-code',
         sessionId,
         projectDir: session.cwd ?? this.config.projectDir,
+        ...this.claudeConfigHomeOption(session),
       });
       if (!jsonlPath) return false;
       const stat = fs.statSync(jsonlPath);
@@ -4669,6 +4670,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         framework: session.framework ?? 'claude-code',
         sessionId,
         projectDir: session.cwd ?? this.config.projectDir,
+        ...this.claudeConfigHomeOption(session),
       });
       if (!jsonlPath) return null;
       const stat = fs.statSync(jsonlPath);
@@ -4825,6 +4827,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * cached: a quota-aware swap or a respawn can re-point a live name at a new
    * slot, so this reads fresh each tick (a handful of sessions, cheap + bounded).
    */
+  /**
+   * The `configHome` resolver option for a claude-code session, read from its
+   * LIVE `CLAUDE_CONFIG_DIR` (see configHomeForSession). A pool-routed session
+   * keeps its transcript under that home, so every transcript probe that
+   * omits it reads "no transcript" for a session that is alive (the age-kill
+   * liveness protection and drain probes were structural no-ops for pooled
+   * claude sessions). Non-claude frameworks and an unreadable env yield no
+   * option, which preserves the default-home path exactly.
+   */
+  private claudeConfigHomeOption(session: Session): { configHome?: string } {
+    if ((session.framework ?? 'claude-code') !== 'claude-code' || !session.tmuxSession) return {};
+    const configHome = this.configHomeForSession(session.tmuxSession);
+    return configHome ? { configHome } : {};
+  }
+
   configHomeForSession(tmuxSession: string): string | undefined {
     try {
       const out = withSyncOp(() => execFileSync(

@@ -4039,7 +4039,13 @@ export class AgentServer {
             const running = boundSession === state.executorId && sessionBoundToRun && options.sessionManager.isSessionAlive(state.executorId);
             let heartbeatAt: string | null = null;
             if (sessionBoundToRun && session?.claudeSessionId && session.framework) {
-              const transcript = options.windowRunLivenessTranscriptPath?.(session) ?? resolveFrameworkTranscriptPath({ framework: session.framework, sessionId: session.claudeSessionId, projectDir: session.cwd ?? options.config.projectDir });
+              // A pool-routed claude-code executor writes its transcript under its
+              // live CLAUDE_CONFIG_DIR, so the heartbeat must be read from THAT home;
+              // the default ~/.claude path would report a fresh session as missing.
+              const configHome = session.framework === 'claude-code' && typeof options.sessionManager.configHomeForSession === 'function'
+                ? options.sessionManager.configHomeForSession(session.tmuxSession)
+                : undefined;
+              const transcript = options.windowRunLivenessTranscriptPath?.(session) ?? resolveFrameworkTranscriptPath({ framework: session.framework, sessionId: session.claudeSessionId, projectDir: session.cwd ?? options.config.projectDir, ...(configHome ? { configHome } : {}) });
               try {
                 if (transcript) heartbeatAt = fs.statSync(transcript).mtime.toISOString();
               } catch { /* absent/unreadable transcript is an honestly missing heartbeat */ }

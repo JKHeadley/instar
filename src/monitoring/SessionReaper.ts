@@ -263,6 +263,10 @@ export interface SessionReaperDeps {
   frameworkForSession: (tmuxSession: string) => 'claude-code' | 'codex-cli' | undefined;
   /** Resolve+stat the session's transcript. Defaults to {@link probeTranscript}. */
   probeTranscript?: (session: Session) => TranscriptProbe;
+  /** The session's LIVE `CLAUDE_CONFIG_DIR` (a pool-routed claude session keeps
+   *  its transcript under `<configHome>/projects`). Absent/undefined → the
+   *  default home, exactly the prior behavior (unresolved → KEEP). */
+  configHomeForSession?: (tmuxSession: string) => string | undefined;
   /** The agent's session-launch cwd (config.projectDir) — Claude Code encodes it into
    *  the transcript path. Used by the fallback probe() to resolve transcripts; absent
    *  ⇒ '' ⇒ transcripts read as unresolved ⇒ KEEP (safe). */
@@ -627,7 +631,8 @@ export class SessionReaper extends EventEmitter {
     // everything (2026-06-06 grounding). Inject it via `transcriptProjectDir`; an
     // absent/wrong value still resolves to unresolved → KEEP (safe).
     const projectDir = this.#deps.transcriptProjectDir?.() ?? '';
-    return probeTranscript({ framework, sessionId, projectDir });
+    const configHome = framework === 'claude-code' ? this.#deps.configHomeForSession?.(session.tmuxSession) : undefined;
+    return probeTranscript({ framework, sessionId, projectDir, ...(configHome ? { configHome } : {}) });
   }
 
   /**

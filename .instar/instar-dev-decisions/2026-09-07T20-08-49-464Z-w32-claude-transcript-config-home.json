@@ -1,0 +1,28 @@
+{
+  "ts": "2026-09-07T20:08:49.464Z",
+  "slug": "w32-claude-transcript-config-home",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/monitoring/SessionReaper.ts matches session reaper"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 56,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/FrameworkSessionStore.ts",
+      "src/core/SessionManager.ts",
+      "src/monitoring/SessionReaper.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 52,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
