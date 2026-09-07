@@ -114,6 +114,45 @@ describe('self-action convergence ratchet — every registered controller SETTLE
           const maxAllowed = Math.ceil(elapsedMs / rateFloorMs) + 1;
           expect(sink.count).toBeLessThanOrEqual(maxAllowed);
         });
+
+        if (controller.restartPosture.pressureSurvives) {
+          for (const restartPercent of [25, 50, 75]) {
+            it(`preserves its rate floor across reconstruction at ${restartPercent}% of sustained pressure`, () => {
+              const restart = controller.restartPosture.restartUnderPressure;
+              const fixture = makePressureFixture();
+              const sink = makeActionSink();
+              let instance = controller.makeUnderPressure(fixture, sink);
+              const restartAt = Math.floor(controller.ticks * restartPercent / 100);
+              for (let i = 0; i < controller.ticks; i++) {
+                if (i === restartAt) instance = restart(fixture, sink);
+                instance.tick();
+                fixture.clock.advance(controller.tickMs);
+              }
+              const rateFloorMs = controller.eternalSentinel!.rateFloorMs;
+              const elapsedMs = controller.ticks * controller.tickMs;
+              expect(sink.count).toBeLessThanOrEqual(Math.ceil(elapsedMs / rateFloorMs) + 1);
+              for (let i = 1; i < sink.emitTimesMs.length; i++) {
+                expect(sink.emitTimesMs[i] - sink.emitTimesMs[i - 1]).toBeGreaterThanOrEqual(rateFloorMs);
+              }
+            });
+          }
+
+          it('preserves its rate floor when reconstructed before every tick', () => {
+            const restart = controller.restartPosture.restartUnderPressure;
+            const fixture = makePressureFixture();
+            const sink = makeActionSink();
+            for (let i = 0; i < controller.ticks; i++) {
+              restart(fixture, sink).tick();
+              fixture.clock.advance(controller.tickMs);
+            }
+            const rateFloorMs = controller.eternalSentinel!.rateFloorMs;
+            const elapsedMs = controller.ticks * controller.tickMs;
+            expect(sink.count).toBeLessThanOrEqual(Math.ceil(elapsedMs / rateFloorMs) + 1);
+            for (let i = 1; i < sink.emitTimesMs.length; i++) {
+              expect(sink.emitTimesMs[i] - sink.emitTimesMs[i - 1]).toBeGreaterThanOrEqual(rateFloorMs);
+            }
+          });
+        }
       } else {
         it(`settles to <= boundK (${controller.boundK}) under sustained pressure`, () => {
           const sink = driveController(controller, controller.ticks);

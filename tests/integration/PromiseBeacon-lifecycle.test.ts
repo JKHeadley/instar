@@ -85,4 +85,55 @@ describe('PromiseBeacon lifecycle', () => {
     expect(tracker.deliver(c.id)?.status).toBe('delivered');
     expect(tracker.deliver(c.id)).toBeNull(); // already delivered
   });
+
+  it('keeps output-off owner recovery live without letting a standby mutate or send', async () => {
+    const tracker = new CommitmentTracker({ stateDir: dir, liveConfig: new LiveConfig(dir) });
+    const sent: string[] = [];
+    const attention: string[] = [];
+    let reviveCalls = 0;
+    const beacon = new PromiseBeacon({
+      userOutputEnabled: false,
+      stateDir: dir,
+      commitmentTracker: tracker,
+      llmQueue: new LlmQueue({ maxDailyCents: 100 }),
+      proxyCoordinator: new ProxyCoordinator(),
+      captureSessionOutput: () => 'tmux output\nrunning',
+      getSessionForTopic: () => 'dead-session',
+      getSessionEpoch: () => 'NEW-EPOCH',
+      isSessionAlive: () => true,
+      sendMessage: async (_t, text) => { sent.push(text); },
+      raiseAttention: (_id, detail) => { attention.push(detail); },
+      currentMachineId: 'machine-owner',
+      now: () => Date.parse('2026-09-06T05:51:00.000Z'),
+      quietHours: { start: '22:00', end: '08:00' },
+      maxDailyLlmSpendCents: 0,
+      escalation: { enabled: true, dryRun: false },
+      requestRevive: async () => {
+        reviveCalls += 1;
+        return { sessionName: 'revived-session' };
+      },
+    });
+    const owner = tracker.record({
+      type: 'one-time-action', userRequest: 'recover overnight work', agentResponse: 'will keep it alive',
+      topicId: 78, ownerMachineId: 'machine-owner', sessionEpoch: 'OLD-EPOCH',
+      beaconEnabled: true, cadenceMs: 60_000, nextUpdateDueAt: '2026-09-06T05:50:00.000Z',
+    });
+    const nonOwner = tracker.record({
+      type: 'one-time-action', userRequest: 'stand by for overnight work', agentResponse: 'will not duplicate it',
+      topicId: 79, ownerMachineId: 'machine-standby', sessionEpoch: 'OLD-EPOCH',
+      beaconEnabled: true, cadenceMs: 60_000, nextUpdateDueAt: '2026-09-06T05:50:00.000Z',
+    });
+
+    await beacon.fire(owner.id);
+    await beacon.fire(nonOwner.id);
+
+    expect(reviveCalls).toBe(1);
+    expect(tracker.get(owner.id)).toMatchObject({
+      status: 'pending', escalationAttempts: 1, escalationInFlight: true,
+    });
+    expect(tracker.get(nonOwner.id)?.lastHeartbeatAt).toBeUndefined();
+    expect(tracker.get(nonOwner.id)?.escalationAttempts ?? 0).toBe(0);
+    expect(sent).toEqual([]);
+    expect(attention).toEqual([]);
+  });
 });

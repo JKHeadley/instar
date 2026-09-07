@@ -82,13 +82,28 @@ describeMaybe('E2E: Instar lifecycle', () => {
       {
         slug: 'e2e-health',
         name: 'E2E Health Check',
-        description: 'Fast health check for E2E testing',
-        schedule: '* * * * * *', // Every second
+        description: 'Manually-triggered health check for E2E testing',
+        // Keep the manual-trigger subject distinct from the every-second cron
+        // subject below. Sharing one slug made a correctly running cron session
+        // race the manual API request and trip the per-slug double-run guard.
+        schedule: '0 0 0 1 1 *',
         priority: 'high',
         expectedDurationMinutes: 1,
         model: 'haiku',
         enabled: true,
         execute: { type: 'prompt', value: 'Quick health check' },
+        tags: ['monitoring'],
+      },
+      {
+        slug: 'e2e-cron',
+        name: 'E2E Cron Check',
+        description: 'Fast cron check for E2E testing',
+        schedule: '* * * * * *', // Every second
+        priority: 'high',
+        expectedDurationMinutes: 1,
+        model: 'haiku',
+        enabled: true,
+        execute: { type: 'prompt', value: 'Quick cron check' },
         tags: ['monitoring'],
       },
     ];
@@ -312,7 +327,7 @@ describeMaybe('E2E: Instar lifecycle', () => {
   // ── Phase 7: Cron-triggered job ──────────────────────────
 
   it('cron triggers jobs automatically', async () => {
-    // The e2e-health job fires every second — wait for it
+    // The e2e-cron job fires every second — wait for it
     await waitFor(
       () => {
         const events = state.queryEvents({ type: 'job_triggered' });

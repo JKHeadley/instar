@@ -1,0 +1,118 @@
+# Side-Effects Review — Window 32 internal beacon cadence
+
+**Version / slug:** `w32-internal-beacon-cadence`
+**Date:** `2026-09-07`
+**Author:** `Echo`
+**Second-pass reviewer:** `Mencius — CONCUR after revision`
+
+## Summary of the change
+
+This change corrects the split between PromiseBeacon's optional human-facing output and its internal follow-through. In `src/monitoring/PromiseBeacon.ts`, quiet hours and the daily LLM spend cap continue to suppress opted-in user output, but no longer suppress output-disabled heartbeat bookkeeping or the pre-existing session-loss/revival ladder. Unit, integration, and booted-server E2E regressions prove both suppressors can be active while the owner advances or revives internally, the standby remains inert, and no send, summary LLM call, or Attention action occurs. The recurring write is explicitly registered as the `promise-beacon-internal-cadence` rate-floored eternal-sentinel controller, bringing it under the shared N/2N and restart convergence ratchet. The repository lifecycle E2E also gives its manual and cron-triggered jobs distinct slugs so their intentionally concurrent paths do not trip the real per-slug double-run guard. The change was built in the fresh W32 worktree from then-current `JKHeadley/main` at `77df8be42` / version `1.3.1225`; `origin/main` has since advanced to `1.3.1226` in non-overlapping files, so the branch must be rebased and reverified before push.
+
+## Decision-point inventory
+
+- `PromiseBeacon.fire()` quiet-hours gate — **modify** — applies only when human output is enabled; output-disabled commitments continue into internal cadence bookkeeping.
+- `PromiseBeacon.fire()` daily-spend gate — **modify** — applies only when human output is enabled; output-disabled bookkeeping spends no LLM budget and remains live.
+- `PromiseBeacon.fire()` session-loss ladder — **newly reachable under the two suppressor conditions, not otherwise modified** — owner-gated revival and internal terminal transitions retain the existing output-off contract; every downstream human sink remains closed.
+- `SELF_ACTION_CONTROLLERS` — **extend** — models the durable internal heartbeat as a constant-cost, 60-second-rate-floored eternal sentinel with restart-surviving cadence state.
+- `tests/e2e/lifecycle.test.ts` job identity — **modify test fixture only** — separates manual-trigger and cron-trigger subjects while preserving the production double-run refusal.
+
+---
+
+## 1. Over-block
+
+No new legitimate input is rejected. When `userOutputEnabled === true`, quiet-hours and daily-spend suppression retain their existing behavior. When output is disabled, the change removes an accidental block on internal bookkeeping; it does not enable any delivery path.
+
+---
+
+## 2. Under-block
+
+This fix does not make every commitment a runtime-liveness source. Commitments with human output explicitly enabled remain subject to quiet hours and the spend cap, including the existing suppression record. Runtime authorities must continue to use the deliberately output-disabled commitment profile used by Window 32. Output-disabled owner commitments can now reach the already-declared session-loss ladder during quiet hours or exhausted spend; this can request a revival or produce an internal terminal transition, while its send and Attention sinks remain suppressed. Non-owners return before both heartbeat mutation and revival. Other causes of stale heartbeats—expired commitments, stopped timers, or failed durable writes—remain governed by their existing checks and are not masked here.
+
+---
+
+## 3. Level-of-abstraction fit
+
+The split belongs in `PromiseBeacon.fire()`, where the existing `userOutputEnabled` authority already separates user-visible delivery from internal follow-through. Moving the exception into WindowRunLivenessAuthority would fabricate freshness downstream; moving it into the tracker would make persistence guess delivery policy. The E2E-only job identity correction belongs in the fixture because the production per-slug concurrency guard is correct and must not be weakened.
+
+---
+
+## 4. Signal vs authority compliance
+
+**Required reference:** [docs/signal-vs-authority.md](../../docs/signal-vs-authority.md)
+
+- [ ] No — this change produces a signal consumed by an existing smart gate.
+- [ ] No — this change has no block/allow surface.
+- [ ] Yes — this change is a smart gate with full conversational context (LLM-backed with recent history or equivalent).
+- [x] Deterministic policy authority over an enumerable configuration boundary; no brittle semantic detector is introduced.
+
+The touched decisions are explicit policy mechanics: whether human output is enabled, whether the current time is within configured quiet hours, and whether a configured spend ceiling has been reached. The change does not infer message meaning or agent intent. It narrows those delivery suppressors to the surface they govern and leaves liveness evaluation with the existing server-owned authority.
+
+---
+
+## 4b. Judgment-point check (Judgment Within Floors standard)
+
+No new static heuristic is added at a competing-signals decision point. `userOutputEnabled` is an explicit boolean contract, quiet hours are an explicit configured interval, and the spend cap is an explicit numeric ceiling. The liveness authority still evaluates ownership, admission, heartbeat, work evidence, and lifecycle state; this patch does not replace that judgment with a shortcut.
+
+---
+
+## 5. Interactions
+
+- **Shadowing:** Quiet-hours and spend checks still precede all human delivery work when output is enabled. When output is disabled, control reaches the pre-existing session-loss ladder first, then the bookkeeping-only branch for a healthy session. Any Rung-2 send or Rung-3 Attention attempt is suppressed at the canonical output boundary.
+- **Double-fire:** No new timer, send, retry, or attention path is added. A normal healthy `fire()` performs one bookkeeping mutation. A session-loss `fire()` may instead perform the pre-existing bounded escalation mutation/spawn path; the regression suite pins owner-only actuation.
+- **Races:** The PromiseBeacon change does not alter timer ownership or commitment CAS behavior. The E2E fixture removes a test-only race by giving cron and manual triggers different production identities.
+- **Feedback loops:** The fresher heartbeat becomes input to WindowRunLivenessAuthority, which is the intended consumer. It does not cause PromiseBeacon to reschedule faster or produce user output. The `promise-beacon-internal-cadence` convergence model carries the same durable cadence anchor as production and is exercised at N, 2N, and restart horizons.
+
+---
+
+## 6. External surfaces
+
+Other agents receive the corrected behavior after package update: output-disabled PromiseBeacon commitments continue recording internal heartbeats—and can run the existing owner-only revival ladder—overnight and after the user-output LLM budget is exhausted. There is no Telegram, Slack, Attention, URL, route, or response-format change. Persistent commitment records may now advance `lastHeartbeatAt`, `escalationAttempts`, or the existing internal terminal fields in cases where an output-only suppressor previously short-circuited the tick; no schema or migration is required. The three-tier regressions pin zero sends, zero summary LLM generations, zero Attention actions, owner-only mutation, and bounded cadence. No operator-facing action is added or changed.
+
+---
+
+## 6b. Operator-surface quality (Operator-Surface Quality standard)
+
+No operator surface — not applicable.
+
+---
+
+## 7. Multi-machine posture (Cross-Machine Coherence)
+
+**Machine-local BY DESIGN:** PromiseBeacon timers and heartbeat observations describe the session executor on the machine running that commitment. Existing session ownership and speaker-election checks remain the one-voice authority for any opted-in user notice. This change emits no user-facing notice, creates no URL, and introduces no new durable store. The existing commitment replication/ownership mechanisms remain responsible for topic transfer; this patch only ensures the owning machine's output-disabled timer records its local heartbeat instead of being suppressed by a human-output policy.
+
+---
+
+## 8. Rollback cost
+
+Rollback is a code/test revert followed by a patch release; there is no schema migration. Before rollback, an output-disabled owner may already have advanced `lastHeartbeatAt`, requested a revival, incremented the existing escalation fields, or reached an existing internal terminal state. Those records remain valid historical state and must not be erased. An already-spawned revival is allowed to settle through the existing idempotent escalation lifecycle rather than being killed or rewritten. After rollback, later output-disabled overnight ticks would again be suppressed by quiet hours or exhausted spend and could appear stale to downstream liveness checks. Human-facing PromiseBeacon sends and Attention actions remain absent throughout unless the deployment separately opts user output in.
+
+---
+
+## Conclusion
+
+The review found that the runtime fix is at the correct authority boundary and does not broaden messaging or LLM spending. It deliberately restores the previously declared internal session-loss behavior under two output-only suppressors, so owner-only revival, cadence rate bounds, and closed human sinks are now explicit test obligations. The production concurrency guard remains intact; only the E2E subjects are separated. The repaired tree completed the prior full repository suite with exit code 0, including the exact Window 32 lifecycle and freeze paths; the expanded proof set is targeted-green and must still clear a fresh full gate after rebase. This is declared Tier 2 despite the small runtime diff because it changes when an autonomous session-recovery path is reachable, spans nine files with the complete three-tier proof, and extends the self-action convergence ratchet. The approved `docs/specs/PROMISE-BEACON-ESCALATION-SPEC.md` is the governing spec; its current user-output boundary explicitly keeps internal detection, revival, bounded transitions, and audit live while all human-facing output defaults off. The independent second pass concurs after the proof and rollback corrections below.
+
+---
+
+## Second-pass review (required)
+
+**Reviewer:** Mencius
+**Independent read of the artifact:** **CONCUR after revision.** The initial review found that the artifact omitted newly reachable session-loss actuation, the convergence citation did not model the durable internal write, and the proof lacked production-lifecycle owner/non-owner coverage. A second review then caught that eternal-sentinel restart callbacks were only type-checked and that rollback understated already-persisted revival state. The final change documents the full internal contract, adds unit + integration + booted-server E2E coverage, registers a dedicated cadence controller, drives its restart path at multiple points and before every tick, and preserves heartbeat, revival, escalation, and terminal history during rollback. The reviewer reports no remaining blocker.
+
+---
+
+## Evidence pointers
+
+- Codex command receipt: session `01a07395-0f77-7cc0-a81a-cee974cec88a`, `npm run test:all`, exit `0`, completed `2026-09-06T08:24:16.812Z` after 3,737 seconds.
+- Exact E2E tail: 351 files passed, 3,153 tests passed, 7 skipped, 3 todo, zero failed.
+- Focused unit regression: `tests/unit/promise-beacon-user-output-off.test.ts`.
+- Tracker integration regression: `tests/integration/PromiseBeacon-lifecycle.test.ts`.
+- Production lifecycle regressions: `tests/e2e/promise-escalation-lifecycle.test.ts` and `tests/e2e/lifecycle.test.ts`.
+- Autonomous convergence ratchet: `tests/unit/self-action-convergence.test.ts`, controller `promise-beacon-internal-cadence`.
+
+---
+
+## Class-Closure Declaration (display-only mirror)
+
+`defectClass: unbounded-self-action`, `closure: guard`, `guardEvidence: {enforcementType: ratchet, citation: tests/unit/self-action-convergence.test.ts, howCaught: the dedicated promise-beacon-internal-cadence eternal-sentinel model uses the production 60-second minimum and durable last-heartbeat anchor; the shared ratchet drives sustained pressure at N and 2N horizons and reconstructs the controller across restarts, failing if internal refreshes accelerate or lose their restart-surviving rate floor}`.

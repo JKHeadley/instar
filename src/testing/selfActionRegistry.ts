@@ -287,6 +287,49 @@ const livenessHeartbeat: SelfActionController = {
 };
 
 /**
+ * promise-beacon-internal-cadence — a DECLARED Eternal Sentinel for the
+ * output-disabled bookkeeping heartbeat. The real controller persists
+ * `lastHeartbeatAt` and schedules from that durable anchor through the
+ * configured cadence clamped to a 60s minimum. Quiet hours and the user-output
+ * LLM budget do not govern this internal write; ownership still does.
+ */
+const promiseBeaconInternalCadence: SelfActionController = {
+  id: 'promise-beacon-internal-cadence',
+  actionVerb: 'heartbeat-refresh',
+  models: 'src/monitoring/PromiseBeacon.ts (output-disabled lastHeartbeatAt refresh + clampCadence minimum)',
+  modelsPath: 'src/monitoring/PromiseBeacon.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makePromiseBeaconInternalCadenceLoop(f, sink),
+  },
+  delegatedGiveUp: 'the hard minCadenceMs floor (60s by default) — durable refreshes cannot exceed elapsed/minCadenceMs',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 20,
+  tickMs: 30_000,
+  eternalSentinel: { reason: 'constant-cost durable internal liveness refresh', rateFloorMs: 60_000 },
+  makeUnderPressure: (f, sink) => makePromiseBeaconInternalCadenceLoop(f, sink),
+};
+
+function makePromiseBeaconInternalCadenceLoop(
+  f: PressureFixture,
+  sink: ActionSink,
+): { tick(): void } {
+  const LAST_AT = 'promise-beacon-internal-cadence:last-at';
+  const RATE_FLOOR_MS = 60_000;
+  return {
+    tick() {
+      sink.considered += 1;
+      const lastAt = (f.durableState.get(LAST_AT) as number | undefined) ?? Number.NEGATIVE_INFINITY;
+      if (f.clock.nowMs() - lastAt < RATE_FLOOR_MS) return;
+      sink.emit({ verb: 'heartbeat-refresh', target: 'commitment-liveness' });
+      sink.emitTimesMs.push(f.clock.nowMs());
+      f.durableState.set(LAST_AT, f.clock.nowMs());
+    },
+  };
+}
+
+/**
  * external-hog-kill-breaker — the External-Hog sentinel's respawn brake
  * (CMT-1901, docs/specs/external-hog-zombie-autokill-sentinel.md §6 — the
  * #863 reaper-kill-loop shape: 17,503 identical requests is the ancestor
@@ -1312,6 +1355,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   ageKillBackoff,
   promiseBeaconNotify,
   livenessHeartbeat,
+  promiseBeaconInternalCadence,
   externalHogKillBreaker,
   meteredReserveExpirySweep,
   jobFailureAlertDelivery,
