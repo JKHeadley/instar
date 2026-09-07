@@ -8,4 +8,6 @@ The recurring internal write is now explicitly registered as the `promise-beacon
 
 The repository-wide lifecycle E2E also separates its manual-trigger job from its every-second cron job. They previously shared one slug, so the cron could correctly acquire that slug immediately before the manual request and make the test nondeterministically receive the production double-run refusal. The test now exercises both behaviors independently without weakening the scheduler guard.
 
+The post-rebase full gate also found that W32's artifact-receipt check used the computer's current clock even when the rest of the lifecycle was running against an injected authority clock. That could make an otherwise valid run look expired only when it tried to record real work. The receipt path now captures one validated authority time and uses that same instant to authorize and stamp the receipt. A receipt must be strictly before the run deadline; equality is already expired, a slow verification cannot resample into a contradictory time, and an invalid clock is rejected instead of silently switching clocks. Unit and production-lifecycle tests cover all three boundaries.
+
 No configuration or operator action is required.

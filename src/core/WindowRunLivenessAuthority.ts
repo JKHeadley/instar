@@ -186,7 +186,7 @@ export interface WindowRunLivenessDeps {
   }) => Promise<WindowRunRecoveryResult>;
   verifyWorkArtifact?: (
     state: Readonly<WindowRunLivenessDocument>,
-    request: Readonly<Pick<WindowRunWorkAdvanceRequest, 'artifactRef'>>,
+    request: Readonly<Pick<WindowRunWorkAdvanceRequest, 'artifactRef'> & { observedAt: string }>,
   ) => { artifact: string; digest: string; taskRef: string };
   /** Resolve the exact first open task with no durable receipt. */
   resolveRecoveryTask?: (state: Readonly<WindowRunLivenessDocument>) => string | null;
@@ -391,10 +391,12 @@ export class WindowRunLivenessAuthority {
       if (!bindingMatches) throw new Error('window-run-liveness-binding-mismatch');
       if (typeof input.artifactRef !== 'string' || !input.artifactRef.trim()) throw new Error('window-run-liveness-work-reference-invalid');
       if (!this.deps.verifyWorkArtifact) throw new Error('window-run-liveness-artifact-verifier-unavailable');
-      const verified = this.deps.verifyWorkArtifact(structuredClone(state), { artifactRef: input.artifactRef });
+      // One authority timestamp governs both admission and the receipt. Sampling
+      // twice could authorize before the ceiling and stamp after it.
+      const observedAt = this.now();
+      const verified = this.deps.verifyWorkArtifact(structuredClone(state), { artifactRef: input.artifactRef, observedAt });
       if (!/^[a-f0-9]{64}$/.test(verified.digest) || !verified.artifact || !/^[A-Za-z0-9._:/-]{1,300}$/.test(verified.taskRef)) throw new Error('window-run-liveness-artifact-verification-invalid');
       if (state.lastWorkReceipt?.digest === verified.digest) throw new Error('window-run-liveness-artifact-unchanged');
-      const observedAt = this.now();
       const sequence = (state.lastWorkReceipt?.sequence ?? 0) + 1;
       const receipt: WindowRunWorkReceipt = {
         receiptId: digest({ windowId: state.windowId, autonomousRunId: state.autonomousRunId, executorId: state.executorId, taskRef: verified.taskRef, artifact: verified.artifact, digest: verified.digest, sequence, observedAt }),
