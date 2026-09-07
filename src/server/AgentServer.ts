@@ -31,6 +31,7 @@ import { AutonomousRunStore } from '../core/AutonomousRunStore.js';
 import { parseContinuationTasks } from '../core/CodexTaskContinuationStore.js';
 import { EchoWindowLedgerStore } from '../core/WindowLifecycleObligationLedger.js';
 import { WindowRunLivenessAuthority, WindowRunLivenessStore } from '../core/WindowRunLivenessAuthority.js';
+import { lifelinePollIsReachable as telegramLifelinePollIsReachable } from '../lifeline/TelegramPollOwnerLease.js';
 import { WindowRunCadenceExecutor, WindowRunCadenceStore, cadenceReportProducerPayload, signCadenceReportProducer } from '../core/WindowRunCadenceExecutor.js';
 import { verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
 import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
@@ -3925,6 +3926,9 @@ export class AgentServer {
       if (options.config.projectName !== 'echo' || !resolveDevAgentGate(raw?.enabled, options.config)) return null;
       const runStore = new AutonomousRunStore(options.config.stateDir);
       const lifecycleStore = new EchoWindowLedgerStore(options.config.stateDir);
+      const telegramConfig = options.config.messaging?.find(entry => entry.type === 'telegram' && entry.enabled);
+      const rawTelegramToken = telegramConfig ? (telegramConfig.config as { token?: unknown }).token : undefined;
+      const telegramBotToken = typeof rawTelegramToken === 'string' && rawTelegramToken ? rawTelegramToken : null;
       const projectLegacyStatus = (state: Readonly<import('../core/WindowRunLivenessAuthority.js').WindowRunLivenessDocument>, status: import('../core/WindowRunLivenessAuthority.js').WindowRunLivenessStatus, executorId = state.executorId): string => {
         const runStatus = status === 'active' ? 'active' : status === 'preparing' ? 'preparing' : status === 'at-risk' ? 'at-risk' : 'failed';
         const localPath = path.join(options.config.stateDir, 'autonomous', `${state.topicId}.local.md`);
@@ -4041,14 +4045,19 @@ export class AgentServer {
               } catch { /* absent/unreadable transcript is an honestly missing heartbeat */ }
             }
             const telegramStatus = options.telegram?.getStatus();
+            const sampledAtMs = Date.parse(now);
+            const adapterDeliveryReachable = !!telegramStatus?.started
+              && telegramStatus.fatalReason === null
+              && telegramStatus.lastError === null
+              && telegramStatus.consecutivePollErrors === 0;
+            const lifelineDeliveryReachable = telegramBotToken !== null
+              && Number.isFinite(sampledAtMs)
+              && telegramLifelinePollIsReachable(options.config.stateDir, telegramBotToken, sampledAtMs);
             const lifecycleMatches = ledger?.lifecycleRunId === state.lifecycleRunId && ledger.windowId === state.windowId;
             return {
               sampledAt: now,
               executor: { id: boundSession, running, heartbeatAt },
-              deliveryReachable: !!telegramStatus?.started
-                && telegramStatus.fatalReason === null
-                && telegramStatus.lastError === null
-                && telegramStatus.consecutivePollErrors === 0,
+              deliveryReachable: adapterDeliveryReachable || lifelineDeliveryReachable,
               work: state.lastWorkReceipt ?? null,
               lifecycle: {
                 lifecycleRunId: lifecycleMatches ? ledger!.lifecycleRunId : null,
