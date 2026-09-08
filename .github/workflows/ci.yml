@@ -357,6 +357,9 @@ jobs:
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
       - run: npm ci
+      # E2E subprocesses exercise the compiled CLI and registry in this checkout.
+      # The separate build job has its own filesystem and cannot supply dist/.
+      - run: npm run build
       - run: npm run test:e2e
       - name: Working-tree integrity check
         run: |

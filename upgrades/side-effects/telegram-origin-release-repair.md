@@ -99,3 +99,33 @@ Historical failed and stopped attempts remain recorded above; this final result
 supersedes their pending validation status, not their historical evidence.
 
 Full log: `/tmp/echo-2010-final2-test-all.log`. SHA256: `bcabe2b462be4ac53cfa0ed47470704bffde16021c04da12f8f4acd530378d74`.
+
+## Independent CI prerequisite review — 2026-09-08
+
+**Concur with the review.** Reviewer: `review_canary_repair`. The isolated-process E2E test imports `dist/core/AgentRegistry.js` and other compiled modules in a real Node child; its E2E Vitest configuration generates registry assets but does not compile those modules. Each GitHub Actions job checks out its own filesystem, so successful unit/build jobs cannot supply the E2E job's missing `dist/`. Adding `npm run build` immediately after `npm ci` and before `npm run test:e2e` supplies the actual prerequisite from that job's checked-out source.
+
+Independent read-only verification parsed both workflow versions as YAML and confirmed this inserted build step is the only semantic workflow change. Existing failure propagation and the working-tree integrity check remain intact; no source or test assertion changes are included. Inspected build outputs (`dist/`, generated source manifest and registry assets) are gitignored, so the tree check does not need an exception. The build also enables previously dist-gated E2E cases in this job, which may add execution time; their assertions must continue to run normally. Direct local `test:e2e` still requires a prior build for compiled-process tests. This workflow change does not claim to alter that local command's contract.
+
+No new judgment/authorization gate, deployed agent behavior, migration, credential, or multi-machine state is introduced. The cost is an additional build in each E2E job; rollback is reverting the workflow step, which would restore the missing-prerequisite failure. YAML structural comparison and `git diff --check` passed; this reviewer ran no build or test suite for this addendum. This acceptance is inspection of the prerequisite repair, not proof that the next CI run passed. Release remains held until the new commit's required checks and operator review satisfy the existing gates.
+
+### CI prerequisite reproduction and follow-up
+
+Both GitHub E2E jobs on `7c9fde6cb` failed only the isolated registry subprocess
+because their fresh checkout lacked `dist/core/AgentRegistry.js`. Unit, build and
+integration CI passed. A separate detached checkout reproduced the missing-module
+failure with no dist, then `npm run build` followed by the unchanged registry,
+unknown-command/help and dev-preflight E2E checks passed 4/4. The checkout remained
+clean after build/test. Logs: `/tmp/echo-2010-ci-prereq-before.log`,
+`/tmp/echo-2010-ci-prereq-build.log`, `/tmp/echo-2010-ci-prereq-after.log`.
+
+The workflow now builds its own E2E checkout before tests. A build on another job
+cannot supply those files. Current preflight resolves npm first; the historical
+pnpm-only obstacle no longer applies. The two stale test comments were corrected;
+no test assertion, runtime source or failure policy changed. The existing full
+local three-stage pass above covers the unchanged runtime and test behavior;
+new-head CI still must pass. Operator review must bind the final commit, not the
+previous head. No merge or deployment is claimed.
+
+Independent prerequisite-chain addendum (`review_canary_repair`): concur after correcting one stale unit-shard statement. CI unit shards use `vitest.push.config.ts`, whose global setup compiles dist; the E2E job now builds its separate checkout explicitly. The revised Slack and standards-lifecycle comments accurately distinguish current prerequisites from the historical pnpm-only failure. Inspected `resolveLintCommand()` prefers usable npm and selects `npm run lint`; CLI help/error and Slack process-survival checks invoke Node directly. No additional pnpm installation is required. The detached-checkout reproduction is accurately reported as local evidence, with new-head CI and operator review still required. No runtime logic or test assertions changed; this addendum is based on source/workflow inspection and a clean whitespace check, not an additional test run.
+
+Additional prerequisite checks passed 8/8: npm-first resolver boundaries and real compiled Slack error-containment subprocesses (`/tmp/echo-2010-ci-prereq-extra.log`). Review corrected the comment about unit shards: their global setup already builds dist; the missing build was specifically the standalone E2E job.
