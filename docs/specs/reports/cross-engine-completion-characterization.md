@@ -1,4 +1,4 @@
-# Completion-Evidence Pathway Characterization — refreshed 2026-08-22
+# Completion-Evidence Pathway Characterization — refreshed 2026-09-08
 
 ## Status
 
@@ -22,7 +22,13 @@ because this install has no Instar-source manifest, decision-quality uniform sea
 benchmark-divergence detector dark. The recheck therefore supplies no new evidence that can
 promote, reorder, or reject any candidate route below.
 
-The August freshness pass therefore cannot promote, reorder, or reject a candidate from live
+The reads were repeated again on 2026-09-08 against the live Instar-codey server on port 4044.
+All three again returned HTTP 503 with the same machine-readable reasons:
+`registry-unavailable-no-instar-source`, `provenance.uniformSeam` dark, and
+`benchmarkDivergence` dark. This newer freshness check likewise supplies no evidence that can
+promote, reorder, or reject a candidate route below.
+
+The September freshness pass therefore cannot promote, reorder, or reject a candidate from live
 quality data. The most recent direct free probe (July 24) found Claude Code, Anthropic headless,
 Codex, and pi runnable; Gemini's asdf shim returned no selected version. That probe was executor
 liveness only, not completion-specific decision quality. Fresh spec-review detection on August 18
