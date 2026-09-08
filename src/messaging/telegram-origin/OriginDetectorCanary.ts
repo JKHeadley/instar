@@ -9,7 +9,7 @@ import type { OriginCanaryHealth } from './OriginDetectorHealth.js';
 
 const CHECKS = ['encrypted-config-read', 'exact-hub-permission', 'opt-out-observed', 'hub-rebind-refused', 'credential-rotation-refused', 'malformed-source-refused'];
 /** @self-action-controller: telegram-origin-owned-detector-canary
- * Fixed-cost diagnostic sentinel: one run at boot, then a completion-relative
+ * Fixed-cost diagnostic sentinel: a 60s startup floor, then a completion-relative
  * interval; two attempts maximum, one worker at a time, no transport capability.
  * RULE 3.1 RATIONALE: owned stable authority schemas, hourly known-state probe;
  * failures report health, never manufacture credentials or delivery permission.
@@ -42,7 +42,10 @@ export class OriginDetectorCanary {
       await this.run();
       if (!this.closed) { this.timer = setTimeout(() => { this.timer = undefined; void cycle(); }, this.intervalMs); this.timer.unref(); }
     };
-    void cycle();
+    // Every new instance waits before its first automatic probe. A restart
+    // therefore cannot turn the startup probe into an unbounded retry loop.
+    this.timer = setTimeout(() => { this.timer = undefined; void cycle(); }, 60_000);
+    this.timer.unref();
   }
   run(): Promise<void> {
     if (this.closed || this.cleanupFailed) return Promise.resolve();

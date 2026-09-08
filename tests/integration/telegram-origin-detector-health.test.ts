@@ -16,10 +16,11 @@ it('serves real fresh detector health through the operator HTTP boundary without
   mountTelegramOriginRoutes(app, { runtime: () => boot.runtime, verifyOperator: proof => proof === 'operator-proof' });
   expect((await request(app).get('/telegram/origins/status')).status).toBe(403);
   const get = () => request(app).get('/telegram/origins/status').set('X-Instar-Operator-Session', 'operator-proof');
+  expect((await get()).body.detectorHealth.canaries.ownedContracts.state).toBe('pending');
   await vi.waitFor(async () => expect((await get()).body.detectorHealth).toMatchObject({
     sources: { config: { state: 'healthy' }, noticePolicy: { state: 'healthy' } },
     canaries: { ownedContracts: { state: 'pass' } },
-  }), { timeout: 8000 });
+  }), { timeout: 75_000 });
   const response = await get(); expect(response.status).toBe(200);
   expect(response.body.detectorHealth.canaries.nativeModels).toMatchObject({ state: 'unavailable', providerExecutionVerified: false });
   expect(JSON.stringify(response.body.detectorHealth)).not.toMatch(/detector-fixture|\/tmp\//);
@@ -30,4 +31,4 @@ it('serves real fresh detector health through the operator HTTP boundary without
   // bounded two-second source read, without manually invoking either reader.
   await vi.waitFor(async () => expect((await get()).body.detectorHealth.sources.config.state).toBe('unavailable'), { timeout: 8000 });
   expect((await boot.runtime.store.listOrigins()).records).toEqual(originsBefore);
-});
+}, 90_000);

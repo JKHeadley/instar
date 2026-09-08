@@ -47,14 +47,25 @@ describe('Promise-Beacon Escalation lifecycle (e2e)', () => {
 
   const auth = () => ({ Authorization: `Bearer ${AUTH}`, 'X-Instar-AgentId': 'promise-escalation-e2e' });
 
-  function wireBeacon(esc: EscalationConfig, revive: () => Promise<ReviveResult>) {
+  function wireBeacon(
+    esc: EscalationConfig,
+    revive: () => Promise<ReviveResult>,
+    opts: {
+      userOutputEnabled?: boolean;
+      currentMachineId?: string;
+      quietHours?: { start: string; end: string };
+      maxDailyLlmSpendCents?: number;
+    } = {},
+  ) {
     const b = new PromiseBeacon({
-      userOutputEnabled: true,
+      userOutputEnabled: opts.userOutputEnabled ?? true,
       stateDir, commitmentTracker: tracker, llmQueue: new LlmQueue({ maxDailyCents: 100 }),
       proxyCoordinator: new ProxyCoordinator(),
       captureSessionOutput: () => 'x', getSessionForTopic: () => 'dead-sess', isSessionAlive: () => true,
       getSessionEpoch: () => 'NEW-EPOCH', sendMessage: async (topicId, text) => { sent.push({ topicId, text }); },
-      now: () => FIXED_NOW, quietHours: NEVER_QUIET, escalation: esc,
+      now: () => FIXED_NOW, quietHours: opts.quietHours ?? NEVER_QUIET, escalation: esc,
+      maxDailyLlmSpendCents: opts.maxDailyLlmSpendCents,
+      currentMachineId: opts.currentMachineId,
       requestRevive: async () => { reviveCalls += 1; return revive(); },
       raiseAttention: () => {},
     });
@@ -140,5 +151,48 @@ describe('Promise-Beacon Escalation lifecycle (e2e)', () => {
     expect(after.status).toBe('pending'); // still owed — NOT falsely delivered
     expect(after.atRisk).toBe(true);
     beacon.stop();
+  });
+
+  it('output-off production lifecycle keeps owner revival live but leaves a non-owner inert under quiet hours and exhausted spend', async () => {
+    beacon = wireBeacon(
+      { enabled: true, dryRun: false },
+      async () => ({ sessionName: 'revived-session' }),
+      {
+        userOutputEnabled: false,
+        currentMachineId: 'machine-owner',
+        quietHours: { start: '00:00', end: '23:59' },
+        maxDailyLlmSpendCents: 0,
+      },
+    );
+    const beforeSent = sent.length;
+    const beforeRevive = reviveCalls;
+    const owner = tracker.record({
+      type: 'one-time-action', userRequest: 'recover overnight work', agentResponse: 'will keep it alive',
+      topicId: 903, ownerMachineId: 'machine-owner', beaconEnabled: true, cadenceMs: 60_000,
+      nextUpdateDueAt: '2099-01-01T00:00:00Z', sessionEpoch: 'OLD-EPOCH',
+    });
+    const nonOwner = tracker.record({
+      type: 'one-time-action', userRequest: 'stand by for overnight work', agentResponse: 'will not duplicate it',
+      topicId: 904, ownerMachineId: 'machine-standby', beaconEnabled: true, cadenceMs: 60_000,
+      nextUpdateDueAt: '2099-01-01T00:00:00Z', sessionEpoch: 'OLD-EPOCH',
+    });
+
+    await beacon.fire(owner.id);
+    await beacon.fire(nonOwner.id);
+
+    expect(reviveCalls).toBe(beforeRevive + 1);
+    expect(sent.length).toBe(beforeSent);
+    expect(tracker.get(owner.id)).toMatchObject({
+      status: 'pending',
+      escalationAttempts: 1,
+      escalationInFlight: true,
+    });
+    expect(tracker.get(nonOwner.id)?.lastHeartbeatAt).toBeUndefined();
+    expect(tracker.get(nonOwner.id)?.escalationAttempts ?? 0).toBe(0);
+
+    const metrics = await request(app).get('/commitments/escalation-metrics').set(auth());
+    expect(metrics.status).toBe(200);
+    expect(metrics.body.enabled).toBe(true);
+    expect(metrics.body.dryRun).toBe(false);
   });
 });

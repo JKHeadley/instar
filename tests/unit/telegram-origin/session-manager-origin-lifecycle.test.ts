@@ -36,11 +36,15 @@ import { captureOriginHookSettings, originHookSettingsDigest } from '../../../sr
 
 describe('SessionManager origin lifecycle production callback wiring', () => {
   let dir: string; let state: StateManager; let manager: SessionManager; let registry: OriginSessionRegistry;
-  let bindNative: ReturnType<typeof vi.fn>;
+  let bindNative: ReturnType<typeof vi.fn>; let claudePath: string;
   beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'origin-session-manager-'));
     fs.mkdirSync(path.join(dir, 'state')); state = new StateManager(path.join(dir, 'state'));
-    const config: SessionManagerConfig = { tmuxPath: '/usr/bin/tmux', claudePath: '/usr/local/bin/claude',
+    // Process execution is mocked, but binary discovery uses the real filesystem.
+    // Keep that dependency in the fixture instead of requiring a host CLI install.
+    claudePath = path.join(dir, 'claude');
+    fs.writeFileSync(claudePath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const config: SessionManagerConfig = { tmuxPath: '/usr/bin/tmux', claudePath,
       projectDir: dir, maxSessions: 10, protectedSessions: ['protected'], completionPatterns: [], framework: 'claude-code', subscriptionPathMode: 'off' };
     manager = new SessionManager(config, state);
     registry = new OriginSessionRegistry({ stateDir: path.join(dir, 'state'), agentId: 'agent', machineId: 'host',
@@ -82,7 +86,7 @@ describe('SessionManager origin lifecycle production callback wiring', () => {
     if (lane === 'interactive') await manager.spawnInteractiveSession(undefined, 'interactive');
     if (lane === 'triage') await manager.spawnTriageSession('triage', { allowedTools: ['Read'], permissionMode: 'dontAsk' });
     if (lane === 'rerouted') await (manager as any).spawnReroutedInteractive({ sessionId: 'rerouted-id', tmuxSession: 'rerouted',
-      options: { name: 'rerouted', prompt: 'fixture' }, binaryPath: '/usr/local/bin/claude', launchModel: 'sonnet',
+      options: { name: 'rerouted', prompt: 'fixture' }, binaryPath: claudePath, launchModel: 'sonnet',
       resolvedCwd: dir, workTreeFencingToken: null, shimDir: null });
     const verification = registry.verify(launchedToken());
     expect(verification.ok).toBe(true);
@@ -90,6 +94,13 @@ describe('SessionManager origin lifecycle production callback wiring', () => {
       expect(verification.binding).toMatchObject({ agentId: 'agent', machineId: 'host', harnessId: 'claude-code', projectDir: dir });
       expect(state.getSession(verification.binding.sessionId)?.status).toBe('running');
     }
+  });
+  it('refuses triage before launch when its configured binary is missing', async () => {
+    fs.renameSync(claudePath, `${claudePath}.unavailable`);
+    await expect(manager.spawnTriageSession('missing-binary', {
+      allowedTools: ['Read'], permissionMode: 'dontAsk',
+    })).rejects.toThrow('triage-session-no-claude-binary');
+    expect(tmux.calls.some(args => args[0] === 'new-session')).toBe(false);
   });
   it('does not revoke a live session on a failed manual kill; success revokes before returning', async () => {
     const session = await manager.spawnSession({ name: 'kill-control', prompt: 'fixture' });

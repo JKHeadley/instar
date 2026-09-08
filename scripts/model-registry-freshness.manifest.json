@@ -47,7 +47,7 @@
           "verifiedAt": "carried-over-from-allowlist"
         }
       ],
-      "note": "Primary door. Tier aliases opus/sonnet/haiku auto-resolve to latest and do NOT rot; only concrete claude-*-N ids in topModels are pinned. topModels seeded 1:1 from the reviewed frontierAllowlist (spec D4 carry-over); the first enabled scan re-verifies."
+      "note": "Primary door. Tier aliases fable/opus/sonnet/haiku auto-resolve to latest and do NOT rot; only concrete claude-*-N ids in topModels are pinned. topModels seeded 1:1 from the reviewed frontierAllowlist (spec D4 carry-over); the first enabled scan re-verifies. UPDATE 2026-09-06: the Claude 5 family (claude-fable-5-1, claude-opus-5, claude-sonnet-5) plus the 'fable' tier alias were live-verified against claude-code CLI 2.1.263 and added to the ACCEPTANCE allowlist KNOWN_CLAUDE_MODEL_IDS — closing a real drift, since the 2026-08-18 review had already recorded claude-opus-5/claude-sonnet-5 as frontier here while the acceptance list still refused them off-enum (and the shipped frameworkDefaultModels['claude-code'] = 'claude-opus-5' was being dropped at the resolution clamp as a result). RECOGNIZED is not FRONTIER: claude-fable-5-1 is deliberately NOT added to topModels / promoted over claude-fable-5, and the escalated pin stays claude-fable-5 — a model earns the routing lane via benchmarks, not release date. Frontier/pin promotion of claude-fable-5-1 is a tracked follow-up (ACT-514 also tracks the missing freshness guard on the acceptance list itself, which is the layer that rotted)."
     },
     "anthropic-headless": {
       "name": "Anthropic headless (claude -p)",

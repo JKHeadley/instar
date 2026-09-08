@@ -5,18 +5,24 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AutonomousRunStore } from '../../src/core/AutonomousRunStore.js';
 import { createLedger, EchoWindowLedgerStore } from '../../src/core/WindowLifecycleObligationLedger.js';
 import type { InstarConfig } from '../../src/core/types.js';
+import { writeLease as writeTelegramPollOwnerLease } from '../../src/lifeline/TelegramPollOwnerLease.js';
 import { AgentServer } from '../../src/server/AgentServer.js';
 import { generateIdentityKeyPair } from '../../src/threadline/ThreadlineCrypto.js';
 import { createMockSessionManager, createTempProject, type MockSessionManager, type TempProject } from '../helpers/setup.js';
 
 describe('window run liveness production wiring', () => {
   const token = 'w32-liveness-e2e';
-  const baseMs = Date.parse('2026-09-05T20:00:00.000Z');
+  const telegramBotToken = 'w32-lifeline-owned-poller';
+  // Anchored to the real clock: the run store archives a run 24h after its
+  // endAt against real Date.now(), so a fixed calendar base silently expires
+  // (this file went red on 2026-09-07T20:00Z with a 2026-09-05 base).
+  const baseMs = Math.floor(Date.now() / 1000) * 1000;
   let nowMs = baseMs;
   let project: TempProject;
   let server: AgentServer;
   let sessions: MockSessionManager;
   let transcript: string;
+  let configHome: string;
   let artifact: string;
   const checkpointInputs: string[] = [];
   const outboundRows: any[] = [];
@@ -26,7 +32,13 @@ describe('window run liveness production wiring', () => {
 
   beforeAll(async () => {
     project = createTempProject();
-    transcript = path.join(project.stateDir, 'bound-session.jsonl');
+    // Production Echo's observer is a subscription-pool-routed claude-code
+    // session: its transcript lives under its LIVE CLAUDE_CONFIG_DIR, not
+    // ~/.claude. No transcript override here — the server must resolve the
+    // real path from the session's config home or the heartbeat is missing.
+    configHome = path.join(project.stateDir, 'claude-followme-pool-a');
+    transcript = path.join(configHome, 'projects', project.dir.replace(/[\/.]/g, '-'), 'provider-session-1.jsonl');
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
     artifact = path.join(project.dir, 'artifact.txt');
     fs.writeFileSync(transcript, '{"type":"session-event"}\n');
     fs.writeFileSync(artifact, 'first durable result\n');
@@ -40,6 +52,7 @@ describe('window run liveness production wiring', () => {
     sessions.sendInput = (tmuxSession: string, input: string) => { checkpointInputs.push(`${tmuxSession}:${input}`); return sessions._aliveSet.has(tmuxSession); };
     sessions._sessions.push({ id: 'instar-session-1', name: 'echo', status: 'running', tmuxSession: 'echo-topic-36966', startedAt: new Date(nowMs).toISOString(), claudeSessionId: 'provider-session-1', framework: 'claude-code', cwd: project.dir } as any);
     sessions._aliveSet.add('echo-topic-36966');
+    (sessions as any).configHomeForSession = (tmuxSession: string) => tmuxSession === 'echo-topic-36966' ? configHome : undefined;
 
     const runs = new AutonomousRunStore(project.stateDir);
     const registered = runs.register({
@@ -61,12 +74,16 @@ describe('window run liveness production wiring', () => {
       projectName: 'echo', projectDir: project.dir, stateDir: project.stateDir, port: 0, authToken: token, developmentAgent: true,
       requestTimeoutMs: 5000, version: '1.3.1223',
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 2, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
-      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [],
+      scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 },
+      messaging: [{ type: 'telegram', enabled: true, config: { token: telegramBotToken } }],
       monitoring: { windowRunLiveness: { enabled: true, dryRun: false, heartbeatMaxAgeMs: 60_000, workEvidenceMaxAgeMs: 30 * 60_000, recoveryCeilingMs: 15 * 60_000, cadenceExecutor: { enabled: true, dryRun: false, reportIntervalMs: 26 * 60_000 } } }, updates: {},
     };
+    writeTelegramPollOwnerLease(project.stateDir, telegramBotToken, process.pid, nowMs);
     const telegram = {
       getSessionForTopic: (topicId: number) => topicId === 36966 ? 'echo-topic-36966' : null,
-      getStatus: () => ({ started: true, fatalReason: null, lastError: null, consecutivePollErrors: 0 }),
+      // Production Echo runs this adapter send-only while the separate lifeline
+      // owns polling. A fresh token-matched poll lease is the live signal.
+      getStatus: () => ({ started: false, fatalReason: null, lastError: null, consecutivePollErrors: 0 }),
       getTopicHistory: (topicId: number) => outboundRows.filter(row => row.topicId === topicId),
       sendToTopic: async (topicId: number, text: string, options: any) => {
         const row = { messageId: outboundRows.length + 1, topicId, text, fromUser: false, forwarded: false, provenance: options?.provenance ?? 'automation', authorship: 'agent-outbound', timestamp: new Date(nowMs).toISOString(), sessionName: binding?.executorId ?? null };
@@ -83,7 +100,7 @@ describe('window run liveness production wiring', () => {
           return sessionKey === '36966' ? { sessionKey, ownerMachineId, ownershipEpoch: 1, status: 'active', nonce: 'owner', timestamp: nowMs, updatedAt: new Date(nowMs).toISOString() } : null;
         },
       } as never,
-      windowLifecycleNow: () => new Date(nowMs).toISOString(), windowRunLivenessTranscriptPath: () => transcript,
+      windowLifecycleNow: () => new Date(nowMs).toISOString(),
       sessionRefresh: { refreshSession: async () => ({ ok: true, oldSessionName: 'echo-topic-36966', newSessionName: 'echo-topic-36966', topicId: 36966 }) } as never,
     });
     await server.start();
@@ -92,7 +109,7 @@ describe('window run liveness production wiring', () => {
   afterAll(async () => { await server.stop(); project.cleanup(); });
   const auth = (call: request.Test) => call.set('Authorization', `Bearer ${token}`).set('X-Instar-AgentId', 'echo');
 
-  it('is alive through AgentServer and requires independently sourced five-predicate evidence', async () => {
+  it('is alive through AgentServer with a lifeline-owned poller and independently sourced five-predicate evidence', async () => {
     await request(server.getApp()).get('/window-run-liveness').expect(401);
     const preparation = await auth(request(server.getApp()).post('/autonomous/register')).send({ topicId: 777, condition: 'preparation response contract', workDir: project.dir, startedAt: new Date(nowMs).toISOString(), endAt: new Date(nowMs + 60_000).toISOString(), sessionId: 'other-session' }).expect(200);
     expect(preparation.body).toMatchObject({ initialStatus: 'preparing', preparationRequired: true });
@@ -114,6 +131,7 @@ describe('window run liveness production wiring', () => {
     fs.writeFileSync(markerPath, JSON.stringify({ topic: 36966, active: false, status: 'preparing' }));
     const active = await auth(request(server.getApp()).post('/window-run-liveness/tick')).send({}).expect(200);
     expect(active.body.status).toBe('active');
+    expect(active.body.predicates['delivery-reachable']).toMatchObject({ ok: true, observed: 'reachable' });
     ownerMachineId = 'laptop';
     await auth(request(server.getApp()).post('/window-run-liveness/cadence/tick')).send({}).expect(404);
     expect(ownershipKeys.at(-1)).toBe('36966');
@@ -155,12 +173,16 @@ describe('window run liveness production wiring', () => {
   });
 
   it('revokes active from transcript heartbeat staleness and durably records the sole dry-run recovery', async () => {
+    // A future-dated lease is valid for the collision-avoidance helper's
+    // fail-open startup posture, but must never count as positive liveness.
+    writeTelegramPollOwnerLease(project.stateDir, telegramBotToken, process.pid, nowMs + 1);
     fs.utimesSync(transcript, new Date(baseMs - 61_000), new Date(baseMs - 61_000));
     const atRisk = await auth(request(server.getApp()).post('/window-run-liveness/tick')).send({}).expect(200);
     expect(atRisk.body.status).toBe('at-risk');
     expect(atRisk.body.predicates).toMatchObject({
       'executor-bound-running': { ok: true },
       'heartbeat-fresh': { ok: false },
+      'delivery-reachable': { ok: false, observed: 'unreachable' },
     });
     expect(atRisk.body.recoveryAttempt).toMatchObject({ number: 1, outcome: 'succeeded', requestedTaskRef: `autonomous:${binding.autonomousRunId}:3`, resumedTaskRef: `autonomous:${binding.autonomousRunId}:3` });
     expect(new AutonomousRunStore(project.stateDir).getByPair('36966', binding.autonomousRunId)?.status).toBe('at-risk');
@@ -189,7 +211,7 @@ describe('window run liveness production wiring', () => {
 describe('window run liveness observe-only production boundary', () => {
   it('fails before synthesis delivery when the configured identity keypair is mismatched', async () => {
     const token = 'w32-keypair-mismatch';
-    const baseMs = Date.parse('2026-09-05T20:00:00.000Z');
+    const baseMs = Math.floor(Date.now() / 1000) * 1000;
     const project = createTempProject();
     const privateIdentity = generateIdentityKeyPair();
     const publicIdentity = generateIdentityKeyPair();
@@ -236,7 +258,7 @@ describe('window run liveness observe-only production boundary', () => {
 
   it('computes shadow transitions while leaving every legacy active surface byte-identical', async () => {
     const token = 'w32-dryrun-e2e';
-    const nowMs = Date.parse('2026-09-05T20:00:00.000Z');
+    const nowMs = Math.floor(Date.now() / 1000) * 1000;
     const project = createTempProject();
     const sessions = createMockSessionManager();
     const transcript = path.join(project.stateDir, 'dryrun-session.jsonl');

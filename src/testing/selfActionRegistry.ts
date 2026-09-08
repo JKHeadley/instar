@@ -288,6 +288,49 @@ const livenessHeartbeat: SelfActionController = {
 };
 
 /**
+ * promise-beacon-internal-cadence — a DECLARED Eternal Sentinel for the
+ * output-disabled bookkeeping heartbeat. The real controller persists
+ * `lastHeartbeatAt` and schedules from that durable anchor through the
+ * configured cadence clamped to a 60s minimum. Quiet hours and the user-output
+ * LLM budget do not govern this internal write; ownership still does.
+ */
+const promiseBeaconInternalCadence: SelfActionController = {
+  id: 'promise-beacon-internal-cadence',
+  actionVerb: 'heartbeat-refresh',
+  models: 'src/monitoring/PromiseBeacon.ts (output-disabled lastHeartbeatAt refresh + clampCadence minimum)',
+  modelsPath: 'src/monitoring/PromiseBeacon.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makePromiseBeaconInternalCadenceLoop(f, sink),
+  },
+  delegatedGiveUp: 'the hard minCadenceMs floor (60s by default) — durable refreshes cannot exceed elapsed/minCadenceMs',
+  boundK: Number.POSITIVE_INFINITY,
+  perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 20,
+  tickMs: 30_000,
+  eternalSentinel: { reason: 'constant-cost durable internal liveness refresh', rateFloorMs: 60_000 },
+  makeUnderPressure: (f, sink) => makePromiseBeaconInternalCadenceLoop(f, sink),
+};
+
+function makePromiseBeaconInternalCadenceLoop(
+  f: PressureFixture,
+  sink: ActionSink,
+): { tick(): void } {
+  const LAST_AT = 'promise-beacon-internal-cadence:last-at';
+  const RATE_FLOOR_MS = 60_000;
+  return {
+    tick() {
+      sink.considered += 1;
+      const lastAt = (f.durableState.get(LAST_AT) as number | undefined) ?? Number.NEGATIVE_INFINITY;
+      if (f.clock.nowMs() - lastAt < RATE_FLOOR_MS) return;
+      sink.emit({ verb: 'heartbeat-refresh', target: 'commitment-liveness' });
+      sink.emitTimesMs.push(f.clock.nowMs());
+      f.durableState.set(LAST_AT, f.clock.nowMs());
+    },
+  };
+}
+
+/**
  * external-hog-kill-breaker — the External-Hog sentinel's respawn brake
  * (CMT-1901, docs/specs/external-hog-zombie-autokill-sentinel.md §6 — the
  * #863 reaper-kill-loop shape: 17,503 identical requests is the ancestor
@@ -1330,34 +1373,35 @@ function makeTelegramBrowserCanaryPressure(f: PressureFixture, sink: ActionSink)
  * Actual single-flight, cancellation and cleanup latches are separately tested
  * against the production classes in telegram-origin-canary-scheduling.test.ts.
  * This rate model does not prove those behaviors or native/provider execution.
- * Both startup probes recur on reconstruction: there is NO durable restart
- * count or global rate guarantee, and the eternal ratchet does not claim one.
+ * Each reconstruction waits 60s before starting automatic work. No durable
+ * count is needed: closing/restarting can only postpone the next automatic run.
+ * Explicit one-shot run() calls are outside this automatic-controller model.
  */
 const telegramOriginOwnedDetectorCanary: SelfActionController = {
   id: 'telegram-origin-owned-detector-canary', actionVerb: 'retry-owned-detector-canary-cycle',
-  models: 'OriginDetectorCanary automatic start cycle: <=2 sequential workers/run, cleanup-failure latch, >=60s completion-relative recurrence within one instance; fresh startup probe on every boot.',
+  models: 'OriginDetectorCanary automatic start cycle: <=2 sequential workers/run, cleanup-failure latch, 60s startup wait on every boot and >=60s completion-relative recurrence.',
   modelsPath: 'src/messaging/telegram-origin/OriginDetectorCanary.ts',
   delegatedGiveUp: 'The instance closes or latches on unverified cleanup; each run has at most two timed worker attempts. Successful cleanup permits the next completion-relative cycle; restart resets this local state.',
   boundK: Number.POSITIVE_INFINITY, perTargetBoundK: Number.POSITIVE_INFINITY,
   ticks: 240, tickMs: 1_000,
-  eternalSentinel: { reason: 'Fixed owned-fixture diagnostic work, without transport authority; the 60s minimum applies only between completed automatic cycles within one surviving instance.', rateFloorMs: 60_000 },
+  eternalSentinel: { reason: 'Fixed owned-fixture diagnostic work, without transport authority; every boot waits 60s before its first automatic cycle, then recurrence waits at least 60s after completion.', rateFloorMs: 60_000 },
   restartPosture: { pressureSurvives: true, restartUnderPressure: makeOriginCanaryCyclePressure },
   makeUnderPressure: makeOriginCanaryCyclePressure,
 };
 const telegramOriginNativeModelCanary: SelfActionController = {
   id: 'telegram-origin-native-model-canary', actionVerb: 'retry-native-model-canary-cycle',
-  models: 'OriginNativeCanaryLane automatic start cycle: <=1 isolated adapter/run, cleanup-failure latch, >=60s completion-relative recurrence within one instance; fresh startup probe on every boot.',
+  models: 'OriginNativeCanaryLane automatic start cycle: <=1 isolated adapter/run, cleanup-failure latch, 60s startup wait on every boot and >=60s completion-relative recurrence.',
   modelsPath: 'src/messaging/telegram-origin/OriginNativeCanaryLane.ts',
   delegatedGiveUp: 'Close cancels the adapter and retains its slot until cleanup; cleanup failure latches this instance. One adapter invocation/run with a 30s cancellation deadline; restart resets local state.',
   boundK: Number.POSITIVE_INFINITY, perTargetBoundK: Number.POSITIVE_INFINITY,
   ticks: 240, tickMs: 1_000,
-  eternalSentinel: { reason: 'Fixed two-turn native-format diagnostic with only a loopback fixture provider; the 60s minimum applies only within one surviving instance and does not verify real provider execution.', rateFloorMs: 60_000 },
+  eternalSentinel: { reason: 'Fixed two-turn native-format diagnostic with only a loopback fixture provider; a 60s startup wait plus completion-relative recurrence preserves the automatic floor across restarts; no real provider execution is certified.', rateFloorMs: 60_000 },
   restartPosture: { pressureSurvives: true, restartUnderPressure: makeOriginCanaryCyclePressure },
   makeUnderPressure: makeOriginCanaryCyclePressure,
 };
 function makeOriginCanaryCyclePressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
-  // Deliberately fresh on reconstruction: no invented durable cadence state.
-  let nextCycleAt = Number.NEGATIVE_INFINITY;
+  // The production classes schedule this same startup delay on each start().
+  let nextCycleAt = f.clock.nowMs() + 60_000;
   return { tick() {
     sink.considered++;
     if (f.clock.nowMs() < nextCycleAt) return;
@@ -1385,6 +1429,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   ageKillBackoff,
   promiseBeaconNotify,
   livenessHeartbeat,
+  promiseBeaconInternalCadence,
   externalHogKillBreaker,
   meteredReserveExpirySweep,
   jobFailureAlertDelivery,

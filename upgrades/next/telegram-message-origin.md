@@ -35,6 +35,8 @@ not be safely recorded. Delivery is paused while recording is unavailable."
 - Separate source and detector health, with bounded disposable config checks and
   an isolated Codex native-format canary. A local test provider verifies record
   parsing, not real-provider execution; unsupported harnesses remain explicit.
+  Automatic checks wait 60 seconds after startup or restart, then recur after
+  completion; pending diagnostic health during that first minute is expected.
 - Authenticated origin history and delivery status, with explicit missing-peer coverage.
 - Typed managed-browser sending that retains the agent-authorship signature.
 - Existing-agent script, configuration and instruction migration.

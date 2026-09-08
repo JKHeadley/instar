@@ -309,3 +309,7 @@ attempt/adapter outcomes; actual worker encryption and native parsing have their
 own detector/HTTP/E2E proofs. No synthetic registry counter stands in for these
 production scheduling assertions. A server restart may trigger another immediate
 probe, so this is no global restart-rate or lifetime-count certificate.
+
+## Release repair update — 2026-09-08
+
+Automatic owned and native canaries now wait 60 seconds after startup or reconstruction before the first cycle, retaining completion-relative recurrence thereafter. This supersedes earlier immediate-startup descriptions above. See `telegram-origin-release-repair.md` for the restart-ratchet failure, guard proof, independent review, upgrade awareness parity, and current validation limits. No deadline extension or release deployment is implied.

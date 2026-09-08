@@ -13,8 +13,8 @@ export interface OriginNativeCanaryResult {
 }
 export type OriginNativeCanary = (input: { signal: AbortSignal; timeoutMs: number }) => Promise<OriginNativeCanaryResult>;
 /** @self-action-controller: telegram-origin-native-model-canary
- * Automatic diagnostic cycles recur after completion; restart creates a fresh
- * startup probe. This is not a durable cross-restart rate or count budget. */
+ * Automatic diagnostic cycles recur after completion. Every reconstructed
+ * instance must first wait 60s, so repeated boots cannot accelerate the probes. */
 export class OriginNativeCanaryLane {
   private pending: Promise<void> | null = null;
   private controller?: AbortController;
@@ -40,7 +40,9 @@ export class OriginNativeCanaryLane {
       await this.run();
       if (!this.closed) { this.timer = setTimeout(() => { this.timer = undefined; void cycle(); }, this.intervalMs); this.timer.unref(); }
     };
-    void cycle();
+    this.result = { ...this.result, reason: 'native-canary-startup-cooldown' };
+    this.timer = setTimeout(() => { this.timer = undefined; void cycle(); }, 60_000);
+    this.timer.unref();
   }
   run(): Promise<void> {
     if (this.closed || this.cleanupFailed || !this.runAdapter) return Promise.resolve();

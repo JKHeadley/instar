@@ -26,7 +26,9 @@ describe('owned detector known-state canary', () => {
     const settle = async () => { const deadline = performance.now() + 5000;
       while (canary.getHealth().state === 'running' && performance.now() < deadline) await new Promise(resolve => setImmediate(resolve));
       expect(canary.getHealth().state).toBe('pass'); };
-    canary.start(); await settle(); expect(run).toHaveBeenCalledOnce();
+    canary.start();
+    await vi.advanceTimersByTimeAsync(59_999); expect(run).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1); await settle(); expect(run).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(59_999); expect(run).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(1); await settle(); expect(run).toHaveBeenCalledTimes(2);
     await canary.close(); await vi.advanceTimersByTimeAsync(120_000); expect(run).toHaveBeenCalledTimes(2);

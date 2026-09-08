@@ -3,7 +3,7 @@ export function telegramOriginDashboardAwareness(): string {
 }
 
 export function telegramOriginDetectorAwareness(): string {
-  return 'Origin detector health: `GET /telegram/origins/status` includes `detectorHealth`, separating fresh source observations, fixed-input canary checks, native hook proof and current-model evidence. The owned config/vault/hub checks run at startup and hourly by default in disposable state; `messageOrigin.detectorCanary.intervalMs` accepts 60000 through 604800000. Successful checks grant no send or ownership permission. Reads do not refresh evidence timestamps; pending, failed, stale and unavailable states remain explicit. Native canary support is reported per harness; a hook proof or regression fixture does not prove model extraction. These diagnostics do not copy live credentials, change operator settings or send Telegram messages.\n';
+  return 'Origin detector health: `GET /telegram/origins/status` includes `detectorHealth`, separating fresh source observations, fixed-input canary checks, native hook proof and current-model evidence. Automatic owned and native canaries wait 60 seconds after every startup, then recur after completion (hourly by default); a restart restarts the wait, so pending health during that minute is expected. The owned checks use disposable state; `messageOrigin.detectorCanary.intervalMs` accepts 60000 through 604800000. Successful checks grant no send or ownership permission. Reads do not refresh evidence timestamps; pending, failed, stale and unavailable states remain explicit. Native canary support is reported per harness; a hook proof or regression fixture does not prove model extraction. These diagnostics do not copy live credentials, change operator settings or send Telegram messages.\n';
 }
 
 export function telegramOriginNoticeAwareness(): string {
@@ -51,4 +51,10 @@ Add \`?scope=pool\` to origin lists, individual-origin lookups or status to insp
 
 Setup completion uses the authenticated loopback endpoint \`POST /telegram/setup/greeting\` with \`{"agentName":"Echo","userName":"Justin","autonomy":"proactive"}\`. The server renders and records its fixed greeting for the configured Lifeline topic, then pins the confirmed message. It accepts no arbitrary text or destination. Setup clients use \`sendOriginSetupGreeting\` after the server is running.
 `;
+}
+
+/** Refresh only the known shipped wording; preserve operator additions. */
+export function refreshOriginCanaryStartupAwareness(content: string): string {
+  return content.replace(/^Origin detector health:[^\r\n]*$/gm, paragraph =>
+    paragraph.replace('The owned config/vault/hub checks run at startup and hourly by default in disposable state;', 'Automatic owned and native canaries wait 60 seconds after every startup, then recur after completion (hourly by default); a restart restarts the wait, so pending health during that minute is expected. The owned checks use disposable state;'));
 }

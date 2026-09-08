@@ -53,6 +53,13 @@ describe('poll-ownership lease — wiring integrity', () => {
     expect(src).not.toMatch(/writePollOwnerLease/);
   });
 
+  it('feeds the fresh token-matched lifeline lease into the W32 delivery predicate', () => {
+    const src = read('src/server/AgentServer.ts');
+    expect(src).toMatch(/import \{ lifelinePollIsReachable as telegramLifelinePollIsReachable \} from '\.\.\/lifeline\/TelegramPollOwnerLease\.js'/);
+    expect(src).toMatch(/const lifelineDeliveryReachable = telegramBotToken !== null\s*&& Number\.isFinite\(sampledAtMs\)\s*&& telegramLifelinePollIsReachable\(options\.config\.stateDir, telegramBotToken, sampledAtMs\)/);
+    expect(src).toContain('deliveryReachable: adapterDeliveryReachable || lifelineDeliveryReachable');
+  });
+
   it('the lease lives under stateDir at a stable path', () => {
     const src = read('src/lifeline/TelegramPollOwnerLease.ts');
     expect(src).toMatch(/telegram-poll-owner\.json/);

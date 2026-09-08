@@ -1,0 +1,23 @@
+{
+  "ts": "2026-09-07T19:38:51.080Z",
+  "slug": "w32-lifeline-delivery-reachability",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 39,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/lifeline/TelegramPollOwnerLease.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 35,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

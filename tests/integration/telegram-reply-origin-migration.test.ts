@@ -36,6 +36,34 @@ function installed(content: string) {
 }
 
 describe('origin relay installed-upgrade parity', () => {
+  it('refreshes shipped startup wording in existing awareness across all frameworks without changing operator prose', () => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'origin-startup-awareness-'));
+    dirs.push(projectDir);
+    const files = ['CLAUDE.md', 'AGENTS.md', 'GEMINI.md'].map(name => path.join(projectDir, name));
+    const oldSentence = 'The owned config/vault/hub checks run at startup and hourly by default in disposable state;';
+    const operatorNote = `Operator historical note: ${oldSentence} keep this quotation.`;
+    for (const file of files) fs.writeFileSync(file,
+      `# Existing agent\n\n### Telegram message origin\n\nOrigin detector health: ${oldSentence} Operator addition: keep our diagnostic notes.\n\n${operatorNote}\n`);
+    const migrator = new PostUpdateMigrator({ projectDir, stateDir: path.join(projectDir, '.instar'),
+      port: 4042, hasTelegram: true, projectName: 'fixture' });
+    const migrate = () => {
+      const result = { upgraded: [] as string[], skipped: [] as string[], errors: [] as string[] };
+      (migrator as unknown as { migrateClaudeMd(output: typeof result): void }).migrateClaudeMd(result);
+      (migrator as unknown as { migrateFrameworkShadowCapabilities(output: typeof result): void }).migrateFrameworkShadowCapabilities(result);
+      expect(result.errors).toEqual([]);
+      return files.map(file => fs.readFileSync(file, 'utf8'));
+    };
+    const first = migrate();
+    for (const content of first) {
+      expect(content).toContain('Automatic owned and native canaries wait 60 seconds after every startup');
+      expect(content).toContain('a restart restarts the wait');
+      expect(content).toContain('Operator addition: keep our diagnostic notes.');
+      expect(content).toContain(operatorNote);
+      expect(content.split('Origin detector health:')).toHaveLength(2);
+    }
+    expect(migrate()).toEqual(first);
+  });
+
   it('adds rollout certification guidance to an existing origin section once, preserving operator notes', () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'origin-awareness-migration-'));
     dirs.push(projectDir);

@@ -19,7 +19,8 @@
  *  - Session-epoch check: if the Claude Code session UUID at declaration
  *    no longer matches the live session, transition to `violated` with
  *    reason `session-lost`.
- *  - Quiet hours + daily spend cap → `beaconSuppressed` (non-terminal).
+ *  - Quiet hours + daily spend cap suppress opted-in human output; internal
+ *    output-disabled follow-through remains owner-gated and cadence-bounded.
  *  - Shares the LlmQueue and ProxyCoordinator with PresenceProxy so the
  *    two monitors can't double-post.
  *
@@ -47,6 +48,7 @@ import { DegradationReporter } from './DegradationReporter.js';
 
 /* @self-action-controller: promise-beacon-notify */
 /* @self-action-controller: liveness-heartbeat */
+/* @self-action-controller: promise-beacon-internal-cadence */
 // Unified self-action backpressure (Increment B, OBSERVE-ONLY): this file
 // hosts TWO controllers (the registry's multi-marker precedent) — the progress
 // heartbeat (promise-beacon-notify) and the sparse liveness line
@@ -772,7 +774,11 @@ export class PromiseBeacon extends EventEmitter {
     }
 
     // ── Quiet hours ──
-    if (this.inQuietHours()) {
+    // Quiet hours govern human-facing output, not the internal follow-through
+    // heartbeat. When output is disabled the bookkeeping branch below must
+    // still advance `lastHeartbeatAt`; otherwise every runtime consumer sees a
+    // fabricated stale executor for the entire quiet-hours window.
+    if (this.userOutputEnabled() && this.inQuietHours()) {
       await this.suppress(c, 'quiet-hours');
       return;
     }
@@ -780,7 +786,7 @@ export class PromiseBeacon extends EventEmitter {
     // ── Daily spend cap (hard, via LlmQueue) ──
     // LlmQueue enforces this on enqueue; we additionally short-circuit here
     // so we emit beaconSuppressed (non-terminal) rather than fail-open.
-    if (this.config.llmQueue.getDailySpendCents() >= (this.config.maxDailyLlmSpendCents ?? 100)) {
+    if (this.userOutputEnabled() && this.config.llmQueue.getDailySpendCents() >= (this.config.maxDailyLlmSpendCents ?? 100)) {
       await this.suppress(c, 'daily-spend-cap');
       return;
     }

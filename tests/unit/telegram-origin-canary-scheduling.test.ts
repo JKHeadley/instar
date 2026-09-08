@@ -15,7 +15,9 @@ describe('origin canary automatic scheduling against production controller class
       await new Promise(resolve => setTimeout(resolve, 5_000)); return false;
     });
     try {
-      canary.start(); canary.start(); const pending = canary.run();
+      canary.start(); canary.start();
+      await vi.advanceTimersByTimeAsync(59_999); expect(attempt).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1); const pending = canary.run();
       expect(attempt).toHaveBeenCalledOnce();
       await vi.advanceTimersByTimeAsync(10_000); await pending;
       expect(attempt).toHaveBeenCalledTimes(2);
@@ -35,7 +37,9 @@ describe('origin canary automatic scheduling against production controller class
     });
     const lane = new OriginNativeCanaryLane(60_000, adapter);
     try {
-      lane.start(); lane.start(); const pending = lane.run();
+      lane.start(); lane.start();
+      await vi.advanceTimersByTimeAsync(59_999); expect(adapter).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1); const pending = lane.run();
       expect(adapter).toHaveBeenCalledOnce();
       await vi.advanceTimersByTimeAsync(5_000); await pending;
       await vi.advanceTimersByTimeAsync(59_999); expect(adapter).toHaveBeenCalledOnce();
@@ -46,30 +50,56 @@ describe('origin canary automatic scheduling against production controller class
     } finally { await lane.close(); }
   });
 
-  it('reconstruction really starts another native probe immediately, without a global restart floor', async () => {
+  it('repeated reconstruction cannot trigger automatic probes before a stable startup floor', async () => {
     vi.useFakeTimers();
     const adapter = vi.fn(async () => ({ state: 'failed' as const, cleanupVerified: true }));
-    for (let boot = 0; boot < 3; boot++) {
+    for (let boot = 0; boot < 240; boot++) {
       const lane = new OriginNativeCanaryLane(60_000, adapter);
-      lane.start(); await lane.run(); await lane.close();
+      lane.start(); await vi.advanceTimersByTimeAsync(1_000); await lane.close();
     }
-    expect(adapter).toHaveBeenCalledTimes(3);
+    expect(adapter).not.toHaveBeenCalled();
+    const stable = new OriginNativeCanaryLane(60_000, adapter);
+    try {
+      stable.start(); await vi.advanceTimersByTimeAsync(59_999);
+      expect(adapter).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1); expect(adapter).toHaveBeenCalledOnce();
+    } finally { await stable.close(); }
+  });
+  it('owned controller also cancels its startup probe on every early reconstruction', async () => {
+    vi.useFakeTimers();
+    const attempt = vi.fn(async () => true);
+    for (let boot = 0; boot < 240; boot++) {
+      const canary = new OriginDetectorCanary({ intervalMs: 60_000 });
+      vi.spyOn(canary as any, 'attempt').mockImplementation(attempt);
+      canary.start(); await vi.advanceTimersByTimeAsync(1_000); await canary.close();
+    }
+    expect(attempt).not.toHaveBeenCalled();
+    const stable = new OriginDetectorCanary({ intervalMs: 60_000 });
+    vi.spyOn(stable as any, 'attempt').mockImplementation(attempt);
+    try {
+      stable.start(); await vi.advanceTimersByTimeAsync(59_999);
+      expect(attempt).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1); expect(attempt).toHaveBeenCalledOnce();
+    } finally { await stable.close(); }
   });
 });
 
 describe('origin canary registry scope', () => {
-  it.each(['telegram-origin-owned-detector-canary', 'telegram-origin-native-model-canary'])('%s preserves the declared fresh-boot behavior without fabricated durable state', id => {
+  it.each(['telegram-origin-owned-detector-canary', 'telegram-origin-native-model-canary'])('%s models the real startup floor without fabricated durable state', id => {
     const controller = SELF_ACTION_CONTROLLERS.find(item => item.id === id)!;
-    const fixture: PressureFixture = { clock: { nowMs: () => 0, advance: () => {} }, durableState: new Map(),
+    let now = 0;
+    const fixture: PressureFixture = { clock: { nowMs: () => now, advance: ms => { now += ms; } }, durableState: new Map(),
       everyAccountHot: () => true, everySessionBusy: () => true, targetAlwaysRejects: () => true, staleQuotaReading: () => 100 };
     const sink = makeActionSink();
     expect(controller.boundK).toBe(Infinity);
     expect(controller.eternalSentinel?.rateFloorMs).toBe(60_000);
-    controller.makeUnderPressure(fixture, sink).tick();
+    const initial = controller.makeUnderPressure(fixture, sink);
+    initial.tick(); expect(sink.emitTimesMs).toEqual([]);
+    fixture.clock.advance(60_000); initial.tick();
     expect(controller.restartPosture.pressureSurvives).toBe(true);
     if (!controller.restartPosture.pressureSurvives) throw new Error('missing reconstruction contract');
     controller.restartPosture.restartUnderPressure(fixture, sink).tick();
-    expect(sink.emitTimesMs).toEqual([0, 0]);
+    expect(sink.emitTimesMs).toEqual([60_000]);
     expect(fixture.durableState.size).toBe(0);
   });
 });

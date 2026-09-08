@@ -18,17 +18,20 @@ it('wires the default configured native resolver and isolated adapter into fresh
     scope: 'native-cli-format-with-loopback-provider', harness: 'codex-cli', providerExecutionVerified: false,
     cliVersion: '0.153.4', cliDigest: 'a'.repeat(64), parserDigest: 'b'.repeat(64), isolationControls: [], twoTurnChecks: [], reason: 'fixture-proof', sampledAt: Date.now() });
   const boot = await bootTelegramOrigin(fixture.options); cleanup.push(boot.close);
+  expect(invoke).not.toHaveBeenCalled();
+  expect((boot.runtime.options.readDetectorHealth!() as any).canaries.nativeModels.reason).toBe('native-canary-startup-cooldown');
   await vi.waitFor(() => expect((boot.runtime.options.readDetectorHealth!() as any).canaries.nativeModels).toMatchObject({
-    state: 'passed', harness: 'codex-cli', scope: 'native-cli-format-with-loopback-provider', providerExecutionVerified: false, cliVersion: '0.153.4' }));
+    state: 'passed', harness: 'codex-cli', scope: 'native-cli-format-with-loopback-provider', providerExecutionVerified: false, cliVersion: '0.153.4' }), { timeout: 75_000 });
   expect(resolve).toHaveBeenCalledWith('/task-fixture/codex');
   expect(invoke).toHaveBeenCalledWith(expect.objectContaining({ cliPath: '/task-fixture/native-codex', timeoutMs: 30_000, signal: expect.any(AbortSignal) }));
   expect(boot.runtime.observer.getHealth().state).toBe('idle');
-});
+}, 90_000);
 it('starts real owned canaries in production Boot and recovers actual vault-source health independently of canary success', async () => {
   const fixture = await detectorFixture(workers); cleanup.push(fixture.cleanup);
   const boot = await fixture.boot(); cleanup.push(boot.close);
   const health = () => boot.runtime.options.readDetectorHealth!() as any;
-  await vi.waitFor(() => expect(health().canaries.ownedContracts).toMatchObject({ state: 'pass', scope: 'owned-file-backed-secretstore-fixture', osKeychainVerified: false }), { timeout: 8000 });
+  expect(health().canaries.ownedContracts.state).toBe('pending');
+  await vi.waitFor(() => expect(health().canaries.ownedContracts).toMatchObject({ state: 'pass', scope: 'owned-file-backed-secretstore-fixture', osKeychainVerified: false }), { timeout: 75_000 });
   await vi.waitFor(() => expect(health().sources).toMatchObject({ config: { state: 'healthy' }, noticePolicy: { state: 'healthy' } }), { timeout: 8000 });
   expect(health().canaries.nativeModels.state).toBe('unavailable');
   const original = await readFile(fixture.configPath, 'utf8');
@@ -39,7 +42,7 @@ it('starts real owned canaries in production Boot and recovers actual vault-sour
   await writeFile(fixture.configPath, original);
   await vi.waitFor(() => expect(health().sources.config.state).toBe('healthy'), { timeout: 8000 });
   await boot.close(); expect(health().sources.config.state).toBe('closed'); expect(health().canaries.ownedContracts.state).toBe('closed');
-});
+}, 90_000);
 it('closes actual runtime workers, source watchers and owner socket when profile enrollment fails before successful boot', async () => {
   const fixture = await detectorFixture(workers); cleanup.push(fixture.cleanup);
   await writeFile(path.join(fixture.stateDir, 'state/playwright-profiles.json'), '{malformed');

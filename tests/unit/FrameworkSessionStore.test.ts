@@ -61,6 +61,36 @@ describe('FrameworkSessionStore', () => {
     expect(p).toBe(path.join('/home/u', '.claude', 'projects', '-p', 's1.jsonl'));
   });
 
+  it('claude-code: a live configHome routes the transcript under <configHome>/projects (pool-routed session)', () => {
+    const p = resolveFrameworkTranscriptPath({
+      framework: 'claude-code',
+      sessionId: 's1',
+      projectDir: '/Users/justin/.instar/agents/echo',
+      homeDir: '/home/u',
+      configHome: '/home/u/.claude-followme-pool-a',
+    });
+    expect(p).toBe(path.join('/home/u/.claude-followme-pool-a', 'projects', '-Users-justin--instar-agents-echo', 's1.jsonl'));
+  });
+
+  it('claude-code: rootOverride still wins over configHome, and a blank configHome falls back to the default home', () => {
+    expect(
+      resolveFrameworkTranscriptPath({ framework: 'claude-code', sessionId: 's1', projectDir: '/p', homeDir: '/home/u', configHome: '/pool', rootOverride: '/root' }),
+    ).toBe('/root/-p/s1.jsonl');
+    expect(
+      resolveFrameworkTranscriptPath({ framework: 'claude-code', sessionId: 's1', projectDir: '/p', homeDir: '/home/u', configHome: '   ' }),
+    ).toBe(path.join('/home/u', '.claude', 'projects', '-p', 's1.jsonl'));
+  });
+
+  it('codex-cli: ignores configHome (it is a Claude-only layout fact)', () => {
+    const root = path.join(tmp, 'sessions');
+    fs.mkdirSync(path.join(root, '2026', '09', '07'), { recursive: true });
+    const file = path.join(root, '2026', '09', '07', 'rollout-2026-09-07T00-00-00-abc.jsonl');
+    fs.writeFileSync(file, '');
+    expect(
+      resolveFrameworkTranscriptPath({ framework: 'codex-cli', sessionId: 'abc', projectDir: '/p', rootOverride: root, configHome: '/pool' }),
+    ).toBe(file);
+  });
+
   it('codex-cli: globs sessions/YYYY/MM/DD/rollout-*-<uuid>.jsonl', () => {
     const uuid = '019e2dcb-61d1-7172-a68c-da60f529db54';
     const dayDir = path.join(tmp, 'sessions', '2026', '05', '15');

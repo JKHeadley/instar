@@ -8,7 +8,28 @@ its full-suite run; all subsequent implementation is in the completion worktree.
 enrollment or authenticated browser operation. The approved spec remains the
 acceptance authority. No activation or complete sender coverage is claimed.
 
-## Current validation snapshot, 2026-09-07 00:18 PDT
+## Release repair validation, 2026-09-08
+
+Merged main v1.3.1229 into the completion worktree and repaired the host-binary
+triage fixture plus automatic canary restart bursts. Both automatic canaries now
+wait 60 seconds after startup or reconstruction before their first cycle, then
+recur after completion. Existing-agent awareness is refreshed idempotently.
+Justin approved exactly 36 deadline extensions to September 14; an independent
+date-only family review refreshed the three affected content-bound audit records
+without changing any coverage floor or claiming the unfinished guards exist.
+
+Final `npm run test:all` exited 0 with zero failures: 51,762 aggregate tests,
+4,181 integration tests, and 3,229 E2E tests passed. Counts overlap across stages;
+existing skipped/TODO tests remain explicit. Build and lint passed. See
+`upgrades/side-effects/telegram-origin-release-repair.md` for exact counts, the
+full-log hash, independent reviews and failed/stopped attempt history.
+
+The older fingerprints and runtime trials below remain historical evidence for
+their original source. They are not silently rebound to the repaired source.
+Physical cross-machine proof and signed complete release certification remain
+unfinished; a package release does not certify full fleet activation.
+
+## Historical validation snapshot, 2026-09-07 00:18 PDT
 
 Build13 and lint13 pass. The staged migration-consumer, Rule 3, migration-protection
 and E2E-pairing checks pass. The final guard batch passes 176 tests across four
