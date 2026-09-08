@@ -121,7 +121,9 @@ describe('production bootstrap outage authority separation', () => {
   it.each(['123:rotated-fixture', '456:rotated-fixture'])('revokes the old runtime after a vault token rotation', async nextToken => {
     const h = await boot(false, true, true);
     new SecretStore({ stateDir: h.stateDir, forceFileKey: true }).set('messaging.0.config.token', nextToken);
-    await vi.waitFor(() => expect(h.runtime.options.getAlertPolicy('operator-attention-hub')).toBeNull());
+    // File-watch delivery is asynchronous; allow the production five-second
+    // refresh plus its bounded two-second source read to observe the rotation.
+    await vi.waitFor(() => expect(h.runtime.options.getAlertPolicy('operator-attention-hub')).toBeNull(), { timeout: 7500 });
     h.runtime.notifier.requestHoldNotice('operator-attention-hub');
     await vi.waitFor(() => expect(h.runtime.notifier.getState('operator-attention-hub').notificationOutcome).toBe('suppressed'));
     await expect(telegramFetch('https://api.telegram.org/bot123:notice-fixture/sendMessage', { method: 'POST',

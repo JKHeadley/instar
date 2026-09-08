@@ -4,7 +4,7 @@
 User request in Telegram topic69507 on 2026-09-08: omit unknown fields for automation. Tier1 presentation correction in OriginPresentation.ts. Fresh isolated worktree from origin/main0a71ebb88, package1.3.1230, remote JKHeadley/instar. This changes no block/allow authority; signal-vs-authority does not apply to this display projection. Rollback is a patch reverting the formatter.
 
 ## 1. Over-block
-No delivery permission or admission changes. Session unknown labels and existing label validation remain.
+No delivery permission or admission changes. The notice-policy test wait matches the existing refresh/read bounds; it still requires revoked authority, suppressed notification and zero wire calls. Session unknown labels and existing label validation remain.
 
 ## 2. Under-block
 No new bypass. Missing evidence stays unknown in the durable record; omission is display-only and does not claim an observation.
@@ -31,7 +31,7 @@ Replicated behavior through the normal installed package update on each machine;
 Revert formatter in a patch release. No data migration or agent state repair; old records are not rewritten.
 
 ## Validation
-Two regression cases failed against the old formatter (unknown harness/model placeholders). Build passes. Focused formatter and runtime lifecycle suite: 33 tests passed. Full repository validation is running; release remains gated on its result.
+Two regression cases failed against the old formatter (unknown harness/model placeholders). Build passes. Focused formatter and runtime lifecycle suite: 33 tests passed. The aggregate run exposed two vault-rotation test failures: the default one-second wait ended before the production five-second refresh. Both reproduced alone. The test now allows the five-second refresh plus the bounded two-second source read (7.5-second deadline); both pass in about5.6seconds with unchanged runtime checks. Full repository validation continues; release remains gated on resolving every failure.
 
 ## Second-pass review
 Not required: this presentation-only change touches no block/allow decisions, session lifecycle, recovery, trust or guard.
