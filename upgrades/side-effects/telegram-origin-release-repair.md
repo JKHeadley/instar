@@ -129,3 +129,47 @@ previous head. No merge or deployment is claimed.
 Independent prerequisite-chain addendum (`review_canary_repair`): concur after correcting one stale unit-shard statement. CI unit shards use `vitest.push.config.ts`, whose global setup compiles dist; the E2E job now builds its separate checkout explicitly. The revised Slack and standards-lifecycle comments accurately distinguish current prerequisites from the historical pnpm-only failure. Inspected `resolveLintCommand()` prefers usable npm and selects `npm run lint`; CLI help/error and Slack process-survival checks invoke Node directly. No additional pnpm installation is required. The detached-checkout reproduction is accurately reported as local evidence, with new-head CI and operator review still required. No runtime logic or test assertions changed; this addendum is based on source/workflow inspection and a clean whitespace check, not an additional test run.
 
 Additional prerequisite checks passed 8/8: npm-first resolver boundaries and real compiled Slack error-containment subprocesses (`/tmp/echo-2010-ci-prereq-extra.log`). Review corrected the comment about unit shards: their global setup already builds dist; the missing build was specifically the standalone E2E job.
+
+### Independent E2E history prerequisite review
+
+**Concur with the proposed prerequisite repair.** Reviewer: `review_canary_repair`. After the build prerequisite was repaired, the compiled preflight E2E reached `npm run lint`. That chain includes `lint-deferral-carrier-resolvable.mjs --staged --enforce`, whose unstaged CI path requires a merge base against `origin/main` or `main`; inability to find either is explicitly an exit-1 unknown-scope result. The failing CI log contains those missing-reference errors. The implementing agent additionally reproduced the direct lint's missing-ref failure and observed lint failure with discoverability passing in a shallow-clone CLI run. An additional host-ledger failure in that direct CLI probe was not evidence about the E2E test, which supplies its own isolated ledger.
+
+Adding `fetch-depth: 0` to the E2E checkout supplies the history prerequisite already declared by the lint and unit jobs. Independent YAML comparison verified this is the only semantic workflow change; whitespace verification passed. It preserves the actual diff-scoped ratchet, existing build/test steps and all failure policies. The cost is fetching full history for the E2E job; it introduces no deployed runtime or migration change. This review certifies the prerequisite chain by inspection and the stated failure reproduction, not a successful post-fix CLI or CI run. A faithful after-probe requires both complete history from a non-shallow origin and the test's isolated host ledger. Post-fix validation and required operator review must still pass before release.
+
+## E2E history prerequisite — 2026-09-08
+
+CI on `758c59a15` passed all eight unit jobs, build, type checking and integration
+(4,174 passed, 19 skipped). E2E passed 3,219 tests with one failure in the compiled
+preflight check; the earlier isolated registry subprocess passed after the build
+prerequisite was supplied. Log: `/tmp/echo-2010-newhead-e2e.log`.
+
+The E2E checkout was still shallow. Compiled preflight runs the real lint chain,
+whose deferral-carrier ratchet requires `origin/main` and a merge base to inspect
+the PR diff when nothing is staged. A depth-one clone reproduced its exit 1 with
+`no-merge-base`, matching CI's missing `origin/main`/`main` errors. The existing
+type-check and unit jobs already fetch full history. E2E now uses the same
+`fetch-depth: 0` prerequisite; no runtime code, assertion, scope rule or failure
+policy is changed.
+
+This is job-local CI checkout configuration. It introduces no deployed state,
+agent migration, messaging authority or peer coupling. Its cost is fetching
+additional history; reverting the setting restores the insufficient-history
+failure. The check remains able to refuse uninspectable changes. A source clone
+that is itself shallow cannot supply the full history; the reproduction therefore
+fetches it from the actual GitHub repository. Direct CLI trials that accidentally
+used the host's fixture-contaminated ledger are diagnostic only; the decisive
+comparison uses the unchanged E2E test and its existing isolated ledger.
+
+Independent final evidence review (`review_canary_repair`): **concur**. Read `/tmp/echo-2010-exact-shallow-preflight.log` (unchanged preflight E2E: 1 failed, missing `origin/main`/`main`) and `/tmp/echo-2010-exact-full-preflight.log` (same test: 1 passed). Independently inspected both clones: each is at `758c59a1520233bd0a869660297c64905d0defdf`, their test-file SHA256 values match, and their compiled CLI SHA256 values match. The failing clone reports shallow=true and cannot resolve `origin/main`; the passing clone reports shallow=false, resolves merge base `a36079dc285265a4b3186a51aec3948cebbddb5d`, and has a clean working tree. The shallow fixture intentionally contains an already-created untracked `dist` symlink pointing to the full clone's identical compiled artifacts; that fixture setup is not a test-created mutation and does not establish a clean-checkout assertion for the shallow fixture. These probes support the history-prerequisite fix with the actual E2E test and its isolated ledger, superseding the earlier diagnostic CLI trials. This is local failure/pass evidence, not a claim that new-head GitHub checks or operator review have completed.
+
+The unchanged `tests/e2e/dev-preflight-cli.test.ts`, run with `CI=true` and its
+existing isolated ledger, failed 1/1 in a depth-one clone with the same missing
+`origin/main`/`main` errors, then passed 1/1 in the complete-history checkout
+(`git rev-parse --is-shallow-repository` = false). Logs:
+`/tmp/echo-2010-exact-shallow-preflight.log` and
+`/tmp/echo-2010-exact-full-preflight.log`. Both used identical compiled source.
+The shallow fixture intentionally had a pre-existing untracked dist symlink;
+that is fixture setup, not a claim of clean-tree proof. The full-history checkout
+used its real built dist and remained clean after the test. The correction adds
+only checkout configuration and this review record; the earlier full local suite
+passed the unchanged runtime/assertions. New-head CI remains required.

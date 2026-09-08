@@ -350,6 +350,10 @@ jobs:
     needs: unit
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The compiled preflight E2E runs lint, whose deferral-carrier ratchet
+          # needs origin/main and its merge base to inspect the actual PR diff.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 20
