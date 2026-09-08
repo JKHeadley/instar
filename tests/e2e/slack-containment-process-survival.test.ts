@@ -20,14 +20,10 @@ import path from 'node:path';
 const POLICY_PATH = path.resolve(__dirname, '../../dist/core/uncaughtExceptionPolicy.js');
 
 // This E2E exercises the BUILT artifact (closest to production), so it needs a
-// fresh dist. Mirror the repo convention (tests/e2e/dev-preflight-cli.test.ts):
-// SKIP when dist is absent rather than building it — a test must never run
-// `npm run build` as a side-effect. The unit-test CI shards do NOT build dist
-// (only `npm ci` + `test:push`), and a build here would materialize dist for
-// every OTHER dist-gated test sharing the shard (e.g. dev-preflight, which then
-// runs `pnpm` and fails on runners without it). The build happens before push
-// locally, so this runs there; CI coverage of the policy is the in-process
-// process-level-error-handler unit tests.
+// fresh dist. Skip when dist is absent rather than building as a test side-effect.
+// Both the E2E CI job and unit-shard global setup build their checkout before tests.
+// The compiled dev-preflight CLI now prefers npm, so building no longer creates
+// a pnpm prerequisite for other compiled-code tests sharing the checkout.
 const DIST_BUILT = existsSync(POLICY_PATH);
 
 // The child registers the REAL handlers (real process.on, real process.exit)

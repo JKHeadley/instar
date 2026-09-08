@@ -1,0 +1,101 @@
+{
+  "build": "12",
+  "actualEntrypoints": [
+    "cli lifeline start",
+    "ServerSupervisor",
+    "cli server start --foreground --no-telegram"
+  ],
+  "externalTransport": "Telegram HTTP replaced by failclosed loopback fixture",
+  "credentials": "actual SecretStore encrypted fixture placeholders; no real Telegram credentials",
+  "controls": {
+    "required": 15,
+    "observed": 15,
+    "allPassed": true
+  },
+  "runtimeAssertionsPassed": true,
+  "originalOverallOutcome": "failed",
+  "cleanupConservativeProblem": [
+    "identity changed before kill 96769"
+  ],
+  "independentClosure": {
+    "at": "2026-09-07T04:12:39.452Z",
+    "survivors": [],
+    "sockets": [],
+    "privateSocket": false,
+    "portsFree": {
+      "mainPort": true,
+      "fixturePort": true
+    },
+    "registryEntries": 0,
+    "closed": true
+  },
+  "lease": {
+    "seconds": 135,
+    "samples": 27,
+    "epochs": [
+      1
+    ],
+    "allHeld": true
+  },
+  "recoveredOriginalOperations": [
+    {
+      "phase": "owner-outage-held",
+      "operationId": "49861030-626f-4201-9269-174535fa754b",
+      "receipts": [
+        {
+          "child_id": "56ca6194-ff04-4748-afe2-03869ffe82cc",
+          "state": "accepted",
+          "message_id": "104"
+        }
+      ]
+    },
+    {
+      "phase": "startup-operation-queued-without-receipt",
+      "operationId": "362d6469-451c-40e0-8d71-3ebb3a7e9275",
+      "receipts": [
+        {
+          "child_id": "ef01223f-8a0a-4236-8e0b-24418550a7b7",
+          "state": "accepted",
+          "message_id": "105"
+        }
+      ]
+    }
+  ],
+  "mainPids": [
+    {
+      "role": "main",
+      "generation": 1,
+      "pid": 48234
+    },
+    {
+      "role": "main",
+      "generation": 2,
+      "pid": 96767
+    }
+  ],
+  "ownerPids": [
+    {
+      "role": "lifeline",
+      "generation": 1,
+      "pid": 47748
+    },
+    {
+      "role": "lifeline",
+      "generation": 2,
+      "pid": 92210
+    }
+  ],
+  "targetTopicSendCount": 6,
+  "distDigests": {
+    "commands/server.js": "f0be82272703f3625b6bc354912a50a48a5997b569dd9e19a971f57f119db9a2",
+    "lifeline/TelegramLifeline.js": "4c60a975e2c9fb6f123158b133943ab588288e842459afd4ab9d247253d2605c",
+    "lifeline/ServerSupervisor.js": "142b81b631d7fae4445c5eaf80beb1727bf758ae7629491015c82f434d7cb44e",
+    "core/MultiMachineCoordinator.js": "e6c680c1da7f8cc10d5710fc53d409ad429cd8515122f2aa4bff3f8869f771b7",
+    "messaging/telegram-origin/TelegramOriginBoot.js": "220fe890624030c92725615b2880a9f9d489cb6b41130f0293d26726af208fee"
+  },
+  "sourceSummarySha256": "e703718b3390d7fb547ea491319d4162635da34412b9b397079e8fff5f85c18e",
+  "rawEvidenceSha256": "0207933f41a8dadc8d46624b9474ed6086321c6f41aa6e517e2c2b383ef643a8",
+  "interpretation": "Runtime assertions passed; original cleanup audit failed conservatively; independent final closure passed. The overall trial is not green. No cause for changed helper identity inferred.",
+  "independentReviewer": "origin_security_review",
+  "productionActivated": false
+}

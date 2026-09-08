@@ -44,6 +44,8 @@
  * the control that matters. Stated so the next reader can disagree with the judgment rather than
  * discover the gap.
  */
+import { dispatchOriginBotEgress } from './telegram-origin/OriginBotEgress.js';
+import type { OriginPreparedBotOperation } from './telegram-origin/TelegramOriginService.js';
 import {
   assertOutgoingPayloadVisible,
   emitInvisiblePayloadRefusal,
@@ -303,7 +305,12 @@ function collectParams(url: string, body: RequestInit['body']): {
     // First occurrence wins here too (pass 38 finding 1: the repair covered query and form encoding
     // and skipped this one, so multipart still resolved a repeated key to its LAST value).
     for (const [k, v] of body as unknown as Iterable<[string, unknown]>) {
-      if (typeof v === 'string' && !(k in params)) params[k] = v;
+      if (!(k in params)) {
+        if (typeof v === 'string') params[k] = v;
+        // A real captured Blob is visible media, with its bytes retained by the
+        // origin outbox before dispatch. Arbitrary objects cannot vouch for it.
+        else if (typeof Blob !== 'undefined' && v instanceof Blob) params[k] = `attach://${k}`;
+      }
     }
     return done(null);
   }
@@ -325,6 +332,8 @@ function collectParams(url: string, body: RequestInit['body']): {
 export async function telegramFetch(
   url: string | URL,
   init: RequestInit = {},
+  originNoticeCapability?: object,
+  originPreparedOperation?: OriginPreparedBotOperation,
 ): Promise<Response> {
   // The TYPE said `string`; the RUNTIME is what ships. Native `fetch` also accepts `URL` and `Request`
   // objects, and JavaScript callers are not bound by the signature — review pass 38 finding 3. A `URL`
@@ -352,16 +361,22 @@ export async function telegramFetch(
   const href = typeof url === 'string' ? url : url.href;
   // Read the body ONCE, and FREEZE it. Reading once was not enough (pass 41): for a string the value IS
   // the bytes, but `URLSearchParams` and `FormData` are captured by REFERENCE, so a caller could mutate
-  // the same object after the check and change what goes on the wire. Serialise those to a string here,
-  // so the value inspected below and the value sent at the end are the same immutable bytes.
+  // the same object after the check and change what goes on the wire. Snapshot
+  // the collection synchronously. Blob values are immutable; the origin outbox
+  // subsequently seals their bytes and the multipart encoding before dispatch.
   const rawBody = init.body;
   const checkedBody: RequestInit['body'] = rawBody instanceof URLSearchParams
     ? rawBody.toString()
     : (typeof FormData !== 'undefined' && rawBody instanceof FormData)
-      ? new URLSearchParams(
-        [...(rawBody as unknown as Iterable<[string, unknown]>)]
-          .filter((e): e is [string, string] => typeof e[1] === 'string'),
-      ).toString()
+      ? (() => {
+        const entries = [...rawBody.entries()];
+        if (entries.some(([, value]) => typeof value !== 'string')) {
+          const snapshot = new FormData();
+          for (const [key, value] of entries) snapshot.append(key, value);
+          return snapshot;
+        }
+        return new URLSearchParams(entries as Array<[string, string]>).toString();
+      })()
       : rawBody;
 
   let method = methodFromTelegramUrl(href);
@@ -484,5 +499,11 @@ export async function telegramFetch(
     (outgoing as Record<string, unknown>)[key] = (init as Record<string, unknown>)[key];
   }
   outgoing.body = checkedBody ?? null;
+  if (method !== null) {
+    const { params } = collectParams(href, checkedBody);
+    const recorded = await dispatchOriginBotEgress({ method, url: href, init: outgoing, params,
+      noticeCapability: originNoticeCapability, preparedOperation: originPreparedOperation }, (sealedUrl, sealedInit) => fetch(sealedUrl, sealedInit));
+    if (recorded) return recorded;
+  }
   return fetch(href, outgoing);
 }

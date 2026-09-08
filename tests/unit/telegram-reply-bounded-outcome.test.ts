@@ -32,10 +32,11 @@ function makeScriptHarness(prefix: string): { dir: string; binDir: string; insta
   };
 }
 
-function runWithFailingCurl(): Promise<{ status: number | null; stdout: string; stderr: string; curlArgs: string }> {
+function runWithFailingCurl(mode: 'transport' | '408' = 'transport'): Promise<{ status: number | null; stdout: string; stderr: string; curlArgs: string }> {
   const { dir, binDir, argsPath } = makeScriptHarness('telegram-bounded-outcome-');
   const curlStub = path.join(binDir, 'curl');
-  fs.writeFileSync(curlStub, `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsPath}'\nexit 28\n`);
+  const outcome = mode === 'transport' ? 'exit 28' : `printf '%s\\n%s\\n' '{"error":"Request timeout"}' '408'`;
+  fs.writeFileSync(curlStub, `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsPath}'\n${outcome}\n`);
   fs.chmodSync(curlStub, 0o755);
 
   return new Promise((resolve, reject) => {
@@ -47,6 +48,8 @@ function runWithFailingCurl(): Promise<{ status: number | null; stdout: string; 
         INSTAR_SENDER_CLASS: 'script',
         INSTAR_PORT: '',
         INSTAR_AUTH_TOKEN: '',
+        INSTAR_SESSION_NAME: '',
+        INSTAR_ORIGIN_TOKEN: '',
       },
     });
     let stdout = '';
@@ -114,6 +117,18 @@ describe('telegram-reply.sh bounded final outcome', () => {
     expect(result.stderr).toMatch(/AMBIGUOUS: Telegram relay transport ended/);
     expect(result.stderr).toMatch(/Do NOT retry blindly/);
     expect(result.stderr).toMatch(/Delivery id:/);
+  });
+
+  it.each(['transport', '408'] as const)('holds %s ambiguity without treating missing conversation text as permission to resend', async mode => {
+    const result = await runWithFailingCurl(mode);
+    const output = result.stdout + result.stderr;
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('Delivery id:');
+    expect(result.stderr).toContain('authoritative receipt/outbox state');
+    expect(result.stderr).toContain('Absence from the conversation is not proof of non-delivery');
+    expect(result.stdout).toContain('hold pending authoritative receipt/outbox resolution');
+    expect(output).not.toMatch(/if not, retry|shorter\/simpler|verify.*before retrying|verify.*before resending/i);
+    expect(output).not.toMatch(/^Sent \d+ chars/m);
   });
 
   it('preserves an underscore-bearing tone decision ref byte-for-byte in the documented client body', async () => {

@@ -131,6 +131,7 @@ export const INSTAR_MCP_PRETOOLUSE_HOOKS: ReadonlyArray<InstarSettingsHookEntry>
  * a marker-file stat, with zero HTTP unless this session is actually listed.
  */
 export const INSTAR_WILDCARD_PRETOOLUSE_HOOKS: ReadonlyArray<InstarSettingsHookEntry> = [
+  { type: 'command', command: `node ${PD}/.instar/hooks/instar/telegram-origin-guard.js`, blocking: true, timeout: 2000 },
   {
     type: 'command',
     command: `node ${PD}/.instar/hooks/instar/standdown-guard.js`,

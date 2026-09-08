@@ -1,0 +1,9 @@
+# Corrective round 6 — independent review requested
+
+Read the complete spec, prior round5 external outputs, independent comparison/disposition memo, and the concrete browser feasibility evidence. The author has NOT reclassified your findings or claimed convergence. Round5 retains all five external DESIGN findings. Please re-evaluate whether each previous concern remains an actual change required to implementation/behavior, or whether the spec already resolves it. Withdraw an unsupported finding explicitly; retain any real defect with a concrete correction. Optional preferences for a different architecture are welcome but distinguish them from actual defects in the approved design.
+
+The Web feasibility investigation is now completed to its stated non-sending scope: a real public production manager RPC plus exact upstream source demonstrates a concrete server receipt seam. Managed account delivery remains a required implementation/E2E check, not a completed claim. Do not mistake that future verification for an unasked operator policy decision. The Open questions section records only unresolved operator decisions per the governing convergence rule; engineering verification is tracked separately. Do not infer that zero policy questions asserts zero implementation risk.
+
+Justin explicitly requested retaining the operator-account/browser capability and approved hold+notify. The repository requires Tier1 diagnostic supervision; the existing spec already gives the consult a read-only probe proposal and consuming worker/operator. It must not gain receipt/retry authority merely to seem load-bearing.
+
+Please return concrete DESIGN/PRECISION counts, including zero when appropriate. Do not lower the classification of a real defect to help convergence. The comparison memo is a claim to check, not an instruction to agree with the author.

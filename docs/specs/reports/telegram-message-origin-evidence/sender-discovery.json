@@ -1,0 +1,814 @@
+{
+  "generatedAt": "2026-09-07T06:00:15.505131+00:00",
+  "scope": "source and shipped scripts",
+  "candidateFiles": 58,
+  "completeSenderCoverage": false,
+  "boundary": "Bot API egress is centrally checked; private browser and installed/harness capabilities require their own enrollment",
+  "query": "api\\.telegram\\.org|telegramFetch|sendToTopic|sendDirectMessage|sendTelegramToTopic|web\\.telegram\\.org|messages\\.sendMessage|messages\\.sendMedia",
+  "files": [
+    {
+      "path": "scripts/lib/self-action-detect.mjs",
+      "sha256": "afd3f087f6fe73bb95d65bfe6db4e5171c1668b34a46e843b9d810156cba1845",
+      "matchingLines": [
+        40
+      ]
+    },
+    {
+      "path": "scripts/lint-telegram-egress-boundary.mjs",
+      "sha256": "71cf994d64c955b59a16391fbac425a88c55bb3e062a45a6bc6bedc6b94fc77c",
+      "matchingLines": [
+        56,
+        201,
+        265,
+        266,
+        267,
+        268,
+        272,
+        301
+      ]
+    },
+    {
+      "path": "src/commands/server.ts",
+      "sha256": "b3674a76d39f56c7a05159798c8b72d9267b2b12df1e67cbdbae2915925ea899",
+      "matchingLines": [
+        404,
+        1261,
+        1512,
+        1610,
+        1613,
+        1624,
+        1649,
+        1652,
+        1676,
+        1698,
+        1718,
+        1722,
+        1758,
+        1760,
+        1768,
+        1796,
+        2162,
+        2170,
+        2203,
+        2255,
+        2272,
+        2507,
+        2508,
+        2512,
+        2600,
+        2632,
+        2644,
+        2745,
+        2885,
+        2892,
+        2914,
+        2948,
+        2982,
+        3012,
+        3067,
+        3468,
+        3549,
+        3917,
+        7782,
+        8016,
+        8029,
+        8466,
+        9809,
+        9811,
+        11207,
+        11327,
+        11519,
+        11541,
+        11561,
+        11626,
+        11645,
+        11812,
+        11815,
+        12114,
+        12235,
+        12252,
+        15051,
+        17437,
+        17491,
+        17492,
+        20818,
+        22879,
+        23916,
+        24722,
+        25536,
+        25815,
+        25824,
+        25829,
+        27392
+      ]
+    },
+    {
+      "path": "src/commands/setup-wizard/codex-driver.ts",
+      "sha256": "805951824be710047e255dcd16dc1e192f72dff80a21f8d6f6be591c430688ba",
+      "matchingLines": [
+        22,
+        615,
+        682,
+        729,
+        766,
+        768,
+        797,
+        815,
+        944,
+        1037,
+        1038,
+        1061,
+        1062
+      ]
+    },
+    {
+      "path": "src/commands/setup-wizard/gemini-driver.ts",
+      "sha256": "b696f300a34312130d18fb76cb15d26dc74ddd8118b9703e70920c2e0aa23c89",
+      "matchingLines": [
+        19,
+        507,
+        600,
+        601,
+        624,
+        625
+      ]
+    },
+    {
+      "path": "src/commands/setup.ts",
+      "sha256": "6ed6b0076f2aba634f0b0b06bb42aeb2fa7fd58b4ff5ec99fdc5b457e988877c",
+      "matchingLines": [
+        20,
+        2137
+      ]
+    },
+    {
+      "path": "src/commands/test-as-self.ts",
+      "sha256": "e53d0666c4a9e90626a798d49d7b9572dd0b13bd5f57cf7ab47886200979cf34",
+      "matchingLines": [
+        26,
+        118,
+        120,
+        134
+      ]
+    },
+    {
+      "path": "src/core/MentorVisibleEcho.ts",
+      "sha256": "fd7623a5224b24aba8fdfad275f50024c24bbf8e4b00c40fe7426b0a50dd26ef",
+      "matchingLines": [
+        64,
+        85
+      ]
+    },
+    {
+      "path": "src/core/OwnerDarkLadder.ts",
+      "sha256": "aeae3630584c2ca43293c54b9ead10987aea11609fb6fae08a019268f6efff9f",
+      "matchingLines": [
+        17,
+        69
+      ]
+    },
+    {
+      "path": "src/core/PostUpdateMigrator.ts",
+      "sha256": "bf828004126268bdd01e730788b605662273c69b91fd4ac4aa8311593196b940",
+      "matchingLines": [
+        8035
+      ]
+    },
+    {
+      "path": "src/core/ScopeAccretionRatifier.ts",
+      "sha256": "39bc9b137be445ae1bdad4dee54f30580fb90751e62de0ac662bcb104313dedb",
+      "matchingLines": [
+        154,
+        155,
+        211,
+        264
+      ]
+    },
+    {
+      "path": "src/core/SpendAlertDispatcher.ts",
+      "sha256": "d0beb35a70b63f88624c29a0bcb8fb79507bfb210a021aa2cac03efe3d624193",
+      "matchingLines": [
+        8
+      ]
+    },
+    {
+      "path": "src/core/SpendAlertResolver.ts",
+      "sha256": "c48cba8355779f74d0a7866aff7439c30a6d996b728ac7664d8f21a8fcf238a9",
+      "matchingLines": [
+        56,
+        159,
+        173
+      ]
+    },
+    {
+      "path": "src/core/TelegramRelay.ts",
+      "sha256": "026f291b6b7104a7c02dcfbae2983b2f2d1315b4e54fcd3961356dde59da45e2",
+      "matchingLines": [
+        7,
+        156
+      ]
+    },
+    {
+      "path": "src/core/TelegramSpendTopicChannel.ts",
+      "sha256": "d39b06b401791aeb1813da64ce652364118ed4a8a9f72d4694c6c89788491923",
+      "matchingLines": [
+        30,
+        69,
+        87,
+        111
+      ]
+    },
+    {
+      "path": "src/lifeline/TelegramLifeline.ts",
+      "sha256": "54e93833e93ca1f1ebda7dffac8703b02b4863602c22853e94d39e6585484a17",
+      "matchingLines": [
+        25,
+        93,
+        373,
+        381,
+        1335,
+        1336,
+        1348,
+        1349,
+        1362,
+        1363,
+        1379,
+        1380,
+        1768,
+        1891,
+        1924,
+        2029,
+        2188,
+        2207,
+        2280,
+        2894,
+        2897,
+        2952,
+        2972,
+        2981
+      ]
+    },
+    {
+      "path": "src/lifeline/droppedMessages.ts",
+      "sha256": "1608dbb5cd1079cad4fc08bf8a52ec1e09e738cfadf07bf0935bda64ffd0afcd",
+      "matchingLines": [
+        117,
+        122,
+        208,
+        210
+      ]
+    },
+    {
+      "path": "src/messaging/ColdStartFallbackReply.ts",
+      "sha256": "8e196a151a7da6788460a2acf500470f32ea55f78b287db4f48d153e21a851ff",
+      "matchingLines": [
+        9,
+        65,
+        68
+      ]
+    },
+    {
+      "path": "src/messaging/TelegramAdapter.ts",
+      "sha256": "9cd60f146f25505ede95f0baf91542f5d7fe61f173cdca4e008cbde5a56eba00",
+      "matchingLines": [
+        15,
+        638,
+        648,
+        650,
+        952,
+        954,
+        959,
+        962,
+        971,
+        976,
+        989,
+        991,
+        1000,
+        1005,
+        1010,
+        1018,
+        1022,
+        1030,
+        1034,
+        1041,
+        1043,
+        1047,
+        1056,
+        1060,
+        1064,
+        1067,
+        1070,
+        1084,
+        1094,
+        1097,
+        1107,
+        1110,
+        1121,
+        1124,
+        1332,
+        1406,
+        1545,
+        1551,
+        1558,
+        1922,
+        2036,
+        2377,
+        2398,
+        2409,
+        2419,
+        2426,
+        2432,
+        2437,
+        2447,
+        2950,
+        2978,
+        3040,
+        3044,
+        3118,
+        3139,
+        3168,
+        3172,
+        3222,
+        3227,
+        3391,
+        3393,
+        3398,
+        3401,
+        3410,
+        3416,
+        3432,
+        3434,
+        3455,
+        3468,
+        3470,
+        3483,
+        3491,
+        3493,
+        3510,
+        3516,
+        3518,
+        3527,
+        3534,
+        3539,
+        3547,
+        3553,
+        3558,
+        3566,
+        3571,
+        3579,
+        3584,
+        3593,
+        3595,
+        3599,
+        3608,
+        3613,
+        3619,
+        3622,
+        3625,
+        3639,
+        3646,
+        3651,
+        3659,
+        3671,
+        3674,
+        3684,
+        3687,
+        3700,
+        3703,
+        4225,
+        4313,
+        4414,
+        4488,
+        4515,
+        4565,
+        5036,
+        5046,
+        5051,
+        5130,
+        5191,
+        5264,
+        5334,
+        5348,
+        5760,
+        5790,
+        5815,
+        5816,
+        5827
+      ]
+    },
+    {
+      "path": "src/messaging/invisible-payload.ts",
+      "sha256": "caa877951bdef2f43c6189e492d17f8e027aa6171c34e1969bad7e9584808a1c",
+      "matchingLines": [
+        232,
+        235,
+        240
+      ]
+    },
+    {
+      "path": "src/messaging/shared/CrossPlatformAlerts.ts",
+      "sha256": "078b0cadaf2f351b7e8d81b4a2029b9281d024722e1f10b84bde052ea4358239",
+      "matchingLines": [
+        84
+      ]
+    },
+    {
+      "path": "src/messaging/telegram-egress.ts",
+      "sha256": "b9720f3bc202e634e21c9a666bf30d566430975dfdee0c899bac41e371e2b132",
+      "matchingLines": [
+        58,
+        62,
+        90,
+        332
+      ]
+    },
+    {
+      "path": "src/messaging/telegram-origin/BrowserTypes.ts",
+      "sha256": "3e638fa60ca6b7967083d8baccf21a64ea088c1b06c9b41ade3ffee70c76724b",
+      "matchingLines": [
+        4,
+        91
+      ]
+    },
+    {
+      "path": "src/messaging/telegram-origin/EnrolledMtprotoWorker.ts",
+      "sha256": "7fcdcc8787368aaaf812e6bd3567eaeb838312cb28d483b7db54c4e845043f1d",
+      "matchingLines": [
+        74
+      ]
+    },
+    {
+      "path": "src/messaging/telegram-origin/OriginBrowserExecutor.ts",
+      "sha256": "52c44487e9f0c405935d29628a7019fb72e993450da1fca1820d788ae7bb0f3b",
+      "matchingLines": [
+        95
+      ]
+    },
+    {
+      "path": "src/messaging/telegram-origin/OriginDeterministicSend.ts",
+      "sha256": "6b56692e4037f120a1c24bbb6e81fcbe5a2847995f30c26cf25f34cd4d7084cb",
+      "matchingLines": [
+        23,
+        25,
+        37,
+        39
+      ]
+    },
+    {
+      "path": "src/messaging/telegram-origin/OriginMesh.ts",
+      "sha256": "5233de5f8718245e51d54746f303966478daa6ec5a47a389546dfc9c841f18e6",
+      "matchingLines": [
+        10,
+        124
+      ]
+    },
+    {
+      "path": "src/messaging/telegram-origin/OriginTestProbe.ts",
+      "sha256": "aab8227de655b28c6fc6812fe2dbd5c49def2857991d7e42736368addad33928",
+      "matchingLines": [
+        6,
+        40
+      ]
+    },
+    {
+      "path": "src/messaging/telegram-origin/TelegramBrowserBroker.ts",
+      "sha256": "655c17c01c7ac14f8798173afa853411c33240c0b2c4791ad7da730efa252170",
+      "matchingLines": [
+        130,
+        135,
+        141
+      ]
+    },
+    {
+      "path": "src/messaging/telegram-origin/TelegramOriginOutageNotifier.ts",
+      "sha256": "5a3d85e56275db3b243c1be607f4c4029e328b17ede238093d6ebf2dd925ccde",
+      "matchingLines": [
+        50
+      ]
+    },
+    {
+      "path": "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+      "sha256": "2d7838930bfe9266175f984c56e15c2795427db89a96a2fd36b8e8289894bd49",
+      "matchingLines": [
+        13,
+        165,
+        344
+      ]
+    },
+    {
+      "path": "src/messaging/telegram-origin/TelegramWebKDriver.ts",
+      "sha256": "a2ca79026a316ef1f433a3454a648c0819461817046c5f8ede4e3d31c16e8740",
+      "matchingLines": [
+        23,
+        52,
+        60,
+        79,
+        85
+      ]
+    },
+    {
+      "path": "src/messaging/telegramSendSideComposition.ts",
+      "sha256": "db650145431180aaa915051f190f981e0cdd6cfcd3eaded8fd34f00e1b18c990",
+      "matchingLines": [
+        71,
+        72
+      ]
+    },
+    {
+      "path": "src/monitoring/BurnAlertDelivery.ts",
+      "sha256": "32c7d21e008c9d6d8763bd6df3bb8a0460f39c13d29dac95d571a703e39e2e09",
+      "matchingLines": [
+        27,
+        88,
+        154
+      ]
+    },
+    {
+      "path": "src/monitoring/GrowthDigestPublisher.ts",
+      "sha256": "95950bbe9f04147b6234b12082a80ad9b5aecc02bdd90b66fc3172a1d5b723e8",
+      "matchingLines": [
+        24
+      ]
+    },
+    {
+      "path": "src/monitoring/PresenceProxy.ts",
+      "sha256": "8e95c198ba4dec2bcd4261ed86e6635cfa51e56c685d305e451e57ee83e6e711",
+      "matchingLines": [
+        106
+      ]
+    },
+    {
+      "path": "src/monitoring/QuotaNotifier.ts",
+      "sha256": "812a8f3193311649da20746e09dafba11e4fb28de91ea5fb780c215644b9b4ae",
+      "matchingLines": [
+        44,
+        56,
+        129,
+        134
+      ]
+    },
+    {
+      "path": "src/monitoring/ReapNoticeDrain.ts",
+      "sha256": "65a17920148fcd8b464fcc4aa4d25215445f0fe929cbf3724c5b990add8f4881",
+      "matchingLines": [
+        20,
+        59,
+        179
+      ]
+    },
+    {
+      "path": "src/monitoring/SessionMonitor.ts",
+      "sha256": "3fb50c6c05ee7311fa7fd3724ba1ad9c9c3923c01897b111435ae76635d43d8e",
+      "matchingLines": [
+        66,
+        335,
+        420,
+        453
+      ]
+    },
+    {
+      "path": "src/monitoring/SessionRecovery.ts",
+      "sha256": "b84fab31cfadd15a046b242883bb60781f5897f785316fdf06c48b0a368de6ae",
+      "matchingLines": [
+        118
+      ]
+    },
+    {
+      "path": "src/monitoring/StallTriageNurse.ts",
+      "sha256": "be65fcfca5009e2b1e360deb7eb5e71f6664b1314c5a1b4e0824b11f920d0c1e",
+      "matchingLines": [
+        470,
+        791,
+        792,
+        797,
+        804,
+        811,
+        819,
+        826
+      ]
+    },
+    {
+      "path": "src/monitoring/StallTriageNurse.types.ts",
+      "sha256": "26bfa53f83a3bd55772350c2812dd7aff074cd99b543db90fa19b75d4bdbb812",
+      "matchingLines": [
+        98
+      ]
+    },
+    {
+      "path": "src/monitoring/TriageOrchestrator.ts",
+      "sha256": "a00260c3a4e60e8e826714e59ad9b5ca6486626051b7f1f461620ec7f67173ec",
+      "matchingLines": [
+        973,
+        974
+      ]
+    },
+    {
+      "path": "src/monitoring/machineCoherenceEffectsExecutor.ts",
+      "sha256": "227767608783e5605cc2d71995fb2be53b618f42cdbf02c821dd542c539fd8b7",
+      "matchingLines": [
+        24,
+        55,
+        58
+      ]
+    },
+    {
+      "path": "src/monitoring/probes/MessagingProbe.ts",
+      "sha256": "311e0e516fe3fdc6cceac2bf2e4e2dc6f5891ca02419a366afb2bd60161e5f10",
+      "matchingLines": [
+        81
+      ]
+    },
+    {
+      "path": "src/monitoring/ropeSinkRouter.ts",
+      "sha256": "d6fc3594cb09b91e07e77b4a494d34afeac818b9cb33a688db753a1a5ce70686",
+      "matchingLines": [
+        37,
+        70
+      ]
+    },
+    {
+      "path": "src/monitoring/sentinelConsolidatedSend.ts",
+      "sha256": "c77cbe89e4b3a71fc69b393d144bc8d56ecd33660f229f93949a184c14a92ca2",
+      "matchingLines": [
+        5,
+        22,
+        53,
+        86
+      ]
+    },
+    {
+      "path": "src/scaffold/templates.ts",
+      "sha256": "14434eddc37bf3b67828ae744edcaeff40221ca96382ca126bf6c871944592d8",
+      "matchingLines": [
+        443
+      ]
+    },
+    {
+      "path": "src/scheduler/JobScheduler.ts",
+      "sha256": "131d7204b60a474803c4c92b5669f25deff84adc1b16f9571e43ed850f80e344",
+      "matchingLines": [
+        1973,
+        1988,
+        2069,
+        2268,
+        2552
+      ]
+    },
+    {
+      "path": "src/server/AgentServer.ts",
+      "sha256": "12c952b6a7ce7f35f7f97e366b1c7473abc6096a90b6bd4247829a10a0735c7d",
+      "matchingLines": [
+        1812,
+        1813,
+        3386,
+        4100,
+        4159,
+        4164,
+        5253,
+        5769,
+        5775,
+        6081,
+        6084,
+        6766,
+        6767
+      ]
+    },
+    {
+      "path": "src/server/routes.ts",
+      "sha256": "1ed6463abb17a4f422f2bfdec93e170c43202bb4e9f0c9d43c74e55a2bc80907",
+      "matchingLines": [
+        16,
+        2336,
+        2339,
+        2789,
+        2797,
+        2801,
+        4160,
+        4189,
+        6785,
+        6820,
+        6822,
+        6905,
+        7678,
+        10752,
+        16238,
+        16243,
+        16398,
+        16641,
+        16939,
+        16996,
+        17037,
+        23217,
+        23732,
+        23744,
+        27117,
+        29580,
+        29595,
+        37329,
+        37336
+      ]
+    },
+    {
+      "path": "src/testing/selfActionRegistry.ts",
+      "sha256": "9a308abab21460e0e88cbf628c8f87f7f0a55b62569bf747895283d1a609fc06",
+      "matchingLines": [
+        717,
+        731
+      ]
+    },
+    {
+      "path": "src/threadline/A2ACheckInScheduler.ts",
+      "sha256": "05a43172f4c20cedac1d8ec66c241e8339b6e32dd54c86a2fb79e744b8587fe5",
+      "matchingLines": [
+        109
+      ]
+    },
+    {
+      "path": "src/threadline/CollaborationSurfacer.ts",
+      "sha256": "357e1e42f453bd727ecbdbb577d970a29e33ad924d8952b6db957c16c757d317",
+      "matchingLines": [
+        31,
+        118,
+        148,
+        191
+      ]
+    },
+    {
+      "path": "src/threadline/TelegramBridge.ts",
+      "sha256": "2b47369fa4dcf08d6153ccc514eefd2d8b21b8229e7de1401a1a6850b3b926e2",
+      "matchingLines": [
+        15,
+        60,
+        305
+      ]
+    },
+    {
+      "path": "src/threadline/TopicLinkageHandler.ts",
+      "sha256": "be717d112511c5e44dd87ffc11501071496ed1b40ba15b5b25f7239cb63b18ac",
+      "matchingLines": [
+        66,
+        481,
+        483
+      ]
+    },
+    {
+      "path": "src/threadline/hubCommands.ts",
+      "sha256": "db548288618a76a1744f8cc336605419d59c7164a6d342261b571c3e4497a3c9",
+      "matchingLines": [
+        35,
+        157
+      ]
+    },
+    {
+      "path": "src/tunnel/TunnelManager.ts",
+      "sha256": "5422bf6a2ce7ddcd8cd75a0f8b0b6689dce58721431d6f65193b5402a3d0e587",
+      "matchingLines": [
+        128,
+        448
+      ]
+    }
+  ],
+  "review": {
+    "completeRecordedEgressSourceReview": true,
+    "runtimeCompleteSenderCoverage": false,
+    "scope": "enabled source writer families; not fleet/native-runtime certification",
+    "conclusion": "No enabled unrecorded bot or typed-browser bypass found in reviewed source writer families. Deterministic producer identity corrections passed focused validation; full three-stage regression run12 passed.",
+    "deterministicProducerFamilies": [
+      "auto-updater",
+      "session-monitor",
+      "session-lifecycle",
+      "cold-start-fallback",
+      "respawn-collision",
+      "owner-dark-ladder",
+      "selected-telegram-lifeline-templates",
+      "quota-threshold-templates"
+    ],
+    "explicitUnknownProducerFamilies": [
+      "auto-dispatcher",
+      "growth-digest",
+      "reap-notifier",
+      "reap-notice-drain"
+    ],
+    "unknownPreservedFor": [
+      "terminal excerpts",
+      "generic notification batches",
+      "forwarded peer prose",
+      "mentor/collaboration echoes",
+      "supplied alert/effect text"
+    ],
+    "nonwriters": [
+      "classifiers and lint tools",
+      "validation/type declarations",
+      "migration and scaffold text",
+      "read-only Telegram probes",
+      "unused sender interfaces"
+    ],
+    "limitations": [
+      "source-only review does not certify installed harnesses or physical-peer rollout",
+      "no signed release certificate issued"
+    ]
+  },
+  "sourceFingerprint": "9111d69153983a33b9ad2b435f4131014059dcd021bdd7fb9bffe1c75f22dd4b",
+  "fingerprintedFiles": 5568,
+  "fingerprintBoundary": "Run12 fingerprint includes six test-only corrections and routing-fixture isolation; source/scripts discovery unchanged from build13."
+}

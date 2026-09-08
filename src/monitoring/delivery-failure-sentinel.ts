@@ -108,6 +108,8 @@ export interface SentinelConfig {
 }
 
 export interface SentinelDeps {
+  /** Origin children retain their exact plans and never enter legacy stampede condensation. */
+  recoverOrigin?: () => Promise<{ processed: number; recovered: number }>;
   store: PendingRelayStore;
   /** Path to .instar/config.json — used for whoami-cache mtime invalidation. */
   configPath: string;
@@ -175,8 +177,9 @@ export interface SentinelEvents {
 
 export class DeliveryFailureSentinel extends EventEmitter {
   private readonly cfg: Required<SentinelConfig>;
-  private readonly deps: Required<Omit<SentinelDeps, 'subscribeFailureEvents'>> & {
+  private readonly deps: Required<Omit<SentinelDeps, 'subscribeFailureEvents' | 'recoverOrigin'>> & {
     subscribeFailureEvents?: SentinelDeps['subscribeFailureEvents'];
+    recoverOrigin?: SentinelDeps['recoverOrigin'];
   };
   private watchdog: ReturnType<typeof setInterval> | null = null;
   private unsubscribe: (() => void) | null = null;
@@ -215,6 +218,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
       bootId: deps.bootId,
       toneGate: deps.toneGate,
       subscribeFailureEvents: deps.subscribeFailureEvents,
+      recoverOrigin: deps.recoverOrigin,
       now: deps.now ?? (() => Date.now()),
       postReply: deps.postReply ?? defaultPostReply,
       whoamiCache: deps.whoamiCache ?? new WhoamiCache(),
@@ -253,7 +257,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
 
     if (!this.restorePurged) {
       try {
-        this.purgeStaleRows();
+        if (!this.deps.recoverOrigin) this.purgeStaleRows();
       } catch (err) {
         console.warn('[delivery-sentinel] restore-purge raised:', err);
       }
@@ -340,6 +344,17 @@ export class DeliveryFailureSentinel extends EventEmitter {
     }
 
     const counters = { processed: 0, recovered: 0, escalated: 0 };
+    if (this.deps.recoverOrigin) {
+      try {
+        const origin = await this.deps.recoverOrigin();
+        counters.processed += origin.processed;
+        counters.recovered += origin.recovered;
+      } catch (error) { console.warn('[delivery-sentinel] origin recovery held:', error instanceof Error ? error.message : 'unavailable'); }
+      // The origin lane imports old rows in place. A failed or bounded import
+      // is never permission to execute remaining rows through the old writer.
+      this.emit('sentinel:tick-complete', counters);
+      return counters;
+    }
 
     // Pull rows that are ready (queued, or claimed-but-stale).
     let candidates = this.selectClaimable();

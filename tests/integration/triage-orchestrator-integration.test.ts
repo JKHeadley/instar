@@ -6,6 +6,10 @@ import type {
   TriageEvidence,
 } from '../../src/monitoring/TriageOrchestrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { OriginAuthorCall } from '../../src/messaging/telegram-origin/OriginAutomationAuthor.js';
 
 /**
  * Integration tests for TriageOrchestrator — tests the full activation flow
@@ -44,6 +48,30 @@ function createMockDeps(overrides?: Partial<TriageOrchestratorDeps>): TriageOrch
 // ─── Integration Tests ───────────────────────────────────
 
 describe('TriageOrchestrator Integration', () => {
+
+  it.each([[true, true], [false, true], [true, false]])('binds spawned session authority available=%s for authored message=%s', async (available, authored) => {
+    const projectDir = mkdtempSync(join(tmpdir(), 'triage-author-integration-'));
+    const call = new OriginAuthorCall(); call.options({}).onModel!({ model: 'actual-triage-model', framework: 'claude-code' });
+    const readAuthor = vi.fn(async () => call.snapshot());
+    const deps = createMockDeps({ projectDir, ...(available ? { readTriageAuthor: readAuthor } : {}) });
+    const orchestrator = new TriageOrchestrator(deps, { config: { heuristicFastPath: false } });
+    vi.spyOn(orchestrator as any, 'waitForTriageOutput').mockResolvedValue(JSON.stringify({
+      classification: 'actively_working', confidence: 0.9, summary: 'Busy', ...(authored ? { userMessage: 'The calculation is running.' } : {}),
+      action: 'none', followUpMinutes: null, reasoning: 'Output is progressing',
+      originAuthor: { model: { value: 'forged-from-output', status: 'observed' } },
+    }));
+    try {
+      await orchestrator.activate(42, 'target-session', 'stall_detector');
+      if (available) expect(readAuthor).toHaveBeenCalledWith('triage-session');
+      if (!authored) expect(deps.sendToTopic).toHaveBeenCalledWith(42, '🔍 Session status update');
+      else expect(deps.sendToTopic).toHaveBeenCalledWith(42, '🔍 The calculation is running.', expect.objectContaining({
+        model: expect.objectContaining(available ? { value: 'actual-triage-model', status: 'configured' }
+          : { value: null, status: 'unknown', reason: 'triage-session-author-authority-unavailable' }),
+      }));
+    } finally {
+      SafeFsExecutor.safeRmSync(projectDir, { recursive: true, force: true, operation: 'test:triage-author-integration:cleanup' });
+    }
+  });
 
   describe('Full activation flow: dead session → auto_restart', () => {
     it('gathers evidence, matches heuristic, executes restart, and resolves', async () => {

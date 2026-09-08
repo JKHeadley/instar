@@ -1,0 +1,5 @@
+# Native schema controls
+
+These are synthetic, sanitized fixtures derived from inspected native schemas, not captured provider responses or proof of provider execution. Codex session_meta/event_msg/turn_context follows existing CodexDeliveryObserver and rollout parser fixtures. Claude assistant.message.model follows TokenLedger and its main-transcript schema. Gemini follows installed CLI 0.53.1 ChatRecordingService.recordMessage. Pi follows upstream pi-mono coding-agent session-manager.ts v3 session/message entries with parentId; no live Pi run is claimed. Grok follows locally inspected CLI 1.0.5 events.jsonl and chat_history.jsonl fields: requested turn model grok-4.6 differs from actual assistant model grok-4.6-build. The common session UUID is invented. Content and other model names are fixture values.
+
+The parser tests exercise actual file reads, multiple turns, configuration versus observation, identity rejection, and incomplete sources. Authenticated live harness canaries remain separate activation evidence.

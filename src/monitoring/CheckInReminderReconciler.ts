@@ -35,7 +35,7 @@ export interface CheckInReminderDeps {
    * for a tone gate to judge — the safety the gate provides is not being
    * bypassed, it is not applicable.
    */
-  send: (topicId: number, text: string) => Promise<unknown>;
+  send: (topicId: number, text: string, identity: { commitmentId: string; checkInAt: string }) => Promise<unknown>;
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -179,7 +179,7 @@ export class CheckInReminderReconciler {
     }
 
     try {
-      await this.deps.send(topicId, text);
+      await this.deps.send(topicId, text, { commitmentId: commitment.id, checkInAt: commitment.checkInAt! });
     } catch (err) {
       report.failed++;
       report.errors.push({ id: commitment.id, error: String(err) });

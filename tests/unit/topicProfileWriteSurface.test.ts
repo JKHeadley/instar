@@ -484,3 +484,36 @@ describe('readout (§9 framework-aware disclosure)', () => {
     expect(h.surface.renderReadout(23)).toContain('re-apply');
   });
 });
+
+
+describe('model undo and recovery leave cosmetic preferences independent', () => {
+  it('a cosmetic edit does not manufacture model undo history for a system-seeded profile', async () => {
+    const h = harness(FLEET_REGIME);
+    await h.store.mutate(42, { model: 'opus', updatedBy: 'system:legacy-seed' });
+    expect((await h.surface.undo({ topicKey: 42, principal: OPERATOR, origin: 'http' })).refusal?.reason).toBe('nothing-to-undo');
+    await h.surface.applyWrite({ topicKey: 42, patch: { messageOriginDisplay: { enabled: false } }, principal: OPERATOR, origin: 'http' });
+    expect(h.store.resolve(42)?.updatedBy).toBe('system:legacy-seed');
+    expect((await h.surface.undo({ topicKey: 42, principal: OPERATOR, origin: 'http' })).refusal?.reason).toBe('nothing-to-undo');
+    expect(h.store.resolve(42)?.model).toBe('opus'); expect(h.store.resolve(42)?.messageOriginDisplay).toEqual({ enabled: false });
+  });
+
+  it('undo restores the actual previous model while retaining a later footer choice', async () => {
+    const h = harness(FULLY_LIVE);
+    for (const model of ['opus', 'sonnet']) await h.surface.applyWrite({ topicKey: 42, patch: { model }, principal: OPERATOR, origin: 'http' });
+    await h.surface.applyWrite({ topicKey: 42, patch: { messageOriginDisplay: { enabled: false } }, principal: OPERATOR, origin: 'http' });
+    expect(h.store.previousFor(42)?.model).toBe('opus');
+    expect((await h.surface.undo({ topicKey: 42, principal: OPERATOR, origin: 'http' })).ok).toBe(true);
+    expect(h.store.resolve(42)?.model).toBe('opus'); expect(h.store.resolve(42)?.messageOriginDisplay).toEqual({ enabled: false });
+  });
+  it('breaker revert, reapply and model clear preserve the latest cosmetic choice', async () => {
+    const h = harness(FULLY_LIVE);
+    await h.surface.applyWrite({ topicKey: 42, patch: { model: 'sonnet', messageOriginDisplay: { enabled: true } }, principal: OPERATOR, origin: 'http' });
+    await h.store.parkAndRevert(42, 'failed-model-launch', null);
+    expect(h.store.resolve(42)?.messageOriginDisplay).toEqual({ enabled: true });
+    await h.surface.applyWrite({ topicKey: 42, patch: { messageOriginDisplay: { enabled: false } }, principal: OPERATOR, origin: 'http' });
+    expect((await h.surface.reapply({ topicKey: 42, principal: OPERATOR, origin: 'http', confirmed: true })).ok).toBe(true);
+    expect(h.store.resolve(42)?.model).toBe('sonnet'); expect(h.store.resolve(42)?.messageOriginDisplay).toEqual({ enabled: false });
+    await h.surface.clear({ topicKey: 42, principal: OPERATOR, origin: 'http' });
+    expect(h.store.resolve(42)?.model).toBeNull(); expect(h.store.resolve(42)?.messageOriginDisplay).toEqual({ enabled: false });
+  });
+});

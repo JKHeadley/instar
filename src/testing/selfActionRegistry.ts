@@ -22,6 +22,7 @@
  */
 
 import { EMPTY_KILL_LEDGER, isBreakerTripped, recordKill } from '../monitoring/ExternalHogKillLedger.js';
+import { advanceBrowserRecovery, type BrowserRecoveryState } from '../messaging/telegram-origin/OriginBrowserRecovery.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
 export interface VirtualClock {
@@ -1340,7 +1341,80 @@ function makeIdentityReannouncePressureLoop(f: PressureFixture, sink: ActionSink
   };
 }
 
+const telegramBrowserCanaryRecovery: SelfActionController = {
+  id: 'telegram-browser-canary-recovery', actionVerb: 'retry-browser-canary',
+  models: 'OriginBrowserRecovery persists a 15-minute activation floor and FailureEpisodeLatch; OriginBrowserExecutor retains the original nine-attempt outbox budget.',
+  modelsPath: 'src/messaging/telegram-origin/OriginBrowserRecovery.ts',
+  boundK: 9, perTargetBoundK: 9, ticks: 400, tickMs: 30_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: makeTelegramBrowserCanaryPressure },
+  makeUnderPressure: makeTelegramBrowserCanaryPressure,
+};
+function makeTelegramBrowserCanaryPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered++;
+    const attempts = (f.durableState.get('telegram-canary:attempts') as number | undefined) ?? 0;
+    if (!f.targetAlwaysRejects() || attempts >= 9) return;
+    const fence = `attempt-${attempts}`;
+    const prior = f.durableState.get('telegram-canary:state') as BrowserRecoveryState | undefined;
+    const start = advanceBrowserRecovery(prior ?? null, { kind: 'begin', fence }, f.clock.nowMs());
+    if (!start.allowed) return;
+    let state = advanceBrowserRecovery(start.state, { kind: 'failure', fence, buildId: 'unsupported', final: false }, f.clock.nowMs()).state;
+    sink.emit({ verb: 'retry-browser-canary', target: 'managed-profile' });
+    state = advanceBrowserRecovery(state, { kind: 'failure', fence, buildId: 'unsupported', final: true }, f.clock.nowMs()).state;
+    f.durableState.set('telegram-canary:state', state);
+    f.durableState.set('telegram-canary:attempts', attempts + 1);
+  } };
+}
+
+/** These entries count automatic diagnostic CYCLES, not their nested attempts.
+ * One owned cycle has at most two sequential worker attempts; one native cycle
+ * has at most one adapter invocation. The modeled zero-duration completion is
+ * the fastest possible recurring schedule within a surviving instance.
+ * Actual single-flight, cancellation and cleanup latches are separately tested
+ * against the production classes in telegram-origin-canary-scheduling.test.ts.
+ * This rate model does not prove those behaviors or native/provider execution.
+ * Each reconstruction waits 60s before starting automatic work. No durable
+ * count is needed: closing/restarting can only postpone the next automatic run.
+ * Explicit one-shot run() calls are outside this automatic-controller model.
+ */
+const telegramOriginOwnedDetectorCanary: SelfActionController = {
+  id: 'telegram-origin-owned-detector-canary', actionVerb: 'retry-owned-detector-canary-cycle',
+  models: 'OriginDetectorCanary automatic start cycle: <=2 sequential workers/run, cleanup-failure latch, 60s startup wait on every boot and >=60s completion-relative recurrence.',
+  modelsPath: 'src/messaging/telegram-origin/OriginDetectorCanary.ts',
+  delegatedGiveUp: 'The instance closes or latches on unverified cleanup; each run has at most two timed worker attempts. Successful cleanup permits the next completion-relative cycle; restart resets this local state.',
+  boundK: Number.POSITIVE_INFINITY, perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 240, tickMs: 1_000,
+  eternalSentinel: { reason: 'Fixed owned-fixture diagnostic work, without transport authority; every boot waits 60s before its first automatic cycle, then recurrence waits at least 60s after completion.', rateFloorMs: 60_000 },
+  restartPosture: { pressureSurvives: true, restartUnderPressure: makeOriginCanaryCyclePressure },
+  makeUnderPressure: makeOriginCanaryCyclePressure,
+};
+const telegramOriginNativeModelCanary: SelfActionController = {
+  id: 'telegram-origin-native-model-canary', actionVerb: 'retry-native-model-canary-cycle',
+  models: 'OriginNativeCanaryLane automatic start cycle: <=1 isolated adapter/run, cleanup-failure latch, 60s startup wait on every boot and >=60s completion-relative recurrence.',
+  modelsPath: 'src/messaging/telegram-origin/OriginNativeCanaryLane.ts',
+  delegatedGiveUp: 'Close cancels the adapter and retains its slot until cleanup; cleanup failure latches this instance. One adapter invocation/run with a 30s cancellation deadline; restart resets local state.',
+  boundK: Number.POSITIVE_INFINITY, perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 240, tickMs: 1_000,
+  eternalSentinel: { reason: 'Fixed two-turn native-format diagnostic with only a loopback fixture provider; a 60s startup wait plus completion-relative recurrence preserves the automatic floor across restarts; no real provider execution is certified.', rateFloorMs: 60_000 },
+  restartPosture: { pressureSurvives: true, restartUnderPressure: makeOriginCanaryCyclePressure },
+  makeUnderPressure: makeOriginCanaryCyclePressure,
+};
+function makeOriginCanaryCyclePressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  // The production classes schedule this same startup delay on each start().
+  let nextCycleAt = f.clock.nowMs() + 60_000;
+  return { tick() {
+    sink.considered++;
+    if (f.clock.nowMs() < nextCycleAt) return;
+    sink.emit({ verb: 'retry-diagnostic-cycle', target: 'isolated-diagnostic-fixture' });
+    sink.emitTimesMs.push(f.clock.nowMs());
+    nextCycleAt = f.clock.nowMs() + 60_000;
+  } };
+}
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  telegramOriginOwnedDetectorCanary,
+  telegramOriginNativeModelCanary,
+  telegramBrowserCanaryRecovery,
   identityReannounce,
   windowRunCadenceDeliveryRedrive,
   windowLifecycleIssueEscalation,

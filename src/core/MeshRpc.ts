@@ -26,6 +26,7 @@
 export type MachineId = string;
 
 export type MeshCommand =
+  | import('../messaging/telegram-origin/OriginMesh.js').OriginMeshCommand
   | { type: 'place'; session: string; machine: MachineId }
   | { type: 'claim'; session: string; epoch: number; failover?: boolean }
   | { type: 'release'; session: string; epoch: number; failover?: boolean }
@@ -439,6 +440,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       return authd ? { ok: true, reason: 'ok' } : { ok: false, reason: 'mandate-deliver-unauthorized' };
     }
     case 'commitment-mutate':
+    case 'telegram-origin':
       // MUTATING verb, deliberately its OWN case (COMMITMENTS-COHERENCE-SPEC
       // §3.4/§5): any registered peer may issue it under the same-operator
       // posture — meaning RBAC adds NO authorization beyond verifyEnvelope,

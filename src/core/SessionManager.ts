@@ -21,6 +21,8 @@ import type { ReapGuard, ReapKeepReason } from './ReapGuard.js';
 import { DRAINED_CLOSE_BYPASSED_REASONS, drainProcessShape, analyseTranscriptSinceBoundary } from './standDownDrain.js';
 import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
 import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
+import type { OriginSessionLaunch, OriginSessionLifecycle } from '../messaging/telegram-origin/OriginSessionRegistry.js';
+import { captureOriginHookSettings } from '../messaging/telegram-origin/OriginNativeHookProof.js';
 import { paneShowsClaudeWorking } from './claudeActivityIndicators.js';
 // ONE definition, imported by both this probe and the stand-down drain predicate
 // (a leaf module, so no load-order cycle — see baselineProcessPatterns.ts).
@@ -643,6 +645,108 @@ export class SessionManager extends EventEmitter {
 
   /** Optional callback to check if a session has active subagents (prevents false zombie kills) */
   private subagentChecker?: (session: Session) => boolean;
+  private originLifecycle?: OriginSessionLifecycle;
+
+  /** Production wires the preparation-only token authority before any new launch. */
+  setOriginLifecycle(lifecycle: OriginSessionLifecycle): void { this.originLifecycle = lifecycle; }
+
+  /** Existing processes survive a server update. Publish their new preparation
+   * credential into their own tmux environment, which the refreshed relay reads.
+   * Do not infer a legacy record's harness from the current topic defaults.
+   */
+  async enrollExistingOriginSessions(): Promise<{ enrolled: number; unavailable: string[] }> {
+    if (!this.originLifecycle) throw new Error('Origin lifecycle unavailable');
+    let enrolled = 0;
+    const unavailable: string[] = [];
+    for (const session of this.state.listSessions().filter(s => s.status === 'running')) {
+      if (!session.framework || !await this.isSessionAliveAsync(session.tmuxSession)) { unavailable.push(session.id); continue; }
+      try {
+        const token = await this.originLifecycle.issue({ sessionId: session.id, harnessId: session.framework,
+          projectDir: session.cwd ?? this.config.projectDir, configuredModel: session.model,
+          nativeSessionId: session.claudeSessionId,
+          configHome: await this.existingOriginConfigHome(session.tmuxSession, session.framework) });
+        await promisify(execFile)(this.config.tmuxPath,
+          ['set-environment', '-t', `=${session.tmuxSession}`, 'INSTAR_ORIGIN_TOKEN', token], { timeout: 5000 });
+        enrolled++;
+      } catch {
+        // @silent-fallback-ok — revoke preparation authority and return this
+        // session in unavailable; server startup logs the enrollment failures.
+        this.revokeOriginSession(session.id);
+        unavailable.push(session.id);
+      }
+    }
+    return { enrolled, unavailable };
+  }
+
+  /** Re-enrollment must retain the running process's account home, not the
+   * restarted server's current launch defaults. Read only the relevant tmux
+   * environment key; never expose the session's other environment values. */
+  private async existingOriginConfigHome(tmuxSession: string, harness: string): Promise<string | undefined> {
+    if (harness === 'pi-cli') return this.originConfigHome(harness, {});
+    const key = ({ 'claude-code': 'CLAUDE_CONFIG_DIR', 'codex-cli': 'CODEX_HOME',
+      'gemini-cli': 'GEMINI_CLI_HOME', 'grok-build': 'GROK_HOME' } as Record<string, string>)[harness];
+    if (!key) return undefined;
+    let output: string;
+    try {
+      const result = await promisify(execFile)(this.config.tmuxPath,
+        ['show-environment', '-t', `=${tmuxSession}`, key], { timeout: 5000, encoding: 'utf8', maxBuffer: 16 * 1024 });
+      output = result.stdout.trim();
+    } catch (error) {
+      // tmux uses exit 1 when an environment key is absent. Other errors are
+      // enrollment failures, not permission to guess another account's home.
+      if ((error as { code?: number }).code === 1) return undefined;
+      throw error;
+    }
+    if (output === `-${key}` || output === '') return undefined;
+    if (!output.startsWith(`${key}=`)) throw new Error('Unexpected runtime config home response');
+    const configHome = output.slice(key.length + 1);
+    if (!path.isAbsolute(configHome)) throw new Error('Invalid runtime config home');
+    return configHome;
+  }
+
+  private async originTokenEnvFlags(launch: OriginSessionLaunch): Promise<string[]> {
+    // Scrub a parent's session token even while this feature is not wired.
+    // Only this pre-spawn seam can certify which hook settings a NEW native
+    // incarnation starts with. Re-enrolling a surviving CLI must not mint it.
+    const token = this.originLifecycle ? await this.originLifecycle.issue({ ...launch,
+      launchHookSettingsDigest: await captureOriginHookSettings(launch.projectDir, launch.harnessId) }) : '';
+    if (this.originLifecycle && !/^ior1_[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('Invalid origin preparation credential');
+    return ['-e', `INSTAR_ORIGIN_TOKEN=${token}`];
+  }
+
+  private revokeOriginSession(sessionId: string): void {
+    const report = () => DegradationReporter.getInstance().report({
+      feature: 'SessionManager.originRevocation', primary: 'Persist revoked origin preparation credentials',
+      fallback: 'In-memory revocation remains enforced; persisted credentials still require live session validation',
+      reason: 'Origin credential revocation persistence unavailable',
+      impact: 'Disk repair is required before revocation survives restart; dead sessions remain unable to prepare messages',
+    });
+    try {
+      const result = this.originLifecycle?.revoke(sessionId);
+      if (result) void result.catch(() => report()); // DegradationReporter above receives the failure.
+    } catch { report(); } // DegradationReporter above receives the failure.
+  }
+
+  private originSpawnError(error: unknown): string {
+    return String(error).replace(/ior1_[A-Za-z0-9_-]{43}/g, '[origin-token-redacted]');
+  }
+
+  private originConfirmsProcessGone(tmuxSession: string): boolean {
+    try {
+      withSyncOp(() => execFileSync(this.config.tmuxPath, ['has-session', '-t', `=${tmuxSession}`], { timeout: 5000 }));
+      return false;
+    } catch (error) {
+      // @silent-fallback-ok — only tmux's explicit absent-session exit status
+      // confirms termination. Other failures preserve the session credential.
+      return (error as { status?: number }).status === 1;
+    }
+  }
+
+  private originConfigHome(harness: string, env: Record<string, string>): string | undefined {
+    if (harness === 'pi-cli') return path.join(this.config.projectDir, '.instar', 'state', 'pi-sessions');
+    const key = ({ 'claude-code': 'CLAUDE_CONFIG_DIR', 'codex-cli': 'CODEX_HOME', 'gemini-cli': 'GEMINI_CLI_HOME', 'grok-build': 'GROK_HOME' } as Record<string, string>)[harness];
+    return key ? env[key] || process.env[key] : undefined;
+  }
 
   /** Optional callback: is this session currently in active compaction recovery? If so, skip zombie kill. */
   private activeRecoveryChecker?: (session: Session) => boolean;
@@ -2012,6 +2116,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // observers run independently from here onward: a listener exception must
       // never turn a successful kill into a rejected promise or suppress the
       // durable reap audit emitted by a later listener.
+      this.revokeOriginSession(session.id);
       this.#emitListenersIsolated('sessionComplete', endedSession);
       // The single reap-notification signal (§P3): terminal reaps may reach the
       // user; recovery-bounce reaps are silent. One emission, at the one chokepoint.
@@ -2124,6 +2229,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
     session.claudeSessionId = claudeSessionId;
     this.state.saveSession(session);
+    this.originLifecycle?.bindNative(instarSessionId, claudeSessionId);
   }
 
   /**
@@ -2310,6 +2416,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
             midWork,
             outcome: midWork ? 'stopped-mid-work' : 'completed',
           });
+          this.revokeOriginSession(fresh.id);
           this.emit('sessionComplete', fresh);
           continue;
         }
@@ -2404,10 +2511,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
           this.emit('beforeSessionKill', session);
           try {
             await execFileAsync(this.config.tmuxPath, ['kill-session', '-t', `=${session.tmuxSession}`]);
-          } catch { /* ignore */ }
+          } catch {
+            // Origin preparation authority must survive a failed kill of a live pane.
+            if (this.originLifecycle && await this.isSessionAliveAsync(session.tmuxSession)) continue;
+          }
           session.status = 'completed';
           session.endedAt = new Date().toISOString();
           this.state.saveSession(session);
+          this.revokeOriginSession(session.id);
           this.emit('sessionComplete', session);
           continue;
         }
@@ -3258,6 +3369,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
         ? ((this.config.anthropicApiKey ?? '') !== '' ? 'env' : 'store')
         : undefined;
 
+    const originEnvFlags = await this.originTokenEnvFlags({
+      sessionId, harnessId: headlessFramework, projectDir: resolvedCwd,
+      configuredModel: resolveModelForFramework(headlessFramework, options.model) ?? options.model,
+      configHome: this.originConfigHome(headlessFramework, headlessSpec.envOverrides),
+    });
     try {
       // §B in-flight marker: this spawn is EXCLUDED from §A async conversion
       // (its synchronous timing is part of the spawn contract) but still funnels
@@ -3273,7 +3389,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
         ...(this.config.claudeCodeMaxRetries != null
           ? ['-e', `CLAUDE_CODE_MAX_RETRIES=${this.config.claudeCodeMaxRetries}`]
           : []),
-        '-e', `INSTAR_SESSION_ID=${sessionId}`, // Expose instar session ID to hook events
+        '-e', `INSTAR_SESSION_ID=${sessionId}`,
+        ...originEnvFlags, // Expose instar session ID to hook events
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
@@ -3342,7 +3459,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // @silent-fallback-ok — history-limit is a nice-to-have
       }
     } catch (err) {
-      throw new Error(`Failed to create tmux session: ${err}`);
+      this.revokeOriginSession(sessionId);
+      throw new Error(`Failed to create tmux session: ${this.originSpawnError(err)}`);
     }
 
     const session: Session = {
@@ -3611,6 +3729,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const reroutedCredentialSource: 'store' | 'env' =
       (this.config.anthropicApiKey ?? '') !== '' ? 'env' : 'store';
 
+    const originEnvFlags = await this.originTokenEnvFlags({
+      sessionId, harnessId: 'claude-code', projectDir: resolvedCwd, configuredModel: launchModel,
+      configHome: this.originConfigHome('claude-code', launchSpec.envOverrides),
+    });
     try {
       // §B: excluded from §A async conversion (spawn timing is contractual) but
       // funnels through withSyncOp so a drift during this blocking spawn reads as
@@ -3628,6 +3750,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           ? ['-e', `CLAUDE_CODE_MAX_RETRIES=${this.config.claudeCodeMaxRetries}`]
           : []),
         '-e', `INSTAR_SESSION_ID=${sessionId}`,
+        ...originEnvFlags,
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`,
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
@@ -3686,7 +3809,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // @silent-fallback-ok — history-limit is a nice-to-have
       }
     } catch (err) {
-      throw new Error(`Failed to create rerouted interactive tmux session: ${err}`);
+      this.revokeOriginSession(sessionId);
+      throw new Error(`Failed to create rerouted interactive tmux session: ${this.originSpawnError(err)}`);
     }
 
     const session: Session = {
@@ -3969,13 +4093,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
           encoding: 'utf-8',
         }));
       } catch {
-        // Session might already be dead
+        // @silent-fallback-ok — an explicit absent-session probe is required;
+        // uncertain kill outcomes preserve live-session preparation authority.
+        if (this.originLifecycle && !this.originConfirmsProcessGone(session.tmuxSession)) return false;
       }
 
       session.status = 'killed';
       session.endedAt = new Date().toISOString();
       session.endedReason = 'manual-kill';
       this.state.saveSession(session);
+      this.revokeOriginSession(session.id);
       // NB: killSession historically does NOT emit 'sessionComplete' (only
       // beforeSessionKill). Preserved to avoid changing listener semantics —
       // the CAS guard + endedReason are the only additions here.
@@ -5715,7 +5842,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
         ...(this.config.claudeCodeMaxRetries != null
           ? ['-e', `CLAUDE_CODE_MAX_RETRIES=${this.config.claudeCodeMaxRetries}`]
           : []),
-        '-e', `INSTAR_SESSION_ID=${interactiveSessionId}`, // Expose instar session ID to hook events
+        '-e', `INSTAR_SESSION_ID=${interactiveSessionId}`,
+        ...await this.originTokenEnvFlags({
+          sessionId: interactiveSessionId, harnessId: framework, projectDir: options?.cwd ?? this.config.projectDir,
+          configuredModel: resolveInteractiveLaunchModel(framework, launchDefaultModel, options?.codexLocalProvider),
+          nativeSessionId: options?.resumeSessionId ?? (framework === 'claude-code' ? options?.sessionId : undefined),
+          configHome: this.originConfigHome(framework, launchSpec.envOverrides),
+        }), // Expose instar session ID to hook events
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
@@ -5817,7 +5950,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // @silent-fallback-ok — history-limit is a nice-to-have
       }
     } catch (err) {
-      throw new Error(`Failed to create interactive tmux session: ${err}`);
+      this.revokeOriginSession(interactiveSessionId);
+      throw new Error(`Failed to create interactive tmux session: ${this.originSpawnError(err)}`);
     }
 
     // Track it in state (with default timeout — interactive sessions shouldn't hang forever)
@@ -6229,6 +6363,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-x', '200', '-y', '50',
         '-e', 'CLAUDECODE=',
         '-e', `INSTAR_SESSION_ID=${triageSessionId}`,
+        ...await this.originTokenEnvFlags({
+          sessionId: triageSessionId, harnessId: 'claude-code', projectDir: this.config.projectDir,
+          nativeSessionId: options.resumeSessionId, configHome: process.env.CLAUDE_CONFIG_DIR,
+        }),
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
@@ -6303,7 +6441,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
         // @silent-fallback-ok — history-limit is a nice-to-have
       }
     } catch (err) {
-      throw new Error(`Failed to create triage tmux session: ${err}`);
+      this.revokeOriginSession(triageSessionId);
+      throw new Error(`Failed to create triage tmux session: ${this.originSpawnError(err)}`);
     }
 
     // Track it but with a shorter timeout (triage sessions should be brief)

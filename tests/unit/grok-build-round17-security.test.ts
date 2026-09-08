@@ -200,7 +200,10 @@ describe('round-19: the metered-key scrub is checked by MEMBERSHIP, not by a cou
       // syntax over. Matching the bare phrase covers both forms.
       let idx = src.indexOf('new-session');
       while (idx !== -1) {
-        const region = src.slice(idx, idx + 4000);
+        // Launch metadata can grow independently of the credential scrubs.
+        // Inspect through the actual array terminator, without a byte ceiling
+        // that could silently truncate a legitimate spawn argv.
+        const region = src.slice(idx);
         const end = region.indexOf('];');
         const argv = end === -1 ? region : region.slice(0, end);
         if (/'-e', '[A-Z_]+='/.test(argv) || /unset [A-Z_ ]*API_KEY/.test(argv)) {

@@ -418,7 +418,10 @@ describe('No Silent Fallbacks', () => {
     // Neither swallows. The first drafts of both DID, and this ratchet is what
     // pushed back — which is the gate working, so the bump records that rather
     // than papering over it. Zero unjustified silent swallows added.
-    const BASELINE = 496;
+    // 496 -> 495: origin reservation DB failures now report degradation;
+    // enrollment/custody failures and the serialization tail have specific
+    // observable/control-flow exemptions. Verified with this exact scanner.
+    const BASELINE = 495;
 
     if (silentFallbacks.length > 0) {
       const report = silentFallbacks.map(fb =>

@@ -1,3 +1,4 @@
+import { TelegramOriginHoldError } from './telegram-origin/types.js';
 /**
  * Telegram Messaging Adapter — send/receive messages via Telegram Bot API.
  *
@@ -48,6 +49,8 @@ import { AspAuthorshipJoin, type MessageAuthorship } from '../core/AspAuthorship
 export const TELEGRAM_STALL_CONFIRM_PROMPT_ID = 'telegram-stall-confirm-v1';
 
 export interface TelegramConfig {
+  /** Presentation only. These settings never disable mandatory origin recording. */
+  messageOrigin?: import('./telegram-origin/types.js').OriginConfig;
   /** Bot token from @BotFather */
   token: string;
   /** Forum chat ID (the supergroup where topics live) */
@@ -1445,7 +1448,7 @@ export class TelegramAdapter implements MessagingAdapter {
         // until review pass 36 finding 5: malformed tag-shaped source would be shown to the reader
         // after Telegram rejects the parse, and this refuses it anyway. The refusal is still right
         // for the case it was built for and wrong for that one; both ride CMT-1260.
-        if (err instanceof InvisiblePayloadRefusedError) throw err;
+        if (err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     } else {
@@ -1474,7 +1477,7 @@ export class TelegramAdapter implements MessagingAdapter {
         // until review pass 36 finding 5: malformed tag-shaped source would be shown to the reader
         // after Telegram rejects the parse, and this refuses it anyway. The refusal is still right
         // for the case it was built for and wrong for that one; both ride CMT-1260.
-        if (err instanceof InvisiblePayloadRefusedError) throw err;
+        if (err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     }
@@ -4034,7 +4037,7 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Create an attention item and its Telegram topic.
    */
-  async createAttentionItem(item: Omit<AttentionItem, 'createdAt' | 'updatedAt' | 'status' | 'topicId'>): Promise<AttentionItem> {
+  async createAttentionItem(item: Omit<AttentionItem, 'createdAt' | 'updatedAt' | 'status' | 'topicId'>, routing?: { hubOnly: true }): Promise<AttentionItem> {
     // Check for existing
     if (this.attentionItems.has(item.id)) {
       return this.attentionItems.get(item.id)!;
@@ -4061,7 +4064,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // are suppression-deduped. This runs BEFORE the flood guard and bypasses it
     // entirely, so a stale-session/peer-unreachable feature can never flood
     // topic-after-topic. Only items that explicitly opt in are affected.
-    if (this.agentHealthLaneCfg.enabled && item.lane === 'agent-health') {
+    if (!routing?.hubOnly && this.agentHealthLaneCfg.enabled && item.lane === 'agent-health') {
       const laneTopicId = await this.routeToAgentHealthLane(attention);
       attention.coalesced = true;
       if (laneTopicId !== null) attention.topicId = laneTopicId;
@@ -4075,7 +4078,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // below is the opt-out. Deliberately NOT registered in the per-item topic
     // maps (many items share the hub — see the coalesce-path comment below);
     // hub items are managed via /attention (PATCH / dashboard), not /ack.
-    if (this.attentionRoutingMode === 'single-topic') {
+    if (routing?.hubOnly || this.attentionRoutingMode === 'single-topic') {
       const hubTopicId = await this.routeToAttentionHub(attention);
       attention.coalesced = true;
       if (hubTopicId !== null) attention.topicId = hubTopicId;
@@ -5690,6 +5693,8 @@ export class TelegramAdapter implements MessagingAdapter {
         });
         return;
       } catch (err) {
+        // The original outbox owns every retry after origin admission.
+        if (err instanceof TelegramOriginHoldError) throw err;
         if (attempt < retries - 1) {
           await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
         } else {

@@ -30,6 +30,7 @@ export type BenchCoverage =
   | { exempt: string };
 
 export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
+  'telegram-origin-recovery': { exempt: 'Produces an advisory diagnostic string only, with no parsed verdict, write capability, or influence on dispatch/retry authority. As with DashboardInsightEngine, model quality is not safety-load-bearing; it remains on the shared fast tier without a benchmark-derived routing-nature claim.' },
   // ── Covered by the critical set (Wave 1 — authored 2026-07-02) ──
   MessageSentinel: { task: 'sentinel-classify' },
   // The zombie-classify benchmark IS this classifier's bench task (operator-approved; it is the
@@ -178,6 +179,7 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
 export type UntrustedInputFlag = true | { false: string };
 
 export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> = {
+  'telegram-origin-recovery': true, // delivery identifiers/reasons may originate across a signed mesh boundary
   // The external-hog classifier judges a process's attacker-controllable name + full argv
   // (wrapped as untrusted data in ExternalHogClassifierPrompt) → judges untrusted content.
   ExternalHogClassifier: true,
@@ -339,6 +341,7 @@ export const CLAIM_KINDS: ReadonlyArray<ClaimKind> = [
 export type JudgesClaimsFlag = { claimKind: ClaimKind } | false | { false: string };
 
 export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
+  'telegram-origin-recovery': false, // advisory explanation, never a completion/authorship/receipt verdict
   'subscription-relogin-supervisor': false, // selects a permitted browser action; does not credit a completion/health claim
   // The dashboard insight engine summarizes a page's own data into awareness-only
   // observations; it never credits or refuses a completion/progress/health claim
@@ -475,6 +478,7 @@ export type ParserContractFlag =
   | { false: string };
 
 export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> = {
+  'telegram-origin-recovery': { false: 'The result is an opaque advisory string written to diagnostics; no output parser, closed verdict vocabulary, retry grant, or receipt claim consumes it.' },
   'subscription-relogin-supervisor': {
     contractTest: 'tests/unit/anthropic-relogin-browser-driver.test.ts',
   },
@@ -809,6 +813,7 @@ const exposed = (inputShape: InjectionInputShape): InjectionExposure => ({ expos
 const notExposed = (reason: string): InjectionExposure => ({ exposed: false, inputShape: NOT_EXPOSED, reason });
 
 export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionExposure>> = {
+  'telegram-origin-recovery': exposed(EXPOSED_TOOL),
   // ── Sentinels ──
   ExternalHogClassifier: exposed(EXPOSED_TOOL), // attacker-controllable process name + argv
   InputGuard: exposed(EXPOSED_USER),

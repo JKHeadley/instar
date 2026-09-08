@@ -22,6 +22,7 @@ import type {
   TreatmentAction,
 } from './StallTriageNurse.types.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { unknownAutomationAuthor, type OriginAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -43,6 +44,8 @@ export interface TriageDecision {
   action: TriageAction;
   followUpMinutes: number | null;
   reasoning: string;
+  /** Infrastructure evidence, only when the session's userMessage survives parsing. */
+  originAuthor?: OriginAutomationAuthor;
 }
 
 export type TriageAction =
@@ -124,6 +127,8 @@ export interface TriageResult {
 // ─── Orchestrator Dependencies ──────────────────────────────
 
 export interface TriageOrchestratorDeps extends TriageDeps {
+  /** Trusted runtime lookup for the actual spawned tmux session, never model output. */
+  readTriageAuthor?: (sessionName: string) => Promise<OriginAutomationAuthor>;
   /** Spawn a scoped triage session, returns tmux session name */
   spawnTriageSession: (name: string, options: {
     allowedTools: string[];
@@ -340,10 +345,10 @@ export class TriageOrchestrator extends EventEmitter {
       triageState.evidencePath = evidencePath;
 
       // Phase 4: Spawn or resume triage session
-      const triageOutput = await this.runTriageSession(triageState, evidencePath, isFollowUp);
+      const { output: triageOutput, originAuthor } = await this.runTriageSession(triageState, evidencePath, isFollowUp);
 
       // Phase 5: Parse and validate decision
-      const decision = this.parseTriageOutput(triageOutput);
+      const decision = this.parseTriageOutput(triageOutput, originAuthor);
       if (!decision) {
         // Parse failed — fall back to heuristic
         console.warn(`[TriageOrchestrator] Failed to parse triage output for topic ${topicId}`);
@@ -358,7 +363,7 @@ export class TriageOrchestrator extends EventEmitter {
 
       // Phase 6: Validate and execute action
       const validatedAction = this.validateAction(decision, evidence);
-      await this.executeAction(topicId, sessionName, validatedAction, decision.userMessage);
+      await this.executeAction(topicId, sessionName, validatedAction, decision.userMessage, decision.originAuthor);
       this.emit('triage:action_executed', { topicId, action: validatedAction });
 
       // Phase 7: Schedule follow-up if requested
@@ -704,8 +709,14 @@ export class TriageOrchestrator extends EventEmitter {
     triageState: TriageState,
     evidencePath: string,
     isFollowUp: boolean,
-  ): Promise<string> {
+  ): Promise<{ output: string; originAuthor: OriginAutomationAuthor }> {
     const bootstrapMessage = this.buildBootstrapMessage(triageState, evidencePath, isFollowUp);
+    const capture = async (name: string, output: string) => {
+      let originAuthor = unknownAutomationAuthor('triage-session-author-authority-unavailable');
+      try { if (this.deps.readTriageAuthor) originAuthor = await this.deps.readTriageAuthor(name); }
+      catch { originAuthor = unknownAutomationAuthor('triage-session-author-read-failed'); }
+      return { output, originAuthor };
+    };
 
     if (isFollowUp && triageState.triageSessionUuid) {
       // Resume existing triage session
@@ -725,7 +736,7 @@ export class TriageOrchestrator extends EventEmitter {
         this.deps.injectMessage(tmuxName, bootstrapMessage);
 
         // Wait for output
-        return await this.waitForTriageOutput(tmuxName, triageState.topicId);
+        return await capture(tmuxName, await this.waitForTriageOutput(tmuxName, triageState.topicId));
       } catch (err) {
         console.warn(`[TriageOrchestrator] Resume failed, spawning fresh session:`, err);
         // Fall through to fresh spawn
@@ -755,7 +766,7 @@ export class TriageOrchestrator extends EventEmitter {
       triageState.triageSessionUuid = uuid;
     }
 
-    return output;
+    return capture(tmuxName, output);
   }
 
   private buildBootstrapMessage(
@@ -842,7 +853,7 @@ export class TriageOrchestrator extends EventEmitter {
 
   // ─── Output Parsing & Validation ──────────────────────────
 
-  private parseTriageOutput(rawOutput: string): TriageDecision | null {
+  private parseTriageOutput(rawOutput: string, originAuthor?: OriginAutomationAuthor): TriageDecision | null {
     if (!rawOutput || rawOutput.trim().length === 0) return null;
 
     try {
@@ -880,6 +891,7 @@ export class TriageOrchestrator extends EventEmitter {
         action: parsed.action,
         followUpMinutes: typeof parsed.followUpMinutes === 'number' ? parsed.followUpMinutes : null,
         reasoning: String(parsed.reasoning || ''),
+        ...(parsed.userMessage && originAuthor ? { originAuthor: structuredClone(originAuthor) } : {}),
       };
     } catch {
       return null;
@@ -952,19 +964,22 @@ export class TriageOrchestrator extends EventEmitter {
     sessionName: string,
     action: TriageAction,
     userMessage: string,
+    originAuthor?: OriginAutomationAuthor,
   ): Promise<void> {
     // Ensure message has the triage prefix
     const prefixedMessage = userMessage.startsWith(TRIAGE_MESSAGE_PREFIX)
       ? userMessage
       : TRIAGE_MESSAGE_PREFIX + userMessage;
+    const send = () => originAuthor ? this.deps.sendToTopic(topicId, prefixedMessage, originAuthor)
+      : this.deps.sendToTopic(topicId, prefixedMessage);
 
     switch (action) {
       case 'none':
-        await this.deps.sendToTopic(topicId, prefixedMessage).catch(() => {});
+        await send().catch(() => {});
         break;
 
       case 'reinject_message': {
-        await this.deps.sendToTopic(topicId, prefixedMessage).catch(() => {});
+        await send().catch(() => {});
         // Re-inject the pending message into the target session
         const triageState = this.activeTriages.get(topicId);
         if (triageState) {
@@ -979,16 +994,16 @@ export class TriageOrchestrator extends EventEmitter {
       }
 
       case 'suggest_interrupt':
-        await this.deps.sendToTopic(topicId, prefixedMessage).catch(() => {});
+        await send().catch(() => {});
         break;
 
       case 'suggest_restart':
-        await this.deps.sendToTopic(topicId, prefixedMessage).catch(() => {});
+        await send().catch(() => {});
         break;
 
       case 'auto_interrupt':
         this.deps.sendKey(sessionName, 'C-c');
-        await this.deps.sendToTopic(topicId, prefixedMessage).catch(() => {});
+        await send().catch(() => {});
         // Send post-intervention context to the session
         await new Promise(r => setTimeout(r, 3000));
         this.deps.sendInput(sessionName,
@@ -998,7 +1013,7 @@ export class TriageOrchestrator extends EventEmitter {
         break;
 
       case 'auto_restart':
-        await this.deps.sendToTopic(topicId, prefixedMessage).catch(() => {});
+        await send().catch(() => {});
         await this.deps.respawnSession(sessionName, topicId, { silent: true });
         break;
     }

@@ -35,6 +35,7 @@ import type { CanRunJobResult, IntelligenceProvider, MessagingAdapter, SkipReaso
 import { TOPIC_STYLE } from '../messaging/TelegramAdapter.js';
 import type { JobDefinition, JobSchedulerConfig, JobState, JobPriority } from '../core/types.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
+import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
 import { reportDeliverySinkFailure } from '../messaging/DeliverySinkFailure.js';
 import type { JobClaimManager } from './JobClaimManager.js';
 import type { JobLeaseClaimStore } from './JobLeaseClaimStore.js';
@@ -1972,6 +1973,9 @@ export class JobScheduler {
         await this.telegram.sendToTopic(job.topicId, summary);
       } catch (err) {
         console.error(`[scheduler] Failed to send to job topic ${job.topicId}: ${err}`);
+        // The original outbox retains custody, including uncertain acceptance.
+        // A different topic would create a new operation outside that custody.
+        if (err instanceof TelegramOriginHoldError) return;
         // Topic may have been deleted — try to recreate
         try {
           const newTopic = await this.telegram.findOrCreateForumTopic(

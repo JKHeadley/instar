@@ -1,3 +1,5 @@
+import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
+import { withUnknownProducerOrigin } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
  * HTTP API routes — health, status, sessions, jobs, events.
  *
@@ -6,6 +8,9 @@
  */
 
 import { Router } from 'express';
+import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
+import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
+import { deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 import { cadenceReportProducerPayload, type WindowRunCadenceExecutor, type WindowCadenceReportReceipt } from '../core/WindowRunCadenceExecutor.js';
 import { verify as verifyEd25519 } from '../threadline/ThreadlineCrypto.js';
 import { telegramFetch } from '../messaging/telegram-egress.js';
@@ -434,6 +439,7 @@ import type { MessageRouter } from '../messaging/MessageRouter.js';
 import type { SessionSummarySentinel } from '../messaging/SessionSummarySentinel.js';
 import { decideIngress, commitInboundReply, dedupeKeyFor } from '../messaging/ingressDedup.js';
 import { OutboundContentDedup } from '../messaging/OutboundContentDedup.js';
+import { originContentDedup } from '../messaging/telegram-origin/OriginContentDedup.js';
 import { SqliteOutboundDedupStore } from '../messaging/OutboundDedupStore.js';
 import { RelayContentDedup } from '../messaging/relayContentDedup.js';
 import type { SpawnRequestManager } from '../messaging/SpawnRequestManager.js';
@@ -888,6 +894,7 @@ export interface RouteContext {
   config: InstarConfig;
   /** Verifies a short-lived proof minted only after a successful dashboard PIN unlock. */
   verifyDashboardOperatorSession?: (token: string | undefined) => boolean;
+  telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime | null;
   /** Machine identity recovery authority/read surfaces. Absent keeps routes
    * honest (503) on single-machine or feature-dark installs. */
   identityStore?: import('../core/IdentityStore.js').IdentityStore | null;
@@ -2318,6 +2325,28 @@ export const OPERATOR_ONLY_SESSION_KEYS: ReadonlyArray<string> = [
 
 export function createRoutes(ctx: RouteContext): Router {
   const router = Router();
+  mountOriginDisplayPreferences(router, ctx);
+  mountTelegramOriginRoutes(router, { runtime: () => ctx.telegramOrigin,
+    verifyOperator: proof => ctx.verifyDashboardOperatorSession?.(proof) === true,
+    setupGreeting: () => {
+      const configured = ctx.config.messaging?.find(item => item.type === 'telegram' && item.enabled !== false)?.config as { lifelineTopicId?: number; token?: string; chatId?: string } | undefined;
+      const topicId = configured?.lifelineTopicId;
+      if (!ctx.telegram || !Number.isSafeInteger(topicId) || Number(topicId) <= 0) return null;
+      return { send: async text => {
+        const receipt = await ctx.telegram!.sendToTopic(topicId!, text);
+        if (configured?.token && configured.chatId && receipt.messageId > 0) {
+          try {
+            const pinned = await telegramFetch(`https://api.telegram.org/bot${configured.token}/pinChatMessage`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ chat_id: configured.chatId, message_id: receipt.messageId, disable_notification: true }),
+              signal: AbortSignal.timeout(5000),
+            });
+            if (!(await pinned.json() as { ok?: boolean }).ok) console.warn('[setup] Lifeline greeting delivered; pin unavailable');
+          } catch { console.warn('[setup] Lifeline greeting delivered; pin unavailable'); }
+        }
+        return receipt;
+      } };
+    } });
 
   router.get('/capability-registry', (_req, res) => {
     const cfg = (ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry;
@@ -3333,6 +3362,66 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   }
 
+  /** Existing local stand-down authority, shared across reply and prepared
+   * transports. Unknown ownership still RELEASES exactly as before. */
+  function authorizeTelegramSessionSend(topicId: number): OutboundEvaluation {
+    if (ctx.standDownRegistry) {
+      try {
+        const sdEntry = ctx.standDownRegistry.getByTopic(topicId);
+        if (sdEntry) {
+          // FIRE-TIME OWNERSHIP RE-CHECK (Ownership-Gated Side Effects, applied at
+          // the side effect's own moment). A topic-keyed muzzle must never outlive
+          // the ownership fact it mirrors: if this machine is NOW the owner, the
+          // entry is stale — release it here and let the send proceed, rather than
+          // suppressing the rightful speaker through the release hysteresis.
+          // UNRESOLVABLE reads release, they do not refuse. The registry being
+          // unwired or the mesh identity being unresolved says nothing about who
+          // owns the conversation — and the spec's rule for this decision is that
+          // every uncertainty fails toward RELEASE, the reachability-preserving
+          // direction. Refusing on a null read would have made an infrastructure
+          // gap look like a duplicate and silenced a legitimate reply.
+          const ownershipReadable = !!ctx.sessionOwnershipRegistry && !!ctx.meshSelfId;
+          const currentOwner = ctx.sessionOwnershipRegistry?.ownerOf(String(topicId)) ?? null;
+          const selfId = ctx.meshSelfId ?? null;
+          if (!ownershipReadable || currentOwner == null || currentOwner === selfId) {
+            const returned = ownershipReadable && currentOwner === selfId;
+            ctx.standDownRegistry.release(
+              sdEntry.sessionName,
+              returned ? 'ownership-returned-at-send' : 'ownership-unresolvable-at-send',
+              // An unresolvable read adjudicated nothing, so it must not arm the
+              // episode latch — one transient null would otherwise permanently
+              // disable a legitimate muzzle.
+              { armLatch: returned },
+            );
+            // Every entry-removing path resets the coalescing bucket; left
+            // populated, a later episode on the same key silently loses its
+            // FIRST enforcement row — which is the soak's evidence that a new
+            // episode began.
+            ctx.standDownAudit?.endEpisode(sdEntry.sessionName);
+          } else {
+            ctx.standDownRegistry.countRefusedSend(topicId);
+            ctx.standDownAudit?.enforcement({
+              transition: 'refused-send', sessionName: sdEntry.sessionName, topicId,
+              dryRun: sdEntry.dryRun, episodeId: sdEntry.episodeId,
+            });
+            if (ctx.standDownRegistry.isEnforcing(sdEntry)) {
+              return { ok: false, status: 409, reason: 'standing-down', body: {
+                error: 'standing-down',
+                // Only the shape-clamped machine id crosses — never a nickname or
+                // a free-text reason (peer-influenced strings stay out of anything
+                // a model reads as instruction).
+                ownerMachineId: sdEntry.ownerMachineId,
+                retryable: false,
+              } };
+            }
+            // dryRun: the would-refuse row is written; the send proceeds untouched.
+          }
+        }
+      } catch { /* @silent-fallback-ok — a stand-down lookup failure must never block a real reply (fail toward reachability) */ }
+    }
+    return { ok: true };
+  }
+
   async function evaluateOutbound(
     text: string,
     channel: string,
@@ -4075,11 +4164,30 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   }
 
+  // The origin execution boundary delegates to this exact evaluator. The
+  // callback receives attested source identity and sealed original text; client
+  // flags cannot turn a session reply into a proxy/system exemption.
+  ctx.telegramOrigin?.attachSendPolicy({
+    ...originContentDedup(outboundContentDedup, ctx.telegramOrigin.options.bot.chatId),
+    review: (record, input) => evaluateOutbound(input.text, 'telegram', {
+      ...(record.destination.topicId === null ? {} : { topicId: Number(record.destination.topicId) }),
+      messageKind: record.producerKind === 'session' ? 'reply' : 'automated',
+      ...input.reaction,
+    }),
+    authorizeDispatch: record => {
+      // A local stand-down marker belongs to the losing LOCAL copy. It must
+      // not muzzle a rightful remote source whose message this holder relays.
+      if (record.originMachineId !== ctx.telegramOrigin!.options.identity.originMachineId ||
+          record.producerKind !== 'session' || record.destination.topicId === null) return { ok: true };
+      return authorizeTelegramSessionSend(Number(record.destination.topicId));
+    },
+  });
+
   // Attach the shared guarded sender to the growth-digest publisher (if wired).
   // Runs once at route registration — the publisher was constructed + started in
   // AgentServer; this is the §3.3 single-funnel hookup, so the publisher can never
   // reach sendToTopic without passing through the identical evaluateOutbound.
-  ctx.growthDigestPublisher?.attachSender((text: string) => postToUpdatesTopic(text));
+  ctx.growthDigestPublisher?.attachSender((text: string) => withUnknownProducerOrigin(ctx.telegramOrigin?.service, 'growth-digest', () => postToUpdatesTopic(text)));
 
   // C1 (maturation-followthrough-fix Standard C): the operator-facing attention
   // raiser for an un-droppable digest delivery. A retryable blocked/failed weekly
@@ -10561,7 +10669,8 @@ export function createRoutes(ctx: RouteContext): Router {
     const gate = requireTopicProfileWrite(req, res);
     if (!gate) return;
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const patch: Record<string, string | null> = {};
+    const patch: import('../core/topicProfileValidation.js').ProfilePatchInput = {};
+    if ('messageOriginDisplay' in body) patch.messageOriginDisplay = body.messageOriginDisplay as typeof patch.messageOriginDisplay;
     for (const field of ['framework', 'model', 'modelTier', 'thinkingMode', 'effort', 'escalationOverride'] as const) {
       if (!(field in body)) continue;
       const value = body[field];
@@ -10618,7 +10727,8 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const patch: Record<string, string | null> = {};
+    const patch: import('../core/topicProfileValidation.js').ProfilePatchInput = {};
+    if ('messageOriginDisplay' in body) patch.messageOriginDisplay = body.messageOriginDisplay as typeof patch.messageOriginDisplay;
     for (const field of ['framework', 'model', 'modelTier', 'thinkingMode', 'effort', 'escalationOverride'] as const) {
       if (!(field in body)) continue;
       const value = body[field];
@@ -16288,60 +16398,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // fallback, the owner-dark ladder) call telegram.sendToTopic directly and never
     // traverse this route — exempt by construction, so genuine system notices and
     // this feature's own episode notice still deliver.
-    if (ctx.standDownRegistry) {
-      try {
-        const sdEntry = ctx.standDownRegistry.getByTopic(topicId);
-        if (sdEntry) {
-          // FIRE-TIME OWNERSHIP RE-CHECK (Ownership-Gated Side Effects, applied at
-          // the side effect's own moment). A topic-keyed muzzle must never outlive
-          // the ownership fact it mirrors: if this machine is NOW the owner, the
-          // entry is stale — release it here and let the send proceed, rather than
-          // suppressing the rightful speaker through the release hysteresis.
-          // UNRESOLVABLE reads release, they do not refuse. The registry being
-          // unwired or the mesh identity being unresolved says nothing about who
-          // owns the conversation — and the spec's rule for this decision is that
-          // every uncertainty fails toward RELEASE, the reachability-preserving
-          // direction. Refusing on a null read would have made an infrastructure
-          // gap look like a duplicate and silenced a legitimate reply.
-          const ownershipReadable = !!ctx.sessionOwnershipRegistry && !!ctx.meshSelfId;
-          const currentOwner = ctx.sessionOwnershipRegistry?.ownerOf(String(topicId)) ?? null;
-          const selfId = ctx.meshSelfId ?? null;
-          if (!ownershipReadable || currentOwner == null || currentOwner === selfId) {
-            const returned = ownershipReadable && currentOwner === selfId;
-            ctx.standDownRegistry.release(
-              sdEntry.sessionName,
-              returned ? 'ownership-returned-at-send' : 'ownership-unresolvable-at-send',
-              // An unresolvable read adjudicated nothing, so it must not arm the
-              // episode latch — one transient null would otherwise permanently
-              // disable a legitimate muzzle.
-              { armLatch: returned },
-            );
-            // Every entry-removing path resets the coalescing bucket; left
-            // populated, a later episode on the same key silently loses its
-            // FIRST enforcement row — which is the soak's evidence that a new
-            // episode began.
-            ctx.standDownAudit?.endEpisode(sdEntry.sessionName);
-          } else {
-            ctx.standDownRegistry.countRefusedSend(topicId);
-            ctx.standDownAudit?.enforcement({
-              transition: 'refused-send', sessionName: sdEntry.sessionName, topicId,
-              dryRun: sdEntry.dryRun, episodeId: sdEntry.episodeId,
-            });
-            if (ctx.standDownRegistry.isEnforcing(sdEntry)) {
-              res.status(409).json({
-                error: 'standing-down',
-                // Only the shape-clamped machine id crosses — never a nickname or
-                // a free-text reason (peer-influenced strings stay out of anything
-                // a model reads as instruction).
-                ownerMachineId: sdEntry.ownerMachineId,
-                retryable: false,
-              });
-              return;
-            }
-            // dryRun: the would-refuse row is written; the send proceeds untouched.
-          }
-        }
-      } catch { /* @silent-fallback-ok — a stand-down lookup failure must never block a real reply (fail toward reachability) */ }
+    const standDownDecision = authorizeTelegramSessionSend(topicId);
+    if (!standDownDecision.ok) {
+      res.status(standDownDecision.status).json(standDownDecision.body);
+      return;
     }
 
     // ── An INVISIBLE payload is refused at the door (window 11, 2026-08-09) ──
@@ -16528,7 +16588,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // the gate skips. Honors the existing `allowDuplicate` escape hatch; brief
     // acks are below the length floor and never suppressed. Recorded only after
     // a successful send (below), so a failed send's retry isn't lost.
-    if (!allowDuplicate && outboundContentDedup.isDuplicate(topicId, text)) {
+    const originOwnsContent = ctx.telegramOrigin?.service.hasProducerContext() === true;
+    if (!originOwnsContent && !allowDuplicate && outboundContentDedup.isDuplicate(topicId, text)) {
       console.log(`[telegram/reply] suppressed duplicate content for topic ${topicId} (identical text within window)`);
       res.json({ ok: true, topicId, suppressedDuplicate: true });
       return;
@@ -16542,11 +16603,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // relaying). The holder is the single Telegram owner and the correct place to
     // gate. (Direct, non-relay sends still gate locally — unchanged.)
     const willRelay = typeof ctx.telegram.willRelay === 'function' && ctx.telegram.willRelay();
-    if (
-      !isProxy &&
-      !isSystemTemplate &&
-      !willRelay &&
-      (await checkOutboundMessage(text, 'telegram', res, {
+    if (!isProxy && !isSystemTemplate && !willRelay) {
+      if (await checkOutboundMessage(text, 'telegram', res, {
         topicId,
         allowDebugText,
         allowDuplicate,
@@ -16556,9 +16614,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         toneAdvisoryAckReason,
         toneAdvisoryDecisionRef,
         toneAdvisoryComplied,
-      }))
-    )
-      return;
+      })) return;
+      ctx.telegramOrigin?.service.markCurrentSendPolicyReviewed();
+    }
 
     // In-flight reservation (2026-07-03): the isDuplicate pre-check above and the
     // record-after-success below leave a race — under a server stall a send can be
@@ -16569,7 +16627,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // is suppressed. Taken AFTER the tone gate (a held/blocked message never
     // reserves → no leak); resolved by record() on success or releaseReservation()
     // in the catch on failure. allowDuplicate bypasses it (no reserve, no block).
-    if (!allowDuplicate && !outboundContentDedup.tryReserve(topicId, text)) {
+    if (!originOwnsContent && !allowDuplicate && !outboundContentDedup.tryReserve(topicId, text)) {
       console.log(`[telegram/reply] suppressed in-flight duplicate for topic ${topicId} (identical text already sending/sent)`);
       res.json({ ok: true, topicId, suppressedDuplicate: true });
       return;
@@ -16610,7 +16668,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Record the content fingerprint AFTER a successful send so an identical
       // re-send within the window is suppressed — but a FAILED send (which
       // throws before here) is never recorded, so its legitimate retry isn't lost.
-      outboundContentDedup.record(topicId, text);
+      if (!originOwnsContent) outboundContentDedup.record(topicId, text);
       // Clear injection tracker — but NOT for proxy messages (PresenceProxy)
       // Proxy messages should not reset stall detection timers
       if (!isProxy) {
@@ -16706,7 +16764,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // The send failed → release the in-flight reservation so the legitimate
       // retry of this exact text is not wrongly suppressed as a duplicate. Safe
       // no-op when nothing was reserved (allowDuplicate / below-floor text).
-      outboundContentDedup.releaseReservation(topicId, text);
+      if (!originOwnsContent) outboundContentDedup.releaseReservation(topicId, text);
+      if (err instanceof TelegramOriginHoldError) {
+        sendOriginHoldResponse(res, err);
+        return;
+      }
       // ── Holder refusal, relayed verbatim ────────────────────────────────
       // On a tokenless standby the tone gate runs on the HOLDER, so its 422
       // arrives here as a thrown RelayRefusedError. Re-emit the holder's own
@@ -29503,8 +29565,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const reconciler = new CheckInReminderReconciler(
         {
           tracker: ctx.commitmentTracker,
-          send: async (topicId, text) => {
+          send: async (topicId, text, identity) => {
             if (!telegram) throw new Error('no-delivery-transport');
+            // The origin boundary owns the reservation for the private
+            // reminder scope below; legacy delivery reserves here instead.
+            const originOwnsContent = !!ctx.telegramOrigin;
             // Route the send through the SAME durable content dedup the
             // /telegram/reply route uses.
             //
@@ -29520,20 +29585,31 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             // this exact reminder, so the send is complete and the caller may
             // stamp. Treating it as a failure would retry-loop until the window
             // expired and then genuinely double-send.
-            if (outboundContentDedup.isDuplicate(topicId, text)) {
+            if (!originOwnsContent && outboundContentDedup.isDuplicate(topicId, text)) {
               return { ok: true, suppressedDuplicate: true } as unknown;
             }
-            if (!outboundContentDedup.tryReserve(topicId, text)) {
+            if (!originOwnsContent && !outboundContentDedup.tryReserve(topicId, text)) {
               return { ok: true, suppressedDuplicate: true } as unknown;
             }
             try {
-              const r = await telegram.sendToTopic(topicId, text);
-              outboundContentDedup.record(topicId, text);
+              const send = () => telegram.sendToTopic(topicId, text);
+              let r;
+              if (ctx.telegramOrigin) {
+                const service = ctx.telegramOrigin.service, producerId = 'commitment-checkin-reminder', body = { text };
+                service.registerAutomationProducer(producerId);
+                // A retry after send-before-stamp replays only this reminder's
+                // accepted receipt. Unknown acceptance remains held, never
+                // success-equivalent merely because its content is reserved.
+                const logicalSendId = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+                const token = service.issueAutomationReply(producerId, topicId, body, deterministicAutomationAuthor(), logicalSendId);
+                r = await service.runWithAutomationReply(token, topicId, body, send);
+              } else r = await send();
+              if (!originOwnsContent) outboundContentDedup.record(topicId, text);
               return r;
             } catch (err) {
               // Release so a genuine transport failure is retried rather than
               // suppressed as a "duplicate" on the next pass.
-              outboundContentDedup.releaseReservation(topicId, text);
+              if (!originOwnsContent) outboundContentDedup.releaseReservation(topicId, text);
               throw err;
             }
           },

@@ -24,6 +24,8 @@ import { LlmAbortedError } from './LlmQueue.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
 import { looksActivelyWorking } from './sentinelWiring.js';
+import { OriginAuthorCall, deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
+import type { OriginAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -217,6 +219,8 @@ export interface ProxyMetadata {
   source: 'presence-proxy';
   tier: number;
   isProxy: true;
+  /** Internal composer evidence; the HTTP endpoint never trusts this field. */
+  originAuthor?: OriginAutomationAuthor;
 }
 
 export interface ProcessInfo {
@@ -1192,6 +1196,7 @@ export class PresenceProxy {
       && state.conversationHistory.some(m => m.role === 'proxy');
 
     let message: string;
+    let originAuthor = deterministicAutomationAuthor();
 
     // ── Quota exhaustion: detect before LLM call (saves tokens + gives clear message) ──
     if (snapshot) {
@@ -1201,7 +1206,7 @@ export class PresenceProxy {
         // Skip LLM, cancel further tiers — quota is a definitive state, not ambiguous
         if (state.cancelled) return;
         state.tier1FiredAt = Date.now();
-        await this.sendProxyMessage(topicId, message, 1);
+        await this.sendProxyMessage(topicId, message, 1, originAuthor);
         this.persistState(topicId, state);
         state.conversationHistory.push({ role: 'proxy', text: message, timestamp: Date.now() });
         return; // Don't schedule tier 2/3 — nothing more to assess
@@ -1265,7 +1270,7 @@ export class PresenceProxy {
           ? this.buildConversationPrompt(state, snapshot)
           : this.buildTier1Prompt(state, snapshot);
 
-        const summary = await this.callLlm(
+        const { text: summary, author } = await this.callLlm(
           prompt,
           { model: this.config.tier1Model ?? 'fast', maxTokens: isConversation ? 500 : 300 },
           'low',
@@ -1276,6 +1281,7 @@ export class PresenceProxy {
 
         // Guard the output
         const guard = guardProxyOutput(summary);
+        if (guard.safe) originAuthor = author;
         message = guard.safe
           ? `${this.prefix} ${summary}`
           : `${this.prefix} ${this.config.agentName} is actively working. Your message has been delivered to the session.`;
@@ -1289,7 +1295,7 @@ export class PresenceProxy {
     if (state.cancelled) return;
 
     state.tier1FiredAt = Date.now();
-    await this.sendProxyMessage(topicId, message, 1);
+    await this.sendProxyMessage(topicId, message, 1, originAuthor);
     this.persistState(topicId, state);
 
     // Add to conversation history
@@ -1377,13 +1383,14 @@ export class PresenceProxy {
     const outputChanged = state.tier1SnapshotHash !== hash;
 
     let message: string;
+    let originAuthor = deterministicAutomationAuthor();
 
     if (typeof honest2 === 'string') {
       // Honest stuck reason — skip the LLM path entirely.
       message = honest2;
     } else {
       try {
-        const summary = await this.callLlm(
+        const { text: summary, author } = await this.callLlm(
           this.buildTier2Prompt(state, snapshot, outputChanged),
           { model: this.config.tier2Model ?? 'fast', maxTokens: 500 },
           'low',
@@ -1393,6 +1400,7 @@ export class PresenceProxy {
         state.lastLlmCallAt = Date.now();
 
         const guard = guardProxyOutput(summary);
+        if (guard.safe) originAuthor = author;
         message = guard.safe
           ? `${this.prefix} 2-minute update — ${summary}`
           : `${this.prefix} 2-minute update — ${this.config.agentName} is still working. ${outputChanged ? 'Output has changed since the last check.' : 'Output appears unchanged — may be waiting on a long operation.'}`;
@@ -1404,7 +1412,7 @@ export class PresenceProxy {
     if (state.cancelled) return;
 
     state.tier2FiredAt = Date.now();
-    await this.sendProxyMessage(topicId, message, 2);
+    await this.sendProxyMessage(topicId, message, 2, originAuthor);
     this.persistState(topicId, state);
 
     state.conversationHistory.push({ role: 'proxy', text: message, timestamp: Date.now() });
@@ -1624,6 +1632,7 @@ export class PresenceProxy {
     const hasActiveProcesses = processes.length > 0;
     const hasLongRunning = isLongRunningProcess(processes);
 
+    let originAuthor = deterministicAutomationAuthor();
     let assessment: 'working' | 'waiting' | 'stalled' | 'dead';
     let summary: string;
 
@@ -1635,7 +1644,7 @@ export class PresenceProxy {
         // Session was active at tier 1 but died before tier 3 — likely completed normally.
         // Use LLM to summarize what it did.
         try {
-          const completionSummary = await this.callLlm(
+          const { text: completionSummary, author } = await this.callLlm(
             `A Claude Code session was working on a task and has now exited. Based on the last terminal output, summarize what the session accomplished in 1-2 sentences. If it looks like it completed its work, say so. If it looks like it crashed or failed, note that.\n\nTerminal output:\n${state.tier1Snapshot.slice(-2000)}`,
             { model: this.config.tier1Model ?? 'fast', maxTokens: 200 },
             'low',
@@ -1649,7 +1658,7 @@ export class PresenceProxy {
           state.tier3FiredAt = Date.now();
           state.tier3Assessment = 'dead';
           state.tier3Summary = safeSummary;
-          await this.sendProxyMessage(topicId, msg, 3);
+          await this.sendProxyMessage(topicId, msg, 3, guard.safe ? author : deterministicAutomationAuthor());
           this.persistState(topicId, state);
           state.conversationHistory.push({ role: 'proxy', text: msg, timestamp: Date.now() });
           this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
@@ -1684,7 +1693,7 @@ export class PresenceProxy {
     } else {
       // No active processes or deterministic live signal — use LLM to assess.
       try {
-        const llmResult = await this.callLlm(
+        const { text: llmResult, author } = await this.callLlm(
           this.buildTier3Prompt(state, snapshot, processes),
           { model: this.config.tier3Model ?? 'balanced', maxTokens: 1000 },
           'high',
@@ -1702,6 +1711,7 @@ export class PresenceProxy {
         // Extract summary (first line after classification or full text)
         const lines = llmResult.split('\n').filter(l => l.trim());
         summary = lines.find(l => !l.match(/^(working|waiting|stalled|dead)$/i)) || llmResult.slice(0, 200);
+        originAuthor = author;
       } catch {
         // LLM failed — fall back to the deterministic framework-aware signal
         // instead of blindly assuming "working". The old "default to active"
@@ -1727,19 +1737,21 @@ export class PresenceProxy {
     let message: string;
 
     if (assessment === 'stalled' || assessment === 'dead') {
+      if (assessment === 'dead') originAuthor = deterministicAutomationAuthor();
       const action = assessment === 'dead' ? 'The session appears to have stopped.' : `${this.config.agentName} appears to be stuck — ${summary}`;
       message = `${this.prefix} 5-minute check — ${action}\n\nReply "unstick" to attempt recovery, or "restart" to start a fresh session.`;
     } else {
       // Working or waiting
       const guard = guardProxyOutput(summary);
       const safeSummary = guard.safe ? summary : 'making progress on your request';
+      if (!guard.safe) originAuthor = deterministicAutomationAuthor();
       message = `${this.prefix} 5-minute check — ${this.config.agentName} is still actively working — ${safeSummary}. I'll keep watching.`;
 
       // Schedule re-check
       this.scheduleTier(topicId, 3, this.tier3RecheckDelayMs);
     }
 
-    await this.sendProxyMessage(topicId, message, 3);
+    await this.sendProxyMessage(topicId, message, 3, originAuthor);
     this.persistState(topicId, state);
     state.conversationHistory.push({ role: 'proxy', text: message, timestamp: Date.now() });
 
@@ -1996,12 +2008,13 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
     options: IntelligenceOptions,
     priority: 'low' | 'high',
     timeoutMs: number,
-  ): Promise<string> {
+  ): Promise<{ text: string; author: OriginAutomationAuthor }> {
     // Default attribution so every PresenceProxy LLM call is labeled in
     // /metrics/features (this is a high-frequency monitor); a caller that already
     // set attribution wins.
+    const authorCall = new OriginAuthorCall();
     const opts: IntelligenceOptions = {
-      ...options,
+      ...authorCall.options(options),
       attribution: options.attribution ?? { component: 'PresenceProxy' },
     };
     // Prefer the shared cross-monitor queue when wired (spec follow-up). Both
@@ -2011,7 +2024,7 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
     // daily spend cap across both monitors.
     if (this.config.sharedLlmQueue) {
       try {
-        return await this.config.sharedLlmQueue.enqueue(
+        const text = await this.config.sharedLlmQueue.enqueue(
           'interactive',
           async (signal) => {
             const result = await Promise.race([
@@ -2029,13 +2042,14 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
           // Rough cost estimate — tier messages are ~1-3k tokens.
           1,
         );
+        return { text, author: authorCall.snapshot() };
       } catch (err) {
         // Surface the cap-exceeded / aborted cases to the caller, same as the
         // legacy queue's behavior (caller decides whether to fallback).
         throw err;
       }
     }
-    return this.llmQueue.enqueue(async () => {
+    const text = await this.llmQueue.enqueue(async () => {
       const result = await Promise.race([
         this.config.intelligence.evaluate(prompt, opts),
         new Promise<never>((_, reject) =>
@@ -2044,9 +2058,10 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
       ]);
       return result;
     }, priority);
+    return { text, author: authorCall.snapshot() };
   }
 
-  private async sendProxyMessage(topicId: number, text: string, tier: number): Promise<void> {
+  private async sendProxyMessage(topicId: number, text: string, tier: number, originAuthor = deterministicAutomationAuthor()): Promise<void> {
     // WS3 one-voice election: only this topic's owner machine speaks the 🔭
     // voice. Single chokepoint for every tier emission. Silent/defer verdicts
     // simply skip this send — the proxy's own cadence re-evaluates later, and
@@ -2118,6 +2133,7 @@ IMPORTANT BIAS: Default to "working" or "waiting" unless there is STRONG evidenc
         source: 'presence-proxy',
         tier,
         isProxy: true,
+        originAuthor,
       });
     } catch (err) {
       console.error(`[PresenceProxy] Failed to send message to topic ${topicId}:`, (err as Error).message);

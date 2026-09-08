@@ -41,6 +41,8 @@ import type { ThreadResumeMap } from './ThreadResumeMap.js';
 import type { SalienceGate, SalienceVerdict } from './SalienceGate.js';
 import type { MessageEnvelope } from '../messaging/types.js';
 import type { MessageStore } from '../messaging/MessageStore.js';
+import type { TelegramOriginService } from '../messaging/telegram-origin/TelegramOriginService.js';
+import { withThreadlineForwardedAuthor } from './TelegramOriginAttribution.js';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -50,6 +52,7 @@ export interface TopicLinkageDeps {
   commitmentTracker: CommitmentTracker;
   salienceGate: SalienceGate;
   messageStore?: MessageStore | null;
+  originService?: TelegramOriginService;
   /**
    * Inject text into a live tmux session, returning whether the session
    * actually CONSUMED it (not merely dispatched). May be async — production
@@ -476,7 +479,8 @@ export class TopicLinkageHandler {
           deliveryMode,
         });
         if (this.deps.sendTelegramToTopic) {
-          await this.deps.sendTelegramToTopic(topicId, surfaceText);
+          await withThreadlineForwardedAuthor(this.deps.originService, 'inbound', topicId, surfaceText,
+            () => this.deps.sendTelegramToTopic!(topicId, surfaceText));
           telegramSent = true;
           this.recordSurface(threadId);
           this.recordTopicSurface(topicId);

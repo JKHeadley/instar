@@ -338,6 +338,7 @@ export class AgentServer {
     senderBotId: string;
   }) => Promise<{ ok: boolean; agentMessage?: boolean; reason?: string }>;
   private routeContext: {
+    telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime | null;
     wsManager: import('./WebSocketManager.js').WebSocketManager | null;
     workQueue?: WorkQueueRegistry | null;
     pendingRelayLookup?: (deliveryId: string) => boolean;
@@ -633,6 +634,7 @@ export class AgentServer {
     state: StateManager;
     scheduler?: JobScheduler;
     telegram?: TelegramAdapter;
+    telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime;
     relationships?: RelationshipManager;
     feedback?: FeedbackManager;
     dispatches?: DispatchManager;
@@ -4213,6 +4215,7 @@ export class AgentServer {
       // `initialized: false` honestly on a build that never wired it).
       selfActionGovernor: getSelfActionGovernor(),
       telegram: options.telegram ?? null,
+      telegramOrigin: options.telegramOrigin ?? null,
       relationships: options.relationships ?? null,
       feedback: options.feedback ?? null,
       dispatches: options.dispatches ?? null,
@@ -6432,6 +6435,7 @@ export class AgentServer {
         }),
         bootId,
         toneGate: this.toneGate,
+        recoverOrigin: this.routeContext?.telegramOrigin ? () => this.routeContext!.telegramOrigin!.recoverHeld() : undefined,
         subscribeFailureEvents: this.wsManager
           ? (listener) => {
               const handler = (event: Record<string, unknown>) => {

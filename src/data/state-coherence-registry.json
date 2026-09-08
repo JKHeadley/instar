@@ -5,6 +5,32 @@
   "sourceDoc": "docs/specs/STATE-COHERENCE-REGISTRY.md",
   "entries": [
     {
+      "category": "telegram-origin-session-custody",
+      "description": "Machine-bound preparation credential verifiers and the owner-only notice IPC socket. Raw credentials are never persisted. Session liveness and incarnation must still be current; a copied verifier or stale socket never grants delivery authority. Excluded structurally from git sync and replicated backup.",
+      "scope": "machine-local", "freshness": "real-time", "conflictShape": "single-writer", "transport": "none",
+      "paths": ["origin-sessions-*.json", "origin-sessions-*.json.*.tmp", "origin-notice.sock"],
+      "grandfathered": false,
+      "retention": { "class": "A", "access": "bounded", "maxBytes": 16384000,
+        "note": "At most 1000 session verifiers; revoked at session end, replaced on incarnation rotation. Socket is removed on orderly owner close and contains no payload or credential." }
+    },
+    {
+      "category": "telegram-origin-retained-evidence",
+      "description": "Immutable Telegram origin envelopes, child/attempt receipts and idempotent metric events beside the canonical PendingRelayStore entries. Entries alone own execution; retained metadata, spool and archives never claim sends. Operator pool reads federate authorized shards and disclose missing coverage.",
+      "scope": "coherent-on-demand",
+      "freshness": "real-time",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": ["state/pending-relay.*.sqlite", "state/telegram-origin-spool/", "state/telegram-origin-archives/"],
+      "grandfathered": false,
+      "retention": {
+        "class": "C",
+        "access": "sqlite",
+        "complianceHold": true,
+        "maxAgeMs": 2592000000,
+        "note": "30 days hot; bounded indexed archive batches retain evidence indefinitely with count/digest manifests. Queue payload cleanup and archive movement never remove receipt/origin lookup or aggregate totals. Execution remains in the existing credential-owner queue; evidence copies are inert. Disk pressure never silently drops retained metadata."
+      }
+    },
+    {
       "category": "undated-action-resurfacer-ledger",
       "description": "Pool-agreed stable-owner event ledger for undated high/critical action cooldown, delivery claims, outcome observation, and terminal disposition. It is keyed to one machine's local action-id namespace and may act only when every registered pool member's latest authenticated advert agrees on that owner and the same owner holds the serving lease; missing or divergent adverts and handoffs away pause instead of starting a fresh ledger.",
       "scope": "machine-local",

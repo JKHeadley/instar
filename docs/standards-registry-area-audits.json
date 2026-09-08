@@ -2,30 +2,30 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-08-23T06:10:18.000Z",
-      "auditRef": "docs/audits/standards-area-audit-building-2026-08-23.json",
-      "auditSha256": "0c994234dec7c8109443ef7fabc1ac28da2bef58696a0f995dad913849174e11",
-      "areaSha256": "05d92649023c23dbccd6f64bbf757b5dfd0209cf1632c17243a7d3171e2fcba5",
+      "lastAuditedAt": "2026-09-08T15:09:59.809Z",
+      "auditRef": "docs/audits/telegram-origin-deadline-family-review-2026-09-08.json",
+      "auditSha256": "30d85181c94996a62e8dd7e4acc8614bd1e80cfb55f25bebf2a02dc7d9d041d1",
+      "areaSha256": "16a13b300e851807fc8943e18caa421cb635ee46ef657fbbd4594390f4acb08c",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
       }
     },
     "Interaction": {
-      "lastAuditedAt": "2026-08-13T17:48:50.000Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-13c.json",
-      "auditSha256": "89a056b6d6804b3df6a9664acdcd16e3b0c876cce142257cff5d4db6a04bc8e8",
-      "areaSha256": "0a3d627010b43d88a23fca5e00ccc016a643e6a14c814e87c8ad10660124d099",
+      "lastAuditedAt": "2026-09-07T03:58:13.637Z",
+      "auditRef": "docs/audits/telegram-message-origin-interaction-family.json",
+      "auditSha256": "0e3f891eb8f329d68cc50202f825579ef718c2087197ecc9d3cea04ae898d735",
+      "areaSha256": "e83a01a0c25843f89ed07600e594ed4fdd68fa0777aad288b2afde3b4d07b9c1",
       "refResolutionFloor": {
         "enforced": 8,
         "total": 13
       }
     },
     "Shipping": {
-      "lastAuditedAt": "2026-08-13T17:48:50.000Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-13c.json",
-      "auditSha256": "89a056b6d6804b3df6a9664acdcd16e3b0c876cce142257cff5d4db6a04bc8e8",
-      "areaSha256": "c06cffa5e7be20cf9364b6faa51d99503e375a763ab71fb7b7ba1998c04a4f22",
+      "lastAuditedAt": "2026-09-08T15:09:59.809Z",
+      "auditRef": "docs/audits/telegram-origin-deadline-family-review-2026-09-08.json",
+      "auditSha256": "30d85181c94996a62e8dd7e4acc8614bd1e80cfb55f25bebf2a02dc7d9d041d1",
+      "areaSha256": "e6cb695f7f5de652f6a36cb40e8d70ae955e42704902f31efbeb4633d0aeb588",
       "refResolutionFloor": {
         "enforced": 5,
         "total": 7
@@ -52,10 +52,10 @@
       }
     },
     "The Substrate": {
-      "lastAuditedAt": "2026-08-22T19:05:00.000Z",
-      "auditRef": "docs/audits/standards-area-audit-2026-08-22.json",
-      "auditSha256": "4c844ba18d26bc6605e82057ceb59bdaf4eed9e7da302691c9f620965d8ae1f0",
-      "areaSha256": "83b311b42cfca904f3bf75c23a8b5990c13729cc2926b92c2b4f2d51929c0fe1",
+      "lastAuditedAt": "2026-09-08T15:09:59.809Z",
+      "auditRef": "docs/audits/telegram-origin-deadline-family-review-2026-09-08.json",
+      "auditSha256": "30d85181c94996a62e8dd7e4acc8614bd1e80cfb55f25bebf2a02dc7d9d041d1",
+      "areaSha256": "7d42dc13c242f17b8cb01ddd82ca252a7193f0745401d3100d76a875cbbe91e8",
       "refResolutionFloor": {
         "enforced": 16,
         "total": 26

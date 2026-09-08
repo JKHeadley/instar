@@ -22,7 +22,7 @@ describe('poll-ownership lease — wiring integrity', () => {
     const src = read('src/lifeline/TelegramLifeline.ts');
     // import + call after the successful-poll reset block
     expect(src).toMatch(/import \{ writeLease as writePollOwnerLease \} from '\.\/TelegramPollOwnerLease\.js'/);
-    expect(src).toMatch(/writePollOwnerLease\(this\.projectConfig\.stateDir, this\.config\.token, process\.pid\)/);
+    expect(src).toMatch(/writePollOwnerLease\(this\.projectConfig\.stateDir, this\.config\.token, process\.pid, Date\.now\(\),/);
     // it lives in the successful-poll branch (after backoff counter resets)
     const idx = src.indexOf('writePollOwnerLease(');
     const window = src.slice(Math.max(0, idx - 1500), idx + 100);

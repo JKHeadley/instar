@@ -16,6 +16,7 @@ import os from 'node:os';
 import type { InstarConfig, SessionManagerConfig, JobSchedulerConfig, FeedbackConfig, AgentType } from './types.js';
 import { CANONICAL_FEEDBACK_URL } from './canonicalFeedback.js';
 import { resolveFrameworkAlias } from './frameworkFacts.js';
+import { agentRegistryPath } from './AgentRegistryPaths.js';
 
 const DEFAULT_PORT = 4040;
 const DEFAULT_MAX_SESSIONS = 10;
@@ -794,9 +795,11 @@ export function resolveAgentDir(nameOrPath?: string): string {
     return agentDir;
   }
 
-  // Check global registry for the name (dynamic import to avoid circular deps)
+  // Resolve before the read fallback: an invalid explicit trial directory
+  // must never silently revert to another registry or a generic not-found.
+  const registryPath = agentRegistryPath();
+  // Check the selected registry for the name.
   try {
-    const registryPath = path.join(os.homedir(), '.instar', 'registry.json');
     if (fs.existsSync(registryPath)) {
       const data = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
       const entries = Array.isArray(data.entries) ? data.entries : [];

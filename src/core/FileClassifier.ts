@@ -1,3 +1,4 @@
+import { ORIGIN_LOCAL_PROJECT_GLOBS } from '../messaging/telegram-origin/OriginLocalPaths.js';
 /**
  * FileClassifier — Routes files to appropriate merge strategies before LLM resolution.
  *
@@ -121,6 +122,7 @@ const DEFAULT_BINARY_EXTENSIONS = new Set([
 ]);
 
 const DEFAULT_GENERATED_PATTERNS = [
+  ...ORIGIN_LOCAL_PROJECT_GLOBS,
   'dist/', 'build/', '.next/', 'out/',
   'node_modules/', '__pycache__/', '.pytest_cache/',
   '*.min.js', '*.min.css', '*.map',

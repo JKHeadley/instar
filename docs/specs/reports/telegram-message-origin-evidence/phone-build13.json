@@ -1,0 +1,61 @@
+{
+  "kind": "actual-chrome-phone-origin-panel",
+  "viewport": {
+    "width": 375,
+    "height": 812
+  },
+  "externalRequests": [
+    {
+      "origin": "https://cdn.jsdelivr.net",
+      "blocked": true
+    },
+    {
+      "origin": "https://cdn.jsdelivr.net",
+      "blocked": true
+    },
+    {
+      "origin": "https://cdn.jsdelivr.net",
+      "blocked": true
+    },
+    {
+      "origin": "https://cdn.jsdelivr.net",
+      "blocked": true
+    },
+    {
+      "origin": "https://cdn.jsdelivr.net",
+      "blocked": true
+    },
+    {
+      "origin": "https://cdn.jsdelivr.net",
+      "blocked": true
+    },
+    {
+      "origin": "https://cdn.jsdelivr.net",
+      "blocked": true
+    },
+    {
+      "origin": "https://cdn.jsdelivr.net",
+      "blocked": true
+    }
+  ],
+  "checks": [
+    "actual PIN unlock",
+    "three-tile glance without exposed details",
+    "rendered durable audit record",
+    "message row opens saved evidence",
+    "recording tile opens real status details",
+    "Save visible after one Display settings tap",
+    "checkbox save persisted",
+    "original immutable evidence preserved"
+  ],
+  "glanceScreenshot": "/tmp/echo-origin-phone-browser-W5O3tS/glance.png",
+  "layout": {
+    "viewport": 375,
+    "documentWidth": 375,
+    "panelWidth": 375,
+    "checkboxes": 5,
+    "saveBottom": 676.6875
+  },
+  "status": "passed",
+  "screenshot": "/tmp/echo-origin-phone-browser-W5O3tS/phone.png"
+}

@@ -16,6 +16,7 @@
 import type { IntelligenceFramework } from './intelligenceProviderFactory.js';
 import { KNOWN_MODEL_IDS, MODEL_ID_RE, escapeIdForAudit } from './ModelTierEscalation.js';
 import { SUPPORTED_FRAMEWORKS } from './TopicFrameworksStore.js';
+import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.js';
 
 export const THINKING_MODES = ['off', 'low', 'medium', 'high', 'max'] as const;
 export type ThinkingMode = (typeof THINKING_MODES)[number];
@@ -121,6 +122,7 @@ export interface ProfileValidationError {
 }
 
 export interface ProfilePatchInput {
+  messageOriginDisplay?: Partial<OriginDisplaySettings> | null;
   framework?: string | null;
   model?: string | null;
   modelTier?: string | null;
@@ -130,6 +132,7 @@ export interface ProfilePatchInput {
 }
 
 export interface ValidatedProfilePatch {
+  messageOriginDisplay?: Partial<OriginDisplaySettings> | null;
   framework?: IntelligenceFramework | null;
   model?: string | null;
   modelTier?: ProfileModelTier | null;
@@ -162,6 +165,16 @@ export function validateProfileFields(
   effectiveFramework: IntelligenceFramework,
 ): { ok: true; patch: ValidatedProfilePatch } | { ok: false; error: ProfileValidationError } {
   const out: ValidatedProfilePatch = {};
+  if (patch.messageOriginDisplay !== undefined) {
+    const display = patch.messageOriginDisplay;
+    if (display === null) out.messageOriginDisplay = null;
+    else if (typeof display !== 'object' || Array.isArray(display) ||
+      Object.keys(display).some(key => !['enabled', 'machine', 'harness', 'model'].includes(key)) ||
+      Object.values(display).some(value => typeof value !== 'boolean')) {
+      return { ok: false, error: { field: 'messageOriginDisplay', failure: 'off-enum',
+        reason: 'messageOriginDisplay accepts only enabled, machine, harness and model booleans' } };
+    } else out.messageOriginDisplay = { ...display };
+  }
 
   if (patch.framework !== undefined) {
     if (patch.framework === null) {

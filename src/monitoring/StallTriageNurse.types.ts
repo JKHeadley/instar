@@ -47,6 +47,8 @@ export interface TriageDiagnosis {
   action: TreatmentAction;
   confidence: 'high' | 'medium' | 'low';
   userMessage: string;
+  /** Infrastructure evidence for the call whose userMessage was retained. */
+  originAuthor?: import('../messaging/telegram-origin/OriginAutomationAuthor.js').OriginAutomationAuthor;
 }
 
 export interface TriageContext {
@@ -93,7 +95,7 @@ export interface TriageDeps {
   sendKey: (sessionName: string, key: string) => boolean;
   sendInput: (sessionName: string, text: string) => boolean;
   getTopicHistory: (topicId: number, limit: number) => Array<{ text: string; fromUser: boolean; timestamp: string }>;
-  sendToTopic: (topicId: number, text: string) => Promise<any>;
+  sendToTopic: (topicId: number, text: string, originAuthor?: import('../messaging/telegram-origin/OriginAutomationAuthor.js').OriginAutomationAuthor) => Promise<any>;
   respawnSession: (sessionName: string, topicId: number, options?: { silent?: boolean }) => Promise<void>;
   clearStallForTopic: (topicId: number) => void;
   /** Optional: Get stuck child processes for a session (process-tree fallback) */

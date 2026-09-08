@@ -191,6 +191,8 @@ export class MultiMachineCoordinator extends EventEmitter {
   private leaseRenewTimer: ReturnType<typeof setInterval> | null = null;
   private leaseRenewing: boolean = false;
   private leaseRenewStartLogged: boolean = false;
+  private readonly originLeaseRenewalOwners = new Set<symbol>();
+  private leaseRenewStopped = false;
   /**
    * B2 (multimachine-lease-poll-robustness, Decision 8) — the lease flap
    * circuit-breaker. Lazily built when the churnDetector gate resolves on.
@@ -385,6 +387,7 @@ export class MultiMachineCoordinator extends EventEmitter {
    * Returns the determined role for this machine.
    */
   start(): MachineRole {
+    this.leaseRenewStopped = false;
     // Check if multi-machine is set up
     if (!this.identityManager.hasIdentity()) {
       this._enabled = false;
@@ -513,6 +516,8 @@ export class MultiMachineCoordinator extends EventEmitter {
   }
 
   stop(): void {
+    this.leaseRenewStopped = true;
+    this.originLeaseRenewalOwners.clear();
     if (this.heartbeatWriteTimer) {
       clearInterval(this.heartbeatWriteTimer);
       this.heartbeatWriteTimer = null;
@@ -653,6 +658,21 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   attachLeaseCoordinator(lc: LeaseCoordinator): void {
     this.leaseCoordinator = lc;
+  }
+
+  /** Origin egress requires a current fenced lease throughout its lifetime.
+   * Enroll before initializeLease: the existing holder-only timer supplies that
+   * dependency when its flag is omitted. Explicit false remains authoritative;
+   * this never grants a lease or enables the other B3 rollout mechanisms. */
+  enrollOriginWriterLeaseRenewal(): () => void {
+    if (this.leaseRenewStopped) throw new Error('origin-lease-renewal-coordinator-stopped');
+    const owner = Symbol('telegram-origin-writer');
+    this.originLeaseRenewalOwners.add(owner);
+    if (!this.leaseRenewTimer) this.startLeaseRenewTimer();
+    return () => {
+      if (!this.originLeaseRenewalOwners.delete(owner) || this.leaseRenewStopped) return;
+      if (!this.resilientRenewEnabled()) this.startLeaseRenewTimer();
+    };
   }
 
   /**
@@ -924,13 +944,13 @@ export class MultiMachineCoordinator extends EventEmitter {
   }
 
   /**
-   * B3 — resolve the resilientRenew gate. OMITTED `enabled` ⇒ developmentAgent
-   * gate (live-on-dev / dark-on-fleet); an explicit boolean wins. Read live so a
-   * config flip applies on the next renew tick without a restart.
+   * B3 keeps its standalone dev gate. An enrolled origin writer requires this
+   * existing renewal carrier when the flag is omitted; explicit booleans win.
+   * Read live so disabling it takes effect on the next renew tick.
    */
   private resilientRenewEnabled(): boolean {
     const explicit = this.config.multiMachine?.leaseSelfHeal?.resilientRenew?.enabled;
-    return resolveDevAgentGate(explicit, this.config);
+    return explicit ?? (this.originLeaseRenewalOwners.size > 0 || resolveDevAgentGate(undefined, this.config));
   }
 
   /** B3 — the renew cadence, clamped so it is always comfortably under the TTL. */
@@ -951,7 +971,7 @@ export class MultiMachineCoordinator extends EventEmitter {
       clearInterval(this.leaseRenewTimer);
       this.leaseRenewTimer = null;
     }
-    if (!this.leaseCoordinator || !this.resilientRenewEnabled()) return;
+    if (this.leaseRenewStopped || !this.leaseCoordinator || !this.resilientRenewEnabled()) return;
     const interval = this.renewIntervalMs();
     if (!this.leaseRenewStartLogged) {
       console.log(`[MultiMachine] lease renew timer armed (every ${interval}ms; TTL ${this.leaseCoordinator.ttlMs}ms) — B3 resilient renew`);
@@ -968,7 +988,7 @@ export class MultiMachineCoordinator extends EventEmitter {
    * can't wedge the timer.
    */
   private async leaseRenewTick(): Promise<void> {
-    if (this.leaseRenewing || !this.leaseCoordinator) return;
+    if (this.leaseRenewStopped || !this.resilientRenewEnabled() || this.leaseRenewing || !this.leaseCoordinator) return;
     // A muted/observe-only machine NEVER renews — same rule tickLease's
     // observe-only branch enforces. Without this, a machine that booted
     // observe-only while still NAMED in a persisted prior lease (the F3

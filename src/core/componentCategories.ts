@@ -150,6 +150,7 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   'correction-learning': 'reflector',    // distill recurring corrections → preference (server:correction-learning)
   'correction-class-review': 'reflector', // standards/process class review proposal for each correction
   'completion-claim-verify': 'reflector', // observe-only completion evidence assessment
+  'telegram-origin-recovery': 'reflector', // diagnose unknown acceptance; never authorizes retries
   'mentor-stage-b': 'reflector',         // classify mentor signals → forensic findings
 };
 

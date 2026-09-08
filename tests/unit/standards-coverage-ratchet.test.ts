@@ -1240,7 +1240,10 @@ describe('standards-coverage ratchet script', () => {
     // was refreshed by a round that genuinely accepts
     // (docs/specs/reports/building-family-area-audit-2026-08-23-round2.md) —
     // never by editing this number to make a run green.
-    expect(report.total).toBe(90);
+    // 2026-09-06: Justin explicitly requested the Telegram message-origin
+    // standard (topic 69507). It adds one Interaction article; the content-bound
+    // family audit must still pass below, without lowering its floor.
+    expect(report.total).toBe(91);
     expect(report.enforcedRatio).toBe(0);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',

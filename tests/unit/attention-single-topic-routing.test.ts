@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { TelegramAdapter, type TelegramConfig, attentionBodyBlocks } from '../../src/messaging/TelegramAdapter.js';
+import { TelegramOriginHoldError } from '../../src/messaging/telegram-origin/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 interface Recorder {
@@ -84,6 +85,26 @@ describe('Single-alerts-topic routing (default mode)', () => {
     await adapter.stop();
     vi.restoreAllMocks();
     SafeFsExecutor.safeRmSync(tmpDir, { recursive: true, force: true, operation: 'single-topic-routing cleanup' });
+  });
+
+  it('does not turn an uncertain prompt edit into a newly prepared retry', async () => {
+    makeAdapter();
+    const failure = new TelegramOriginHoldError('receipt-unavailable', 'original-operation', 'outcome-unknown');
+    const api = vi.spyOn(adapter as any, 'apiCall').mockRejectedValue(failure);
+    await expect((adapter as any).editMessageWithRetry(123, 'Prompt answered')).rejects.toBe(failure);
+    expect(api).toHaveBeenCalledOnce();
+  });
+  it('keeps origin recovery in the operator hub even with legacy per-item routing enabled', async () => {
+    makeAdapter({ attentionRouting: { mode: 'per-item' }, getAttentionHubTopicId: () => 7848 });
+    const rec = installApiStub(adapter);
+    const item = await adapter.createAttentionItem({ id: 'origin-recovery', title: 'Telegram browser paused',
+      category: 'telegram-origin', priority: 'HIGH', summary: 'The account check failed.' }, { hubOnly: true });
+    expect(item.topicId).toBe(7848);
+    expect(rec.forumTopicsCreated).toBe(0);
+    expect(rec.messagesByThread.get(7848)).toHaveLength(1);
+    await adapter.createAttentionItem({ id: 'origin-recovery', title: 'Duplicate', category: 'telegram-origin',
+      priority: 'HIGH' }, { hubOnly: true });
+    expect(rec.messagesByThread.get(7848)).toHaveLength(1);
   });
 
   it('EVERY priority — LOW through URGENT — posts into the injected hub with ZERO forum topics created', async () => {

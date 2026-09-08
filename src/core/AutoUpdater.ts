@@ -1,3 +1,4 @@
+import { sendDeterministicTelegramNotice } from '../messaging/telegram-origin/OriginDeterministicSend.js';
 /**
  * Auto Updater — built-in periodic update mechanism.
  *
@@ -1171,7 +1172,7 @@ export class AutoUpdater {
       try {
         const topicId = this.config.notificationTopicId || this.getNotificationTopicId();
         if (topicId) {
-          await this.telegram.sendToTopic(topicId, formatted);
+          await sendDeterministicTelegramNotice(this.telegram, 'auto-updater', topicId, formatted);
           return;
         }
       } catch (err) {

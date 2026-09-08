@@ -9,9 +9,40 @@
  * DETERMINISTIC path (sendToTopic, never the LLM tone gate), resolves the real
  * Lifeline topic id, and that the old jargon-leaking message is gone.
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { wireTelegramRouting } from '../../src/commands/server.js';
+import * as replies from '../../src/messaging/ColdStartFallbackReply.js';
+import * as deterministicOrigin from '../../src/messaging/telegram-origin/OriginDeterministicSend.js';
+import type { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
+import type { SessionManager } from '../../src/core/SessionManager.js';
+import type { Message } from '../../src/core/types.js';
+
+// Exercise real inbound routing without rendering identity shadows into this checkout.
+vi.mock('../../src/core/IdentityRenderer.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/core/IdentityRenderer.js')>(),
+  ensureFrameworkIdentityFile: vi.fn(() => null),
+}));
+const fixture = vi.hoisted(() => ({ inboundDir: '' }));
+vi.mock('../../src/messaging/shared/telegramInboundFiles.js', () => ({
+  getTelegramInboundDir: () => {
+    if (!fixture.inboundDir) throw new Error('test inbound fixture is not active');
+    return fixture.inboundDir;
+  },
+}));
+beforeEach(() => { fixture.inboundDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-cold-start-notice-')); });
+afterEach(async () => {
+  // Routing assertions await the terminal spawn/notice boundary; drain its
+  // remaining promise continuations before removing only this test's files.
+  await new Promise<void>(resolve => setImmediate(resolve));
+  vi.restoreAllMocks();
+  const directory = fixture.inboundDir; fixture.inboundDir = '';
+  SafeFsExecutor.safeRmSync(directory, { recursive: true, force: true, operation: 'test:instar-cold-start-notice-inbound-cleanup' });
+  expect(fs.existsSync(directory)).toBe(false);
+});
 
 const SERVER_SRC = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
 
@@ -35,8 +66,41 @@ describe('G1 cold-start fallback — wiring integrity', () => {
     expect(SERVER_SRC).toMatch(/kind:\s*'restart'/);
   });
 
-  it('delivers the fallback on the deterministic path (sendToTopic with the built userMessage)', () => {
-    expect(SERVER_SRC).toMatch(/telegram\.sendToTopic\(topicId,\s*userMessage\)/);
+  it.each(['spawn', 'restart'] as const)('delivers the real %s fallback through its origin producer with the builder output', async kind => {
+    const failure = new Error('Session limit (3) reached');
+    const builder = vi.spyOn(replies, 'buildColdStartFallbackReply');
+    const deterministicSend = vi.spyOn(deterministicOrigin, 'sendDeterministicTelegramNotice');
+    const spawnInteractiveSession = vi.fn(async () => { throw failure; });
+    const rawAdapter = {
+      onTopicMessage: null as null | ((message: Message) => Promise<void>),
+      isAuthorizedSender: () => true, handleCommand: async () => false,
+      getTopicName: () => 'Reachable discussion', resolveTopicName: async () => 'Reachable discussion',
+      getSessionForTopic: () => kind === 'restart' ? 'dead-session' : null,
+      getTopicHistory: () => [], getLifelineTopicId: vi.fn(() => 457),
+      registerTopicSession: vi.fn(), sendToTopic: vi.fn(async (_topicId: number, _text: string) => ({ ok: true })),
+      sendMessageThroughFunnel: vi.fn(), isPolling: false,
+    };
+    const sessionManager = {
+      isSessionAlive: () => false, requiresCodexGenerationRespawn: () => false,
+      captureOutput: () => '', clearSessionFrameworkCache: vi.fn(),
+      spawnInteractiveSession, injectTelegramMessage: vi.fn(),
+    };
+    wireTelegramRouting(rawAdapter as unknown as TelegramAdapter, sessionManager as unknown as SessionManager);
+    await rawAdapter.onTopicMessage!({ id: 'tg-1', userId: '8820318295', content: 'Please continue this work',
+      channel: { type: 'telegram', identifier: '458' }, receivedAt: '2026-07-11T00:00:00Z',
+      metadata: { messageThreadId: 458, telegramUserId: 8820318295, firstName: 'Echo' },
+    } as Message);
+    await vi.waitFor(() => expect(builder).toHaveBeenCalledOnce());
+    expect(builder).toHaveBeenCalledWith({ error: failure, topicId: 458, topicName: 'Reachable discussion', lifelineTopicId: 457, kind });
+    const built = builder.mock.results[0].value;
+    expect(built).toMatchObject({ lifelineTopicId: 457, reason: 'session-limit' });
+    expect(built.userMessage).toContain('Lifeline topic');
+    const fallbackCalls = deterministicSend.mock.calls.filter(call => call[1] === 'cold-start-fallback');
+    expect(fallbackCalls).toEqual([[rawAdapter, 'cold-start-fallback', 458, built.userMessage]]);
+    expect(rawAdapter.sendToTopic.mock.calls.filter(call => call[1] === built.userMessage)).toEqual([[458, built.userMessage]]);
+    expect(rawAdapter.sendMessageThroughFunnel).not.toHaveBeenCalled();
+    expect(spawnInteractiveSession).toHaveBeenCalledOnce();
+    expect(sessionManager.injectTelegramMessage).not.toHaveBeenCalled();
   });
 
   it('drops the old jargon-leaking "increase maxSessions in your config" message', () => {

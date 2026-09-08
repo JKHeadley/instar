@@ -24,6 +24,10 @@ export const STAGE_B_CERTIFIED_SET = {
   ],
   "excluded": [
     {
+      "file": "src/core/AgentRegistryPaths.ts",
+      "reason": "Shared agent registry path/test-isolation utility reached through excluded Config.ts; outside Stage-B canaried delivery behavior, with unchanged default registry location and separate registry-path tests"
+    },
+    {
       "file": "src/core/AccountFollowMeGrants.ts",
       "reason": "LLM-provider plumbing reached through a dynamic import in a certified module; shared across every internal LLM feature and certified by its own suites — binding it would re-freeze releases on unrelated provider churn"
     },

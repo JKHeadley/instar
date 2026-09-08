@@ -22,6 +22,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { generateClaudeMd } from '../../src/scaffold/templates.js';
 // @ts-expect-error — .mjs script, no type declarations; runtime import is fine under vitest
 import { assembleNextMd, gatherFragmentInputs } from '../../scripts/assemble-next-md.mjs';
 
@@ -29,6 +30,7 @@ const srcDir = path.join(process.cwd(), 'src');
 const initSource = fs.readFileSync(path.join(srcDir, 'commands/init.ts'), 'utf-8');
 const migratorSource = fs.readFileSync(path.join(srcDir, 'core/PostUpdateMigrator.ts'), 'utf-8');
 const templatesSource = fs.readFileSync(path.join(srcDir, 'scaffold/templates.ts'), 'utf-8');
+const renderedTemplate = generateClaudeMd('fixture', 'Fixture', 4042, true);
 
 describe('Feature Delivery Completeness', () => {
   describe('Hook parity: init installHooks() → PostUpdateMigrator migrateHooks()', () => {
@@ -121,6 +123,7 @@ describe('Feature Delivery Completeness', () => {
     // When you add a new CLAUDE.md section to templates.ts, add a key phrase here.
     // The test will verify it exists in both files. If it's only in one, CI fails.
     const featureSections = [
+      '### Telegram message origin',
       // duplicate-session-standdown: both audiences (capability + the muzzled
       // session's behavioral contract) ship via generateClaudeMd AND a
       // content-sniffed migrateClaudeMd entry — full template↔migrator parity.
@@ -190,7 +193,8 @@ describe('Feature Delivery Completeness', () => {
 
     for (const section of featureSections) {
       it(`"${section}" is in templates.ts (new agents)`, () => {
-        expect(templatesSource).toContain(section);
+        // Shared section builders must actually reach generated output.
+        expect(templatesSource + renderedTemplate).toContain(section);
       });
 
       it(`"${section}" is in PostUpdateMigrator (existing agents)`, () => {
@@ -229,6 +233,24 @@ describe('Feature Delivery Completeness', () => {
     let sectionMatch;
     while ((sectionMatch = migratorSectionPattern.exec(migratorSource)) !== null) {
       detectedSections.push(sectionMatch[1]);
+    }
+
+    // Addenda upgrade an already-installed parent section independently. Their
+    // shadow migration uses shared builders after the main markers loop, so an
+    // existing parent heading cannot suppress a newly added paragraph.
+    const featureAddenda = [
+      ['messageOrigin.outageNotice.enabled', 'telegramOriginNoticeAwareness'],
+      ['Origin rollout certification:', 'telegramOriginCertificationAwareness'],
+      ['Origin lease renewal dependency:', 'telegramOriginLeaseAwareness'],
+      ['Message origins on your phone:', 'telegramOriginDashboardAwareness'],
+      ['Origin detector health:', 'telegramOriginDetectorAwareness'],
+    ];
+    for (const [phrase, builder] of featureAddenda) {
+      it(`origin addendum "${phrase}" reaches new and existing framework instructions`, () => {
+        expect(renderedTemplate).toContain(phrase);
+        expect(migratorSource).toContain(`if (!content.includes('${phrase}'))`);
+        expect(migratorSource).toContain(`['${phrase}', ${builder}]`);
+      });
     }
 
     // Some migrator sections are legacy patches for old agents that have since been
@@ -383,7 +405,7 @@ describe('Feature Delivery Completeness', () => {
 
     it('all new migrator CLAUDE.md sections are tracked', () => {
       for (const section of detectedSections) {
-        const isTracked = featureSections.includes(section) || legacyMigratorSections.includes(section);
+        const isTracked = featureSections.includes(section) || featureAddenda.some(([phrase]) => phrase === section) || legacyMigratorSections.includes(section);
         expect(
           isTracked,
           `PostUpdateMigrator adds CLAUDE.md section "${section}" but it's not tracked — add it to featureSections or legacyMigratorSections`
