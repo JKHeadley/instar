@@ -55,6 +55,18 @@ async function boot() {
   return { runtime, policy, network, send, lifecycle: lifecycle! };
 }
 describe('Telegram origin initialization and outage lifecycle', () => {
+  it('delivers an unbound automation without unknown footer labels while retaining unknown audit evidence', async () => {
+    const h = await boot();
+    await h.send();
+    const sent = JSON.parse(h.network.mock.calls[0][1].body as string);
+    expect(sent.text).toBe('Answer being held\n\nEcho · Mac Studio · automation');
+    const rows = (await h.runtime.store.listOrigins()).records;
+    const row = rows.find(entry => JSON.parse(entry.record.envelopeJson).destination.topicId === '42')!;
+    expect(row.operation?.state).toBe('accepted');
+    expect(JSON.parse(row.record.envelopeJson)).toMatchObject({ producerKind: 'server-automation',
+      harness: { status: 'unknown', value: null }, model: { status: 'unknown', value: null } });
+  });
+
   it('never recreates a batch operation after ambiguous network acceptance and batcher restart', async () => {
     const h = await boot();
     h.network.mockRejectedValue(new Error('response connection lost after dispatch'));

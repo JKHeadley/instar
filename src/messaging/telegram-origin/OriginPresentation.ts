@@ -21,23 +21,28 @@ export function validateOriginDisplay(value: unknown): Partial<OriginDisplaySett
   }
   return value as Partial<OriginDisplaySettings>;
 }
-function label(evidence: OriginEvidence, preferred?: string | null): string | null {
+function label(evidence: OriginEvidence, preferred?: string | null, omitUnknown = false): string | null {
   if (evidence.status === 'not-applicable') return null;
-  if (!evidence.value || evidence.status === 'unknown') return 'unknown';
+  if (!evidence.value || evidence.status === 'unknown') return omitUnknown ? null : 'unknown';
   const value = preferred ?? evidence.value;
   return evidence.status === 'configured' ? `${value} (configured)` : value;
 }
 export function originFooter(producer: TelegramOriginProducer, display: OriginDisplaySettings): string {
   if (!display.enabled || (!display.machine && !display.harness && !display.model)) return '';
   const values = [producer.agentName];
-  if (display.machine) values.push(label(producer.machine, producer.originMachineName) ?? 'unknown machine');
-  if (producer.producerKind === 'server-automation') {
+  const automation = producer.producerKind === 'server-automation';
+  if (display.machine) {
+    const machine = label(producer.machine, producer.originMachineName, automation);
+    if (machine) values.push(machine);
+    else if (!automation) values.push('unknown machine');
+  }
+  if (automation) {
     if (display.harness) {
       values.push('automation');
-      const harness = label(producer.harness, producer.harnessName);
+      const harness = label(producer.harness, producer.harnessName, true);
       if (harness) values.push(harness);
     }
-    if (display.model) { const model = label(producer.model); if (model) values.push(model); }
+    if (display.model) { const model = label(producer.model, undefined, true); if (model) values.push(model); }
   } else {
     if (display.harness) values.push(label(producer.harness, producer.harnessName) ?? 'unknown harness');
     if (display.model) values.push(label(producer.model) ?? 'unknown model');
