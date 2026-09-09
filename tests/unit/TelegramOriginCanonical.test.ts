@@ -46,3 +46,23 @@ describe('origin optional display', () => {
     expect(originFooter({ ...producer, model: { ...producer.model, value: null, status: 'unknown' } }, resolveOriginDisplay())).toContain('unknown');
   });
 });
+
+describe('automation origin display', () => {
+  const unknown = { value: null, status: 'unknown', sourceEventRef: null, observedAt: null, reason: 'native-source-unavailable' } as const;
+  const automation: TelegramOriginProducer = { ...producer, producerKind: 'server-automation', producerId: 'session-respawn',
+    sessionId: null, sessionIncarnation: null, turnId: null, harnessId: null, harnessName: null, harness: unknown, model: unknown };
+  it('omits missing automation fields without changing recorded evidence', () => {
+    const before = canonicalOrigin(automation);
+    expect(originFooter(automation, resolveOriginDisplay())).toBe('Echo · Mac Studio · automation');
+    expect(originFooter({ ...automation, machine: unknown }, resolveOriginDisplay())).toBe('Echo · automation');
+    expect(canonicalOrigin(automation)).toBe(before);
+    expect(originFooter({ ...automation, producerKind: 'session' }, resolveOriginDisplay())).toBe('Echo · Mac Studio · unknown · unknown');
+  });
+  it('retains known automation evidence and explicit display overrides', () => {
+    const known = { ...automation, harness: producer.harness, harnessName: 'Codex', model: { ...producer.model, status: 'configured' as const } };
+    expect(originFooter(known, resolveOriginDisplay())).toBe('Echo · Mac Studio · automation · Codex · gpt-6-astra (configured)');
+    expect(originFooter(known, resolveOriginDisplay({ harness: false }))).toBe('Echo · Mac Studio · gpt-6-astra (configured)');
+    expect(originFooter(automation, resolveOriginDisplay({ enabled: false }))).toBe('');
+    expect(originFooter({ ...automation, model: { ...unknown, status: 'not-applicable' } }, resolveOriginDisplay())).toBe('Echo · Mac Studio · automation');
+  });
+});

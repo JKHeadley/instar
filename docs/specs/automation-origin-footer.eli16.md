@@ -1,0 +1,9 @@
+# Automation footers show available information
+
+Justin’s screenshot showed a system notice ending with “echo · Mac Studio · automation · unknown · unknown”. The final two labels do not help someone reading a routine notice on their phone. New automation messages should show the information that is available, for example “echo · Mac Studio · automation”. If a particular automation has a known harness or model, that information still appears. A model known only from configuration still says “configured”. Missing machine information follows the same omission rule for automation.
+
+This change belongs in the shared footer formatter. It applies when new bot messages, attachment captions and browser messages are prepared, rather than editing message bodies after they have been recorded. The underlying origin record continues to store missing information as unknown, including its reason. Nothing about author verification, durable recording, permissions or delivery recovery changes. Session-authored messages retain their existing unknown labels. Display switches retain their existing meaning, and previously prepared messages keep their recorded bytes.
+
+The correction is covered by formatter checks for missing and known evidence, plus a runtime delivery test that checks both the outgoing footer and the preserved audit record. The release uses the normal package update path. There is no new setting, schema migration or operator action. Reverting the formatter in a subsequent patch restores the prior presentation without rewriting history.
+
+During validation, two credential-rotation checks needed to wait for the existing five-second observer refresh instead of assuming completion within one second. Their assertions still require the old credential to lose authority and prevent outgoing sends. Only their wait deadline changed.
