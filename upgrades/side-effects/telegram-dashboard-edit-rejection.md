@@ -172,3 +172,21 @@ fresh complete full run remain required on the correction.
 The corrected three-file run passed all 24 tests on the dashboard worktree, including
 the real production-Boot restart cases. Runtime source is unchanged from its passing
 build; full-suite validation and CI are still required.
+
+The fresh full run on 1523f656a99c completed normally with exit 1: exactly two
+failed and 51,886 passed tests (one failed/3,351 passed files). The only failing
+file was guards-route.test.ts. Standalone integration/E2E stages did not run
+after the aggregate failure. All 5,579 frozen source/test/config inputs were
+verified unchanged after completion.
+
+The receiver fixture used 1781300000000 (2026-06-12T21:33:20Z), which crossed the
+durable store's real-clock 90-day retention threshold at 2026-09-10T21:33:20Z.
+The preceding full run exercised that fixture before the threshold. Three
+receiver-clock initializations now start at Date.now(), retaining their existing
+relative advances and every persistence/age assertion. The sender timestamp
+remains fixed, so receiver-versus-sender semantics are still tested. Production
+retention policy and dashboard runtime behavior are unchanged.
+
+Hooke independently concurred with this exact clock correction. All 20 tests
+passed in both the isolated preparation and the dashboard candidate after the
+patch was applied. The next full run must validate the resulting commit.
