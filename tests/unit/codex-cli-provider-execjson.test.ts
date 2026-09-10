@@ -19,6 +19,7 @@ import {
   setFeatureMetricsRecorder,
 } from '../../src/core/CircuitBreakingIntelligenceProvider.js';
 import { LlmCircuitBreaker } from '../../src/core/LlmCircuitBreaker.js';
+import { CODEX_CHATGPT_FALLBACK_MODEL } from '../../src/providers/adapters/openai-codex/models.js';
 
 let fixtureDir: string;
 let prevEnv: string | undefined;
@@ -101,7 +102,7 @@ for a in "$@"; do
 done
 cat > /dev/null
 echo "$MODEL" >> "${calls}"
-if [ "$MODEL" != "gpt-5.4-mini" ]; then
+if [ "$MODEL" != "${CODEX_CHATGPT_FALLBACK_MODEL}" ]; then
   echo "Error 400: The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account." >&2
   exit 1
 fi
@@ -111,9 +112,12 @@ exit 0
     const provider = new CodexCliIntelligenceProvider({ codexPath: script });
 
     await expect(provider.evaluate('p', { model: 'gpt-5.5' })).resolves.toBe('RECOVERED-JSON');
+    // Asserted against the CONSTANT, not a literal: the floor moves every time
+    // OpenAI retires a model (three times so far), and a hardcoded name here
+    // silently re-breaks this mechanism test on each move.
     expect(fs.readFileSync(calls, 'utf-8').trim().split('\n')).toEqual([
       'gpt-5.5',
-      'gpt-5.4-mini',
+      CODEX_CHATGPT_FALLBACK_MODEL,
     ]);
   });
 

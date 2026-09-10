@@ -153,12 +153,12 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
 
   describe('codex-cli', () => {
     it('reports the same concrete default model the interactive builder launches', () => {
-      expect(resolveInteractiveLaunchModel('codex-cli', undefined)).toBe('gpt-5.5');
-      expect(resolveInteractiveLaunchModel('codex-cli', 'balanced')).toBe('gpt-5.4-mini');
+      expect(resolveInteractiveLaunchModel('codex-cli', undefined)).toBe('gpt-5.6-sol');
+      expect(resolveInteractiveLaunchModel('codex-cli', 'balanced')).toBe('gpt-5.6-sol');
       expect(resolveInteractiveLaunchModel('codex-cli', undefined, 'ollama')).toBe('llama3.2:latest');
     });
 
-    it('passes --model gpt-5.5 + --dangerously-bypass-approvals-and-sandbox by default (parity with Claude\'s --dangerously-skip-permissions)', () => {
+    it('passes --model gpt-5.6-sol + --dangerously-bypass-approvals-and-sandbox by default (parity with Claude\'s --dangerously-skip-permissions)', () => {
       // The binary is a FAKE whose --help advertises no hook-trust flag, so this
       // asserts the DEFAULT argv deterministically. It previously passed the real
       // '/usr/local/bin/codex' path, which made the assertion depend on whichever
@@ -171,7 +171,7 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
       const spec = buildInteractiveLaunch('codex-cli', { binaryPath: bin });
       // The explicit `--model` flag avoids Codex CLI's own historical
       // default `gpt-5.2-codex` (retired from ChatGPT-subscription auth
-      // 2026-04-14). The session default is gpt-5.5 as of 2026-05-23
+      // 2026-04-14). The session default is gpt-5.6-sol as of 2026-09-09
       // (Justin's call) — newest generalist + Codex CLI's own default,
       // confirmed working on the subscription. See models.ts comment block.
       // The bypass flag is the single-flag parity for Claude's
@@ -185,7 +185,7 @@ describe('frameworkSessionLaunch.buildInteractiveLaunch', () => {
       expect(spec.argv).toEqual([
         bin,
         '--model',
-        'gpt-5.5',
+        'gpt-5.6-sol',
         '--dangerously-bypass-approvals-and-sandbox',
         '-c',
         'check_for_update_on_startup=false',
@@ -365,7 +365,7 @@ describe('frameworkSessionLaunch.buildHeadlessLaunch', () => {
       expect(spec.argv).toContain('sandbox_workspace_write.network_access=true');
       expect(spec.argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(spec.argv).toContain('-m');
-      expect(spec.argv).toContain('gpt-5.5');
+      expect(spec.argv).toContain('gpt-5.6-sol');
       expect(spec.argv[spec.argv.length - 1]).toBe('analyze this');
     });
 
@@ -488,16 +488,16 @@ describe('frameworkSessionLaunch.resolveModelForFramework', () => {
   describe('codex-cli', () => {
     it('maps generic tiers to subscription-safe Codex model ids', () => {
       // light/medium/heavy mapping. NOTE: gpt-5.2 was retired from ChatGPT-account
-      // Codex on 2026-06-03 (now 400s), so `fast`/`haiku` moved to gpt-5.4-mini —
+      // Codex on 2026-09-09 (now 400s), so `fast`/`haiku` moved to gpt-5.6-sol —
       // the cheapest still-accepted model (== balanced). See models.ts.
-      expect(resolveModelForFramework('codex-cli', 'fast')).toBe('gpt-5.4-mini');
-      expect(resolveModelForFramework('codex-cli', 'balanced')).toBe('gpt-5.4-mini');
-      expect(resolveModelForFramework('codex-cli', 'capable')).toBe('gpt-5.5');
+      expect(resolveModelForFramework('codex-cli', 'fast')).toBe('gpt-5.6-sol');
+      expect(resolveModelForFramework('codex-cli', 'balanced')).toBe('gpt-5.6-sol');
+      expect(resolveModelForFramework('codex-cli', 'capable')).toBe('gpt-6-astra');
     });
     it('maps legacy Claude tier names to Codex equivalents (cross-port back-compat)', () => {
-      expect(resolveModelForFramework('codex-cli', 'haiku')).toBe('gpt-5.4-mini');
-      expect(resolveModelForFramework('codex-cli', 'sonnet')).toBe('gpt-5.4-mini');
-      expect(resolveModelForFramework('codex-cli', 'opus')).toBe('gpt-5.5');
+      expect(resolveModelForFramework('codex-cli', 'haiku')).toBe('gpt-5.6-sol');
+      expect(resolveModelForFramework('codex-cli', 'sonnet')).toBe('gpt-5.6-sol');
+      expect(resolveModelForFramework('codex-cli', 'opus')).toBe('gpt-6-astra');
     });
     it('passes raw Codex model ids through verbatim', () => {
       expect(resolveModelForFramework('codex-cli', 'gpt-5.4-codex')).toBe('gpt-5.4-codex');
@@ -542,7 +542,7 @@ describe('frameworkSessionLaunch.resolveModelForFramework', () => {
 
   it('codex headless builder rewrites generic tier to gpt-5.x', () => {
     const balanced = buildHeadlessLaunch('codex-cli', { binaryPath: '/x/codex', prompt: 'p', model: 'balanced' });
-    expect(balanced.argv).toContain('gpt-5.4-mini'); // medium tier
+    expect(balanced.argv).toContain('gpt-5.6-sol'); // medium tier
     expect(balanced.argv).not.toContain('balanced');
   });
 });

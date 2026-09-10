@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { CodexCliIntelligenceProvider } from '../../src/core/CodexCliIntelligenceProvider.js';
+import { CODEX_CHATGPT_FALLBACK_MODEL } from '../../src/providers/adapters/openai-codex/models.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const dirs: string[] = [];
@@ -50,7 +51,7 @@ exit 0
 
     expect(fs.readFileSync(calls, 'utf-8').trim().split('\n')).toEqual([
       'gpt-5.5',
-      'gpt-5.4-mini',
+      CODEX_CHATGPT_FALLBACK_MODEL,
     ]);
     expect(fs.readFileSync(prompts, 'utf-8').trim().split('\n')).toEqual([
       'classify this',

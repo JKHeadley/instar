@@ -64,15 +64,16 @@ export function resolveModelForFramework(
     // sensible Codex equivalent (haiku→fast, sonnet→balanced,
     // opus→capable) so an unported call site doesn't immediately
     // crash for a Codex agent.
-    // Light/medium/heavy mapping. NOTE (2026-06-03): OpenAI retired gpt-5.2 from
-    // the ChatGPT-account Codex surface (it now 400s "not supported … with a
-    // ChatGPT account"), so the `fast` tier moved off it onto the cheapest model
-    // still accepted — gpt-5.4-mini (== balanced). Keep this in lockstep with
+    // Light/medium/heavy mapping. NOTE (2026-09-09): OpenAI retired the whole
+    // gpt-5.4/5.5 generation from the ChatGPT-account Codex surface — including
+    // gpt-5.4-mini, which the 2026-06-03 gpt-5.2 retirement had moved `fast`
+    // onto. Live-probed replacements: gpt-5.6-sol (light+medium) and
+    // gpt-6-astra (heavy). Keep this in lockstep with
     // src/providers/adapters/openai-codex/models.ts (the single source of the
-    // full rationale + the drift-resilience follow-up).
-    if (key === 'fast' || key === 'haiku') return 'gpt-5.4-mini';   // light tier — gpt-5.2 retired 2026-06-03
-    if (key === 'balanced' || key === 'sonnet') return 'gpt-5.4-mini'; // medium — cheapest reasoning
-    if (key === 'capable' || key === 'opus') return 'gpt-5.5';      // heavy — frontier reasoning
+    // full rationale + the live-probe record).
+    if (key === 'fast' || key === 'haiku') return 'gpt-5.6-sol';    // light tier — gpt-5.4-mini retired 2026-09-09
+    if (key === 'balanced' || key === 'sonnet') return 'gpt-5.6-sol'; // medium — cheapest live reasoning
+    if (key === 'capable' || key === 'opus') return 'gpt-6-astra';  // heavy — frontier; gpt-5.5 retired 2026-09-09
     return modelOrTier;
   }
   if (framework === 'gemini-cli') {
@@ -133,7 +134,7 @@ export function resolveInteractiveLaunchModel(
 ): string | undefined {
   if (framework === 'codex-cli') {
     if (codexLocalProvider) return configuredModel ?? 'llama3.2:latest';
-    return resolveModelForFramework(framework, configuredModel) ?? 'gpt-5.5';
+    return resolveModelForFramework(framework, configuredModel) ?? 'gpt-5.6-sol';
   }
   if (framework === 'gemini-cli') {
     return resolveModelForFramework(framework, configuredModel) ?? 'gemini-2.5-flash';
@@ -1015,7 +1016,7 @@ const codexCliHeadlessBuilder: HeadlessBuilder = (options) => {
   const isLocal = options.codexLocalProvider !== undefined;
   const model = isLocal
     ? (options.model ?? 'llama3.2:latest')
-    : (resolveModelForFramework('codex-cli', options.model) ?? 'gpt-5.5');
+    : (resolveModelForFramework('codex-cli', options.model) ?? 'gpt-5.6-sol');
   const argv: string[] = [
     options.binaryPath,
     'exec',

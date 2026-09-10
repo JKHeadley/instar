@@ -51,6 +51,24 @@ import type { ModelTier } from '../../types.js';
  * CodexCliIntelligenceProvider: the exact ChatGPT-account model-retirement
  * response retries once on the known-good floor declared below.
  *
+ * ⚠ RE-PROBED AGAIN 2026-09-09 (live, against Justin's ChatGPT subscription; triggered
+ * by EVERY internal codex call failing fleet-wide — sentinels, gates and reflectors alike
+ * 400'ing instantly on all three machines). OpenAI has now retired the ENTIRE gpt-5.4/5.5
+ * generation from the ChatGPT-account Codex surface, INCLUDING the model this file had
+ * pinned as both the `fast`/`balanced` tier AND the retirement safety floor:
+ *   ❌ rejected 400 "not supported when using Codex with a ChatGPT account":
+ *        gpt-5.4-mini, gpt-5.4, gpt-5.6, gpt-6, gpt-5.6-mini, gpt-6-mini
+ *   ❌ rejected 404 "does not exist or you do not have access to it": gpt-5.5
+ *   ✅ still working 2026-09-09: gpt-5.6-sol, gpt-6-astra   (both replied to a trivial probe)
+ * This was the THIRD retirement in this class (2026-04-14 `-codex` suffix, 2026-06-03
+ * gpt-5.2) and the first where the SAFETY FLOOR itself was dead — so the self-heal in
+ * CodexCliIntelligenceProvider retried onto another rejected model and the fleet stayed
+ * dark. Two consequences are addressed together, because a live floor that the classifier
+ * never reaches is not a fix:
+ *   (1) the tier map + `CODEX_CHATGPT_FALLBACK_MODEL` move onto live-probed ids below;
+ *   (2) `classifyCodexErrorMessage` now also recognises the 404 retirement shape, which
+ *       previously fell through to 'unknown' and so never triggered the self-heal at all.
+ *
  * TOKEN-BURN observation (same trivial "reply OK" prompt, 2026-05-23):
  *   gpt-5.2 = 103 tokens · gpt-5.3-codex = 5,574 · gpt-5.5 = 7,399.
  *   The reasoning models (5.3-codex, 5.5) burn ~50-70x more than gpt-5.2
@@ -96,16 +114,17 @@ import type { ModelTier } from '../../types.js';
  * target is validated against KNOWN_CODEX_MODEL_IDS at the retry authority.
  */
 const TIER_TO_MODEL: Record<ModelTier, string> = {
-  // fast — cheapest model accepted on the ChatGPT account. Was non-reasoning
-  // gpt-5.2 until OpenAI retired it (2026-06-03, see header); gpt-5.2 now 400s
-  // and broke every cheap codex call. No non-reasoning option remains, so this
-  // is gpt-5.4-mini (== balanced) — a reasoning model, raising cheap-call burn,
-  // but a working model beats a rejected one.
-  fast: 'gpt-5.4-mini',
-  // medium — cheapest reasoning model; everyday light work / worker subagents.
-  balanced: 'gpt-5.4-mini',
+  // fast — cheapest model still ACCEPTED on the ChatGPT account. gpt-5.2 was
+  // retired 2026-06-03 and its replacement gpt-5.4-mini was retired in turn
+  // (2026-09-09, see header), so this is now gpt-5.6-sol. Still a reasoning
+  // model, so `fast` continues to equal `balanced` — there is no non-reasoning
+  // option on this surface, and a working model beats a rejected one.
+  fast: 'gpt-5.6-sol',
+  // medium — cheapest live reasoning model; everyday light work / worker subagents.
+  balanced: 'gpt-5.6-sol',
   // heavy — frontier reasoning model; hard problems + the user's main chat.
-  capable: 'gpt-5.5',
+  // gpt-5.5 was retired 2026-09-09 (404s); gpt-6-astra is the live frontier id.
+  capable: 'gpt-6-astra',
 };
 
 /**
@@ -114,7 +133,10 @@ const TIER_TO_MODEL: Record<ModelTier, string> = {
  * changing normal tier defaults and changing the retirement safety floor are
  * separate operational decisions.
  */
-export const CODEX_CHATGPT_FALLBACK_MODEL = 'gpt-5.4-mini';
+// Live-probed 2026-09-09. The previous floor (gpt-5.4-mini) was retired in the
+// same sweep that killed the tier map, which is exactly how the self-heal came
+// to retry one dead model with another. A floor is only a floor while it answers.
+export const CODEX_CHATGPT_FALLBACK_MODEL = 'gpt-5.6-sol';
 
 /**
  * Resolve a tier or raw model string to a concrete model name to pass to
