@@ -126,6 +126,20 @@ exposed missing standalone guidance on existing framework files; the explicit
 migration tuple corrected it and all three migration cases passed. Final commit
 checks, full test:all and CI remain required before release.
 
+The first full run on 9ffb202636d7 found two release-completeness failures:
+the new awareness marker was absent from the feature-addenda parity registry,
+and the release fragment lacked the required sections. The parent deliberately
+cancelled its own run after confirming these failures; all 5,579 frozen inputs
+were unchanged. That run is incomplete, not passing. The correction adds the
+marker to the existing real parity assertions and organizes the release note
+under the required headings. It changes no production behavior and removes no
+assertion or release requirement. A fresh full run is required on the correction.
+The corrected completeness suite and dashboard unit/migration tests passed all
+179 cases across three files.
+Independent correction review confirmed the added assertions preserve the gate;
+its wording concern narrowed the user-facing claim to held or uncertain pinned
+edits, preserving the documented cross-invocation replacement limitation.
+
 Class closure: unbounded-self-action is n/a for this bounded change. It removes
 an exception-driven extra send from one invocation and adds no autonomous retry
 controller. It does not claim to close the broader wake loop or cross-invocation
