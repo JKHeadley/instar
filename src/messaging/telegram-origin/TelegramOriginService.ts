@@ -2,6 +2,7 @@
 // (docs/STANDARDS-REGISTRY.md). Recording and presentation are independent.
 import { sealOriginAdmission, validOriginAdmission } from './OriginAdmissionSeal.js';
 import { OriginCapacityUnavailable } from './OriginEgressCapacity.js';
+import { recordTelegramEditRejection } from '../TelegramEditRejection.js';
 import type { OriginCapacityAuthority } from './OriginEgressCapacity.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { originSendPolicyInput, validOriginSendPolicyInput, OriginSendPolicyRefusal } from './OriginSendPolicy.js';
@@ -563,7 +564,7 @@ export class TelegramOriginService {
         await this.#outcomeUnknown(operation, claim.child, 'transport-acceptance-unknown');
         throw new TelegramOriginHoldError('transport-acceptance-unknown', operation.record.operationId, 'outcome-unknown');
       }
-      type BotResponse = { ok?: boolean; result?: unknown; parameters?: { retry_after?: unknown } };
+      type BotResponse = { ok?: boolean; result?: unknown; error_code?: unknown; description?: unknown; parameters?: { retry_after?: unknown } };
       let parsed: BotResponse | null = null;
       try { parsed = JSON.parse(await response.clone().text()) as BotResponse; } catch { /* No concrete receipt; never infer success from HTTP alone. */ }
       const receipt = correlateBotReceipt(request, parsed?.result, this.#now());
@@ -578,9 +579,13 @@ export class TelegramOriginService {
         const nextAttemptAt = response.status === 429 ? nextOriginKnownFailure({ attempt: claim.child.attemptNumber,
           maxAttempts: operation.admission.maxAttempts, deadlineAt: operation.admission.deadlineAt, now: this.#now(),
           minimumDelayMs: Number.isSafeInteger(retryAfter) && Number(retryAfter) > 0 ? Number(retryAfter) * 1000 : 0 }) : undefined;
-        await this.options.store.recordOutcome({ ...claim.child, outcome: 'known-failed', reason: `telegram-${response.status}`,
+        const saved = await this.options.store.recordOutcome({ ...claim.child, outcome: 'known-failed', reason: `telegram-${response.status}`,
           ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }) });
-        throw new TelegramOriginHoldError(`telegram-${response.status}`, operation.record.operationId, 'known-failed');
+        const error = new TelegramOriginHoldError(`telegram-${response.status}`, operation.record.operationId, 'known-failed');
+        if (saved.recorded) recordTelegramEditRejection(error, response.status, parsed, {
+          method: request.method, accountId: request.accountId, params: JSON.parse(request.body),
+        });
+        throw error;
       } else {
         const partial = response.ok && parsed?.ok === true ? correlatePartialBotReceipt(request, parsed.result, this.#now()) : null;
         const reason = partial ? 'partial-platform-receipt' : 'response-without-correlated-receipt';

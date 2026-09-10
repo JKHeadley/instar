@@ -22,7 +22,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
  */
 
 import fs from 'node:fs';
-import { telegramOriginAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, refreshOriginCanaryStartupAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { telegramOriginAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramDashboardEditAwareness, refreshOriginCanaryStartupAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -6262,6 +6262,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Telegram late capacity awareness');
     }
 
+    if (!content.includes('Dashboard edit rejection:')) {
+      content += '\n' + telegramDashboardEditAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added dashboard edit rejection awareness');
+    }
+
     const refreshedOriginCanary = refreshOriginCanaryStartupAwareness(content);
     if (refreshedOriginCanary !== content) {
       content = refreshedOriginCanary;
@@ -10660,6 +10666,7 @@ Two layers keep my machine-to-machine \"ropes\" (Tailscale / LAN / Cloudflare) h
         ['Queued-message review pacing:', telegramOriginRecoveryAwareness],
         ['Telegram send deadlines:', telegramOriginTransportAwareness],
         ['Telegram capacity checks:', telegramOriginCapacityAwareness],
+        ['Dashboard edit rejection:', telegramDashboardEditAwareness],
       ] as const) {
         if (claudeMd.includes(marker) && !appended.includes(marker)) {
           appended = appended.trimEnd() + '\n\n' + render();

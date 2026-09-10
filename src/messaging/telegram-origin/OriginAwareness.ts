@@ -30,6 +30,10 @@ export function telegramOriginCapacityAwareness(): string {
   return 'Telegram capacity checks: ordinary replies acquire the credential owner\'s short-lived capacity only after durable dispatch intent, immediately before network invocation. Storage preparation cannot use up that grant. An unavailable or expired grant still holds the original message and consumes a charged attempt, even if no network call started; sustained capacity refusal can exhaust its original attempt limit. The existing recovery pacing, deadline, ownership and shared rate limit remain in force. Never recreate a held message to obtain a new budget.\n';
 }
 
+export function telegramDashboardEditAwareness(): string {
+  return 'Dashboard edit rejection: a held or uncertain pinned-link edit preserves its original operation and saved message ID; it never escalates into a fresh dashboard post. Only Telegram\'s concrete missing-message rejection for that same target permits replacement, after durable outcome recording for managed sends. An authoritative unchanged response is a no-op. `POST /telegram/dashboard-refresh` still reports failed refreshes; inspect the original origin record rather than deleting the saved ID or manually reposting to evade a hold. This guard limits dashboard send amplification; it does not repair false wake classification or guarantee that a held edit is delivered.\n';
+}
+
 export function telegramOriginAwareness(port: number): string {
   return `
 ### Telegram message origin
