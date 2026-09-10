@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
-import { telegramOriginCertificationAwareness, telegramOriginLeaseAwareness } from '../../src/messaging/telegram-origin/OriginAwareness.js';
+import { telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginRecoveryAwareness } from '../../src/messaging/telegram-origin/OriginAwareness.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 const prior = fs.readFileSync('tests/fixtures/relay-history/telegram-reply-pre-origin.sh', 'utf8');
@@ -83,16 +83,20 @@ describe('origin relay installed-upgrade parity', () => {
     const first = migrate();
     expect(first).toContain(telegramOriginCertificationAwareness());
     expect(first).toContain(telegramOriginLeaseAwareness());
+    expect(first).toContain(telegramOriginRecoveryAwareness());
     expect(first).toContain('messageOrigin.outageNotice.enabled');
     expect(first).toContain('Operator note: preserve this workflow.');
     const second = migrate();
     expect(second.split('Origin rollout certification:')).toHaveLength(2);
     expect(second.split('Origin lease renewal dependency:')).toHaveLength(2);
     expect(second.split('Message origins on your phone:')).toHaveLength(2);
+    expect(second.split('Queued-message review pacing:')).toHaveLength(2);
     expect(second).toBe(first);
     for (const shadow of shadows) {
       const content = fs.readFileSync(shadow, 'utf8');
       expect(content).toContain('Operator shadow note.');
+      expect(content).toContain(telegramOriginRecoveryAwareness());
+      expect(content.split('Queued-message review pacing:')).toHaveLength(2);
       expect(content).toContain('messageOrigin.outageNotice.enabled');
       expect(content.split('Origin rollout certification:')).toHaveLength(2);
       expect(content.split('Origin lease renewal dependency:')).toHaveLength(2);

@@ -23,9 +23,14 @@ describe('owned detector known-state canary', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     const canary = new OriginDetectorCanary({ workerUrl, configWorkerUrl, intervalMs: 60_000 }); cleanups.push(() => canary.close());
     const run = vi.spyOn(canary, 'run');
-    const settle = async () => { const deadline = performance.now() + 5000;
-      while (canary.getHealth().state === 'running' && performance.now() < deadline) await new Promise(resolve => setImmediate(resolve));
-      expect(canary.getHealth().state).toBe('pass'); };
+    const settle = async () => {
+      // The scheduling clock is frozen; await the actual worker and its cleanup
+      // instead of imposing an unrelated wall-clock deadline on the fixture.
+      const result = run.mock.results.at(-1);
+      expect(result?.type).toBe('return');
+      await result!.value;
+      expect(canary.getHealth().state).toBe('pass');
+    };
     canary.start();
     await vi.advanceTimersByTimeAsync(59_999); expect(run).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1); await settle(); expect(run).toHaveBeenCalledOnce();
@@ -46,6 +51,9 @@ describe('owned detector known-state canary', () => {
     } finally { read.mockRestore(); write.mockRestore(); }
   });
   it('uses real encrypted fixtures and checks positive and negative source authority without native claims', async () => {
+    // This case verifies the source contract. Freeze the parent's deadline while
+    // real fixture workers run; bounded timeout behavior has its own case below.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     let now = Date.now();
     const canary = new OriginDetectorCanary({ workerUrl, configWorkerUrl, intervalMs: 60_000, now: () => now }); cleanups.push(() => canary.close());
     await canary.run();

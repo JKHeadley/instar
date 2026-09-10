@@ -18,6 +18,10 @@ export function telegramOriginLeaseAwareness(): string {
   return 'Origin lease renewal dependency: an enabled Telegram origin writer enrolls the existing current-holder renewal timer so ordinary installations keep a confirmed lease beyond its TTL. Explicit `multiMachine.leaseSelfHeal.resilientRenew.enabled: false` remains an opt-out; lease expiry still holds sends. Observe-only roles, higher-epoch holders and failed partition confirmations remain fenced. Without an origin writer, the standalone renewal feature keeps its development-agent default. Never change identity records or bypass `holdsLease` to clear a delivery hold.\n';
 }
 
+export function telegramOriginRecoveryAwareness(): string {
+  return 'Queued-message review pacing: automatic origin recovery reserves a durable 15-minute interval per original operation before reviewing or attempting delivery. Failed reviews, send refusals and process restarts cannot reset that interval. Existing origin audit records expose `recovery.attempts` and `recovery.nextAttemptAt`; these count recovery starts, not Telegram sends or tokens. A due retry still checks current policy. The original deadline and transport attempt limit remain in force, and retained messages are not guaranteed delivered. New replies are independent; never rewrite or resend a held message merely to bypass this interval.\n';
+}
+
 export function telegramOriginAwareness(port: number): string {
   return `
 ### Telegram message origin
@@ -33,6 +37,7 @@ ${telegramOriginCertificationAwareness()}
 ${telegramOriginLeaseAwareness()}
 ${telegramOriginDashboardAwareness()}
 ${telegramOriginDetectorAwareness()}
+${telegramOriginRecoveryAwareness()}
 Ordinary bot messages and fixed outage notices share the credential owner's bounded send capacity across server and Lifeline processes. A \`credential-capacity-unavailable\` result retains the original operation for recovery; never replace it with a new message. An unavailable or stale capacity owner holds sends. Recording-worker failure does not disable the independent notice queue or its current permission checks.
 
 Claude and Codex tool hooks direct raw Telegram writes to the recorded relay or typed browser broker. Managed Telegram profiles belong to the broker; generic browser tools cannot use them. This cooperative hook is not an operating-system sandbox. Other enabled harnesses must prove equivalent enrollment before activation; a hook being installed is not proof of complete sender coverage.
